@@ -1,0 +1,44 @@
+{% extends "_base.html" %}
+
+{% block content %}
+  <main class="mx-auto max-w-md px-6 py-16 text-slate-900 dark:text-gray-100">
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900 dark:text-white">Log in</h1>
+    <form class="mt-6 space-y-4" method="post">
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-700 dark:text-red-200">
+          {{ form.non_field_errors }}
+        </div>
+      {% endif %}
+      <div>
+        <label class="block text-sm font-medium text-slate-700 dark:text-gray-300" for="{{ form.username.id_for_label }}">
+          Email
+        </label>
+        {{ form.username }}
+        {% if form.username.errors %}
+          <p class="mt-1 text-sm text-red-600 dark:text-red-400">{{ form.username.errors }}</p>
+        {% endif %}
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-700 dark:text-gray-300" for="{{ form.password.id_for_label }}">
+          Password
+        </label>
+        {{ form.password }}
+        {% if form.password.errors %}
+          <p class="mt-1 text-sm text-red-600 dark:text-red-400">{{ form.password.errors }}</p>
+        {% endif %}
+      </div>
+      <div class="flex flex-wrap items-center gap-4">
+        <button class="rounded-lg bg-indigo-600 dark:bg-indigo-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 dark:hover:bg-indigo-600" type="submit">
+          Log in
+        </button>
+        <a class="inline-flex items-center text-sm font-medium text-body hover:text-heading dark:text-gray-300 dark:hover:text-white" href="{% url 'accounts:password_reset' %}">
+          Forgot password?
+        </a>
+      </div>
+    </form>
+    <p class="mt-4 text-sm text-slate-600 dark:text-gray-400">
+      Don't have an account? <a class="font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500" href="{% url 'accounts:signup' %}">Sign up</a>
+    </p>
+  </main>
+{% endblock content %}

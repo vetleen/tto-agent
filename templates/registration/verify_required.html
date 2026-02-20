@@ -1,0 +1,25 @@
+{% extends "_base.html" %}
+
+{% block content %}
+  <main class="mx-auto max-w-md px-6 py-16 text-slate-900 dark:text-gray-100">
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900 dark:text-white">Verify your email</h1>
+    <p class="mt-4 text-slate-600 dark:text-gray-300">
+      You need to verify your email address before you can log in. We sent a verification link to your email.
+    </p>
+    {% if email %}
+      <p class="mt-2 text-sm text-slate-500 dark:text-gray-400">
+        Send another link to <strong>{{ email }}</strong>:
+      </p>
+      <form class="mt-4" method="post" action="{% url 'accounts:resend_verification' %}">
+        {% csrf_token %}
+        <input type="hidden" name="email" value="{{ email }}">
+        <button class="rounded-lg bg-indigo-600 dark:bg-indigo-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 dark:hover:bg-indigo-600" type="submit">
+          Resend verification email
+        </button>
+      </form>
+    {% endif %}
+    <p class="mt-6">
+      <a class="text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-300" href="{% url 'accounts:login' %}">Back to log in</a>
+    </p>
+  </main>
+{% endblock content %}

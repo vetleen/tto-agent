@@ -1,0 +1,171 @@
+{% load static %}
+<!doctype html>
+<html lang="en" {% if landing_page %}data-theme="dark"{% elif user.is_authenticated %}data-theme="{{ theme }}" data-theme-update-url="{% url 'accounts:theme_update' %}"{% endif %}>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>tto-agent</title>
+    <script>
+      (function() {
+        var serverTheme = document.documentElement.getAttribute('data-theme');
+        if (serverTheme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else if (serverTheme === 'light') {
+          document.documentElement.classList.remove('dark');
+        } else {
+          /* Anonymous: use localStorage or default to dark (no backend) */
+          if (localStorage.getItem('color-theme') === 'light') {
+            document.documentElement.classList.remove('dark');
+          } else {
+            document.documentElement.classList.add('dark');
+          }
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="{% static 'src/output.css' %}">
+    {% if user.is_authenticated %}
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    {% endif %}
+  </head>
+  <body class="{% block body_class %}pt-20 bg-neutral-primary min-h-screen{% endblock %}">
+    {% block navbar %}
+    <nav class="bg-neutral-primary fixed w-full z-20 top-0 start-0 border-b border-default backdrop-blur-md">
+      <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-wrap items-center justify-between h-16">
+        <a href="/" class="flex items-center shrink-0" aria-label="Home">
+          <span class="text-2xl" aria-hidden="true">🔥</span>
+          <span class="ml-2 self-center text-xl text-heading font-semibold whitespace-nowrap">tto-agent</span>
+        </a>
+        {% if user.is_authenticated %}
+          <div class="flex items-center gap-4 md:order-2">
+            <div class="hidden w-full items-center md:flex md:w-auto" id="navbar-user">
+              <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:space-x-6 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
+                {# Chat link restored when llm_chat app is re-enabled #}
+              </ul>
+            </div>
+            <button type="button" id="theme-toggle" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
+              <svg id="theme-toggle-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+              <svg id="theme-toggle-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
+            </button>
+            <button type="button" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5 md:me-0" id="user-menu-button" aria-expanded="false" data-dropdown-toggle="user-dropdown" data-dropdown-placement="bottom" aria-label="Open user menu">
+              <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"></path>
+              </svg>
+            </button>
+            <div class="z-50 hidden bg-neutral-primary-medium border border-default-medium rounded-base shadow-lg w-56" id="user-dropdown">
+              <div class="px-4 py-3 text-sm border-b border-default">
+                <span class="block text-heading font-medium">Account</span>
+                <span class="block text-body truncate">{{ user.email }}</span>
+              </div>
+              <ul class="p-2 text-sm text-body font-medium" aria-labelledby="user-menu-button">
+                <li>
+                  <a href="{% url 'accounts:password_change' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Change password</a>
+                </li>
+                <li>
+                  <a href="{% url 'accounts:account_delete' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Delete account</a>
+                </li>
+                <li>
+                  <form action="{% url 'accounts:logout' %}" method="post">
+                    {% csrf_token %}
+                    <button class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded" type="submit">
+                      Log out
+                    </button>
+                  </form>
+                </li>
+              </ul>
+            </div>
+            <button data-collapse-toggle="navbar-user" type="button" class="inline-flex items-center p-2 w-10 h-10 justify-center text-sm text-body rounded-base md:hidden hover:bg-neutral-secondary-soft hover:text-heading focus:outline-none focus:ring-2 focus:ring-neutral-tertiary" aria-controls="navbar-user" aria-expanded="false">
+              <span class="sr-only">Open main menu</span>
+              <svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-width="2" d="M5 7h14M5 12h14M5 17h14"/></svg>
+            </button>
+          </div>
+        {% else %}
+          <div class="flex items-center gap-4 md:order-2">
+            {% if not landing_page %}
+            <button type="button" id="theme-toggle-anon" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
+              <svg id="theme-toggle-anon-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+              <svg id="theme-toggle-anon-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
+            </button>
+            {% endif %}
+            <a href="{% url 'accounts:login' %}" class="text-white bg-brand hover:bg-brand-strong box-border border border-transparent focus:ring-4 focus:ring-brand-medium shadow-xs font-medium leading-5 rounded-base text-sm px-3 py-2 focus:outline-none">
+              Log in
+            </a>
+          </div>
+        {% endif %}
+        </div>
+      </div>
+    </nav>
+    {% endblock navbar %}
+    {% block content %}{% endblock content %}
+    <script src="https://cdn.jsdelivr.net/npm/flowbite@4.0.1/dist/flowbite.min.js"></script>
+    {% if user.is_authenticated %}
+    <script>
+      (function() {
+        var themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
+        var themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
+        var serverTheme = document.documentElement.getAttribute('data-theme');
+        var isDark = serverTheme === 'dark' || (!serverTheme && (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)));
+        if (isDark) {
+          themeToggleLightIcon.classList.remove('hidden');
+        } else {
+          themeToggleDarkIcon.classList.remove('hidden');
+        }
+        document.getElementById('theme-toggle').addEventListener('click', function() {
+          themeToggleDarkIcon.classList.toggle('hidden');
+          themeToggleLightIcon.classList.toggle('hidden');
+          var isDarkNow = document.documentElement.classList.contains('dark');
+          if (isDarkNow) {
+            document.documentElement.classList.remove('dark');
+            localStorage.setItem('color-theme', 'light');
+            var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+            fetch(document.documentElement.getAttribute('data-theme-update-url'), {
+              method: 'POST',
+              headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+              body: 'theme=light&csrfmiddlewaretoken=' + encodeURIComponent(csrf),
+              credentials: 'same-origin'
+            });
+          } else {
+            document.documentElement.classList.add('dark');
+            localStorage.setItem('color-theme', 'dark');
+            var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+            fetch(document.documentElement.getAttribute('data-theme-update-url'), {
+              method: 'POST',
+              headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+              body: 'theme=dark&csrfmiddlewaretoken=' + encodeURIComponent(csrf),
+              credentials: 'same-origin'
+            });
+          }
+        });
+      })();
+    </script>
+    {% endif %}
+    {% if not user.is_authenticated and not landing_page %}
+    <script>
+      (function() {
+        var btn = document.getElementById('theme-toggle-anon');
+        if (!btn) return;
+        var darkIcon = document.getElementById('theme-toggle-anon-dark-icon');
+        var lightIcon = document.getElementById('theme-toggle-anon-light-icon');
+        var isDark = document.documentElement.classList.contains('dark');
+        if (isDark) {
+          lightIcon.classList.remove('hidden');
+        } else {
+          darkIcon.classList.remove('hidden');
+        }
+        btn.addEventListener('click', function() {
+          darkIcon.classList.toggle('hidden');
+          lightIcon.classList.toggle('hidden');
+          var isDarkNow = document.documentElement.classList.contains('dark');
+          if (isDarkNow) {
+            document.documentElement.classList.remove('dark');
+            localStorage.setItem('color-theme', 'light');
+          } else {
+            document.documentElement.classList.add('dark');
+            localStorage.setItem('color-theme', 'dark');
+          }
+        });
+      })();
+    </script>
+    {% endif %}
+  </body>
+</html>

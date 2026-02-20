@@ -1,0 +1,54 @@
+{% extends "_base.html" %}
+{% load static %}
+
+{% block body_class %}min-h-screen{% endblock %}
+
+{% block navbar %}
+<nav class="bg-neutral-primary fixed w-full z-20 top-0 start-0 border-b border-default backdrop-blur-md">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex items-center justify-between h-16">
+      <a href="/" class="flex items-center shrink-0" aria-label="Home">
+        <span class="text-2xl" aria-hidden="true">🔥</span>
+        <span class="ml-2 text-xl text-heading font-semibold whitespace-nowrap hidden sm:inline">tto-agent</span>
+      </a>
+      <div class="absolute left-1/2 -translate-x-1/2 flex items-center gap-8">
+        <a href="#example" class="font-medium text-body hover:text-heading transition-colors">Example</a>
+        <a href="#template" class="font-medium text-body hover:text-heading transition-colors">Template</a>
+        <a href="#change" class="font-medium text-body hover:text-heading transition-colors">Change</a>
+        <a href="#this" class="font-medium text-body hover:text-heading transition-colors">This</a>
+      </div>
+      <a href="{% url 'accounts:login' %}" class="text-sm font-medium text-body hover:text-heading transition-colors inline-flex items-center gap-1 shrink-0">
+        Log in
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+      </a>
+    </div>
+  </div>
+</nav>
+{% endblock navbar %}
+
+{% block content %}
+<section class="relative min-h-screen flex items-center justify-center overflow-hidden">
+  <div class="absolute inset-0 bg-zinc-900">
+    <div class="absolute inset-0 bg-cover bg-center bg-no-repeat" style="background-image: url('{% static 'images/hero/hero.jpg' %}');"></div>
+    <div class="absolute inset-0 bg-gradient-to-b from-zinc-900/80 via-zinc-900/60 to-zinc-900"></div>
+    <div class="absolute inset-0 bg-gradient-to-t from-zinc-900 via-transparent to-transparent"></div>
+  </div>
+  <div class="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+    <h1 class="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight text-white drop-shadow-lg">
+      tto-agent
+    </h1>
+    <p class="mt-6 text-lg sm:text-xl text-zinc-400 max-w-2xl mx-auto leading-relaxed">
+      Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+    </p>
+    <div class="mt-10 flex flex-wrap items-center justify-center gap-4">
+      <a href="{% url 'accounts:signup' %}" class="inline-flex items-center justify-center rounded-lg bg-white px-6 py-3 text-base font-semibold text-zinc-900 shadow-sm hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-zinc-900 transition-colors">
+        Get started
+      </a>
+      <a href="{% url 'accounts:login' %}" class="inline-flex items-center gap-2 text-base font-medium text-zinc-300 hover:text-white transition-colors">
+        Log in
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+      </a>
+    </div>
+  </div>
+</section>
+{% endblock content %}

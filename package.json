@@ -1,0 +1,14 @@
+{
+  "name": "tto-agent",
+  "scripts": {
+    "build": "npm run build:css",
+    "build:css": "npx @tailwindcss/cli -i ./static/src/input.css -o ./static/src/output.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.18",
+    "tailwindcss": "^4.1.18"
+  },
+  "dependencies": {
+    "flowbite": "^4.0.1"
+  }
+}

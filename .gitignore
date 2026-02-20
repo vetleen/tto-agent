@@ -1,0 +1,69 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+venv/
+env/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# Django
+*.sqlite3
+/db.sqlite3
+*.log
+local_settings.py
+/media
+/staticfiles
+/static/CACHE/
+
+# Django static build
+static/src/output.css
+
+# Env
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+secrets.json
+*.key
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cursor/
+
+# OS
+.DS_Store
+.DS_Store?
+Thumbs.db
+Desktop.ini

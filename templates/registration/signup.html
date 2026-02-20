@@ -1,0 +1,45 @@
+{% extends "_base.html" %}
+
+{% block content %}
+  <main class="mx-auto max-w-md px-6 py-16 text-slate-900 dark:text-gray-100">
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900 dark:text-white">Sign up</h1>
+    <form class="mt-6 space-y-4" method="post">
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-700 dark:text-red-200">
+          {{ form.non_field_errors }}
+        </div>
+      {% endif %}
+      <div>
+        <label class="block text-sm font-medium text-slate-700 dark:text-gray-300" for="{{ form.email.id_for_label }}">
+          Email
+        </label>
+        {{ form.email }}
+        {% if form.email.errors %}
+          <p class="mt-1 text-sm text-red-600 dark:text-red-400">{{ form.email.errors }}</p>
+        {% endif %}
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-700 dark:text-gray-300" for="{{ form.password1.id_for_label }}">
+          Password
+        </label>
+        {{ form.password1 }}
+        {% if form.password1.errors %}
+          <p class="mt-1 text-sm text-red-600 dark:text-red-400">{{ form.password1.errors }}</p>
+        {% endif %}
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-700 dark:text-gray-300" for="{{ form.password2.id_for_label }}">
+          Confirm password
+        </label>
+        {{ form.password2 }}
+        {% if form.password2.errors %}
+          <p class="mt-1 text-sm text-red-600 dark:text-red-400">{{ form.password2.errors }}</p>
+        {% endif %}
+      </div>
+      <button class="rounded-lg bg-indigo-600 dark:bg-indigo-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 dark:hover:bg-indigo-600" type="submit">
+        Create account
+      </button>
+    </form>
+  </main>
+{% endblock content %}

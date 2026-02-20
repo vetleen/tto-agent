@@ -1,0 +1,37 @@
+{% extends "_base.html" %}
+
+{% block content %}
+  <main class="mx-auto max-w-md px-6 py-16 text-slate-900 dark:text-gray-100">
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900 dark:text-white">Check your email</h1>
+    <p class="mt-4 text-slate-600 dark:text-gray-300">
+      We sent a verification link to <strong>{{ email|default:"your email" }}</strong>. Click the link to verify your account.
+    </p>
+    <p class="mt-2 text-sm text-slate-500 dark:text-gray-400">
+      The link expires in 24 hours. If you don't see the email, check your spam folder.
+    </p>
+
+    {% if resend_sent %}
+      <p class="mt-4 rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/30 px-4 py-3 text-sm text-green-700 dark:text-green-200">
+        We sent another verification email.
+      </p>
+    {% endif %}
+
+    {% if resend_rate_limited and resend_wait_seconds %}
+      <p class="mt-4 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm text-amber-700 dark:text-amber-200">
+        Please wait <strong>{{ resend_wait_seconds }}</strong> second{{ resend_wait_seconds|pluralize }} before requesting another email.
+      </p>
+    {% elif email %}
+      <form class="mt-6" method="post" action="{% url 'accounts:resend_verification' %}">
+        {% csrf_token %}
+        <input type="hidden" name="email" value="{{ email }}">
+        <button class="rounded-lg bg-indigo-600 dark:bg-indigo-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 dark:hover:bg-indigo-600" type="submit">
+          Resend verification email
+        </button>
+      </form>
+    {% endif %}
+
+    <p class="mt-6">
+      <a class="text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-300" href="{% url 'accounts:login' %}">Back to log in</a>
+    </p>
+  </main>
+{% endblock content %}
