@@ -1,5 +1,7 @@
 # tto-agent
 
+An **agentic system for technology transfer offices (TTO)** that handles routine workflows for TTO staff. The system assists employees with common tasks—such as intake, disclosure support, and process guidance—through an AI-powered assistant, reducing repetitive work and keeping workflows consistent.
+
 ## Setup
 
 ### Prerequisites
