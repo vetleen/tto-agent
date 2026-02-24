@@ -137,8 +137,12 @@ class ChatMessage(models.Model):
             else:
                 enc = tiktoken.get_encoding(cls._encoding_name_for_model(model_name))
         except Exception:
-            # Fallback to a safe default.
-            enc = tiktoken.get_encoding("cl100k_base")
+            # Fallback to a safe default. If tokenizer assets are unavailable
+            # (e.g., offline environment), return 0 instead of raising.
+            try:
+                enc = tiktoken.get_encoding("cl100k_base")
+            except Exception:
+                return 0
 
         return len(enc.encode(text))
 

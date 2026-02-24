@@ -54,6 +54,17 @@ class ChatMessageTokenCountingTest(TestCase):
         )
         self.assertGreaterEqual(msg.token_count, 0)
 
+    @mock.patch("tiktoken.get_encoding", side_effect=Exception("offline"))
+    @mock.patch("tiktoken.encoding_for_model", side_effect=Exception("offline"))
+    def test_token_count_returns_zero_when_tiktoken_unavailable(self, *_mocks):
+        msg = ChatMessage.objects.create(
+            thread=self.thread,
+            role=ChatMessage.Role.USER,
+            content="Hello world",
+        )
+
+        self.assertEqual(msg.token_count, 0)
+
 
 class ChatMessageStreamingConstraintTest(TestCase):
     def setUp(self):
@@ -75,4 +86,3 @@ class ChatMessageStreamingConstraintTest(TestCase):
                 status=ChatMessage.Status.STREAMING,
                 content="another partial",
             )
-
