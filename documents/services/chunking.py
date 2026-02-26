@@ -22,13 +22,23 @@ def _get_loaders():
 
 
 def _count_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
+    text = text or ""
+    if not text.strip():
+        return 0
     try:
         import tiktoken
+
         enc = tiktoken.get_encoding(encoding_name)
         return len(enc.encode(text))
     except Exception as e:
         logger.warning("tiktoken count failed: %s", e)
-        return 0
+        # Fallback token estimate to keep chunking and limits functional even
+        # when tiktoken cannot download/load encoding data.
+        # Use both word- and char-based heuristics to avoid severe
+        # under-counting for long strings with little/no whitespace.
+        word_estimate = len(text.split())
+        char_estimate = (len(text) + 3) // 4
+        return max(1, word_estimate, char_estimate)
 
 
 def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:

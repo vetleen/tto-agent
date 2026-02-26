@@ -49,28 +49,19 @@ def delete_vectors_for_document(document_id: int) -> None:
     if not conn:
         return
     try:
-        from langchain_community.vectorstores import PGVector
-        from langchain_openai import OpenAIEmbeddings
-        timeout = getattr(settings, "EMBEDDING_REQUEST_TIMEOUT", 120)
-        embeddings = OpenAIEmbeddings(
-            model=getattr(settings, "EMBEDDING_MODEL", "text-embedding-3-large"),
-            request_timeout=timeout,
-        )
-        store = PGVector(
-            connection_string=conn,
-            embedding_function=embeddings,
-            collection_name=COLLECTION_NAME,
-            use_jsonb=True,
-        )
-        # PGVector stores in a table; filter by metadata document_id and delete
-        # The store may not expose delete by filter; we use the underlying connection
+        # PGVector stores rows for all collections; scope deletion to this app collection.
         from django.db import connection
+
         with connection.cursor() as cursor:
-            # LangChain PGVector table name: langchain_pg_collection + langchain_pg_embedding
-            # Collection name is stored; we need to delete rows where metadata->>'document_id' = doc_id
             cursor.execute(
-                "DELETE FROM langchain_pg_embedding WHERE cmetadata->>'document_id' = %s",
-                [str(document_id)],
+                """
+                DELETE FROM langchain_pg_embedding AS emb
+                USING langchain_pg_collection AS col
+                WHERE emb.collection_id = col.uuid
+                  AND col.name = %s
+                  AND emb.cmetadata->>'document_id' = %s
+                """,
+                [COLLECTION_NAME, str(document_id)],
             )
     except Exception as e:
         logger.warning("delete_vectors_for_document failed: %s", e)
@@ -115,6 +106,7 @@ def similarity_search(
     conn = _get_connection_string()
     if not conn:
         return []
+    k = max(1, min(k, 50))
     store = _get_vector_store()
     if not store:
         return []
