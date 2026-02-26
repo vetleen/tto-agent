@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from django.test import TestCase, override_settings
 
@@ -25,6 +26,15 @@ class ChunkingTests(TestCase):
         n = _count_tokens("Hello world")
         self.assertGreaterEqual(n, 1)
         self.assertLessEqual(n, 10)
+
+    def test_count_tokens_falls_back_when_encoding_is_unavailable(self):
+        n = _count_tokens("hello world from fallback", encoding_name="definitely_missing_encoding")
+        self.assertEqual(n, 7)
+
+    def test_count_tokens_fallback_uses_char_heuristic_for_unspaced_text(self):
+        text = "x" * 401
+        n = _count_tokens(text, encoding_name="definitely_missing_encoding")
+        self.assertEqual(n, 101)
 
     def test_looks_like_markdown(self):
         self.assertTrue(_looks_like_markdown("# Title"))
@@ -154,3 +164,34 @@ class ChunkingTests(TestCase):
                 load_documents(path, "xyz")
         finally:
             path.unlink(missing_ok=True)
+
+
+class VectorStoreTests(TestCase):
+    @patch("django.db.connection")
+    @patch("documents.services.vector_store._get_connection_string", return_value="postgresql://example")
+    def test_delete_vectors_for_document_scopes_to_collection(self, _mock_conn, mock_connection):
+        from documents.services.vector_store import COLLECTION_NAME, delete_vectors_for_document
+
+        mock_cursor = Mock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+
+        delete_vectors_for_document(document_id=42)
+
+        query, params = mock_cursor.execute.call_args.args
+        self.assertIn("col.name = %s", query)
+        self.assertIn("emb.cmetadata->>'document_id' = %s", query)
+        self.assertEqual(params, [COLLECTION_NAME, "42"])
+
+    @patch("documents.services.vector_store._get_connection_string", return_value="postgresql://example")
+    @patch("documents.services.vector_store._get_vector_store")
+    def test_similarity_search_bounds_k(self, mock_get_store, _mock_conn):
+        from documents.services.vector_store import similarity_search
+
+        store = Mock()
+        store.similarity_search.return_value = ["result"]
+        mock_get_store.return_value = store
+
+        similarity_search(project_id=1, query="hello", k=500, document_id=9)
+
+        self.assertEqual(store.similarity_search.call_args.kwargs["k"], 50)
+        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"project_id": 1, "document_id": 9})
