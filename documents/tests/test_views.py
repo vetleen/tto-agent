@@ -1,6 +1,11 @@
 import sys
 import types
 from io import BytesIO
+from unittest.mock import Mock, call, patch
+
+from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -24,6 +29,18 @@ class DocumentViewsTests(TestCase):
     def test_project_list_requires_login(self):
         response = self.client.get(reverse("project_list"))
         self.assertEqual(response.status_code, 302)
+
+    def test_project_create_retries_after_integrity_error(self):
+        self.client.force_login(self.user)
+
+        created_project = Project(name="Test Retry", slug="test-retry-1", created_by=self.user)
+        with patch("documents.views.Project.objects.create", side_effect=[IntegrityError(), created_project]) as mock_create:
+            response = self.client.post(reverse("project_list"), {"name": "Test Retry"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(mock_create.call_count, 2)
+        self.assertEqual(mock_create.call_args_list[0], call(name="Test Retry", slug="test-retry", created_by=self.user))
+        self.assertEqual(mock_create.call_args_list[1], call(name="Test Retry", slug="test-retry-1", created_by=self.user))
 
     def test_project_list_renders_for_owner(self):
         self.client.force_login(self.user)

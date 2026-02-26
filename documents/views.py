@@ -3,6 +3,7 @@ import ntpath
 import os
 
 from django.conf import settings
+from django.db import IntegrityError
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
@@ -53,12 +54,18 @@ def project_list(request):
         name = (request.POST.get("name") or "").strip()
         if name:
             base_slug = slugify(name) or "project"
-            slug = base_slug
             n = 0
-            while Project.objects.filter(slug=slug).exists():
-                n += 1
-                slug = f"{base_slug}-{n}"
-            Project.objects.create(name=name, slug=slug, created_by=request.user)
+            while True:
+                slug = base_slug if n == 0 else f"{base_slug}-{n}"
+                try:
+                    Project.objects.create(name=name, slug=slug, created_by=request.user)
+                    break
+                except IntegrityError:
+                    # Handle concurrent creates picking the same slug.
+                    n += 1
+                    if n > 50:
+                        messages.error(request, "Could not create project right now. Please try again.")
+                        break
         return redirect("project_list")
     projects = Project.objects.filter(created_by=request.user).order_by("-updated_at")
     return render(request, "documents/project_list.html", {"projects": projects})

@@ -110,8 +110,8 @@ def similarity_search(
     store = _get_vector_store()
     if not store:
         return []
-    filt = {"project_id": str(project_id)}
+    filt = {"project_id": project_id}
     if document_id is not None:
-        filt["document_id"] = str(document_id)
+        filt["document_id"] = document_id
     results = store.similarity_search(query, k=k, filter=filt)
     return results

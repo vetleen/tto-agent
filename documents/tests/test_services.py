@@ -191,6 +191,7 @@ class VectorStoreTests(TestCase):
         store.similarity_search.return_value = ["result"]
         mock_get_store.return_value = store
 
-        similarity_search(project_id=1, query="hello", k=500)
+        similarity_search(project_id=1, query="hello", k=500, document_id=9)
 
         self.assertEqual(store.similarity_search.call_args.kwargs["k"], 50)
+        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"project_id": 1, "document_id": 9})
