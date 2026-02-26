@@ -1,6 +1,10 @@
+import sys
+import types
 from io import BytesIO
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -64,6 +68,101 @@ class DocumentViewsTests(TestCase):
             doc.status,
             (ProjectDocument.Status.UPLOADED, ProjectDocument.Status.READY, ProjectDocument.Status.FAILED),
         )
+
+    def test_document_upload_marks_failed_when_task_enqueue_fails(self):
+        self.client.force_login(self.user)
+        fake_task = Mock()
+        fake_task.delay.side_effect = RuntimeError("broker unavailable")
+        fake_module = types.SimpleNamespace(process_document_task=fake_task)
+        f = BytesIO(b"hello")
+        f.name = "enqueue-fail.txt"
+
+        with patch.dict(sys.modules, {"documents.tasks": fake_module}):
+            with self.assertLogs("documents.views", level="ERROR"):
+                response = self.client.post(
+                    reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+                    {"file": f},
+                    follow=True,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        doc = ProjectDocument.objects.get(project=self.project, original_filename="enqueue-fail.txt")
+        self.assertEqual(doc.status, ProjectDocument.Status.FAILED)
+        self.assertIn("broker unavailable", doc.processing_error)
+        self.assertContains(response, "processing could not be started")
+
+    @override_settings(DOCUMENT_ALLOWED_MIME_TYPES=set())
+    def test_document_upload_allows_mime_when_allowlist_not_configured(self):
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("mime-ok.txt", b"hello", content_type="text/plain")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="mime-ok.txt").count(), 1)
+
+    @override_settings(DOCUMENT_ALLOWED_MIME_TYPES={"application/pdf"})
+    def test_document_upload_rejects_mime_not_in_allowlist(self):
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("mime-blocked.txt", b"hello", content_type="text/plain")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="mime-blocked.txt").count(), 0)
+        self.assertContains(response, "Unsupported file type")
+
+    def test_document_upload_sanitizes_path_from_original_filename(self):
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile(r"..\..\secret\report.txt", b"hello", content_type="text/plain")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        doc = ProjectDocument.objects.get(project=self.project)
+        self.assertEqual(doc.original_filename, "report.txt")
+
+    def test_document_upload_truncates_original_filename_to_model_limit(self):
+        self.client.force_login(self.user)
+        long_name = f"{'a' * 300}.txt"
+        f = SimpleUploadedFile(long_name, b"hello", content_type="text/plain")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        doc = ProjectDocument.objects.get(project=self.project)
+        self.assertLessEqual(len(doc.original_filename), 255)
+        self.assertTrue(doc.original_filename.endswith('.txt'))
+
+    def test_document_upload_rejects_empty_file(self):
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("empty.txt", b"", content_type="text/plain")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="empty.txt").count(), 0)
+        self.assertContains(response, "File is empty")
 
     def test_document_upload_rejects_unsupported_extension(self):
         self.client.force_login(self.user)

@@ -1,3 +1,7 @@
+import logging
+import ntpath
+import os
+
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -8,6 +12,9 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 
 from .models import Project, ProjectDocument, ProjectDocumentChunk
+
+
+logger = logging.getLogger(__name__)
 
 
 def _relative_upload_date(value):
@@ -84,13 +91,37 @@ def project_detail(request, project_id):
     )
 
 
+def _safe_original_filename(filename: str, max_length: int = 255) -> str:
+    """Normalize and cap client-provided file names for safe persistence/display."""
+    raw = (filename or "").strip()
+    if not raw:
+        return "document"
+    # Handle both Unix and Windows style paths that may be sent by clients.
+    name = os.path.basename(ntpath.basename(raw)).strip()
+    if not name:
+        return "document"
+    if len(name) <= max_length:
+        return name
+    base, ext = os.path.splitext(name)
+    if not ext:
+        return name[:max_length]
+    reserved = len(ext)
+    if reserved >= max_length:
+        return name[:max_length]
+    return f"{base[: max_length - reserved]}{ext}"
+
+
 def _allowed_extension(filename: str) -> bool:
     ext = (filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
     return ext in getattr(settings, "DOCUMENT_ALLOWED_EXTENSIONS", {"pdf", "txt", "md", "html"})
 
 
 def _allowed_mime(mime_type: str) -> bool:
-    return mime_type in getattr(settings, "DOCUMENT_ALLOWED_MIME_TYPES", frozenset())
+    allowed_mime_types = getattr(settings, "DOCUMENT_ALLOWED_MIME_TYPES", None)
+    # Empty/undefined allowlist means MIME checking is disabled.
+    if not allowed_mime_types:
+        return True
+    return mime_type in allowed_mime_types
 
 
 @login_required
@@ -103,11 +134,18 @@ def document_upload(request, project_id):
     if not file_obj:
         messages.error(request, "No file selected. Please choose a file to upload.")
         return redirect("project_detail", project_id=project.uuid)
+    if file_obj.size <= 0:
+        messages.error(request, "File is empty. Please upload a non-empty file.")
+        return redirect("project_detail", project_id=project.uuid)
     max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 10_000_000)
     if file_obj.size > max_size:
         messages.error(request, "File is too large. Maximum size is 10 MB.")
         return redirect("project_detail", project_id=project.uuid)
-    if not _allowed_extension(file_obj.name):
+    safe_filename = _safe_original_filename(file_obj.name)
+    stored_filename = _safe_original_filename(file_obj.name, max_length=180)
+    # Ensure storage path generation does not use overlong/untrusted client names.
+    file_obj.name = stored_filename
+    if not _allowed_extension(safe_filename):
         messages.error(request, "Unsupported file type. Allowed: PDF, TXT, MD, HTML.")
         return redirect("project_detail", project_id=project.uuid)
     mime = getattr(file_obj, "content_type", "") or ""
@@ -118,17 +156,25 @@ def document_upload(request, project_id):
         project=project,
         uploaded_by=request.user,
         original_file=file_obj,
-        original_filename=file_obj.name,
+        original_filename=safe_filename,
         mime_type=mime,
         size_bytes=file_obj.size,
         status=ProjectDocument.Status.UPLOADED,
     )
     try:
         from documents.tasks import process_document_task
+
         process_document_task.delay(doc.id)
     except ImportError:
         from documents.services.process_document import process_document
+
         process_document(doc.id)
+    except Exception as exc:
+        logger.exception("document_upload: failed to enqueue processing for document_id=%s", doc.id)
+        doc.status = ProjectDocument.Status.FAILED
+        doc.processing_error = str(exc)[:2000]
+        doc.save(update_fields=["status", "processing_error", "updated_at"])
+        messages.error(request, "Upload succeeded, but processing could not be started. Please try again.")
     return redirect("project_detail", project_id=project.uuid)
 
 
