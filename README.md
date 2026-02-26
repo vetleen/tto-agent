@@ -27,12 +27,10 @@ An **agentic system for technology transfer offices (TTO)** that handles routine
    
    Key dependencies include:
    - Django 6.0.1
-   - Django Channels (for WebSocket support)
+   - Django Channels (for future WebSocket/real-time features)
    - channels-redis (Redis backend for Channels)
    - daphne (ASGI server)
    - django-anymail (optional; for production email via Mailgun etc.)
-   - openai (OpenAI API client)
-   - tiktoken (token counting)
    - whitenoise (static files), dj-database-url + psycopg2-binary (Postgres on Heroku)
 
 3. **Install Node dependencies:**
@@ -74,17 +72,15 @@ An **agentic system for technology transfer offices (TTO)** that handles routine
 
 ### Running the Server
 
-**For WebSocket support (required for chat application):**
-```bash
-daphne -b 127.0.0.1 -p 8000 config.asgi:application
-```
-
-**Alternative: Django 6.0 runserver (also supports WebSockets):**
+**Run the development server:**
 ```bash
 python manage.py runserver 8000
 ```
 
-Note: The chat application requires WebSocket support, so use one of the above methods. The `daphne` server is recommended for production-like environments.
+**For ASGI (e.g. production or when adding WebSockets later):**
+```bash
+daphne -b 127.0.0.1 -p 8000 config.asgi:application
+```
 
 ### Heroku deployment
 
@@ -116,7 +112,7 @@ git push heroku main
 # Release phase runs migrate + collectstatic automatically.
 ```
 
-Add any other vars (e.g. `OPENAI_API_KEY`, `LLM_ALLOWED_MODELS`) in Dashboard → Settings → Config Vars or via `heroku config:set` after the first deploy.
+Add any other vars in Dashboard → Settings → Config Vars or via `heroku config:set` after the first deploy.
 
 **Checklist before first deploy** (if not using the new-app flow above):
 
@@ -150,7 +146,7 @@ Add any other vars (e.g. `OPENAI_API_KEY`, `LLM_ALLOWED_MODELS`) in Dashboard �
 
 - **CSS 404:** Tailwind’s `output.css` must exist in the slug. It is built in the **Node build phase** (`npm run build`), not in the release phase (release runs in a one-off dyno; files written there are not in the slug). The template uses a direct `<link>` to `output.css`; Django Compressor is not used for it (Heroku’s filesystem is read-only at runtime).
 - **CSRF 403 on login/signup:** Set `DJANGO_CSRF_TRUSTED_ORIGINS` to your app’s HTTPS origin (e.g. `https://your-app.herokuapp.com`).
-- **Chat / channel layer 500, SSL cert verify failed:** Heroku Redis uses TLS with a cert that fails default verification. Settings use `ssl_cert_reqs=ssl.CERT_NONE` for `rediss://` URLs so the channel layer can connect.
+- **Channel layer 500, SSL cert verify failed:** Heroku Redis uses TLS with a cert that fails default verification. Settings use `ssl_cert_reqs=ssl.CERT_NONE` for `rediss://` URLs so the channel layer can connect.
 - **“Verify your email” after login:** The Heroku DB is separate from local. Either set the user’s `email_verified=True` via `heroku run python manage.py shell`, or set `EMAIL_VERIFICATION_REQUIRED=False` in Config Vars. To create a superuser: `heroku run python manage.py createsuperuser -a YOUR_APP_NAME`.
 - **Viewing logs:** `heroku logs --tail` mixes addon (e.g. Redis) output. For web/release only: `heroku logs --tail --source app -a YOUR_APP_NAME`. Check release success: `heroku releases -a YOUR_APP_NAME`.
 
@@ -159,12 +155,6 @@ Add any other vars (e.g. `OPENAI_API_KEY`, `LLM_ALLOWED_MODELS`) in Dashboard �
 ```bash
 # Account tests (auth, signup, password reset, email verification, email config)
 python manage.py test accounts
-
-# Chat application tests (comprehensive, includes WebSocket tests)
-python manage.py test llm_chat
-
-# LLM service tests (requires OPENAI_API_KEY)
-TEST_APIS=True python manage.py test llm_service
 ```
 
 ## Admin & superuser (dev)
@@ -184,11 +174,7 @@ DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
 # DJANGO_CSRF_TRUSTED_ORIGINS=https://your-app.herokuapp.com
 DJANGO_PASSWORD_RESET_TIMEOUT=3600
 
-# APIs
-OPENAI_API_KEY=sk-...  # Required for LLM functionality
-TEST_APIS=False  # Set to True to run LLM service tests
-
-# Redis (for Django Channels/WebSocket support)
+# Redis (for Django Channels; optional until real-time features are added)
 REDIS_URL=redis://127.0.0.1:6379/0  # Optional, defaults to localhost:6379
 
 # Superuser (dev-only, auto-created on runserver)
@@ -212,7 +198,7 @@ EMAIL_VERIFICATION_TIMEOUT=86400   # Token validity in seconds (default: 24h)
 
 `python-dotenv` loads `.env` in `config/settings.py`. On Heroku, set these in **Config Vars** (Settings → Reveal Config Vars); see [Heroku deployment](#heroku-deployment) for the required vars table and gotchas.
 
-**Note:** The `REDIS_URL` is optional locally and defaults to `redis://127.0.0.1:6379/0`. Heroku Redis sets `REDIS_URL` (often `rediss://`); the app skips TLS cert verification for the channel layer so WebSockets/chat work.
+**Note:** The `REDIS_URL` is optional locally and defaults to `redis://127.0.0.1:6379/0`. Heroku Redis sets `REDIS_URL` (often `rediss://`); the app skips TLS cert verification for the channel layer when used.
 
 ### Email modes and django-anymail
 
@@ -264,7 +250,7 @@ New signups must verify their email before they can log in (when `EMAIL_VERIFICA
 
 ## User settings & dark mode
 
-**UserSettings** (accounts app): OneToOne to User, created automatically when a user is created (signal). Stores per-user preferences; currently `theme` with choices `light` or `dark` (default `light`). Access via `user.settings.theme`.
+**UserSettings** (accounts app): OneToOne to User, created automatically when a user is created (signal). Stores per-user preferences: `theme` with choices `light` or `dark` (default `light`). Access via `user.settings.theme`.
 
 **Dark mode** (Flowbite class-based):
 - Toggle in the top nav for **logged-in users only**; theme is saved in `UserSettings` and persists across sessions.
@@ -272,170 +258,3 @@ New signups must verify their email before they can log in (when `EMAIL_VERIFICA
 - Implemented via `@custom-variant dark` in `static/src/input.css`, inline script in `<head>` to avoid FOUC, and context processor `accounts.context_processors.theme` that passes `theme` into templates.
 - **Theme update:** `POST /accounts/settings/theme/` with `theme=light` or `theme=dark` (login required); returns JSON `{"theme": "…"}`.
 
-## LLM Service (LiteLLM)
-
-The `llm_service` app provides a thin, provider-agnostic layer over [LiteLLM](https://docs.litellm.ai/). All calls go through `completion(**kwargs)` or `acompletion(**kwargs)` with policy (timeout, retry, optional guardrail hooks), and every call is logged to **LLMCallLog** after completion. Cost comes from LiteLLM when available, with an optional fallback in `llm_service/pricing.py` for allowed models.
-
-### API
-
-- **Sync**: `llm_service.client.completion(**kwargs)` — same kwargs as `litellm.completion()` (model, messages, stream, response_format, tools, etc.). Pass-through; add `metadata={}` and optional `user=` for attribution.
-- **Async**: `llm_service.client.acompletion(**kwargs)` — same behaviour for async views/workers.
-- **Backend**: `llm_service.client.get_client()` returns the configured client (LiteLLM by default). The client implements `BaseLLMClient` so you can swap the backend without changing callers.
-
-### Allowed models
-
-Only models in **LLM_ALLOWED_MODELS** (settings / env) are accepted; others raise `ValueError`. Set `LLM_ALLOWED_MODELS` to a comma-separated list in env, or override in Django settings. Default env: `openai/gpt-4o,openai/gpt-4o-mini`. Multiple providers can be in use at once (e.g. `openai/gpt-4o`, `anthropic/claude-3-5-sonnet`); set the corresponding API keys in env (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
-
-### Metadata
-
-Pass `metadata={"feature": "...", "tenant_id": "...", "request_id": "...", "trace_id": "..."}` (and any other keys) into every call. It is stored as JSON on **LLMCallLog** for debugging and cost allocation. You can also pass `request_id=` as a top-level kwarg; it is indexed.
-
-### Policy
-
-- **Timeout**: `LLM_REQUEST_TIMEOUT` (default 60s).
-- **Retries**: `LLM_MAX_RETRIES` (default 2) with exponential backoff on rate limit and transient errors.
-- **Guardrails**: Optional pre-call and post-call hooks in settings (`LLM_PRE_CALL_HOOKS`, `LLM_POST_CALL_HOOKS`); receive `LLMRequest` / `LLMResult` and can block, sanitize, or validate.
-
-### Logging
-
-Every call writes one **LLMCallLog** when the call (or stream) ends. Fields include identity (id, created_at, duration_ms, user, metadata, request_id), request (model, is_stream, request_kwargs, prompt_preview), response (provider_response_id, response_model, response_preview), usage/cost (input/output/total tokens, cost_usd, cost_source), and errors (status, error_type, error_message, http_status, retry_count). Log write is bounded by `LLM_LOG_WRITE_TIMEOUT` (default 5s). If the full log fails (e.g. serialization), a minimal row (primitives only) is written so the process is not stuck.
-
-### Basic usage
-
-**Non-streaming:**
-```python
-from llm_service.client import completion
-
-response = completion(
-    model="openai/gpt-4o",
-    messages=[{"role": "user", "content": "Say hello"}],
-    user=request.user,  # optional, for attribution
-    metadata={"feature": "greeting", "request_id": "req-123"},
-)
-# response is the raw LiteLLM response (e.g. response.choices[0].message.content)
-```
-
-**Streaming (chunks proxied verbatim; log written when stream ends or consumer stops):**
-```python
-for chunk in completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "Hi"}], stream=True):
-    print(chunk.choices[0].delta.content, end="")
-```
-
-**Async:**
-```python
-from llm_service.client import acompletion
-
-response = await acompletion(model="openai/gpt-4o", messages=[{"role": "user", "content": "Hello"}])
-```
-
-### Env and settings
-
-- **API keys**: Per provider, in env (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). See [LiteLLM docs](https://docs.litellm.ai/docs/providers) for each provider.
-- **Settings**: `LLM_DEFAULT_MODEL`, `LLM_ALLOWED_MODELS`, `LLM_REQUEST_TIMEOUT`, `LLM_MAX_RETRIES`, `LLM_LOG_WRITE_TIMEOUT`. Optional: `LLM_PRE_CALL_HOOKS`, `LLM_POST_CALL_HOOKS`.
-
-View logs in admin: `/admin/llm_service/llmcalllog/`.
-
-## Chat Application (`llm_chat`)
-
-The `llm_chat` app provides a real-time chat interface with an LLM assistant, featuring WebSocket-based streaming, markdown rendering, and persistent chat history.
-
-### Features
-
-- **Real-time streaming**: WebSocket-based message streaming using Django Channels
-- **Markdown rendering**: Full markdown support with syntax highlighting, code blocks, lists, headers, links, etc.
-- **Chat history**: Persistent chat threads with automatic title generation
-- **Token-aware context**: Smart chat history truncation using token counts
-- **Multi-tab support**: Chat updates sync across multiple browser tabs
-- **Connection management**: Automatic reconnection with connection status indicators
-- **Accessibility**: Proper ARIA handling and keyboard navigation support
-
-### Architecture
-
-**Models:**
-- `ChatThread`: Represents a conversation thread with a user, title, and timestamps
-- `ChatMessage`: Individual messages with role (user/assistant), content, status, and token counts
-
-**Services:**
-- `ChatService`: Orchestrates LLM streaming, message persistence, and thread title generation
-- `assemble_system_instruction()`: Builds system prompts with dynamic chat history
-- `assemble_chat_history()`: Retrieves and formats chat history up to token limits
-
-**WebSocket Consumer:**
-- `ChatConsumer`: Handles WebSocket connections, message streaming, and group broadcasting
-- Routes: `/ws/chat/<thread_id>/`
-- Events: `response.output_text.delta`, `final`, `thread.title.updated`, `response.error`
-
-**Views:**
-- `chat_view`: Main chat interface (GET/POST)
-- `chat_messages_json`: API endpoint for AJAX message loading
-- URLs: `/chat/` (new chat), `/chat/<uuid>/` (specific thread)
-
-### Usage
-
-**Access the chat:**
-- Navigate to `/chat/` for a new chat
-- Navigate to `/chat/<thread_id>/` for an existing thread
-- Requires authentication (login required)
-
-**Sending messages:**
-- Type in the textarea and press Enter to send
-- Use Shift+Enter for multi-line input
-- Textarea auto-resizes up to ~5 lines
-
-**Markdown support:**
-The chat supports full markdown rendering including:
-- Headers (`#`, `##`, `###`, etc.)
-- **Bold** (`**text**`), *italic* (`*text*`), ~~strikethrough~~ (`~~text~~`)
-- Code blocks (```python ... ```) and inline code (`` `code` ``)
-- Lists (ordered and unordered)
-- Blockquotes (`> quote`)
-- Links (`[text](url)`)
-- Tables
-- Horizontal rules (`---`)
-- Emoji shortcodes (`:sparkles:`, `:tada:`, etc.)
-
-### System Instructions
-
-The system automatically assembles prompts with:
-- Dynamic chat history (up to 20,000 tokens by default)
-- Formatting instructions encouraging markdown usage
-- Context-aware conversation continuation
-
-See `llm_chat/system_instructions.py` for customization.
-
-### Testing
-
-Run chat tests:
-```bash
-python manage.py test llm_chat
-```
-
-Test files:
-- `llm_chat/tests/test_models.py` - Model tests
-- `llm_chat/tests/test_services.py` - Service layer tests
-- `llm_chat/tests/test_consumers.py` - WebSocket consumer tests
-- `llm_chat/tests/test_views.py` - View tests
-- `llm_chat/tests/test_connection.py` - WebSocket connection tests
-- `llm_chat/tests/test_integration.py` - End-to-end integration tests
-- `llm_chat/tests/test_markdown.py` - Markdown rendering tests
-
-### Frontend Features
-
-**Markdown Rendering:**
-- Uses `marked.js` for parsing and `DOMPurify` for sanitization
-- CSS styling scoped to `#chat-messages .markdown-content`
-- Streaming markdown re-parses when complete blocks are detected
-- Server-rendered messages are processed on page load
-
-**WebSocket Management:**
-- Automatic connection when thread is active
-- Reconnection with exponential backoff (max 5 attempts)
-- Connection status: green dot when connected (no label), spinner and "Connecting..." when connecting, text when reconnecting or disconnected
-- Heartbeat ping/pong for connection health
-
-**UI Features:**
-- Auto-scrolling when messages arrive
-- Sidebar navigation with thread history
-- Dynamic thread ordering (most recent at top)
-- Form disabling during streaming
-- Rate limiting (1 second between messages)

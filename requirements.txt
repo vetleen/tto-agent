@@ -12,9 +12,15 @@ rcssmin==1.2.2
 rjsmin==1.2.5
 sqlparse==0.5.5
 tzdata==2025.3
+langchain
+langchain-openai
+langchain-text-splitters
+langchain-community
+pypdf
 litellm
 openai
 tiktoken
+celery
 channels
 channels-redis
 daphne

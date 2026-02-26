@@ -40,7 +40,7 @@
           <div class="flex items-center gap-4 md:order-2">
             <div class="hidden w-full items-center md:flex md:w-auto" id="navbar-user">
               <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:space-x-6 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
-                {# Chat link restored when llm_chat app is re-enabled #}
+                <li><a href="{% url 'project_list' %}" class="text-body hover:text-fg-brand">My projects</a></li>
               </ul>
             </div>
             <button type="button" id="theme-toggle" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
