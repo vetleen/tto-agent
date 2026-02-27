@@ -85,6 +85,7 @@ INSTALLED_APPS = [
     "core.apps.CoreConfig",
     "accounts",
     "documents.apps.DocumentsConfig",
+    "llm.apps.LlmConfig",
 ]
 if DEBUG:
     INSTALLED_APPS.extend([

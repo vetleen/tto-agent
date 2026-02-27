@@ -14,8 +14,11 @@ sqlparse==0.5.5
 tzdata==2025.3
 langchain
 langchain-openai
+langchain-anthropic
+langchain-google-genai
 langchain-text-splitters
 langchain-community
+pydantic>=2,<3
 pypdf
 litellm
 openai
