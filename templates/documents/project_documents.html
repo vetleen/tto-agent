@@ -1,15 +1,6 @@
-{% extends "_base.html" %}
+{% extends "documents/project_base.html" %}
 {% load static %}
-{% block content %}
-<div class="max-w-4xl mx-auto px-4 py-10">
-  <p class="text-sm text-body mb-3">
-    <a href="{% url 'project_list' %}" class="inline-flex items-center gap-1.5 text-fg-brand hover:underline">
-      <svg class="w-4 h-4 shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12l4-4M5 12l4 4"/></svg>
-      Back to My projects
-    </a>
-  </p>
-  <h1 class="text-2xl font-semibold text-heading mb-8">{{ project.name }}</h1>
-
+{% block project_content %}
   {% if messages %}
   <ul class="mb-6 space-y-2">
     {% for message in messages %}
@@ -65,36 +56,35 @@
       {% endfor %}
     </div>
   </section>
-</div>
 
-<!-- Hidden trigger for rename document modal -->
-<button type="button" id="rename-document-modal-trigger" class="hidden" data-modal-target="rename-document-modal" data-modal-show="rename-document-modal" aria-label="Open rename modal"></button>
-<!-- Rename document modal -->
-<div id="rename-document-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
-  <div class="relative w-full max-w-md max-h-full">
-    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
-      <div class="px-6 py-4 border-b border-default">
-        <h3 class="text-lg font-semibold text-heading">Rename document</h3>
+  <!-- Hidden trigger for rename document modal -->
+  <button type="button" id="rename-document-modal-trigger" class="hidden" data-modal-target="rename-document-modal" data-modal-show="rename-document-modal" aria-label="Open rename modal"></button>
+  <!-- Rename document modal -->
+  <div id="rename-document-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+    <div class="relative w-full max-w-md max-h-full">
+      <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+        <div class="px-6 py-4 border-b border-default">
+          <h3 class="text-lg font-semibold text-heading">Rename document</h3>
+        </div>
+        <form id="rename-document-form" method="post" action="">
+          {% csrf_token %}
+          <div class="p-6 space-y-4">
+            <label for="rename-document-name" class="block text-sm font-medium text-heading">Name</label>
+            <input type="text" name="name" id="rename-document-name" required
+                   class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs"
+                   maxlength="75" placeholder="Document name">
+          </div>
+          <div class="flex gap-3 px-6 py-4 border-t border-default">
+            <button type="submit" class="text-white bg-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+              Save
+            </button>
+            <button type="button" data-modal-hide="rename-document-modal" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+              Cancel
+            </button>
+          </div>
+        </form>
       </div>
-      <form id="rename-document-form" method="post" action="">
-        {% csrf_token %}
-        <div class="p-6 space-y-4">
-          <label for="rename-document-name" class="block text-sm font-medium text-heading">Name</label>
-          <input type="text" name="name" id="rename-document-name" required
-                 class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs"
-                 maxlength="75" placeholder="Document name">
-        </div>
-        <div class="flex gap-3 px-6 py-4 border-t border-default">
-          <button type="submit" class="text-white bg-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
-            Save
-          </button>
-          <button type="button" data-modal-hide="rename-document-modal" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
-            Cancel
-          </button>
-        </div>
-      </form>
     </div>
   </div>
-</div>
-<script src="{% static 'js/rename-modal.js' %}"></script>
+  <script src="{% static 'js/rename-modal.js' %}"></script>
 {% endblock %}

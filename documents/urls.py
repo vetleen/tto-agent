@@ -4,7 +4,8 @@ from . import views
 
 urlpatterns = [
     path("", views.project_list, name="project_list"),
-    path("<uuid:project_id>/", views.project_detail, name="project_detail"),
+    path("<uuid:project_id>/", views.project_detail_redirect, name="project_detail"),
+    path("<uuid:project_id>/chat/", views.project_chat, name="project_chat"),
     path("<uuid:project_id>/delete/", views.project_delete, name="project_delete"),
     path("<uuid:project_id>/rename/", views.project_rename, name="project_rename"),
     path("<uuid:project_id>/documents/upload/", views.document_upload, name="document_upload"),
@@ -23,4 +24,5 @@ urlpatterns = [
         views.document_chunks,
         name="document_chunks",
     ),
+    path("<uuid:project_id>/documents/", views.project_documents, name="project_documents"),
 ]

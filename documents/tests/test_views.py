@@ -52,9 +52,15 @@ class DocumentViewsTests(TestCase):
         response = self.client.get(reverse("project_detail", kwargs={"project_id": self.project.uuid}))
         self.assertEqual(response.status_code, 302)
 
-    def test_project_detail_owner_sees_upload_form(self):
+    def test_project_detail_redirects_to_chat(self):
         self.client.force_login(self.user)
         response = self.client.get(reverse("project_detail", kwargs={"project_id": self.project.uuid}))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("project_chat", kwargs={"project_id": self.project.uuid}))
+
+    def test_project_documents_owner_sees_upload_form(self):
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("project_documents", kwargs={"project_id": self.project.uuid}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Upload document")
         self.assertContains(response, "name=\"file\"")
@@ -62,9 +68,12 @@ class DocumentViewsTests(TestCase):
     def test_project_detail_other_user_redirected(self):
         other = User.objects.create_user(email="other@example.com", password="testpass")
         self.client.force_login(other)
-        response = self.client.get(reverse("project_detail", kwargs={"project_id": self.project.uuid}))
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, reverse("project_list"))
+        response = self.client.get(
+            reverse("project_detail", kwargs={"project_id": self.project.uuid}),
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.resolver_match.url_name, "project_list")
 
     def test_document_upload_creates_document_and_redirects(self):
         self.client.force_login(self.user)

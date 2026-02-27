@@ -104,7 +104,27 @@ def project_rename(request, project_id):
 
 @login_required
 @require_http_methods(["GET"])
-def project_detail(request, project_id):
+def project_detail_redirect(request, project_id):
+    """Redirect /projects/<uuid>/ to /projects/<uuid>/chat/."""
+    return redirect("project_chat", project_id=project_id)
+
+
+@login_required
+@require_http_methods(["GET"])
+def project_chat(request, project_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return redirect("project_list")
+    return render(
+        request,
+        "documents/project_chat.html",
+        {"project": project, "active_tab": "chat"},
+    )
+
+
+@login_required
+@require_http_methods(["GET"])
+def project_documents(request, project_id):
     project = get_object_or_404(Project, uuid=project_id)
     if not _user_owns_project(request.user, project):
         return redirect("project_list")
@@ -115,8 +135,8 @@ def project_detail(request, project_id):
         doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
     return render(
         request,
-        "documents/project_detail.html",
-        {"project": project, "documents": documents},
+        "documents/project_documents.html",
+        {"project": project, "documents": documents, "active_tab": "documents"},
     )
 
 
@@ -162,25 +182,25 @@ def document_upload(request, project_id):
     file_obj = request.FILES.get("file")
     if not file_obj:
         messages.error(request, "No file selected. Please choose a file to upload.")
-        return redirect("project_detail", project_id=project.uuid)
+        return redirect("project_documents", project_id=project.uuid)
     if file_obj.size <= 0:
         messages.error(request, "File is empty. Please upload a non-empty file.")
-        return redirect("project_detail", project_id=project.uuid)
+        return redirect("project_documents", project_id=project.uuid)
     max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 10_000_000)
     if file_obj.size > max_size:
         messages.error(request, f"File is too large. Maximum size is {max_size / 1_000_000:.0f} MB.")
-        return redirect("project_detail", project_id=project.uuid)
+        return redirect("project_documents", project_id=project.uuid)
     safe_filename = _safe_original_filename(file_obj.name, max_length=75)
     stored_filename = _safe_original_filename(file_obj.name, max_length=180)
     # Ensure storage path generation does not use overlong/untrusted client names.
     file_obj.name = stored_filename
     if not _allowed_extension(safe_filename):
         messages.error(request, "Unsupported file type. Allowed: PDF, TXT, MD, HTML.")
-        return redirect("project_detail", project_id=project.uuid)
+        return redirect("project_documents", project_id=project.uuid)
     mime = getattr(file_obj, "content_type", "") or ""
     if mime and not _allowed_mime(mime):
         messages.error(request, "Unsupported file type. Allowed: PDF, TXT, MD, HTML.")
-        return redirect("project_detail", project_id=project.uuid)
+        return redirect("project_documents", project_id=project.uuid)
     doc = ProjectDocument.objects.create(
         project=project,
         uploaded_by=request.user,
@@ -204,7 +224,7 @@ def document_upload(request, project_id):
         doc.processing_error = str(exc)[:2000]
         doc.save(update_fields=["status", "processing_error", "updated_at"])
         messages.error(request, "Upload succeeded, but processing could not be started. Please try again.")
-    return redirect("project_detail", project_id=project.uuid)
+    return redirect("project_documents", project_id=project.uuid)
 
 
 @login_required
@@ -216,7 +236,7 @@ def document_delete(request, project_id, document_id):
     doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
     doc.delete()
     messages.success(request, "Document deleted.")
-    return redirect("project_detail", project_id=project.uuid)
+    return redirect("project_documents", project_id=project.uuid)
 
 
 @login_required
@@ -224,16 +244,16 @@ def document_delete(request, project_id, document_id):
 def document_rename(request, project_id, document_id):
     project = get_object_or_404(Project, uuid=project_id)
     if not _user_owns_project(request.user, project):
-        return redirect("project_detail", project_id=project.uuid)
+        return redirect("project_list")
     doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
     name = (request.POST.get("name") or "").strip()
     if not name:
         messages.error(request, "Document name cannot be empty.")
-        return redirect("project_detail", project_id=project.uuid)
+        return redirect("project_documents", project_id=project.uuid)
     doc.original_filename = _safe_original_filename(name, max_length=75)
     doc.save(update_fields=["original_filename", "updated_at"])
     messages.success(request, "Document renamed.")
-    return redirect("project_detail", project_id=project.uuid)
+    return redirect("project_documents", project_id=project.uuid)
 
 
 @login_required
