@@ -63,7 +63,6 @@ class ProjectDocument(models.Model):
     embedding_model = models.CharField(max_length=128, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

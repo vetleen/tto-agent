@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% load static %}
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-10">
   <p class="text-sm text-body mb-3">
@@ -45,6 +46,7 @@
           </button>
           <div id="dropdown-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
             <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+                    data-rename-modal="rename-document-modal"
                     data-action="{% url 'document_rename' project_id=project.uuid document_id=doc.id %}"
                     data-name="{{ doc.original_filename|escapejs }}">
               Rename
@@ -68,7 +70,7 @@
 <!-- Hidden trigger for rename document modal -->
 <button type="button" id="rename-document-modal-trigger" class="hidden" data-modal-target="rename-document-modal" data-modal-show="rename-document-modal" aria-label="Open rename modal"></button>
 <!-- Rename document modal -->
-<div id="rename-document-modal" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+<div id="rename-document-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
   <div class="relative w-full max-w-md max-h-full">
     <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
       <div class="px-6 py-4 border-b border-default">
@@ -94,23 +96,5 @@
     </div>
   </div>
 </div>
-<script>
-(function() {
-  var trigger = document.getElementById('rename-document-modal-trigger');
-  var form = document.getElementById('rename-document-form');
-  var input = document.getElementById('rename-document-name');
-  document.querySelectorAll('.rename-document-btn').forEach(function(btn) {
-    btn.addEventListener('click', function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      form.action = this.getAttribute('data-action');
-      input.value = this.getAttribute('data-name') || '';
-      input.focus();
-      if (trigger) {
-        setTimeout(function() { trigger.click(); }, 0);
-      }
-    });
-  });
-})();
-</script>
+<script src="{% static 'js/rename-modal.js' %}"></script>
 {% endblock %}

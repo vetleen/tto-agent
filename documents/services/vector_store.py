@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "document_chunks"
 
+# Module-level cache for the vector store instance (lazy init). Use reset_vector_store() in tests to clear.
+_vector_store_cache: Any = None
+
 
 def _get_connection_string() -> str | None:
     conn = getattr(settings, "PGVECTOR_CONNECTION", None) or ""
@@ -23,10 +26,19 @@ def _get_connection_string() -> str | None:
     return conn
 
 
+def reset_vector_store() -> None:
+    """Clear the cached vector store instance. Use in tests for isolation."""
+    global _vector_store_cache
+    _vector_store_cache = None
+
+
 def _get_vector_store():
-    from langchain_core.documents import Document
+    global _vector_store_cache
+    if _vector_store_cache is not None:
+        return _vector_store_cache
     from langchain_community.vectorstores import PGVector
     from langchain_openai import OpenAIEmbeddings
+
     conn = _get_connection_string()
     if not conn:
         return None
@@ -35,12 +47,13 @@ def _get_vector_store():
         model=getattr(settings, "EMBEDDING_MODEL", "text-embedding-3-large"),
         request_timeout=timeout,
     )
-    return PGVector(
+    _vector_store_cache = PGVector(
         connection_string=conn,
         embedding_function=embeddings,
         collection_name=COLLECTION_NAME,
         use_jsonb=True,
     )
+    return _vector_store_cache
 
 
 def delete_vectors_for_document(document_id: int) -> None:
@@ -48,23 +61,20 @@ def delete_vectors_for_document(document_id: int) -> None:
     conn = _get_connection_string()
     if not conn:
         return
-    try:
-        # PGVector stores rows for all collections; scope deletion to this app collection.
-        from django.db import connection
+    # PGVector stores rows for all collections; scope deletion to this app collection.
+    from django.db import connection
 
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                DELETE FROM langchain_pg_embedding AS emb
-                USING langchain_pg_collection AS col
-                WHERE emb.collection_id = col.uuid
-                  AND col.name = %s
-                  AND emb.cmetadata->>'document_id' = %s
-                """,
-                [COLLECTION_NAME, str(document_id)],
-            )
-    except Exception as e:
-        logger.warning("delete_vectors_for_document failed: %s", e)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            DELETE FROM langchain_pg_embedding AS emb
+            USING langchain_pg_collection AS col
+            WHERE emb.collection_id = col.uuid
+              AND col.name = %s
+              AND emb.cmetadata->>'document_id' = %s
+            """,
+            [COLLECTION_NAME, str(document_id)],
+        )
 
 
 def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, project_id: int) -> None:

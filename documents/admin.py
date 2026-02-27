@@ -14,6 +14,7 @@ class ProjectAdmin(admin.ModelAdmin):
 class ProjectDocumentChunkInline(admin.TabularInline):
     model = ProjectDocumentChunk
     extra = 0
+    max_num = 20
     readonly_fields = ("chunk_index", "token_count", "created_at")
     fields = ("chunk_index", "heading", "text", "token_count", "source_page_start", "source_page_end", "created_at")
     ordering = ("chunk_index",)
@@ -27,7 +28,7 @@ class ProjectDocumentAdmin(admin.ModelAdmin):
     search_fields = ("original_filename",)
     raw_id_fields = ("project", "uploaded_by")
     inlines = [ProjectDocumentChunkInline]
-    readonly_fields = ("uploaded_at", "processed_at", "created_at", "updated_at", "token_count")
+    readonly_fields = ("uploaded_at", "processed_at", "updated_at", "token_count")
 
 
 @admin.register(ProjectDocumentChunk)

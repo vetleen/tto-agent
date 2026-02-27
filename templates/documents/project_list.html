@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% load static %}
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-10">
   <h1 class="text-2xl font-semibold text-heading mb-8">My projects</h1>
@@ -29,6 +30,7 @@
         </button>
         <div id="dropdown-project-{{ project.uuid }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
           <button type="button" class="rename-project-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+                  data-rename-modal="rename-project-modal"
                   data-action="{% url 'project_rename' project_id=project.uuid %}"
                   data-name="{{ project.name|escapejs }}">
             Rename
@@ -51,7 +53,7 @@
 <!-- Hidden trigger for rename modal (Flowbite opens via data-modal-toggle) -->
 <button type="button" id="rename-project-modal-trigger" class="hidden" data-modal-target="rename-project-modal" data-modal-show="rename-project-modal" aria-label="Open rename modal"></button>
 <!-- Rename project modal -->
-<div id="rename-project-modal" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+<div id="rename-project-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
   <div class="relative w-full max-w-md max-h-full">
     <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
       <div class="px-6 py-4 border-b border-default">
@@ -77,23 +79,5 @@
     </div>
   </div>
 </div>
-<script>
-(function() {
-  var trigger = document.getElementById('rename-project-modal-trigger');
-  var form = document.getElementById('rename-project-form');
-  var input = document.getElementById('rename-project-name');
-  document.querySelectorAll('.rename-project-btn').forEach(function(btn) {
-    btn.addEventListener('click', function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      form.action = this.getAttribute('data-action');
-      input.value = this.getAttribute('data-name') || '';
-      input.focus();
-      if (trigger) {
-        setTimeout(function() { trigger.click(); }, 0);
-      }
-    });
-  });
-})();
-</script>
+<script src="{% static 'js/rename-modal.js' %}"></script>
 {% endblock %}

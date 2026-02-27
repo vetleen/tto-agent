@@ -168,7 +168,7 @@ def document_upload(request, project_id):
         return redirect("project_detail", project_id=project.uuid)
     max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 10_000_000)
     if file_obj.size > max_size:
-        messages.error(request, "File is too large. Maximum size is 10 MB.")
+        messages.error(request, f"File is too large. Maximum size is {max_size / 1_000_000:.0f} MB.")
         return redirect("project_detail", project_id=project.uuid)
     safe_filename = _safe_original_filename(file_obj.name, max_length=75)
     stored_filename = _safe_original_filename(file_obj.name, max_length=180)
