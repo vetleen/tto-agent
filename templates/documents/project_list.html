@@ -28,6 +28,11 @@
           <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
         </button>
         <div id="dropdown-project-{{ project.uuid }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+          <button type="button" class="rename-project-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+                  data-action="{% url 'project_rename' project_id=project.uuid %}"
+                  data-name="{{ project.name|escapejs }}">
+            Rename
+          </button>
           <form method="post" action="{% url 'project_delete' project_id=project.uuid %}" class="p-0">
             {% csrf_token %}
             <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this project?');">
@@ -42,4 +47,53 @@
     {% endfor %}
   </div>
 </div>
+
+<!-- Hidden trigger for rename modal (Flowbite opens via data-modal-toggle) -->
+<button type="button" id="rename-project-modal-trigger" class="hidden" data-modal-target="rename-project-modal" data-modal-show="rename-project-modal" aria-label="Open rename modal"></button>
+<!-- Rename project modal -->
+<div id="rename-project-modal" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+  <div class="relative w-full max-w-md max-h-full">
+    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+      <div class="px-6 py-4 border-b border-default">
+        <h3 class="text-lg font-semibold text-heading">Rename project</h3>
+      </div>
+      <form id="rename-project-form" method="post" action="">
+        {% csrf_token %}
+        <div class="p-6 space-y-4">
+          <label for="rename-project-name" class="block text-sm font-medium text-heading">Name</label>
+          <input type="text" name="name" id="rename-project-name" required
+                 class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs"
+                 maxlength="255" placeholder="Project name">
+        </div>
+        <div class="flex gap-3 px-6 py-4 border-t border-default">
+          <button type="submit" class="text-white bg-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+            Save
+          </button>
+          <button type="button" data-modal-hide="rename-project-modal" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+  var trigger = document.getElementById('rename-project-modal-trigger');
+  var form = document.getElementById('rename-project-form');
+  var input = document.getElementById('rename-project-name');
+  document.querySelectorAll('.rename-project-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      form.action = this.getAttribute('data-action');
+      input.value = this.getAttribute('data-name') || '';
+      input.focus();
+      if (trigger) {
+        setTimeout(function() { trigger.click(); }, 0);
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}

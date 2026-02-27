@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from documents.models import ProjectDocumentChunk
+from documents.models import ProjectDocumentChunk, ProjectDocument
 from documents.services import vector_store as vs
 
 
@@ -27,9 +27,10 @@ def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
 
 
 def get_chunks_by_project(project_id: int) -> list[dict[str, Any]]:
-    """Return all chunks for a project, grouped by document (order preserved)."""
+    """Return all chunks for a project, grouped by document (order preserved). Excludes failed documents."""
     chunks = (
         ProjectDocumentChunk.objects.filter(document__project_id=project_id)
+        .exclude(document__status=ProjectDocument.Status.FAILED)
         .select_related("document")
         .order_by("document_id", "chunk_index")
     )

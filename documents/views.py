@@ -83,12 +83,34 @@ def project_delete(request, project_id):
 
 
 @login_required
+@require_http_methods(["GET", "POST"])
+def project_rename(request, project_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return redirect("project_list")
+    if request.method != "POST":
+        return redirect("project_list")
+    name = (request.POST.get("name") or "").strip()
+    if not name:
+        messages.error(request, "Project name cannot be empty.")
+        return redirect("project_list")
+    if len(name) > 255:
+        name = name[:255]
+    project.name = name
+    project.save(update_fields=["name", "updated_at"])
+    messages.success(request, "Project renamed.")
+    return redirect("project_list")
+
+
+@login_required
 @require_http_methods(["GET"])
 def project_detail(request, project_id):
     project = get_object_or_404(Project, uuid=project_id)
     if not _user_owns_project(request.user, project):
         return redirect("project_list")
-    documents = list(project.documents.all().order_by("-uploaded_at"))
+    documents = list(
+        project.documents.exclude(status=ProjectDocument.Status.FAILED).order_by("-uploaded_at")
+    )
     for doc in documents:
         doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
     return render(
@@ -148,7 +170,7 @@ def document_upload(request, project_id):
     if file_obj.size > max_size:
         messages.error(request, "File is too large. Maximum size is 10 MB.")
         return redirect("project_detail", project_id=project.uuid)
-    safe_filename = _safe_original_filename(file_obj.name)
+    safe_filename = _safe_original_filename(file_obj.name, max_length=75)
     stored_filename = _safe_original_filename(file_obj.name, max_length=180)
     # Ensure storage path generation does not use overlong/untrusted client names.
     file_obj.name = stored_filename
@@ -194,6 +216,23 @@ def document_delete(request, project_id, document_id):
     doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
     doc.delete()
     messages.success(request, "Document deleted.")
+    return redirect("project_detail", project_id=project.uuid)
+
+
+@login_required
+@require_http_methods(["POST"])
+def document_rename(request, project_id, document_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return redirect("project_detail", project_id=project.uuid)
+    doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
+    name = (request.POST.get("name") or "").strip()
+    if not name:
+        messages.error(request, "Document name cannot be empty.")
+        return redirect("project_detail", project_id=project.uuid)
+    doc.original_filename = _safe_original_filename(name, max_length=75)
+    doc.save(update_fields=["original_filename", "updated_at"])
+    messages.success(request, "Document renamed.")
     return redirect("project_detail", project_id=project.uuid)
 
 
