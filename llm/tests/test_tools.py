@@ -37,6 +37,13 @@ class ToolRegistryTests(TestCase):
         listed["add_number"] = None
         self.assertIs(self.registry.get_tool("add_number"), tool)
 
+    def test_clear_empties_all_tools(self):
+        tool = AddNumberTool()
+        self.registry.register_tool(tool)
+        self.registry.clear()
+        self.assertIsNone(self.registry.get_tool("add_number"))
+        self.assertEqual(self.registry.list_tools(), {})
+
     def test_get_tool_registry_returns_singleton(self):
         a = get_tool_registry()
         b = get_tool_registry()

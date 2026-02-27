@@ -1,13 +1,9 @@
 """
-Example: minimal Channels AsyncWebsocketConsumer that uses LLMService.stream()
+Example: minimal Channels AsyncWebsocketConsumer that uses LLMService.astream()
 and forwards deltas to the client.
 
 This file is for reference only; it is not wired into Django/Channels routing.
 To use it, register the consumer in your ASGI routing and call the URL from the client.
-
-In production, run the blocking service.stream() loop in a thread pool so the
-async event loop is not blocked, e.g. with asyncio.to_thread() or
-loop.run_in_executor().
 """
 
 import json
@@ -44,11 +40,5 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 #         )
 #         service = get_llm_service()
 #
-#         # Run blocking stream in executor to avoid blocking the event loop
-#         import asyncio
-#         def run_stream():
-#             return list(service.stream(pipeline_id, request))
-#         events = await asyncio.to_thread(run_stream)
-#
-#         for event in events:
+#         async for event in service.astream(pipeline_id, request):
 #             await self.send(json.dumps(event.model_dump()))

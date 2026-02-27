@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
-from typing import Iterator, List
+from typing import Iterator
 
 from llm.core.interfaces import ChatModel
+from llm.core.langchain_utils import to_langchain_messages
 from llm.core.registry import get_model_registry
 from llm.service.errors import LLMConfigurationError, LLMProviderError
 from llm.types.messages import Message
@@ -13,27 +14,12 @@ from llm.types.streaming import StreamEvent
 
 try:  # pragma: no cover - exercised via mocks in unit tests
     from langchain_openai import ChatOpenAI
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 except Exception as exc:  # ImportError or other environment issues
     # Defer failure until provider is actually constructed
     ChatOpenAI = None  # type: ignore[assignment]
-    AIMessage = HumanMessage = SystemMessage = None  # type: ignore[assignment]
     _import_error: Exception | None = exc
 else:
     _import_error = None
-
-
-def _to_lc_messages(messages: List[Message]):
-    lc_messages = []
-    for m in messages:
-        if m.role == "system":
-            lc_messages.append(SystemMessage(content=m.content))
-        elif m.role == "assistant":
-            lc_messages.append(AIMessage(content=m.content))
-        else:
-            # Treat "user" and any other roles as human messages for v1
-            lc_messages.append(HumanMessage(content=m.content))
-    return lc_messages
 
 
 class OpenAIChatModel(ChatModel):
@@ -56,7 +42,7 @@ class OpenAIChatModel(ChatModel):
         self._client = ChatOpenAI(model=model_name, stream_usage=True)
 
     def generate(self, request: ChatRequest) -> ChatResponse:
-        lc_messages = _to_lc_messages(request.messages)
+        lc_messages = to_langchain_messages(request.messages)
         try:
             result = self._client.invoke(lc_messages)
         except Exception as exc:  # pragma: no cover - wrapped in higher level tests
@@ -82,7 +68,7 @@ class OpenAIChatModel(ChatModel):
         return ChatResponse(message=message, model=self.name, usage=usage, metadata={})
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
-        lc_messages = _to_lc_messages(request.messages)
+        lc_messages = to_langchain_messages(request.messages)
         run_id = request.context.run_id if request.context else ""
         sequence = 1
 

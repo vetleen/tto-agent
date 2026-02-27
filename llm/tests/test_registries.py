@@ -38,17 +38,24 @@ class ModelRegistryTests(TestCase):
         result = registry.get_model("gpt-4o-mini")
         self.assertIs(result, fake)
 
-    def test_get_model_first_matching_prefix_wins(self):
+    def test_get_model_longest_prefix_wins_regardless_of_registration_order(self):
         registry = ModelRegistry()
-        first = MagicMock(spec=ChatModel)
-        first.name = "gpt"
-        second = MagicMock(spec=ChatModel)
-        second.name = "gpt-4"
-        registry.register_model_prefix("gpt-4", lambda name: second)
-        registry.register_model_prefix("gpt", lambda name: first)
-        # Dict iteration order: first registered "gpt-4" then "gpt". So "gpt-4o" matches "gpt-4" first.
+        short = MagicMock(spec=ChatModel)
+        short.name = "gpt"
+        long = MagicMock(spec=ChatModel)
+        long.name = "gpt-4"
+        # Register the shorter prefix first — longest should still win.
+        registry.register_model_prefix("gpt", lambda name: short)
+        registry.register_model_prefix("gpt-4", lambda name: long)
         result = registry.get_model("gpt-4o")
-        self.assertIs(result, second)
+        self.assertIs(result, long)
+
+    def test_clear_empties_all_prefixes(self):
+        registry = ModelRegistry()
+        registry.register_model_prefix("gpt-", lambda name: MagicMock(spec=ChatModel))
+        registry.clear()
+        with self.assertRaises(LLMConfigurationError):
+            registry.get_model("gpt-4o")
 
     def test_get_model_registry_returns_singleton(self):
         a = get_model_registry()
@@ -82,6 +89,15 @@ class PipelineRegistryTests(TestCase):
         with self.assertRaises(ValueError) as ctx:
             registry.register_pipeline(pipeline)
         self.assertIn("non-empty", str(ctx.exception))
+
+    def test_clear_empties_all_pipelines(self):
+        registry = PipelineRegistry()
+        pipeline = MagicMock(spec=BasePipeline)
+        pipeline.id = "test_pipeline"
+        registry.register_pipeline(pipeline)
+        registry.clear()
+        with self.assertRaises(LLMConfigurationError):
+            registry.get_pipeline("test_pipeline")
 
     def test_get_pipeline_registry_returns_singleton(self):
         a = get_pipeline_registry()

@@ -28,6 +28,10 @@ class ToolRegistry:
         """Return a copy of the name -> tool mapping."""
         return dict(self._tools)
 
+    def clear(self) -> None:
+        """Remove all registered tools."""
+        self._tools.clear()
+
 
 _global_registry: Optional[ToolRegistry] = None
 

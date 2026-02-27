@@ -31,6 +31,10 @@ class PipelineRegistry:
             )
         return pipeline
 
+    def clear(self) -> None:
+        """Remove all registered pipelines."""
+        self._pipelines.clear()
+
 
 _global_registry: Optional[PipelineRegistry] = None
 

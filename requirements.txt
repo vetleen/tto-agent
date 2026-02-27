@@ -20,7 +20,6 @@ langchain-text-splitters
 langchain-community
 pydantic>=2,<3
 pypdf
-litellm
 openai
 tiktoken
 celery

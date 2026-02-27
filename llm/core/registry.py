@@ -35,14 +35,19 @@ class ModelRegistry:
         Raises LLMConfigurationError if no prefix matches.
         """
 
-        for prefix, factory in self._prefix_factories.items():
+        # Sort longest-first so "gpt-4" beats "gpt-" regardless of registration order.
+        for prefix in sorted(self._prefix_factories, key=len, reverse=True):
             if model_name.startswith(prefix):
-                return factory(model_name)
+                return self._prefix_factories[prefix](model_name)
         available_prefixes: List[str] = list(self._prefix_factories.keys())
         raise LLMConfigurationError(
             f"No ChatModel registered for model_name='{model_name}'. "
             f"Configured prefixes: {available_prefixes or '[]'}"
         )
+
+    def clear(self) -> None:
+        """Remove all registered prefix factories."""
+        self._prefix_factories.clear()
 
 
 _global_registry: ModelRegistry | None = None
