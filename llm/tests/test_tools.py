@@ -90,3 +90,19 @@ class AddNumberToolTests(TestCase):
         with self.assertRaises(ValueError) as ctx:
             self.tool.run({"a": 1, "b": []}, self.context)
         self.assertIn("numeric", str(ctx.exception).lower())
+
+
+class AddNumberToolSchemaTests(TestCase):
+    """Test AddNumberTool has description and parameters for tool calling."""
+
+    def test_add_number_tool_has_description_and_parameters(self):
+        tool = AddNumberTool()
+        self.assertEqual(tool.name, "add_number")
+        self.assertIsInstance(tool.description, str)
+        self.assertIn("add", tool.description.lower())
+        self.assertIsInstance(tool.parameters, dict)
+        self.assertEqual(tool.parameters.get("type"), "object")
+        self.assertIn("properties", tool.parameters)
+        self.assertIn("a", tool.parameters["properties"])
+        self.assertIn("b", tool.parameters["properties"])
+        self.assertEqual(tool.parameters.get("required"), ["a", "b"])

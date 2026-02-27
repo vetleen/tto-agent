@@ -14,6 +14,15 @@ class AddNumberTool:
     """Tool that adds two numbers. Used for testing tool wiring."""
 
     name = "add_number"
+    description = "Add two numbers together and return the sum."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "a": {"type": "number", "description": "First number"},
+            "b": {"type": "number", "description": "Second number"},
+        },
+        "required": ["a", "b"],
+    }
 
     def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
         a = args.get("a")

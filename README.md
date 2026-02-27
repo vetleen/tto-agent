@@ -5,6 +5,7 @@
 - **Web app:** Django 6, Tailwind CSS v4, Flowbite. Branded UI (“Wilfred”) with custom font and dark/light theme.
 - **Auth:** Accounts app with login, signup, email verification, password reset, and per-user theme (UserSettings).
 - **Documents app:** Projects (UUID-based), document upload (PDF, TXT, MD, HTML), async processing via **Celery**, chunking (LangChain + tiktoken), OpenAI embeddings, and **pgvector** storage when Postgres is used.
+- **LLM app:** Internal LLM API used by the assistant: multi-provider (OpenAI, Anthropic, Gemini) via LangChain, pipeline registry, policy-based model allowlist, and optional live API integration tests.
 
 ## Setup
 
@@ -30,7 +31,7 @@
    ```bash
    pip install -r requirements.txt
    ```
-   Key dependencies: Django 6, Celery, channels/channels-redis/daphne, langchain/langchain-openai/langchain-community, pypdf, tiktoken, whitenoise, dj-database-url, psycopg2-binary, django-anymail (optional for production email).
+   Key dependencies: Django 6, Celery, channels/channels-redis/daphne, langchain/langchain-openai/langchain-anthropic/langchain-google-genai/langchain-community, pypdf, tiktoken, whitenoise, dj-database-url, psycopg2-binary, django-anymail (optional for production email).
 
 3. **Install Node dependencies:**
    ```bash
@@ -95,7 +96,12 @@ python manage.py test accounts
 
 # Only documents
 python manage.py test documents
+
+# Only llm (unit tests; no API calls by default)
+python manage.py test llm
 ```
+
+To run **live API integration tests** (OpenAI, Anthropic, Gemini), set `TEST_APIS=True` in the environment and ensure the corresponding API keys are set in `.env`. See [Environment variables](#environment-variables).
 
 Run from the project root with the virtual environment activated. Use the project’s `.venv` so all dependencies (e.g. whitenoise) are available.
 
@@ -106,6 +112,41 @@ Run from the project root with the virtual environment activated. Use the projec
 - **Pipeline:** Upload → Celery task `process_document_task` → extract text (PyPDF/TextLoader), chunk (see below), persist `token_count` and chunks to DB, then embed and add to vector store (when `PGVECTOR_CONNECTION` is set).
 - **Chunking** (`documents/services/chunking.py`): LangChain loaders (PDF, TXT, MD, HTML). Markdown-aware splitting when applicable; token-based with tiktoken (fallback estimate if tiktoken fails). Max chunk size 1200 tokens (configurable), overlap 100. If total tokens ≤ max, one chunk. Chunks under 200 tokens are merged into the smallest adjacent chunk; merged chunks can exceed the max. Document `token_count` is set after chunking and saved before the vector step so it persists even if embedding fails.
 - **Vector store:** Optional. When `PGVECTOR_CONNECTION` (or `DATABASE_URL` for Postgres) is set, embeddings are stored in pgvector via LangChain PGVector and OpenAI embeddings. Idempotent per document: delete by document_id then add.
+
+## LLM app
+
+The **llm** app provides an internal LLM API used by the assistant and other parts of the system. Use it like any other app:
+
+```python
+from llm import get_llm_service
+from llm.types import ChatRequest, Message, RunContext
+
+service = get_llm_service()
+request = ChatRequest(
+    messages=[Message(role="user", content="Hello")],
+    stream=False,
+    model=None,  # resolved from DEFAULT_LLM_MODEL / LLM_ALLOWED_MODELS
+    context=RunContext.create(),
+)
+response = service.run("simple_chat", request)
+```
+
+For **async** usage (e.g. Channels consumers), use `arun()` and `astream()`; concurrent streams are capped by `LLM_MAX_CONCURRENT_STREAMS` (default 20). The Channels consumer example in `llm/examples/channels_consumer_example.py` uses `service.astream()`.
+
+```python
+# Async run (delegates to run in a thread)
+response = await service.arun("simple_chat", request)
+
+# Async stream (for WebSockets)
+async for event in service.astream("simple_chat", request):
+    await websocket.send(json.dumps(event.model_dump()))
+```
+
+- **Dependency injection:** `LLMService(pipeline_registry=..., resolve_model_fn=...)` accepts optional overrides for testing or custom wiring; when omitted, process-wide singletons are used.
+- **Providers:** OpenAI (`gpt-*`, `o1*`, `openai/*`), Anthropic (`claude-*`, `anthropic/*`), Gemini (`gemini-*`, `gemini/*`). Each requires the corresponding API key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY`). Model resolution uses **longest-prefix-first** matching.
+- **Pipelines:** Registered by id. The **simple_chat** pipeline delegates to the selected ChatModel. When `request.tools` is set (list of tool names), the pipeline uses LLM function calling (`bind_tools()`); the model decides when to call tools, the pipeline runs them and feeds results back until the model returns text or a cap is hit. Streaming uses `chat_model.stream()` for the final response (after tool rounds or on max-iterations fallback), so tool conversations get real token-by-token output. Use `service.stream("simple_chat", request)` for synchronous streaming.
+- **Policies:** Model choice is constrained by `LLM_ALLOWED_MODELS`; `DEFAULT_LLM_MODEL` (or `LLM_DEFAULT_MODEL`) is used when the request does not specify a model. See [Environment variables](#environment-variables).
+- **Tests:** Unit tests in `llm/tests/` (policies, registries, pipelines, service, tools). Live provider tests in `llm/tests/test_api_integration.py` run only when `TEST_APIS=True`.
 
 ## Environment variables
 
@@ -120,14 +161,20 @@ Create a `.env` file in the project root (see `.env.example` for a template). `p
 | `CELERY_BROKER_URL` | Optional; defaults to `REDIS_URL` |
 | `DATABASE_URL` | Postgres URL (Heroku sets this). SQLite used if not set |
 | `PGVECTOR_CONNECTION` | Optional; defaults to `DATABASE_URL`. Postgres connection for pgvector; if set, embeddings are stored |
-| `OPENAI_API_KEY` | Required for embeddings (and any OpenAI-based features) |
+| `OPENAI_API_KEY` | Required for embeddings (and OpenAI provider in llm app) |
 | `EMBEDDING_MODEL` | Optional; default `text-embedding-3-large` |
+| `ANTHROPIC_API_KEY` | Optional; required for Anthropic provider in llm app |
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Optional; required for Gemini provider in llm app |
+| `LLM_ALLOWED_MODELS` | Comma-separated list of allowed model names (e.g. `gpt-4o-mini,claude-3-5-sonnet,gemini-1.5-flash`) |
+| `DEFAULT_LLM_MODEL` or `LLM_DEFAULT_MODEL` | Default model when request does not specify one; must be in `LLM_ALLOWED_MODELS` |
+| `TEST_APIS` | Set to `True` to run live API integration tests (llm app); default `False` |
+| `LLM_MAX_CONCURRENT_STREAMS` | Max concurrent async streams (default 20); used by `astream()` |
 | `MAX_CHUNK_TOKENS`, `CHUNK_OVERLAP_TOKENS` | Optional chunking tuning (defaults 1200, 100) |
 | `DJANGO_USER_NAME`, `DJANGO_PASSWORD` | Dev-only; auto-create superuser on runserver |
 | `DJANGO_EMAIL_BACKEND` | e.g. `django.core.mail.backends.console.EmailBackend` for local |
 | `EMAIL_VERIFICATION_REQUIRED` | Set `False` to skip email verification (e.g. dev) |
 
-See `.env.example` for LLM/API and Mailgun-related options.
+See `.env.example` for more options (e.g. Mailgun, MOONSHOT).
 
 ## Heroku deployment
 

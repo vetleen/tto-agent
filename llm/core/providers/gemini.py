@@ -4,7 +4,7 @@ import os
 from typing import Iterator
 
 from llm.core.interfaces import ChatModel
-from llm.core.langchain_utils import to_langchain_messages
+from llm.core.langchain_utils import to_langchain_messages, parse_tool_calls_from_ai_message
 from llm.core.registry import get_model_registry
 from llm.service.errors import LLMConfigurationError, LLMProviderError
 from llm.types.messages import Message
@@ -43,13 +43,23 @@ class GeminiChatModel(ChatModel):
 
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages)
+        client = self._client
+        if request.tool_schemas:
+            client = client.bind_tools(request.tool_schemas)
         try:
-            result = self._client.invoke(lc_messages)
+            result = client.invoke(lc_messages)
         except Exception as exc:  # pragma: no cover
             raise LLMProviderError(f"Gemini generate failed for model={self.name}") from exc
 
         content = getattr(result, "content", "") or ""
-        message = Message(role="assistant", content=str(content))
+
+        message_tool_calls = parse_tool_calls_from_ai_message(result)
+
+        message = Message(
+            role="assistant",
+            content=str(content),
+            tool_calls=message_tool_calls,
+        )
 
         usage = None
         usage_meta = getattr(result, "usage_metadata", None)
@@ -65,6 +75,9 @@ class GeminiChatModel(ChatModel):
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         lc_messages = to_langchain_messages(request.messages)
+        client = self._client
+        if request.tool_schemas:
+            client = client.bind_tools(request.tool_schemas)
         run_id = request.context.run_id if request.context else ""
         sequence = 1
 
@@ -78,7 +91,7 @@ class GeminiChatModel(ChatModel):
 
         try:
             # If true token streaming is available, this will yield chunks.
-            for chunk in self._client.stream(lc_messages):
+            for chunk in client.stream(lc_messages):
                 text = getattr(chunk, "content", "") or ""
                 if not text:
                     continue

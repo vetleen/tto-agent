@@ -2,114 +2,187 @@
 
 from __future__ import annotations
 
-import re
-from typing import Iterator
+import json
+from typing import Iterator, List
 
 from llm.core.interfaces import ChatModel
 from llm.core.registry import get_model_registry
 from llm.pipelines.base import BasePipeline
 from llm.pipelines.registry import get_pipeline_registry
-from llm.types.messages import Message
+from llm.types.messages import Message, ToolCall
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse
 from llm.types.streaming import StreamEvent
+from llm.types.context import RunContext
+from llm.tools import tools_to_langchain_schemas
+from llm.tools.interfaces import Tool
 from llm.tools.registry import get_tool_registry
 
 # Ensure built-in tools (e.g. add_number) are registered when this pipeline is used.
 import llm.tools.builtins  # noqa: F401
 
 
-# Pattern for the testing tool shortcut: "tool:add_number a=<num> b=<num>"
-_ADD_NUMBER_PATTERN = re.compile(
-    r"^tool:add_number\s+a=([0-9]+(?:\.[0-9]+)?)\s+b=([0-9]+(?:\.[0-9]+)?)\s*$",
-    re.IGNORECASE,
-)
-
-
 class SimpleChatPipeline(BasePipeline):
-    """Single pipeline: optional add_number tool shortcut, else delegate to ChatModel."""
+    """Single pipeline: LLM-driven tool calling via bind_tools(), else delegate to ChatModel."""
 
     id = "simple_chat"
     capabilities = {"streaming": True, "tools": True}
 
-    def run(self, request: ChatRequest) -> ChatResponse:
-        last_user_content = self._last_user_content(request)
-        if last_user_content is not None:
-            tool_result = self._try_add_number_tool(last_user_content, request)
-            if tool_result is not None:
-                return tool_result
+    def __init__(self, max_tool_iterations: int = 10) -> None:
+        self.max_tool_iterations = max_tool_iterations
 
+    def run(self, request: ChatRequest) -> ChatResponse:
+        tool_names = request.tools or []
+        if not tool_names:
+            return self._run_no_tools(request)
+
+        if not request.model:
+            raise ValueError("request.model must be set by the service before calling pipeline")
+        tools = self._resolve_tools(tool_names)
+        schemas = tools_to_langchain_schemas(tools)
+        req = request.model_copy(update={"tool_schemas": schemas})
+        return self._run_tool_loop(get_model_registry().get_model(req.model), req, tools)
+
+    def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
+        tool_names = request.tools or []
+        if not tool_names:
+            model_name = request.model
+            if not model_name:
+                raise ValueError("request.model must be set by the service before calling pipeline")
+            yield from get_model_registry().get_model(model_name).stream(request)
+            return
+
+        if not request.model:
+            raise ValueError("request.model must be set by the service before calling pipeline")
+        tools = self._resolve_tools(tool_names)
+        schemas = tools_to_langchain_schemas(tools)
+        req = request.model_copy(update={"tool_schemas": schemas})
+        model = get_model_registry().get_model(req.model)
+        run_id = req.context.run_id if req.context else ""
+        yield from self._stream_with_tools(model, req, tools, run_id, req.context)
+
+    def _resolve_tools(self, tool_names: List[str]) -> List[Tool]:
+        registry = get_tool_registry()
+        tools = []
+        for name in tool_names:
+            t = registry.get_tool(name)
+            if t is None:
+                raise ValueError(f"Unknown tool name: {name!r}")
+            tools.append(t)
+        return tools
+
+    def _run_no_tools(self, request: ChatRequest) -> ChatResponse:
         model_name = request.model
         if not model_name:
             raise ValueError("request.model must be set by the service before calling pipeline")
         chat_model = get_model_registry().get_model(model_name)
         return chat_model.generate(request)
 
-    def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
-        last_user_content = self._last_user_content(request)
-        if last_user_content is not None:
-            tool_response = self._try_add_number_tool(last_user_content, request)
-            if tool_response is not None:
-                run_id = request.context.run_id if request.context else ""
-                yield StreamEvent(
-                    event_type="message_start",
-                    data={"model": ""},
-                    sequence=1,
-                    run_id=run_id,
+    def _run_tool_loop(
+        self,
+        chat_model: ChatModel,
+        request: ChatRequest,
+        tools: List[Tool],
+    ) -> ChatResponse:
+        tool_by_name = {t.name: t for t in tools}
+        req = request
+
+        for _ in range(self.max_tool_iterations):
+            response = chat_model.generate(req)
+            msg = response.message
+            if not msg.tool_calls:
+                return response
+
+            new_messages = list(req.messages) + [msg]
+            context = req.context
+
+            for tc in msg.tool_calls:
+                tool = tool_by_name.get(tc.name)
+                if not tool:
+                    content = json.dumps({"error": f"Unknown tool: {tc.name}"})
+                else:
+                    try:
+                        result = tool.run(tc.arguments, context or RunContext.create())
+                        content = json.dumps(result)
+                    except Exception as e:
+                        content = json.dumps({"error": str(e)})
+                new_messages.append(
+                    Message(role="tool", content=content, tool_call_id=tc.id)
                 )
-                yield StreamEvent(
-                    event_type="token",
-                    data={"text": tool_response.message.content},
-                    sequence=2,
-                    run_id=run_id,
-                )
-                yield StreamEvent(
-                    event_type="message_end",
-                    data={"model": ""},
-                    sequence=3,
-                    run_id=run_id,
-                )
+
+            req = req.model_copy(update={"messages": new_messages})
+
+        # Max iterations reached: strip tools and do one final generate
+        req = req.model_copy(update={"tool_schemas": None})
+        return chat_model.generate(req)
+
+    def _stream_with_tools(
+        self,
+        chat_model: ChatModel,
+        request: ChatRequest,
+        tools: List[Tool],
+        run_id: str,
+        context,
+    ) -> Iterator[StreamEvent]:
+        tool_by_name = {t.name: t for t in tools}
+        req = request
+        sequence = 1
+
+        for _ in range(self.max_tool_iterations):
+            response = chat_model.generate(req)
+            msg = response.message
+            if not msg.tool_calls:
+                # Final round: stream the real response token-by-token.
+                # Strip tool_schemas so the provider doesn't bind tools.
+                final_req = req.model_copy(update={"tool_schemas": None})
+                yield from chat_model.stream(final_req)
                 return
 
-        model_name = request.model
-        if not model_name:
-            raise ValueError("request.model must be set by the service before calling pipeline")
-        chat_model = get_model_registry().get_model(model_name)
-        yield from chat_model.stream(request)
+            new_messages = list(req.messages) + [msg]
+            for tc in msg.tool_calls:
+                yield StreamEvent(
+                    event_type="tool_start",
+                    data={
+                        "tool_name": tc.name,
+                        "tool_call_id": tc.id,
+                        "arguments": tc.arguments,
+                    },
+                    sequence=sequence,
+                    run_id=run_id,
+                )
+                sequence += 1
 
-    @staticmethod
-    def _last_user_content(request: ChatRequest) -> str | None:
-        for m in reversed(request.messages):
-            if m.role == "user":
-                return (m.content or "").strip()
-        return None
+                tool = tool_by_name.get(tc.name)
+                if not tool:
+                    result_str = json.dumps({"error": f"Unknown tool: {tc.name}"})
+                else:
+                    try:
+                        result = tool.run(tc.arguments, context or RunContext.create())
+                        result_str = json.dumps(result)
+                    except Exception as e:
+                        result_str = json.dumps({"error": str(e)})
 
-    @staticmethod
-    def _try_add_number_tool(last_content: str, request: ChatRequest) -> ChatResponse | None:
-        m = _ADD_NUMBER_PATTERN.match(last_content.strip())
-        if not m:
-            return None
-        a_str, b_str = m.group(1), m.group(2)
-        try:
-            a_num = float(a_str)
-            b_num = float(b_str)
-        except ValueError:
-            return None
-        tool = get_tool_registry().get_tool("add_number")
-        if not tool:
-            return None
-        context = request.context
-        if context is None:
-            from llm.types.context import RunContext
-            context = RunContext.create()
-        result = tool.run({"a": a_num, "b": b_num}, context)
-        result_val = result.get("result")
-        return ChatResponse(
-            message=Message(role="assistant", content=f"Result: {result_val}"),
-            model="",
-            usage=None,
-            metadata={},
-        )
+                yield StreamEvent(
+                    event_type="tool_end",
+                    data={
+                        "tool_name": tc.name,
+                        "tool_call_id": tc.id,
+                        "result": result_str,
+                    },
+                    sequence=sequence,
+                    run_id=run_id,
+                )
+                sequence += 1
+
+                new_messages.append(
+                    Message(role="tool", content=result_str, tool_call_id=tc.id)
+                )
+
+            req = req.model_copy(update={"messages": new_messages})
+
+        # Max iterations: strip tools and stream the final response.
+        req = req.model_copy(update={"tool_schemas": None})
+        yield from chat_model.stream(req)
 
 
 # Register so LLMService can resolve "simple_chat"

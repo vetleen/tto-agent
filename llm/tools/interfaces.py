@@ -12,6 +12,8 @@ class Tool(Protocol):
     """Protocol for a callable tool that can be invoked by pipelines."""
 
     name: str
+    description: str
+    parameters: Dict[str, Any]  # JSON Schema
 
     def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
         """Execute the tool with the given arguments and run context."""

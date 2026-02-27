@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from llm.core.langchain_utils import to_langchain_messages
 from llm.types.messages import Message
@@ -30,10 +30,38 @@ class ToLangchainMessagesTests(TestCase):
         self.assertEqual(result[0].content, "Hello")
 
     def test_tool_role_maps_to_human_message(self):
+        """role='tool' without tool_call_id maps to HumanMessage (backward compat)."""
         result = to_langchain_messages([Message(role="tool", content="result")])
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], HumanMessage)
         self.assertEqual(result[0].content, "result")
+
+    def test_assistant_with_tool_calls_maps_to_ai_message_with_tool_calls(self):
+        from llm.types.messages import ToolCall
+        msg = Message(
+            role="assistant",
+            content="",
+            tool_calls=[
+                ToolCall(id="id1", name="add_number", arguments={"a": 1, "b": 2}),
+            ],
+        )
+        result = to_langchain_messages([msg])
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], AIMessage)
+        self.assertEqual(result[0].content, "")
+        self.assertEqual(len(result[0].tool_calls), 1)
+        self.assertEqual(result[0].tool_calls[0]["id"], "id1")
+        self.assertEqual(result[0].tool_calls[0]["name"], "add_number")
+        self.assertEqual(result[0].tool_calls[0]["args"], {"a": 1, "b": 2})
+
+    def test_tool_role_with_tool_call_id_maps_to_tool_message(self):
+        result = to_langchain_messages([
+            Message(role="tool", content='{"result": 5}', tool_call_id="call_1"),
+        ])
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], ToolMessage)
+        self.assertEqual(result[0].content, '{"result": 5}')
+        self.assertEqual(result[0].tool_call_id, "call_1")
 
     def test_mixed_conversation_preserves_order(self):
         messages = [
