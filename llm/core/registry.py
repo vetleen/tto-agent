@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, TypeVar
 
@@ -51,14 +52,17 @@ class ModelRegistry:
 
 
 _global_registry: ModelRegistry | None = None
+_global_registry_lock = threading.Lock()
 
 
 def get_model_registry() -> ModelRegistry:
-    """Return the process-wide ModelRegistry singleton."""
+    """Return the process-wide ModelRegistry singleton (thread-safe)."""
 
     global _global_registry
     if _global_registry is None:
-        _global_registry = ModelRegistry()
+        with _global_registry_lock:
+            if _global_registry is None:
+                _global_registry = ModelRegistry()
     return _global_registry
 
 

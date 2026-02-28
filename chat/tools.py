@@ -58,9 +58,14 @@ class SearchDocumentsTool:
 
         try:
             docs = similarity_search_chunks(project_id=project_pk, query=query, k=k)
-        except Exception:
+        except Exception as exc:
             logger.exception("search_documents: similarity_search_chunks failed")
-            return {"results": [], "count": 0, "error": "Search failed"}
+            return {
+                "results": [],
+                "count": 0,
+                "error": "Search failed",
+                "error_type": type(exc).__name__,
+            }
 
         results = []
         for doc in docs:

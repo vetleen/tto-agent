@@ -5,6 +5,7 @@ PGVECTOR_CONNECTION is set (Postgres). Idempotent: delete by document_id before 
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from django.conf import settings
@@ -15,6 +16,7 @@ COLLECTION_NAME = "document_chunks"
 
 # Module-level cache for the vector store instance (lazy init). Use reset_vector_store() in tests to clear.
 _vector_store_cache: Any = None
+_vector_store_lock = threading.Lock()
 
 
 def _get_connection_string() -> str | None:
@@ -36,24 +38,27 @@ def _get_vector_store():
     global _vector_store_cache
     if _vector_store_cache is not None:
         return _vector_store_cache
-    from langchain_community.vectorstores import PGVector
-    from langchain_openai import OpenAIEmbeddings
+    with _vector_store_lock:
+        if _vector_store_cache is not None:
+            return _vector_store_cache
+        from langchain_community.vectorstores import PGVector
+        from langchain_openai import OpenAIEmbeddings
 
-    conn = _get_connection_string()
-    if not conn:
-        return None
-    timeout = getattr(settings, "EMBEDDING_REQUEST_TIMEOUT", 120)
-    embeddings = OpenAIEmbeddings(
-        model=getattr(settings, "EMBEDDING_MODEL", "text-embedding-3-large"),
-        request_timeout=timeout,
-    )
-    _vector_store_cache = PGVector(
-        connection_string=conn,
-        embedding_function=embeddings,
-        collection_name=COLLECTION_NAME,
-        use_jsonb=True,
-    )
-    return _vector_store_cache
+        conn = _get_connection_string()
+        if not conn:
+            return None
+        timeout = getattr(settings, "EMBEDDING_REQUEST_TIMEOUT", 120)
+        embeddings = OpenAIEmbeddings(
+            model=getattr(settings, "EMBEDDING_MODEL", "text-embedding-3-large"),
+            request_timeout=timeout,
+        )
+        _vector_store_cache = PGVector(
+            connection_string=conn,
+            embedding_function=embeddings,
+            collection_name=COLLECTION_NAME,
+            use_jsonb=True,
+        )
+        return _vector_store_cache
 
 
 def delete_vectors_for_document(document_id: int) -> None:
