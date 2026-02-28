@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
+from django.test import override_settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase
 
@@ -21,6 +22,9 @@ def make_application():
     return URLRouter(websocket_urlpatterns)
 
 
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
 class ConsumerConnectTests(TransactionTestCase):
     """Test WebSocket connection handling."""
 
@@ -77,6 +81,9 @@ class ConsumerConnectTests(TransactionTestCase):
         await communicator.disconnect()
 
 
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
 class ConsumerMessageTests(TransactionTestCase):
     """Test message handling in the consumer."""
 
@@ -180,6 +187,13 @@ class ConsumerMessageTests(TransactionTestCase):
 
         resp3 = await communicator.receive_json_from(timeout=5)
         self.assertEqual(resp3["event_type"], "message_end")
+
+        # Assistant message should be persisted from streamed tokens
+        assistant = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(role="assistant").first()
+        )()
+        self.assertIsNotNone(assistant)
+        self.assertEqual(assistant.content, "Hi")
 
         await communicator.disconnect()
 
