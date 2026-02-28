@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     "accounts",
     "documents.apps.DocumentsConfig",
     "llm.apps.LlmConfig",
+    "chat.apps.ChatConfig",
 ]
 if DEBUG:
     INSTALLED_APPS.extend([

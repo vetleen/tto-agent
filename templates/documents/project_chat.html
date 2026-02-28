@@ -1,6 +1,533 @@
-{% extends "documents/project_base.html" %}
+{% extends "_base.html" %}
 {% load static %}
-{% block project_content %}
-  {# Chat UI will be added here later #}
-  <p class="text-body text-sm">Project chat — coming soon.</p>
+{% load document_filters %}
+{% block body_class %}pt-16 bg-neutral-primary{% endblock %}
+{% block content %}
+{# Replicate project_base.html header but override the content container for full-height chat #}
+<header class="sticky top-16 z-10 bg-neutral-primary border-b border-default">
+  <nav class="bg-neutral-secondary-soft border-y border-default">
+    <div class="max-w-screen-xl px-4 py-3 mx-auto">
+      <div class="flex items-center">
+        <nav class="flex min-w-0" aria-label="Breadcrumb">
+          <ol class="inline-flex items-center space-x-1 md:space-x-2 rtl:space-x-reverse">
+            <li class="inline-flex items-center">
+              <a href="{% url 'project_list' %}" class="inline-flex items-center gap-1.5 text-sm font-medium text-body hover:text-heading py-0.5 pe-0.5 shrink-0">
+                <svg class="w-4 h-4 shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12l4-4M5 12l4 4"/></svg>
+                Back to My projects
+              </a>
+            </li>
+            <li>
+              <div class="flex items-center space-x-1.5 md:space-x-2">
+                <svg class="w-3.5 h-3.5 rtl:rotate-180 text-body shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
+                <a href="{% url 'project_chat' project_id=project.uuid %}" class="inline-flex items-center gap-1.5 text-sm font-medium text-body hover:text-heading py-0.5 pe-0.5 min-w-0 truncate" title="{{ project.name }}">
+                  <svg class="w-4 h-4 shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v1M9 12h10m-6 4h6"/></svg>
+                  <span class="truncate">{{ project.name|truncate_project_name:30 }}</span>
+                </a>
+              </div>
+            </li>
+            <li aria-current="page">
+              <div class="flex items-center space-x-1.5 md:space-x-2">
+                <svg class="w-3.5 h-3.5 rtl:rotate-180 text-body shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
+                <div class="inline-flex items-center space-x-3 md:space-x-4 rtl:space-x-reverse">
+                  <span class="inline-flex items-center gap-1.5 text-sm font-medium text-fg-brand font-semibold dark:text-heading py-0.5 pe-0.5">
+                    <svg class="w-4 h-4 shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                    Chat
+                  </span>
+                  <a href="{% url 'project_documents' project_id=project.uuid %}" class="inline-flex items-center gap-1.5 text-sm font-medium text-body hover:text-heading py-0.5 pe-0.5">
+                    <svg class="w-4 h-4 shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8"/></svg>
+                    Manage documents
+                  </a>
+                </div>
+              </div>
+            </li>
+          </ol>
+        </nav>
+      </div>
+    </div>
+  </nav>
+</header>
+
+{# Full-height chat layout: flex column filling remaining viewport height #}
+<div class="flex flex-col" style="height: calc(100vh - 8rem);">
+  {# Messages area — scrollable #}
+  <div class="flex-1 overflow-y-auto" id="messages-scroll-container">
+    <div class="max-w-3xl mx-auto w-full px-4 py-6">
+      <div id="chat-messages" class="space-y-6">
+        {% for m in messages %}
+          {% if m.role == "user" %}
+            <div class="flex justify-end" data-role="user">
+              <div class="flex items-start gap-2.5 flex-row-reverse">
+                <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
+                  <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
+                    <span class="text-sm font-semibold text-heading">You</span>
+                    <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
+                  </div>
+                  <div class="text-sm py-2.5 text-body">{{ m.content }}</div>
+                </div>
+              </div>
+            </div>
+          {% elif m.role == "assistant" %}
+            <div class="flex items-start gap-2.5" data-role="assistant">
+              <div class="flex flex-col w-full">
+                <div class="flex items-center space-x-2">
+                  <span class="text-sm font-semibold text-heading">Assistant</span>
+                  <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
+                </div>
+                <div class="text-sm text-body mt-2 markdown-content">{{ m.content }}</div>
+              </div>
+            </div>
+          {% endif %}
+        {% empty %}
+          <div class="flex items-start gap-2.5" data-placeholder="true">
+            <div class="flex flex-col w-full">
+              <div class="flex items-center space-x-2">
+                <span class="text-sm font-semibold text-heading">Assistant</span>
+              </div>
+              <p class="text-sm text-body mt-2">Ask me anything about your project documents.</p>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  {# Input area — sticky bottom #}
+  <div class="border-t border-default bg-neutral-primary">
+    <div class="max-w-3xl mx-auto w-full px-4 py-3">
+      <form class="flex gap-2" id="chat-form">
+        <div class="flex-1 flex items-end gap-2">
+          <div id="connection-status" class="flex items-center gap-1.5 shrink-0 mb-2.5" title="Connection status">
+            <div id="connection-spinner" class="hidden" role="status">
+              <svg aria-hidden="true" class="w-4 h-4 text-neutral-quaternary animate-spin fill-brand" viewBox="0 0 100 101" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M100 50.5908C100 78.2051 77.6142 100.591 50 100.591C22.3858 100.591 0 78.2051 0 50.5908C0 22.9766 22.3858 0.59082 50 0.59082C77.6142 0.59082 100 22.9766 100 50.5908ZM9.08144 50.5908C9.08144 73.1895 27.4013 91.5094 50 91.5094C72.5987 91.5094 90.9186 73.1895 90.9186 50.5908C90.9186 27.9921 72.5987 9.67226 50 9.67226C27.4013 9.67226 9.08144 27.9921 9.08144 50.5908Z" fill="currentColor"/>
+                <path d="M93.9676 39.0409C96.393 38.4038 97.8624 35.9116 97.0079 33.5539C95.2932 28.8227 92.871 24.3692 89.8167 20.348C85.8452 15.1192 80.8826 10.7238 75.2124 7.41289C69.5422 4.10194 63.2754 1.94025 56.7698 1.05124C51.7666 0.367541 46.6976 0.446843 41.7345 1.27873C39.2613 1.69328 37.813 4.19778 38.4501 6.62326C39.0873 9.04874 41.5694 10.4717 44.0505 10.1071C47.8511 9.54855 51.7191 9.52689 55.5402 10.0491C60.8642 10.7766 65.9928 12.5457 70.6331 15.2552C75.2735 17.9648 79.3347 21.5619 82.5849 25.841C84.9175 28.9121 86.7997 32.2913 88.1811 35.8758C89.083 38.2158 91.5421 39.6781 93.9676 39.0409Z" fill="currentFill"/>
+              </svg>
+              <span class="sr-only">Connecting...</span>
+            </div>
+            <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-gray-400 dark:bg-gray-500"></span>
+            <span id="connection-text" class="text-xs text-body">Connecting...</span>
+          </div>
+          <textarea
+            name="message"
+            placeholder="Type your message..."
+            id="message-input"
+            rows="1"
+            class="flex-1 rounded-base border border-default-medium bg-neutral-primary text-heading text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none p-2.5 resize-none overflow-hidden"
+            style="min-height: 2.5rem; max-height: 7.5rem;"
+          ></textarea>
+        </div>
+        <button
+          type="submit"
+          id="send-button"
+          class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed self-end"
+          style="height: 2.5rem;"
+        >
+          Send
+        </button>
+      </form>
+      {# Tool activity indicator #}
+      <div id="tool-indicator" class="hidden mt-2 text-xs text-body flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span id="tool-indicator-text">Searching documents...</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Markdown rendering libraries #}
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+
+{# Markdown styling #}
+<style>
+  .markdown-content h1 { font-size: 1.875rem; font-weight: 700; margin-top: 1.5rem; margin-bottom: 1rem; line-height: 1.2; }
+  .markdown-content h2 { font-size: 1.5rem; font-weight: 600; margin-top: 1.25rem; margin-bottom: 0.75rem; line-height: 1.3; }
+  .markdown-content h3 { font-size: 1.25rem; font-weight: 600; margin-top: 1rem; margin-bottom: 0.5rem; line-height: 1.4; }
+  .markdown-content h4 { font-size: 1.125rem; font-weight: 600; margin-top: 0.875rem; margin-bottom: 0.5rem; }
+  .markdown-content h5, .markdown-content h6 { font-size: 1rem; font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.5rem; }
+  .markdown-content p { margin-top: 0.75rem; margin-bottom: 0.75rem; line-height: 1.6; }
+  .markdown-content p:first-child { margin-top: 0; }
+  .markdown-content p:last-child { margin-bottom: 0; }
+  .markdown-content ul, .markdown-content ol { margin-top: 0.75rem; margin-bottom: 0.75rem; padding-left: 1.5rem; }
+  .markdown-content ul { list-style-type: disc; }
+  .markdown-content ol { list-style-type: decimal; }
+  .markdown-content li { margin-top: 0.25rem; margin-bottom: 0.25rem; line-height: 1.6; }
+  .markdown-content ul ul { list-style-type: circle; }
+  .markdown-content ul ul ul { list-style-type: square; }
+  .markdown-content pre { background-color: rgb(243 244 246); border: 1px solid rgb(229 231 235); border-radius: 0.375rem; padding: 1rem; margin-top: 0.75rem; margin-bottom: 0.75rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5; }
+  .markdown-content pre code { background-color: transparent; border: none; padding: 0; font-size: inherit; color: inherit; }
+  .markdown-content code { background-color: rgb(243 244 246); border: 1px solid rgb(229 231 235); border-radius: 0.25rem; padding: 0.125rem 0.375rem; font-size: 0.875em; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  .markdown-content blockquote { border-left: 4px solid rgb(156 163 175); padding-left: 1rem; margin-top: 0.75rem; margin-bottom: 0.75rem; color: rgb(107 114 128); font-style: italic; }
+  .markdown-content a { color: rgb(59 130 246); text-decoration: underline; text-underline-offset: 2px; }
+  .markdown-content a:hover { color: rgb(37 99 235); }
+  .markdown-content hr { border: none; border-top: 2px solid rgb(209 213 219); margin: 1.5rem 0; }
+  .markdown-content strong { font-weight: 700; }
+  .markdown-content table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; border: 1px solid rgb(229 231 235); }
+  .markdown-content th, .markdown-content td { border: 1px solid rgb(229 231 235); padding: 0.5rem; text-align: left; }
+  .markdown-content th { background-color: rgb(243 244 246); font-weight: 600; }
+
+  /* Dark mode */
+  .dark .markdown-content pre { background-color: rgb(55 65 81); border-color: rgb(75 85 99); }
+  .dark .markdown-content code { background-color: rgb(55 65 81); border-color: rgb(75 85 99); }
+  .dark .markdown-content blockquote { border-left-color: rgb(107 114 128); color: rgb(209 213 219); }
+  .dark .markdown-content a { color: rgb(96 165 250); }
+  .dark .markdown-content a:hover { color: rgb(147 197 253); }
+  .dark .markdown-content hr { border-top-color: rgb(75 85 99); }
+  .dark .markdown-content table { border-color: rgb(75 85 99); }
+  .dark .markdown-content th, .dark .markdown-content td { border-color: rgb(75 85 99); }
+  .dark .markdown-content th { background-color: rgb(55 65 81); }
+</style>
+
+<script>
+(function () {
+  // -- Config --
+  const PROJECT_UUID = "{{ project.uuid }}";
+  const THREAD_ID = "{{ thread.id|default:'' }}";
+  const STREAM_TIMEOUT_MS = 300000;
+
+  // -- Markdown --
+  function renderMarkdown(text) {
+    if (!text) return "";
+    try {
+      const html = marked.parse(text);
+      return DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td'],
+        ALLOWED_ATTR: ['href','title','target']
+      });
+    } catch (e) {
+      return escapeHtml(text).replace(/\n/g, "<br>");
+    }
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // -- DOM refs --
+  const form = document.getElementById("chat-form");
+  const input = document.getElementById("message-input");
+  const button = document.getElementById("send-button");
+  const messagesContainer = document.getElementById("chat-messages");
+  const scrollContainer = document.getElementById("messages-scroll-container");
+  const toolIndicator = document.getElementById("tool-indicator");
+  const toolIndicatorText = document.getElementById("tool-indicator-text");
+
+  // -- Render server-rendered markdown --
+  function renderServerMarkdown() {
+    const els = messagesContainer.querySelectorAll('.markdown-content');
+    els.forEach(function(el) {
+      const text = el.textContent || el.innerText;
+      if (text) el.innerHTML = renderMarkdown(text);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', renderServerMarkdown);
+  } else {
+    renderServerMarkdown();
+  }
+
+  // -- Auto-resize textarea --
+  function autoResize(ta) {
+    ta.style.height = 'auto';
+    const h = Math.min(Math.max(ta.scrollHeight, 40), 120);
+    ta.style.height = h + 'px';
+  }
+  if (input) {
+    input.addEventListener('input', function() { autoResize(input); });
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (!input.disabled && !locked) form.dispatchEvent(new Event('submit'));
+      }
+    });
+    autoResize(input);
+  }
+
+  // -- Scroll --
+  function scrollToBottom() {
+    requestAnimationFrame(function() {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    });
+  }
+
+  // -- WebSocket --
+  let ws = null;
+  let reconnectTimeout = null;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
+  let streamingTimeout = null;
+  let activeThreadId = THREAD_ID || null;
+  let currentStreamingElement = null;
+  let accumulatedContent = "";
+  let locked = false;
+
+  function getWsUrl() {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/ws/projects/${PROJECT_UUID}/chat/`;
+  }
+
+  function connect() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    try {
+      updateConnectionStatus(false, true);
+      ws = new WebSocket(getWsUrl());
+
+      ws.onopen = function() {
+        reconnectAttempts = 0;
+        updateConnectionStatus(true, false);
+      };
+
+      ws.onmessage = function(event) {
+        handleEvent(JSON.parse(event.data));
+      };
+
+      ws.onerror = function() {
+        updateConnectionStatus(false, false);
+      };
+
+      ws.onclose = function(event) {
+        updateConnectionStatus(false, false);
+        if (currentStreamingElement) {
+          finishStreaming("[Connection lost]");
+        }
+        clearTimeout(streamingTimeout);
+        if (event.code !== 1000 && reconnectAttempts < maxReconnectAttempts) {
+          const delay = 1000 * Math.pow(2, reconnectAttempts);
+          reconnectAttempts++;
+          reconnectTimeout = setTimeout(connect, delay);
+        }
+      };
+    } catch (e) {
+      updateConnectionStatus(false, false);
+    }
+  }
+
+  function disconnect() {
+    clearTimeout(reconnectTimeout);
+    if (ws) { ws.close(1000); ws = null; }
+    reconnectAttempts = 0;
+    updateConnectionStatus(false, false);
+  }
+
+  function updateConnectionStatus(connected, isConnecting) {
+    const indicator = document.getElementById("connection-indicator");
+    const spinner = document.getElementById("connection-spinner");
+    const text = document.getElementById("connection-text");
+
+    if (isConnecting) {
+      if (spinner) spinner.classList.remove("hidden");
+      if (indicator) indicator.classList.add("hidden");
+      text.textContent = "Connecting...";
+      input.disabled = true; button.disabled = true;
+    } else if (connected) {
+      if (spinner) spinner.classList.add("hidden");
+      if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-success"; }
+      text.textContent = "";
+      if (!currentStreamingElement) { input.disabled = false; button.disabled = false; }
+    } else {
+      if (spinner) spinner.classList.add("hidden");
+      if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-danger"; }
+      text.textContent = reconnectAttempts > 0 ? `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})` : "Disconnected";
+      text.className = "text-xs text-body" + (reconnectAttempts === 0 ? " text-danger" : "");
+      input.disabled = true; button.disabled = true;
+    }
+  }
+
+  // -- Event handling --
+  function handleEvent(data) {
+    const et = data.event_type;
+
+    if (et === "thread.created") {
+      activeThreadId = data.thread_id;
+      return;
+    }
+
+    if (et === "error") {
+      const msg = (data.data && data.data.message) || "An error occurred";
+      if (currentStreamingElement) {
+        finishStreaming("[Error: " + escapeHtml(msg) + "]");
+      } else {
+        appendError(msg);
+      }
+      enableInput();
+      return;
+    }
+
+    if (et === "message_start") {
+      // Remove placeholder
+      const ph = messagesContainer.querySelector('[data-placeholder="true"]');
+      if (ph) ph.remove();
+      // Create assistant bubble
+      currentStreamingElement = createAssistantBubble();
+      messagesContainer.appendChild(currentStreamingElement);
+      accumulatedContent = "";
+      startStreamingTimeout();
+      scrollToBottom();
+      return;
+    }
+
+    if (et === "token") {
+      const tokenText = (data.data && data.data.text) || "";
+      if (!tokenText) return;
+      if (!currentStreamingElement) {
+        // Create bubble on first token if no message_start received
+        const ph = messagesContainer.querySelector('[data-placeholder="true"]');
+        if (ph) ph.remove();
+        currentStreamingElement = createAssistantBubble();
+        messagesContainer.appendChild(currentStreamingElement);
+        accumulatedContent = "";
+        startStreamingTimeout();
+      }
+      accumulatedContent += tokenText;
+      const contentEl = currentStreamingElement.querySelector(".message-content");
+      if (contentEl) {
+        contentEl.innerHTML = renderMarkdown(accumulatedContent);
+      }
+      scrollToBottom();
+      return;
+    }
+
+    if (et === "tool_start") {
+      if (toolIndicator) {
+        const toolName = (data.data && data.data.tool_name) || "search_documents";
+        toolIndicatorText.textContent = toolName === "search_documents" ? "Searching documents..." : "Using tool...";
+        toolIndicator.classList.remove("hidden");
+      }
+      return;
+    }
+
+    if (et === "tool_end") {
+      if (toolIndicator) toolIndicator.classList.add("hidden");
+      return;
+    }
+
+    if (et === "message_end") {
+      if (currentStreamingElement) {
+        const contentEl = currentStreamingElement.querySelector(".message-content");
+        if (contentEl && accumulatedContent) {
+          contentEl.innerHTML = renderMarkdown(accumulatedContent);
+        }
+        currentStreamingElement = null;
+        accumulatedContent = "";
+      }
+      clearTimeout(streamingTimeout);
+      if (toolIndicator) toolIndicator.classList.add("hidden");
+      enableInput();
+      scrollToBottom();
+      return;
+    }
+  }
+
+  function finishStreaming(suffix) {
+    if (!currentStreamingElement) return;
+    const contentEl = currentStreamingElement.querySelector(".message-content");
+    if (contentEl) {
+      if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent);
+      if (suffix) contentEl.innerHTML += "<br><br>" + suffix;
+    }
+    currentStreamingElement = null;
+    accumulatedContent = "";
+    clearTimeout(streamingTimeout);
+    if (toolIndicator) toolIndicator.classList.add("hidden");
+  }
+
+  function enableInput() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      input.disabled = false; button.disabled = false;
+      input.focus();
+    }
+  }
+
+  function startStreamingTimeout() {
+    clearTimeout(streamingTimeout);
+    streamingTimeout = setTimeout(function() {
+      finishStreaming("[Timed out]");
+      enableInput();
+    }, STREAM_TIMEOUT_MS);
+  }
+
+  function createAssistantBubble() {
+    const now = new Date();
+    const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
+    const div = document.createElement("div");
+    div.className = "flex items-start gap-2.5";
+    div.setAttribute("data-role", "assistant");
+    div.innerHTML = `
+      <div class="flex flex-col w-full">
+        <div class="flex items-center space-x-2">
+          <span class="text-sm font-semibold text-heading">Assistant</span>
+          <span class="text-sm text-body">${ts}</span>
+        </div>
+        <div class="text-sm text-body mt-2 message-content markdown-content"></div>
+      </div>
+    `;
+    return div;
+  }
+
+  function appendError(msg) {
+    const div = document.createElement("div");
+    div.className = "text-sm text-danger py-2";
+    div.textContent = msg;
+    messagesContainer.appendChild(div);
+    scrollToBottom();
+  }
+
+  // -- Form submission --
+  form.addEventListener("submit", function(e) {
+    e.preventDefault();
+    if (locked) return;
+    const text = (input.value || "").trim();
+    if (!text) return;
+
+    // Add user bubble
+    const now = new Date();
+    const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
+    const userDiv = document.createElement("div");
+    userDiv.className = "flex justify-end";
+    userDiv.setAttribute("data-role", "user");
+    userDiv.innerHTML = `
+      <div class="flex items-start gap-2.5 flex-row-reverse">
+        <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
+          <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
+            <span class="text-sm font-semibold text-heading">You</span>
+            <span class="text-sm text-body">${ts}</span>
+          </div>
+          <p class="text-sm py-2.5 text-body">${escapeHtml(text)}</p>
+        </div>
+      </div>
+    `;
+    const ph = messagesContainer.querySelector('[data-placeholder="true"]');
+    if (ph) ph.remove();
+    messagesContainer.appendChild(userDiv);
+    scrollToBottom();
+
+    // Clear and disable
+    input.value = "";
+    autoResize(input);
+    input.disabled = true; button.disabled = true;
+    locked = true;
+
+    // Send over WebSocket
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "chat.message",
+        content: text,
+        thread_id: activeThreadId || "",
+      }));
+    }
+
+    setTimeout(function() { locked = false; }, 500);
+  });
+
+  // -- Init --
+  connect();
+  setTimeout(scrollToBottom, 100);
+  window.addEventListener("beforeunload", disconnect);
+})();
+</script>
 {% endblock %}

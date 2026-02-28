@@ -115,10 +115,27 @@ def project_chat(request, project_id):
     project = get_object_or_404(Project, uuid=project_id)
     if not _user_owns_project(request.user, project):
         return redirect("project_list")
+
+    from chat.models import ChatThread
+
+    thread = (
+        ChatThread.objects.filter(project=project, created_by=request.user)
+        .order_by("-updated_at")
+        .first()
+    )
+    chat_messages = []
+    if thread:
+        chat_messages = list(thread.messages.order_by("created_at")[:100])
+
     return render(
         request,
         "documents/project_chat.html",
-        {"project": project, "active_tab": "chat"},
+        {
+            "project": project,
+            "active_tab": "chat",
+            "thread": thread,
+            "messages": chat_messages,
+        },
     )
 
 

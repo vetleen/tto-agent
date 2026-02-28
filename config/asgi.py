@@ -19,8 +19,9 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 # before importing any Django models or settings-dependent code
 django_asgi_app = get_asgi_application()
 
-# WebSocket routing (empty until a new real-time feature is added)
-websocket_urlpatterns = []
+from chat.routing import websocket_urlpatterns as chat_ws  # noqa: E402
+
+websocket_urlpatterns = chat_ws
 
 application = ProtocolTypeRouter(
     {
