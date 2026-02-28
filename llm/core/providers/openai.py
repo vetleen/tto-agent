@@ -25,6 +25,9 @@ else:
 class OpenAIChatModel(ChatModel):
     """ChatModel backed by LangChain's ChatOpenAI."""
 
+    # Prefix used in LLM_ALLOWED_MODELS; strip before sending to API.
+    _API_MODEL_PREFIX = "openai/"
+
     def __init__(self, model_name: str) -> None:
         if _import_error is not None or ChatOpenAI is None:
             raise LLMProviderError(
@@ -38,8 +41,12 @@ class OpenAIChatModel(ChatModel):
             )
 
         self.name = model_name
+        # API expects model id without provider prefix (e.g. gpt-5-mini, not openai/gpt-5-mini).
+        api_model = model_name
+        if model_name.startswith(self._API_MODEL_PREFIX):
+            api_model = model_name[len(self._API_MODEL_PREFIX) :]
         # Let ChatOpenAI read configuration from environment; enable streaming usage accounting.
-        self._client = ChatOpenAI(model=model_name, stream_usage=True)
+        self._client = ChatOpenAI(model=api_model, stream_usage=True)
 
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages)

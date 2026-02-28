@@ -24,6 +24,8 @@ else:
 class GeminiChatModel(ChatModel):
     """ChatModel backed by LangChain's ChatGoogleGenerativeAI."""
 
+    _API_MODEL_PREFIX = "gemini/"
+
     def __init__(self, model_name: str) -> None:
         if _import_error is not None or ChatGoogleGenerativeAI is None:
             raise LLMProviderError(
@@ -38,8 +40,11 @@ class GeminiChatModel(ChatModel):
             )
 
         self.name = model_name
+        api_model = model_name
+        if model_name.startswith(self._API_MODEL_PREFIX):
+            api_model = model_name[len(self._API_MODEL_PREFIX) :]
         # Let the underlying library pick up GOOGLE_API_KEY / GEMINI_API_KEY from env.
-        self._client = ChatGoogleGenerativeAI(model=model_name)
+        self._client = ChatGoogleGenerativeAI(model=api_model)
 
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages)

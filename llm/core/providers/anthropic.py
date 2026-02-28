@@ -24,6 +24,8 @@ else:
 class AnthropicChatModel(ChatModel):
     """ChatModel backed by LangChain's ChatAnthropic."""
 
+    _API_MODEL_PREFIX = "anthropic/"
+
     def __init__(self, model_name: str) -> None:
         if _import_error is not None or ChatAnthropic is None:
             raise LLMProviderError(
@@ -37,7 +39,10 @@ class AnthropicChatModel(ChatModel):
             )
 
         self.name = model_name
-        self._client = ChatAnthropic(model=model_name)
+        api_model = model_name
+        if model_name.startswith(self._API_MODEL_PREFIX):
+            api_model = model_name[len(self._API_MODEL_PREFIX) :]
+        self._client = ChatAnthropic(model=api_model)
 
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages)
