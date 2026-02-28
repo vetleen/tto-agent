@@ -86,6 +86,10 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             # Stream LLM response
             await self._stream_response(thread, system_prompt, history)
 
+            # Auto-generate title for new threads
+            if created:
+                await self._generate_thread_title(thread, content)
+
         except Exception:
             logger.exception("Error handling chat message")
             await self.send(text_data=json.dumps({
@@ -205,6 +209,46 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             content=content,
             tool_call_id=tool_call_id,
         )
+
+    async def _generate_thread_title(self, thread, first_user_message):
+        """Generate a short title for a new thread using a cheap LLM call."""
+        try:
+            from llm import get_llm_service
+            from llm.types import ChatRequest, Message, RunContext
+
+            prompt = (
+                "Generate a short title (max 5 words) for a chat that starts with: "
+                f"{first_user_message[:500]}. Reply with ONLY the title."
+            )
+            context = RunContext.create(
+                user_id=self.user.pk,
+                conversation_id=self.project.pk,
+            )
+            request = ChatRequest(
+                messages=[Message(role="user", content=prompt)],
+                model="openai/gpt-5-mini",
+                stream=False,
+                tools=[],
+                context=context,
+            )
+            service = get_llm_service()
+            response = await service.arun("simple_chat", request)
+            title = response.message.content.strip().strip('"').strip("'")[:255]
+            if title:
+                await self._update_thread_title(thread, title)
+                await self.send(text_data=json.dumps({
+                    "event_type": "thread.title_updated",
+                    "thread_id": str(thread.id),
+                    "title": title,
+                }))
+        except Exception:
+            logger.exception("Failed to generate thread title")
+
+    @database_sync_to_async
+    def _update_thread_title(self, thread, title):
+        from chat.models import ChatThread
+
+        ChatThread.objects.filter(pk=thread.pk).update(title=title)
 
     @database_sync_to_async
     def _load_history(self, thread, limit=50):

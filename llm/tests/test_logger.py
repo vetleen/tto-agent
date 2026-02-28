@@ -1,5 +1,6 @@
 """Tests for llm.service.logger — log_call, log_stream, log_error."""
 
+import json
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -48,7 +49,10 @@ class LogCallTests(TestCase):
         self.assertEqual(log.status, "success")
         self.assertEqual(log.model, "gpt-4o-mini")
         self.assertFalse(log.is_stream)
-        self.assertEqual(log.raw_output, "Hi!")
+        # raw_output = full response JSON
+        parsed = json.loads(log.raw_output)
+        self.assertEqual(parsed["message"]["content"], "Hi!")
+        self.assertEqual(parsed["model"], "gpt-4o-mini")
         self.assertEqual(log.input_tokens, 5)
         self.assertEqual(log.output_tokens, 3)
         self.assertEqual(log.total_tokens, 8)
@@ -185,7 +189,11 @@ class LogStreamTests(TestCase):
         log = _get_log(request)
         self.assertEqual(log.status, "success")
         self.assertTrue(log.is_stream)
-        self.assertEqual(log.raw_output, "Hello!")
+        # raw_output = assembled response JSON (single coherent blob)
+        parsed = json.loads(log.raw_output)
+        self.assertEqual(parsed["message"]["role"], "assistant")
+        self.assertEqual(parsed["message"]["content"], "Hello!")
+        self.assertEqual(parsed["tool_calls"], [])
         self.assertEqual(log.duration_ms, 300)
         # Streaming doesn't log token counts
         self.assertIsNone(log.input_tokens)
@@ -196,7 +204,9 @@ class LogStreamTests(TestCase):
         log_stream(request, [], duration_ms=10)
 
         log = _get_log(request)
-        self.assertEqual(log.raw_output, "")
+        parsed = json.loads(log.raw_output)
+        self.assertEqual(parsed["message"]["content"], "")
+        self.assertEqual(parsed["tool_calls"], [])
 
     def test_never_raises_on_db_error(self):
         request = _make_request(stream=True)
@@ -313,7 +323,8 @@ class LogCallIntegrationTests(TestCase):
         log = _get_log(request)
         self.assertEqual(log.status, "success")
         self.assertTrue(log.is_stream)
-        self.assertEqual(log.raw_output, "Hi")
+        parsed = json.loads(log.raw_output)
+        self.assertEqual(parsed["message"]["content"], "Hi")
 
     def test_stream_error_creates_error_log_entry(self):
         from unittest.mock import MagicMock
