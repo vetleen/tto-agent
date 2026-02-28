@@ -1,4 +1,8 @@
+import logging
+
 from django.apps import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 class LlmConfig(AppConfig):
@@ -12,6 +16,9 @@ class LlmConfig(AppConfig):
             from .pipelines import simple_chat  # noqa: F401
             from .core import providers  # noqa: F401
         except Exception:
-            # Avoid hard failures during startup; issues will surface when service is used.
-            pass
+            logger.error(
+                "Failed to import LLM pipelines/providers during startup. "
+                "LLM features will be unavailable until the issue is resolved.",
+                exc_info=True,
+            )
 
