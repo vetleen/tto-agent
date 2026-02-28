@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
@@ -37,13 +38,16 @@ class PipelineRegistry:
 
 
 _global_registry: Optional[PipelineRegistry] = None
+_global_registry_lock = threading.Lock()
 
 
 def get_pipeline_registry() -> PipelineRegistry:
-    """Return the process-wide PipelineRegistry singleton."""
+    """Return the process-wide PipelineRegistry singleton (thread-safe)."""
     global _global_registry
     if _global_registry is None:
-        _global_registry = PipelineRegistry()
+        with _global_registry_lock:
+            if _global_registry is None:
+                _global_registry = PipelineRegistry()
     return _global_registry
 
 

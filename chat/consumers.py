@@ -95,6 +95,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
 
     async def _stream_response(self, thread, system_prompt, history):
         from llm import get_llm_service
+        from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
         from llm.types import ChatRequest, Message, RunContext
 
         messages = [Message(role="system", content=system_prompt)]
@@ -134,8 +135,26 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             if accumulated_content.strip():
                 await self._create_message(thread, "assistant", accumulated_content)
 
+        except LLMConfigurationError:
+            logger.exception("LLM misconfigured for streaming response")
+            await self.send(text_data=json.dumps({
+                "event_type": "error",
+                "data": {"message": "AI service is not configured. Please contact support."},
+            }))
+        except LLMPolicyDenied:
+            logger.exception("LLM policy denied streaming response")
+            await self.send(text_data=json.dumps({
+                "event_type": "error",
+                "data": {"message": "This request is not allowed by the current policy."},
+            }))
+        except LLMProviderError:
+            logger.exception("LLM provider error during streaming response")
+            await self.send(text_data=json.dumps({
+                "event_type": "error",
+                "data": {"message": "The AI service encountered an error. Please try again."},
+            }))
         except Exception:
-            logger.exception("Error streaming LLM response")
+            logger.exception("Unexpected error streaming LLM response")
             await self.send(text_data=json.dumps({
                 "event_type": "error",
                 "data": {"message": "Failed to get AI response."},

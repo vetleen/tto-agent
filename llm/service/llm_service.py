@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import queue
+import threading
 import time
 from typing import AsyncIterator, Callable, Iterator, Optional
 
@@ -118,24 +120,43 @@ class LLMService:
         """Async wrapper around ``run()``. Executes the blocking call in a thread."""
         return await asyncio.to_thread(self.run, pipeline_id, request)
 
+    _STREAM_SENTINEL = None  # sentinel to signal end of stream
+
     async def astream(
         self, pipeline_id: str, request: ChatRequest
     ) -> AsyncIterator[StreamEvent]:
-        """Async wrapper around ``stream()``.
+        """Async wrapper around ``stream()`` with true token-level streaming.
 
-        Collects all events in a worker thread then yields them asynchronously.
-        This moves blocking I/O off the event loop but is *not* true token-level
-        streaming — that would require async LangChain providers (future work).
+        A background thread runs the sync ``stream()`` generator, pushing each
+        event into an ``asyncio.Queue`` so the async caller receives tokens as
+        they arrive rather than waiting for the full response.
 
         Concurrent streams are capped by ``LLM_MAX_CONCURRENT_STREAMS`` (default 20).
         """
         sem = self._get_stream_semaphore()
         async with sem:
-            events = await asyncio.to_thread(
-                lambda: list(self.stream(pipeline_id, request))
-            )
-        for event in events:
-            yield event
+            loop = asyncio.get_running_loop()
+            q: asyncio.Queue[StreamEvent | BaseException | None] = asyncio.Queue()
+
+            def _produce() -> None:
+                try:
+                    for event in self.stream(pipeline_id, request):
+                        loop.call_soon_threadsafe(q.put_nowait, event)
+                except BaseException as exc:
+                    loop.call_soon_threadsafe(q.put_nowait, exc)
+                else:
+                    loop.call_soon_threadsafe(q.put_nowait, self._STREAM_SENTINEL)
+
+            thread = threading.Thread(target=_produce, daemon=True)
+            thread.start()
+
+            while True:
+                item = await q.get()
+                if item is self._STREAM_SENTINEL:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
 
     def _get_stream_semaphore(self) -> asyncio.Semaphore:
         """Lazy-init the semaphore inside a running event loop."""
@@ -152,13 +173,16 @@ class LLMService:
 
 
 _global_service: LLMService | None = None
+_global_service_lock = threading.Lock()
 
 
 def get_llm_service() -> LLMService:
-    """Return the process-wide LLMService singleton."""
+    """Return the process-wide LLMService singleton (thread-safe)."""
     global _global_service
     if _global_service is None:
-        _global_service = LLMService()
+        with _global_service_lock:
+            if _global_service is None:
+                _global_service = LLMService()
     return _global_service
 
 

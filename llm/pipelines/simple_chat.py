@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Iterator, List
+from typing import Iterator, List, Tuple
 
 from llm.core.interfaces import ChatModel
 from llm.core.registry import get_model_registry
@@ -78,6 +78,27 @@ class SimpleChatPipeline(BasePipeline):
         chat_model = get_model_registry().get_model(model_name)
         return chat_model.generate(request)
 
+    @staticmethod
+    def _execute_tool_calls(
+        tool_calls: List[ToolCall],
+        tool_by_name: dict[str, Tool],
+        context: RunContext | None,
+    ) -> List[Tuple[ToolCall, str]]:
+        """Execute a batch of tool calls and return (tool_call, result_json) pairs."""
+        results: List[Tuple[ToolCall, str]] = []
+        for tc in tool_calls:
+            tool = tool_by_name.get(tc.name)
+            if not tool:
+                result_str = json.dumps({"error": f"Unknown tool: {tc.name}"})
+            else:
+                try:
+                    result = tool.run(tc.arguments, context or RunContext.create())
+                    result_str = json.dumps(result)
+                except Exception as e:
+                    result_str = json.dumps({"error": str(e)})
+            results.append((tc, result_str))
+        return results
+
     def _run_tool_loop(
         self,
         chat_model: ChatModel,
@@ -94,20 +115,10 @@ class SimpleChatPipeline(BasePipeline):
                 return response
 
             new_messages = list(req.messages) + [msg]
-            context = req.context
-
-            for tc in msg.tool_calls:
-                tool = tool_by_name.get(tc.name)
-                if not tool:
-                    content = json.dumps({"error": f"Unknown tool: {tc.name}"})
-                else:
-                    try:
-                        result = tool.run(tc.arguments, context or RunContext.create())
-                        content = json.dumps(result)
-                    except Exception as e:
-                        content = json.dumps({"error": str(e)})
+            results = self._execute_tool_calls(msg.tool_calls, tool_by_name, req.context)
+            for tc, result_str in results:
                 new_messages.append(
-                    Message(role="tool", content=content, tool_call_id=tc.id)
+                    Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
 
             req = req.model_copy(update={"messages": new_messages})
@@ -139,7 +150,9 @@ class SimpleChatPipeline(BasePipeline):
                 return
 
             new_messages = list(req.messages) + [msg]
-            for tc in msg.tool_calls:
+            results = self._execute_tool_calls(msg.tool_calls, tool_by_name, context)
+
+            for tc, result_str in results:
                 yield StreamEvent(
                     event_type="tool_start",
                     data={
@@ -151,16 +164,6 @@ class SimpleChatPipeline(BasePipeline):
                     run_id=run_id,
                 )
                 sequence += 1
-
-                tool = tool_by_name.get(tc.name)
-                if not tool:
-                    result_str = json.dumps({"error": f"Unknown tool: {tc.name}"})
-                else:
-                    try:
-                        result = tool.run(tc.arguments, context or RunContext.create())
-                        result_str = json.dumps(result)
-                    except Exception as e:
-                        result_str = json.dumps({"error": str(e)})
 
                 yield StreamEvent(
                     event_type="tool_end",

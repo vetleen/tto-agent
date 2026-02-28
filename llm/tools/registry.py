@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
@@ -34,13 +35,16 @@ class ToolRegistry:
 
 
 _global_registry: Optional[ToolRegistry] = None
+_global_registry_lock = threading.Lock()
 
 
 def get_tool_registry() -> ToolRegistry:
-    """Return the process-wide ToolRegistry singleton."""
+    """Return the process-wide ToolRegistry singleton (thread-safe)."""
     global _global_registry
     if _global_registry is None:
-        _global_registry = ToolRegistry()
+        with _global_registry_lock:
+            if _global_registry is None:
+                _global_registry = ToolRegistry()
     return _global_registry
 
 
