@@ -27,8 +27,8 @@
     {% endif %}
     <ul class="space-y-2 font-medium">
       <li>
-        <a href="{% url 'chat' %}" class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group">
-          <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
+        <a href="{% url 'chat' %}" class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-heading group">
+          <svg class="w-5 h-5 transition duration-75 group-hover:text-heading" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
             <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m-7-7h14"/>
           </svg>
           <span class="ms-3">New chat</span>
@@ -41,7 +41,7 @@
         <li>
           <a
             href="{% url 'chat_thread' thread_id=t.id %}"
-            class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if active_thread.id == t.id %}bg-neutral-tertiary text-heading{% endif %}"
+            class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-heading group {% if active_thread.id == t.id %}bg-neutral-tertiary text-heading{% endif %}"
             data-thread-id="{{ t.id }}"
           >
             <span class="truncate">{{ t.title|default:"Untitled chat" }}</span>
@@ -59,9 +59,9 @@
     <div class="flex-1 flex flex-col">
     <div class="mb-4 text-center">
       {% if has_older and older_cursor %}
-        <a href="{% url 'chat_thread' thread_id=active_thread.id %}?before={{ older_cursor }}" class="text-sm text-fg-brand font-medium hover:underline">Load more messages</a>
+        <a href="{% url 'chat_thread' thread_id=active_thread.id %}?before={{ older_cursor }}" class="text-sm text-heading font-medium hover:underline">Load more messages</a>
       {% elif has_older %}
-        <a href="#" class="text-sm text-fg-brand font-medium hover:underline">Load more messages</a>
+        <a href="#" class="text-sm text-heading font-medium hover:underline">Load more messages</a>
       {% endif %}
     </div>
 
@@ -146,7 +146,7 @@
     <button
       type="submit"
       id="send-button"
-      class="text-white bg-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed self-end"
+      class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed self-end"
       style="height: 2.5rem;"
       {% if has_streaming %}disabled{% endif %}
     >
@@ -1245,7 +1245,7 @@
                 listItem.innerHTML = `
                   <a
                     href="${getChatUrl(activeThreadId)}"
-                    class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-tertiary text-heading"
+                    class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-heading group bg-neutral-tertiary text-heading"
                     data-thread-id="${activeThreadId}"
                   >
                     <span class="truncate">${escapeHtml(newTitle)}</span>
@@ -1463,7 +1463,7 @@
                   listItem.innerHTML = `
                     <a
                       href="${getChatUrl(newThreadId)}"
-                      class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-tertiary text-heading"
+                      class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-heading group bg-neutral-tertiary text-heading"
                       data-thread-id="${newThreadId}"
                     >
                       <span class="truncate">New chat</span>

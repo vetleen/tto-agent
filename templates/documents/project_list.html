@@ -1,5 +1,6 @@
 {% extends "_base.html" %}
 {% load static %}
+{% load document_filters %}
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-10">
   <h1 class="text-2xl font-semibold text-heading mb-8">My projects</h1>
@@ -11,7 +12,7 @@
       <input type="text" name="name" id="project-name" placeholder="e.g. My TTO Project" required
              class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body">
     </div>
-    <button type="submit" class="text-white bg-brand box-border border border-transparent hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium shadow-xs font-medium leading-5 rounded-base text-sm px-4 py-2.5 focus:outline-none">
+    <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
       Create project
     </button>
   </form>
@@ -20,9 +21,9 @@
   <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
     {% for project in projects %}
     <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.first %}rounded-t-base{% endif %} {% if forloop.last %}rounded-b-base{% endif %}">
-      <a href="{% url 'project_chat' project_id=project.uuid %}" class="flex-1 flex items-center min-w-0 cursor-pointer hover:text-fg-brand focus:outline-none focus:ring-2 focus:ring-brand focus:text-fg-brand rounded-base">
+      <a href="{% url 'project_chat' project_id=project.uuid %}" class="flex-1 flex items-center min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand focus:text-heading rounded-base">
         <svg class="w-4 h-4 me-2 shrink-0 text-body" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v1M9 12h10m-6 4h6"/></svg>
-        <span class="truncate">{{ project.name }}</span>
+        <span class="truncate" title="{{ project.name }}">{{ project.name|truncate_project_name:60 }}</span>
       </a>
       <div class="relative shrink-0 ms-2">
         <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Project options" data-dropdown-toggle="dropdown-project-{{ project.uuid }}">
@@ -68,7 +69,7 @@
                  maxlength="255" placeholder="Project name">
         </div>
         <div class="flex gap-3 px-6 py-4 border-t border-default">
-          <button type="submit" class="text-white bg-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+          <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
             Save
           </button>
           <button type="button" data-modal-hide="rename-project-modal" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
