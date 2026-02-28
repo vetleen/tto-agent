@@ -4,7 +4,11 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>tto-agent</title>
+    <title>Wilfred - the AI Technology Transfer Officer</title>
+    <link rel="icon" type="image/x-icon" href="{% static 'favicons/favicon.ico' %}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{% static 'favicons/favicon-32x32.png' %}">
+    <link rel="icon" type="image/png" sizes="16x16" href="{% static 'favicons/favicon-16x16.png' %}">
+    <link rel="apple-touch-icon" href="{% static 'favicons/apple-touch-icon.png' %}">
     <script>
       (function() {
         var serverTheme = document.documentElement.getAttribute('data-theme');
@@ -33,14 +37,14 @@
       <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex flex-wrap items-center justify-between h-16">
         <a href="/" class="flex items-center shrink-0" aria-label="Home">
-          <span class="text-2xl" aria-hidden="true">🔥</span>
-          <span class="ml-2 self-center text-xl text-heading font-semibold whitespace-nowrap">tto-agent</span>
+          <span class="text-2xl" aria-hidden="true">🤖</span>
+          <span class="ml-2 self-center text-3xl text-heading font-semibold whitespace-nowrap font-handrawn">Wilfred</span>
         </a>
         {% if user.is_authenticated %}
           <div class="flex items-center gap-4 md:order-2">
             <div class="hidden w-full items-center md:flex md:w-auto" id="navbar-user">
               <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:space-x-6 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
-                {# Chat link restored when llm_chat app is re-enabled #}
+                <li><a href="{% url 'project_list' %}" class="text-body hover:text-fg-brand">My projects</a></li>
               </ul>
             </div>
             <button type="button" id="theme-toggle" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
@@ -97,7 +101,7 @@
     </nav>
     {% endblock navbar %}
     {% block content %}{% endblock content %}
-    <script src="https://cdn.jsdelivr.net/npm/flowbite@4.0.1/dist/flowbite.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flowbite@4.0.1/dist/flowbite.min.js" integrity="sha384-dXMudAuWq5MLjG7Tex8rC+3U/BPQ/OUAF6UyUa7DWzfAMW1JRIf2NuW2hAyGtsvO" crossorigin="anonymous"></script>
     {% if user.is_authenticated %}
     <script>
       (function() {

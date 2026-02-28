@@ -84,8 +84,8 @@ INSTALLED_APPS = [
     "compressor",
     "core.apps.CoreConfig",
     "accounts",
-    "llm_service.apps.LlmServiceConfig",
-    "llm_chat.apps.LlmChatConfig",
+    "documents.apps.DocumentsConfig",
+    "llm.apps.LlmConfig",
 ]
 if DEBUG:
     INSTALLED_APPS.extend([
@@ -205,7 +205,7 @@ STATICFILES_FINDERS = (
     'compressor.finders.CompressorFinder',
 )
 
-LOGIN_REDIRECT_URL = '/chat/'
+LOGIN_REDIRECT_URL = "/projects/"
 LOGOUT_REDIRECT_URL = '/'
 LOGIN_URL = '/accounts/login/'
 
@@ -259,27 +259,28 @@ if not DEBUG:
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# LLM Service (LiteLLM)
-LLM_DEFAULT_MODEL = os.environ.get("LLM_DEFAULT_MODEL", "openai/gpt-5.2")
-LLM_ALLOWED_MODELS = [
-    m.strip()
-    for m in os.environ.get(
-        "LLM_ALLOWED_MODELS",
-        (
-            "openai/gpt-5.2,openai/gpt-5-mini,openai/gpt-5-nano,"
-            "anthropic/claude-sonnet-4-5-20250929,anthropic/claude-opus-4-1-20250805,anthropic/claude-3-5-haiku-20241022,"
-            "gemini/gemini-3-pro-preview,gemini/gemini-3-flash-preview,gemini/gemini-2.5-pro,gemini/gemini-2.5-flash,gemini/gemini-2.5-flash-lite,"
-            "moonshot/kimi-k2.5,moonshot/kimi-k2-thinking"
-        ),
-    ).split(",")
-    if m.strip()
-]
-LLM_REQUEST_TIMEOUT = float(os.environ.get("LLM_REQUEST_TIMEOUT", "60"))
-LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "2"))
-LLM_LOG_WRITE_TIMEOUT = float(os.environ.get("LLM_LOG_WRITE_TIMEOUT", "5"))
-# Optional: list of callables for guardrails (pre: LLMRequest, post: LLMResult)
-# LLM_PRE_CALL_HOOKS = []
-# LLM_POST_CALL_HOOKS = []
+# Media (uploaded files)
+MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_URL = "/media/"
+
+# Document upload and chunking (MVP)
+DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "10_000_000"))  # 10 MB
+DOCUMENT_ALLOWED_EXTENSIONS = {"pdf", "txt", "md", "html"}
+DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
+    "application/pdf",
+    "text/plain",
+    "text/markdown",
+    "text/html",
+])
+TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
+MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
+CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", "100"))
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+# pgvector: use same DB as Django when DATABASE_URL is Postgres
+PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATABASE_URL", ""))
+
+# Celery (use Redis as broker)
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
 
 # Channels / Redis
 _redis_url = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")

@@ -85,8 +85,6 @@ class UserSettings(models.Model):
         choices=Theme.choices,
         default=Theme.LIGHT,
     )
-    # Preferred LLM model for chat (e.g. moonshot/kimi-k2.5). Blank = use app default.
-    chat_model = models.CharField(max_length=128, blank=True, default="")
 
     def __str__(self) -> str:
         return f"Settings for {self.user}"
