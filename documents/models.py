@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 
 
@@ -86,6 +88,7 @@ class ProjectDocumentChunk(models.Model):
     source_page_end = models.PositiveIntegerField(null=True, blank=True)
     source_offset_start = models.PositiveIntegerField(null=True, blank=True)
     source_offset_end = models.PositiveIntegerField(null=True, blank=True)
+    search_vector = SearchVectorField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -98,6 +101,7 @@ class ProjectDocumentChunk(models.Model):
         ]
         indexes = [
             models.Index(fields=["document", "chunk_index"]),
+            GinIndex(fields=["search_vector"], name="chunk_search_vector_gin"),
         ]
 
     def __str__(self) -> str:
