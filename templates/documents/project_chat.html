@@ -90,7 +90,7 @@
                     <span class="text-sm font-semibold text-heading">You</span>
                     <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
                   </div>
-                  <div class="text-sm py-2.5 text-body">{{ m.content }}</div>
+                  <div class="text-sm py-2.5 text-body whitespace-pre-wrap">{{ m.content }}</div>
                 </div>
               </div>
             </div>
@@ -608,7 +608,7 @@
             <span class="text-sm font-semibold text-heading">You</span>
             <span class="text-sm text-body">${ts}</span>
           </div>
-          <p class="text-sm py-2.5 text-body">${escapeHtml(text)}</p>
+          <p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p>
         </div>
       </div>
     `;
