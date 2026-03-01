@@ -126,10 +126,7 @@ def project_chat(request, project_id):
     thread = None
     chat_messages = []
 
-    if request.GET.get("new") == "1":
-        # Start a fresh conversation — no thread loaded
-        pass
-    elif request.GET.get("thread"):
+    if request.GET.get("thread"):
         # Load a specific thread by UUID
         thread_id = request.GET["thread"]
         thread = ChatThread.objects.filter(
@@ -137,10 +134,6 @@ def project_chat(request, project_id):
         ).first()
         if thread:
             chat_messages = list(thread.messages.order_by("created_at")[:100])
-    elif threads:
-        # Default: load most recent thread
-        thread = threads[0]
-        chat_messages = list(thread.messages.order_by("created_at")[:100])
 
     return render(
         request,

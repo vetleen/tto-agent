@@ -47,7 +47,7 @@
   <div class="h-full px-3 py-4 overflow-y-auto bg-neutral-primary-soft border-e border-default">
     <ul class="space-y-2 font-medium">
       <li>
-        <a href="{% url 'project_chat' project_id=project.uuid %}?new=1" class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group">
+        <a href="{% url 'project_chat' project_id=project.uuid %}" class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group">
           <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15"/></svg>
           <span class="ms-3">New chat</span>
         </a>
@@ -111,7 +111,7 @@
               <div class="flex items-center space-x-2">
                 <span class="text-sm font-semibold text-heading">Assistant</span>
               </div>
-              <p class="text-sm text-body mt-2">Ask me anything about your project documents.</p>
+              <p class="text-sm text-body mt-2">What are we working on?</p>
             </div>
           </div>
         {% endfor %}
