@@ -12,6 +12,8 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from django.contrib.postgres.search import SearchVector
+
 from documents.models import ProjectDocument, ProjectDocumentChunk
 from documents.services.chunking import extract_and_chunk_file
 
@@ -69,6 +71,18 @@ def process_document(document_id: int) -> None:
             for i, c in enumerate(chunks_data)
         ]
         ProjectDocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
+
+        # Populate full-text search vectors for hybrid retrieval
+        try:
+            doc.chunks.filter(search_vector__isnull=True).update(
+                search_vector=(
+                    SearchVector("heading", weight="A", config="english")
+                    + SearchVector("text", weight="B", config="english")
+                )
+            )
+        except Exception as fts_err:
+            # FTS is non-critical; log and continue (e.g. SQLite in dev)
+            logger.warning("process_document: document_id=%s fts update failed: %s", document_id, fts_err)
 
         # Persist token_count (and chunking metadata) immediately so they're saved even if vector store fails
         doc.token_count = sum(c.get("token_count", 0) for c in chunks_data)

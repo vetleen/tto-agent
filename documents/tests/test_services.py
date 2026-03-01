@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 
 from django.test import TestCase, override_settings
 
@@ -12,6 +12,10 @@ from documents.services.chunking import (
     _merge_small_chunks,
     chunk_text,
     load_documents,
+)
+from documents.services.retrieval import (
+    _rrf_score,
+    hybrid_search_chunks,
 )
 
 try:
@@ -195,3 +199,162 @@ class VectorStoreTests(TestCase):
 
         self.assertEqual(store.similarity_search.call_args.kwargs["k"], 50)
         self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"project_id": 1, "document_id": 9})
+
+
+class RRFScoreTests(TestCase):
+    """Unit tests for the Reciprocal Rank Fusion scoring function."""
+
+    def test_rrf_score_rank_zero(self):
+        # rank 0 with default rrf_k=60: 1.0 / (60 + 0 + 1) = 1/61
+        score = _rrf_score(0)
+        self.assertAlmostEqual(score, 1.0 / 61)
+
+    def test_rrf_score_with_weight(self):
+        score = _rrf_score(0, weight=2.0)
+        self.assertAlmostEqual(score, 2.0 / 61)
+
+    def test_rrf_score_decreases_with_rank(self):
+        s0 = _rrf_score(0)
+        s1 = _rrf_score(1)
+        s5 = _rrf_score(5)
+        self.assertGreater(s0, s1)
+        self.assertGreater(s1, s5)
+
+
+class HybridSearchTests(TestCase):
+    """Tests for hybrid_search_chunks RRF fusion logic."""
+
+    def _make_semantic_doc(self, chunk_id, text, document_id=1, chunk_index=0):
+        """Create a mock LangChain Document as returned by pgvector."""
+        doc = MagicMock()
+        doc.page_content = text
+        doc.metadata = {
+            "chunk_id": chunk_id,
+            "document_id": document_id,
+            "project_id": 1,
+            "chunk_index": chunk_index,
+        }
+        return doc
+
+    def _make_fts_hit(self, chunk_id, text, document_id=1, chunk_index=0, rank=0.5):
+        return {
+            "id": chunk_id,
+            "chunk_index": chunk_index,
+            "text": text,
+            "heading": None,
+            "document_id": document_id,
+            "rank": rank,
+        }
+
+    @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
+    @patch("documents.services.retrieval.vs.similarity_search", return_value=[])
+    def test_hybrid_returns_empty_when_no_results(self, _mock_sem, _mock_fts):
+        results = hybrid_search_chunks(project_id=1, query="nothing", k=5)
+        self.assertEqual(results, [])
+
+    @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_semantic_only_when_fts_empty(self, mock_sem, _mock_fts):
+        mock_sem.return_value = [
+            self._make_semantic_doc(10, "semantic result"),
+        ]
+        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 10)
+        self.assertEqual(results[0]["text"], "semantic result")
+        self.assertGreater(results[0]["rrf_score"], 0)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks")
+    @patch("documents.services.retrieval.vs.similarity_search", return_value=[])
+    def test_hybrid_fts_only_when_semantic_empty(self, _mock_sem, mock_fts):
+        mock_fts.return_value = [
+            self._make_fts_hit(20, "fulltext result"),
+        ]
+        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 20)
+        self.assertEqual(results[0]["text"], "fulltext result")
+        self.assertGreater(results[0]["rrf_score"], 0)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks")
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_fuses_and_boosts_overlapping_results(self, mock_sem, mock_fts):
+        """A chunk appearing in both result sets gets a higher RRF score."""
+        shared_id = 100
+        only_semantic_id = 200
+        only_fts_id = 300
+
+        mock_sem.return_value = [
+            self._make_semantic_doc(shared_id, "shared chunk"),
+            self._make_semantic_doc(only_semantic_id, "semantic only"),
+        ]
+        mock_fts.return_value = [
+            self._make_fts_hit(shared_id, "shared chunk"),
+            self._make_fts_hit(only_fts_id, "fts only"),
+        ]
+
+        results = hybrid_search_chunks(project_id=1, query="test", k=10)
+
+        ids = [r["id"] for r in results]
+        self.assertIn(shared_id, ids)
+        self.assertIn(only_semantic_id, ids)
+        self.assertIn(only_fts_id, ids)
+
+        # Shared chunk should be ranked first (highest RRF from both lists)
+        self.assertEqual(results[0]["id"], shared_id)
+
+        # Its score should be higher than either single-source result
+        shared_score = results[0]["rrf_score"]
+        other_scores = [r["rrf_score"] for r in results[1:]]
+        for s in other_scores:
+            self.assertGreater(shared_score, s)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks")
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_respects_k_limit(self, mock_sem, mock_fts):
+        mock_sem.return_value = [
+            self._make_semantic_doc(i, f"sem {i}") for i in range(10)
+        ]
+        mock_fts.return_value = [
+            self._make_fts_hit(i + 100, f"fts {i}") for i in range(10)
+        ]
+        results = hybrid_search_chunks(project_id=1, query="test", k=3)
+        self.assertEqual(len(results), 3)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks")
+    @patch("documents.services.retrieval.vs.similarity_search", side_effect=Exception("pgvector down"))
+    def test_hybrid_degrades_gracefully_when_semantic_fails(self, _mock_sem, mock_fts):
+        mock_fts.return_value = [
+            self._make_fts_hit(50, "fallback result"),
+        ]
+        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 50)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks", side_effect=Exception("FTS down"))
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_degrades_gracefully_when_fts_fails(self, mock_sem, _mock_fts):
+        mock_sem.return_value = [
+            self._make_semantic_doc(60, "fallback semantic"),
+        ]
+        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 60)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks")
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_prefers_fts_heading_over_semantic(self, mock_sem, mock_fts):
+        """When same chunk appears in both, heading from FTS result should be kept."""
+        mock_sem.return_value = [
+            self._make_semantic_doc(1, "some text"),
+        ]
+        mock_fts.return_value = [{
+            "id": 1,
+            "chunk_index": 0,
+            "text": "some text",
+            "heading": "Important Section",
+            "document_id": 1,
+            "rank": 0.8,
+        }]
+        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        self.assertEqual(results[0]["heading"], "Important Section")
