@@ -69,8 +69,18 @@ class ChunkingTests(TestCase):
         self.assertEqual(chunks[0]["source_offset_end"], len(short_text))
 
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
-    def test_chunk_text_multiple_chunks_when_over_max_tokens(self):
-        """Documents over max_chunk_tokens are split, then small chunks merged (min 200)."""
+    @patch("tiktoken.get_encoding")
+    def test_chunk_text_multiple_chunks_when_over_max_tokens(self, mock_get_encoding):
+        """Documents over max_chunk_tokens are split, then small chunks merged (min 200).
+
+        tiktoken.get_encoding is mocked to avoid a network download of the BPE data file
+        which is blocked in CI. The mock uses a character-based encoder (len(text)//4
+        tokens) — the same heuristic as _count_tokens' fallback — to drive the splitter.
+        """
+        mock_enc = Mock()
+        mock_enc.encode = lambda text, **kwargs: list(range(max(1, len(text) // 4)))
+        mock_get_encoding.return_value = mock_enc
+
         from langchain_core.documents import Document
         docs = [Document(page_content="First paragraph. " * 50, metadata={})]
         chunks = chunk_text(docs, max_chunk_tokens=50, chunk_overlap_tokens=5)
