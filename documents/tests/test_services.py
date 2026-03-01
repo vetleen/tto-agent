@@ -3,8 +3,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
+from documents.models import Project, ProjectDocument, ProjectDocumentChunk
 from documents.services.chunking import (
     MIN_CHUNK_TOKENS,
     _count_tokens,
@@ -15,8 +17,13 @@ from documents.services.chunking import (
 )
 from documents.services.retrieval import (
     _rrf_score,
+    get_chunks_by_document,
+    get_chunks_by_project,
     hybrid_search_chunks,
+    similarity_search_chunks,
 )
+
+User = get_user_model()
 
 try:
     import langchain_core  # noqa: F401
@@ -358,3 +365,162 @@ class HybridSearchTests(TestCase):
         }]
         results = hybrid_search_chunks(project_id=1, query="test", k=5)
         self.assertEqual(results[0]["heading"], "Important Section")
+
+
+class ProcessDocumentServiceTests(TestCase):
+    """Unit tests for documents.services.process_document.process_document()."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="svc@example.com", password="testpass")
+        self.project = Project.objects.create(name="SvcProject", slug="svc-project", created_by=self.user)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_happy_path(self):
+        """UPLOADED doc with a real file becomes READY and gets chunks persisted."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [
+            {"text": "First chunk", "heading": None, "token_count": 10,
+             "source_page_start": 1, "source_page_end": 1,
+             "source_offset_start": 0, "source_offset_end": 11},
+            {"text": "Second chunk", "heading": "Section", "token_count": 12,
+             "source_page_start": 1, "source_page_end": 1,
+             "source_offset_start": 12, "source_offset_end": 24},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = ProjectDocument(
+                    project=self.project,
+                    uploaded_by=self.user,
+                    original_filename="test.txt",
+                    status=ProjectDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
+
+                with patch("documents.services.process_document.extract_and_chunk_file", return_value=sample_chunks):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, ProjectDocument.Status.READY)
+                self.assertEqual(doc.chunks.count(), 2)
+                self.assertEqual(doc.token_count, 22)
+                self.assertIsNotNone(doc.processed_at)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_sets_failed_when_file_missing(self):
+        """Doc with no attached file transitions to FAILED with a processing_error."""
+        from documents.services.process_document import process_document
+
+        doc = ProjectDocument.objects.create(
+            project=self.project,
+            uploaded_by=self.user,
+            original_filename="missing.txt",
+            status=ProjectDocument.Status.UPLOADED,
+        )
+        process_document(doc.id)
+
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, ProjectDocument.Status.FAILED)
+        self.assertIsNotNone(doc.processing_error)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_sets_failed_on_chunking_error(self):
+        """Chunking exception causes status=FAILED and error stored in processing_error."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = ProjectDocument(
+                    project=self.project,
+                    uploaded_by=self.user,
+                    original_filename="bad.txt",
+                    status=ProjectDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("bad.txt", ContentFile(b"content"), save=True)
+
+                with patch(
+                    "documents.services.process_document.extract_and_chunk_file",
+                    side_effect=RuntimeError("parse error"),
+                ):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, ProjectDocument.Status.FAILED)
+                self.assertIn("parse error", doc.processing_error)
+
+    def test_process_document_skips_nonexistent_document(self):
+        """Calling with a non-existent ID logs a warning and returns without raising."""
+        from documents.services.process_document import process_document
+
+        with self.assertLogs("documents.services.process_document", level="WARNING") as cm:
+            process_document(99999)
+
+        self.assertTrue(any("not found" in line for line in cm.output))
+
+
+class RetrievalServiceTests(TestCase):
+    """Unit tests for documents.services.retrieval non-search functions."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="ret@example.com", password="testpass")
+        self.project = Project.objects.create(name="RetProject", slug="ret-project", created_by=self.user)
+        self.doc = ProjectDocument.objects.create(
+            project=self.project,
+            uploaded_by=self.user,
+            original_filename="ret.txt",
+            status=ProjectDocument.Status.READY,
+        )
+
+    def test_get_chunks_by_document_returns_ordered(self):
+        """Chunks are returned in chunk_index order regardless of insertion order."""
+        ProjectDocumentChunk.objects.create(document=self.doc, chunk_index=1, text="Second", token_count=2)
+        ProjectDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="First", token_count=1)
+
+        result = get_chunks_by_document(self.doc.id)
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["chunk_index"], 0)
+        self.assertEqual(result[0]["text"], "First")
+        self.assertEqual(result[1]["chunk_index"], 1)
+        # Required fields are present
+        for key in ("id", "text", "heading", "token_count", "source_page_start", "source_page_end"):
+            self.assertIn(key, result[0])
+
+    def test_get_chunks_by_project_excludes_failed_documents(self):
+        """Chunks from FAILED documents are not returned."""
+        ProjectDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="Ready chunk", token_count=5)
+
+        failed_doc = ProjectDocument.objects.create(
+            project=self.project,
+            uploaded_by=self.user,
+            original_filename="fail.txt",
+            status=ProjectDocument.Status.FAILED,
+        )
+        ProjectDocumentChunk.objects.create(document=failed_doc, chunk_index=0, text="Failed chunk", token_count=5)
+
+        result = get_chunks_by_project(self.project.id)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["text"], "Ready chunk")
+        self.assertEqual(result[0]["document_id"], self.doc.id)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_similarity_search_chunks_returns_langchain_documents(self):
+        """similarity_search_chunks wraps hybrid_search output as LangChain Documents."""
+        from langchain_core.documents import Document
+
+        fake_results = [
+            {"id": 42, "text": "hello", "document_id": 7, "chunk_index": 0, "rrf_score": 0.5, "heading": None},
+        ]
+        with patch("documents.services.retrieval.hybrid_search_chunks", return_value=fake_results):
+            results = similarity_search_chunks(project_id=1, query="test", k=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], Document)
+        self.assertEqual(results[0].page_content, "hello")
+        self.assertEqual(results[0].metadata["chunk_id"], 42)
+        self.assertEqual(results[0].metadata["project_id"], 1)
+        self.assertEqual(results[0].metadata["document_id"], 7)

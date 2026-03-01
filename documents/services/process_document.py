@@ -72,14 +72,17 @@ def process_document(document_id: int) -> None:
         ]
         ProjectDocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
 
-        # Populate full-text search vectors for hybrid retrieval
+        # Populate full-text search vectors for hybrid retrieval.
+        # Wrapped in its own savepoint so a failure (e.g. SQLite in dev/test) does
+        # not abort the outer transaction and leave the document stuck as PROCESSING.
         try:
-            doc.chunks.filter(search_vector__isnull=True).update(
-                search_vector=(
-                    SearchVector("heading", weight="A", config="english")
-                    + SearchVector("text", weight="B", config="english")
+            with transaction.atomic():
+                doc.chunks.filter(search_vector__isnull=True).update(
+                    search_vector=(
+                        SearchVector("heading", weight="A", config="english")
+                        + SearchVector("text", weight="B", config="english")
+                    )
                 )
-            )
         except Exception as fts_err:
             # FTS is non-critical; log and continue (e.g. SQLite in dev)
             logger.warning("process_document: document_id=%s fts update failed: %s", document_id, fts_err)

@@ -45,6 +45,14 @@ class ProjectDocumentModelTests(TestCase):
         )
         self.assertIn("file.pdf", str(doc))
 
+    def test_document_default_status_is_uploaded(self):
+        doc = ProjectDocument.objects.create(
+            project=self.project,
+            uploaded_by=self.user,
+            original_filename="default.txt",
+        )
+        self.assertEqual(doc.status, ProjectDocument.Status.UPLOADED)
+
 
 class ProjectDocumentChunkModelTests(TestCase):
     def setUp(self):
@@ -81,3 +89,22 @@ class ProjectDocumentChunkModelTests(TestCase):
                 text="Second",
                 token_count=1,
             )
+
+    def test_chunk_str(self):
+        chunk = ProjectDocumentChunk.objects.create(
+            document=self.doc,
+            chunk_index=0,
+            text="Some text",
+            token_count=2,
+        )
+        # Should not raise; result should be a non-empty string
+        self.assertIsInstance(str(chunk), str)
+        self.assertTrue(len(str(chunk)) > 0)
+
+
+class ProjectDocumentStatusTests(TestCase):
+    def test_all_four_statuses_exist(self):
+        self.assertEqual(ProjectDocument.Status.UPLOADED, "uploaded")
+        self.assertEqual(ProjectDocument.Status.PROCESSING, "processing")
+        self.assertEqual(ProjectDocument.Status.READY, "ready")
+        self.assertEqual(ProjectDocument.Status.FAILED, "failed")
