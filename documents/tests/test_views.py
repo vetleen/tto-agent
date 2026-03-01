@@ -1,21 +1,50 @@
 import sys
 import types
+from datetime import timedelta
 from io import BytesIO
 from unittest.mock import Mock, call, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
-from unittest.mock import Mock, patch
-
-from django.contrib.auth import get_user_model
-from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from documents.models import Project, ProjectDocument
+from documents.views import _relative_upload_date
 
 User = get_user_model()
+
+
+class RelativeUploadDateTests(SimpleTestCase):
+    """Unit tests for _relative_upload_date() covering every branch."""
+
+    def _make_dt(self, days_ago):
+        return timezone.now() - timedelta(days=days_ago)
+
+    def test_none_returns_empty_string(self):
+        self.assertEqual(_relative_upload_date(None), "")
+
+    def test_today(self):
+        result = _relative_upload_date(timezone.now())
+        self.assertTrue(result.startswith("Today at "), result)
+
+    def test_yesterday(self):
+        result = _relative_upload_date(self._make_dt(1))
+        self.assertEqual(result, "Yesterday")
+
+    def test_days_ago(self):
+        result = _relative_upload_date(self._make_dt(15))
+        self.assertEqual(result, "15 days ago")
+
+    def test_one_month_ago(self):
+        result = _relative_upload_date(self._make_dt(35))
+        self.assertEqual(result, "1 month ago")
+
+    def test_one_year_ago(self):
+        result = _relative_upload_date(self._make_dt(370))
+        self.assertEqual(result, "1 year ago")
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -25,6 +54,15 @@ class DocumentViewsTests(TestCase):
         self.user.email_verified = True
         self.user.save(update_fields=["email_verified"])
         self.project = Project.objects.create(name="Test", slug="test", created_by=self.user)
+        self.other = User.objects.create_user(email="other@example.com", password="testpass")
+
+    def _make_doc(self):
+        return ProjectDocument.objects.create(
+            project=self.project,
+            uploaded_by=self.user,
+            original_filename="doc.txt",
+            status=ProjectDocument.Status.READY,
+        )
 
     def test_project_list_requires_login(self):
         response = self.client.get(reverse("project_list"))
@@ -66,8 +104,7 @@ class DocumentViewsTests(TestCase):
         self.assertContains(response, "name=\"file\"")
 
     def test_project_detail_other_user_redirected(self):
-        other = User.objects.create_user(email="other@example.com", password="testpass")
-        self.client.force_login(other)
+        self.client.force_login(self.other)
         response = self.client.get(
             reverse("project_detail", kwargs={"project_id": self.project.uuid}),
             follow=True,
@@ -234,3 +271,190 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(len(data["chunks"]), 2)
         self.assertEqual(data["chunks"][0]["text"], "A")
         self.assertEqual(data["chunks"][1]["text"], "B")
+
+    # ------------------------------------------------------------------ #
+    # project_delete                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_project_delete_removes_project(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("project_delete", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertRedirects(response, reverse("project_list"))
+        self.assertFalse(Project.objects.filter(pk=self.project.pk).exists())
+
+    def test_project_delete_other_user_blocked(self):
+        self.client.force_login(self.other)
+        self.client.post(
+            reverse("project_delete", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertTrue(Project.objects.filter(pk=self.project.pk).exists())
+
+    def test_project_delete_requires_post(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("project_delete", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 405)
+
+    # ------------------------------------------------------------------ #
+    # project_rename                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_project_rename_updates_name(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            {"name": "Renamed Project"},
+        )
+        self.assertRedirects(response, reverse("project_list"))
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.name, "Renamed Project")
+
+    def test_project_rename_rejects_empty_name(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            {"name": ""},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.name, "Test")
+
+    def test_project_rename_truncates_at_255(self):
+        self.client.force_login(self.user)
+        long_name = "x" * 300
+        self.client.post(
+            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            {"name": long_name},
+        )
+        self.project.refresh_from_db()
+        self.assertLessEqual(len(self.project.name), 255)
+
+    def test_project_rename_other_user_blocked(self):
+        self.client.force_login(self.other)
+        self.client.post(
+            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            {"name": "Hacked"},
+        )
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.name, "Test")
+
+    # ------------------------------------------------------------------ #
+    # document_delete                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_document_delete_removes_document(self):
+        self.client.force_login(self.user)
+        doc = self._make_doc()
+        response = self.client.post(
+            reverse("document_delete", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+        )
+        self.assertRedirects(
+            response,
+            reverse("project_documents", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertFalse(ProjectDocument.objects.filter(pk=doc.pk).exists())
+
+    def test_document_delete_other_user_blocked(self):
+        self.client.force_login(self.other)
+        doc = self._make_doc()
+        self.client.post(
+            reverse("document_delete", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+        )
+        self.assertTrue(ProjectDocument.objects.filter(pk=doc.pk).exists())
+
+    # ------------------------------------------------------------------ #
+    # document_rename                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_document_rename_updates_filename(self):
+        self.client.force_login(self.user)
+        doc = self._make_doc()
+        self.client.post(
+            reverse("document_rename", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            {"name": "renamed.txt"},
+        )
+        doc.refresh_from_db()
+        self.assertEqual(doc.original_filename, "renamed.txt")
+
+    def test_document_rename_rejects_empty_name(self):
+        self.client.force_login(self.user)
+        doc = self._make_doc()
+        response = self.client.post(
+            reverse("document_rename", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            {"name": ""},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        doc.refresh_from_db()
+        self.assertEqual(doc.original_filename, "doc.txt")
+
+    def test_document_rename_other_user_blocked(self):
+        self.client.force_login(self.other)
+        doc = self._make_doc()
+        self.client.post(
+            reverse("document_rename", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            {"name": "hacked.txt"},
+        )
+        doc.refresh_from_db()
+        self.assertEqual(doc.original_filename, "doc.txt")
+
+    # ------------------------------------------------------------------ #
+    # document_upload — oversized file                                    #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(DOCUMENT_UPLOAD_MAX_SIZE_BYTES=5)
+    def test_document_upload_rejects_oversized_file(self):
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("big.txt", b"0123456789", content_type="text/plain")
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": f},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "too large")
+        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="big.txt").count(), 0)
+
+    # ------------------------------------------------------------------ #
+    # document_chunks API — additional authorization cases                #
+    # ------------------------------------------------------------------ #
+
+    def test_document_chunks_api_forbidden_for_other_user(self):
+        self.client.force_login(self.other)
+        doc = self._make_doc()
+        response = self.client.get(
+            reverse("document_chunks", kwargs={"project_id": self.project.uuid, "document_id": doc.id})
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json(), {"error": "Forbidden"})
+
+    def test_document_chunks_api_returns_404_for_missing_doc(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("document_chunks", kwargs={"project_id": self.project.uuid, "document_id": 99999})
+        )
+        self.assertEqual(response.status_code, 404)
+
+    # ------------------------------------------------------------------ #
+    # project_chat                                                         #
+    # ------------------------------------------------------------------ #
+
+    def test_project_chat_renders_for_owner(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("project_chat", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_project_chat_other_user_redirected(self):
+        self.client.force_login(self.other)
+        response = self.client.get(
+            reverse("project_chat", kwargs={"project_id": self.project.uuid}),
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.resolver_match.url_name, "project_list")
