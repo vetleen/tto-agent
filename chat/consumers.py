@@ -74,14 +74,8 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             history = await self._load_history(thread)
 
             # Build system prompt
-            system_prompt = (
-                "You are a helpful assistant for the project "
-                f'"{self.project.name}". '
-                "You have access to a search_documents tool that can search "
-                "the project's uploaded documents. Use it when the user asks "
-                "about document contents or needs specific information from their files. "
-                "Answer concisely and accurately."
-            )
+            from chat.prompts import build_system_prompt
+            system_prompt = build_system_prompt(self.project)
 
             # Stream LLM response
             await self._stream_response(thread, system_prompt, history)
