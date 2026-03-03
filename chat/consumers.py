@@ -10,6 +10,9 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 
 logger = logging.getLogger(__name__)
 
+MAX_HISTORY_TOKENS = 20_000
+OVERLAP_TOKENS = 2_000  # always show at least this many recent tokens as raw messages
+
 
 class ProjectChatConsumer(AsyncWebsocketConsumer):
     """WebSocket consumer for per-project chat with LLM streaming and RAG."""
@@ -70,12 +73,16 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             # Persist user message
             await self._create_message(thread, "user", content)
 
-            # Load conversation history
-            history = await self._load_history(thread)
+            # Load conversation history (token-aware)
+            history_result = await self._load_history(thread)
+            history = history_result["messages"]
+            meta = history_result["meta"]
 
             # Build system prompt
             from chat.prompts import build_system_prompt
-            system_prompt = build_system_prompt(self.project)
+            system_prompt = build_system_prompt(
+                self.project, history_meta=meta,
+            )
 
             # Stream LLM response
             await self._stream_response(thread, system_prompt, history)
@@ -83,6 +90,10 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             # Auto-generate title for new threads
             if created:
                 await self._generate_thread_title(thread, content)
+
+            # Trigger summarization if history exceeds budget
+            if meta.get("needs_summary"):
+                await self._trigger_summarization(thread)
 
         except Exception:
             logger.exception("Error handling chat message")
@@ -158,6 +169,106 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
                 "data": {"message": "Failed to get AI response."},
             }))
 
+    # -- Summarization helpers --
+
+    async def _trigger_summarization(self, thread):
+        """Summarise messages outside the token window and save to thread."""
+        try:
+            from chat.services import generate_summary
+
+            thread_data = await self._get_thread_summary_data(thread)
+            messages_to_summarise = await self._get_messages_to_summarise(thread)
+
+            if not messages_to_summarise:
+                return
+
+            summary_text = await generate_summary(
+                messages_to_summarise,
+                existing_summary=thread_data["summary"],
+                user_id=self.user.pk,
+                conversation_id=self.project.pk,
+            )
+
+            last_msg = messages_to_summarise[-1]
+            new_count = thread_data["summary_message_count"] + len(messages_to_summarise)
+            await self._save_summary(
+                thread, summary_text, last_msg.id, new_count,
+            )
+        except Exception:
+            logger.exception("Failed to generate conversation summary")
+
+    @database_sync_to_async
+    def _get_thread_summary_data(self, thread):
+        from chat.models import ChatThread
+
+        t = ChatThread.objects.get(pk=thread.pk)
+        return {
+            "summary": t.summary,
+            "summary_token_count": t.summary_token_count,
+            "summary_up_to_message_id": t.summary_up_to_message_id,
+            "summary_message_count": t.summary_message_count,
+        }
+
+    @database_sync_to_async
+    def _get_messages_to_summarise(self, thread):
+        """Return unsummarised messages that fall outside the token budget window.
+
+        The overlap window (newest OVERLAP_TOKENS worth of messages) is always
+        preserved as raw context and is never summarised.
+        """
+        from chat.models import ChatMessage, ChatThread
+
+        t = ChatThread.objects.get(pk=thread.pk)
+
+        # All unsummarised messages, newest first
+        qs = ChatMessage.objects.filter(thread=thread).order_by("-created_at")
+        if t.summary_up_to_message_id:
+            cutoff_msg = ChatMessage.objects.filter(
+                id=t.summary_up_to_message_id,
+            ).first()
+            if cutoff_msg:
+                qs = qs.filter(created_at__gt=cutoff_msg.created_at)
+
+        all_msgs = list(qs)
+
+        # Reserve the overlap window — never summarise those messages
+        overlap_used = 0
+        overlap_count = 0
+        for msg in all_msgs:
+            overlap_used += msg.token_count
+            overlap_count += 1
+            if overlap_used >= OVERLAP_TOKENS:
+                break
+
+        # Candidates for summarisation: everything beyond the overlap window
+        non_overlap = all_msgs[overlap_count:]
+
+        # Of those, keep what fits in the remaining budget
+        remaining_budget = max(0, MAX_HISTORY_TOKENS - t.summary_token_count - overlap_used)
+        keep_count = 0
+        used = 0
+        for msg in non_overlap:
+            used += msg.token_count
+            if used > remaining_budget:
+                break
+            keep_count += 1
+
+        to_summarise = non_overlap[keep_count:]
+        to_summarise.reverse()  # chronological order
+        return to_summarise
+
+    @database_sync_to_async
+    def _save_summary(self, thread, text, last_msg_id, count):
+        from chat.models import ChatThread
+        from core.tokens import count_tokens
+
+        ChatThread.objects.filter(pk=thread.pk).update(
+            summary=text,
+            summary_token_count=count_tokens(text),
+            summary_up_to_message_id=last_msg_id,
+            summary_message_count=count,
+        )
+
     # -- Database helpers --
 
     @database_sync_to_async
@@ -196,12 +307,14 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _create_message(self, thread, role, content, tool_call_id=None):
         from chat.models import ChatMessage
+        from core.tokens import count_tokens
 
         return ChatMessage.objects.create(
             thread=thread,
             role=role,
             content=content,
             tool_call_id=tool_call_id,
+            token_count=count_tokens(content),
         )
 
     async def _generate_thread_title(self, thread, first_user_message):
@@ -245,19 +358,101 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
         ChatThread.objects.filter(pk=thread.pk).update(title=title)
 
     @database_sync_to_async
-    def _load_history(self, thread, limit=50):
-        from chat.models import ChatMessage
+    def _load_history(self, thread):
+        """Load token-aware conversation history with a recency overlap window.
 
-        messages = list(
-            ChatMessage.objects.filter(thread=thread)
-            .order_by("-created_at")[:limit]
+        The most recent OVERLAP_TOKENS worth of messages are always included as
+        raw messages (even if they are already covered by the summary).  Any
+        remaining budget is filled with older unsummarised messages.
+
+        Returns a dict with:
+        - ``messages``: list of message dicts to send to the LLM
+        - ``meta``: dict with total_messages, included_messages, has_summary,
+          needs_summary
+        """
+        from chat.models import ChatMessage, ChatThread
+
+        t = ChatThread.objects.get(pk=thread.pk)
+        total_messages = ChatMessage.objects.filter(thread=thread).count()
+
+        # Load ALL messages newest-first (needed to build the overlap window).
+        all_msgs = list(
+            ChatMessage.objects.filter(thread=thread).order_by("-created_at")
         )
-        messages.reverse()
-        return [
-            {
+
+        if not all_msgs:
+            return {
+                "messages": [],
+                "meta": {
+                    "total_messages": 0,
+                    "included_messages": 0,
+                    "has_summary": False,
+                    "needs_summary": False,
+                },
+            }
+
+        # 1. Build overlap window: newest messages up to OVERLAP_TOKENS.
+        #    Always includes at least one message regardless of size.
+        overlap: list = []
+        overlap_tokens_used = 0
+        for msg in all_msgs:
+            overlap_tokens_used += msg.token_count
+            overlap.append(msg)
+            if overlap_tokens_used >= OVERLAP_TOKENS:
+                break
+        # overlap is newest-first; oldest_overlap is the boundary
+        oldest_overlap = overlap[-1]
+
+        # 2. Fill remaining budget with unsummarised messages between the
+        #    summary cutoff and the start of the overlap window.
+        remaining_budget = max(
+            0, MAX_HISTORY_TOKENS - t.summary_token_count - overlap_tokens_used
+        )
+        add_qs = ChatMessage.objects.filter(
+            thread=thread,
+            created_at__lt=oldest_overlap.created_at,
+        ).order_by("-created_at")
+        if t.summary_up_to_message_id:
+            cutoff_msg = ChatMessage.objects.filter(
+                id=t.summary_up_to_message_id,
+            ).first()
+            if cutoff_msg:
+                add_qs = add_qs.filter(created_at__gt=cutoff_msg.created_at)
+
+        add_msgs = list(add_qs)
+        additional: list = []
+        used = 0
+        for msg in add_msgs:
+            used += msg.token_count
+            if used > remaining_budget:
+                break
+            additional.append(msg)
+
+        needs_summary = len(additional) < len(add_msgs)
+
+        # 3. Combine into chronological order: additional + overlap (both reversed)
+        included = list(reversed(additional)) + list(reversed(overlap))
+
+        # 4. Build message list
+        messages: list[dict] = []
+        if t.summary:
+            messages.append({
+                "role": "system",
+                "content": f"Summary of earlier conversation:\n{t.summary}",
+            })
+        for m in included:
+            messages.append({
                 "role": m.role,
                 "content": m.content,
                 "tool_call_id": m.tool_call_id,
-            }
-            for m in messages
-        ]
+            })
+
+        return {
+            "messages": messages,
+            "meta": {
+                "total_messages": total_messages,
+                "included_messages": len(included),
+                "has_summary": bool(t.summary),
+                "needs_summary": needs_summary,
+            },
+        }

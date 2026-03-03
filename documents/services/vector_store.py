@@ -23,8 +23,11 @@ def _get_connection_string() -> str | None:
     conn = getattr(settings, "PGVECTOR_CONNECTION", None) or ""
     if not conn or "sqlite" in conn.lower():
         return None
+    # Normalise scheme for psycopg3 (required by langchain_postgres)
     if conn.startswith("postgres://"):
-        conn = conn.replace("postgres://", "postgresql://", 1)
+        conn = conn.replace("postgres://", "postgresql+psycopg://", 1)
+    elif conn.startswith("postgresql://"):
+        conn = conn.replace("postgresql://", "postgresql+psycopg://", 1)
     return conn
 
 
@@ -41,7 +44,7 @@ def _get_vector_store():
     with _vector_store_lock:
         if _vector_store_cache is not None:
             return _vector_store_cache
-        from langchain_community.vectorstores import PGVector
+        from langchain_postgres import PGVector
         from langchain_openai import OpenAIEmbeddings
 
         conn = _get_connection_string()
@@ -53,8 +56,8 @@ def _get_vector_store():
             request_timeout=timeout,
         )
         _vector_store_cache = PGVector(
-            connection_string=conn,
-            embedding_function=embeddings,
+            embeddings,
+            connection=conn,
             collection_name=COLLECTION_NAME,
             use_jsonb=True,
         )
@@ -67,19 +70,25 @@ def delete_vectors_for_document(document_id: int) -> None:
     if not conn:
         return
     # PGVector stores rows for all collections; scope deletion to this app collection.
-    from django.db import connection
+    from django.db import connection, transaction
+    from django.db.utils import ProgrammingError
 
-    with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            DELETE FROM langchain_pg_embedding AS emb
-            USING langchain_pg_collection AS col
-            WHERE emb.collection_id = col.uuid
-              AND col.name = %s
-              AND emb.cmetadata->>'document_id' = %s
-            """,
-            [COLLECTION_NAME, str(document_id)],
-        )
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM langchain_pg_embedding AS emb
+                    USING langchain_pg_collection AS col
+                    WHERE emb.collection_id = col.uuid
+                      AND col.name = %s
+                      AND emb.cmetadata->>'document_id' = %s
+                    """,
+                    [COLLECTION_NAME, str(document_id)],
+                )
+    except ProgrammingError:
+        # Table doesn't exist yet; nothing to delete.
+        logger.debug("langchain_pg_embedding table does not exist yet, skipping delete")
 
 
 def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, project_id: int) -> None:

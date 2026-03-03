@@ -22,6 +22,12 @@ class ChatThread(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Rolling summary of older messages
+    summary = models.TextField(blank=True, default="")
+    summary_token_count = models.PositiveIntegerField(default=0)
+    summary_up_to_message_id = models.UUIDField(null=True, blank=True)
+    summary_message_count = models.PositiveIntegerField(default=0)
+
     class Meta:
         ordering = ["-updated_at"]
         indexes = [
@@ -49,6 +55,7 @@ class ChatMessage(models.Model):
     content = models.TextField()
     tool_call_id = models.CharField(max_length=255, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    token_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -56,6 +63,13 @@ class ChatMessage(models.Model):
         indexes = [
             models.Index(fields=["thread", "created_at"]),
         ]
+
+    def save(self, *args, **kwargs):
+        if not self.token_count and self.content:
+            from core.tokens import count_tokens
+
+            self.token_count = count_tokens(self.content)
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.role}: {self.content[:50]}"

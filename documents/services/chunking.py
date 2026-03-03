@@ -13,32 +13,14 @@ from typing import Any
 
 from django.conf import settings
 
+from core.tokens import count_tokens as _count_tokens
+
 logger = logging.getLogger(__name__)
 
 # Lazy imports to avoid loading LangChain at module import when not needed
 def _get_loaders():
     from langchain_community.document_loaders import PyPDFLoader, TextLoader
     return PyPDFLoader, TextLoader
-
-
-def _count_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
-    text = text or ""
-    if not text.strip():
-        return 0
-    try:
-        import tiktoken
-
-        enc = tiktoken.get_encoding(encoding_name)
-        return len(enc.encode(text))
-    except Exception as e:
-        logger.warning("tiktoken count failed: %s", e)
-        # Fallback token estimate to keep chunking and limits functional even
-        # when tiktoken cannot download/load encoding data.
-        # Use both word- and char-based heuristics to avoid severe
-        # under-counting for long strings with little/no whitespace.
-        word_estimate = len(text.split())
-        char_estimate = (len(text) + 3) // 4
-        return max(1, word_estimate, char_estimate)
 
 
 def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
@@ -53,11 +35,15 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     PyPDFLoader, TextLoader = _get_loaders()
     if ext == "pdf":
         loader = PyPDFLoader(str(path))
-        return loader.load()
+        docs = loader.load()
+        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        return docs
     if ext in ("txt", "md", "html"):
         # TextLoader works for all text-based; use utf-8 with errors=replace
         loader = TextLoader(str(path), encoding="utf-8", autodetect_encoding=True)
-        return loader.load()
+        docs = loader.load()
+        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        return docs
     raise ValueError(f"Unsupported file type: {ext}")
 
 
