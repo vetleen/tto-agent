@@ -266,7 +266,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
 
 # Document upload and chunking (MVP)
-DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "10_000_000"))  # 10 MB
+DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000"))  # 50 MB
 DOCUMENT_ALLOWED_EXTENSIONS = {"pdf", "txt", "md", "html"}
 DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
     "application/pdf",
