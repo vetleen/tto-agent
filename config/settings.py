@@ -142,7 +142,7 @@ if DATABASE_URL:
     # Production / Heroku: use Postgres from DATABASE_URL (SSL and options from URL).
     DATABASES = {
         "default": dj_database_url.config(
-            conn_max_age=600,
+            conn_max_age=0,
             conn_health_checks=True,
         )
     }

@@ -123,8 +123,7 @@ class SimpleChatPipeline(BasePipeline):
 
             req = req.model_copy(update={"messages": new_messages})
 
-        # Max iterations reached: strip tools and do one final generate
-        req = req.model_copy(update={"tool_schemas": None})
+        # Max iterations reached: do one final generate.
         return chat_model.generate(req)
 
     def _stream_with_tools(
@@ -144,9 +143,7 @@ class SimpleChatPipeline(BasePipeline):
             msg = response.message
             if not msg.tool_calls:
                 # Final round: stream the real response token-by-token.
-                # Strip tool_schemas so the provider doesn't bind tools.
-                final_req = req.model_copy(update={"tool_schemas": None})
-                yield from chat_model.stream(final_req)
+                yield from chat_model.stream(req)
                 return
 
             new_messages = list(req.messages) + [msg]
@@ -183,8 +180,7 @@ class SimpleChatPipeline(BasePipeline):
 
             req = req.model_copy(update={"messages": new_messages})
 
-        # Max iterations: strip tools and stream the final response.
-        req = req.model_copy(update={"tool_schemas": None})
+        # Max iterations reached: stream the final response.
         yield from chat_model.stream(req)
 
 

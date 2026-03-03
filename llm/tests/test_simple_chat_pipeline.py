@@ -207,10 +207,10 @@ class SimpleChatPipelineTests(TestCase):
             mock_registry.return_value.get_model.return_value = fake_model
             response = pipeline.run(request)
 
-        # 3 tool rounds + 1 final (tool_schemas stripped)
+        # 3 tool rounds + 1 final (tool_schemas preserved for raw_prompt capture)
         self.assertEqual(fake_model.generate.call_count, 4)
         last_call = fake_model.generate.call_args_list[3][0][0]
-        self.assertIsNone(last_call.tool_schemas)
+        self.assertIsNotNone(last_call.tool_schemas)
         self.assertEqual(response.message.content, "Done.")
 
     def test_run_unknown_tool_name_raises_value_error(self):
@@ -313,9 +313,9 @@ class SimpleChatPipelineTests(TestCase):
 
         # Verify final response came from stream(), not generate()
         fake_model.stream.assert_called_once()
-        # The stream call should have tool_schemas stripped
+        # The stream call preserves tool_schemas for raw_prompt capture
         stream_req = fake_model.stream.call_args[0][0]
-        self.assertIsNone(stream_req.tool_schemas)
+        self.assertIsNotNone(stream_req.tool_schemas)
 
     def test_stream_final_response_is_real_streaming(self):
         """Final response (no tool calls) is emitted as message_start, token, message_end."""

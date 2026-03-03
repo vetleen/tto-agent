@@ -62,6 +62,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             model=request.model or "",
             is_stream=False,
             prompt=_serialize_messages(request),
+            raw_prompt=response.metadata.get("raw_prompt"),
             raw_output=response.model_dump_json(),
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
@@ -119,6 +120,10 @@ def log_stream(
         from llm.models import LLMCallLog
 
         raw_output = _assemble_stream_response(events)
+        raw_prompt = next(
+            (e.data.get("raw_prompt") for e in events if e.event_type == "raw_prompt"),
+            None,
+        )
 
         context = request.context
         LLMCallLog.objects.create(
@@ -127,6 +132,7 @@ def log_stream(
             model=request.model or "",
             is_stream=True,
             prompt=_serialize_messages(request),
+            raw_prompt=raw_prompt,
             raw_output=raw_output,
             input_tokens=None,
             output_tokens=None,

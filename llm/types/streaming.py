@@ -13,6 +13,7 @@ StreamEventType = Literal[
     "tool_end",
     "error",
     "meta",
+    "raw_prompt",
 ]
 
 

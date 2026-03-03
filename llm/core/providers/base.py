@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
+from llm.core.callbacks import PromptCaptureCallback
 from llm.core.interfaces import ChatModel
 from llm.core.langchain_utils import to_langchain_messages, parse_tool_calls_from_ai_message
 from llm.service.errors import LLMProviderError
@@ -29,13 +30,24 @@ class BaseLangChainChatModel(ChatModel):
     _client: object  # LangChain BaseChatModel instance
     _provider_label: str = "LLM"
 
+    @staticmethod
+    def _build_raw_prompt(callback: PromptCaptureCallback, tool_schemas: list | None) -> dict | None:
+        """Assemble the raw_prompt dict from callback messages + request tool schemas."""
+        if callback.captured_messages is None:
+            return None
+        return {
+            "messages": callback.captured_messages,
+            "tools": tool_schemas or [],
+        }
+
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages)
         client = self._client
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
+        callback = PromptCaptureCallback()
         try:
-            result = client.invoke(lc_messages)
+            result = client.invoke(lc_messages, config={"callbacks": [callback]})
         except Exception as exc:
             raise LLMProviderError(
                 f"{self._provider_label} generate failed for model={self.name}"
@@ -60,7 +72,8 @@ class BaseLangChainChatModel(ChatModel):
                 cost_usd=None,
             )
 
-        return ChatResponse(message=message, model=self.name, usage=usage, metadata={})
+        raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
+        return ChatResponse(message=message, model=self.name, usage=usage, metadata={"raw_prompt": raw_prompt})
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         lc_messages = to_langchain_messages(request.messages)
@@ -78,8 +91,21 @@ class BaseLangChainChatModel(ChatModel):
         )
         sequence += 1
 
+        callback = PromptCaptureCallback()
+        raw_prompt_yielded = False
+
         try:
-            for chunk in client.stream(lc_messages):
+            for chunk in client.stream(lc_messages, config={"callbacks": [callback]}):
+                if not raw_prompt_yielded:
+                    raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
+                    yield StreamEvent(
+                        event_type="raw_prompt",
+                        data={"raw_prompt": raw_prompt},
+                        sequence=sequence,
+                        run_id=run_id,
+                    )
+                    sequence += 1
+                    raw_prompt_yielded = True
                 text = getattr(chunk, "content", "") or ""
                 if not text:
                     continue

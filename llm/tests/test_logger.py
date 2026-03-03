@@ -171,6 +171,37 @@ class LogCallTests(TestCase):
         self.assertIsNotNone(log)
         self.assertIsNone(log.user)
 
+    def test_stores_raw_prompt_from_metadata(self):
+        request = _make_request()
+        raw = {
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={"raw_prompt": raw},
+        )
+        log_call(request, response, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertEqual(log.raw_prompt, raw)
+        self.assertEqual(log.raw_prompt["tools"][0]["function"]["name"], "search")
+
+    def test_raw_prompt_none_when_not_in_metadata(self):
+        request = _make_request()
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        log_call(request, response, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertIsNone(log.raw_prompt)
+
 
 class LogStreamTests(TestCase):
     """Tests for log_stream (streaming success)."""
@@ -207,6 +238,36 @@ class LogStreamTests(TestCase):
         parsed = json.loads(log.raw_output)
         self.assertEqual(parsed["message"]["content"], "")
         self.assertEqual(parsed["tool_calls"], [])
+
+    def test_stores_raw_prompt_from_event(self):
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        raw = {
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="raw_prompt", data={"raw_prompt": raw}, sequence=2, run_id=run_id),
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=3, run_id=run_id),
+            StreamEvent(event_type="message_end", data={}, sequence=4, run_id=run_id),
+        ]
+        log_stream(request, events, duration_ms=200)
+
+        log = _get_log(request)
+        self.assertEqual(log.raw_prompt, raw)
+
+    def test_raw_prompt_none_when_event_absent(self):
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="message_end", data={}, sequence=2, run_id=run_id),
+        ]
+        log_stream(request, events, duration_ms=100)
+
+        log = _get_log(request)
+        self.assertIsNone(log.raw_prompt)
 
     def test_never_raises_on_db_error(self):
         request = _make_request(stream=True)

@@ -7,6 +7,7 @@ from llm.models import LLMCallLog
 class LLMCallLogAdmin(admin.ModelAdmin):
     list_display = [
         "id",
+        "prompt_preview",
         "model",
         "user",
         "status",
@@ -35,6 +36,23 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         "error_type",
         "error_message",
     ]
+
+    @admin.display(description="Prompt")
+    def prompt_preview(self, obj):
+        messages = obj.prompt or []
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Handle structured content blocks (e.g. Anthropic format)
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        content = block.get("text", "")
+                        break
+                else:
+                    content = ""
+            if content:
+                return content[:100] + ("…" if len(content) > 100 else "")
+        return ""
 
     def has_add_permission(self, request):
         return False

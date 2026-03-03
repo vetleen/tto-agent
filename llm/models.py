@@ -31,6 +31,7 @@ class LLMCallLog(models.Model):
     model = models.CharField(max_length=255)
     is_stream = models.BooleanField(default=False)
     prompt = models.JSONField()  # full messages list: [{role, content}, ...]
+    raw_prompt = models.JSONField(null=True, blank=True)  # messages as LangChain sees them (after bind_tools)
 
     # Response
     raw_output = models.TextField(blank=True)
