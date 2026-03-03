@@ -63,12 +63,31 @@ class ProjectDocument(models.Model):
     parser_type = models.CharField(max_length=64, blank=True)
     chunking_strategy = models.CharField(max_length=64, blank=True)
     embedding_model = models.CharField(max_length=128, blank=True)
+    description = models.TextField(blank=True, default="")
+    doc_index = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-uploaded_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "doc_index"],
+                name="documents_unique_doc_index_per_project",
+                condition=models.Q(doc_index__gt=0),
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.doc_index:
+            from django.db.models import Max
+
+            max_idx = ProjectDocument.objects.filter(
+                project=self.project
+            ).aggregate(Max("doc_index"))["doc_index__max"] or 0
+            self.doc_index = max_idx + 1
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return self.original_filename or f"Document {self.pk}"

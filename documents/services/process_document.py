@@ -107,6 +107,14 @@ def process_document(document_id: int) -> None:
         doc.processing_error = None
         doc.processed_at = timezone.now()
         doc.save(update_fields=["status", "processing_error", "processed_at", "embedding_model", "updated_at"])
+
+        # Generate document description (non-critical — failures are logged, not raised)
+        if getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", ""):
+            try:
+                from documents.services.description import generate_document_description
+                generate_document_description(document_id)
+            except Exception:
+                logger.exception("process_document: document_id=%s description generation failed", document_id)
         duration_seconds = time.perf_counter() - started_at
         logger.info(
             "process_document: document_id=%s project_id=%s stage=ready chunk_count=%s duration_seconds=%.2f",

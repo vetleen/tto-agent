@@ -77,6 +77,88 @@ class SearchDocumentsTool:
         return {"results": results, "count": len(results)}
 
 
+class ReadDocumentTool:
+    """Read the full text content of one or more project documents by index number."""
+
+    name = "read_document"
+    description = (
+        "Read the full text content of one or more project documents by their "
+        "index number. Use this when you need the complete content of a specific "
+        "document rather than search excerpts."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "doc_indices": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "List of document index numbers to read (e.g. [1, 3]).",
+            },
+        },
+        "required": ["doc_indices"],
+    }
+
+    # Cap total output to ~8000 tokens worth of characters (~32k chars)
+    _MAX_TOTAL_CHARS = 32_000
+
+    def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
+        from documents.models import ProjectDocument
+
+        doc_indices = args.get("doc_indices", [])
+        if not doc_indices or not isinstance(doc_indices, list):
+            raise ValueError("read_document requires a non-empty 'doc_indices' list")
+
+        project_id = context.conversation_id
+        if not project_id:
+            raise ValueError("read_document requires a project context (conversation_id)")
+
+        try:
+            project_pk = int(project_id)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid project ID in context: {project_id}") from e
+
+        documents = []
+        total_chars = 0
+
+        for idx in doc_indices:
+            try:
+                doc = ProjectDocument.objects.get(
+                    project_id=project_pk,
+                    doc_index=idx,
+                )
+            except ProjectDocument.DoesNotExist:
+                documents.append({
+                    "doc_index": idx,
+                    "error": f"No document with index {idx} found.",
+                })
+                continue
+
+            chunks = doc.chunks.order_by("chunk_index").values_list("text", flat=True)
+            content = "\n\n".join(chunks)
+
+            remaining = self._MAX_TOTAL_CHARS - total_chars
+            if remaining <= 0:
+                documents.append({
+                    "doc_index": idx,
+                    "filename": doc.original_filename,
+                    "error": "Output size limit reached; document omitted.",
+                })
+                continue
+
+            if len(content) > remaining:
+                content = content[:remaining] + "\n\n[... truncated due to size limit ...]"
+
+            total_chars += len(content)
+            documents.append({
+                "doc_index": idx,
+                "filename": doc.original_filename,
+                "content": content,
+            })
+
+        return {"documents": documents}
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(SearchDocumentsTool())
+_registry.register_tool(ReadDocumentTool())

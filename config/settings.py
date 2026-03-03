@@ -293,6 +293,11 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 # pgvector: use same DB as Django when DATABASE_URL is Postgres
 PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATABASE_URL", ""))
 
+# LLM model tiers
+LLM_DEFAULT_MODEL = os.environ.get("LLM_DEFAULT_MODEL") or os.environ.get("DEFAULT_LLM_MODEL", "")
+LLM_DEFAULT_MID_MODEL = os.environ.get("LLM_DEFAULT_MID_MODEL", "")
+LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
+
 # Celery (use Redis as broker)
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
 

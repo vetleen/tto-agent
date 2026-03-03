@@ -26,8 +26,10 @@ async def generate_summary(
     so that the LLM produces a single coherent summary covering all prior
     history.
 
-    Uses ``openai/gpt-5-mini`` (same cheap model used for title generation).
+    Uses the mid-tier model (same cheap model used for title generation).
     """
+    from django.conf import settings as django_settings
+
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
 
@@ -59,7 +61,7 @@ async def generate_summary(
             Message(role="system", content=system_prompt),
             Message(role="user", content=user_prompt),
         ],
-        model="openai/gpt-5-mini",
+        model=django_settings.LLM_DEFAULT_MID_MODEL,
         stream=False,
         tools=[],
         context=context,

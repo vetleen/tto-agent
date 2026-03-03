@@ -78,10 +78,17 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             history = history_result["messages"]
             meta = history_result["meta"]
 
+            # Gather document context for the system prompt
+            doc_context = await self._get_document_context(
+                self.project.pk, content,
+            )
+
             # Build system prompt
             from chat.prompts import build_system_prompt
             system_prompt = build_system_prompt(
-                self.project, history_meta=meta,
+                self.project,
+                history_meta=meta,
+                doc_context=doc_context,
             )
 
             # Stream LLM response
@@ -123,7 +130,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
         request = ChatRequest(
             messages=messages,
             stream=True,
-            tools=["search_documents"],
+            tools=["search_documents", "read_document"],
             context=context,
         )
 
@@ -269,6 +276,82 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             summary_message_count=count,
         )
 
+    # -- Document context helpers --
+
+    async def _get_document_context(self, project_id, user_message):
+        """Search project documents and return context for the system prompt."""
+        try:
+            doc_context = await self._search_and_build_doc_context(
+                project_id, user_message,
+            )
+            return doc_context
+        except Exception:
+            logger.exception("Failed to build document context")
+            # Graceful fallback: return minimal context
+            total = await self._count_project_documents(project_id)
+            return {"total_doc_count": total, "documents": []}
+
+    @database_sync_to_async
+    def _search_and_build_doc_context(self, project_id, user_message):
+        from documents.models import ProjectDocument
+        from documents.services.retrieval import hybrid_search_chunks
+
+        total_count = ProjectDocument.objects.filter(
+            project_id=project_id,
+            status=ProjectDocument.Status.READY,
+        ).count()
+
+        if total_count == 0:
+            return {"total_doc_count": 0, "documents": []}
+
+        # Run hybrid search to find relevant chunks
+        try:
+            results = hybrid_search_chunks(
+                project_id=project_id, query=user_message, k=10,
+            )
+        except Exception:
+            logger.exception("Document context: hybrid search failed")
+            results = []
+
+        # Collect unique documents from results (up to 5)
+        seen_doc_ids = []
+        for r in results:
+            doc_id = r.get("document_id")
+            if doc_id and doc_id not in seen_doc_ids:
+                seen_doc_ids.append(doc_id)
+            if len(seen_doc_ids) >= 5:
+                break
+
+        # Fetch document metadata
+        documents = []
+        if seen_doc_ids:
+            docs = ProjectDocument.objects.filter(
+                pk__in=seen_doc_ids,
+                status=ProjectDocument.Status.READY,
+            ).values("pk", "doc_index", "original_filename", "description", "token_count")
+
+            doc_map = {d["pk"]: d for d in docs}
+            for doc_id in seen_doc_ids:
+                d = doc_map.get(doc_id)
+                if d:
+                    documents.append({
+                        "doc_index": d["doc_index"],
+                        "filename": d["original_filename"],
+                        "description": d["description"] or "",
+                        "token_count": d["token_count"],
+                    })
+
+        return {"total_doc_count": total_count, "documents": documents}
+
+    @database_sync_to_async
+    def _count_project_documents(self, project_id):
+        from documents.models import ProjectDocument
+
+        return ProjectDocument.objects.filter(
+            project_id=project_id,
+            status=ProjectDocument.Status.READY,
+        ).count()
+
     # -- Database helpers --
 
     @database_sync_to_async
@@ -331,9 +414,11 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
                 user_id=self.user.pk,
                 conversation_id=self.project.pk,
             )
+            from django.conf import settings as django_settings
+
             request = ChatRequest(
                 messages=[Message(role="user", content=prompt)],
-                model="openai/gpt-5-mini",
+                model=django_settings.LLM_DEFAULT_MID_MODEL,
                 stream=False,
                 tools=[],
                 context=context,

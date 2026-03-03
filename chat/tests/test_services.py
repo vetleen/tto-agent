@@ -28,10 +28,11 @@ class GenerateSummaryTests(TransactionTestCase):
         self.assertEqual(result, "This is a summary.")
         mock_service.arun.assert_called_once()
 
-        # Verify it used gpt-5-mini
+        # Verify it used the mid-tier model from settings
+        from django.conf import settings
         call_args = mock_service.arun.call_args
         request = call_args[0][1]
-        self.assertEqual(request.model, "openai/gpt-5-mini")
+        self.assertEqual(request.model, settings.LLM_DEFAULT_MID_MODEL)
 
     @patch("llm.get_llm_service")
     async def test_includes_existing_summary(self, mock_get_service):
