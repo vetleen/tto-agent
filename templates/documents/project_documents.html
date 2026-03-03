@@ -15,8 +15,8 @@
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">File</label>
-        <input class="cursor-pointer bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full shadow-xs placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,application/pdf,text/plain,text/markdown,text/html" required aria-describedby="file_input_help">
-        <p class="mt-2 text-xs text-body" id="file_input_help">PDF, TXT, MD or HTML. Max. 10 MB.</p>
+        <input class="cursor-pointer bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full shadow-xs placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml" required aria-describedby="file_input_help">
+        <p class="mt-2 text-xs text-body" id="file_input_help">PDF, DOCX, TXT, MD, HTML, CSV, JSON, XML, RST, TEX, YAML, or LOG. Max. 50 MB.</p>
       </div>
       <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         Upload

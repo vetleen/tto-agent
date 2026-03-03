@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Lazy imports to avoid loading LangChain at module import when not needed
 def _get_loaders():
-    from langchain_community.document_loaders import PyPDFLoader, TextLoader
-    return PyPDFLoader, TextLoader
+    from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
+    return Docx2txtLoader, PyPDFLoader, TextLoader
 
 
 def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
@@ -32,13 +32,18 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
     ext = file_extension.lower().lstrip(".")
-    PyPDFLoader, TextLoader = _get_loaders()
+    Docx2txtLoader, PyPDFLoader, TextLoader = _get_loaders()
     if ext == "pdf":
         loader = PyPDFLoader(str(path))
         docs = loader.load()
         logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
         return docs
-    if ext in ("txt", "md", "html"):
+    if ext == "docx":
+        loader = Docx2txtLoader(str(path))
+        docs = loader.load()
+        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        return docs
+    if ext in ("txt", "md", "html", "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log"):
         # TextLoader works for all text-based; use utf-8 with errors=replace
         loader = TextLoader(str(path), encoding="utf-8", autodetect_encoding=True)
         docs = loader.load()

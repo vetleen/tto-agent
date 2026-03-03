@@ -267,12 +267,24 @@ MEDIA_URL = "/media/"
 
 # Document upload and chunking (MVP)
 DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000"))  # 50 MB
-DOCUMENT_ALLOWED_EXTENSIONS = {"pdf", "txt", "md", "html"}
+DOCUMENT_ALLOWED_EXTENSIONS = {
+    "pdf", "txt", "md", "html", "docx",
+    "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log",
+}
 DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
     "application/pdf",
     "text/plain",
     "text/markdown",
     "text/html",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/csv",
+    "application/json",
+    "application/xml",
+    "text/xml",
+    "text/x-rst",
+    "application/x-tex",
+    "application/x-yaml",
+    "text/yaml",
 ])
 TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
 MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
