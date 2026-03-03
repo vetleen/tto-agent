@@ -100,7 +100,7 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.user)
         response = self.client.get(reverse("project_documents", kwargs={"project_id": self.project.uuid}))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Upload document")
+        self.assertContains(response, "Upload documents")
         self.assertContains(response, "name=\"file\"")
 
     def test_project_detail_other_user_redirected(self):
@@ -181,7 +181,7 @@ class DocumentViewsTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="mime-blocked.txt").count(), 0)
-        self.assertContains(response, "Unsupported file type")
+        self.assertContains(response, "unsupported file type")
 
     def test_document_upload_sanitizes_path_from_original_filename(self):
         self.client.force_login(self.user)
@@ -225,7 +225,7 @@ class DocumentViewsTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="empty.txt").count(), 0)
-        self.assertContains(response, "File is empty")
+        self.assertContains(response, "file is empty")
 
     def test_document_upload_rejects_unsupported_extension(self):
         self.client.force_login(self.user)
@@ -238,7 +238,7 @@ class DocumentViewsTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 0)
-        self.assertContains(response, "Unsupported file type")
+        self.assertContains(response, "unsupported file type")
 
     def test_document_chunks_api_requires_auth(self):
         doc = ProjectDocument.objects.create(
@@ -458,3 +458,59 @@ class DocumentViewsTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.resolver_match.url_name, "project_list")
+
+    # ------------------------------------------------------------------ #
+    # document_upload — multi-file                                         #
+    # ------------------------------------------------------------------ #
+
+    def test_multi_file_upload_creates_multiple_documents(self):
+        self.client.force_login(self.user)
+        f1 = SimpleUploadedFile("a.txt", b"hello", content_type="text/plain")
+        f2 = SimpleUploadedFile("b.txt", b"world", content_type="text/plain")
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": [f1, f2]},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 2)
+        filenames = set(
+            ProjectDocument.objects.filter(project=self.project).values_list("original_filename", flat=True)
+        )
+        self.assertEqual(filenames, {"a.txt", "b.txt"})
+        self.assertContains(response, "2 files uploaded successfully")
+
+    def test_multi_file_upload_partial_rejection(self):
+        self.client.force_login(self.user)
+        good = SimpleUploadedFile("good.txt", b"content", content_type="text/plain")
+        bad = BytesIO(b"content")
+        bad.name = "bad.xyz"
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": [good, bad]},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            ProjectDocument.objects.filter(project=self.project, original_filename="good.txt").count(), 1
+        )
+        self.assertEqual(
+            ProjectDocument.objects.filter(project=self.project, original_filename="bad.xyz").count(), 0
+        )
+        self.assertContains(response, "bad.xyz")
+        self.assertContains(response, "unsupported file type")
+        self.assertContains(response, "1 file uploaded successfully")
+
+    def test_multi_file_upload_all_rejected(self):
+        self.client.force_login(self.user)
+        f1 = BytesIO(b"x")
+        f1.name = "a.xyz"
+        f2 = BytesIO(b"x")
+        f2.name = "b.xyz"
+        response = self.client.post(
+            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            {"file": [f1, f2]},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 0)
