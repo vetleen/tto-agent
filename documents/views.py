@@ -205,51 +205,64 @@ def document_upload(request, project_id):
     project = get_object_or_404(Project, uuid=project_id)
     if not _user_owns_project(request.user, project):
         return redirect("project_list")
-    file_obj = request.FILES.get("file")
-    if not file_obj:
+    files = request.FILES.getlist("file")
+    if not files:
         messages.error(request, "No file selected. Please choose a file to upload.")
         return redirect("project_documents", project_id=project.uuid)
-    if file_obj.size <= 0:
-        messages.error(request, "File is empty. Please upload a non-empty file.")
-        return redirect("project_documents", project_id=project.uuid)
+
     max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 10_000_000)
-    if file_obj.size > max_size:
-        messages.error(request, f"File is too large. Maximum size is {max_size / 1_000_000:.0f} MB.")
-        return redirect("project_documents", project_id=project.uuid)
-    safe_filename = _safe_original_filename(file_obj.name, max_length=75)
-    stored_filename = _safe_original_filename(file_obj.name, max_length=180)
-    # Ensure storage path generation does not use overlong/untrusted client names.
-    file_obj.name = stored_filename
-    if not _allowed_extension(safe_filename):
-        messages.error(request, "Unsupported file type. Allowed: PDF, TXT, MD, HTML.")
-        return redirect("project_documents", project_id=project.uuid)
-    mime = getattr(file_obj, "content_type", "") or ""
-    if mime and not _allowed_mime(mime):
-        messages.error(request, "Unsupported file type. Allowed: PDF, TXT, MD, HTML.")
-        return redirect("project_documents", project_id=project.uuid)
-    doc = ProjectDocument.objects.create(
-        project=project,
-        uploaded_by=request.user,
-        original_file=file_obj,
-        original_filename=safe_filename,
-        mime_type=mime,
-        size_bytes=file_obj.size,
-        status=ProjectDocument.Status.UPLOADED,
-    )
-    try:
-        from documents.tasks import process_document_task
+    errors = []
+    created_docs = []
 
-        process_document_task.delay(doc.id)
-    except ImportError:
-        from documents.services.process_document import process_document
+    for file_obj in files:
+        safe_filename = _safe_original_filename(file_obj.name, max_length=75)
+        if file_obj.size <= 0:
+            errors.append(f"{safe_filename}: file is empty.")
+            continue
+        if file_obj.size > max_size:
+            errors.append(f"{safe_filename}: file is too large (max {max_size / 1_000_000:.0f} MB).")
+            continue
+        if not _allowed_extension(safe_filename):
+            errors.append(f"{safe_filename}: unsupported file type.")
+            continue
+        mime = getattr(file_obj, "content_type", "") or ""
+        if mime and not _allowed_mime(mime):
+            errors.append(f"{safe_filename}: unsupported file type.")
+            continue
+        stored_filename = _safe_original_filename(file_obj.name, max_length=180)
+        file_obj.name = stored_filename
+        doc = ProjectDocument.objects.create(
+            project=project,
+            uploaded_by=request.user,
+            original_file=file_obj,
+            original_filename=safe_filename,
+            mime_type=mime,
+            size_bytes=file_obj.size,
+            status=ProjectDocument.Status.UPLOADED,
+        )
+        created_docs.append(doc)
 
-        process_document(doc.id)
-    except Exception as exc:
-        logger.exception("document_upload: failed to enqueue processing for document_id=%s", doc.id)
-        doc.status = ProjectDocument.Status.FAILED
-        doc.processing_error = str(exc)[:2000]
-        doc.save(update_fields=["status", "processing_error", "updated_at"])
-        messages.error(request, "Upload succeeded, but processing could not be started. Please try again.")
+    for doc in created_docs:
+        try:
+            from documents.tasks import process_document_task
+
+            process_document_task.delay(doc.id)
+        except ImportError:
+            from documents.services.process_document import process_document
+
+            process_document(doc.id)
+        except Exception as exc:
+            logger.exception("document_upload: failed to enqueue processing for document_id=%s", doc.id)
+            doc.status = ProjectDocument.Status.FAILED
+            doc.processing_error = str(exc)[:2000]
+            doc.save(update_fields=["status", "processing_error", "updated_at"])
+            errors.append(f"{doc.original_filename}: processing could not be started.")
+
+    if created_docs:
+        count = len(created_docs)
+        messages.success(request, f"{count} file{'s' if count != 1 else ''} uploaded successfully.")
+    for err in errors:
+        messages.error(request, err)
     return redirect("project_documents", project_id=project.uuid)
 
 
