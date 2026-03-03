@@ -212,7 +212,7 @@ class ChatEndToEndTests(TransactionTestCase):
 
         err = await communicator.receive_json_from(timeout=5)
         self.assertEqual(err["event_type"], "error")
-        self.assertIn("Failed to get AI response", err["data"]["message"])
+        self.assertIn("AI service is not configured", err["data"]["message"])
 
         await communicator.disconnect()
 
