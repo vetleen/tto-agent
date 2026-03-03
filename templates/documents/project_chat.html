@@ -153,14 +153,7 @@
           Send
         </button>
       </form>
-      {# Tool activity indicator #}
-      <div id="tool-indicator" class="hidden mt-2 text-xs text-body flex items-center gap-1.5">
-        <svg class="w-3.5 h-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-        <span id="tool-indicator-text">Searching documents...</span>
-      </div>
+      {# Tool & thinking status is now shown inline in the assistant bubble #}
     </div>
   </div>
 </div>
@@ -207,6 +200,20 @@
   .dark .markdown-content table { border-color: rgb(75 85 99); }
   .dark .markdown-content th, .dark .markdown-content td { border-color: rgb(75 85 99); }
   .dark .markdown-content th { background-color: rgb(55 65 81); }
+
+  /* Thinking block */
+  .thinking-block .thinking-chevron { transform: rotate(90deg); }
+  .thinking-block.collapsed .thinking-chevron { transform: rotate(0deg); }
+  .thinking-block.collapsed .thinking-content { display: none; }
+  .thinking-content {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+    scrollbar-width: thin;
+  }
+
+  /* Tool cards */
+  .tool-card { transition: opacity 0.2s; }
 </style>
 
 <script>
@@ -284,8 +291,6 @@
   const button = document.getElementById("send-button");
   const messagesContainer = document.getElementById("chat-messages");
   const scrollContainer = document.getElementById("messages-scroll-container");
-  const toolIndicator = document.getElementById("tool-indicator");
-  const toolIndicatorText = document.getElementById("tool-indicator-text");
   const threadList = document.getElementById("thread-list");
 
   // -- Render server-rendered markdown --
@@ -359,6 +364,8 @@
   let currentStreamingElement = null;
   let accumulatedContent = "";
   let locked = false;
+  let isThinking = false;
+  let thinkingStartTime = null;
 
   function getWsUrl() {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -432,6 +439,33 @@
     }
   }
 
+  // -- Helpers: ensure streaming bubble exists --
+  function ensureBubble() {
+    if (!currentStreamingElement) {
+      const ph = messagesContainer.querySelector('[data-placeholder="true"]');
+      if (ph) ph.remove();
+      currentStreamingElement = createAssistantBubble();
+      messagesContainer.appendChild(currentStreamingElement);
+      accumulatedContent = "";
+      startStreamingTimeout();
+    }
+  }
+
+  function collapseThinking() {
+    if (!currentStreamingElement) return;
+    const thinkingBlock = currentStreamingElement.querySelector(".thinking-block");
+    if (thinkingBlock && !thinkingBlock.classList.contains("collapsed")) {
+      thinkingBlock.classList.add("collapsed");
+      const label = thinkingBlock.querySelector(".thinking-label");
+      if (label && thinkingStartTime) {
+        const secs = Math.round((Date.now() - thinkingStartTime) / 1000);
+        label.textContent = "Thought for " + secs + "s";
+      }
+    }
+    isThinking = false;
+    thinkingStartTime = null;
+  }
+
   // -- Event handling --
   function handleEvent(data) {
     const et = data.event_type;
@@ -469,10 +503,8 @@
     }
 
     if (et === "message_start") {
-      // Remove placeholder
       const ph = messagesContainer.querySelector('[data-placeholder="true"]');
       if (ph) ph.remove();
-      // Create assistant bubble
       currentStreamingElement = createAssistantBubble();
       messagesContainer.appendChild(currentStreamingElement);
       accumulatedContent = "";
@@ -481,18 +513,30 @@
       return;
     }
 
+    if (et === "thinking") {
+      const text = (data.data && data.data.text) || "";
+      if (!text) return;
+      ensureBubble();
+      const thinkingBlock = currentStreamingElement.querySelector(".thinking-block");
+      if (thinkingBlock) {
+        thinkingBlock.classList.remove("hidden");
+        if (!isThinking) {
+          isThinking = true;
+          thinkingStartTime = Date.now();
+        }
+        const contentEl = thinkingBlock.querySelector(".thinking-content");
+        if (contentEl) contentEl.textContent += text;
+      }
+      scrollToBottom();
+      return;
+    }
+
     if (et === "token") {
       const tokenText = (data.data && data.data.text) || "";
       if (!tokenText) return;
-      if (!currentStreamingElement) {
-        // Create bubble on first token if no message_start received
-        const ph = messagesContainer.querySelector('[data-placeholder="true"]');
-        if (ph) ph.remove();
-        currentStreamingElement = createAssistantBubble();
-        messagesContainer.appendChild(currentStreamingElement);
-        accumulatedContent = "";
-        startStreamingTimeout();
-      }
+      ensureBubble();
+      // Auto-collapse thinking block on first token
+      if (isThinking) collapseThinking();
       accumulatedContent += tokenText;
       const contentEl = currentStreamingElement.querySelector(".message-content");
       if (contentEl) {
@@ -503,20 +547,54 @@
     }
 
     if (et === "tool_start") {
-      if (toolIndicator) {
-        const toolName = (data.data && data.data.tool_name) || "search_documents";
-        toolIndicatorText.textContent = toolName === "search_documents" ? "Searching documents..." : "Using tool...";
-        toolIndicator.classList.remove("hidden");
+      const toolName = (data.data && data.data.tool_name) || "tool";
+      const args = (data.data && data.data.arguments) || {};
+      const toolId = (data.data && data.data.tool_call_id) || "";
+      ensureBubble();
+      const container = currentStreamingElement.querySelector(".tool-cards");
+      if (container) {
+        const card = document.createElement("div");
+        card.className = "tool-card flex items-center gap-1.5 text-xs text-body/70 py-1";
+        card.setAttribute("data-tool-id", toolId);
+        let displayText = "Using tool...";
+        if (toolName === "search_documents" && args.query) {
+          displayText = 'Searching: \u201c' + escapeHtml(args.query).substring(0, 60) + '\u201d';
+        } else if (toolName === "read_document") {
+          displayText = "Reading document...";
+        }
+        card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + '</span>';
+        container.appendChild(card);
       }
+      scrollToBottom();
       return;
     }
 
     if (et === "tool_end") {
-      if (toolIndicator) toolIndicator.classList.add("hidden");
+      const toolId = (data.data && data.data.tool_call_id) || "";
+      const toolName = (data.data && data.data.tool_name) || "";
+      const resultStr = (data.data && data.data.result) || "";
+      if (currentStreamingElement) {
+        const card = currentStreamingElement.querySelector('.tool-card[data-tool-id="' + toolId + '"]');
+        if (card) {
+          let summary = "Done";
+          try {
+            const result = JSON.parse(resultStr);
+            if (toolName === "search_documents" && result.count !== undefined) {
+              summary = "Found " + result.count + " result" + (result.count !== 1 ? "s" : "");
+            } else if (toolName === "read_document" && result.documents) {
+              summary = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : "");
+            }
+          } catch (e) {}
+          const prevText = card.querySelector(".tool-card-text");
+          const prevLabel = prevText ? prevText.textContent : "";
+          card.innerHTML = '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="tool-card-text">' + escapeHtml(prevLabel) + ' \u2014 ' + escapeHtml(summary) + '</span>';
+        }
+      }
       return;
     }
 
     if (et === "message_end") {
+      if (isThinking) collapseThinking();
       if (currentStreamingElement) {
         const contentEl = currentStreamingElement.querySelector(".message-content");
         if (contentEl && accumulatedContent) {
@@ -526,7 +604,6 @@
         accumulatedContent = "";
       }
       clearTimeout(streamingTimeout);
-      if (toolIndicator) toolIndicator.classList.add("hidden");
       enableInput();
       scrollToBottom();
       return;
@@ -535,6 +612,7 @@
 
   function finishStreaming(suffix) {
     if (!currentStreamingElement) return;
+    if (isThinking) collapseThinking();
     const contentEl = currentStreamingElement.querySelector(".message-content");
     if (contentEl) {
       if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent);
@@ -543,7 +621,6 @@
     currentStreamingElement = null;
     accumulatedContent = "";
     clearTimeout(streamingTimeout);
-    if (toolIndicator) toolIndicator.classList.add("hidden");
   }
 
   function enableInput() {
@@ -573,9 +650,24 @@
           <span class="text-sm font-semibold text-heading">Wilfred</span>
           <span class="text-sm text-body">${ts}</span>
         </div>
+        <div class="thinking-block hidden mt-2">
+          <button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none">
+            <svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            <span class="thinking-label">Thinking...</span>
+          </button>
+          <div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto"></div>
+        </div>
+        <div class="tool-cards mt-1 space-y-1"></div>
         <div class="text-sm text-body mt-2 message-content markdown-content"></div>
       </div>
     `;
+    // Wire up thinking toggle
+    const toggle = div.querySelector(".thinking-toggle");
+    if (toggle) {
+      toggle.addEventListener("click", function() {
+        toggle.closest(".thinking-block").classList.toggle("collapsed");
+      });
+    }
     return div;
   }
 

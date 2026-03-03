@@ -40,6 +40,27 @@ class BaseLangChainChatModel(ChatModel):
             "tools": tool_schemas or [],
         }
 
+    def _get_streaming_client(self, request: ChatRequest):
+        """Return the LangChain client for streaming.
+
+        Subclasses may override to return a differently-configured client
+        (e.g. with thinking/reasoning enabled) based on *request.params*.
+        """
+        client = self._client
+        if request.tool_schemas:
+            client = client.bind_tools(request.tool_schemas)
+        return client
+
+    def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
+        """Extract ``(event_type, data)`` pairs from a single LangChain chunk.
+
+        Override in provider subclasses to handle thinking/reasoning content.
+        """
+        text = getattr(chunk, "content", "") or ""
+        if not text:
+            return []
+        return [("token", {"text": str(text)})]
+
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages)
         client = self._client
@@ -77,9 +98,7 @@ class BaseLangChainChatModel(ChatModel):
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         lc_messages = to_langchain_messages(request.messages)
-        client = self._client
-        if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas)
+        client = self._get_streaming_client(request)
         run_id = request.context.run_id if request.context else ""
         sequence = 1
 
@@ -106,16 +125,15 @@ class BaseLangChainChatModel(ChatModel):
                     )
                     sequence += 1
                     raw_prompt_yielded = True
-                text = getattr(chunk, "content", "") or ""
-                if not text:
-                    continue
-                yield StreamEvent(
-                    event_type="token",
-                    data={"text": str(text)},
-                    sequence=sequence,
-                    run_id=run_id,
-                )
-                sequence += 1
+
+                for event_type, event_data in self._parse_chunk(chunk):
+                    yield StreamEvent(
+                        event_type=event_type,
+                        data=event_data,
+                        sequence=sequence,
+                        run_id=run_id,
+                    )
+                    sequence += 1
         except Exception as exc:
             yield StreamEvent(
                 event_type="error",

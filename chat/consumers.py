@@ -127,11 +127,14 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             conversation_id=self.project.pk,
         )
 
+        from django.conf import settings as django_settings
+
         request = ChatRequest(
             messages=messages,
             stream=True,
             tools=["search_documents", "read_document"],
             context=context,
+            params={"thinking": getattr(django_settings, "LLM_ENABLE_THINKING", False)},
         )
 
         service = get_llm_service()
