@@ -36,12 +36,4 @@ class Migration(migrations.Migration):
             field=models.PositiveIntegerField(default=0),
         ),
         migrations.RunPython(backfill_doc_index, migrations.RunPython.noop),
-        migrations.AddConstraint(
-            model_name="projectdocument",
-            constraint=models.UniqueConstraint(
-                condition=models.Q(("doc_index__gt", 0)),
-                fields=("project", "doc_index"),
-                name="documents_unique_doc_index_per_project",
-            ),
-        ),
     ]
