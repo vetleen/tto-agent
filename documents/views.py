@@ -139,22 +139,29 @@ def project_chat(request, project_id):
 
     from chat.models import ChatThread
 
-    threads = list(
-        ChatThread.objects.filter(project=project, created_by=request.user)
-        .order_by("-updated_at")
-    )
-
     thread = None
     chat_messages = []
 
     if request.GET.get("thread"):
-        # Load a specific thread by UUID
         thread_id = request.GET["thread"]
         thread = ChatThread.objects.filter(
             id=thread_id, project=project, created_by=request.user
         ).first()
         if thread:
+            # Auto-restore archived threads when opened
+            if thread.is_archived:
+                thread.is_archived = False
+                thread.save(update_fields=["is_archived"])
             chat_messages = list(thread.messages.order_by("created_at")[:100])
+
+    threads = list(
+        ChatThread.objects.filter(project=project, created_by=request.user, is_archived=False)
+        .order_by("-updated_at")
+    )
+    archived_threads = list(
+        ChatThread.objects.filter(project=project, created_by=request.user, is_archived=True)
+        .order_by("-updated_at")
+    )
 
     return render(
         request,
@@ -164,9 +171,35 @@ def project_chat(request, project_id):
             "active_tab": "chat",
             "thread": thread,
             "threads": threads,
+            "archived_threads": archived_threads,
             "messages": chat_messages,
         },
     )
+
+
+@login_required
+@require_POST
+def thread_delete(request, project_id, thread_id):
+    from chat.models import ChatThread
+
+    thread = get_object_or_404(
+        ChatThread, id=thread_id, project__uuid=project_id, created_by=request.user
+    )
+    thread.delete()
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_POST
+def thread_archive(request, project_id, thread_id):
+    from chat.models import ChatThread
+
+    thread = get_object_or_404(
+        ChatThread, id=thread_id, project__uuid=project_id, created_by=request.user
+    )
+    thread.is_archived = not thread.is_archived
+    thread.save(update_fields=["is_archived"])
+    return JsonResponse({"ok": True, "is_archived": thread.is_archived})
 
 
 @login_required

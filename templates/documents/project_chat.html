@@ -27,19 +27,55 @@
     </ul>
     <ul id="thread-list" class="space-y-2 font-medium pb-4">
       {% for t in threads %}
-      <li>
+      <li class="relative group" data-thread-li="{{ t.id }}">
         <a href="{% url 'project_chat' project_id=project.uuid %}?thread={{ t.id }}"
-           class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium{% endif %}"
+           class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium{% endif %}"
            data-thread-id="{{ t.id }}"
            title="{{ t.title|default:t }}">
           <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
           <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
         </a>
+        <button type="button"
+                class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium {% if thread and t.id == thread.id %}flex{% else %}hidden group-hover:flex{% endif %} items-center justify-center"
+                data-thread-id="{{ t.id }}" data-archived="false">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+        </button>
       </li>
       {% empty %}
       <li class="px-2 py-1.5 text-sm text-body" data-empty="true">No conversations yet.</li>
       {% endfor %}
     </ul>
+    {% if archived_threads %}
+    <div id="archived-section" class="border-t border-default pt-2 mt-2">
+      <button id="archived-toggle" type="button" class="flex items-center w-full px-2 py-1.5 text-xs text-body hover:text-heading">
+        <svg id="archived-chevron" class="w-3 h-3 me-1.5 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        Archived (<span id="archived-count">{{ archived_threads|length }}</span>)
+      </button>
+      <ul id="archived-thread-list" class="hidden space-y-2 font-medium mt-2">
+        {% for t in archived_threads %}
+        <li class="relative group" data-thread-li="{{ t.id }}">
+          <a href="{% url 'project_chat' project_id=project.uuid %}?thread={{ t.id }}"
+             class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"
+             data-thread-id="{{ t.id }}"
+             title="{{ t.title|default:t }}">
+            <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+            <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
+          </a>
+          <button type="button"
+                  class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium hidden group-hover:flex items-center justify-center"
+                  data-thread-id="{{ t.id }}" data-archived="true">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+          </button>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {# Shared thread action dropdown menu #}
+  <div id="thread-menu" class="hidden absolute z-50 w-32 bg-neutral-primary border border-default rounded-base shadow-lg py-1" style="top:0;left:0;">
+    <button type="button" data-action="archive" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Archive</button>
+    <button type="button" data-action="delete" class="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-neutral-tertiary">Delete</button>
   </div>
 </aside>
 
@@ -309,16 +345,26 @@
     if (threadList.querySelector('[data-thread-id="' + threadId + '"]')) return;
 
     var li = document.createElement("li");
+    li.className = "relative group";
+    li.setAttribute("data-thread-li", threadId);
     var a = document.createElement("a");
     a.href = "?thread=" + threadId;
-    a.className = "flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-secondary-soft text-heading font-medium";
+    a.className = "flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-secondary-soft text-heading font-medium";
     a.setAttribute("data-thread-id", threadId);
     a.title = title || "New chat";
     a.innerHTML = '<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><span class="ms-3 truncate">' + escapeHtml(title || "New chat") + "</span>";
     li.appendChild(a);
 
+    var menuBtn = document.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.className = "thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium flex items-center justify-center";
+    menuBtn.setAttribute("data-thread-id", threadId);
+    menuBtn.setAttribute("data-archived", "false");
+    menuBtn.innerHTML = '<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>';
+    li.appendChild(menuBtn);
+
     threadList.querySelectorAll("a").forEach(function(el) {
-      el.className = "flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group";
+      el.className = "flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group";
     });
 
     threadList.insertBefore(li, threadList.firstChild);
@@ -728,6 +774,168 @@
 
     setTimeout(function() { locked = false; }, 500);
   });
+
+  // -- Thread actions (delete / archive / restore) --
+  const threadMenu = document.getElementById("thread-menu");
+  const archivedSection = document.getElementById("archived-section");
+  const archivedToggle = document.getElementById("archived-toggle");
+  const archivedList = document.getElementById("archived-thread-list");
+  const archivedChevron = document.getElementById("archived-chevron");
+  const archivedCountEl = document.getElementById("archived-count");
+  let menuThreadId = null;
+  let menuIsArchived = false;
+
+  // Toggle archived section
+  if (archivedToggle) {
+    archivedToggle.addEventListener("click", function() {
+      archivedList.classList.toggle("hidden");
+      if (archivedChevron) {
+        archivedChevron.style.transform = archivedList.classList.contains("hidden") ? "" : "rotate(90deg)";
+      }
+    });
+  }
+
+  // Open the menu near a ... button
+  function openThreadMenu(btn) {
+    menuThreadId = btn.getAttribute("data-thread-id");
+    menuIsArchived = btn.getAttribute("data-archived") === "true";
+    const archiveBtn = threadMenu.querySelector('[data-action="archive"]');
+    archiveBtn.textContent = menuIsArchived ? "Restore" : "Archive";
+    const rect = btn.getBoundingClientRect();
+    const sidebar = btn.closest("aside");
+    const sidebarRect = sidebar.getBoundingClientRect();
+    threadMenu.style.top = (rect.bottom - sidebarRect.top) + "px";
+    threadMenu.style.left = (rect.left - sidebarRect.left) + "px";
+    threadMenu.classList.remove("hidden");
+  }
+
+  // Delegate click on ... buttons
+  document.addEventListener("click", function(e) {
+    const btn = e.target.closest(".thread-menu-btn");
+    if (btn) {
+      e.preventDefault();
+      e.stopPropagation();
+      openThreadMenu(btn);
+      return;
+    }
+    // Close menu on outside click
+    if (!e.target.closest("#thread-menu")) {
+      threadMenu.classList.add("hidden");
+    }
+  });
+
+  // Menu action handlers
+  threadMenu.addEventListener("click", function(e) {
+    const actionBtn = e.target.closest("[data-action]");
+    if (!actionBtn || !menuThreadId) return;
+    const action = actionBtn.getAttribute("data-action");
+    threadMenu.classList.add("hidden");
+
+    if (action === "delete") {
+      if (!confirm("Delete this chat? This cannot be undone.")) return;
+      fetch(`/projects/${PROJECT_UUID}/chat/threads/${menuThreadId}/delete/`, {
+        method: "POST",
+        headers: {"X-CSRFToken": getCSRFToken()},
+      }).then(function(res) {
+        if (!res.ok) return;
+        removeThreadLi(menuThreadId);
+        if (activeThreadId === menuThreadId) {
+          window.location.href = "{% url 'project_chat' project_id=project.uuid %}";
+        }
+      });
+    }
+
+    if (action === "archive") {
+      fetch(`/projects/${PROJECT_UUID}/chat/threads/${menuThreadId}/archive/`, {
+        method: "POST",
+        headers: {"X-CSRFToken": getCSRFToken()},
+      }).then(function(res) { return res.json(); }).then(function(data) {
+        if (!data.ok) return;
+        // If archiving the active thread, redirect to new chat immediately
+        if (activeThreadId === menuThreadId && data.is_archived) {
+          window.location.href = "{% url 'project_chat' project_id=project.uuid %}";
+          return;
+        }
+        moveThread(menuThreadId, data.is_archived);
+      });
+    }
+  });
+
+  function getCSRFToken() {
+    const cookie = document.cookie.split(";").find(function(c) { return c.trim().startsWith("csrftoken="); });
+    return cookie ? cookie.split("=")[1] : "";
+  }
+
+  function removeThreadLi(threadId) {
+    const li = document.querySelector('[data-thread-li="' + threadId + '"]');
+    if (li) li.remove();
+    updateArchivedCount();
+    showEmptyIfNeeded();
+  }
+
+  function moveThread(threadId, toArchived) {
+    const li = document.querySelector('[data-thread-li="' + threadId + '"]');
+    if (!li) return;
+    const menuBtn = li.querySelector(".thread-menu-btn");
+
+    if (toArchived) {
+      if (menuBtn) menuBtn.setAttribute("data-archived", "true");
+      ensureArchivedSection();
+      document.getElementById("archived-thread-list").appendChild(li);
+    } else {
+      if (menuBtn) menuBtn.setAttribute("data-archived", "false");
+      threadList.insertBefore(li, threadList.firstChild);
+    }
+    updateArchivedCount();
+    showEmptyIfNeeded();
+  }
+
+  function ensureArchivedSection() {
+    if (document.getElementById("archived-section")) return;
+    // Create archived section dynamically if it doesn't exist yet
+    const sidebar = document.querySelector("#chat-sidebar .overflow-y-auto");
+    const div = document.createElement("div");
+    div.id = "archived-section";
+    div.className = "border-t border-default pt-2 mt-2";
+    div.innerHTML = '<button id="archived-toggle" type="button" class="flex items-center w-full px-2 py-1.5 text-xs text-body hover:text-heading"><svg id="archived-chevron" class="w-3 h-3 me-1.5 transition-transform duration-200" style="transform:rotate(90deg)" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>Archived (<span id="archived-count">0</span>)</button><ul id="archived-thread-list" class="space-y-2 font-medium mt-2"></ul>';
+    sidebar.appendChild(div);
+    // Wire up toggle and re-assign references
+    const toggle = div.querySelector("#archived-toggle");
+    const chevron = div.querySelector("#archived-chevron");
+    const list = div.querySelector("#archived-thread-list");
+    toggle.addEventListener("click", function() {
+      list.classList.toggle("hidden");
+      chevron.style.transform = list.classList.contains("hidden") ? "" : "rotate(90deg)";
+    });
+  }
+
+  function updateArchivedCount() {
+    const section = document.getElementById("archived-section");
+    const countEl = document.getElementById("archived-count");
+    const list = document.getElementById("archived-thread-list");
+    if (!countEl || !list) return;
+    const count = list.querySelectorAll("[data-thread-li]").length;
+    countEl.textContent = count;
+    if (section && count === 0) {
+      section.classList.add("hidden");
+    } else if (section) {
+      section.classList.remove("hidden");
+    }
+  }
+
+  function showEmptyIfNeeded() {
+    const hasThreads = threadList.querySelector("[data-thread-li]");
+    const emptyEl = threadList.querySelector('[data-empty="true"]');
+    if (!hasThreads && !emptyEl) {
+      const li = document.createElement("li");
+      li.className = "px-2 py-1.5 text-sm text-body";
+      li.setAttribute("data-empty", "true");
+      li.textContent = "No conversations yet.";
+      threadList.appendChild(li);
+    } else if (hasThreads && emptyEl) {
+      emptyEl.remove();
+    }
+  }
 
   // -- Init --
   connect();

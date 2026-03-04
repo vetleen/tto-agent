@@ -22,6 +22,8 @@ class ChatThread(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    is_archived = models.BooleanField(default=False)
+
     # Rolling summary of older messages
     summary = models.TextField(blank=True, default="")
     summary_token_count = models.PositiveIntegerField(default=0)
