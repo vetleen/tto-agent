@@ -27,6 +27,8 @@ DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_aut
 DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_auth.LoginTestCase.test_login  # Single test
 ```
 
+**Create tests:** When planning new features always consider what should be tested, and ensure the plan includes creating good test coverage for the new feature. 
+
 **Notes:**
 - Tests can take 3+ minutes to run. Use a generous timeout (e.g., 5–10 min) or run in background.
 - Tracebacks in test output (e.g., "DB locked", "Failed to write LLM call log") are **expected** — they come from tests that verify error-handling paths, not from actual failures. Check the final summary line for pass/fail counts.

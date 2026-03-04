@@ -55,10 +55,11 @@ def project_list(request):
         if name:
             base_slug = slugify(name) or "project"
             n = 0
+            project = None
             while True:
                 slug = base_slug if n == 0 else f"{base_slug}-{n}"
                 try:
-                    Project.objects.create(name=name, slug=slug, created_by=request.user)
+                    project = Project.objects.create(name=name, slug=slug, created_by=request.user)
                     break
                 except IntegrityError:
                     # Handle concurrent creates picking the same slug.
@@ -66,9 +67,15 @@ def project_list(request):
                     if n > 50:
                         messages.error(request, "Could not create project right now. Please try again.")
                         break
+            if project:
+                return redirect("project_chat", project_id=project.uuid)
         return redirect("project_list")
-    projects = Project.objects.filter(created_by=request.user).order_by("-updated_at")
-    return render(request, "documents/project_list.html", {"projects": projects})
+    projects = Project.objects.filter(created_by=request.user, is_archived=False).order_by("-updated_at")
+    archived_projects = Project.objects.filter(created_by=request.user, is_archived=True).order_by("-updated_at")
+    return render(request, "documents/project_list.html", {
+        "projects": projects,
+        "archived_projects": archived_projects,
+    })
 
 
 @login_required
@@ -99,6 +106,19 @@ def project_rename(request, project_id):
     project.name = name
     project.save(update_fields=["name", "updated_at"])
     messages.success(request, "Project renamed.")
+    return redirect("project_list")
+
+
+@login_required
+@require_POST
+def project_archive(request, project_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return redirect("project_list")
+    project.is_archived = not project.is_archived
+    project.save(update_fields=["is_archived", "updated_at"])
+    label = "archived" if project.is_archived else "restored"
+    messages.success(request, f"Project {label}.")
     return redirect("project_list")
 
 
@@ -155,14 +175,26 @@ def project_documents(request, project_id):
     if not _user_owns_project(request.user, project):
         return redirect("project_list")
     documents = list(
-        project.documents.exclude(status=ProjectDocument.Status.FAILED).order_by("-uploaded_at")
+        project.documents.exclude(status=ProjectDocument.Status.FAILED)
+        .filter(is_archived=False).order_by("-uploaded_at")
     )
     for doc in documents:
+        doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
+    archived_documents = list(
+        project.documents.exclude(status=ProjectDocument.Status.FAILED)
+        .filter(is_archived=True).order_by("-uploaded_at")
+    )
+    for doc in archived_documents:
         doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
     return render(
         request,
         "documents/project_documents.html",
-        {"project": project, "documents": documents, "active_tab": "documents"},
+        {
+            "project": project,
+            "documents": documents,
+            "archived_documents": archived_documents,
+            "active_tab": "documents",
+        },
     )
 
 
@@ -292,6 +324,20 @@ def document_rename(request, project_id, document_id):
     doc.original_filename = _safe_original_filename(name, max_length=75)
     doc.save(update_fields=["original_filename", "updated_at"])
     messages.success(request, "Document renamed.")
+    return redirect("project_documents", project_id=project.uuid)
+
+
+@login_required
+@require_POST
+def document_archive(request, project_id, document_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return redirect("project_list")
+    doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
+    doc.is_archived = not doc.is_archived
+    doc.save(update_fields=["is_archived", "updated_at"])
+    label = "archived" if doc.is_archived else "restored"
+    messages.success(request, f"Document {label}.")
     return redirect("project_documents", project_id=project.uuid)
 
 

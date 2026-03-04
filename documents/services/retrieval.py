@@ -37,6 +37,7 @@ def get_chunks_by_project(project_id: int) -> list[dict[str, Any]]:
     chunks = (
         ProjectDocumentChunk.objects.filter(document__project_id=project_id)
         .exclude(document__status=ProjectDocument.Status.FAILED)
+        .exclude(document__is_archived=True)
         .select_related("document")
         .order_by("document_id", "chunk_index")
     )
@@ -71,6 +72,7 @@ def fulltext_search_chunks(
             search_vector__isnull=False,
         )
         .exclude(document__status=ProjectDocument.Status.FAILED)
+        .exclude(document__is_archived=True)
         .annotate(rank=SearchRank("search_vector", search_query))
         .filter(rank__gt=0)
         .order_by("-rank")
@@ -140,6 +142,19 @@ def hybrid_search_chunks(
             )
         except Exception:
             logger.exception("hybrid_search: fulltext search failed, continuing with semantic only")
+
+    # ---- Exclude archived documents from semantic results ----------------------
+    if semantic_results:
+        archived_doc_ids = set(
+            ProjectDocument.objects.filter(
+                project_id=project_id, is_archived=True,
+            ).values_list("pk", flat=True)
+        )
+        if archived_doc_ids:
+            semantic_results = [
+                doc for doc in semantic_results
+                if (getattr(doc, "metadata", {}) or {}).get("document_id") not in archived_doc_ids
+            ]
 
     # ---- Fuse with RRF -------------------------------------------------------
     # Keyed by chunk DB id → merged dict

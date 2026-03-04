@@ -302,6 +302,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
         total_count = ProjectDocument.objects.filter(
             project_id=project_id,
             status=ProjectDocument.Status.READY,
+            is_archived=False,
         ).count()
 
         if total_count == 0:
@@ -331,6 +332,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             docs = ProjectDocument.objects.filter(
                 pk__in=seen_doc_ids,
                 status=ProjectDocument.Status.READY,
+                is_archived=False,
             ).values("pk", "doc_index", "original_filename", "description", "token_count")
 
             doc_map = {d["pk"]: d for d in docs}
@@ -353,6 +355,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
         return ProjectDocument.objects.filter(
             project_id=project_id,
             status=ProjectDocument.Status.READY,
+            is_archived=False,
         ).count()
 
     # -- Database helpers --

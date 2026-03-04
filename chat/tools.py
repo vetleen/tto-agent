@@ -125,6 +125,7 @@ class ReadDocumentTool:
                 doc = ProjectDocument.objects.get(
                     project_id=project_pk,
                     doc_index=idx,
+                    is_archived=False,
                 )
             except ProjectDocument.DoesNotExist:
                 documents.append({

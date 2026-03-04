@@ -42,6 +42,12 @@
                     data-name="{{ doc.original_filename|escapejs }}">
               Rename
             </button>
+            <form method="post" action="{% url 'document_archive' project_id=project.uuid document_id=doc.id %}" class="p-0">
+              {% csrf_token %}
+              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+                Archive
+              </button>
+            </form>
             <form method="post" action="{% url 'document_delete' project_id=project.uuid document_id=doc.id %}" class="p-0">
               {% csrf_token %}
               <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this document?');">
@@ -56,6 +62,48 @@
       {% endfor %}
     </div>
   </section>
+
+  {% if archived_documents %}
+  <section class="mt-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
+    <button type="button" class="flex items-center text-lg font-medium text-body hover:text-heading mb-4" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-90');">
+      <svg class="w-4 h-4 me-1.5 shrink-0 transition-transform" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
+      Archived documents ({{ archived_documents|length }})
+    </button>
+    <div class="hidden w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+      {% for doc in archived_documents %}
+      <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.first %}rounded-t-base{% endif %} {% if forloop.last %}rounded-b-base{% endif %}">
+        <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
+        <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
+        <div class="relative shrink-0 ms-2">
+          <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Document options" data-dropdown-toggle="dropdown-archived-doc-{{ doc.id }}">
+            <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+          </button>
+          <div id="dropdown-archived-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+            <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+                    data-rename-modal="rename-document-modal"
+                    data-action="{% url 'document_rename' project_id=project.uuid document_id=doc.id %}"
+                    data-name="{{ doc.original_filename|escapejs }}">
+              Rename
+            </button>
+            <form method="post" action="{% url 'document_archive' project_id=project.uuid document_id=doc.id %}" class="p-0">
+              {% csrf_token %}
+              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+                Restore
+              </button>
+            </form>
+            <form method="post" action="{% url 'document_delete' project_id=project.uuid document_id=doc.id %}" class="p-0">
+              {% csrf_token %}
+              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this document?');">
+                Delete
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <!-- Hidden trigger for rename document modal -->
   <button type="button" id="rename-document-modal-trigger" class="hidden" data-modal-target="rename-document-modal" data-modal-show="rename-document-modal" aria-label="Open rename modal"></button>

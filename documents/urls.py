@@ -8,6 +8,7 @@ urlpatterns = [
     path("<uuid:project_id>/chat/", views.project_chat, name="project_chat"),
     path("<uuid:project_id>/delete/", views.project_delete, name="project_delete"),
     path("<uuid:project_id>/rename/", views.project_rename, name="project_rename"),
+    path("<uuid:project_id>/archive/", views.project_archive, name="project_archive"),
     path("<uuid:project_id>/documents/upload/", views.document_upload, name="document_upload"),
     path(
         "<uuid:project_id>/documents/<int:document_id>/delete/",
@@ -18,6 +19,11 @@ urlpatterns = [
         "<uuid:project_id>/documents/<int:document_id>/rename/",
         views.document_rename,
         name="document_rename",
+    ),
+    path(
+        "<uuid:project_id>/documents/<int:document_id>/archive/",
+        views.document_archive,
+        name="document_archive",
     ),
     path(
         "<uuid:project_id>/documents/<int:document_id>/chunks/",

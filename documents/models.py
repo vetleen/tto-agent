@@ -17,6 +17,7 @@ class Project(models.Model):
         on_delete=models.CASCADE,
         related_name="projects",
     )
+    is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -64,6 +65,7 @@ class ProjectDocument(models.Model):
     chunking_strategy = models.CharField(max_length=64, blank=True)
     embedding_model = models.CharField(max_length=128, blank=True)
     description = models.TextField(blank=True, default="")
+    is_archived = models.BooleanField(default=False)
     doc_index = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
