@@ -1,0 +1,153 @@
+{% extends "_base.html" %}
+
+{% block content %}
+<main class="mx-auto max-w-2xl px-6 py-16">
+  <h1 class="text-2xl font-semibold text-heading">{{ org.name }} &mdash; Settings</h1>
+
+  <!-- Allowed Models -->
+  <section class="mt-8">
+    <h2 class="text-lg font-medium text-heading">Allowed Models</h2>
+    <p class="mt-1 text-sm text-body">Select which models are available to members of this organization.</p>
+
+    <div id="allowed-models-list" class="mt-4 space-y-2">
+      {% for model in system_models %}
+      <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
+        <input
+          type="checkbox"
+          class="allowed-model-checkbox rounded border-default text-brand focus:ring-brand-medium"
+          value="{{ model }}"
+          {% if model in org_allowed or not org_allowed %}checked{% endif %}
+        >
+        <span class="text-sm text-body">{{ model }}</span>
+      </label>
+      {% empty %}
+      <p class="text-sm text-body italic">No models configured in system allowlist (LLM_ALLOWED_MODELS).</p>
+      {% endfor %}
+    </div>
+    {% if system_models %}
+    <button
+      id="save-allowed-models"
+      class="mt-4 rounded-base bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-strong focus:outline-none focus:ring-2 focus:ring-brand-medium"
+    >
+      Save allowed models
+    </button>
+    {% endif %}
+  </section>
+
+  <!-- Model Defaults -->
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Model Defaults</h2>
+    <p class="mt-1 text-sm text-body">Choose the default model for each tier. Members can override these in their personal settings.</p>
+
+    <div class="mt-4 space-y-4">
+      {% for tier in tiers %}
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="org-model-{{ tier.key }}">
+          {{ tier.label }}
+        </label>
+        <p class="text-xs text-body mt-0.5">{{ tier.desc }}</p>
+        <select
+          id="org-model-{{ tier.key }}"
+          data-tier="{{ tier.key }}"
+          class="org-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">System default</option>
+          {% for model in system_models %}
+          <option value="{{ model }}">{{ model }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- Tools -->
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Tools</h2>
+    <p class="mt-1 text-sm text-body">Enable or disable tools for all members. Disabled tools will not be available in chat.</p>
+
+    <div class="mt-4 space-y-2">
+      {% for tool in org_tools %}
+      <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
+        <div>
+          <span class="text-sm font-medium text-heading">{{ tool.name }}</span>
+          {% if tool.description %}
+          <p class="text-xs text-body mt-0.5">{{ tool.description }}</p>
+          {% endif %}
+        </div>
+        <input
+          type="checkbox"
+          class="tool-toggle rounded border-default text-brand focus:ring-brand-medium"
+          data-tool="{{ tool.name }}"
+          {% if tool.enabled %}checked{% endif %}
+        >
+      </label>
+      {% empty %}
+      <p class="text-sm text-body italic">No tools registered.</p>
+      {% endfor %}
+    </div>
+  </section>
+</main>
+
+<script>
+(function() {
+  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var orgModels = {{ org_models|safe }};
+
+  // Set initial org model select values
+  document.querySelectorAll('.org-model-select').forEach(function(sel) {
+    var tier = sel.dataset.tier;
+    sel.value = (orgModels && orgModels[tier]) || '';
+  });
+
+  // Save allowed models
+  var saveBtn = document.getElementById('save-allowed-models');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', function() {
+      var checked = [];
+      document.querySelectorAll('.allowed-model-checkbox:checked').forEach(function(cb) {
+        checked.push(cb.value);
+      });
+      fetch('{% url "accounts:org_allowed_models_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowed_models: checked }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+        else saveBtn.textContent = 'Saved!';
+        setTimeout(function() { saveBtn.textContent = 'Save allowed models'; }, 2000);
+      });
+    });
+  }
+
+  // Org model tier updates
+  document.querySelectorAll('.org-model-select').forEach(function(sel) {
+    sel.addEventListener('change', function() {
+      fetch('{% url "accounts:org_models_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tier: this.dataset.tier, model: this.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  });
+
+  // Tool toggles
+  document.querySelectorAll('.tool-toggle').forEach(function(cb) {
+    cb.addEventListener('change', function() {
+      fetch('{% url "accounts:org_tools_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.dataset.tool, enabled: this.checked }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  });
+})();
+</script>
+{% endblock content %}

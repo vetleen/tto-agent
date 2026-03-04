@@ -21,6 +21,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
         self.project_id = str(self.scope["url_route"]["kwargs"]["project_id"])
         self.project = None
         self.user = self.scope.get("user")
+        self.resolved_prefs = None
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
@@ -33,7 +34,15 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4404)
             return
 
+        # Resolve user/org/system preferences
+        self.resolved_prefs = await self._resolve_preferences()
+
         await self.accept()
+
+    @database_sync_to_async
+    def _resolve_preferences(self):
+        from core.preferences import get_preferences
+        return get_preferences(self.user)
 
     async def receive(self, text_data=None, bytes_data=None):
         if not text_data:
@@ -129,10 +138,12 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
 
         from django.conf import settings as django_settings
 
+        prefs = self.resolved_prefs
         request = ChatRequest(
             messages=messages,
+            model=prefs.primary_model if prefs else None,
             stream=True,
-            tools=["search_documents", "read_document"],
+            tools=prefs.allowed_tools if prefs else ["search_documents", "read_document"],
             context=context,
             params={"thinking": getattr(django_settings, "LLM_ENABLE_THINKING", False)},
         )
@@ -420,11 +431,12 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
                 user_id=self.user.pk,
                 conversation_id=self.project.pk,
             )
-            from django.conf import settings as django_settings
+            prefs = self.resolved_prefs
+            mid_model = prefs.mid_model if prefs else None
 
             request = ChatRequest(
                 messages=[Message(role="user", content=prompt)],
-                model=django_settings.LLM_DEFAULT_MID_MODEL,
+                model=mid_model or None,
                 stream=False,
                 tools=[],
                 context=context,

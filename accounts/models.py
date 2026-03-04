@@ -85,6 +85,7 @@ class UserSettings(models.Model):
         choices=Theme.choices,
         default=Theme.LIGHT,
     )
+    preferences = models.JSONField(default=dict, blank=True)
 
     def __str__(self) -> str:
         return f"Settings for {self.user}"
@@ -93,6 +94,7 @@ class UserSettings(models.Model):
 class Organization(models.Model):
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=100, unique=True)
+    preferences = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ("name",)

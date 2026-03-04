@@ -16,7 +16,15 @@ from .views.auth import (
     verify_email_sent,
     verify_required,
 )
-from .views.settings import theme_update
+from .views.settings import (
+    org_allowed_models_update,
+    org_models_update,
+    org_settings_page,
+    org_tools_update,
+    preferences_models_update,
+    settings_page,
+    theme_update,
+)
 
 app_name = "accounts"
 
@@ -31,7 +39,13 @@ urlpatterns = [
     path("verify-email/<str:token>/", verify_email, name="verify_email"),
     path("verify-email/resend/", resend_verification, name="resend_verification"),
     path("verify-required/", verify_required, name="verify_required"),
+    path("settings/", settings_page, name="settings"),
     path("settings/theme/", theme_update, name="theme_update"),
+    path("settings/models/", preferences_models_update, name="preferences_models_update"),
+    path("org/settings/", org_settings_page, name="org_settings"),
+    path("org/settings/allowed-models/", org_allowed_models_update, name="org_allowed_models_update"),
+    path("org/settings/models/", org_models_update, name="org_models_update"),
+    path("org/settings/tools/", org_tools_update, name="org_tools_update"),
     path("delete/", delete_account, name="account_delete"),
     path(
         "password_change/",

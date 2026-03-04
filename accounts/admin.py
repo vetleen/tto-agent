@@ -5,6 +5,13 @@ from django.utils import timezone
 from .models import EmailVerificationToken, Membership, Organization, Scope, User
 
 
+class MembershipInline(admin.TabularInline):
+    model = Membership
+    extra = 1
+    autocomplete_fields = ("org",)
+    fields = ("org", "role")
+
+
 @admin.register(User)
 class UserAdmin(DjangoUserAdmin):
     model = User
@@ -17,6 +24,8 @@ class UserAdmin(DjangoUserAdmin):
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")}),
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
+    readonly_fields = ("date_joined",)
+    inlines = (MembershipInline,)
 
 
 @admin.register(EmailVerificationToken)
