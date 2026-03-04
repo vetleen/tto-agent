@@ -9,6 +9,9 @@ urlpatterns = [
     path("<uuid:project_id>/delete/", views.project_delete, name="project_delete"),
     path("<uuid:project_id>/rename/", views.project_rename, name="project_rename"),
     path("<uuid:project_id>/archive/", views.project_archive, name="project_archive"),
+    path("<uuid:project_id>/documents/bulk-delete/", views.document_bulk_delete, name="document_bulk_delete"),
+    path("<uuid:project_id>/documents/bulk-archive/", views.document_bulk_archive, name="document_bulk_archive"),
+    path("<uuid:project_id>/documents/status/", views.document_status, name="document_status"),
     path("<uuid:project_id>/documents/upload/", views.document_upload, name="document_upload"),
     path(
         "<uuid:project_id>/documents/<int:document_id>/delete/",

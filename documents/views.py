@@ -1,3 +1,4 @@
+import json
 import logging
 import ntpath
 import os
@@ -175,14 +176,12 @@ def project_documents(request, project_id):
     if not _user_owns_project(request.user, project):
         return redirect("project_list")
     documents = list(
-        project.documents.exclude(status=ProjectDocument.Status.FAILED)
-        .filter(is_archived=False).order_by("-uploaded_at")
+        project.documents.filter(is_archived=False).order_by("-uploaded_at")
     )
     for doc in documents:
         doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
     archived_documents = list(
-        project.documents.exclude(status=ProjectDocument.Status.FAILED)
-        .filter(is_archived=True).order_by("-uploaded_at")
+        project.documents.filter(is_archived=True).order_by("-uploaded_at")
     )
     for doc in archived_documents:
         doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
@@ -363,3 +362,54 @@ def document_chunks(request, project_id, document_id):
             "created_at": c.created_at.isoformat() if c.created_at else None,
         })
     return JsonResponse({"chunks": chunks})
+
+
+@login_required
+@require_POST
+def document_bulk_delete(request, project_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    doc_ids = body.get("document_ids")
+    if not isinstance(doc_ids, list) or not doc_ids:
+        return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+    deleted, _ = ProjectDocument.objects.filter(pk__in=doc_ids, project=project).delete()
+    return JsonResponse({"deleted": deleted})
+
+
+@login_required
+@require_POST
+def document_bulk_archive(request, project_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    doc_ids = body.get("document_ids")
+    if not isinstance(doc_ids, list) or not doc_ids:
+        return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+    action = body.get("action")
+    if action not in ("archive", "restore"):
+        return JsonResponse({"error": "action must be 'archive' or 'restore'"}, status=400)
+    is_archived = action == "archive"
+    updated = ProjectDocument.objects.filter(pk__in=doc_ids, project=project).update(is_archived=is_archived)
+    return JsonResponse({"updated": updated})
+
+
+@login_required
+@require_http_methods(["GET"])
+def document_status(request, project_id):
+    project = get_object_or_404(Project, uuid=project_id)
+    if not _user_owns_project(request.user, project):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    statuses = {
+        str(pk): status
+        for pk, status in project.documents.values_list("id", "status")
+    }
+    return JsonResponse({"statuses": statuses})

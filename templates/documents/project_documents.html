@@ -24,11 +24,36 @@
     </form>
   </section>
 
+  <!-- Config for JS -->
+  <div id="doc-list-config" class="hidden"
+       data-bulk-delete-url="{% url 'document_bulk_delete' project_id=project.uuid %}"
+       data-bulk-archive-url="{% url 'document_bulk_archive' project_id=project.uuid %}"
+       data-status-url="{% url 'document_status' project_id=project.uuid %}"></div>
+
   <section class="mt-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
     <h2 class="text-lg font-medium text-heading mb-4">Documents</h2>
     <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+      {% if documents %}
+      <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-medium/40" id="active-toolbar">
+        <input type="checkbox" id="select-all-active" class="w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select all documents">
+        <span class="text-sm text-body">Select all</span>
+        <span id="active-selection-count" class="text-sm text-body hidden ms-1.5">&mdash; <span class="count">0</span> selected</span>
+        <div id="active-bulk-actions" class="hidden items-center gap-2 ms-auto">
+          <button type="button" id="active-bulk-archive" class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base" title="Archive selected">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z"/></svg>
+            Archive
+          </button>
+          <button type="button" id="active-bulk-delete" class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-fg-danger bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base" title="Delete selected">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
+            Delete
+          </button>
+        </div>
+      </div>
+      {% endif %}
       {% for doc in documents %}
-      <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.first %}rounded-t-base{% endif %} {% if forloop.last %}rounded-b-base{% endif %}">
+      <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="active">
+        <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
+        <span class="doc-status-icon shrink-0 me-2"></span>
         <span class="flex-1 min-w-0 truncate font-medium text-heading" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
         <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
         <div class="relative shrink-0 ms-2">
@@ -69,38 +94,57 @@
       <svg class="w-4 h-4 me-1.5 shrink-0 transition-transform" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
       Archived documents ({{ archived_documents|length }})
     </button>
-    <div class="hidden w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
-      {% for doc in archived_documents %}
-      <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.first %}rounded-t-base{% endif %} {% if forloop.last %}rounded-b-base{% endif %}">
-        <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
-        <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
-        <div class="relative shrink-0 ms-2">
-          <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Document options" data-dropdown-toggle="dropdown-archived-doc-{{ doc.id }}">
-            <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
-          </button>
-          <div id="dropdown-archived-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
-            <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
-                    data-rename-modal="rename-document-modal"
-                    data-action="{% url 'document_rename' project_id=project.uuid document_id=doc.id %}"
-                    data-name="{{ doc.original_filename|escapejs }}">
-              Rename
+    <div class="hidden">
+      <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+        <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-medium/40" id="archived-toolbar">
+          <input type="checkbox" id="select-all-archived" class="w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select all archived documents">
+          <span class="text-sm text-body">Select all</span>
+          <span id="archived-selection-count" class="text-sm text-body hidden ms-1.5">&mdash; <span class="count">0</span> selected</span>
+          <div id="archived-bulk-actions" class="hidden items-center gap-2 ms-auto">
+            <button type="button" id="archived-bulk-restore" class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base" title="Restore selected">
+              <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"/></svg>
+              Restore
             </button>
-            <form method="post" action="{% url 'document_archive' project_id=project.uuid document_id=doc.id %}" class="p-0">
-              {% csrf_token %}
-              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
-                Restore
-              </button>
-            </form>
-            <form method="post" action="{% url 'document_delete' project_id=project.uuid document_id=doc.id %}" class="p-0">
-              {% csrf_token %}
-              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this document?');">
-                Delete
-              </button>
-            </form>
+            <button type="button" id="archived-bulk-delete" class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-fg-danger bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base" title="Delete selected">
+              <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
+              Delete
+            </button>
           </div>
         </div>
+        {% for doc in archived_documents %}
+        <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="archived">
+          <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
+          <span class="doc-status-icon shrink-0 me-2"></span>
+          <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
+          <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
+          <div class="relative shrink-0 ms-2">
+            <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Document options" data-dropdown-toggle="dropdown-archived-doc-{{ doc.id }}">
+              <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+            </button>
+            <div id="dropdown-archived-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+              <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+                      data-rename-modal="rename-document-modal"
+                      data-action="{% url 'document_rename' project_id=project.uuid document_id=doc.id %}"
+                      data-name="{{ doc.original_filename|escapejs }}">
+                Rename
+              </button>
+              <form method="post" action="{% url 'document_archive' project_id=project.uuid document_id=doc.id %}" class="p-0">
+                {% csrf_token %}
+                <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+                  Restore
+                </button>
+              </form>
+              <form method="post" action="{% url 'document_delete' project_id=project.uuid document_id=doc.id %}" class="p-0">
+                {% csrf_token %}
+                <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this document?');">
+                  Delete
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
       </div>
-      {% endfor %}
     </div>
   </section>
   {% endif %}
@@ -135,4 +179,5 @@
     </div>
   </div>
   <script src="{% static 'js/rename-modal.js' %}"></script>
+  <script src="{% static 'js/document-list.js' %}"></script>
 {% endblock %}

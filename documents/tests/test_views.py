@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 from datetime import timedelta
@@ -514,3 +515,205 @@ class DocumentViewsTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 0)
+
+    # ------------------------------------------------------------------ #
+    # document_bulk_delete                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_bulk_delete_removes_selected_docs(self):
+        self.client.force_login(self.user)
+        d1 = self._make_doc()
+        d2 = self._make_doc()
+        d3 = self._make_doc()
+        response = self.client.post(
+            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [d1.id, d2.id]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["deleted"], 2)
+        self.assertFalse(ProjectDocument.objects.filter(pk=d1.pk).exists())
+        self.assertFalse(ProjectDocument.objects.filter(pk=d2.pk).exists())
+        self.assertTrue(ProjectDocument.objects.filter(pk=d3.pk).exists())
+
+    def test_bulk_delete_ignores_other_project_ids(self):
+        self.client.force_login(self.user)
+        other_project = Project.objects.create(name="Other", slug="other", created_by=self.user)
+        other_doc = ProjectDocument.objects.create(
+            project=other_project, uploaded_by=self.user,
+            original_filename="other.txt", status=ProjectDocument.Status.READY,
+        )
+        response = self.client.post(
+            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [other_doc.id]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["deleted"], 0)
+        self.assertTrue(ProjectDocument.objects.filter(pk=other_doc.pk).exists())
+
+    def test_bulk_delete_requires_post(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 405)
+
+    def test_bulk_delete_blocks_other_user(self):
+        self.client.force_login(self.other)
+        doc = self._make_doc()
+        response = self.client.post(
+            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [doc.id]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(ProjectDocument.objects.filter(pk=doc.pk).exists())
+
+    def test_bulk_delete_rejects_empty_ids(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": []}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_bulk_delete_rejects_bad_json(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            data="not json",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    # ------------------------------------------------------------------ #
+    # document_bulk_archive                                                #
+    # ------------------------------------------------------------------ #
+
+    def test_bulk_archive_archives_selected(self):
+        self.client.force_login(self.user)
+        d1 = self._make_doc()
+        d2 = self._make_doc()
+        response = self.client.post(
+            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [d1.id, d2.id], "action": "archive"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["updated"], 2)
+        d1.refresh_from_db()
+        d2.refresh_from_db()
+        self.assertTrue(d1.is_archived)
+        self.assertTrue(d2.is_archived)
+
+    def test_bulk_archive_restores_selected(self):
+        self.client.force_login(self.user)
+        d1 = self._make_doc()
+        d1.is_archived = True
+        d1.save(update_fields=["is_archived"])
+        response = self.client.post(
+            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [d1.id], "action": "restore"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["updated"], 1)
+        d1.refresh_from_db()
+        self.assertFalse(d1.is_archived)
+
+    def test_bulk_archive_ignores_other_project_ids(self):
+        self.client.force_login(self.user)
+        other_project = Project.objects.create(name="Other2", slug="other2", created_by=self.user)
+        other_doc = ProjectDocument.objects.create(
+            project=other_project, uploaded_by=self.user,
+            original_filename="other.txt", status=ProjectDocument.Status.READY,
+        )
+        response = self.client.post(
+            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [other_doc.id], "action": "archive"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["updated"], 0)
+        other_doc.refresh_from_db()
+        self.assertFalse(other_doc.is_archived)
+
+    def test_bulk_archive_rejects_invalid_action(self):
+        self.client.force_login(self.user)
+        d1 = self._make_doc()
+        response = self.client.post(
+            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [d1.id], "action": "invalid"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_bulk_archive_blocks_other_user(self):
+        self.client.force_login(self.other)
+        doc = self._make_doc()
+        response = self.client.post(
+            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            data=json.dumps({"document_ids": [doc.id], "action": "archive"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_bulk_archive_requires_post(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 405)
+
+    # ------------------------------------------------------------------ #
+    # document_status                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_document_status_returns_all_statuses(self):
+        self.client.force_login(self.user)
+        d1 = self._make_doc()  # READY
+        d2 = ProjectDocument.objects.create(
+            project=self.project, uploaded_by=self.user,
+            original_filename="fail.txt", status=ProjectDocument.Status.FAILED,
+        )
+        response = self.client.get(
+            reverse("document_status", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["statuses"][str(d1.id)], "ready")
+        self.assertEqual(data["statuses"][str(d2.id)], "failed")
+
+    def test_document_status_blocks_other_user(self):
+        self.client.force_login(self.other)
+        response = self.client.get(
+            reverse("document_status", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_document_status_requires_get(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("document_status", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 405)
+
+    # ------------------------------------------------------------------ #
+    # FAILED doc visibility                                                #
+    # ------------------------------------------------------------------ #
+
+    def test_failed_doc_visible_in_project_documents(self):
+        self.client.force_login(self.user)
+        failed_doc = ProjectDocument.objects.create(
+            project=self.project, uploaded_by=self.user,
+            original_filename="broken.txt", status=ProjectDocument.Status.FAILED,
+        )
+        response = self.client.get(
+            reverse("project_documents", kwargs={"project_id": self.project.uuid}),
+        )
+        self.assertEqual(response.status_code, 200)
+        doc_ids = [d.id for d in response.context["documents"]]
+        self.assertIn(failed_doc.id, doc_ids)
