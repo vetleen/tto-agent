@@ -17,7 +17,7 @@ _HEAD_TOKENS = 5_000
 _TAIL_TOKENS = 2_000
 
 _SYSTEM_PROMPT = (
-    "Read this document and write a single paragraph (target ~200 tokens) "
+    "Read this document and write a single paragraph (target ~100 tokens) "
     "describing what the document contains. Focus on the type of document, "
     "its subject matter, and the key topics it covers. Output ONLY the description."
 )
