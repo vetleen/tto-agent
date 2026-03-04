@@ -17,12 +17,20 @@ npm run build                            # Build Tailwind CSS
 ```
 
 ### Tests
+
+**Important:** The `.env` file may contain a `DATABASE_URL` pointing to a remote Postgres database where the user lacks `CREATE DATABASE` permission. Always unset `DATABASE_URL` and `PGVECTOR_CONNECTION` when running tests so Django uses local SQLite:
+
 ```bash
-python manage.py test                    # All tests
-python manage.py test accounts           # Single app
-python manage.py test accounts.tests.test_auth  # Single module
-python manage.py test accounts.tests.test_auth.LoginTestCase.test_login  # Single test
+DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test                    # All tests
+DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts           # Single app
+DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_auth  # Single module
+DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_auth.LoginTestCase.test_login  # Single test
 ```
+
+**Notes:**
+- Tests can take 3+ minutes to run. Use a generous timeout (e.g., 5–10 min) or run in background.
+- Tracebacks in test output (e.g., "DB locked", "Failed to write LLM call log") are **expected** — they come from tests that verify error-handling paths, not from actual failures. Check the final summary line for pass/fail counts.
+
 Set `TEST_APIS=True` in `.env` for live LLM API tests.
 
 ### Setup
