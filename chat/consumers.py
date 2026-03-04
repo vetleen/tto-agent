@@ -432,11 +432,11 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
                 conversation_id=self.project.pk,
             )
             prefs = self.resolved_prefs
-            mid_model = prefs.mid_model if prefs else None
+            cheap_model = prefs.cheap_model if prefs else None
 
             request = ChatRequest(
                 messages=[Message(role="user", content=prompt)],
-                model=mid_model or None,
+                model=cheap_model or None,
                 stream=False,
                 tools=[],
                 context=context,
