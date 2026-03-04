@@ -91,17 +91,23 @@ def process_document(document_id: int) -> None:
         doc.token_count = sum(c.get("token_count", 0) for c in chunks_data)
         doc.save(update_fields=["parser_type", "chunking_strategy", "token_count", "updated_at"])
 
-        # Embed and index in vector store
+        # Embed and index in vector store (non-critical — failures are logged, not raised)
         from documents.services import vector_store as vs
         chunk_records = list(
             doc.chunks.order_by("chunk_index").values("id", "text", "chunk_index")
         )
         if chunk_records and getattr(settings, "PGVECTOR_CONNECTION", None):
-            logger.info("process_document: document_id=%s stage=vector_delete", document_id)
-            vs.delete_vectors_for_document(doc.id)
-            logger.info("process_document: document_id=%s stage=embedding", document_id)
-            vs.add_chunk_vectors(chunk_records, document_id=doc.id, project_id=doc.project_id)
-            logger.info("process_document: document_id=%s stage=vector_done", document_id)
+            try:
+                logger.info("process_document: document_id=%s stage=vector_delete", document_id)
+                vs.delete_vectors_for_document(doc.id)
+                logger.info("process_document: document_id=%s stage=embedding", document_id)
+                vs.add_chunk_vectors(chunk_records, document_id=doc.id, project_id=doc.project_id)
+                logger.info("process_document: document_id=%s stage=vector_done", document_id)
+            except Exception as vec_err:
+                logger.warning(
+                    "process_document: document_id=%s vector embedding failed (non-critical): %s",
+                    document_id, vec_err,
+                )
         doc.embedding_model = getattr(settings, "EMBEDDING_MODEL", "")
         doc.status = ProjectDocument.Status.READY
         doc.processing_error = None
