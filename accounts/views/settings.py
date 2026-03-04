@@ -30,20 +30,21 @@ def theme_update(request):
 @login_required
 @require_GET
 def settings_page(request):
-    from core.preferences import get_preferences
+    from core.preferences import get_preferences, get_tier_defaults
 
     prefs = get_preferences(request.user)
     user_settings, _ = UserSettings.objects.get_or_create(user=request.user)
     user_models = (user_settings.preferences or {}).get("models", {})
+    tier_defaults = get_tier_defaults(request.user)
 
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
         "user_models": user_models,
         "allowed_models": prefs.allowed_models,
         "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Main chat responses"},
-            {"key": "mid", "label": "Mid model", "desc": "Thread title generation"},
-            {"key": "cheap", "label": "Cheap model", "desc": "Lightweight tasks"},
+            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"]},
+            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"]},
+            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": tier_defaults["cheap"]},
         ],
     })
 
@@ -97,6 +98,7 @@ def _get_admin_membership(user):
 @login_required
 @require_GET
 def org_settings_page(request):
+    from core.preferences import get_system_defaults
     from llm.service.policies import get_allowed_models
     from llm.tools.registry import get_tool_registry
 
@@ -111,6 +113,7 @@ def org_settings_page(request):
     org_tools = org_prefs.get("tools", {})
 
     system_models = get_allowed_models()
+    system_defaults = get_system_defaults()
     all_tools = get_tool_registry().list_tools()
     tool_list = [
         {"name": name, "description": tool.description, "enabled": org_tools.get(name, True) is not False}
@@ -124,9 +127,9 @@ def org_settings_page(request):
         "org_models": org_models,
         "org_tools": tool_list,
         "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Main chat responses"},
-            {"key": "mid", "label": "Mid model", "desc": "Thread title generation"},
-            {"key": "cheap", "label": "Cheap model", "desc": "Lightweight tasks"},
+            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
+            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},
+            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": system_defaults["cheap"]},
         ],
     })
 

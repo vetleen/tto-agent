@@ -18,9 +18,6 @@ from llm.tools import tools_to_langchain_schemas
 from llm.tools.interfaces import Tool
 from llm.tools.registry import get_tool_registry
 
-# Ensure built-in tools (e.g. add_number) are registered when this pipeline is used.
-import llm.tools.builtins  # noqa: F401
-
 
 class SimpleChatPipeline(BasePipeline):
     """Single pipeline: LLM-driven tool calling via bind_tools(), else delegate to ChatModel."""

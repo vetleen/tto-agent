@@ -42,7 +42,7 @@ class ToLangchainMessagesTests(TestCase):
             role="assistant",
             content="",
             tool_calls=[
-                ToolCall(id="id1", name="add_number", arguments={"a": 1, "b": 2}),
+                ToolCall(id="id1", name="search_documents", arguments={"a": 1, "b": 2}),
             ],
         )
         result = to_langchain_messages([msg])
@@ -51,7 +51,7 @@ class ToLangchainMessagesTests(TestCase):
         self.assertEqual(result[0].content, "")
         self.assertEqual(len(result[0].tool_calls), 1)
         self.assertEqual(result[0].tool_calls[0]["id"], "id1")
-        self.assertEqual(result[0].tool_calls[0]["name"], "add_number")
+        self.assertEqual(result[0].tool_calls[0]["name"], "search_documents")
         self.assertEqual(result[0].tool_calls[0]["args"], {"a": 1, "b": 2})
 
     def test_tool_role_with_tool_call_id_maps_to_tool_message(self):

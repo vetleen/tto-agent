@@ -7,7 +7,27 @@
   <!-- Appearance -->
   <section class="mt-8">
     <h2 class="text-lg font-medium text-heading">Appearance</h2>
-    <p class="mt-1 text-sm text-body">Use the theme toggle in the navigation bar to switch between light and dark mode.</p>
+    <p class="mt-1 text-sm text-body">Choose your preferred color theme.</p>
+    <div class="mt-3 inline-flex rounded-base border border-default overflow-hidden">
+      <button
+        type="button"
+        id="theme-btn-light"
+        class="theme-btn px-4 py-2 text-sm font-medium focus:outline-none"
+        data-theme="light"
+      >
+        <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
+        Light
+      </button>
+      <button
+        type="button"
+        id="theme-btn-dark"
+        class="theme-btn px-4 py-2 text-sm font-medium focus:outline-none"
+        data-theme="dark"
+      >
+        <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+        Dark
+      </button>
+    </div>
   </section>
 
   <!-- AI Models -->
@@ -27,7 +47,7 @@
           data-tier="{{ tier.key }}"
           class="model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">Default</option>
+          <option value="">Default ({{ tier.default_model }})</option>
           {% for model in allowed_models %}
           <option value="{{ model }}" {% if tier.key in user_models and user_models|dictsort:tier.key %}{% endif %}>{{ model }}</option>
           {% endfor %}
@@ -76,6 +96,45 @@
           alert(data.error);
           sel.value = '';
         }
+      });
+    });
+  });
+
+  // Theme toggle buttons
+  var activeClasses = 'bg-brand text-white';
+  var inactiveClasses = 'bg-neutral-primary text-body hover:bg-neutral-secondary-soft';
+  function updateThemeButtons(theme) {
+    document.querySelectorAll('.theme-btn').forEach(function(btn) {
+      var isActive = btn.dataset.theme === theme;
+      btn.className = 'theme-btn px-4 py-2 text-sm font-medium focus:outline-none ' + (isActive ? activeClasses : inactiveClasses);
+    });
+  }
+  var currentTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+  updateThemeButtons(currentTheme);
+
+  document.querySelectorAll('.theme-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var theme = this.dataset.theme;
+      if (theme === 'dark') {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+      localStorage.setItem('color-theme', theme);
+      updateThemeButtons(theme);
+      // Sync navbar toggle icons
+      var darkIcon = document.getElementById('theme-toggle-dark-icon');
+      var lightIcon = document.getElementById('theme-toggle-light-icon');
+      if (darkIcon && lightIcon) {
+        darkIcon.classList.toggle('hidden', theme === 'dark');
+        lightIcon.classList.toggle('hidden', theme === 'light');
+      }
+      // Persist to server
+      fetch('{% url "accounts:theme_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'theme=' + theme + '&csrfmiddlewaretoken=' + encodeURIComponent(csrf),
+        credentials: 'same-origin',
       });
     });
   });

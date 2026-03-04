@@ -120,6 +120,51 @@ def _resolve_tier(
     return system_default or ""
 
 
+def get_tier_defaults(user) -> dict[str, str]:
+    """Return the resolved default model for each tier, *excluding* the user's own choices.
+
+    This is what the user sees as "Default" — i.e. what would apply if they pick no model.
+    Cascade: org default → system default → first allowed.
+    """
+    from llm.service.policies import get_allowed_models
+
+    system_allowed = get_allowed_models()
+    system_primary = getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
+    system_mid = getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or ""
+    system_cheap = getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or ""
+
+    org_prefs = _get_org_preferences(user)
+    org_allowed = org_prefs.get("allowed_models") if org_prefs else None
+    org_models = org_prefs.get("models", {}) if org_prefs else {}
+
+    if org_allowed and isinstance(org_allowed, list):
+        effective_allowed = [m for m in org_allowed if m in system_allowed]
+    else:
+        effective_allowed = list(system_allowed)
+
+    return {
+        "primary": _resolve_tier(None, org_models.get("primary"), system_primary, effective_allowed, system_allowed),
+        "mid": _resolve_tier(None, org_models.get("mid"), system_mid, effective_allowed, system_allowed),
+        "cheap": _resolve_tier(None, org_models.get("cheap"), system_cheap, effective_allowed, system_allowed),
+    }
+
+
+def get_system_defaults() -> dict[str, str]:
+    """Return the system-level default model for each tier (env vars / first allowed)."""
+    from llm.service.policies import get_allowed_models
+
+    system_allowed = get_allowed_models()
+    system_primary = getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
+    system_mid = getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or ""
+    system_cheap = getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or ""
+
+    return {
+        "primary": _resolve_tier(None, None, system_primary, system_allowed, system_allowed),
+        "mid": _resolve_tier(None, None, system_mid, system_allowed, system_allowed),
+        "cheap": _resolve_tier(None, None, system_cheap, system_allowed, system_allowed),
+    }
+
+
 def _get_org_preferences(user) -> Optional[dict]:
     """Get the organization preferences for a user, or None if no org."""
     from accounts.models import Membership

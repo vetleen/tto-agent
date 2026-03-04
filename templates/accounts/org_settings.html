@@ -51,7 +51,7 @@
           data-tier="{{ tier.key }}"
           class="org-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">System default</option>
+          <option value="">System default ({{ tier.default_model }})</option>
           {% for model in system_models %}
           <option value="{{ model }}">{{ model }}</option>
           {% endfor %}

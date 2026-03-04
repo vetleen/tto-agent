@@ -63,11 +63,11 @@
               </div>
               <ul class="p-2 text-sm text-body font-medium" aria-labelledby="user-menu-button">
                 <li>
-                  <a href="{% url 'accounts:settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Settings</a>
+                  <a href="{% url 'accounts:settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">User settings</a>
                 </li>
                 {% if user_is_org_admin %}
                 <li>
-                  <a href="{% url 'accounts:org_settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Organization</a>
+                  <a href="{% url 'accounts:org_settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Organization settings</a>
                 </li>
                 {% endif %}
                 <li>

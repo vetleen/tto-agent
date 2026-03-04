@@ -111,7 +111,7 @@ class GenerateRawPromptTests(TestCase):
         model, client, bound_client = _make_model_with_mock_client()
         bound_client.invoke.side_effect = _invoke_with_callback(_make_lc_ai_message("OK"))
 
-        schemas = [_make_tool_schema("search_documents"), _make_tool_schema("add_number")]
+        schemas = [_make_tool_schema("search_documents"), _make_tool_schema("search_documents")]
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=False,
@@ -126,7 +126,7 @@ class GenerateRawPromptTests(TestCase):
         self.assertEqual(len(raw_prompt["tools"]), 2)
         tool_names = [t["function"]["name"] for t in raw_prompt["tools"]]
         self.assertIn("search_documents", tool_names)
-        self.assertIn("add_number", tool_names)
+        self.assertIn("search_documents", tool_names)
 
     def test_raw_prompt_tools_empty_when_no_tool_schemas(self):
         model, client, bound_client = _make_model_with_mock_client()
@@ -173,7 +173,7 @@ class GenerateRawPromptTests(TestCase):
         model, client, bound_client = _make_model_with_mock_client()
         bound_client.invoke.side_effect = _invoke_with_callback(_make_lc_ai_message("5"))
 
-        tools = [_fake_tool("add_number", "Add two numbers")]
+        tools = [_fake_tool("search_documents", "Add two numbers")]
         schemas = tools_to_langchain_schemas(tools)
 
         request = ChatRequest(
@@ -188,7 +188,7 @@ class GenerateRawPromptTests(TestCase):
         raw_prompt = response.metadata["raw_prompt"]
         self.assertEqual(len(raw_prompt["tools"]), 1)
         fn = raw_prompt["tools"][0]["function"]
-        self.assertEqual(fn["name"], "add_number")
+        self.assertEqual(fn["name"], "search_documents")
         self.assertEqual(fn["description"], "Add two numbers")
         self.assertIn("query", fn["parameters"]["properties"])
 
@@ -264,7 +264,7 @@ class LogCallRawPromptToolsTests(TestCase):
             "messages": [{"role": "user", "content": "Hi"}],
             "tools": [
                 _make_tool_schema("search_documents"),
-                _make_tool_schema("add_number"),
+                _make_tool_schema("search_documents"),
             ],
         }
         response = ChatResponse(
@@ -280,7 +280,7 @@ class LogCallRawPromptToolsTests(TestCase):
         self.assertEqual(len(log.raw_prompt["tools"]), 2)
         tool_names = [t["function"]["name"] for t in log.raw_prompt["tools"]]
         self.assertIn("search_documents", tool_names)
-        self.assertIn("add_number", tool_names)
+        self.assertIn("search_documents", tool_names)
 
     def test_log_call_stores_empty_tools_when_no_tools(self):
         request = ChatRequest(

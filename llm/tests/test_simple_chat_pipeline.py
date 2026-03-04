@@ -42,16 +42,32 @@ class SimpleChatPipelineTests(TestCase):
             self.assertIsNone(call_args.tool_schemas)
         self.assertEqual(response.message.content, "Hi there")
 
+    def _make_mock_tool(self, name="mock_tool"):
+        """Create a mock tool for testing."""
+        tool = MagicMock()
+        tool.name = name
+        tool.description = "A mock tool"
+        tool.parameters = {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}
+        tool.run.return_value = {"result": 5}
+        return tool
+
+    def _patch_tool_registry(self, tool):
+        """Return a patch context for get_tool_registry that returns the given tool."""
+        mock_registry = MagicMock()
+        mock_registry.return_value.get_tool.side_effect = lambda n: tool if n == tool.name else None
+        return patch("llm.pipelines.simple_chat.get_tool_registry", mock_registry)
+
     def test_run_tool_loop_executes_tool_and_returns_final_response(self):
         """Model returns tool_calls on first call, then text on second; tool is executed."""
+        mock_tool = self._make_mock_tool("search_documents")
         request = ChatRequest(
             messages=[Message(role="user", content="What is 2 + 3?")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["add_number"],
+            tools=["search_documents"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="call_1", name="add_number", arguments={"a": 2, "b": 3})
+        tool_call = ToolCall(id="call_1", name="search_documents", arguments={"a": 2, "b": 3})
         response_with_tool = ChatResponse(
             message=Message(
                 role="assistant",
@@ -71,7 +87,8 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.side_effect = [response_with_tool, final_response]
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
+        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+             self._patch_tool_registry(mock_tool):
             mock_registry.return_value.get_model.return_value = fake_model
             response = SimpleChatPipeline().run(request)
 
@@ -178,14 +195,15 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_run_max_iterations_strips_tools_and_returns(self):
         """When model keeps returning tool_calls, cap at max_tool_iterations then final generate."""
+        mock_tool = self._make_mock_tool("search_documents")
         request = ChatRequest(
             messages=[Message(role="user", content="Loop")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["add_number"],
+            tools=["search_documents"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="c1", name="add_number", arguments={"a": 1, "b": 2})
+        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -203,7 +221,8 @@ class SimpleChatPipelineTests(TestCase):
         fake_model.generate.side_effect = [tool_response, tool_response, tool_response, final_response]
 
         pipeline = SimpleChatPipeline(max_tool_iterations=3)
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
+        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+             self._patch_tool_registry(mock_tool):
             mock_registry.return_value.get_model.return_value = fake_model
             response = pipeline.run(request)
 
@@ -227,14 +246,16 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_run_tool_error_sent_back_to_llm(self):
         """When tool.run() raises, error JSON is appended as tool message and LLM gets another turn."""
+        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool.run.side_effect = ValueError("Invalid arguments")
         request = ChatRequest(
             messages=[Message(role="user", content="Use bad tool")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["add_number"],
+            tools=["search_documents"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="c1", name="add_number", arguments={"a": "not", "b": "numbers"})
+        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": "not", "b": "numbers"})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -250,7 +271,8 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.side_effect = [tool_response, final_response]
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
+        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+             self._patch_tool_registry(mock_tool):
             mock_registry.return_value.get_model.return_value = fake_model
             response = SimpleChatPipeline().run(request)
 
@@ -264,15 +286,17 @@ class SimpleChatPipelineTests(TestCase):
     def test_stream_with_tools_emits_tool_start_and_tool_end(self):
         """When model returns tool_calls in stream path, tool_start/tool_end events are
         emitted and the final response is truly streamed via chat_model.stream()."""
+        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool.run.return_value = {"result": 3}
         request = ChatRequest(
             messages=[Message(role="user", content="Add 1 and 2")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["add_number"],
+            tools=["search_documents"],
             context=RunContext.create(),
         )
         run_id = request.context.run_id
-        tool_call = ToolCall(id="s1", name="add_number", arguments={"a": 1, "b": 2})
+        tool_call = ToolCall(id="s1", name="search_documents", arguments={"a": 1, "b": 2})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -296,7 +320,8 @@ class SimpleChatPipelineTests(TestCase):
         fake_model.generate.side_effect = [tool_response, no_tool_response]
         fake_model.stream.side_effect = fake_stream
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
+        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+             self._patch_tool_registry(mock_tool):
             mock_registry.return_value.get_model.return_value = fake_model
             events = list(SimpleChatPipeline().stream(request))
 
@@ -305,10 +330,10 @@ class SimpleChatPipelineTests(TestCase):
         tool_ends = [e for e in events if e.event_type == "tool_end"]
         self.assertEqual(len(tool_starts), 1)
         self.assertEqual(len(tool_ends), 1)
-        self.assertEqual(tool_starts[0].data["tool_name"], "add_number")
+        self.assertEqual(tool_starts[0].data["tool_name"], "search_documents")
         self.assertEqual(tool_starts[0].data["tool_call_id"], "s1")
         self.assertEqual(tool_starts[0].data["arguments"], {"a": 1, "b": 2})
-        self.assertEqual(tool_ends[0].data["tool_name"], "add_number")
+        self.assertEqual(tool_ends[0].data["tool_name"], "search_documents")
         self.assertIn("3", tool_ends[0].data["result"])
 
         # Verify final response came from stream(), not generate()
