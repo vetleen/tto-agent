@@ -1,13 +1,12 @@
-"""Tests for the token-aware _load_history in ProjectChatConsumer."""
+"""Tests for the token-aware _load_history in ChatConsumer."""
 
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.test import TransactionTestCase
 
-from chat.consumers import MAX_HISTORY_TOKENS, OVERLAP_TOKENS, ProjectChatConsumer
+from chat.consumers import MAX_HISTORY_TOKENS, OVERLAP_TOKENS, ChatConsumer
 from chat.models import ChatMessage, ChatThread
 from core.tokens import count_tokens
-from documents.models import Project
 
 User = get_user_model()
 
@@ -19,13 +18,10 @@ class LoadHistoryTests(TransactionTestCase):
         self.user = User.objects.create_user(
             email="test@example.com", password="pass"
         )
-        self.project = Project.objects.create(
-            name="Test", slug="test-proj", created_by=self.user
-        )
         self.thread = ChatThread.objects.create(
-            project=self.project, created_by=self.user
+            created_by=self.user
         )
-        self.consumer = ProjectChatConsumer()
+        self.consumer = ChatConsumer()
 
     @database_sync_to_async
     def _make_msg(self, content, role="user"):

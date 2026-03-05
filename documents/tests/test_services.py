@@ -6,7 +6,7 @@ from unittest.mock import Mock, MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
-from documents.models import Project, ProjectDocument, ProjectDocumentChunk
+from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 from documents.services.chunking import (
     MIN_CHUNK_TOKENS,
     _count_tokens,
@@ -18,7 +18,7 @@ from documents.services.chunking import (
 from documents.services.retrieval import (
     _rrf_score,
     get_chunks_by_document,
-    get_chunks_by_project,
+    get_chunks_by_data_room,
     hybrid_search_chunks,
     similarity_search_chunks,
 )
@@ -212,10 +212,10 @@ class VectorStoreTests(TestCase):
         store.similarity_search.return_value = ["result"]
         mock_get_store.return_value = store
 
-        similarity_search(project_id=1, query="hello", k=500, document_id=9)
+        similarity_search(data_room_ids=[1], query="hello", k=500, document_id=9)
 
         self.assertEqual(store.similarity_search.call_args.kwargs["k"], 50)
-        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"project_id": 1, "document_id": 9})
+        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"data_room_id": 1, "document_id": 9})
 
 
 class RRFScoreTests(TestCase):
@@ -248,7 +248,7 @@ class HybridSearchTests(TestCase):
         doc.metadata = {
             "chunk_id": chunk_id,
             "document_id": document_id,
-            "project_id": 1,
+            "data_room_id": 1,
             "chunk_index": chunk_index,
         }
         return doc
@@ -266,7 +266,7 @@ class HybridSearchTests(TestCase):
     @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
     @patch("documents.services.retrieval.vs.similarity_search", return_value=[])
     def test_hybrid_returns_empty_when_no_results(self, _mock_sem, _mock_fts):
-        results = hybrid_search_chunks(project_id=1, query="nothing", k=5)
+        results = hybrid_search_chunks(data_room_ids=[1], query="nothing", k=5)
         self.assertEqual(results, [])
 
     @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
@@ -275,7 +275,7 @@ class HybridSearchTests(TestCase):
         mock_sem.return_value = [
             self._make_semantic_doc(10, "semantic result"),
         ]
-        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        results = hybrid_search_chunks(data_room_ids=[1], query="test", k=5)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], 10)
         self.assertEqual(results[0]["text"], "semantic result")
@@ -287,7 +287,7 @@ class HybridSearchTests(TestCase):
         mock_fts.return_value = [
             self._make_fts_hit(20, "fulltext result"),
         ]
-        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        results = hybrid_search_chunks(data_room_ids=[1], query="test", k=5)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], 20)
         self.assertEqual(results[0]["text"], "fulltext result")
@@ -310,7 +310,7 @@ class HybridSearchTests(TestCase):
             self._make_fts_hit(only_fts_id, "fts only"),
         ]
 
-        results = hybrid_search_chunks(project_id=1, query="test", k=10)
+        results = hybrid_search_chunks(data_room_ids=[1], query="test", k=10)
 
         ids = [r["id"] for r in results]
         self.assertIn(shared_id, ids)
@@ -335,7 +335,7 @@ class HybridSearchTests(TestCase):
         mock_fts.return_value = [
             self._make_fts_hit(i + 100, f"fts {i}") for i in range(10)
         ]
-        results = hybrid_search_chunks(project_id=1, query="test", k=3)
+        results = hybrid_search_chunks(data_room_ids=[1], query="test", k=3)
         self.assertEqual(len(results), 3)
 
     @patch("documents.services.retrieval.fulltext_search_chunks")
@@ -344,7 +344,7 @@ class HybridSearchTests(TestCase):
         mock_fts.return_value = [
             self._make_fts_hit(50, "fallback result"),
         ]
-        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        results = hybrid_search_chunks(data_room_ids=[1], query="test", k=5)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], 50)
 
@@ -354,7 +354,7 @@ class HybridSearchTests(TestCase):
         mock_sem.return_value = [
             self._make_semantic_doc(60, "fallback semantic"),
         ]
-        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        results = hybrid_search_chunks(data_room_ids=[1], query="test", k=5)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], 60)
 
@@ -373,7 +373,7 @@ class HybridSearchTests(TestCase):
             "document_id": 1,
             "rank": 0.8,
         }]
-        results = hybrid_search_chunks(project_id=1, query="test", k=5)
+        results = hybrid_search_chunks(data_room_ids=[1], query="test", k=5)
         self.assertEqual(results[0]["heading"], "Important Section")
 
 
@@ -382,7 +382,7 @@ class ProcessDocumentServiceTests(TestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(email="svc@example.com", password="testpass")
-        self.project = Project.objects.create(name="SvcProject", slug="svc-project", created_by=self.user)
+        self.data_room = DataRoom.objects.create(name="SvcProject", slug="svc-project", created_by=self.user)
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_happy_path(self):
@@ -401,11 +401,11 @@ class ProcessDocumentServiceTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.settings(MEDIA_ROOT=tmpdir):
-                doc = ProjectDocument(
-                    project=self.project,
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
                     uploaded_by=self.user,
                     original_filename="test.txt",
-                    status=ProjectDocument.Status.UPLOADED,
+                    status=DataRoomDocument.Status.UPLOADED,
                 )
                 doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
 
@@ -413,7 +413,7 @@ class ProcessDocumentServiceTests(TestCase):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
-                self.assertEqual(doc.status, ProjectDocument.Status.READY)
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
                 self.assertEqual(doc.chunks.count(), 2)
                 self.assertEqual(doc.token_count, 22)
                 self.assertIsNotNone(doc.processed_at)
@@ -423,16 +423,16 @@ class ProcessDocumentServiceTests(TestCase):
         """Doc with no attached file transitions to FAILED with a processing_error."""
         from documents.services.process_document import process_document
 
-        doc = ProjectDocument.objects.create(
-            project=self.project,
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="missing.txt",
-            status=ProjectDocument.Status.UPLOADED,
+            status=DataRoomDocument.Status.UPLOADED,
         )
         process_document(doc.id)
 
         doc.refresh_from_db()
-        self.assertEqual(doc.status, ProjectDocument.Status.FAILED)
+        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
         self.assertIsNotNone(doc.processing_error)
 
     @override_settings(PGVECTOR_CONNECTION="")
@@ -443,11 +443,11 @@ class ProcessDocumentServiceTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.settings(MEDIA_ROOT=tmpdir):
-                doc = ProjectDocument(
-                    project=self.project,
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
                     uploaded_by=self.user,
                     original_filename="bad.txt",
-                    status=ProjectDocument.Status.UPLOADED,
+                    status=DataRoomDocument.Status.UPLOADED,
                 )
                 doc.original_file.save("bad.txt", ContentFile(b"content"), save=True)
 
@@ -458,7 +458,7 @@ class ProcessDocumentServiceTests(TestCase):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
-                self.assertEqual(doc.status, ProjectDocument.Status.FAILED)
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
                 self.assertIn("parse error", doc.processing_error)
 
     def test_process_document_skips_nonexistent_document(self):
@@ -476,18 +476,18 @@ class RetrievalServiceTests(TestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(email="ret@example.com", password="testpass")
-        self.project = Project.objects.create(name="RetProject", slug="ret-project", created_by=self.user)
-        self.doc = ProjectDocument.objects.create(
-            project=self.project,
+        self.data_room = DataRoom.objects.create(name="RetProject", slug="ret-project", created_by=self.user)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="ret.txt",
-            status=ProjectDocument.Status.READY,
+            status=DataRoomDocument.Status.READY,
         )
 
     def test_get_chunks_by_document_returns_ordered(self):
         """Chunks are returned in chunk_index order regardless of insertion order."""
-        ProjectDocumentChunk.objects.create(document=self.doc, chunk_index=1, text="Second", token_count=2)
-        ProjectDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="First", token_count=1)
+        DataRoomDocumentChunk.objects.create(document=self.doc, chunk_index=1, text="Second", token_count=2)
+        DataRoomDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="First", token_count=1)
 
         result = get_chunks_by_document(self.doc.id)
 
@@ -499,19 +499,19 @@ class RetrievalServiceTests(TestCase):
         for key in ("id", "text", "heading", "token_count", "source_page_start", "source_page_end"):
             self.assertIn(key, result[0])
 
-    def test_get_chunks_by_project_excludes_failed_documents(self):
+    def test_get_chunks_by_data_room_excludes_failed_documents(self):
         """Chunks from FAILED documents are not returned."""
-        ProjectDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="Ready chunk", token_count=5)
+        DataRoomDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="Ready chunk", token_count=5)
 
-        failed_doc = ProjectDocument.objects.create(
-            project=self.project,
+        failed_doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="fail.txt",
-            status=ProjectDocument.Status.FAILED,
+            status=DataRoomDocument.Status.FAILED,
         )
-        ProjectDocumentChunk.objects.create(document=failed_doc, chunk_index=0, text="Failed chunk", token_count=5)
+        DataRoomDocumentChunk.objects.create(document=failed_doc, chunk_index=0, text="Failed chunk", token_count=5)
 
-        result = get_chunks_by_project(self.project.id)
+        result = get_chunks_by_data_room(self.data_room.id)
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["text"], "Ready chunk")
@@ -526,12 +526,12 @@ class RetrievalServiceTests(TestCase):
             {"id": 42, "text": "hello", "document_id": self.doc.pk, "chunk_index": 0, "rrf_score": 0.5, "heading": None},
         ]
         with patch("documents.services.retrieval.hybrid_search_chunks", return_value=fake_results):
-            results = similarity_search_chunks(project_id=self.project.pk, query="test", k=5)
+            results = similarity_search_chunks(data_room_ids=[self.data_room.pk], query="test", k=5)
 
         self.assertEqual(len(results), 1)
         self.assertIsInstance(results[0], Document)
         self.assertEqual(results[0].page_content, "hello")
         self.assertEqual(results[0].metadata["chunk_id"], 42)
-        self.assertEqual(results[0].metadata["project_id"], self.project.pk)
+        self.assertEqual(results[0].metadata["data_room_id"], self.data_room.pk)
         self.assertEqual(results[0].metadata["doc_index"], self.doc.doc_index)
         self.assertNotIn("document_id", results[0].metadata)

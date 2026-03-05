@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 
-from .models import Project, ProjectDocument, ProjectDocumentChunk
+from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 
 
 logger = logging.getLogger(__name__)
@@ -44,188 +44,118 @@ def _relative_upload_date(value):
     return "1 year ago" if years == 1 else f"{years} years ago"
 
 
-def _user_owns_project(user, project: Project) -> bool:
-    return project.created_by_id == user.id
+def _user_can_access_data_room(user, data_room: DataRoom) -> bool:
+    if data_room.created_by_id == user.id:
+        return True
+    if data_room.is_shared:
+        # Shared data rooms are visible to all members of owner's Organization
+        from accounts.models import Organization
+        try:
+            owner_org = Organization.objects.filter(members=data_room.created_by).first()
+            if owner_org and owner_org.members.filter(pk=user.pk).exists():
+                return True
+        except Exception:
+            pass
+    return False
 
 
 @login_required
 @require_http_methods(["GET", "POST"])
-def project_list(request):
+def data_room_list(request):
     if request.method == "POST":
         name = (request.POST.get("name") or "").strip()
         if name:
-            base_slug = slugify(name) or "project"
+            base_slug = slugify(name) or "data-room"
             n = 0
-            project = None
+            data_room = None
             while True:
                 slug = base_slug if n == 0 else f"{base_slug}-{n}"
                 try:
-                    project = Project.objects.create(name=name, slug=slug, created_by=request.user)
+                    data_room = DataRoom.objects.create(name=name, slug=slug, created_by=request.user)
                     break
                 except IntegrityError:
-                    # Handle concurrent creates picking the same slug.
                     n += 1
                     if n > 50:
-                        messages.error(request, "Could not create project right now. Please try again.")
+                        messages.error(request, "Could not create data room right now. Please try again.")
                         break
-            if project:
-                return redirect("project_chat", project_id=project.uuid)
-        return redirect("project_list")
-    projects = Project.objects.filter(created_by=request.user, is_archived=False).order_by("-updated_at")
-    archived_projects = Project.objects.filter(created_by=request.user, is_archived=True).order_by("-updated_at")
-    return render(request, "documents/project_list.html", {
-        "projects": projects,
-        "archived_projects": archived_projects,
+            if data_room:
+                return redirect("data_room_documents", data_room_id=data_room.uuid)
+        return redirect("data_room_list")
+    data_rooms = DataRoom.objects.filter(created_by=request.user, is_archived=False).order_by("-updated_at")
+    archived_data_rooms = DataRoom.objects.filter(created_by=request.user, is_archived=True).order_by("-updated_at")
+    return render(request, "documents/data_room_list.html", {
+        "data_rooms": data_rooms,
+        "archived_data_rooms": archived_data_rooms,
     })
 
 
 @login_required
 @require_POST
-def project_delete(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
-    project.delete()
-    messages.success(request, "Project deleted.")
-    return redirect("project_list")
+def data_room_delete(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
+    data_room.delete()
+    messages.success(request, "Data room deleted.")
+    return redirect("data_room_list")
 
 
 @login_required
 @require_http_methods(["GET", "POST"])
-def project_rename(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
+def data_room_rename(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
     if request.method != "POST":
-        return redirect("project_list")
+        return redirect("data_room_list")
     name = (request.POST.get("name") or "").strip()
     if not name:
-        messages.error(request, "Project name cannot be empty.")
-        return redirect("project_list")
+        messages.error(request, "Data room name cannot be empty.")
+        return redirect("data_room_list")
     if len(name) > 255:
         name = name[:255]
-    project.name = name
-    project.save(update_fields=["name", "updated_at"])
-    messages.success(request, "Project renamed.")
-    return redirect("project_list")
+    data_room.name = name
+    data_room.save(update_fields=["name", "updated_at"])
+    messages.success(request, "Data room renamed.")
+    return redirect("data_room_list")
 
 
 @login_required
 @require_POST
-def project_archive(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
-    project.is_archived = not project.is_archived
-    project.save(update_fields=["is_archived", "updated_at"])
-    label = "archived" if project.is_archived else "restored"
-    messages.success(request, f"Project {label}.")
-    return redirect("project_list")
+def data_room_archive(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
+    data_room.is_archived = not data_room.is_archived
+    data_room.save(update_fields=["is_archived", "updated_at"])
+    label = "archived" if data_room.is_archived else "restored"
+    messages.success(request, f"Data room {label}.")
+    return redirect("data_room_list")
 
 
 @login_required
 @require_http_methods(["GET"])
-def project_detail_redirect(request, project_id):
-    """Redirect /projects/<uuid>/ to /projects/<uuid>/chat/."""
-    return redirect("project_chat", project_id=project_id)
-
-
-@login_required
-@require_http_methods(["GET"])
-def project_chat(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
-
-    from chat.models import ChatThread
-
-    thread = None
-    chat_messages = []
-
-    if request.GET.get("thread"):
-        thread_id = request.GET["thread"]
-        thread = ChatThread.objects.filter(
-            id=thread_id, project=project, created_by=request.user
-        ).first()
-        if thread:
-            # Auto-restore archived threads when opened
-            if thread.is_archived:
-                thread.is_archived = False
-                thread.save(update_fields=["is_archived"])
-            chat_messages = list(thread.messages.order_by("created_at")[:100])
-
-    threads = list(
-        ChatThread.objects.filter(project=project, created_by=request.user, is_archived=False)
-        .order_by("-updated_at")
-    )
-    archived_threads = list(
-        ChatThread.objects.filter(project=project, created_by=request.user, is_archived=True)
-        .order_by("-updated_at")
-    )
-
-    return render(
-        request,
-        "documents/project_chat.html",
-        {
-            "project": project,
-            "active_tab": "chat",
-            "thread": thread,
-            "threads": threads,
-            "archived_threads": archived_threads,
-            "messages": chat_messages,
-        },
-    )
-
-
-@login_required
-@require_POST
-def thread_delete(request, project_id, thread_id):
-    from chat.models import ChatThread
-
-    thread = get_object_or_404(
-        ChatThread, id=thread_id, project__uuid=project_id, created_by=request.user
-    )
-    thread.delete()
-    return JsonResponse({"ok": True})
-
-
-@login_required
-@require_POST
-def thread_archive(request, project_id, thread_id):
-    from chat.models import ChatThread
-
-    thread = get_object_or_404(
-        ChatThread, id=thread_id, project__uuid=project_id, created_by=request.user
-    )
-    thread.is_archived = not thread.is_archived
-    thread.save(update_fields=["is_archived"])
-    return JsonResponse({"ok": True, "is_archived": thread.is_archived})
-
-
-@login_required
-@require_http_methods(["GET"])
-def project_documents(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
+def data_room_documents(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
     documents = list(
-        project.documents.filter(is_archived=False).order_by("-uploaded_at")
+        data_room.documents.filter(is_archived=False).order_by("-uploaded_at")
     )
     for doc in documents:
         doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
     archived_documents = list(
-        project.documents.filter(is_archived=True).order_by("-uploaded_at")
+        data_room.documents.filter(is_archived=True).order_by("-uploaded_at")
     )
     for doc in archived_documents:
         doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
     return render(
         request,
-        "documents/project_documents.html",
+        "documents/data_room_documents.html",
         {
-            "project": project,
+            "data_room": data_room,
             "documents": documents,
             "archived_documents": archived_documents,
-            "active_tab": "documents",
         },
     )
 
@@ -265,14 +195,14 @@ def _allowed_mime(mime_type: str) -> bool:
 
 @login_required
 @require_POST
-def document_upload(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
+def document_upload(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
     files = request.FILES.getlist("file")
     if not files:
         messages.error(request, "No file selected. Please choose a file to upload.")
-        return redirect("project_documents", project_id=project.uuid)
+        return redirect("data_room_documents", data_room_id=data_room.uuid)
 
     max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 10_000_000)
     errors = []
@@ -295,14 +225,14 @@ def document_upload(request, project_id):
             continue
         stored_filename = _safe_original_filename(file_obj.name, max_length=180)
         file_obj.name = stored_filename
-        doc = ProjectDocument.objects.create(
-            project=project,
+        doc = DataRoomDocument.objects.create(
+            data_room=data_room,
             uploaded_by=request.user,
             original_file=file_obj,
             original_filename=safe_filename,
             mime_type=mime,
             size_bytes=file_obj.size,
-            status=ProjectDocument.Status.UPLOADED,
+            status=DataRoomDocument.Status.UPLOADED,
         )
         created_docs.append(doc)
 
@@ -317,7 +247,7 @@ def document_upload(request, project_id):
             process_document(doc.id)
         except Exception as exc:
             logger.exception("document_upload: failed to enqueue processing for document_id=%s", doc.id)
-            doc.status = ProjectDocument.Status.FAILED
+            doc.status = DataRoomDocument.Status.FAILED
             doc.processing_error = str(exc)[:2000]
             doc.save(update_fields=["status", "processing_error", "updated_at"])
             errors.append(f"{doc.original_filename}: processing could not be started.")
@@ -327,59 +257,59 @@ def document_upload(request, project_id):
         messages.success(request, f"{count} file{'s' if count != 1 else ''} uploaded successfully.")
     for err in errors:
         messages.error(request, err)
-    return redirect("project_documents", project_id=project.uuid)
+    return redirect("data_room_documents", data_room_id=data_room.uuid)
 
 
 @login_required
 @require_POST
-def document_delete(request, project_id, document_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
-    doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
+def document_delete(request, data_room_id, document_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     doc.delete()
     messages.success(request, "Document deleted.")
-    return redirect("project_documents", project_id=project.uuid)
+    return redirect("data_room_documents", data_room_id=data_room.uuid)
 
 
 @login_required
 @require_http_methods(["POST"])
-def document_rename(request, project_id, document_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
-    doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
+def document_rename(request, data_room_id, document_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     name = (request.POST.get("name") or "").strip()
     if not name:
         messages.error(request, "Document name cannot be empty.")
-        return redirect("project_documents", project_id=project.uuid)
+        return redirect("data_room_documents", data_room_id=data_room.uuid)
     doc.original_filename = _safe_original_filename(name, max_length=75)
     doc.save(update_fields=["original_filename", "updated_at"])
     messages.success(request, "Document renamed.")
-    return redirect("project_documents", project_id=project.uuid)
+    return redirect("data_room_documents", data_room_id=data_room.uuid)
 
 
 @login_required
 @require_POST
-def document_archive(request, project_id, document_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
-        return redirect("project_list")
-    doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
+def document_archive(request, data_room_id, document_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return redirect("data_room_list")
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     doc.is_archived = not doc.is_archived
     doc.save(update_fields=["is_archived", "updated_at"])
     label = "archived" if doc.is_archived else "restored"
     messages.success(request, f"Document {label}.")
-    return redirect("project_documents", project_id=project.uuid)
+    return redirect("data_room_documents", data_room_id=data_room.uuid)
 
 
 @login_required
 @require_http_methods(["GET"])
-def document_chunks(request, project_id, document_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
+def document_chunks(request, data_room_id, document_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
-    doc = get_object_or_404(ProjectDocument, pk=document_id, project=project)
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     chunks = []
     for c in doc.chunks.order_by("chunk_index"):
         chunks.append({
@@ -399,9 +329,9 @@ def document_chunks(request, project_id, document_id):
 
 @login_required
 @require_POST
-def document_bulk_delete(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
+def document_bulk_delete(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     try:
         body = json.loads(request.body)
@@ -410,15 +340,15 @@ def document_bulk_delete(request, project_id):
     doc_ids = body.get("document_ids")
     if not isinstance(doc_ids, list) or not doc_ids:
         return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
-    deleted, _ = ProjectDocument.objects.filter(pk__in=doc_ids, project=project).delete()
+    deleted, _ = DataRoomDocument.objects.filter(pk__in=doc_ids, data_room=data_room).delete()
     return JsonResponse({"deleted": deleted})
 
 
 @login_required
 @require_POST
-def document_bulk_archive(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
+def document_bulk_archive(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     try:
         body = json.loads(request.body)
@@ -431,18 +361,18 @@ def document_bulk_archive(request, project_id):
     if action not in ("archive", "restore"):
         return JsonResponse({"error": "action must be 'archive' or 'restore'"}, status=400)
     is_archived = action == "archive"
-    updated = ProjectDocument.objects.filter(pk__in=doc_ids, project=project).update(is_archived=is_archived)
+    updated = DataRoomDocument.objects.filter(pk__in=doc_ids, data_room=data_room).update(is_archived=is_archived)
     return JsonResponse({"updated": updated})
 
 
 @login_required
 @require_http_methods(["GET"])
-def document_status(request, project_id):
-    project = get_object_or_404(Project, uuid=project_id)
-    if not _user_owns_project(request.user, project):
+def document_status(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     statuses = {
         str(pk): status
-        for pk, status in project.documents.values_list("id", "status")
+        for pk, status in data_room.documents.values_list("id", "status")
     }
     return JsonResponse({"statuses": statuses})

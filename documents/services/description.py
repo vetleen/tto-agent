@@ -7,7 +7,7 @@ import logging
 import tiktoken
 from django.conf import settings
 
-from documents.models import ProjectDocument
+from documents.models import DataRoomDocument
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def generate_document_description(document_id: int) -> str:
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
 
-    doc = ProjectDocument.objects.get(pk=document_id)
+    doc = DataRoomDocument.objects.get(pk=document_id)
     chunks = doc.chunks.order_by("chunk_index").values_list("text", flat=True)
     full_text = "\n\n".join(chunks)
 
@@ -64,7 +64,7 @@ def generate_document_description(document_id: int) -> str:
 
     context = RunContext.create(
         user_id=doc.uploaded_by_id,
-        conversation_id=doc.project_id,
+        conversation_id=doc.data_room_id,
     )
     request = ChatRequest(
         messages=[

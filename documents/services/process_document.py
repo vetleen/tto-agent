@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from django.contrib.postgres.search import SearchVector
 
-from documents.models import ProjectDocument, ProjectDocumentChunk
+from documents.models import DataRoomDocument, DataRoomDocumentChunk
 from documents.services.chunking import extract_and_chunk_file
 
 logger = logging.getLogger(__name__)
@@ -22,22 +22,22 @@ logger = logging.getLogger(__name__)
 
 def process_document(document_id: int) -> None:
     """
-    Load a ProjectDocument (with select_for_update to avoid concurrent processing),
+    Load a DataRoomDocument (with select_for_update to avoid concurrent processing),
     extract text, chunk, persist chunks, then embed and index in vector store.
     Sets status to PROCESSING then READY or FAILED.
     """
     with transaction.atomic():
         doc = (
-            ProjectDocument.objects.filter(pk=document_id)
+            DataRoomDocument.objects.filter(pk=document_id)
             .select_for_update(skip_locked=True)
             .first()
         )
     if not doc:
         logger.warning("process_document: document_id=%s not found or locked by another task", document_id)
         return
-    doc.status = ProjectDocument.Status.PROCESSING
+    doc.status = DataRoomDocument.Status.PROCESSING
     doc.save(update_fields=["status", "updated_at"])
-    logger.info("process_document: document_id=%s project_id=%s stage=processing", document_id, doc.project_id)
+    logger.info("process_document: document_id=%s data_room_id=%s stage=processing", document_id, doc.data_room_id)
     started_at = time.perf_counter()
     try:
         file_path = None
@@ -57,7 +57,7 @@ def process_document(document_id: int) -> None:
         doc.chunks.all().delete()
 
         chunk_objects = [
-            ProjectDocumentChunk(
+            DataRoomDocumentChunk(
                 document=doc,
                 chunk_index=i,
                 heading=c.get("heading"),
@@ -70,7 +70,7 @@ def process_document(document_id: int) -> None:
             )
             for i, c in enumerate(chunks_data)
         ]
-        ProjectDocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
+        DataRoomDocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
 
         # Populate full-text search vectors for hybrid retrieval.
         # Wrapped in its own savepoint so a failure (e.g. SQLite in dev/test) does
@@ -101,7 +101,7 @@ def process_document(document_id: int) -> None:
                 logger.info("process_document: document_id=%s stage=vector_delete", document_id)
                 vs.delete_vectors_for_document(doc.id)
                 logger.info("process_document: document_id=%s stage=embedding", document_id)
-                vs.add_chunk_vectors(chunk_records, document_id=doc.id, project_id=doc.project_id)
+                vs.add_chunk_vectors(chunk_records, document_id=doc.id, data_room_id=doc.data_room_id)
                 logger.info("process_document: document_id=%s stage=vector_done", document_id)
             except Exception as vec_err:
                 logger.warning(
@@ -109,7 +109,7 @@ def process_document(document_id: int) -> None:
                     document_id, vec_err,
                 )
         doc.embedding_model = getattr(settings, "EMBEDDING_MODEL", "")
-        doc.status = ProjectDocument.Status.READY
+        doc.status = DataRoomDocument.Status.READY
         doc.processing_error = None
         doc.processed_at = timezone.now()
         doc.save(update_fields=["status", "processing_error", "processed_at", "embedding_model", "updated_at"])
@@ -123,15 +123,15 @@ def process_document(document_id: int) -> None:
                 logger.exception("process_document: document_id=%s description generation failed", document_id)
         duration_seconds = time.perf_counter() - started_at
         logger.info(
-            "process_document: document_id=%s project_id=%s stage=ready chunk_count=%s duration_seconds=%.2f",
-            document_id, doc.project_id, len(chunks_data), duration_seconds,
+            "process_document: document_id=%s data_room_id=%s stage=ready chunk_count=%s duration_seconds=%.2f",
+            document_id, doc.data_room_id, len(chunks_data), duration_seconds,
         )
     except Exception as e:
         duration_seconds = time.perf_counter() - started_at
         logger.exception(
-            "process_document: document_id=%s project_id=%s stage=failed duration_seconds=%.2f",
-            document_id, doc.project_id, duration_seconds,
+            "process_document: document_id=%s data_room_id=%s stage=failed duration_seconds=%.2f",
+            document_id, doc.data_room_id, duration_seconds,
         )
-        doc.status = ProjectDocument.Status.FAILED
+        doc.status = DataRoomDocument.Status.FAILED
         doc.processing_error = str(e)[:2000]
         doc.save(update_fields=["status", "processing_error", "updated_at"])

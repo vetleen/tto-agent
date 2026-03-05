@@ -1,4 +1,4 @@
-"""RAG tool: search project documents via similarity search."""
+"""RAG tools: search data room documents via similarity search."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 class SearchDocumentsTool:
-    """Search project documents using semantic similarity."""
+    """Search data room documents using semantic similarity."""
 
     name = "search_documents"
     description = (
-        "Search the project's uploaded documents for information relevant to a query. "
+        "Search the attached data rooms' documents for information relevant to a query. "
         "Use this when the user asks about document contents, wants summaries, "
         "or needs specific information from their files."
     )
@@ -36,7 +36,7 @@ class SearchDocumentsTool:
     }
 
     def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
-        from documents.models import Project
+        from documents.models import DataRoom
         from documents.services.retrieval import similarity_search_chunks
 
         query = args.get("query", "").strip()
@@ -48,22 +48,24 @@ class SearchDocumentsTool:
             k = 5
         k = min(k, 10)
 
-        project_id = context.conversation_id
-        if not project_id:
-            raise ValueError("search_documents requires a project context (conversation_id)")
+        data_room_ids = context.data_room_ids
+        if not data_room_ids:
+            return {"error": "No data rooms attached", "results": [], "count": 0}
 
-        try:
-            project_pk = int(project_id)
-        except (TypeError, ValueError) as e:
-            raise ValueError(f"Invalid project ID in context: {project_id}") from e
-
-        # Verify the user owns this project
+        # Verify the user has access to all data rooms
         user_id = context.user_id
-        if not user_id or not Project.objects.filter(pk=project_pk, created_by_id=user_id).exists():
-            raise ValueError("Project not found or access denied")
+        if user_id:
+            accessible = set(
+                DataRoom.objects.filter(
+                    pk__in=data_room_ids, created_by_id=user_id,
+                ).values_list("pk", flat=True)
+            )
+            data_room_ids = [rid for rid in data_room_ids if rid in accessible]
+            if not data_room_ids:
+                raise ValueError("Data rooms not found or access denied")
 
         try:
-            docs = similarity_search_chunks(project_id=project_pk, query=query, k=k)
+            docs = similarity_search_chunks(data_room_ids=data_room_ids, query=query, k=k)
         except Exception as exc:
             logger.exception("search_documents: similarity_search_chunks failed")
             return {
@@ -84,11 +86,11 @@ class SearchDocumentsTool:
 
 
 class ReadDocumentTool:
-    """Read the full text content of one or more project documents by index number."""
+    """Read the full text content of one or more documents by index number."""
 
     name = "read_document"
     description = (
-        "Read the full text content of one or more project documents by their "
+        "Read the full text content of one or more documents by their "
         "index number. Use this when you need the complete content of a specific "
         "document rather than search excerpts."
     )
@@ -100,6 +102,10 @@ class ReadDocumentTool:
                 "items": {"type": "integer"},
                 "description": "List of document index numbers to read (e.g. [1, 3]).",
             },
+            "data_room_id": {
+                "type": "integer",
+                "description": "Optional data room ID to disambiguate when multiple data rooms are attached.",
+            },
         },
         "required": ["doc_indices"],
     }
@@ -108,42 +114,56 @@ class ReadDocumentTool:
     _MAX_TOTAL_CHARS = 32_000
 
     def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
-        from documents.models import Project, ProjectDocument
+        from documents.models import DataRoom, DataRoomDocument
 
         doc_indices = args.get("doc_indices", [])
         if not doc_indices or not isinstance(doc_indices, list):
             raise ValueError("read_document requires a non-empty 'doc_indices' list")
 
-        project_id = context.conversation_id
-        if not project_id:
-            raise ValueError("read_document requires a project context (conversation_id)")
+        data_room_ids = context.data_room_ids
+        if not data_room_ids:
+            return {"error": "No data rooms attached", "documents": []}
 
-        try:
-            project_pk = int(project_id)
-        except (TypeError, ValueError) as e:
-            raise ValueError(f"Invalid project ID in context: {project_id}") from e
+        # Optionally scope to a single data room
+        specific_room = args.get("data_room_id")
+        if specific_room and specific_room in data_room_ids:
+            data_room_ids = [specific_room]
 
-        # Verify the user owns this project
+        # Verify the user has access
         user_id = context.user_id
-        if not user_id or not Project.objects.filter(pk=project_pk, created_by_id=user_id).exists():
-            raise ValueError("Project not found or access denied")
+        if user_id:
+            accessible = set(
+                DataRoom.objects.filter(
+                    pk__in=data_room_ids, created_by_id=user_id,
+                ).values_list("pk", flat=True)
+            )
+            data_room_ids = [rid for rid in data_room_ids if rid in accessible]
+            if not data_room_ids:
+                raise ValueError("Data rooms not found or access denied")
 
         documents = []
         total_chars = 0
 
         for idx in doc_indices:
             try:
-                doc = ProjectDocument.objects.get(
-                    project_id=project_pk,
+                doc = DataRoomDocument.objects.get(
+                    data_room_id__in=data_room_ids,
                     doc_index=idx,
                     is_archived=False,
                 )
-            except ProjectDocument.DoesNotExist:
+            except DataRoomDocument.DoesNotExist:
                 documents.append({
                     "doc_index": idx,
                     "error": f"No document with index {idx} found.",
                 })
                 continue
+            except DataRoomDocument.MultipleObjectsReturned:
+                # Same doc_index in multiple rooms — take the first match
+                doc = DataRoomDocument.objects.filter(
+                    data_room_id__in=data_room_ids,
+                    doc_index=idx,
+                    is_archived=False,
+                ).first()
 
             chunks = doc.chunks.order_by("chunk_index").values_list("text", flat=True)
             content = "\n\n".join(chunks)
@@ -164,6 +184,7 @@ class ReadDocumentTool:
             documents.append({
                 "doc_index": idx,
                 "filename": doc.original_filename,
+                "data_room_id": doc.data_room_id,
                 "content": content,
             })
 

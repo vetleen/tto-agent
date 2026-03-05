@@ -1,5 +1,5 @@
 """
-Backend retrieval: get chunks by project/document (ordered), by similarity
+Backend retrieval: get chunks by data room/document (ordered), by similarity
 search, by full-text search, or hybrid (semantic + full-text with RRF).
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from typing import Any
 
 from django.contrib.postgres.search import SearchQuery, SearchRank
 
-from documents.models import ProjectDocumentChunk, ProjectDocument
+from documents.models import DataRoomDocumentChunk, DataRoomDocument
 from documents.services import vector_store as vs
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
     """Return chunks for a document in order (from DB)."""
-    chunks = ProjectDocumentChunk.objects.filter(document_id=document_id).order_by("chunk_index")
+    chunks = DataRoomDocumentChunk.objects.filter(document_id=document_id).order_by("chunk_index")
     return [
         {
             "id": c.id,
@@ -32,11 +32,11 @@ def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
     ]
 
 
-def get_chunks_by_project(project_id: int) -> list[dict[str, Any]]:
-    """Return all chunks for a project, grouped by document (order preserved). Excludes failed documents."""
+def get_chunks_by_data_room(data_room_id: int) -> list[dict[str, Any]]:
+    """Return all chunks for a data room, grouped by document (order preserved). Excludes failed documents."""
     chunks = (
-        ProjectDocumentChunk.objects.filter(document__project_id=project_id)
-        .exclude(document__status=ProjectDocument.Status.FAILED)
+        DataRoomDocumentChunk.objects.filter(document__data_room_id=data_room_id)
+        .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
         .select_related("document")
         .order_by("document_id", "chunk_index")
@@ -55,7 +55,7 @@ def get_chunks_by_project(project_id: int) -> list[dict[str, Any]]:
 
 
 def fulltext_search_chunks(
-    project_id: int,
+    data_room_ids: list[int],
     query: str,
     k: int = 10,
     document_id: int | None = None,
@@ -67,11 +67,11 @@ def fulltext_search_chunks(
     """
     search_query = SearchQuery(query, config="english", search_type="websearch")
     qs = (
-        ProjectDocumentChunk.objects.filter(
-            document__project_id=project_id,
+        DataRoomDocumentChunk.objects.filter(
+            document__data_room_id__in=data_room_ids,
             search_vector__isnull=False,
         )
-        .exclude(document__status=ProjectDocument.Status.FAILED)
+        .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
         .annotate(rank=SearchRank("search_vector", search_query))
         .filter(rank__gt=0)
@@ -106,7 +106,7 @@ def _rrf_score(rank_position: int, weight: float = 1.0, rrf_k: int = _RRF_K) -> 
 
 
 def hybrid_search_chunks(
-    project_id: int,
+    data_room_ids: list[int],
     query: str,
     k: int = 10,
     document_id: int | None = None,
@@ -128,7 +128,7 @@ def hybrid_search_chunks(
     if semantic_weight > 0:
         try:
             semantic_results = vs.similarity_search(
-                project_id=project_id, query=query, k=fetch_k, document_id=document_id,
+                data_room_ids=data_room_ids, query=query, k=fetch_k, document_id=document_id,
             )
         except Exception:
             logger.exception("hybrid_search: semantic search failed, continuing with fulltext only")
@@ -138,7 +138,7 @@ def hybrid_search_chunks(
     if fulltext_weight > 0:
         try:
             fts_results = fulltext_search_chunks(
-                project_id=project_id, query=query, k=fetch_k, document_id=document_id,
+                data_room_ids=data_room_ids, query=query, k=fetch_k, document_id=document_id,
             )
         except Exception:
             logger.exception("hybrid_search: fulltext search failed, continuing with semantic only")
@@ -146,8 +146,8 @@ def hybrid_search_chunks(
     # ---- Exclude archived documents from semantic results ----------------------
     if semantic_results:
         archived_doc_ids = set(
-            ProjectDocument.objects.filter(
-                project_id=project_id, is_archived=True,
+            DataRoomDocument.objects.filter(
+                data_room_id__in=data_room_ids, is_archived=True,
             ).values_list("pk", flat=True)
         )
         if archived_doc_ids:
@@ -171,6 +171,7 @@ def hybrid_search_chunks(
             "text": getattr(doc, "page_content", ""),
             "heading": None,
             "document_id": meta.get("document_id"),
+            "data_room_id": meta.get("data_room_id"),
             "rrf_score": 0.0,
         })
         entry["rrf_score"] += _rrf_score(rank_pos, weight=semantic_weight)
@@ -195,29 +196,29 @@ def hybrid_search_chunks(
 
 
 def similarity_search_chunks(
-    project_id: int,
+    data_room_ids: list[int],
     query: str,
     k: int = 10,
     document_id: int | None = None,
 ) -> list[Any]:
     """
     Run hybrid search (semantic + full-text) and return LangChain Document
-    objects with metadata doc_index (project-scoped), project_id, chunk_index.
-    Maintains backward compatibility with existing callers.
+    objects with metadata doc_index (data-room-scoped), data_room_id, chunk_index.
     """
     from langchain_core.documents import Document
 
     results = hybrid_search_chunks(
-        project_id=project_id, query=query, k=k, document_id=document_id,
+        data_room_ids=data_room_ids, query=query, k=k, document_id=document_id,
     )
 
-    # Resolve database PKs to project-scoped doc_index values
+    # Resolve database PKs to data-room-scoped doc_index values
     doc_pks = {r["document_id"] for r in results if r.get("document_id")}
     doc_index_map: dict[int, int] = {}
+    doc_room_map: dict[int, int] = {}
     if doc_pks:
-        doc_index_map = dict(
-            ProjectDocument.objects.filter(pk__in=doc_pks).values_list("pk", "doc_index")
-        )
+        for pk, doc_index, room_id in DataRoomDocument.objects.filter(pk__in=doc_pks).values_list("pk", "doc_index", "data_room_id"):
+            doc_index_map[pk] = doc_index
+            doc_room_map[pk] = room_id
 
     return [
         Document(
@@ -225,7 +226,7 @@ def similarity_search_chunks(
             metadata={
                 "chunk_id": r["id"],
                 "doc_index": doc_index_map.get(r["document_id"], 0),
-                "project_id": project_id,
+                "data_room_id": doc_room_map.get(r["document_id"], 0),
                 "chunk_index": r["chunk_index"],
             },
         )

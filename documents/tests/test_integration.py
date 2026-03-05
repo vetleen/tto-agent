@@ -7,7 +7,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from documents.models import Project, ProjectDocument
+from documents.models import DataRoom, DataRoomDocument
 
 User = get_user_model()
 
@@ -23,7 +23,7 @@ class UploadProcessRetrieveIntegrationTest(TestCase):
         self.user = User.objects.create_user(email="integration@example.com", password="testpass")
         self.user.email_verified = True
         self.user.save(update_fields=["email_verified"])
-        self.project = Project.objects.create(name="Integration Project", slug="integration-project", created_by=self.user)
+        self.data_room = DataRoom.objects.create(name="Integration Project", slug="integration-project", created_by=self.user)
 
     def test_upload_process_then_retrieve_chunks(self):
         content = b"First paragraph.\n\nSecond paragraph with more text for chunking."
@@ -31,18 +31,18 @@ class UploadProcessRetrieveIntegrationTest(TestCase):
         self.client.force_login(self.user)
 
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": uploaded},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
 
-        doc = ProjectDocument.objects.get(project=self.project, original_filename="integration.txt")
-        self.assertEqual(doc.status, ProjectDocument.Status.READY, doc.processing_error or "expected READY")
+        doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="integration.txt")
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY, doc.processing_error or "expected READY")
         self.assertGreater(doc.chunks.count(), 0, "chunks should be created")
 
         chunks_response = self.client.get(
-            reverse("document_chunks", kwargs={"project_id": self.project.uuid, "document_id": doc.id})
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
         )
         self.assertEqual(chunks_response.status_code, 200)
         data = chunks_response.json()

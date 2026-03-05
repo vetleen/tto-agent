@@ -207,7 +207,7 @@ STATICFILES_FINDERS = (
     'compressor.finders.CompressorFinder',
 )
 
-LOGIN_REDIRECT_URL = "/projects/"
+LOGIN_REDIRECT_URL = "/chat/"
 LOGOUT_REDIRECT_URL = '/'
 LOGIN_URL = '/accounts/login/'
 

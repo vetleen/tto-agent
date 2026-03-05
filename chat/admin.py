@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import ChatMessage, ChatThread
+from .models import ChatMessage, ChatThread, ChatThreadDataRoom
 
 
 class ChatMessageInline(admin.TabularInline):
@@ -10,13 +10,20 @@ class ChatMessageInline(admin.TabularInline):
     fields = ("role", "content", "tool_call_id", "created_at")
 
 
+class ChatThreadDataRoomInline(admin.TabularInline):
+    model = ChatThreadDataRoom
+    extra = 0
+    readonly_fields = ("attached_at",)
+    raw_id_fields = ("data_room",)
+
+
 @admin.register(ChatThread)
 class ChatThreadAdmin(admin.ModelAdmin):
-    list_display = ("id", "project", "title", "created_by", "created_at", "updated_at")
+    list_display = ("id", "title", "created_by", "created_at", "updated_at")
     list_filter = ("created_at",)
-    search_fields = ("title", "project__name")
+    search_fields = ("title",)
     readonly_fields = ("id", "created_at", "updated_at")
-    inlines = [ChatMessageInline]
+    inlines = [ChatThreadDataRoomInline, ChatMessageInline]
 
 
 @admin.register(ChatMessage)

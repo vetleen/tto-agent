@@ -9,16 +9,19 @@ from chat.prompts import build_system_prompt
 
 class BuildSystemPromptTests(TestCase):
     def setUp(self):
-        self.project = MagicMock()
-        self.project.name = "My Project"
+        self.data_room = {"id": 1, "name": "My Data Room"}
 
     def test_basic_prompt(self):
-        prompt = build_system_prompt(self.project)
-        self.assertIn("My Project", prompt)
-        self.assertIn("search_documents", prompt)
+        prompt = build_system_prompt(data_rooms=[self.data_room])
+        self.assertIn("My Data Room", prompt)
+
+    def test_no_data_rooms_omits_tools(self):
+        prompt = build_system_prompt()
+        self.assertNotIn("search_documents", prompt)
+        self.assertNotIn("read_document", prompt)
 
     def test_no_metadata_no_history_note(self):
-        prompt = build_system_prompt(self.project)
+        prompt = build_system_prompt(data_rooms=[self.data_room])
         self.assertNotIn("messages total", prompt)
 
     def test_metadata_when_all_included(self):
@@ -27,7 +30,7 @@ class BuildSystemPromptTests(TestCase):
             "included_messages": 5,
             "has_summary": False,
         }
-        prompt = build_system_prompt(self.project, history_meta=meta)
+        prompt = build_system_prompt(data_rooms=[self.data_room], history_meta=meta)
         # All messages included — no note
         self.assertNotIn("messages total", prompt)
 
@@ -37,11 +40,9 @@ class BuildSystemPromptTests(TestCase):
             "included_messages": 30,
             "has_summary": False,
         }
-        prompt = build_system_prompt(self.project, history_meta=meta)
+        prompt = build_system_prompt(data_rooms=[self.data_room], history_meta=meta)
         self.assertIn("100 messages total", prompt)
         self.assertIn("30 most recent", prompt)
-        self.assertNotIn("summary", prompt.lower().split("search_documents")[0]
-                         if "search_documents" in prompt else "")
 
     def test_metadata_with_summary(self):
         meta = {
@@ -49,6 +50,6 @@ class BuildSystemPromptTests(TestCase):
             "included_messages": 30,
             "has_summary": True,
         }
-        prompt = build_system_prompt(self.project, history_meta=meta)
+        prompt = build_system_prompt(data_rooms=[self.data_room], history_meta=meta)
         self.assertIn("100 messages total", prompt)
         self.assertIn("summary of earlier messages", prompt.lower())

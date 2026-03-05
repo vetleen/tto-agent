@@ -8,10 +8,11 @@ from django.db import models
 
 class ChatThread(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    project = models.ForeignKey(
-        "documents.Project",
-        on_delete=models.CASCADE,
+    data_rooms = models.ManyToManyField(
+        "documents.DataRoom",
+        through="ChatThreadDataRoom",
         related_name="chat_threads",
+        blank=True,
     )
     title = models.CharField(max_length=255, blank=True)
     created_by = models.ForeignKey(
@@ -33,11 +34,32 @@ class ChatThread(models.Model):
     class Meta:
         ordering = ["-updated_at"]
         indexes = [
-            models.Index(fields=["project", "-updated_at"]),
+            models.Index(fields=["created_by", "-updated_at"]),
         ]
 
     def __str__(self) -> str:
         return self.title or f"Thread {self.id}"
+
+
+class ChatThreadDataRoom(models.Model):
+    thread = models.ForeignKey(
+        ChatThread,
+        on_delete=models.CASCADE,
+        related_name="thread_data_rooms",
+    )
+    data_room = models.ForeignKey(
+        "documents.DataRoom",
+        on_delete=models.CASCADE,
+        related_name="thread_links",
+    )
+    attached_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("thread", "data_room")]
+        ordering = ["attached_at"]
+
+    def __str__(self) -> str:
+        return f"{self.thread_id} ↔ {self.data_room_id}"
 
 
 class ChatMessage(models.Model):

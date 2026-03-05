@@ -1,4 +1,4 @@
-"""WebSocket consumer for project chat with LLM streaming."""
+"""WebSocket consumer for chat with LLM streaming."""
 
 from __future__ import annotations
 
@@ -14,24 +14,17 @@ MAX_HISTORY_TOKENS = 20_000
 OVERLAP_TOKENS = 2_000  # always show at least this many recent tokens as raw messages
 
 
-class ProjectChatConsumer(AsyncWebsocketConsumer):
-    """WebSocket consumer for per-project chat with LLM streaming and RAG."""
+class ChatConsumer(AsyncWebsocketConsumer):
+    """WebSocket consumer for chat with LLM streaming and optional RAG via data rooms."""
 
     async def connect(self):
-        self.project_id = str(self.scope["url_route"]["kwargs"]["project_id"])
-        self.project = None
         self.user = self.scope.get("user")
         self.resolved_prefs = None
+        self.data_room_ids: list[int] = []
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
             await self.close(code=4401)
-            return
-
-        # Validate project exists and user owns it
-        self.project = await self._get_project()
-        if self.project is None:
-            await self.close(code=4404)
             return
 
         # Resolve user/org/system preferences
@@ -58,8 +51,75 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
 
         if msg_type == "chat.message":
             await self._handle_chat_message(data)
+        elif msg_type == "chat.attach_data_room":
+            await self._handle_attach_data_room(data)
+        elif msg_type == "chat.detach_data_room":
+            await self._handle_detach_data_room(data)
+        elif msg_type == "chat.load_thread":
+            await self._handle_load_thread(data)
         elif msg_type == "pong":
             pass  # heartbeat acknowledgment
+
+    async def _handle_attach_data_room(self, data):
+        """Attach a data room to the current session."""
+        data_room_id = data.get("data_room_id")
+        thread_id = data.get("thread_id")
+        if not data_room_id:
+            await self.send(text_data=json.dumps({"error": "data_room_id required"}))
+            return
+
+        # Validate ownership
+        room = await self._validate_data_room(data_room_id)
+        if not room:
+            await self.send(text_data=json.dumps({"error": "Data room not found or access denied"}))
+            return
+
+        if data_room_id not in self.data_room_ids:
+            self.data_room_ids.append(data_room_id)
+
+        # Persist M2M if thread exists
+        if thread_id:
+            await self._persist_data_room_link(thread_id, data_room_id)
+
+        await self.send(text_data=json.dumps({
+            "event_type": "data_room.attached",
+            "data_room_id": data_room_id,
+            "data_room_name": room["name"],
+        }))
+
+    async def _handle_detach_data_room(self, data):
+        """Detach a data room from the current session."""
+        data_room_id = data.get("data_room_id")
+        thread_id = data.get("thread_id")
+        if not data_room_id:
+            return
+
+        if data_room_id in self.data_room_ids:
+            self.data_room_ids.remove(data_room_id)
+
+        # Remove M2M if thread exists
+        if thread_id:
+            await self._remove_data_room_link(thread_id, data_room_id)
+
+        await self.send(text_data=json.dumps({
+            "event_type": "data_room.detached",
+            "data_room_id": data_room_id,
+        }))
+
+    async def _handle_load_thread(self, data):
+        """Load a thread's data rooms into the session."""
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            return
+
+        thread_data = await self._load_thread_data_rooms(thread_id)
+        if thread_data is not None:
+            self.data_room_ids = thread_data["data_room_ids"]
+            await self.send(text_data=json.dumps({
+                "event_type": "thread.loaded",
+                "thread_id": thread_id,
+                "data_rooms": thread_data["data_rooms"],
+            }))
 
     async def _handle_chat_message(self, data):
         content = (data.get("content") or "").strip()
@@ -69,11 +129,20 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
 
         thread_id = data.get("thread_id")
 
+        # Allow payload to specify data_room_ids (e.g. for new threads)
+        payload_room_ids = data.get("data_room_ids")
+        if payload_room_ids and isinstance(payload_room_ids, list):
+            self.data_room_ids = payload_room_ids
+
         try:
             # Get or create thread
             thread, created = await self._get_or_create_thread(thread_id)
 
             if created:
+                # Persist session data_room_ids as M2M for new threads
+                if self.data_room_ids:
+                    await self._persist_data_room_links(thread.id, self.data_room_ids)
+
                 await self.send(text_data=json.dumps({
                     "event_type": "thread.created",
                     "thread_id": str(thread.id),
@@ -88,14 +157,19 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             meta = history_result["meta"]
 
             # Gather document context for the system prompt
-            doc_context = await self._get_document_context(
-                self.project.pk, content,
-            )
+            doc_context = None
+            if self.data_room_ids:
+                doc_context = await self._get_document_context(
+                    self.data_room_ids, content,
+                )
 
             # Build system prompt
             from chat.prompts import build_system_prompt
+            data_rooms = None
+            if self.data_room_ids:
+                data_rooms = await self._get_data_room_info(self.data_room_ids)
             system_prompt = build_system_prompt(
-                self.project,
+                data_rooms=data_rooms,
                 history_meta=meta,
                 doc_context=doc_context,
             )
@@ -133,17 +207,25 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
 
         context = RunContext.create(
             user_id=self.user.pk,
-            conversation_id=self.project.pk,
+            conversation_id=str(thread.id),
+            data_room_ids=self.data_room_ids,
         )
 
         from django.conf import settings as django_settings
 
         prefs = self.resolved_prefs
+
+        # Only include document tools when data rooms are attached
+        if self.data_room_ids:
+            tools = prefs.allowed_tools if prefs else ["search_documents", "read_document"]
+        else:
+            tools = []
+
         request = ChatRequest(
             messages=messages,
             model=prefs.primary_model if prefs else None,
             stream=True,
-            tools=prefs.allowed_tools if prefs else ["search_documents", "read_document"],
+            tools=tools,
             context=context,
             params={"thinking": getattr(django_settings, "LLM_ENABLE_THINKING", False)},
         )
@@ -207,7 +289,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
                 messages_to_summarise,
                 existing_summary=thread_data["summary"],
                 user_id=self.user.pk,
-                conversation_id=self.project.pk,
+                conversation_id=str(thread.id),
             )
 
             last_msg = messages_to_summarise[-1]
@@ -292,27 +374,26 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
 
     # -- Document context helpers --
 
-    async def _get_document_context(self, project_id, user_message):
-        """Search project documents and return context for the system prompt."""
+    async def _get_document_context(self, data_room_ids, user_message):
+        """Search data room documents and return context for the system prompt."""
         try:
             doc_context = await self._search_and_build_doc_context(
-                project_id, user_message,
+                data_room_ids, user_message,
             )
             return doc_context
         except Exception:
             logger.exception("Failed to build document context")
-            # Graceful fallback: return minimal context
-            total = await self._count_project_documents(project_id)
+            total = await self._count_data_room_documents(data_room_ids)
             return {"total_doc_count": total, "documents": []}
 
     @database_sync_to_async
-    def _search_and_build_doc_context(self, project_id, user_message):
-        from documents.models import ProjectDocument
+    def _search_and_build_doc_context(self, data_room_ids, user_message):
+        from documents.models import DataRoomDocument
         from documents.services.retrieval import hybrid_search_chunks
 
-        total_count = ProjectDocument.objects.filter(
-            project_id=project_id,
-            status=ProjectDocument.Status.READY,
+        total_count = DataRoomDocument.objects.filter(
+            data_room_id__in=data_room_ids,
+            status=DataRoomDocument.Status.READY,
             is_archived=False,
         ).count()
 
@@ -322,7 +403,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
         # Run hybrid search to find relevant chunks
         try:
             results = hybrid_search_chunks(
-                project_id=project_id, query=user_message, k=10,
+                data_room_ids=data_room_ids, query=user_message, k=10,
             )
         except Exception:
             logger.exception("Document context: hybrid search failed")
@@ -340,48 +421,106 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
         # Fetch document metadata
         documents = []
         if seen_doc_ids:
-            docs = ProjectDocument.objects.filter(
+            docs = DataRoomDocument.objects.filter(
                 pk__in=seen_doc_ids,
-                status=ProjectDocument.Status.READY,
+                status=DataRoomDocument.Status.READY,
                 is_archived=False,
-            ).values("pk", "doc_index", "original_filename", "description", "token_count")
+            ).select_related("data_room").values(
+                "pk", "doc_index", "original_filename", "description",
+                "token_count", "data_room__name", "data_room_id",
+            )
 
             doc_map = {d["pk"]: d for d in docs}
+            multi_room = len(data_room_ids) > 1
             for doc_id in seen_doc_ids:
                 d = doc_map.get(doc_id)
                 if d:
-                    documents.append({
+                    entry = {
                         "doc_index": d["doc_index"],
                         "filename": d["original_filename"],
                         "description": d["description"] or "",
                         "token_count": d["token_count"],
-                    })
+                    }
+                    if multi_room:
+                        entry["data_room_name"] = d["data_room__name"]
+                    documents.append(entry)
 
         return {"total_doc_count": total_count, "documents": documents}
 
     @database_sync_to_async
-    def _count_project_documents(self, project_id):
-        from documents.models import ProjectDocument
+    def _count_data_room_documents(self, data_room_ids):
+        from documents.models import DataRoomDocument
 
-        return ProjectDocument.objects.filter(
-            project_id=project_id,
-            status=ProjectDocument.Status.READY,
+        return DataRoomDocument.objects.filter(
+            data_room_id__in=data_room_ids,
+            status=DataRoomDocument.Status.READY,
             is_archived=False,
         ).count()
 
-    # -- Database helpers --
+    # -- Data room helpers --
 
     @database_sync_to_async
-    def _get_project(self):
-        from documents.models import Project
+    def _validate_data_room(self, data_room_id):
+        from documents.models import DataRoom
 
         try:
-            project = Project.objects.get(uuid=self.project_id)
-        except Project.DoesNotExist:
+            room = DataRoom.objects.get(pk=data_room_id)
+        except DataRoom.DoesNotExist:
             return None
-        if project.created_by_id != self.user.pk:
+        if room.created_by_id != self.user.pk:
             return None
-        return project
+        return {"id": room.pk, "name": room.name}
+
+    @database_sync_to_async
+    def _get_data_room_info(self, data_room_ids):
+        from documents.models import DataRoom
+
+        rooms = DataRoom.objects.filter(pk__in=data_room_ids).values("pk", "name")
+        return [{"id": r["pk"], "name": r["name"]} for r in rooms]
+
+    @database_sync_to_async
+    def _persist_data_room_link(self, thread_id, data_room_id):
+        from chat.models import ChatThreadDataRoom
+
+        ChatThreadDataRoom.objects.get_or_create(
+            thread_id=thread_id, data_room_id=data_room_id,
+        )
+
+    @database_sync_to_async
+    def _persist_data_room_links(self, thread_id, data_room_ids):
+        from chat.models import ChatThreadDataRoom
+
+        for room_id in data_room_ids:
+            ChatThreadDataRoom.objects.get_or_create(
+                thread_id=thread_id, data_room_id=room_id,
+            )
+
+    @database_sync_to_async
+    def _remove_data_room_link(self, thread_id, data_room_id):
+        from chat.models import ChatThreadDataRoom
+
+        ChatThreadDataRoom.objects.filter(
+            thread_id=thread_id, data_room_id=data_room_id,
+        ).delete()
+
+    @database_sync_to_async
+    def _load_thread_data_rooms(self, thread_id):
+        from chat.models import ChatThread
+
+        try:
+            thread = ChatThread.objects.get(pk=thread_id, created_by=self.user)
+        except ChatThread.DoesNotExist:
+            return None
+
+        rooms = list(
+            thread.data_rooms.values("pk", "name")
+        )
+        return {
+            "data_room_ids": [r["pk"] for r in rooms],
+            "data_rooms": [{"id": r["pk"], "name": r["name"]} for r in rooms],
+        }
+
+    # -- Database helpers --
 
     @database_sync_to_async
     def _get_or_create_thread(self, thread_id):
@@ -391,7 +530,6 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             try:
                 thread = ChatThread.objects.get(
                     id=thread_id,
-                    project=self.project,
                     created_by=self.user,
                 )
                 return thread, False
@@ -399,7 +537,6 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
                 pass
 
         thread = ChatThread.objects.create(
-            project=self.project,
             created_by=self.user,
         )
         return thread, True
@@ -429,7 +566,7 @@ class ProjectChatConsumer(AsyncWebsocketConsumer):
             )
             context = RunContext.create(
                 user_id=self.user.pk,
-                conversation_id=self.project.pk,
+                conversation_id=str(thread.id),
             )
             prefs = self.resolved_prefs
             cheap_model = prefs.cheap_model if prefs else None

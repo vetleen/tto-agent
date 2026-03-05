@@ -1,4 +1,4 @@
-"""Tests for ProjectChatConsumer WebSocket consumer."""
+"""Tests for ChatConsumer WebSocket consumer."""
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,11 +9,10 @@ from django.test import override_settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase
 
-from chat.consumers import ProjectChatConsumer
+from chat.consumers import ChatConsumer
 from chat.models import ChatMessage, ChatThread
 from chat.routing import websocket_urlpatterns
 from channels.routing import URLRouter
-from documents.models import Project
 
 User = get_user_model()
 
@@ -32,17 +31,11 @@ class ConsumerConnectTests(TransactionTestCase):
         self.user = User.objects.create_user(
             email="owner@example.com", password="pass123"
         )
-        self.project = Project.objects.create(
-            name="Test", slug="test-project", created_by=self.user
-        )
-        self.other_user = User.objects.create_user(
-            email="other@example.com", password="pass123"
-        )
 
-    async def _communicator(self, project_uuid, user=None):
+    async def _communicator(self, user=None):
         app = make_application()
         communicator = WebsocketCommunicator(
-            app, f"/ws/projects/{project_uuid}/chat/"
+            app, "/ws/chat/"
         )
         if user:
             communicator.scope["user"] = user
@@ -51,33 +44,16 @@ class ConsumerConnectTests(TransactionTestCase):
     async def test_unauthenticated_rejected(self):
         from django.contrib.auth.models import AnonymousUser
 
-        communicator = await self._communicator(self.project.uuid, AnonymousUser())
+        communicator = await self._communicator(AnonymousUser())
         connected, code = await communicator.connect()
         self.assertFalse(connected)
         self.assertEqual(code, 4401)
         await communicator.disconnect()
 
-    async def test_wrong_owner_rejected(self):
-        communicator = await self._communicator(self.project.uuid, self.other_user)
-        connected, code = await communicator.connect()
-        self.assertFalse(connected)
-        self.assertEqual(code, 4404)
-        await communicator.disconnect()
-
     async def test_connect_succeeds(self):
-        communicator = await self._communicator(self.project.uuid, self.user)
+        communicator = await self._communicator(self.user)
         connected, _ = await communicator.connect()
         self.assertTrue(connected)
-        await communicator.disconnect()
-
-    async def test_nonexistent_project_rejected(self):
-        import uuid
-
-        fake_uuid = uuid.uuid4()
-        communicator = await self._communicator(fake_uuid, self.user)
-        connected, code = await communicator.connect()
-        self.assertFalse(connected)
-        self.assertEqual(code, 4404)
         await communicator.disconnect()
 
 
@@ -91,14 +67,11 @@ class ConsumerMessageTests(TransactionTestCase):
         self.user = User.objects.create_user(
             email="owner@example.com", password="pass123"
         )
-        self.project = Project.objects.create(
-            name="Test", slug="test-project", created_by=self.user
-        )
 
     async def _connect(self):
         app = make_application()
         communicator = WebsocketCommunicator(
-            app, f"/ws/projects/{self.project.uuid}/chat/"
+            app, "/ws/chat/"
         )
         communicator.scope["user"] = self.user
         connected, _ = await communicator.connect()

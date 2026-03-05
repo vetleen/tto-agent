@@ -48,8 +48,8 @@ python manage.py migrate
 
 - **config/** — Project settings, root URL conf, ASGI/WSGI entry points. Settings loaded from `.env` via python-dotenv.
 - **accounts/** — Auth (login, signup, email verification, password reset), user settings (theme). Views split into `views/auth.py` and `views/settings.py`.
-- **documents/** — Projects (UUID-keyed), file upload (PDF/TXT/MD/HTML), Celery-based processing pipeline (extract → chunk via tiktoken → save → optionally embed with pgvector).
-- **chat/** — WebSocket consumer (`ProjectChatConsumer`) for per-project LLM chat with streaming. Uses Django Channels + Redis. Consumer at `chat/consumers.py`, routing at `chat/routing.py`.
+- **documents/** — Data Rooms (UUID-keyed document collections), file upload (PDF/TXT/MD/HTML), Celery-based processing pipeline (extract → chunk via tiktoken → save → optionally embed with pgvector). Models: `DataRoom`, `DataRoomDocument`, `DataRoomDocumentChunk`.
+- **chat/** — Standalone WebSocket consumer (`ChatConsumer`) for LLM chat with streaming. Decoupled from documents — users attach 0+ data rooms to any chat thread via M2M. Uses Django Channels + Redis. Consumer at `chat/consumers.py`, routing at `chat/routing.py`. Views at `chat/views.py`, URLs at `chat/urls.py`.
 - **llm/** — Multi-provider LLM abstraction layer (see below).
 - **core/** — Shared app (minimal).
 
@@ -78,11 +78,16 @@ response = service.run("simple_chat", ChatRequest(
 
 ### WebSocket Chat Flow
 
-`chat/consumers.py` (`ProjectChatConsumer`) → authenticates user → validates project ownership → on message: builds chat history with token-limited rolling summarization → calls `LLMService.astream()` → streams `StreamEvent`s back over WebSocket.
+`chat/consumers.py` (`ChatConsumer`) connects at `ws/chat/` → authenticates user → on message: optionally attaches data rooms (M2M) → builds chat history with token-limited rolling summarization → calls `LLMService.astream()` → streams `StreamEvent`s back over WebSocket. Tools (`search_documents`, `read_document`) only available when data rooms are attached. Supports `chat.attach_data_room`, `chat.detach_data_room`, and `chat.load_thread` message types.
 
 ### Document Processing Flow
 
-Upload → Celery task `process_document_task` (in `documents/tasks.py`) → text extraction → chunking (tiktoken, 1200 tokens max, 100 overlap) → save `DocumentChunk` records → optional pgvector embedding when `PGVECTOR_CONNECTION` is set.
+Upload → Celery task `process_document_task` (in `documents/tasks.py`) → text extraction → chunking (tiktoken, 1200 tokens max, 100 overlap) → save `DataRoomDocumentChunk` records → optional pgvector embedding when `PGVECTOR_CONNECTION` is set.
+
+### URL Structure
+
+- `/chat/` — Standalone chat interface (`chat.urls`). Thread via `?thread=<uuid>`.
+- `/data-rooms/` — Data room management (`documents.urls`). Documents at `/<uuid>/documents/`.
 
 ### Infrastructure
 

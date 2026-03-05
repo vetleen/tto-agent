@@ -1,0 +1,700 @@
+{% extends "_base.html" %}
+{% load static %}
+{% block body_class %}pt-16 bg-neutral-primary{% endblock %}
+{% block content %}
+
+{# Mobile sidebar toggle #}
+<button data-drawer-target="chat-sidebar" data-drawer-toggle="chat-sidebar" aria-controls="chat-sidebar" type="button" class="text-heading bg-transparent box-border border border-transparent hover:bg-neutral-secondary-medium focus:ring-4 focus:ring-neutral-tertiary font-medium leading-5 rounded-base ms-3 mt-3 text-sm p-2 focus:outline-none inline-flex sm:hidden">
+  <span class="sr-only">Open sidebar</span>
+  <svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-width="2" d="M5 7h14M5 12h14M5 17h10"/></svg>
+</button>
+
+{# Sidebar — directly below navbar (4rem) #}
+<aside id="chat-sidebar" class="fixed top-16 left-0 z-40 w-64 h-[calc(100vh-4rem)] transition-transform -translate-x-full sm:translate-x-0 border-e border-default" aria-label="Chat sidebar">
+  <div class="h-full px-3 py-4 overflow-y-auto bg-neutral-primary-soft border-e border-default">
+    <ul class="space-y-2 font-medium">
+      <li>
+        <a href="{% url 'chat_home' %}" class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group">
+          <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          <span class="ms-3">New chat</span>
+        </a>
+      </li>
+    </ul>
+    <ul class="space-y-2 font-medium border-t border-default pt-4 mt-4">
+      <li class="px-2 py-1.5 text-xs text-body uppercase tracking-wider">Your chats</li>
+    </ul>
+    <ul id="thread-list" class="space-y-2 font-medium pb-4">
+      {% for t in threads %}
+      <li class="relative group" data-thread-li="{{ t.id }}">
+        <a href="{% url 'chat_home' %}?thread={{ t.id }}"
+           class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium{% endif %}"
+           data-thread-id="{{ t.id }}"
+           title="{{ t.title|default:t }}">
+          <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+          <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
+        </a>
+        <button type="button"
+                class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium {% if thread and t.id == thread.id %}flex{% else %}hidden group-hover:flex{% endif %} items-center justify-center"
+                data-thread-id="{{ t.id }}" data-archived="false">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+        </button>
+      </li>
+      {% empty %}
+      <li class="px-2 py-1.5 text-sm text-body" data-empty="true">No conversations yet.</li>
+      {% endfor %}
+    </ul>
+    {% if archived_threads %}
+    <div id="archived-section" class="border-t border-default pt-2 mt-2">
+      <button id="archived-toggle" type="button" class="flex items-center w-full px-2 py-1.5 text-xs text-body hover:text-heading">
+        <svg id="archived-chevron" class="w-3 h-3 me-1.5 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        Archived (<span id="archived-count">{{ archived_threads|length }}</span>)
+      </button>
+      <ul id="archived-thread-list" class="hidden space-y-2 font-medium mt-2">
+        {% for t in archived_threads %}
+        <li class="relative group" data-thread-li="{{ t.id }}">
+          <a href="{% url 'chat_home' %}?thread={{ t.id }}"
+             class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"
+             data-thread-id="{{ t.id }}"
+             title="{{ t.title|default:t }}">
+            <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+            <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
+          </a>
+          <button type="button"
+                  class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium hidden group-hover:flex items-center justify-center"
+                  data-thread-id="{{ t.id }}" data-archived="true">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+          </button>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {# Shared thread action dropdown menu #}
+  <div id="thread-menu" class="hidden absolute z-50 w-32 bg-neutral-primary border border-default rounded-base shadow-lg py-1" style="top:0;left:0;">
+    <button type="button" data-action="archive" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Archive</button>
+    <button type="button" data-action="delete" class="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-neutral-tertiary">Delete</button>
+  </div>
+</aside>
+
+{# Full-height chat layout #}
+<div class="flex flex-col sm:ml-64" style="height: calc(100vh - 4rem);">
+  {# Messages area — scrollable #}
+  <div class="flex-1 overflow-y-auto" id="messages-scroll-container">
+    <div class="max-w-3xl mx-auto w-full px-4 py-6">
+      <div id="chat-messages" class="space-y-6">
+        {% for m in messages %}
+          {% if m.role == "user" %}
+            <div class="flex justify-end" data-role="user">
+              <div class="flex items-start gap-2.5 flex-row-reverse">
+                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">{{ user.email|first|upper }}</span>
+                <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
+                  <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
+                    <span class="text-sm font-semibold text-heading">You</span>
+                    <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
+                  </div>
+                  <div class="text-sm py-2.5 text-body whitespace-pre-wrap">{{ m.content }}</div>
+                </div>
+              </div>
+            </div>
+          {% elif m.role == "assistant" %}
+            <div class="flex items-start gap-2.5" data-role="assistant">
+              <div class="flex flex-col w-full">
+                <div class="flex items-center space-x-2">
+                  <span class="text-sm font-semibold text-heading">Wilfred</span>
+                  <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
+                </div>
+                <div class="text-sm text-body mt-2 markdown-content">{{ m.content }}</div>
+              </div>
+            </div>
+          {% endif %}
+        {% empty %}
+          <div class="flex flex-col items-center justify-center py-20" data-placeholder="true">
+            <h2 class="text-xl font-semibold text-heading mb-2">What are we working on today?</h2>
+            <p class="text-sm text-body">Start a new conversation, or attach a data room for document-aware chat</p>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  {# Input area — sticky bottom #}
+  <div class="border-t border-default bg-neutral-primary">
+    <div class="max-w-3xl mx-auto w-full px-4 py-3">
+      {# Attached data room pills #}
+      <div id="attached-data-rooms" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
+        {% for dr in thread_data_rooms %}
+        <span class="data-room-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full" data-room-id="{{ dr.pk }}">
+          <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
+          {{ dr.name }}
+          <button type="button" class="detach-room-btn hover:text-fg-danger" data-room-id="{{ dr.pk }}" aria-label="Detach {{ dr.name }}">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </span>
+        {% endfor %}
+      </div>
+      <form class="flex gap-2" id="chat-form">
+        <div class="flex-1 flex items-end gap-2">
+          <div id="connection-status" class="flex items-center gap-1.5 shrink-0 mb-2.5" title="Connection status">
+            <div id="connection-spinner" class="hidden" role="status">
+              <svg aria-hidden="true" class="w-4 h-4 text-neutral-quaternary animate-spin fill-brand" viewBox="0 0 100 101" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M100 50.5908C100 78.2051 77.6142 100.591 50 100.591C22.3858 100.591 0 78.2051 0 50.5908C0 22.9766 22.3858 0.59082 50 0.59082C77.6142 0.59082 100 22.9766 100 50.5908ZM9.08144 50.5908C9.08144 73.1895 27.4013 91.5094 50 91.5094C72.5987 91.5094 90.9186 73.1895 90.9186 50.5908C90.9186 27.9921 72.5987 9.67226 50 9.67226C27.4013 9.67226 9.08144 27.9921 9.08144 50.5908Z" fill="currentColor"/>
+                <path d="M93.9676 39.0409C96.393 38.4038 97.8624 35.9116 97.0079 33.5539C95.2932 28.8227 92.871 24.3692 89.8167 20.348C85.8452 15.1192 80.8826 10.7238 75.2124 7.41289C69.5422 4.10194 63.2754 1.94025 56.7698 1.05124C51.7666 0.367541 46.6976 0.446843 41.7345 1.27873C39.2613 1.69328 37.813 4.19778 38.4501 6.62326C39.0873 9.04874 41.5694 10.4717 44.0505 10.1071C47.8511 9.54855 51.7191 9.52689 55.5402 10.0491C60.8642 10.7766 65.9928 12.5457 70.6331 15.2552C75.2735 17.9648 79.3347 21.5619 82.5849 25.841C84.9175 28.9121 86.7997 32.2913 88.1811 35.8758C89.083 38.2158 91.5421 39.6781 93.9676 39.0409Z" fill="currentFill"/>
+              </svg>
+              <span class="sr-only">Connecting...</span>
+            </div>
+            <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-gray-400 dark:bg-gray-500"></span>
+            <span id="connection-text" class="text-xs text-body">Connecting...</span>
+          </div>
+          {# "+" button for data room attachment #}
+          <div class="relative shrink-0 mb-0.5">
+            <button type="button" id="attach-btn" class="inline-flex items-center justify-center w-9 h-9 text-body hover:text-heading hover:bg-neutral-secondary-medium border border-default-medium rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Attach data room" data-dropdown-toggle="attach-dropdown">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+            </button>
+            <div id="attach-dropdown" class="z-50 hidden bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1 w-40">
+              <button type="button" id="open-data-room-modal-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
+                Data room
+              </button>
+            </div>
+          </div>
+          <textarea
+            name="message"
+            placeholder="Type your message..."
+            id="message-input"
+            rows="1"
+            class="flex-1 rounded-base border border-default-medium bg-neutral-primary text-heading text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none p-2.5 resize-none overflow-hidden"
+            style="min-height: 2.5rem; max-height: 7.5rem;"
+          ></textarea>
+        </div>
+        <button
+          type="submit"
+          id="send-button"
+          class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed self-end"
+          style="height: 2.5rem;"
+        >
+          Send
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{# Data room attach modal #}
+<div id="attach-data-room-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+  <div class="relative w-full max-w-md max-h-full">
+    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-default">
+        <h3 class="text-lg font-semibold text-heading">Attach data room</h3>
+        <button type="button" id="close-data-room-modal" class="text-body hover:text-heading rounded-base p-1" aria-label="Close">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-6">
+        <ul id="data-room-modal-list" class="space-y-2 max-h-64 overflow-y-auto">
+          {% for dr in data_rooms %}
+          <li>
+            <button type="button" class="data-room-select-btn flex items-center justify-between w-full px-3 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base" data-room-id="{{ dr.pk }}" data-room-name="{{ dr.name }}">
+              <span class="flex items-center gap-2">
+                <svg class="w-4 h-4 shrink-0 text-body" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
+                {{ dr.name }}
+              </span>
+              <svg class="w-4 h-4 text-success attached-check hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            </button>
+          </li>
+          {% empty %}
+          <li class="text-sm text-body px-3 py-2">No data rooms yet. <a href="{% url 'data_room_list' %}" class="text-fg-brand hover:underline">Create one</a></li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Markdown rendering libraries #}
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+
+{# Markdown styling #}
+<style>
+  .markdown-content h1 { font-size: 1.25rem; font-weight: 700; margin-top: 1.25rem; margin-bottom: 0.5rem; line-height: 1.3; }
+  .markdown-content h2 { font-size: 1.125rem; font-weight: 600; margin-top: 1rem; margin-bottom: 0.5rem; line-height: 1.3; }
+  .markdown-content h3 { font-size: 1rem; font-weight: 600; margin-top: 0.875rem; margin-bottom: 0.375rem; line-height: 1.4; }
+  .markdown-content h4 { font-size: 0.9375rem; font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.375rem; }
+  .markdown-content h5, .markdown-content h6 { font-size: 0.875rem; font-weight: 600; margin-top: 0.625rem; margin-bottom: 0.375rem; }
+  .markdown-content p { margin-top: 0.75rem; margin-bottom: 0.75rem; line-height: 1.6; }
+  .markdown-content p:first-child { margin-top: 0; }
+  .markdown-content p:last-child { margin-bottom: 0; }
+  .markdown-content ul, .markdown-content ol { margin-top: 0.75rem; margin-bottom: 0.75rem; padding-left: 1.5rem; }
+  .markdown-content ul { list-style-type: disc; }
+  .markdown-content ol { list-style-type: decimal; }
+  .markdown-content li { margin-top: 0.25rem; margin-bottom: 0.25rem; line-height: 1.6; }
+  .markdown-content ul ul { list-style-type: circle; }
+  .markdown-content ul ul ul { list-style-type: square; }
+  .markdown-content pre { background-color: rgb(243 244 246); border: 1px solid rgb(229 231 235); border-radius: 0.375rem; padding: 1rem; margin-top: 0.75rem; margin-bottom: 0.75rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5; }
+  .markdown-content pre code { background-color: transparent; border: none; padding: 0; font-size: inherit; color: inherit; }
+  .markdown-content code { background-color: rgb(243 244 246); border: 1px solid rgb(229 231 235); border-radius: 0.25rem; padding: 0.125rem 0.375rem; font-size: 0.875em; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  .markdown-content blockquote { border-left: 4px solid rgb(156 163 175); padding-left: 1rem; margin-top: 0.75rem; margin-bottom: 0.75rem; color: rgb(107 114 128); font-style: italic; }
+  .markdown-content a { color: rgb(59 130 246); text-decoration: underline; text-underline-offset: 2px; }
+  .markdown-content a:hover { color: rgb(37 99 235); }
+  .markdown-content hr { border: none; border-top: 2px solid rgb(209 213 219); margin: 1.5rem 0; }
+  .markdown-content strong { font-weight: 700; }
+  .markdown-content table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; border: 1px solid rgb(229 231 235); }
+  .markdown-content th, .markdown-content td { border: 1px solid rgb(229 231 235); padding: 0.5rem; text-align: left; }
+  .markdown-content th { background-color: rgb(243 244 246); font-weight: 600; }
+  .dark .markdown-content pre { background-color: rgb(55 65 81); border-color: rgb(75 85 99); }
+  .dark .markdown-content code { background-color: rgb(55 65 81); border-color: rgb(75 85 99); }
+  .dark .markdown-content blockquote { border-left-color: rgb(107 114 128); color: rgb(209 213 219); }
+  .dark .markdown-content a { color: rgb(96 165 250); }
+  .dark .markdown-content a:hover { color: rgb(147 197 253); }
+  .dark .markdown-content hr { border-top-color: rgb(75 85 99); }
+  .dark .markdown-content table { border-color: rgb(75 85 99); }
+  .dark .markdown-content th, .dark .markdown-content td { border-color: rgb(75 85 99); }
+  .dark .markdown-content th { background-color: rgb(55 65 81); }
+  .thinking-block .thinking-chevron { transform: rotate(90deg); }
+  .thinking-block.collapsed .thinking-chevron { transform: rotate(0deg); }
+  .thinking-block.collapsed .thinking-content { display: none; }
+  .thinking-content { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; scrollbar-width: thin; }
+  .tool-card { transition: opacity 0.2s; }
+  .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
+</style>
+
+<script>
+(function () {
+  const THREAD_ID = "{{ thread.id|default:'' }}";
+  const USER_INITIAL = "{{ user.email|first|upper }}";
+  const STREAM_TIMEOUT_MS = 300000;
+  const CHAT_HOME = "{% url 'chat_home' %}";
+
+  // -- Track attached data rooms --
+  let attachedDataRoomIds = [{% for dr in thread_data_rooms %}{{ dr.pk }}{% if not forloop.last %}, {% endif %}{% endfor %}];
+
+  // -- Emoji shortcodes --
+  const emojiMap = {':sparkles:':'\u2728',':tada:':'\ud83c\udf89',':smile:':'\ud83d\ude04',':heart:':'\u2764\ufe0f',':thumbsup:':'\ud83d\udc4d',':thumbsdown:':'\ud83d\udc4e',':fire:':'\ud83d\udd25',':rocket:':'\ud83d\ude80',':star:':'\u2b50',':check:':'\u2705',':x:':'\u274c',':warning:':'\u26a0\ufe0f',':bulb:':'\ud83d\udca1',':muscle:':'\ud83d\udcaa',':clap:':'\ud83d\udc4f',':eyes:':'\ud83d\udc40',':thinking:':'\ud83e\udd14',':party:':'\ud83c\udf89',':confetti:':'\ud83c\udf8a',':trophy:':'\ud83c\udfc6',':zap:':'\u26a1',':boom:':'\ud83d\udca5',':100:':'\ud83d\udcaf',':ok_hand:':'\ud83d\udc4c',':raised_hands:':'\ud83d\ude4c',':pray:':'\ud83d\ude4f',':coffee:':'\u2615',':pizza:':'\ud83c\udf55',':cake:':'\ud83c\udf82',':gift:':'\ud83c\udf81',':balloon:':'\ud83c\udf88'};
+
+  function renderMarkdown(text) {
+    if (!text) return "";
+    try {
+      text = text.replace(/:[a-z_]+:/g, function(match) { return emojiMap[match] || match; });
+      const html = marked.parse(text);
+      return DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td'],
+        ALLOWED_ATTR: ['href','title','target']
+      });
+    } catch (e) { return escapeHtml(text).replace(/\n/g, "<br>"); }
+  }
+
+  function escapeHtml(text) { const div = document.createElement("div"); div.textContent = text; return div.innerHTML; }
+
+  const form = document.getElementById("chat-form");
+  const input = document.getElementById("message-input");
+  const button = document.getElementById("send-button");
+  const messagesContainer = document.getElementById("chat-messages");
+  const scrollContainer = document.getElementById("messages-scroll-container");
+  const threadList = document.getElementById("thread-list");
+  const attachedRoomsContainer = document.getElementById("attached-data-rooms");
+
+  function renderServerMarkdown() {
+    const els = messagesContainer.querySelectorAll('.markdown-content');
+    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) el.innerHTML = renderMarkdown(text); });
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', renderServerMarkdown); } else { renderServerMarkdown(); }
+
+  function autoResize(ta) { ta.style.height = 'auto'; const h = Math.min(Math.max(ta.scrollHeight, 40), 120); ta.style.height = h + 'px'; }
+  if (input) {
+    input.addEventListener('input', function() { autoResize(input); });
+    input.addEventListener('keydown', function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!input.disabled && !locked) form.dispatchEvent(new Event('submit')); } });
+    autoResize(input);
+  }
+
+  function scrollToBottom() { requestAnimationFrame(function() { scrollContainer.scrollTop = scrollContainer.scrollHeight; }); }
+
+  function addThreadToSidebar(threadId, title) {
+    var emptyEl = threadList.querySelector('[data-empty="true"]');
+    if (emptyEl) emptyEl.remove();
+    if (threadList.querySelector('[data-thread-id="' + threadId + '"]')) return;
+    var li = document.createElement("li"); li.className = "relative group"; li.setAttribute("data-thread-li", threadId);
+    var a = document.createElement("a"); a.href = CHAT_HOME + "?thread=" + threadId;
+    a.className = "flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-secondary-soft text-heading font-medium";
+    a.setAttribute("data-thread-id", threadId); a.title = title || "New chat";
+    a.innerHTML = '<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><span class="ms-3 truncate">' + escapeHtml(title || "New chat") + "</span>";
+    li.appendChild(a);
+    var menuBtn = document.createElement("button"); menuBtn.type = "button";
+    menuBtn.className = "thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium flex items-center justify-center";
+    menuBtn.setAttribute("data-thread-id", threadId); menuBtn.setAttribute("data-archived", "false");
+    menuBtn.innerHTML = '<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>';
+    li.appendChild(menuBtn);
+    threadList.querySelectorAll("a").forEach(function(el) { el.className = "flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"; });
+    threadList.insertBefore(li, threadList.firstChild);
+  }
+
+  // -- Data room pill helpers --
+  function addDataRoomPill(roomId, roomName) {
+    if (attachedRoomsContainer.querySelector('[data-room-id="' + roomId + '"]')) return;
+    var pill = document.createElement("span");
+    pill.className = "data-room-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full";
+    pill.setAttribute("data-room-id", roomId);
+    pill.innerHTML = '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>' + escapeHtml(roomName) + '<button type="button" class="detach-room-btn hover:text-fg-danger" data-room-id="' + roomId + '"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>';
+    attachedRoomsContainer.appendChild(pill);
+    if (!attachedDataRoomIds.includes(roomId)) attachedDataRoomIds.push(roomId);
+    updateModalChecks();
+  }
+
+  function removeDataRoomPill(roomId) {
+    var pill = attachedRoomsContainer.querySelector('[data-room-id="' + roomId + '"]');
+    if (pill) pill.remove();
+    attachedDataRoomIds = attachedDataRoomIds.filter(function(id) { return id !== roomId; });
+    updateModalChecks();
+  }
+
+  function updateModalChecks() {
+    document.querySelectorAll('.data-room-select-btn').forEach(function(btn) {
+      var id = parseInt(btn.getAttribute('data-room-id'));
+      var check = btn.querySelector('.attached-check');
+      if (check) { if (attachedDataRoomIds.includes(id)) { check.classList.remove('hidden'); } else { check.classList.add('hidden'); } }
+    });
+  }
+
+  // -- Detach pill click handler --
+  attachedRoomsContainer.addEventListener('click', function(e) {
+    var btn = e.target.closest('.detach-room-btn');
+    if (!btn) return;
+    var roomId = parseInt(btn.getAttribute('data-room-id'));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "chat.detach_data_room", data_room_id: roomId, thread_id: activeThreadId || "" }));
+    }
+    removeDataRoomPill(roomId);
+  });
+
+  // -- Data room modal --
+  var modal = document.getElementById('attach-data-room-modal');
+  var openModalBtn = document.getElementById('open-data-room-modal-btn');
+  var closeModalBtn = document.getElementById('close-data-room-modal');
+
+  if (openModalBtn) {
+    openModalBtn.addEventListener('click', function() {
+      updateModalChecks();
+      modal.classList.remove('hidden');
+      // Close the dropdown
+      var dd = document.getElementById('attach-dropdown');
+      if (dd) dd.classList.add('hidden');
+    });
+  }
+  if (closeModalBtn) { closeModalBtn.addEventListener('click', function() { modal.classList.add('hidden'); }); }
+  modal.addEventListener('click', function(e) { if (e.target === modal) modal.classList.add('hidden'); });
+
+  document.querySelectorAll('.data-room-select-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var roomId = parseInt(btn.getAttribute('data-room-id'));
+      var roomName = btn.getAttribute('data-room-name');
+      if (attachedDataRoomIds.includes(roomId)) {
+        // Detach
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "chat.detach_data_room", data_room_id: roomId, thread_id: activeThreadId || "" }));
+        }
+        removeDataRoomPill(roomId);
+      } else {
+        // Attach
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "chat.attach_data_room", data_room_id: roomId, thread_id: activeThreadId || "" }));
+        }
+        addDataRoomPill(roomId, roomName);
+      }
+    });
+  });
+
+  // -- WebSocket --
+  let ws = null;
+  let reconnectTimeout = null;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
+  let streamingTimeout = null;
+  let activeThreadId = THREAD_ID || null;
+  let currentStreamingElement = null;
+  let accumulatedContent = "";
+  let locked = false;
+  let isThinking = false;
+  let thinkingStartTime = null;
+
+  function getWsUrl() {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/ws/chat/`;
+  }
+
+  function connect() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    try {
+      updateConnectionStatus(false, true);
+      ws = new WebSocket(getWsUrl());
+      ws.onopen = function() {
+        reconnectAttempts = 0;
+        updateConnectionStatus(true, false);
+        // Load thread data rooms if resuming a thread
+        if (activeThreadId) {
+          ws.send(JSON.stringify({ type: "chat.load_thread", thread_id: activeThreadId }));
+        }
+      };
+      ws.onmessage = function(event) { handleEvent(JSON.parse(event.data)); };
+      ws.onerror = function() { updateConnectionStatus(false, false); };
+      ws.onclose = function(event) {
+        updateConnectionStatus(false, false);
+        if (currentStreamingElement) { finishStreaming("[Connection lost]"); }
+        clearTimeout(streamingTimeout);
+        if (event.code !== 1000 && reconnectAttempts < maxReconnectAttempts) {
+          const delay = 1000 * Math.pow(2, reconnectAttempts); reconnectAttempts++;
+          reconnectTimeout = setTimeout(connect, delay);
+        }
+      };
+    } catch (e) { updateConnectionStatus(false, false); }
+  }
+
+  function disconnect() { clearTimeout(reconnectTimeout); if (ws) { ws.close(1000); ws = null; } reconnectAttempts = 0; updateConnectionStatus(false, false); }
+
+  function updateConnectionStatus(connected, isConnecting) {
+    const indicator = document.getElementById("connection-indicator");
+    const spinner = document.getElementById("connection-spinner");
+    const text = document.getElementById("connection-text");
+    if (isConnecting) {
+      if (spinner) spinner.classList.remove("hidden"); if (indicator) indicator.classList.add("hidden");
+      text.textContent = "Connecting..."; input.disabled = true; button.disabled = true;
+    } else if (connected) {
+      if (spinner) spinner.classList.add("hidden"); if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-success"; }
+      text.textContent = ""; if (!currentStreamingElement) { input.disabled = false; button.disabled = false; }
+    } else {
+      if (spinner) spinner.classList.add("hidden"); if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-danger"; }
+      text.textContent = reconnectAttempts > 0 ? `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})` : "Disconnected";
+      text.className = "text-xs text-body" + (reconnectAttempts === 0 ? " text-danger" : "");
+      input.disabled = true; button.disabled = true;
+    }
+  }
+
+  function ensureBubble() {
+    if (!currentStreamingElement) {
+      const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
+      currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement);
+      accumulatedContent = ""; startStreamingTimeout();
+    }
+  }
+  function hideWaitingIndicator() { if (!currentStreamingElement) return; const el = currentStreamingElement.querySelector(".waiting-indicator"); if (el) el.remove(); }
+  function collapseThinking() {
+    if (!currentStreamingElement) return;
+    const thinkingBlock = currentStreamingElement.querySelector(".thinking-block");
+    if (thinkingBlock && !thinkingBlock.classList.contains("collapsed")) {
+      thinkingBlock.classList.add("collapsed");
+      const label = thinkingBlock.querySelector(".thinking-label");
+      if (label && thinkingStartTime) { const secs = Math.round((Date.now() - thinkingStartTime) / 1000); label.textContent = "Thought for " + secs + "s"; }
+    }
+    isThinking = false; thinkingStartTime = null;
+  }
+
+  function handleEvent(data) {
+    const et = data.event_type;
+    if (et === "thread.created") { activeThreadId = data.thread_id; addThreadToSidebar(data.thread_id, "New chat"); return; }
+    if (et === "thread.title_updated") {
+      var tid = data.thread_id, title = data.title || "";
+      if (tid && title) { var link = threadList.querySelector('a[data-thread-id="' + tid + '"]'); if (link) { link.title = title; var span = link.querySelector("span"); if (span) span.textContent = title.length > 30 ? title.substring(0, 27) + "..." : title; } }
+      return;
+    }
+    if (et === "thread.loaded") {
+      // Replace data room pills with loaded thread's rooms
+      attachedRoomsContainer.innerHTML = "";
+      attachedDataRoomIds = [];
+      if (data.data_rooms) { data.data_rooms.forEach(function(r) { addDataRoomPill(r.id, r.name); }); }
+      return;
+    }
+    if (et === "data_room.attached") { addDataRoomPill(data.data_room_id, data.data_room_name); return; }
+    if (et === "data_room.detached") { removeDataRoomPill(data.data_room_id); return; }
+    if (et === "error") {
+      const msg = (data.data && data.data.message) || "An error occurred";
+      if (currentStreamingElement) { finishStreaming("[Error: " + escapeHtml(msg) + "]"); } else { appendError(msg); }
+      enableInput(); return;
+    }
+    if (et === "message_start") {
+      const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
+      if (!currentStreamingElement) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); }
+      accumulatedContent = ""; startStreamingTimeout(); scrollToBottom(); return;
+    }
+    if (et === "thinking") {
+      const text = (data.data && data.data.text) || ""; if (!text) return;
+      ensureBubble(); hideWaitingIndicator();
+      const thinkingBlock = currentStreamingElement.querySelector(".thinking-block");
+      if (thinkingBlock) { thinkingBlock.classList.remove("hidden"); if (!isThinking) { isThinking = true; thinkingStartTime = Date.now(); } const contentEl = thinkingBlock.querySelector(".thinking-content"); if (contentEl) contentEl.textContent += text; }
+      scrollToBottom(); return;
+    }
+    if (et === "token") {
+      const tokenText = (data.data && data.data.text) || ""; if (!tokenText) return;
+      ensureBubble(); hideWaitingIndicator(); if (isThinking) collapseThinking();
+      accumulatedContent += tokenText;
+      const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl) contentEl.innerHTML = renderMarkdown(accumulatedContent);
+      scrollToBottom(); return;
+    }
+    if (et === "tool_start") {
+      const toolName = (data.data && data.data.tool_name) || "tool";
+      const toolId = (data.data && data.data.tool_call_id) || "";
+      ensureBubble(); hideWaitingIndicator();
+      const container = currentStreamingElement.querySelector(".tool-cards");
+      if (container) {
+        const card = document.createElement("div"); card.className = "tool-card flex items-center gap-1.5 text-xs text-body/70 py-1"; card.setAttribute("data-tool-id", toolId);
+        let displayText = "Working...";
+        if (toolName === "search_documents") displayText = "Searching documents...";
+        else if (toolName === "read_document") displayText = "Reading document...";
+        card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + '</span>';
+        container.appendChild(card);
+      }
+      scrollToBottom(); return;
+    }
+    if (et === "tool_end") {
+      const toolId = (data.data && data.data.tool_call_id) || "";
+      const toolName = (data.data && data.data.tool_name) || "";
+      const resultStr = (data.data && data.data.result) || "";
+      if (currentStreamingElement) {
+        const card = currentStreamingElement.querySelector('.tool-card[data-tool-id="' + toolId + '"]');
+        if (card) {
+          let doneLabel = "Done";
+          try { const result = JSON.parse(resultStr); if (toolName === "search_documents" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "read_document" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); } catch (e) {}
+          if (toolName === "search_documents") doneLabel = "Searched documents";
+          else if (toolName === "read_document") doneLabel = "Read document";
+          card.innerHTML = '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="tool-card-text">' + escapeHtml(doneLabel) + '</span>';
+        }
+      }
+      return;
+    }
+    if (et === "message_end") {
+      if (isThinking) collapseThinking();
+      if (currentStreamingElement) {
+        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent);
+        const toolCards = currentStreamingElement.querySelector(".tool-cards"); if (toolCards && toolCards.children.length > 0) toolCards.classList.add("tool-cards-done");
+        currentStreamingElement = null; accumulatedContent = "";
+      }
+      clearTimeout(streamingTimeout); enableInput(); scrollToBottom(); return;
+    }
+  }
+
+  function finishStreaming(suffix) {
+    if (!currentStreamingElement) return; if (isThinking) collapseThinking();
+    const contentEl = currentStreamingElement.querySelector(".message-content");
+    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; }
+    currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
+  }
+  function enableInput() { if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
+  function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("[Timed out]"); enableInput(); }, STREAM_TIMEOUT_MS); }
+
+  function createAssistantBubble() {
+    const now = new Date();
+    const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
+    const div = document.createElement("div"); div.className = "flex items-start gap-2.5"; div.setAttribute("data-role", "assistant");
+    div.innerHTML = `<div class="flex flex-col w-full"><div class="flex items-center space-x-2"><span class="text-sm font-semibold text-heading">Wilfred</span><span class="text-sm text-body">${ts}</span></div><div class="thinking-block hidden mt-2"><button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thinking...</span></button><div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto"></div></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-2"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="tool-cards mt-1 space-y-1"></div><div class="text-sm text-body mt-2 message-content markdown-content"></div></div>`;
+    const toggle = div.querySelector(".thinking-toggle");
+    if (toggle) { toggle.addEventListener("click", function() { toggle.closest(".thinking-block").classList.toggle("collapsed"); }); }
+    return div;
+  }
+
+  function appendError(msg) { const div = document.createElement("div"); div.className = "text-sm text-danger py-2"; div.textContent = msg; messagesContainer.appendChild(div); scrollToBottom(); }
+
+  form.addEventListener("submit", function(e) {
+    e.preventDefault(); if (locked) return;
+    const text = (input.value || "").trim(); if (!text) return;
+    const now = new Date();
+    const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
+    const userDiv = document.createElement("div"); userDiv.className = "flex justify-end"; userDiv.setAttribute("data-role", "user");
+    userDiv.innerHTML = `<div class="flex items-start gap-2.5 flex-row-reverse"><span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">${escapeHtml(USER_INITIAL)}</span><div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base"><div class="flex items-center space-x-1.5 rtl:space-x-reverse"><span class="text-sm font-semibold text-heading">You</span><span class="text-sm text-body">${ts}</span></div><p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p></div></div>`;
+    const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
+    messagesContainer.appendChild(userDiv); scrollToBottom();
+    input.value = ""; autoResize(input); input.disabled = true; button.disabled = true; locked = true;
+    currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); accumulatedContent = ""; scrollToBottom();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds }));
+    }
+    setTimeout(function() { locked = false; }, 500);
+  });
+
+  // -- Thread actions --
+  const threadMenu = document.getElementById("thread-menu");
+  const archivedToggle = document.getElementById("archived-toggle");
+  const archivedList = document.getElementById("archived-thread-list");
+  const archivedChevron = document.getElementById("archived-chevron");
+  let menuThreadId = null;
+  let menuIsArchived = false;
+
+  if (archivedToggle) {
+    archivedToggle.addEventListener("click", function() {
+      archivedList.classList.toggle("hidden");
+      if (archivedChevron) archivedChevron.style.transform = archivedList.classList.contains("hidden") ? "" : "rotate(90deg)";
+    });
+  }
+
+  function openThreadMenu(btn) {
+    menuThreadId = btn.getAttribute("data-thread-id");
+    menuIsArchived = btn.getAttribute("data-archived") === "true";
+    const archiveBtn = threadMenu.querySelector('[data-action="archive"]');
+    archiveBtn.textContent = menuIsArchived ? "Restore" : "Archive";
+    const rect = btn.getBoundingClientRect();
+    const sidebar = btn.closest("aside");
+    const sidebarRect = sidebar.getBoundingClientRect();
+    threadMenu.style.top = (rect.bottom - sidebarRect.top) + "px";
+    threadMenu.style.left = (rect.left - sidebarRect.left) + "px";
+    threadMenu.classList.remove("hidden");
+  }
+
+  document.addEventListener("click", function(e) {
+    const btn = e.target.closest(".thread-menu-btn");
+    if (btn) { e.preventDefault(); e.stopPropagation(); openThreadMenu(btn); return; }
+    if (!e.target.closest("#thread-menu")) threadMenu.classList.add("hidden");
+  });
+
+  threadMenu.addEventListener("click", function(e) {
+    const actionBtn = e.target.closest("[data-action]");
+    if (!actionBtn || !menuThreadId) return;
+    const action = actionBtn.getAttribute("data-action");
+    threadMenu.classList.add("hidden");
+    if (action === "delete") {
+      if (!confirm("Delete this chat? This cannot be undone.")) return;
+      fetch(`/chat/threads/${menuThreadId}/delete/`, { method: "POST", headers: {"X-CSRFToken": getCSRFToken()} }).then(function(res) {
+        if (!res.ok) return; removeThreadLi(menuThreadId);
+        if (activeThreadId === menuThreadId) window.location.href = CHAT_HOME;
+      });
+    }
+    if (action === "archive") {
+      fetch(`/chat/threads/${menuThreadId}/archive/`, { method: "POST", headers: {"X-CSRFToken": getCSRFToken()} }).then(function(res) { return res.json(); }).then(function(data) {
+        if (!data.ok) return;
+        if (activeThreadId === menuThreadId && data.is_archived) { window.location.href = CHAT_HOME; return; }
+        moveThread(menuThreadId, data.is_archived);
+      });
+    }
+  });
+
+  function getCSRFToken() { const cookie = document.cookie.split(";").find(function(c) { return c.trim().startsWith("csrftoken="); }); return cookie ? cookie.split("=")[1] : ""; }
+  function removeThreadLi(threadId) { const li = document.querySelector('[data-thread-li="' + threadId + '"]'); if (li) li.remove(); updateArchivedCount(); showEmptyIfNeeded(); }
+  function moveThread(threadId, toArchived) {
+    const li = document.querySelector('[data-thread-li="' + threadId + '"]'); if (!li) return;
+    const menuBtn = li.querySelector(".thread-menu-btn");
+    if (toArchived) { if (menuBtn) menuBtn.setAttribute("data-archived", "true"); ensureArchivedSection(); document.getElementById("archived-thread-list").appendChild(li); }
+    else { if (menuBtn) menuBtn.setAttribute("data-archived", "false"); threadList.insertBefore(li, threadList.firstChild); }
+    updateArchivedCount(); showEmptyIfNeeded();
+  }
+  function ensureArchivedSection() {
+    if (document.getElementById("archived-section")) return;
+    const sidebar = document.querySelector("#chat-sidebar .overflow-y-auto");
+    const div = document.createElement("div"); div.id = "archived-section"; div.className = "border-t border-default pt-2 mt-2";
+    div.innerHTML = '<button id="archived-toggle" type="button" class="flex items-center w-full px-2 py-1.5 text-xs text-body hover:text-heading"><svg id="archived-chevron" class="w-3 h-3 me-1.5 transition-transform duration-200" style="transform:rotate(90deg)" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>Archived (<span id="archived-count">0</span>)</button><ul id="archived-thread-list" class="space-y-2 font-medium mt-2"></ul>';
+    sidebar.appendChild(div);
+    const toggle = div.querySelector("#archived-toggle"); const chevron = div.querySelector("#archived-chevron"); const list = div.querySelector("#archived-thread-list");
+    toggle.addEventListener("click", function() { list.classList.toggle("hidden"); chevron.style.transform = list.classList.contains("hidden") ? "" : "rotate(90deg)"; });
+  }
+  function updateArchivedCount() {
+    const section = document.getElementById("archived-section"); const countEl = document.getElementById("archived-count"); const list = document.getElementById("archived-thread-list");
+    if (!countEl || !list) return; const count = list.querySelectorAll("[data-thread-li]").length; countEl.textContent = count;
+    if (section && count === 0) section.classList.add("hidden"); else if (section) section.classList.remove("hidden");
+  }
+  function showEmptyIfNeeded() {
+    const hasThreads = threadList.querySelector("[data-thread-li]"); const emptyEl = threadList.querySelector('[data-empty="true"]');
+    if (!hasThreads && !emptyEl) { const li = document.createElement("li"); li.className = "px-2 py-1.5 text-sm text-body"; li.setAttribute("data-empty", "true"); li.textContent = "No conversations yet."; threadList.appendChild(li); }
+    else if (hasThreads && emptyEl) emptyEl.remove();
+  }
+
+  connect();
+  setTimeout(scrollToBottom, 100);
+  window.addEventListener("beforeunload", disconnect);
+})();
+</script>
+{% endblock %}

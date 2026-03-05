@@ -1,18 +1,18 @@
 from django.contrib import admin
-from .models import Project, ProjectDocument, ProjectDocumentChunk
+from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 
 
-@admin.register(Project)
-class ProjectAdmin(admin.ModelAdmin):
-    list_display = ("uuid", "name", "slug", "created_by", "created_at", "updated_at")
-    list_filter = ("created_at",)
+@admin.register(DataRoom)
+class DataRoomAdmin(admin.ModelAdmin):
+    list_display = ("uuid", "name", "slug", "created_by", "is_shared", "created_at", "updated_at")
+    list_filter = ("is_shared", "created_at")
     search_fields = ("name", "slug")
     raw_id_fields = ("created_by",)
     readonly_fields = ("uuid",)
 
 
-class ProjectDocumentChunkInline(admin.TabularInline):
-    model = ProjectDocumentChunk
+class DataRoomDocumentChunkInline(admin.TabularInline):
+    model = DataRoomDocumentChunk
     extra = 0
     max_num = 20
     readonly_fields = ("chunk_index", "token_count", "created_at")
@@ -21,20 +21,20 @@ class ProjectDocumentChunkInline(admin.TabularInline):
     show_change_link = True
 
 
-@admin.register(ProjectDocument)
-class ProjectDocumentAdmin(admin.ModelAdmin):
-    list_display = ("original_filename", "project", "status", "token_count", "uploaded_by", "uploaded_at", "processed_at")
+@admin.register(DataRoomDocument)
+class DataRoomDocumentAdmin(admin.ModelAdmin):
+    list_display = ("original_filename", "data_room", "status", "token_count", "uploaded_by", "uploaded_at", "processed_at")
     list_filter = ("status", "uploaded_at")
     search_fields = ("original_filename",)
-    raw_id_fields = ("project", "uploaded_by")
-    inlines = [ProjectDocumentChunkInline]
+    raw_id_fields = ("data_room", "uploaded_by")
+    inlines = [DataRoomDocumentChunkInline]
     readonly_fields = ("uploaded_at", "processed_at", "updated_at", "token_count")
 
 
-@admin.register(ProjectDocumentChunk)
-class ProjectDocumentChunkAdmin(admin.ModelAdmin):
+@admin.register(DataRoomDocumentChunk)
+class DataRoomDocumentChunkAdmin(admin.ModelAdmin):
     list_display = ("document", "chunk_index", "heading", "token_count", "created_at")
-    list_filter = ("document__project",)
+    list_filter = ("document__data_room",)
     search_fields = ("text", "heading")
     raw_id_fields = ("document",)
     ordering = ("document", "chunk_index")

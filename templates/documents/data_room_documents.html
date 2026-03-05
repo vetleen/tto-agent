@@ -1,6 +1,10 @@
-{% extends "documents/project_base.html" %}
+{% extends "_base.html" %}
 {% load static %}
-{% block project_content %}
+{% load document_filters %}
+{% block body_class %}pt-16 bg-neutral-primary min-h-screen{% endblock %}
+{% block content %}
+{% include "documents/_data_room_header.html" %}
+<div class="max-w-4xl mx-auto px-4 py-10">
   {% if messages %}
   <ul class="mb-6 space-y-2">
     {% for message in messages %}
@@ -11,7 +15,7 @@
 
   <section class="mb-10 p-6 bg-neutral-primary-soft border border-default rounded-base">
     <h2 class="text-lg font-medium text-heading mb-4">Upload documents</h2>
-    <form method="post" action="{% url 'document_upload' project_id=project.uuid %}" enctype="multipart/form-data" class="max-w-lg">
+    <form method="post" action="{% url 'document_upload' data_room_id=data_room.uuid %}" enctype="multipart/form-data" class="max-w-lg">
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
@@ -26,9 +30,9 @@
 
   <!-- Config for JS -->
   <div id="doc-list-config" class="hidden"
-       data-bulk-delete-url="{% url 'document_bulk_delete' project_id=project.uuid %}"
-       data-bulk-archive-url="{% url 'document_bulk_archive' project_id=project.uuid %}"
-       data-status-url="{% url 'document_status' project_id=project.uuid %}"></div>
+       data-bulk-delete-url="{% url 'document_bulk_delete' data_room_id=data_room.uuid %}"
+       data-bulk-archive-url="{% url 'document_bulk_archive' data_room_id=data_room.uuid %}"
+       data-status-url="{% url 'document_status' data_room_id=data_room.uuid %}"></div>
 
   <section class="mt-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
     <h2 class="text-lg font-medium text-heading mb-4">Documents</h2>
@@ -63,17 +67,17 @@
           <div id="dropdown-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
             <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                     data-rename-modal="rename-document-modal"
-                    data-action="{% url 'document_rename' project_id=project.uuid document_id=doc.id %}"
+                    data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
                     data-name="{{ doc.original_filename|escapejs }}">
               Rename
             </button>
-            <form method="post" action="{% url 'document_archive' project_id=project.uuid document_id=doc.id %}" class="p-0">
+            <form method="post" action="{% url 'document_archive' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">
               {% csrf_token %}
               <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
                 Archive
               </button>
             </form>
-            <form method="post" action="{% url 'document_delete' project_id=project.uuid document_id=doc.id %}" class="p-0">
+            <form method="post" action="{% url 'document_delete' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">
               {% csrf_token %}
               <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this document?');">
                 Delete
@@ -124,17 +128,17 @@
             <div id="dropdown-archived-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
               <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                       data-rename-modal="rename-document-modal"
-                      data-action="{% url 'document_rename' project_id=project.uuid document_id=doc.id %}"
+                      data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
                       data-name="{{ doc.original_filename|escapejs }}">
                 Rename
               </button>
-              <form method="post" action="{% url 'document_archive' project_id=project.uuid document_id=doc.id %}" class="p-0">
+              <form method="post" action="{% url 'document_archive' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">
                 {% csrf_token %}
                 <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
                   Restore
                 </button>
               </form>
-              <form method="post" action="{% url 'document_delete' project_id=project.uuid document_id=doc.id %}" class="p-0">
+              <form method="post" action="{% url 'document_delete' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">
                 {% csrf_token %}
                 <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this document?');">
                   Delete
@@ -180,4 +184,5 @@
   </div>
   <script src="{% static 'js/rename-modal.js' %}"></script>
   <script src="{% static 'js/document-list.js' %}"></script>
+</div>
 {% endblock %}

@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from documents.models import Project, ProjectDocument, ProjectDocumentChunk
+from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 
 User = get_user_model()
 
@@ -11,14 +11,14 @@ User = get_user_model()
 class AdminRegistrationTests(TestCase):
     """Verify all documents models are registered with the admin."""
 
-    def test_project_admin_registered(self):
-        self.assertIn(Project, admin_site._registry)
+    def test_data_room_admin_registered(self):
+        self.assertIn(DataRoom, admin_site._registry)
 
     def test_document_admin_registered(self):
-        self.assertIn(ProjectDocument, admin_site._registry)
+        self.assertIn(DataRoomDocument, admin_site._registry)
 
     def test_chunk_admin_registered(self):
-        self.assertIn(ProjectDocumentChunk, admin_site._registry)
+        self.assertIn(DataRoomDocumentChunk, admin_site._registry)
 
 
 class AdminChangelistSmokeTests(TestCase):
@@ -31,14 +31,14 @@ class AdminChangelistSmokeTests(TestCase):
         )
         self.client.force_login(self.superuser)
 
-    def test_project_changelist_loads(self):
-        response = self.client.get(reverse("admin:documents_project_changelist"))
+    def test_data_room_changelist_loads(self):
+        response = self.client.get(reverse("admin:documents_dataroom_changelist"))
         self.assertEqual(response.status_code, 200)
 
     def test_document_changelist_loads(self):
-        response = self.client.get(reverse("admin:documents_projectdocument_changelist"))
+        response = self.client.get(reverse("admin:documents_dataroomdocument_changelist"))
         self.assertEqual(response.status_code, 200)
 
     def test_chunk_changelist_loads(self):
-        response = self.client.get(reverse("admin:documents_projectdocumentchunk_changelist"))
+        response = self.client.get(reverse("admin:documents_dataroomdocumentchunk_changelist"))
         self.assertEqual(response.status_code, 200)

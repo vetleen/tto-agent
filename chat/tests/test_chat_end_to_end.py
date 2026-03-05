@@ -15,7 +15,7 @@ from django.test import TransactionTestCase, override_settings
 
 from chat.models import ChatMessage, ChatThread
 from chat.routing import websocket_urlpatterns
-from documents.models import Project
+from documents.models import DataRoom
 from llm.core.registry import get_model_registry
 from llm.types.messages import Message, ToolCall
 from llm.types.responses import ChatResponse
@@ -86,7 +86,7 @@ class ChatEndToEndTests(TransactionTestCase):
         import chat.tools  # noqa: F401
 
         self.user = User.objects.create_user(email="owner@example.com", password="pass123")
-        self.project = Project.objects.create(
+        self.data_room = DataRoom.objects.create(
             name="Test", slug="test-project", created_by=self.user
         )
 
@@ -99,7 +99,7 @@ class ChatEndToEndTests(TransactionTestCase):
 
     async def _connect(self):
         app = make_application()
-        communicator = WebsocketCommunicator(app, f"/ws/projects/{self.project.uuid}/chat/")
+        communicator = WebsocketCommunicator(app, "/ws/chat/")
         communicator.scope["user"] = self.user
         connected, _ = await communicator.connect()
         assert connected
@@ -147,17 +147,15 @@ class ChatEndToEndTests(TransactionTestCase):
         self.assertEqual(msgs[0][1], "Hi")
         self.assertEqual(msgs[1][1], "Hello")
 
-        # LLM requests should include a system prompt and the conversation context
-        self.assertGreaterEqual(len(fake.generate_requests), 1)
-        req = fake.generate_requests[0]
+        # Without data_room_ids, no tools → pipeline calls stream() not generate().
+        self.assertGreaterEqual(len(fake.stream_requests), 1)
+        req = fake.stream_requests[0]
         roles = [m.role for m in req.messages]
         self.assertEqual(roles[0], "system")
         self.assertIn("helpful assistant", req.messages[0].content.lower())
-        self.assertIn("Test", req.messages[0].content)
         self.assertEqual(req.messages[-1].role, "user")
         self.assertEqual(req.messages[-1].content, "Hi")
         self.assertEqual(req.model, "test-model")
-        self.assertEqual(req.context.conversation_id, str(self.project.pk))
 
     @patch.dict(
         os.environ,
@@ -176,7 +174,12 @@ class ChatEndToEndTests(TransactionTestCase):
         self._register_fake_model(fake)
 
         communicator = await self._connect()
-        await communicator.send_json_to({"type": "chat.message", "content": "Search please"})
+        # Send data_room_ids in the message payload so the consumer includes tools
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Search please",
+            "data_room_ids": [self.data_room.pk],
+        })
 
         created = await communicator.receive_json_from(timeout=5)
         self.assertEqual(created["event_type"], "thread.created")
@@ -199,7 +202,7 @@ class ChatEndToEndTests(TransactionTestCase):
 
         await communicator.disconnect()
 
-        mock_search.assert_called_once_with(project_id=self.project.pk, query="foo", k=1)
+        mock_search.assert_called_once_with(data_room_ids=[self.data_room.pk], query="foo", k=1)
 
     @patch.dict(os.environ, {"LLM_ALLOWED_MODELS": "", "DEFAULT_LLM_MODEL": ""}, clear=False)
     async def test_missing_llm_allowed_models_surfaces_as_error_event(self):
@@ -219,4 +222,3 @@ class ChatEndToEndTests(TransactionTestCase):
         msgs = await self._db_messages()
         # User message is persisted before LLM call; assistant should not be persisted.
         self.assertEqual([m[0] for m in msgs], ["user"])
-

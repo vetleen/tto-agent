@@ -24,7 +24,8 @@ from accounts.views.auth import index
 urlpatterns = [
     path("", index, name="index"),
     path("accounts/", include(("accounts.urls", "accounts"), namespace="accounts")),
-    path("projects/", include("documents.urls")),
+    path("chat/", include("chat.urls")),
+    path("data-rooms/", include("documents.urls")),
     path("admin/", admin.site.urls),
 ]
 

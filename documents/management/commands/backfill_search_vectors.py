@@ -1,5 +1,5 @@
 """
-Backfill search_vector for ProjectDocumentChunk rows that have NULL search_vector.
+Backfill search_vector for DataRoomDocumentChunk rows that have NULL search_vector.
 
 Usage:
     python manage.py backfill_search_vectors
@@ -10,7 +10,7 @@ from __future__ import annotations
 from django.contrib.postgres.search import SearchVector
 from django.core.management.base import BaseCommand
 
-from documents.models import ProjectDocument, ProjectDocumentChunk
+from documents.models import DataRoomDocument, DataRoomDocumentChunk
 
 
 class Command(BaseCommand):
@@ -28,8 +28,8 @@ class Command(BaseCommand):
         batch_size = options["batch_size"]
 
         documents = (
-            ProjectDocument.objects.filter(
-                status=ProjectDocument.Status.READY,
+            DataRoomDocument.objects.filter(
+                status=DataRoomDocument.Status.READY,
                 chunks__search_vector__isnull=True,
             )
             .distinct()
@@ -46,7 +46,7 @@ class Command(BaseCommand):
         total_updated = 0
         for doc_id in doc_ids:
             updated = (
-                ProjectDocumentChunk.objects.filter(
+                DataRoomDocumentChunk.objects.filter(
                     document_id=doc_id,
                     search_vector__isnull=True,
                 )[:batch_size]

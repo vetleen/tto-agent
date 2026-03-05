@@ -91,7 +91,7 @@ def delete_vectors_for_document(document_id: int) -> None:
         logger.debug("langchain_pg_embedding table does not exist yet, skipping delete")
 
 
-def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, project_id: int) -> None:
+def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, data_room_id: int) -> None:
     """
     Embed and store chunk vectors. chunks: list of dicts with 'id', 'text', and optional chunk_index.
     The store's embedding_function is used to embed page_content.
@@ -109,7 +109,7 @@ def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, project_id
         meta = {
             "chunk_id": chunk["id"],
             "document_id": document_id,
-            "project_id": project_id,
+            "data_room_id": data_room_id,
             "chunk_index": chunk.get("chunk_index", i),
         }
         doc = Document(page_content=chunk["text"], metadata=meta)
@@ -118,14 +118,15 @@ def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, project_id
 
 
 def similarity_search(
-    project_id: int,
+    data_room_ids: list[int],
     query: str,
     k: int = 10,
     document_id: int | None = None,
 ) -> list[Any]:
     """
-    Return chunks from the vector store most similar to query, filtered by project_id (and optionally document_id).
-    Returns list of LangChain Documents with metadata chunk_id, document_id, project_id.
+    Return chunks from the vector store most similar to query, filtered by data_room_ids
+    (and optionally document_id). Iterates per room and merges results.
+    Returns list of LangChain Documents with metadata chunk_id, document_id, data_room_id.
     """
     conn = _get_connection_string()
     if not conn:
@@ -134,8 +135,13 @@ def similarity_search(
     store = _get_vector_store()
     if not store:
         return []
-    filt = {"project_id": project_id}
-    if document_id is not None:
-        filt["document_id"] = document_id
-    results = store.similarity_search(query, k=k, filter=filt)
-    return results
+
+    all_results = []
+    for room_id in data_room_ids:
+        filt = {"data_room_id": room_id}
+        if document_id is not None:
+            filt["document_id"] = document_id
+        results = store.similarity_search(query, k=k, filter=filt)
+        all_results.extend(results)
+
+    return all_results

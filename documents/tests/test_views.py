@@ -12,7 +12,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from documents.models import Project, ProjectDocument
+from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 from documents.views import _relative_upload_date
 
 User = get_user_model()
@@ -54,64 +54,45 @@ class DocumentViewsTests(TestCase):
         self.user = User.objects.create_user(email="user@example.com", password="testpass")
         self.user.email_verified = True
         self.user.save(update_fields=["email_verified"])
-        self.project = Project.objects.create(name="Test", slug="test", created_by=self.user)
+        self.data_room = DataRoom.objects.create(name="Test", slug="test", created_by=self.user)
         self.other = User.objects.create_user(email="other@example.com", password="testpass")
 
     def _make_doc(self):
-        return ProjectDocument.objects.create(
-            project=self.project,
+        return DataRoomDocument.objects.create(
+            data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="doc.txt",
-            status=ProjectDocument.Status.READY,
+            status=DataRoomDocument.Status.READY,
         )
 
-    def test_project_list_requires_login(self):
-        response = self.client.get(reverse("project_list"))
+    def test_data_room_list_requires_login(self):
+        response = self.client.get(reverse("data_room_list"))
         self.assertEqual(response.status_code, 302)
 
-    def test_project_create_retries_after_integrity_error(self):
+    def test_data_room_create_retries_after_integrity_error(self):
         self.client.force_login(self.user)
 
-        created_project = Project(name="Test Retry", slug="test-retry-1", created_by=self.user)
-        with patch("documents.views.Project.objects.create", side_effect=[IntegrityError(), created_project]) as mock_create:
-            response = self.client.post(reverse("project_list"), {"name": "Test Retry"})
+        created_data_room = DataRoom(name="Test Retry", slug="test-retry-1", created_by=self.user)
+        with patch("documents.views.DataRoom.objects.create", side_effect=[IntegrityError(), created_data_room]) as mock_create:
+            response = self.client.post(reverse("data_room_list"), {"name": "Test Retry"})
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(mock_create.call_count, 2)
         self.assertEqual(mock_create.call_args_list[0], call(name="Test Retry", slug="test-retry", created_by=self.user))
         self.assertEqual(mock_create.call_args_list[1], call(name="Test Retry", slug="test-retry-1", created_by=self.user))
 
-    def test_project_list_renders_for_owner(self):
+    def test_data_room_list_renders_for_owner(self):
         self.client.force_login(self.user)
-        response = self.client.get(reverse("project_list"))
+        response = self.client.get(reverse("data_room_list"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Test")
 
-    def test_project_detail_requires_login(self):
-        response = self.client.get(reverse("project_detail", kwargs={"project_id": self.project.uuid}))
-        self.assertEqual(response.status_code, 302)
-
-    def test_project_detail_redirects_to_chat(self):
+    def test_data_room_documents_owner_sees_upload_form(self):
         self.client.force_login(self.user)
-        response = self.client.get(reverse("project_detail", kwargs={"project_id": self.project.uuid}))
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, reverse("project_chat", kwargs={"project_id": self.project.uuid}))
-
-    def test_project_documents_owner_sees_upload_form(self):
-        self.client.force_login(self.user)
-        response = self.client.get(reverse("project_documents", kwargs={"project_id": self.project.uuid}))
+        response = self.client.get(reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Upload documents")
         self.assertContains(response, "name=\"file\"")
-
-    def test_project_detail_other_user_redirected(self):
-        self.client.force_login(self.other)
-        response = self.client.get(
-            reverse("project_detail", kwargs={"project_id": self.project.uuid}),
-            follow=True,
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.resolver_match.url_name, "project_list")
 
     def test_document_upload_creates_document_and_redirects(self):
         self.client.force_login(self.user)
@@ -119,18 +100,18 @@ class DocumentViewsTests(TestCase):
         f = BytesIO(content)
         f.name = "test.txt"
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 1)
-        doc = ProjectDocument.objects.get(project=self.project)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 1)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
         self.assertEqual(doc.original_filename, "test.txt")
         # Status may be UPLOADED (task queued), READY (sync processed), or FAILED (sync ran but deps missing)
         self.assertIn(
             doc.status,
-            (ProjectDocument.Status.UPLOADED, ProjectDocument.Status.READY, ProjectDocument.Status.FAILED),
+            (DataRoomDocument.Status.UPLOADED, DataRoomDocument.Status.READY, DataRoomDocument.Status.FAILED),
         )
 
     def test_document_upload_marks_failed_when_task_enqueue_fails(self):
@@ -144,14 +125,14 @@ class DocumentViewsTests(TestCase):
         with patch.dict(sys.modules, {"documents.tasks": fake_module}):
             with self.assertLogs("documents.views", level="ERROR"):
                 response = self.client.post(
-                    reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+                    reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
                     {"file": f},
                     follow=True,
                 )
 
         self.assertEqual(response.status_code, 200)
-        doc = ProjectDocument.objects.get(project=self.project, original_filename="enqueue-fail.txt")
-        self.assertEqual(doc.status, ProjectDocument.Status.FAILED)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="enqueue-fail.txt")
+        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
         self.assertIn("broker unavailable", doc.processing_error)
         self.assertContains(response, "processing could not be started")
 
@@ -161,13 +142,13 @@ class DocumentViewsTests(TestCase):
         f = SimpleUploadedFile("mime-ok.txt", b"hello", content_type="text/plain")
 
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="mime-ok.txt").count(), 1)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="mime-ok.txt").count(), 1)
 
     @override_settings(DOCUMENT_ALLOWED_MIME_TYPES={"application/pdf"})
     def test_document_upload_rejects_mime_not_in_allowlist(self):
@@ -175,13 +156,13 @@ class DocumentViewsTests(TestCase):
         f = SimpleUploadedFile("mime-blocked.txt", b"hello", content_type="text/plain")
 
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="mime-blocked.txt").count(), 0)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="mime-blocked.txt").count(), 0)
         self.assertContains(response, "unsupported file type")
 
     def test_document_upload_sanitizes_path_from_original_filename(self):
@@ -189,13 +170,13 @@ class DocumentViewsTests(TestCase):
         f = SimpleUploadedFile(r"..\..\secret\report.txt", b"hello", content_type="text/plain")
 
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
 
         self.assertEqual(response.status_code, 200)
-        doc = ProjectDocument.objects.get(project=self.project)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
         self.assertEqual(doc.original_filename, "report.txt")
 
     def test_document_upload_truncates_original_filename_to_model_limit(self):
@@ -204,13 +185,13 @@ class DocumentViewsTests(TestCase):
         f = SimpleUploadedFile(long_name, b"hello", content_type="text/plain")
 
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
 
         self.assertEqual(response.status_code, 200)
-        doc = ProjectDocument.objects.get(project=self.project)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
         self.assertLessEqual(len(doc.original_filename), 255)
         self.assertTrue(doc.original_filename.endswith('.txt'))
 
@@ -219,13 +200,13 @@ class DocumentViewsTests(TestCase):
         f = SimpleUploadedFile("empty.txt", b"", content_type="text/plain")
 
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="empty.txt").count(), 0)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="empty.txt").count(), 0)
         self.assertContains(response, "file is empty")
 
     def test_document_upload_rejects_unsupported_extension(self):
@@ -233,39 +214,38 @@ class DocumentViewsTests(TestCase):
         f = BytesIO(b"x")
         f.name = "file.xyz"
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 0)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 0)
         self.assertContains(response, "unsupported file type")
 
     def test_document_chunks_api_requires_auth(self):
-        doc = ProjectDocument.objects.create(
-            project=self.project,
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="x.txt",
-            status=ProjectDocument.Status.READY,
+            status=DataRoomDocument.Status.READY,
         )
         response = self.client.get(
-            reverse("document_chunks", kwargs={"project_id": self.project.uuid, "document_id": doc.id})
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
         )
         self.assertEqual(response.status_code, 302)
 
     def test_document_chunks_api_returns_ordered_chunks(self):
         self.client.force_login(self.user)
-        doc = ProjectDocument.objects.create(
-            project=self.project,
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="x.txt",
-            status=ProjectDocument.Status.READY,
+            status=DataRoomDocument.Status.READY,
         )
-        from documents.models import ProjectDocumentChunk
-        ProjectDocumentChunk.objects.create(document=doc, chunk_index=0, text="A", token_count=1)
-        ProjectDocumentChunk.objects.create(document=doc, chunk_index=1, text="B", token_count=1)
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="A", token_count=1)
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="B", token_count=1)
         response = self.client.get(
-            reverse("document_chunks", kwargs={"project_id": self.project.uuid, "document_id": doc.id})
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -274,74 +254,74 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(data["chunks"][1]["text"], "B")
 
     # ------------------------------------------------------------------ #
-    # project_delete                                                       #
+    # data_room_delete                                                     #
     # ------------------------------------------------------------------ #
 
-    def test_project_delete_removes_project(self):
+    def test_data_room_delete_removes_data_room(self):
         self.client.force_login(self.user)
         response = self.client.post(
-            reverse("project_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_delete", kwargs={"data_room_id": self.data_room.uuid}),
         )
-        self.assertRedirects(response, reverse("project_list"))
-        self.assertFalse(Project.objects.filter(pk=self.project.pk).exists())
+        self.assertRedirects(response, reverse("data_room_list"))
+        self.assertFalse(DataRoom.objects.filter(pk=self.data_room.pk).exists())
 
-    def test_project_delete_other_user_blocked(self):
+    def test_data_room_delete_other_user_blocked(self):
         self.client.force_login(self.other)
         self.client.post(
-            reverse("project_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_delete", kwargs={"data_room_id": self.data_room.uuid}),
         )
-        self.assertTrue(Project.objects.filter(pk=self.project.pk).exists())
+        self.assertTrue(DataRoom.objects.filter(pk=self.data_room.pk).exists())
 
-    def test_project_delete_requires_post(self):
+    def test_data_room_delete_requires_post(self):
         self.client.force_login(self.user)
         response = self.client.get(
-            reverse("project_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_delete", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 405)
 
     # ------------------------------------------------------------------ #
-    # project_rename                                                       #
+    # data_room_rename                                                     #
     # ------------------------------------------------------------------ #
 
-    def test_project_rename_updates_name(self):
+    def test_data_room_rename_updates_name(self):
         self.client.force_login(self.user)
         response = self.client.post(
-            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_rename", kwargs={"data_room_id": self.data_room.uuid}),
             {"name": "Renamed Project"},
         )
-        self.assertRedirects(response, reverse("project_list"))
-        self.project.refresh_from_db()
-        self.assertEqual(self.project.name, "Renamed Project")
+        self.assertRedirects(response, reverse("data_room_list"))
+        self.data_room.refresh_from_db()
+        self.assertEqual(self.data_room.name, "Renamed Project")
 
-    def test_project_rename_rejects_empty_name(self):
+    def test_data_room_rename_rejects_empty_name(self):
         self.client.force_login(self.user)
         response = self.client.post(
-            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_rename", kwargs={"data_room_id": self.data_room.uuid}),
             {"name": ""},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.project.refresh_from_db()
-        self.assertEqual(self.project.name, "Test")
+        self.data_room.refresh_from_db()
+        self.assertEqual(self.data_room.name, "Test")
 
-    def test_project_rename_truncates_at_255(self):
+    def test_data_room_rename_truncates_at_255(self):
         self.client.force_login(self.user)
         long_name = "x" * 300
         self.client.post(
-            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_rename", kwargs={"data_room_id": self.data_room.uuid}),
             {"name": long_name},
         )
-        self.project.refresh_from_db()
-        self.assertLessEqual(len(self.project.name), 255)
+        self.data_room.refresh_from_db()
+        self.assertLessEqual(len(self.data_room.name), 255)
 
-    def test_project_rename_other_user_blocked(self):
+    def test_data_room_rename_other_user_blocked(self):
         self.client.force_login(self.other)
         self.client.post(
-            reverse("project_rename", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_rename", kwargs={"data_room_id": self.data_room.uuid}),
             {"name": "Hacked"},
         )
-        self.project.refresh_from_db()
-        self.assertEqual(self.project.name, "Test")
+        self.data_room.refresh_from_db()
+        self.assertEqual(self.data_room.name, "Test")
 
     # ------------------------------------------------------------------ #
     # document_delete                                                      #
@@ -351,21 +331,21 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.user)
         doc = self._make_doc()
         response = self.client.post(
-            reverse("document_delete", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            reverse("document_delete", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id}),
         )
         self.assertRedirects(
             response,
-            reverse("project_documents", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
         )
-        self.assertFalse(ProjectDocument.objects.filter(pk=doc.pk).exists())
+        self.assertFalse(DataRoomDocument.objects.filter(pk=doc.pk).exists())
 
     def test_document_delete_other_user_blocked(self):
         self.client.force_login(self.other)
         doc = self._make_doc()
         self.client.post(
-            reverse("document_delete", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            reverse("document_delete", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id}),
         )
-        self.assertTrue(ProjectDocument.objects.filter(pk=doc.pk).exists())
+        self.assertTrue(DataRoomDocument.objects.filter(pk=doc.pk).exists())
 
     # ------------------------------------------------------------------ #
     # document_rename                                                      #
@@ -375,7 +355,7 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.user)
         doc = self._make_doc()
         self.client.post(
-            reverse("document_rename", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            reverse("document_rename", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id}),
             {"name": "renamed.txt"},
         )
         doc.refresh_from_db()
@@ -385,7 +365,7 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.user)
         doc = self._make_doc()
         response = self.client.post(
-            reverse("document_rename", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            reverse("document_rename", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id}),
             {"name": ""},
             follow=True,
         )
@@ -397,7 +377,7 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.other)
         doc = self._make_doc()
         self.client.post(
-            reverse("document_rename", kwargs={"project_id": self.project.uuid, "document_id": doc.id}),
+            reverse("document_rename", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id}),
             {"name": "hacked.txt"},
         )
         doc.refresh_from_db()
@@ -412,13 +392,13 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.user)
         f = SimpleUploadedFile("big.txt", b"0123456789", content_type="text/plain")
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": f},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "too large")
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project, original_filename="big.txt").count(), 0)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="big.txt").count(), 0)
 
     # ------------------------------------------------------------------ #
     # document_chunks API — additional authorization cases                #
@@ -428,7 +408,7 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.other)
         doc = self._make_doc()
         response = self.client.get(
-            reverse("document_chunks", kwargs={"project_id": self.project.uuid, "document_id": doc.id})
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
         )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json(), {"error": "Forbidden"})
@@ -436,29 +416,9 @@ class DocumentViewsTests(TestCase):
     def test_document_chunks_api_returns_404_for_missing_doc(self):
         self.client.force_login(self.user)
         response = self.client.get(
-            reverse("document_chunks", kwargs={"project_id": self.project.uuid, "document_id": 99999})
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": 99999})
         )
         self.assertEqual(response.status_code, 404)
-
-    # ------------------------------------------------------------------ #
-    # project_chat                                                         #
-    # ------------------------------------------------------------------ #
-
-    def test_project_chat_renders_for_owner(self):
-        self.client.force_login(self.user)
-        response = self.client.get(
-            reverse("project_chat", kwargs={"project_id": self.project.uuid}),
-        )
-        self.assertEqual(response.status_code, 200)
-
-    def test_project_chat_other_user_redirected(self):
-        self.client.force_login(self.other)
-        response = self.client.get(
-            reverse("project_chat", kwargs={"project_id": self.project.uuid}),
-            follow=True,
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.resolver_match.url_name, "project_list")
 
     # ------------------------------------------------------------------ #
     # document_upload — multi-file                                         #
@@ -469,14 +429,14 @@ class DocumentViewsTests(TestCase):
         f1 = SimpleUploadedFile("a.txt", b"hello", content_type="text/plain")
         f2 = SimpleUploadedFile("b.txt", b"world", content_type="text/plain")
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": [f1, f2]},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 2)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 2)
         filenames = set(
-            ProjectDocument.objects.filter(project=self.project).values_list("original_filename", flat=True)
+            DataRoomDocument.objects.filter(data_room=self.data_room).values_list("original_filename", flat=True)
         )
         self.assertEqual(filenames, {"a.txt", "b.txt"})
         self.assertContains(response, "2 files uploaded successfully")
@@ -487,16 +447,16 @@ class DocumentViewsTests(TestCase):
         bad = BytesIO(b"content")
         bad.name = "bad.xyz"
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": [good, bad]},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            ProjectDocument.objects.filter(project=self.project, original_filename="good.txt").count(), 1
+            DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="good.txt").count(), 1
         )
         self.assertEqual(
-            ProjectDocument.objects.filter(project=self.project, original_filename="bad.xyz").count(), 0
+            DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="bad.xyz").count(), 0
         )
         self.assertContains(response, "bad.xyz")
         self.assertContains(response, "unsupported file type")
@@ -509,12 +469,12 @@ class DocumentViewsTests(TestCase):
         f2 = BytesIO(b"x")
         f2.name = "b.xyz"
         response = self.client.post(
-            reverse("document_upload", kwargs={"project_id": self.project.uuid}),
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
             {"file": [f1, f2]},
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ProjectDocument.objects.filter(project=self.project).count(), 0)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 0)
 
     # ------------------------------------------------------------------ #
     # document_bulk_delete                                                 #
@@ -526,37 +486,37 @@ class DocumentViewsTests(TestCase):
         d2 = self._make_doc()
         d3 = self._make_doc()
         response = self.client.post(
-            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [d1.id, d2.id]}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["deleted"], 2)
-        self.assertFalse(ProjectDocument.objects.filter(pk=d1.pk).exists())
-        self.assertFalse(ProjectDocument.objects.filter(pk=d2.pk).exists())
-        self.assertTrue(ProjectDocument.objects.filter(pk=d3.pk).exists())
+        self.assertFalse(DataRoomDocument.objects.filter(pk=d1.pk).exists())
+        self.assertFalse(DataRoomDocument.objects.filter(pk=d2.pk).exists())
+        self.assertTrue(DataRoomDocument.objects.filter(pk=d3.pk).exists())
 
-    def test_bulk_delete_ignores_other_project_ids(self):
+    def test_bulk_delete_ignores_other_data_room_ids(self):
         self.client.force_login(self.user)
-        other_project = Project.objects.create(name="Other", slug="other", created_by=self.user)
-        other_doc = ProjectDocument.objects.create(
-            project=other_project, uploaded_by=self.user,
-            original_filename="other.txt", status=ProjectDocument.Status.READY,
+        other_data_room = DataRoom.objects.create(name="Other", slug="other", created_by=self.user)
+        other_doc = DataRoomDocument.objects.create(
+            data_room=other_data_room, uploaded_by=self.user,
+            original_filename="other.txt", status=DataRoomDocument.Status.READY,
         )
         response = self.client.post(
-            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [other_doc.id]}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["deleted"], 0)
-        self.assertTrue(ProjectDocument.objects.filter(pk=other_doc.pk).exists())
+        self.assertTrue(DataRoomDocument.objects.filter(pk=other_doc.pk).exists())
 
     def test_bulk_delete_requires_post(self):
         self.client.force_login(self.user)
         response = self.client.get(
-            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 405)
 
@@ -564,17 +524,17 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.other)
         doc = self._make_doc()
         response = self.client.post(
-            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [doc.id]}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
-        self.assertTrue(ProjectDocument.objects.filter(pk=doc.pk).exists())
+        self.assertTrue(DataRoomDocument.objects.filter(pk=doc.pk).exists())
 
     def test_bulk_delete_rejects_empty_ids(self):
         self.client.force_login(self.user)
         response = self.client.post(
-            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": []}),
             content_type="application/json",
         )
@@ -583,7 +543,7 @@ class DocumentViewsTests(TestCase):
     def test_bulk_delete_rejects_bad_json(self):
         self.client.force_login(self.user)
         response = self.client.post(
-            reverse("document_bulk_delete", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
             data="not json",
             content_type="application/json",
         )
@@ -598,7 +558,7 @@ class DocumentViewsTests(TestCase):
         d1 = self._make_doc()
         d2 = self._make_doc()
         response = self.client.post(
-            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_archive", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [d1.id, d2.id], "action": "archive"}),
             content_type="application/json",
         )
@@ -615,7 +575,7 @@ class DocumentViewsTests(TestCase):
         d1.is_archived = True
         d1.save(update_fields=["is_archived"])
         response = self.client.post(
-            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_archive", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [d1.id], "action": "restore"}),
             content_type="application/json",
         )
@@ -624,15 +584,15 @@ class DocumentViewsTests(TestCase):
         d1.refresh_from_db()
         self.assertFalse(d1.is_archived)
 
-    def test_bulk_archive_ignores_other_project_ids(self):
+    def test_bulk_archive_ignores_other_data_room_ids(self):
         self.client.force_login(self.user)
-        other_project = Project.objects.create(name="Other2", slug="other2", created_by=self.user)
-        other_doc = ProjectDocument.objects.create(
-            project=other_project, uploaded_by=self.user,
-            original_filename="other.txt", status=ProjectDocument.Status.READY,
+        other_data_room = DataRoom.objects.create(name="Other2", slug="other2", created_by=self.user)
+        other_doc = DataRoomDocument.objects.create(
+            data_room=other_data_room, uploaded_by=self.user,
+            original_filename="other.txt", status=DataRoomDocument.Status.READY,
         )
         response = self.client.post(
-            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_archive", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [other_doc.id], "action": "archive"}),
             content_type="application/json",
         )
@@ -645,7 +605,7 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.user)
         d1 = self._make_doc()
         response = self.client.post(
-            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_archive", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [d1.id], "action": "invalid"}),
             content_type="application/json",
         )
@@ -655,7 +615,7 @@ class DocumentViewsTests(TestCase):
         self.client.force_login(self.other)
         doc = self._make_doc()
         response = self.client.post(
-            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_archive", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"document_ids": [doc.id], "action": "archive"}),
             content_type="application/json",
         )
@@ -664,7 +624,7 @@ class DocumentViewsTests(TestCase):
     def test_bulk_archive_requires_post(self):
         self.client.force_login(self.user)
         response = self.client.get(
-            reverse("document_bulk_archive", kwargs={"project_id": self.project.uuid}),
+            reverse("document_bulk_archive", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 405)
 
@@ -675,12 +635,12 @@ class DocumentViewsTests(TestCase):
     def test_document_status_returns_all_statuses(self):
         self.client.force_login(self.user)
         d1 = self._make_doc()  # READY
-        d2 = ProjectDocument.objects.create(
-            project=self.project, uploaded_by=self.user,
-            original_filename="fail.txt", status=ProjectDocument.Status.FAILED,
+        d2 = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="fail.txt", status=DataRoomDocument.Status.FAILED,
         )
         response = self.client.get(
-            reverse("document_status", kwargs={"project_id": self.project.uuid}),
+            reverse("document_status", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -690,14 +650,14 @@ class DocumentViewsTests(TestCase):
     def test_document_status_blocks_other_user(self):
         self.client.force_login(self.other)
         response = self.client.get(
-            reverse("document_status", kwargs={"project_id": self.project.uuid}),
+            reverse("document_status", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 403)
 
     def test_document_status_requires_get(self):
         self.client.force_login(self.user)
         response = self.client.post(
-            reverse("document_status", kwargs={"project_id": self.project.uuid}),
+            reverse("document_status", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 405)
 
@@ -705,14 +665,14 @@ class DocumentViewsTests(TestCase):
     # FAILED doc visibility                                                #
     # ------------------------------------------------------------------ #
 
-    def test_failed_doc_visible_in_project_documents(self):
+    def test_failed_doc_visible_in_data_room_documents(self):
         self.client.force_login(self.user)
-        failed_doc = ProjectDocument.objects.create(
-            project=self.project, uploaded_by=self.user,
-            original_filename="broken.txt", status=ProjectDocument.Status.FAILED,
+        failed_doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="broken.txt", status=DataRoomDocument.Status.FAILED,
         )
         response = self.client.get(
-            reverse("project_documents", kwargs={"project_id": self.project.uuid}),
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 200)
         doc_ids = [d.id for d in response.context["documents"]]

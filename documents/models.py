@@ -8,16 +8,17 @@ from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 
 
-class Project(models.Model):
+class DataRoom(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True)
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=100, unique=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="projects",
+        related_name="data_rooms",
     )
     is_archived = models.BooleanField(default=False)
+    is_shared = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -28,15 +29,15 @@ class Project(models.Model):
         return self.name
 
 
-class ProjectDocument(models.Model):
+class DataRoomDocument(models.Model):
     class Status(models.TextChoices):
         UPLOADED = "uploaded", "Uploaded"
         PROCESSING = "processing", "Processing"
         READY = "ready", "Ready"
         FAILED = "failed", "Failed"
 
-    project = models.ForeignKey(
-        Project,
+    data_room = models.ForeignKey(
+        DataRoom,
         on_delete=models.CASCADE,
         related_name="documents",
     )
@@ -75,8 +76,8 @@ class ProjectDocument(models.Model):
         ordering = ["-uploaded_at"]
         constraints = [
             models.UniqueConstraint(
-                fields=["project", "doc_index"],
-                name="documents_unique_doc_index_per_project",
+                fields=["data_room", "doc_index"],
+                name="documents_unique_doc_index_per_data_room",
                 condition=models.Q(doc_index__gt=0),
             ),
         ]
@@ -85,8 +86,8 @@ class ProjectDocument(models.Model):
         if not self.doc_index:
             from django.db.models import Max
 
-            max_idx = ProjectDocument.objects.filter(
-                project=self.project
+            max_idx = DataRoomDocument.objects.filter(
+                data_room=self.data_room
             ).aggregate(Max("doc_index"))["doc_index__max"] or 0
             self.doc_index = max_idx + 1
         super().save(*args, **kwargs)
@@ -95,9 +96,9 @@ class ProjectDocument(models.Model):
         return self.original_filename or f"Document {self.pk}"
 
 
-class ProjectDocumentChunk(models.Model):
+class DataRoomDocumentChunk(models.Model):
     document = models.ForeignKey(
-        ProjectDocument,
+        DataRoomDocument,
         on_delete=models.CASCADE,
         related_name="chunks",
     )

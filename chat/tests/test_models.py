@@ -4,7 +4,6 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from chat.models import ChatMessage, ChatThread
-from documents.models import Project
 
 User = get_user_model()
 
@@ -14,55 +13,40 @@ class ChatThreadModelTests(TestCase):
         self.user = User.objects.create_user(
             email="test@example.com", password="testpass123"
         )
-        self.project = Project.objects.create(
-            name="Test Project", slug="test-project", created_by=self.user
-        )
 
     def test_create_thread(self):
         thread = ChatThread.objects.create(
-            project=self.project, created_by=self.user, title="My thread"
+            created_by=self.user, title="My thread"
         )
         self.assertIsNotNone(thread.id)
         self.assertEqual(thread.title, "My thread")
-        self.assertEqual(thread.project, self.project)
         self.assertEqual(thread.created_by, self.user)
 
     def test_thread_blank_title(self):
         thread = ChatThread.objects.create(
-            project=self.project, created_by=self.user
+            created_by=self.user
         )
         self.assertEqual(thread.title, "")
 
     def test_thread_str(self):
         thread = ChatThread.objects.create(
-            project=self.project, created_by=self.user, title="Chat about docs"
+            created_by=self.user, title="Chat about docs"
         )
         self.assertEqual(str(thread), "Chat about docs")
 
     def test_thread_str_no_title(self):
         thread = ChatThread.objects.create(
-            project=self.project, created_by=self.user
+            created_by=self.user
         )
         self.assertIn("Thread", str(thread))
 
     def test_thread_ordering(self):
-        t1 = ChatThread.objects.create(project=self.project, created_by=self.user, title="First")
-        t2 = ChatThread.objects.create(project=self.project, created_by=self.user, title="Second")
-        threads = list(ChatThread.objects.filter(project=self.project))
+        t1 = ChatThread.objects.create(created_by=self.user, title="First")
+        t2 = ChatThread.objects.create(created_by=self.user, title="Second")
+        threads = list(ChatThread.objects.filter(created_by=self.user))
         # Most recently updated first
         self.assertEqual(threads[0].id, t2.id)
         self.assertEqual(threads[1].id, t1.id)
-
-    def test_cascade_delete_with_project(self):
-        thread = ChatThread.objects.create(project=self.project, created_by=self.user)
-        ChatMessage.objects.create(thread=thread, role="user", content="Hello")
-        self.project.delete()
-        self.assertEqual(ChatThread.objects.count(), 0)
-        self.assertEqual(ChatMessage.objects.count(), 0)
-
-    def test_related_name(self):
-        ChatThread.objects.create(project=self.project, created_by=self.user)
-        self.assertEqual(self.project.chat_threads.count(), 1)
 
 
 class ChatMessageModelTests(TestCase):
@@ -70,11 +54,8 @@ class ChatMessageModelTests(TestCase):
         self.user = User.objects.create_user(
             email="test@example.com", password="testpass123"
         )
-        self.project = Project.objects.create(
-            name="Test Project", slug="test-project", created_by=self.user
-        )
         self.thread = ChatThread.objects.create(
-            project=self.project, created_by=self.user
+            created_by=self.user
         )
 
     def test_create_message(self):

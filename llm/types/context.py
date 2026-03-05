@@ -14,6 +14,7 @@ class RunContext(BaseModel):
     trace_id: str = Field(default_factory=lambda: str(uuid4()))
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
+    data_room_ids: list[int] = Field(default_factory=list)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     deadline_seconds: Optional[int] = None
 
@@ -23,13 +24,14 @@ class RunContext(BaseModel):
         user_id: Any | None = None,
         conversation_id: Any | None = None,
         deadline_seconds: int | None = None,
+        data_room_ids: list[int] | None = None,
     ) -> "RunContext":
         return cls(
             user_id=str(user_id) if user_id is not None else None,
             conversation_id=str(conversation_id) if conversation_id is not None else None,
             deadline_seconds=deadline_seconds,
+            data_room_ids=data_room_ids or [],
         )
 
 
 __all__ = ["RunContext"]
-
