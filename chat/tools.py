@@ -36,6 +36,7 @@ class SearchDocumentsTool:
     }
 
     def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
+        from documents.models import Project
         from documents.services.retrieval import similarity_search_chunks
 
         query = args.get("query", "").strip()
@@ -55,6 +56,11 @@ class SearchDocumentsTool:
             project_pk = int(project_id)
         except (TypeError, ValueError) as e:
             raise ValueError(f"Invalid project ID in context: {project_id}") from e
+
+        # Verify the user owns this project
+        user_id = context.user_id
+        if not user_id or not Project.objects.filter(pk=project_pk, created_by_id=user_id).exists():
+            raise ValueError("Project not found or access denied")
 
         try:
             docs = similarity_search_chunks(project_id=project_pk, query=query, k=k)
@@ -102,7 +108,7 @@ class ReadDocumentTool:
     _MAX_TOTAL_CHARS = 32_000
 
     def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
-        from documents.models import ProjectDocument
+        from documents.models import Project, ProjectDocument
 
         doc_indices = args.get("doc_indices", [])
         if not doc_indices or not isinstance(doc_indices, list):
@@ -116,6 +122,11 @@ class ReadDocumentTool:
             project_pk = int(project_id)
         except (TypeError, ValueError) as e:
             raise ValueError(f"Invalid project ID in context: {project_id}") from e
+
+        # Verify the user owns this project
+        user_id = context.user_id
+        if not user_id or not Project.objects.filter(pk=project_pk, created_by_id=user_id).exists():
+            raise ValueError("Project not found or access denied")
 
         documents = []
         total_chars = 0

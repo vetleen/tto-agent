@@ -202,7 +202,7 @@ def similarity_search_chunks(
 ) -> list[Any]:
     """
     Run hybrid search (semantic + full-text) and return LangChain Document
-    objects with metadata chunk_id, document_id, project_id.
+    objects with metadata doc_index (project-scoped), project_id, chunk_index.
     Maintains backward compatibility with existing callers.
     """
     from langchain_core.documents import Document
@@ -210,12 +210,21 @@ def similarity_search_chunks(
     results = hybrid_search_chunks(
         project_id=project_id, query=query, k=k, document_id=document_id,
     )
+
+    # Resolve database PKs to project-scoped doc_index values
+    doc_pks = {r["document_id"] for r in results if r.get("document_id")}
+    doc_index_map: dict[int, int] = {}
+    if doc_pks:
+        doc_index_map = dict(
+            ProjectDocument.objects.filter(pk__in=doc_pks).values_list("pk", "doc_index")
+        )
+
     return [
         Document(
             page_content=r["text"],
             metadata={
                 "chunk_id": r["id"],
-                "document_id": r["document_id"],
+                "doc_index": doc_index_map.get(r["document_id"], 0),
                 "project_id": project_id,
                 "chunk_index": r["chunk_index"],
             },

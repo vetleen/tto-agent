@@ -519,18 +519,19 @@ class RetrievalServiceTests(TestCase):
 
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
     def test_similarity_search_chunks_returns_langchain_documents(self):
-        """similarity_search_chunks wraps hybrid_search output as LangChain Documents."""
+        """similarity_search_chunks wraps hybrid_search output as LangChain Documents with doc_index."""
         from langchain_core.documents import Document
 
         fake_results = [
-            {"id": 42, "text": "hello", "document_id": 7, "chunk_index": 0, "rrf_score": 0.5, "heading": None},
+            {"id": 42, "text": "hello", "document_id": self.doc.pk, "chunk_index": 0, "rrf_score": 0.5, "heading": None},
         ]
         with patch("documents.services.retrieval.hybrid_search_chunks", return_value=fake_results):
-            results = similarity_search_chunks(project_id=1, query="test", k=5)
+            results = similarity_search_chunks(project_id=self.project.pk, query="test", k=5)
 
         self.assertEqual(len(results), 1)
         self.assertIsInstance(results[0], Document)
         self.assertEqual(results[0].page_content, "hello")
         self.assertEqual(results[0].metadata["chunk_id"], 42)
-        self.assertEqual(results[0].metadata["project_id"], 1)
-        self.assertEqual(results[0].metadata["document_id"], 7)
+        self.assertEqual(results[0].metadata["project_id"], self.project.pk)
+        self.assertEqual(results[0].metadata["doc_index"], self.doc.doc_index)
+        self.assertNotIn("document_id", results[0].metadata)
