@@ -12,6 +12,7 @@ from llm.core.callbacks import PromptCaptureCallback
 from llm.core.interfaces import ChatModel
 from llm.core.langchain_utils import to_langchain_messages, parse_tool_calls_from_ai_message
 from llm.service.errors import LLMProviderError
+from llm.service.pricing import calculate_cost
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse, Usage
@@ -61,6 +62,40 @@ class BaseLangChainChatModel(ChatModel):
             return []
         return [("token", {"text": str(text)})]
 
+    def _extract_stream_usage(self, last_chunk: object | None, output_text: str) -> dict:
+        """Build usage dict from the final streaming chunk.
+
+        Checks ``last_chunk.usage_metadata`` for provider-reported token counts
+        (OpenAI with ``stream_usage=True``, Anthropic, Gemini). Falls back to
+        estimating output tokens via tiktoken if no provider data is available.
+        """
+        data: dict = {}
+        usage_meta = getattr(last_chunk, "usage_metadata", None) if last_chunk else None
+        if isinstance(usage_meta, dict) and usage_meta.get("output_tokens"):
+            input_tokens = usage_meta.get("input_tokens")
+            output_tokens = usage_meta.get("output_tokens")
+            total_tokens = usage_meta.get("total_tokens")
+            details = usage_meta.get("input_token_details") or {}
+            cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
+            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens)
+            data["input_tokens"] = input_tokens
+            data["output_tokens"] = output_tokens
+            data["total_tokens"] = total_tokens
+            data["cached_tokens"] = cached_tokens
+            data["cost_usd"] = float(cost) if cost is not None else None
+        elif output_text:
+            # Fallback: estimate output tokens only
+            try:
+                import tiktoken
+                enc = tiktoken.get_encoding("cl100k_base")
+                output_tokens = len(enc.encode(output_text))
+            except Exception:
+                output_tokens = len(output_text) // 4  # rough estimate
+            cost = calculate_cost(self.name, None, output_tokens)
+            data["output_tokens"] = output_tokens
+            data["cost_usd"] = float(cost) if cost is not None else None
+        return data
+
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages)
         client = self._client
@@ -86,11 +121,18 @@ class BaseLangChainChatModel(ChatModel):
         usage = None
         usage_meta = getattr(result, "usage_metadata", None)
         if isinstance(usage_meta, dict):
+            input_tokens = usage_meta.get("input_tokens")
+            output_tokens = usage_meta.get("output_tokens")
+            # Extract cached token count from input_token_details
+            details = usage_meta.get("input_token_details") or {}
+            cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
+            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens)
             usage = Usage(
-                prompt_tokens=usage_meta.get("input_tokens"),
-                completion_tokens=usage_meta.get("output_tokens"),
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
                 total_tokens=usage_meta.get("total_tokens"),
-                cost_usd=None,
+                cached_tokens=cached_tokens,
+                cost_usd=float(cost) if cost is not None else None,
             )
 
         raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
@@ -112,9 +154,12 @@ class BaseLangChainChatModel(ChatModel):
 
         callback = PromptCaptureCallback()
         raw_prompt_yielded = False
+        last_chunk = None
+        output_text_parts: list[str] = []
 
         try:
             for chunk in client.stream(lc_messages, config={"callbacks": [callback]}):
+                last_chunk = chunk
                 if not raw_prompt_yielded:
                     raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
                     yield StreamEvent(
@@ -127,6 +172,8 @@ class BaseLangChainChatModel(ChatModel):
                     raw_prompt_yielded = True
 
                 for event_type, event_data in self._parse_chunk(chunk):
+                    if event_type == "token":
+                        output_text_parts.append(event_data.get("text", ""))
                     yield StreamEvent(
                         event_type=event_type,
                         data=event_data,
@@ -143,9 +190,11 @@ class BaseLangChainChatModel(ChatModel):
             )
             return
 
+        end_data = self._extract_stream_usage(last_chunk, "".join(output_text_parts))
+        end_data["model"] = self.name
         yield StreamEvent(
             event_type="message_end",
-            data={"model": self.name},
+            data=end_data,
             sequence=sequence,
             run_id=run_id,
         )

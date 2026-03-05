@@ -13,6 +13,7 @@ class Usage(BaseModel):
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    cached_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
 
 

@@ -226,7 +226,7 @@ class LogStreamTests(TestCase):
         self.assertEqual(parsed["message"]["content"], "Hello!")
         self.assertEqual(parsed["tool_calls"], [])
         self.assertEqual(log.duration_ms, 300)
-        # Streaming doesn't log token counts
+        # No usage in message_end data → still None
         self.assertIsNone(log.input_tokens)
         self.assertIsNone(log.cost_usd)
 
@@ -268,6 +268,49 @@ class LogStreamTests(TestCase):
 
         log = _get_log(request)
         self.assertIsNone(log.raw_prompt)
+
+    def test_extracts_usage_from_message_end(self):
+        """log_stream should populate token/cost fields from message_end data."""
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=2, run_id=run_id),
+            StreamEvent(
+                event_type="message_end",
+                data={
+                    "model": "gpt-5-mini",
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                    "cost_usd": 0.000125,
+                },
+                sequence=3,
+                run_id=run_id,
+            ),
+        ]
+        log_stream(request, events, duration_ms=200)
+
+        log = _get_log(request)
+        self.assertEqual(log.input_tokens, 100)
+        self.assertEqual(log.output_tokens, 50)
+        self.assertEqual(log.total_tokens, 150)
+        self.assertEqual(log.cost_usd, Decimal("0.000125"))
+
+    def test_missing_usage_in_message_end_stays_none(self):
+        """Backward compat: empty message_end data → None for all usage fields."""
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="message_end", data={"model": "gpt-5-mini"}, sequence=1, run_id=run_id),
+        ]
+        log_stream(request, events, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertIsNone(log.input_tokens)
+        self.assertIsNone(log.output_tokens)
+        self.assertIsNone(log.total_tokens)
+        self.assertIsNone(log.cost_usd)
 
     def test_never_raises_on_db_error(self):
         request = _make_request(stream=True)

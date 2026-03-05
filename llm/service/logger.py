@@ -50,10 +50,22 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
     try:
         from llm.models import LLMCallLog
 
+        from llm.service.pricing import calculate_cost
+
         usage = response.usage
         cost = None
         if usage and usage.cost_usd is not None:
             cost = Decimal(str(usage.cost_usd))
+        elif usage and cost is None:
+            # Defense-in-depth: calculate cost if provider didn't supply it
+            computed = calculate_cost(
+                request.model or "",
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.cached_tokens,
+            )
+            if computed is not None:
+                cost = computed
 
         context = request.context
         LLMCallLog.objects.create(
@@ -125,6 +137,18 @@ def log_stream(
             None,
         )
 
+        # Extract usage from the message_end event (populated by provider)
+        end_event = next(
+            (e for e in events if e.event_type == "message_end"),
+            None,
+        )
+        end_data = end_event.data if end_event else {}
+        input_tokens = end_data.get("input_tokens")
+        output_tokens = end_data.get("output_tokens")
+        total_tokens = end_data.get("total_tokens")
+        cost_raw = end_data.get("cost_usd")
+        cost = Decimal(str(cost_raw)) if cost_raw is not None else None
+
         context = request.context
         LLMCallLog.objects.create(
             user=_resolve_user(context.user_id if context else None),
@@ -134,10 +158,10 @@ def log_stream(
             prompt=_serialize_messages(request),
             raw_prompt=raw_prompt,
             raw_output=raw_output,
-            input_tokens=None,
-            output_tokens=None,
-            total_tokens=None,
-            cost_usd=None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost,
             duration_ms=duration_ms,
             status=LLMCallLog.Status.SUCCESS,
         )
