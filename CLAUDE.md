@@ -92,6 +92,10 @@ Upload → Celery task `process_document_task` (in `documents/tasks.py`) → tex
 - **CSS**: Tailwind v4 CLI, input at `static/src/input.css`, output at `static/src/output.css`. Flowbite for components.
 - **Deployment**: Heroku (Node + Python buildpacks). See `Procfile`.
 
+## Working Directory
+
+The working directory persists between Bash tool calls. If already in the repo root, don't redundantly prefix commands with `cd <path> &&` — just run them directly.
+
 ## Key Environment Variables
 
 Configure in `.env` (copy from `.env.example`):
