@@ -10,7 +10,7 @@
 </button>
 
 {# Sidebar — directly below navbar (4rem) #}
-<aside id="chat-sidebar" class="fixed top-16 left-0 z-40 w-64 h-[calc(100vh-4rem)] transition-transform -translate-x-full sm:translate-x-0 border-e border-default" aria-label="Chat sidebar">
+<aside id="chat-sidebar" class="fixed top-16 left-0 z-40 w-64 bottom-0 transition-transform -translate-x-full sm:translate-x-0" aria-label="Chat sidebar">
   <div class="h-full px-3 py-4 overflow-y-auto bg-neutral-primary-soft border-e border-default">
     <ul class="space-y-2 font-medium">
       <li>
@@ -78,10 +78,10 @@
 </aside>
 
 {# Full-height chat layout #}
-<div class="flex flex-col sm:ml-64" style="height: calc(100vh - 4rem);">
+<div class="flex flex-col sm:ml-64" style="height: calc(100vh - 4rem);" id="chat-layout">
   {# Messages area — scrollable #}
-  <div class="flex-1 overflow-y-auto" id="messages-scroll-container">
-    <div class="max-w-3xl mx-auto w-full px-4 py-6">
+  <div class="{% if messages %}flex-1{% endif %} overflow-y-auto" id="messages-scroll-container">
+    <div class="max-w-3xl mx-auto w-full px-4 {% if messages %}py-6{% endif %}">
       <div id="chat-messages" class="space-y-6">
         {% for m in messages %}
           {% if m.role == "user" %}
@@ -109,17 +109,16 @@
             </div>
           {% endif %}
         {% empty %}
-          <div class="flex flex-col items-center justify-center py-20" data-placeholder="true">
-            <h2 class="text-xl font-semibold text-heading mb-2">What are we working on today?</h2>
-            <p class="text-sm text-body">Start a new conversation, or attach a data room for document-aware chat</p>
+          <div class="flex flex-col items-center justify-center" style="padding-top: 30vh;" data-placeholder="true">
+            <h2 class="text-xl text-heading">What are we working on today?</h2>
           </div>
         {% endfor %}
       </div>
     </div>
   </div>
 
-  {# Input area — sticky bottom #}
-  <div class="border-t border-default bg-neutral-primary">
+  {# Input area — sticky bottom, moves up when chat is empty #}
+  <div id="chat-input-area" class="{% if messages %}border-t border-default{% endif %} bg-neutral-primary w-full">
     <div class="max-w-3xl mx-auto w-full px-4 py-3">
       {# Attached data room pills #}
       <div id="attached-data-rooms" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
@@ -133,39 +132,42 @@
         </span>
         {% endfor %}
       </div>
-      <form class="flex gap-2" id="chat-form">
-        <div class="flex-1 flex items-end gap-2">
-          <div id="connection-status" class="flex items-center gap-1.5 shrink-0 mb-2.5" title="Connection status">
-            <div id="connection-spinner" class="hidden" role="status">
-              <svg aria-hidden="true" class="w-4 h-4 text-neutral-quaternary animate-spin fill-brand" viewBox="0 0 100 101" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M100 50.5908C100 78.2051 77.6142 100.591 50 100.591C22.3858 100.591 0 78.2051 0 50.5908C0 22.9766 22.3858 0.59082 50 0.59082C77.6142 0.59082 100 22.9766 100 50.5908ZM9.08144 50.5908C9.08144 73.1895 27.4013 91.5094 50 91.5094C72.5987 91.5094 90.9186 73.1895 90.9186 50.5908C90.9186 27.9921 72.5987 9.67226 50 9.67226C27.4013 9.67226 9.08144 27.9921 9.08144 50.5908Z" fill="currentColor"/>
-                <path d="M93.9676 39.0409C96.393 38.4038 97.8624 35.9116 97.0079 33.5539C95.2932 28.8227 92.871 24.3692 89.8167 20.348C85.8452 15.1192 80.8826 10.7238 75.2124 7.41289C69.5422 4.10194 63.2754 1.94025 56.7698 1.05124C51.7666 0.367541 46.6976 0.446843 41.7345 1.27873C39.2613 1.69328 37.813 4.19778 38.4501 6.62326C39.0873 9.04874 41.5694 10.4717 44.0505 10.1071C47.8511 9.54855 51.7191 9.52689 55.5402 10.0491C60.8642 10.7766 65.9928 12.5457 70.6331 15.2552C75.2735 17.9648 79.3347 21.5619 82.5849 25.841C84.9175 28.9121 86.7997 32.2913 88.1811 35.8758C89.083 38.2158 91.5421 39.6781 93.9676 39.0409Z" fill="currentFill"/>
-              </svg>
-              <span class="sr-only">Connecting...</span>
-            </div>
-            <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-gray-400 dark:bg-gray-500"></span>
-            <span id="connection-text" class="text-xs text-body">Connecting...</span>
+      <form class="flex gap-2 items-end" id="chat-form">
+        {# Connection status — left of input #}
+        <div id="connection-status" class="flex items-center gap-1.5 shrink-0 self-center" title="Connection status">
+          <div id="connection-spinner" class="hidden" role="status">
+            <svg aria-hidden="true" class="w-4 h-4 text-neutral-quaternary animate-spin fill-brand" viewBox="0 0 100 101" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M100 50.5908C100 78.2051 77.6142 100.591 50 100.591C22.3858 100.591 0 78.2051 0 50.5908C0 22.9766 22.3858 0.59082 50 0.59082C77.6142 0.59082 100 22.9766 100 50.5908ZM9.08144 50.5908C9.08144 73.1895 27.4013 91.5094 50 91.5094C72.5987 91.5094 90.9186 73.1895 90.9186 50.5908C90.9186 27.9921 72.5987 9.67226 50 9.67226C27.4013 9.67226 9.08144 27.9921 9.08144 50.5908Z" fill="currentColor"/>
+              <path d="M93.9676 39.0409C96.393 38.4038 97.8624 35.9116 97.0079 33.5539C95.2932 28.8227 92.871 24.3692 89.8167 20.348C85.8452 15.1192 80.8826 10.7238 75.2124 7.41289C69.5422 4.10194 63.2754 1.94025 56.7698 1.05124C51.7666 0.367541 46.6976 0.446843 41.7345 1.27873C39.2613 1.69328 37.813 4.19778 38.4501 6.62326C39.0873 9.04874 41.5694 10.4717 44.0505 10.1071C47.8511 9.54855 51.7191 9.52689 55.5402 10.0491C60.8642 10.7766 65.9928 12.5457 70.6331 15.2552C75.2735 17.9648 79.3347 21.5619 82.5849 25.841C84.9175 28.9121 86.7997 32.2913 88.1811 35.8758C89.083 38.2158 91.5421 39.6781 93.9676 39.0409Z" fill="currentFill"/>
+            </svg>
+            <span class="sr-only">Connecting...</span>
           </div>
-          {# "+" button for data room attachment #}
-          <div class="relative shrink-0 mb-0.5">
-            <button type="button" id="attach-btn" class="inline-flex items-center justify-center w-9 h-9 text-body hover:text-heading hover:bg-neutral-secondary-medium border border-default-medium rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Attach data room" data-dropdown-toggle="attach-dropdown">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-            </button>
-            <div id="attach-dropdown" class="z-50 hidden bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1 w-40">
-              <button type="button" id="open-data-room-modal-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2">
-                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
-                Data room
+          <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-gray-400 dark:bg-gray-500"></span>
+          <span id="connection-text" class="text-xs text-body">Connecting...</span>
+        </div>
+        <div class="flex-1 flex items-end">
+          <div class="flex w-full shadow-xs rounded-base ring-offset-0 focus-within:ring-2 focus-within:ring-brand focus-within:rounded-base">
+            {# "+" addon button for data room attachment #}
+            <div class="relative">
+              <button type="button" id="attach-btn" class="inline-flex items-center px-3 h-full text-sm text-body bg-neutral-tertiary border border-default-medium border-e-0 rounded-s-base hover:text-heading hover:bg-neutral-secondary-medium focus:outline-none" aria-label="Attach data room">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
               </button>
+              <div id="attach-dropdown" class="absolute bottom-full left-0 mb-1 z-50 hidden bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1 w-52">
+                <button type="button" id="open-data-room-modal-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
+                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
+                  Attach data room
+                </button>
+              </div>
             </div>
+            <textarea
+              name="message"
+              placeholder="Type your message..."
+              id="message-input"
+              rows="1"
+              class="rounded-none rounded-e-base block w-full px-3 py-2.5 bg-neutral-secondary-medium border border-default-medium text-heading text-sm focus:outline-none focus:ring-0 focus:border-default-medium placeholder:text-body resize-none overflow-hidden"
+              style="min-height: 2.5rem; max-height: 7.5rem;"
+            ></textarea>
           </div>
-          <textarea
-            name="message"
-            placeholder="Type your message..."
-            id="message-input"
-            rows="1"
-            class="flex-1 rounded-base border border-default-medium bg-neutral-primary text-heading text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none p-2.5 resize-none overflow-hidden"
-            style="min-height: 2.5rem; max-height: 7.5rem;"
-          ></textarea>
         </div>
         <button
           type="submit"
@@ -181,8 +183,8 @@
 </div>
 
 {# Data room attach modal #}
-<div id="attach-data-room-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
-  <div class="relative w-full max-w-md max-h-full">
+<div id="attach-data-room-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto">
+  <div class="relative w-full max-w-md">
     <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
       <div class="flex items-center justify-between px-6 py-4 border-b border-default">
         <h3 class="text-lg font-semibold text-heading">Attach data room</h3>
@@ -194,7 +196,7 @@
         <ul id="data-room-modal-list" class="space-y-2 max-h-64 overflow-y-auto">
           {% for dr in data_rooms %}
           <li>
-            <button type="button" class="data-room-select-btn flex items-center justify-between w-full px-3 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base" data-room-id="{{ dr.pk }}" data-room-name="{{ dr.name }}">
+            <button type="button" class="data-room-select-btn flex items-center justify-between w-full px-3 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base focus:outline-none" data-room-id="{{ dr.pk }}" data-room-name="{{ dr.name }}">
               <span class="flex items-center gap-2">
                 <svg class="w-4 h-4 shrink-0 text-body" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
                 {{ dr.name }}
@@ -206,6 +208,7 @@
           <li class="text-sm text-body px-3 py-2">No data rooms yet. <a href="{% url 'data_room_list' %}" class="text-fg-brand hover:underline">Create one</a></li>
           {% endfor %}
         </ul>
+        <p class="text-xs text-body mt-3">Hold <kbd class="px-1 py-0.5 text-xs font-mono bg-neutral-tertiary border border-default rounded">Shift</kbd> and click to attach multiple.</p>
       </div>
     </div>
   </div>
@@ -257,6 +260,7 @@
   .thinking-content { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; scrollbar-width: thin; }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
+
 </style>
 
 <script>
@@ -366,6 +370,21 @@
     removeDataRoomPill(roomId);
   });
 
+  // -- Attach dropdown toggle --
+  var attachBtn = document.getElementById('attach-btn');
+  var attachDropdown = document.getElementById('attach-dropdown');
+  if (attachBtn && attachDropdown) {
+    attachBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      attachDropdown.classList.toggle('hidden');
+    });
+    document.addEventListener('click', function(e) {
+      if (!attachDropdown.contains(e.target) && e.target !== attachBtn) {
+        attachDropdown.classList.add('hidden');
+      }
+    });
+  }
+
   // -- Data room modal --
   var modal = document.getElementById('attach-data-room-modal');
   var openModalBtn = document.getElementById('open-data-room-modal-btn');
@@ -384,7 +403,7 @@
   modal.addEventListener('click', function(e) { if (e.target === modal) modal.classList.add('hidden'); });
 
   document.querySelectorAll('.data-room-select-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
+    btn.addEventListener('click', function(e) {
       var roomId = parseInt(btn.getAttribute('data-room-id'));
       var roomName = btn.getAttribute('data-room-name');
       if (attachedDataRoomIds.includes(roomId)) {
@@ -400,6 +419,8 @@
         }
         addDataRoomPill(roomId, roomName);
       }
+      // Close modal unless Shift is held
+      if (!e.shiftKey) { modal.classList.add('hidden'); }
     });
   });
 
@@ -599,6 +620,11 @@
     const userDiv = document.createElement("div"); userDiv.className = "flex justify-end"; userDiv.setAttribute("data-role", "user");
     userDiv.innerHTML = `<div class="flex items-start gap-2.5 flex-row-reverse"><span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">${escapeHtml(USER_INITIAL)}</span><div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base"><div class="flex items-center space-x-1.5 rtl:space-x-reverse"><span class="text-sm font-semibold text-heading">You</span><span class="text-sm text-body">${ts}</span></div><p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p></div></div>`;
     const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
+    // Switch from empty layout to normal chat layout
+    scrollContainer.classList.add('flex-1');
+    scrollContainer.firstElementChild.classList.add('py-6');
+    var inputArea = document.getElementById('chat-input-area');
+    if (inputArea) { inputArea.classList.add('border-t', 'border-default'); }
     messagesContainer.appendChild(userDiv); scrollToBottom();
     input.value = ""; autoResize(input); input.disabled = true; button.disabled = true; locked = true;
     currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); accumulatedContent = ""; scrollToBottom();
