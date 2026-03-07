@@ -12,6 +12,7 @@ from documents.services.chunking import (
     _count_tokens,
     _looks_like_markdown,
     _merge_small_chunks,
+    _strip_nul_bytes,
     chunk_text,
     load_documents,
 )
@@ -174,6 +175,17 @@ class ChunkingTests(TestCase):
 
     def test_merge_small_chunks_min_constant(self):
         self.assertEqual(MIN_CHUNK_TOKENS, 200)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_strip_nul_bytes_removes_null_characters(self):
+        from langchain_core.documents import Document
+        docs = [
+            Document(page_content="hello\x00world\x00", metadata={"page": 1}),
+            Document(page_content="clean text", metadata={"page": 2}),
+        ]
+        result = _strip_nul_bytes(docs)
+        self.assertEqual(result[0].page_content, "helloworld")
+        self.assertEqual(result[1].page_content, "clean text")
 
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
     def test_load_documents_unsupported_raises(self):

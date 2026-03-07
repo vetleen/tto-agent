@@ -23,6 +23,17 @@ def _get_loaders():
     return Docx2txtLoader, PyPDFLoader, TextLoader
 
 
+def _strip_nul_bytes(docs: list[Any]) -> list[Any]:
+    """Remove NUL (0x00) bytes from document page_content.
+
+    Some PDF extractors produce NUL bytes that PostgreSQL text fields reject.
+    """
+    for doc in docs:
+        if "\x00" in (doc.page_content or ""):
+            doc.page_content = doc.page_content.replace("\x00", "")
+    return docs
+
+
 def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     """
     Load a file into a list of LangChain Document objects.
@@ -36,6 +47,7 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     if ext == "pdf":
         loader = PyPDFLoader(str(path))
         docs = loader.load()
+        _strip_nul_bytes(docs)
         logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
         return docs
     if ext == "docx":
