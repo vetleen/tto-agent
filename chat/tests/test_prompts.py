@@ -53,3 +53,12 @@ class BuildSystemPromptTests(TestCase):
         prompt = build_system_prompt(data_rooms=[self.data_room], history_meta=meta)
         self.assertIn("100 messages total", prompt)
         self.assertIn("summary of earlier messages", prompt.lower())
+
+    def test_organization_name_included(self):
+        prompt = build_system_prompt(organization_name="MIT TTO")
+        self.assertIn("at MIT TTO", prompt)
+
+    def test_no_organization_omits_org_name(self):
+        prompt = build_system_prompt()
+        self.assertIn("at a technology transfer office", prompt)
+        self.assertNotIn("MIT TTO", prompt)

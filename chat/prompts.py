@@ -10,6 +10,7 @@ def build_system_prompt(
     data_rooms: list[dict[str, Any]] | None = None,
     history_meta: dict[str, Any] | None = None,
     doc_context: dict[str, Any] | None = None,
+    organization_name: str | None = None,
 ) -> str:
     """Build the system prompt for a chat session.
 
@@ -23,9 +24,10 @@ def build_system_prompt(
     - ``documents``: list of dicts with ``doc_index``, ``filename``,
       ``description``, ``token_count``, and optionally ``data_room_name``
     """
-    prompt = '''\
+    org_line = f" {organization_name}," if organization_name else ""
+    prompt = f'''\
 # Identity
-- You are Wilfred, a helpful assistant in a technology transfer office (TTO) at a university.
+- You are Wilfred, a helpful assistant at{org_line} a technology transfer office (TTO).
 
 # Instructions
 - Answer the user's queries concisely and accurately.

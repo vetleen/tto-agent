@@ -220,3 +220,34 @@ class OrgDefaultModelTest(TestCase):
 
         prefs = get_preferences(user)
         self.assertEqual(prefs.primary_model, "anthropic/claude-sonnet-4-5")
+
+
+class OrgDefaultRemovedFromAllowedTest(TestCase):
+    """Org default model that was removed from allowed list must not be used."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5-mini",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano",
+        "anthropic/claude-sonnet-4-5",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_default_removed_from_allowed_falls_back(self, mock_registry, mock_allowed):
+        """If org sets a default but then removes it from allowed_models, fall back."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user()
+        org = Organization.objects.create(name="TestOrg", slug="testorg", preferences={
+            # Default is claude, but allowed list only has gpt-5
+            "allowed_models": ["openai/gpt-5"],
+            "models": {"primary": "anthropic/claude-sonnet-4-5"},
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        # Must NOT resolve to claude since it's not in the org's allowed list
+        self.assertNotEqual(prefs.primary_model, "anthropic/claude-sonnet-4-5")
+        self.assertEqual(prefs.primary_model, "openai/gpt-5")

@@ -37,6 +37,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from core.preferences import get_preferences
         return get_preferences(self.user)
 
+    @database_sync_to_async
+    def _get_organization_name(self) -> str | None:
+        from accounts.models import Membership
+        membership = (
+            Membership.objects
+            .filter(user=self.user)
+            .select_related("org")
+            .first()
+        )
+        return membership.org.name if membership else None
+
+
     async def receive(self, text_data=None, bytes_data=None):
         if not text_data:
             return
@@ -129,6 +141,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         thread_id = data.get("thread_id")
 
+        # Per-message model and thinking overrides
+        requested_model = data.get("model") or None
+        thinking = bool(data.get("thinking", False))
+
         # Allow payload to specify data_room_ids (e.g. for new threads)
         payload_room_ids = data.get("data_room_ids")
         if payload_room_ids and isinstance(payload_room_ids, list):
@@ -168,14 +184,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
             data_rooms = None
             if self.data_room_ids:
                 data_rooms = await self._get_data_room_info(self.data_room_ids)
+            org_name = await self._get_organization_name()
             system_prompt = build_system_prompt(
                 data_rooms=data_rooms,
                 history_meta=meta,
                 doc_context=doc_context,
+                organization_name=org_name,
             )
 
             # Stream LLM response
-            await self._stream_response(thread, system_prompt, history)
+            await self._stream_response(
+                thread, system_prompt, history,
+                requested_model=requested_model, thinking=thinking,
+            )
 
             # Auto-generate title for new threads
             if created:
@@ -192,7 +213,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "data": {"message": "An error occurred processing your message."},
             }))
 
-    async def _stream_response(self, thread, system_prompt, history):
+    async def _stream_response(
+        self, thread, system_prompt, history,
+        requested_model=None, thinking=False,
+    ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
         from llm.types import ChatRequest, Message, RunContext
@@ -211,9 +235,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             data_room_ids=self.data_room_ids,
         )
 
-        from django.conf import settings as django_settings
-
         prefs = self.resolved_prefs
+
+        # Validate requested model against user's allowed models
+        if requested_model and prefs and requested_model in prefs.allowed_models:
+            model = requested_model
+        else:
+            model = prefs.primary_model if prefs else None
 
         # Only include document tools when data rooms are attached
         if self.data_room_ids:
@@ -223,11 +251,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         request = ChatRequest(
             messages=messages,
-            model=prefs.primary_model if prefs else None,
+            model=model,
             stream=True,
             tools=tools,
             context=context,
-            params={"thinking": getattr(django_settings, "LLM_ENABLE_THINKING", False)},
+            params={"thinking": thinking},
         )
 
         service = get_llm_service()

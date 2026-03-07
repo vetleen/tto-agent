@@ -101,17 +101,17 @@ def _resolve_tier(
     """Resolve a single model tier using the cascade.
 
     1. User's choice if set AND in effective allowed list
-    2. Org's default if set AND in system allowed list
-    3. System env var default
+    2. Org's default if set AND in effective allowed list
+    3. System env var default if in effective allowed list
     4. First model in effective allowed list
     """
     if user_choice and user_choice in effective_allowed:
         return user_choice
 
-    if org_default and org_default in system_allowed:
+    if org_default and org_default in effective_allowed:
         return org_default
 
-    if system_default and system_default in system_allowed:
+    if system_default and system_default in effective_allowed:
         return system_default
 
     if effective_allowed:

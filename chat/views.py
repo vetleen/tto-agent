@@ -1,3 +1,4 @@
+import json
 import logging
 
 from django.contrib.auth.decorators import login_required
@@ -53,6 +54,20 @@ def chat_home(request):
             thread.data_rooms.values("pk", "uuid", "name")
         )
 
+    # Model choices for the model selector dropdown
+    from core.preferences import get_preferences
+    from llm.display import get_display_name, supports_thinking
+
+    prefs = get_preferences(request.user)
+    model_choices = [
+        {
+            "id": m,
+            "display_name": get_display_name(m),
+            "supports_thinking": supports_thinking(m),
+        }
+        for m in prefs.allowed_models
+    ]
+
     return render(
         request,
         "chat/chat.html",
@@ -63,6 +78,9 @@ def chat_home(request):
             "messages": chat_messages,
             "data_rooms": data_rooms,
             "thread_data_rooms": thread_data_rooms,
+            "model_choices_json": json.dumps(model_choices),
+            "default_model": prefs.primary_model,
+            "default_model_display": get_display_name(prefs.primary_model),
         },
     )
 
