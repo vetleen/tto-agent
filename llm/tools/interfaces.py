@@ -1,23 +1,25 @@
-"""Tool interface for the LLM framework."""
+"""Tool interface for the LLM framework — LangChain BaseTool integration."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Protocol, runtime_checkable
+from langchain_core.tools import BaseTool
+from pydantic import ConfigDict
 
 from llm.types.context import RunContext
 
 
-@runtime_checkable
-class Tool(Protocol):
-    """Protocol for a callable tool that can be invoked by pipelines."""
+class ContextAwareTool(BaseTool):
+    """Base class for all project tools. Holds RunContext for access control."""
 
-    name: str
-    description: str
-    parameters: Dict[str, Any]  # JSON Schema
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    context: RunContext | None = None
 
-    def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
-        """Execute the tool with the given arguments and run context."""
-        ...
+    def set_context(self, ctx: RunContext) -> "ContextAwareTool":
+        self.context = ctx
+        return self
 
 
-__all__ = ["Tool"]
+# Backward-compat alias
+Tool = ContextAwareTool
+
+__all__ = ["ContextAwareTool", "Tool"]

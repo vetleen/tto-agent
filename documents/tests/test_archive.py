@@ -208,23 +208,27 @@ class ArchivedDocumentsExcludedFromRAGTests(TestCase):
         self.assertNotIn(self.archived_doc.pk, doc_ids)
 
     def test_read_document_tool_excludes_archived(self):
+        import json
         from chat.tools import ReadDocumentTool
         from llm.types.context import RunContext
 
         tool = ReadDocumentTool()
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[self.data_room.pk])
-        result = tool.run({"doc_indices": [self.archived_doc.doc_index]}, ctx)
+        tool.set_context(ctx)
+        result = json.loads(tool.invoke({"doc_indices": [self.archived_doc.doc_index]}))
         # Should get a "not found" error for the archived doc
         self.assertEqual(len(result["documents"]), 1)
         self.assertIn("error", result["documents"][0])
 
     def test_read_document_tool_allows_active(self):
+        import json
         from chat.tools import ReadDocumentTool
         from llm.types.context import RunContext
 
         tool = ReadDocumentTool()
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[self.data_room.pk])
-        result = tool.run({"doc_indices": [self.active_doc.doc_index]}, ctx)
+        tool.set_context(ctx)
+        result = json.loads(tool.invoke({"doc_indices": [self.active_doc.doc_index]}))
         self.assertEqual(len(result["documents"]), 1)
         self.assertIn("content", result["documents"][0])
 

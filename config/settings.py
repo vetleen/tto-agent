@@ -298,6 +298,7 @@ LLM_DEFAULT_MODEL = os.environ.get("LLM_DEFAULT_MODEL") or os.environ.get("DEFAU
 LLM_DEFAULT_MID_MODEL = os.environ.get("LLM_DEFAULT_MID_MODEL", "")
 LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
+BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 
 # Celery (use Redis as broker)
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))

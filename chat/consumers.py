@@ -243,11 +243,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             model = prefs.primary_model if prefs else None
 
-        # Only include document tools when data rooms are attached
+        # Web tools always available; document tools only with data rooms
+        from llm.tools.registry import get_tool_registry
+        doc_tools = {"search_documents", "read_document"}
+        all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
-            tools = prefs.allowed_tools if prefs else ["search_documents", "read_document"]
+            tools = all_tools
         else:
-            tools = []
+            tools = [t for t in all_tools if t not in doc_tools]
 
         request = ChatRequest(
             messages=messages,

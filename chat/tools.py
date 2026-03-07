@@ -2,58 +2,64 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict
+from typing import Optional
 
-from llm.tools import get_tool_registry
-from llm.types.context import RunContext
+from pydantic import BaseModel, Field
+
+from llm.tools import ContextAwareTool, get_tool_registry
 
 logger = logging.getLogger(__name__)
 
 
-class SearchDocumentsTool:
+# --- Input schemas ---
+
+class SearchDocumentsInput(BaseModel):
+    query: str = Field(description="The search query to find relevant document passages.")
+    k: int = Field(default=5, description="Number of results to return (1-10, default 5).")
+
+
+class ReadDocumentInput(BaseModel):
+    doc_indices: list[int] = Field(description="List of document index numbers to read (e.g. [1, 3]).")
+    data_room_id: Optional[int] = Field(
+        default=None,
+        description="Optional data room ID to disambiguate when multiple data rooms are attached.",
+    )
+
+
+# --- Tools ---
+
+class SearchDocumentsTool(ContextAwareTool):
     """Search data room documents using semantic similarity."""
 
-    name = "search_documents"
-    description = (
+    name: str = "search_documents"
+    description: str = (
         "Search the attached data rooms' documents for information relevant to a query. "
         "Use this when the user asks about document contents, wants summaries, "
         "or needs specific information from their files."
     )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query to find relevant document passages.",
-            },
-            "k": {
-                "type": "integer",
-                "description": "Number of results to return (1-10, default 5).",
-            },
-        },
-        "required": ["query"],
-    }
+    args_schema: type[BaseModel] = SearchDocumentsInput
 
-    def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
+    def _run(self, query: str, k: int = 5) -> str:
         from documents.models import DataRoom
         from documents.services.retrieval import similarity_search_chunks
 
-        query = args.get("query", "").strip()
+        query = query.strip()
         if not query:
             raise ValueError("search_documents requires a non-empty 'query'")
 
-        k = args.get("k", 5)
         if not isinstance(k, int) or k < 1:
             k = 5
         k = min(k, 10)
 
-        data_room_ids = context.data_room_ids
+        context = self.context
+        data_room_ids = context.data_room_ids if context else []
         if not data_room_ids:
-            return {"error": "No data rooms attached", "results": [], "count": 0}
+            return json.dumps({"error": "No data rooms attached", "results": [], "count": 0})
 
         # Verify the user has access to all data rooms
-        user_id = context.user_id
+        user_id = context.user_id if context else None
         if user_id:
             accessible = set(
                 DataRoom.objects.filter(
@@ -68,12 +74,12 @@ class SearchDocumentsTool:
             docs = similarity_search_chunks(data_room_ids=data_room_ids, query=query, k=k)
         except Exception as exc:
             logger.exception("search_documents: similarity_search_chunks failed")
-            return {
+            return json.dumps({
                 "results": [],
                 "count": 0,
                 "error": "Search failed",
                 "error_type": type(exc).__name__,
-            }
+            })
 
         results = []
         for doc in docs:
@@ -82,55 +88,40 @@ class SearchDocumentsTool:
                 "metadata": doc.metadata,
             })
 
-        return {"results": results, "count": len(results)}
+        return json.dumps({"results": results, "count": len(results)})
 
 
-class ReadDocumentTool:
+class ReadDocumentTool(ContextAwareTool):
     """Read the full text content of one or more documents by index number."""
 
-    name = "read_document"
-    description = (
+    name: str = "read_document"
+    description: str = (
         "Read the full text content of one or more documents by their "
         "index number. Use this when you need the complete content of a specific "
         "document rather than search excerpts."
     )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "doc_indices": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "List of document index numbers to read (e.g. [1, 3]).",
-            },
-            "data_room_id": {
-                "type": "integer",
-                "description": "Optional data room ID to disambiguate when multiple data rooms are attached.",
-            },
-        },
-        "required": ["doc_indices"],
-    }
+    args_schema: type[BaseModel] = ReadDocumentInput
 
     # Cap total output to ~8000 tokens worth of characters (~32k chars)
-    _MAX_TOTAL_CHARS = 32_000
+    _MAX_TOTAL_CHARS: int = 32_000
 
-    def run(self, args: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
+    def _run(self, doc_indices: list[int], data_room_id: int | None = None) -> str:
         from documents.models import DataRoom, DataRoomDocument
 
-        doc_indices = args.get("doc_indices", [])
         if not doc_indices or not isinstance(doc_indices, list):
             raise ValueError("read_document requires a non-empty 'doc_indices' list")
 
-        data_room_ids = context.data_room_ids
+        context = self.context
+        data_room_ids = context.data_room_ids if context else []
         if not data_room_ids:
-            return {"error": "No data rooms attached", "documents": []}
+            return json.dumps({"error": "No data rooms attached", "documents": []})
 
         # Optionally scope to a single data room
-        specific_room = args.get("data_room_id")
-        if specific_room and specific_room in data_room_ids:
-            data_room_ids = [specific_room]
+        if data_room_id and data_room_id in data_room_ids:
+            data_room_ids = [data_room_id]
 
         # Verify the user has access
-        user_id = context.user_id
+        user_id = context.user_id if context else None
         if user_id:
             accessible = set(
                 DataRoom.objects.filter(
@@ -188,7 +179,7 @@ class ReadDocumentTool:
                 "content": content,
             })
 
-        return {"documents": documents}
+        return json.dumps({"documents": documents})
 
 
 # Register on import

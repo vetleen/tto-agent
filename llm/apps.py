@@ -15,6 +15,7 @@ class LlmConfig(AppConfig):
         try:
             from .pipelines import simple_chat  # noqa: F401
             from .core import providers  # noqa: F401
+            from .tools import builtins  # noqa: F401
         except Exception:
             logger.error(
                 "Failed to import LLM pipelines/providers during startup. "

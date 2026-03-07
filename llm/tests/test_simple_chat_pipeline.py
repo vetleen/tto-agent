@@ -3,13 +3,30 @@
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
+from pydantic import BaseModel, Field
 
 from llm.pipelines.simple_chat import SimpleChatPipeline
+from llm.tools.interfaces import ContextAwareTool
 from llm.types.context import RunContext
 from llm.types.messages import Message, ToolCall
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse
 from llm.types.streaming import StreamEvent
+
+
+class _MockInput(BaseModel):
+    a: float = Field(description="First number")
+    b: float = Field(description="Second number")
+
+
+class _MockToolImpl(ContextAwareTool):
+    name: str = "search_documents"
+    description: str = "A mock tool"
+    args_schema: type[BaseModel] = _MockInput
+    _return_value: str = '{"result": 5}'
+
+    def _run(self, a: float, b: float) -> str:
+        return self._return_value
 
 
 class SimpleChatPipelineTests(TestCase):
@@ -43,12 +60,8 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(response.message.content, "Hi there")
 
     def _make_mock_tool(self, name="mock_tool"):
-        """Create a mock tool for testing."""
-        tool = MagicMock()
-        tool.name = name
-        tool.description = "A mock tool"
-        tool.parameters = {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}
-        tool.run.return_value = {"result": 5}
+        """Create a mock ContextAwareTool for testing."""
+        tool = _MockToolImpl(name=name)
         return tool
 
     def _patch_tool_registry(self, tool):
@@ -245,9 +258,16 @@ class SimpleChatPipelineTests(TestCase):
         self.assertIn("nonexistent_tool", str(ctx.exception))
 
     def test_run_tool_error_sent_back_to_llm(self):
-        """When tool.run() raises, error JSON is appended as tool message and LLM gets another turn."""
-        mock_tool = self._make_mock_tool("search_documents")
-        mock_tool.run.side_effect = ValueError("Invalid arguments")
+        """When tool._run() raises, error JSON is appended as tool message and LLM gets another turn."""
+        # Create a tool that raises
+        class _ErrorTool(ContextAwareTool):
+            name: str = "search_documents"
+            description: str = "A tool that errors"
+            args_schema: type[BaseModel] = _MockInput
+            def _run(self, a: float, b: float) -> str:
+                raise ValueError("Invalid arguments")
+
+        mock_tool = _ErrorTool()
         request = ChatRequest(
             messages=[Message(role="user", content="Use bad tool")],
             stream=False,
@@ -255,7 +275,7 @@ class SimpleChatPipelineTests(TestCase):
             tools=["search_documents"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": "not", "b": "numbers"})
+        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 0, "b": 0})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -287,7 +307,7 @@ class SimpleChatPipelineTests(TestCase):
         """When model returns tool_calls in stream path, tool_start/tool_end events are
         emitted and the final response is truly streamed via chat_model.stream()."""
         mock_tool = self._make_mock_tool("search_documents")
-        mock_tool.run.return_value = {"result": 3}
+        mock_tool._return_value = '{"result": 3}'
         request = ChatRequest(
             messages=[Message(role="user", content="Add 1 and 2")],
             stream=True,

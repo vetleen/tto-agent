@@ -1,5 +1,6 @@
 """Tests for the SearchDocumentsTool and ReadDocumentTool."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -24,43 +25,51 @@ class SearchDocumentsToolTests(TestCase):
             data_room_ids=data_room_pks or [self.data_room.pk],
         )
 
+    def _invoke(self, args, ctx):
+        """Set context and invoke the tool."""
+        tool = self.tool.model_copy()
+        tool.set_context(ctx)
+        result = tool.invoke(args)
+        return json.loads(result)
+
     def test_has_required_attributes(self):
         self.assertEqual(self.tool.name, "search_documents")
         self.assertIsInstance(self.tool.description, str)
         self.assertTrue(len(self.tool.description) > 0)
-        self.assertIsInstance(self.tool.parameters, dict)
-        self.assertEqual(self.tool.parameters["type"], "object")
-        self.assertIn("query", self.tool.parameters["properties"])
-        self.assertIn("query", self.tool.parameters["required"])
+        # args_schema should produce a valid JSON schema
+        schema = self.tool.args_schema.model_json_schema()
+        self.assertEqual(schema["type"], "object")
+        self.assertIn("query", schema["properties"])
 
-    def test_has_run_method(self):
-        self.assertTrue(callable(getattr(self.tool, "run", None)))
+    def test_is_context_aware_tool(self):
+        from llm.tools.interfaces import ContextAwareTool
+        self.assertIsInstance(self.tool, ContextAwareTool)
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     def test_calls_similarity_search_with_correct_args(self, mock_search):
         mock_search.return_value = []
-        self.tool.run({"query": "test query", "k": 3}, self._ctx())
+        self._invoke({"query": "test query", "k": 3}, self._ctx())
         mock_search.assert_called_once_with(data_room_ids=[self.data_room.pk], query="test query", k=3)
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     def test_default_k(self, mock_search):
         mock_search.return_value = []
-        self.tool.run({"query": "test"}, self._ctx())
+        self._invoke({"query": "test"}, self._ctx())
         mock_search.assert_called_once_with(data_room_ids=[self.data_room.pk], query="test", k=5)
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     def test_caps_k_at_10(self, mock_search):
         mock_search.return_value = []
-        self.tool.run({"query": "test", "k": 50}, self._ctx())
+        self._invoke({"query": "test", "k": 50}, self._ctx())
         mock_search.assert_called_once_with(data_room_ids=[self.data_room.pk], query="test", k=10)
 
     def test_empty_query_raises(self):
-        with self.assertRaises(ValueError):
-            self.tool.run({"query": ""}, self._ctx())
+        with self.assertRaises(Exception):
+            self._invoke({"query": ""}, self._ctx())
 
     def test_empty_data_room_ids_returns_error(self):
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[])
-        result = self.tool.run({"query": "test"}, ctx)
+        result = self._invoke({"query": "test"}, ctx)
         self.assertIn("error", result)
         self.assertEqual(result["count"], 0)
 
@@ -71,7 +80,7 @@ class SearchDocumentsToolTests(TestCase):
         mock_doc.metadata = {"chunk_id": 1}
         mock_search.return_value = [mock_doc]
 
-        result = self.tool.run({"query": "test"}, self._ctx())
+        result = self._invoke({"query": "test"}, self._ctx())
 
         self.assertEqual(result["count"], 1)
         self.assertEqual(len(result["results"]), 1)
@@ -81,7 +90,7 @@ class SearchDocumentsToolTests(TestCase):
     @patch("documents.services.retrieval.similarity_search_chunks")
     def test_handles_search_exception(self, mock_search):
         mock_search.side_effect = Exception("DB error")
-        result = self.tool.run({"query": "test"}, self._ctx())
+        result = self._invoke({"query": "test"}, self._ctx())
         self.assertEqual(result["count"], 0)
         self.assertIn("error", result)
 
@@ -96,17 +105,13 @@ class SearchDocumentsToolTests(TestCase):
     def test_denies_access_to_other_users_data_room(self):
         other_user = User.objects.create_user(email="other@test.com", password="pass")
         ctx = self._ctx(user_id=other_user.pk)
-        with self.assertRaises(ValueError):
-            self.tool.run({"query": "test"}, ctx)
+        with self.assertRaises(Exception):
+            self._invoke({"query": "test"}, ctx)
 
     def test_denies_access_without_user_id(self):
         ctx = RunContext.create(data_room_ids=[self.data_room.pk])
-        # Without a user_id the tool skips the ownership check and proceeds;
-        # this tests that data_room_ids are still passed through.
-        # The tool only raises when user_id is set but doesn't own the rooms.
-        # If you want to test no user_id, just verify it doesn't crash:
-        result = self.tool.run({"query": "test"}, ctx)
-        # It should attempt the search (no ownership check without user_id)
+        # Without a user_id the tool skips the ownership check and proceeds
+        result = self._invoke({"query": "test"}, ctx)
         self.assertIn("count", result)
 
 
@@ -122,19 +127,26 @@ class ReadDocumentToolTests(TestCase):
             data_room_ids=data_room_pks or [self.data_room.pk],
         )
 
+    def _invoke(self, args, ctx):
+        """Set context and invoke the tool."""
+        tool = self.tool.model_copy()
+        tool.set_context(ctx)
+        result = tool.invoke(args)
+        return json.loads(result)
+
     def test_denies_access_to_other_users_data_room(self):
         other_user = User.objects.create_user(email="other2@test.com", password="pass")
         ctx = self._ctx(user_id=other_user.pk)
-        with self.assertRaises(ValueError):
-            self.tool.run({"doc_indices": [1]}, ctx)
+        with self.assertRaises(Exception):
+            self._invoke({"doc_indices": [1]}, ctx)
 
     def test_empty_data_room_ids_returns_error(self):
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[])
-        result = self.tool.run({"doc_indices": [1]}, ctx)
+        result = self._invoke({"doc_indices": [1]}, ctx)
         self.assertIn("error", result)
 
     def test_returns_not_found_for_missing_doc_index(self):
-        result = self.tool.run({"doc_indices": [999]}, self._ctx())
+        result = self._invoke({"doc_indices": [999]}, self._ctx())
         self.assertEqual(len(result["documents"]), 1)
         self.assertIn("error", result["documents"][0])
 

@@ -16,7 +16,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     params: Dict[str, Any] = Field(default_factory=dict)
     tools: Optional[List[str]] = None  # tool names from caller
-    tool_schemas: Optional[List[Dict[str, Any]]] = None  # resolved schemas for bind_tools(); set by pipeline
+    tool_schemas: Optional[List[Any]] = None  # resolved BaseTool instances for bind_tools(); set by pipeline
     context: Optional[RunContext] = None
 
 

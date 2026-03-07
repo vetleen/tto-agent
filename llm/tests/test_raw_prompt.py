@@ -41,16 +41,21 @@ def _make_tool_schema(name, description="A tool"):
 
 
 def _fake_tool(name="search_documents", description="Search docs"):
-    """Return a mock Tool with .name, .description, .parameters."""
-    tool = MagicMock()
-    tool.name = name
-    tool.description = description
-    tool.parameters = {
-        "type": "object",
-        "properties": {"query": {"type": "string"}},
-        "required": ["query"],
-    }
-    return tool
+    """Return a ContextAwareTool instance for schema tests."""
+    from pydantic import BaseModel, Field
+    from llm.tools.interfaces import ContextAwareTool
+
+    class _Input(BaseModel):
+        query: str = Field(description="Search query")
+
+    class _Tool(ContextAwareTool):
+        name: str = "placeholder"
+        description: str = "placeholder"
+        args_schema: type[BaseModel] = _Input
+        def _run(self, query: str) -> str:
+            return "{}"
+
+    return _Tool(name=name, description=description)
 
 
 def _make_lc_ai_message(content="Hello"):
@@ -187,10 +192,10 @@ class GenerateRawPromptTests(TestCase):
 
         raw_prompt = response.metadata["raw_prompt"]
         self.assertEqual(len(raw_prompt["tools"]), 1)
-        fn = raw_prompt["tools"][0]["function"]
-        self.assertEqual(fn["name"], "search_documents")
-        self.assertEqual(fn["description"], "Add two numbers")
-        self.assertIn("query", fn["parameters"]["properties"])
+        # tools_to_langchain_schemas now passes through BaseTool instances
+        tool = raw_prompt["tools"][0]
+        self.assertEqual(tool.name, "search_documents")
+        self.assertEqual(tool.description, "Add two numbers")
 
 
 # ---------------------------------------------------------------------------

@@ -6,26 +6,26 @@ import threading
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-from llm.tools.interfaces import Tool
+from llm.tools.interfaces import ContextAwareTool
 
 
 @dataclass
 class ToolRegistry:
     """Holds tools by name for lookup by pipelines."""
 
-    _tools: Dict[str, Tool] = field(default_factory=dict)
+    _tools: Dict[str, ContextAwareTool] = field(default_factory=dict)
 
-    def register_tool(self, tool: Tool) -> None:
+    def register_tool(self, tool: ContextAwareTool) -> None:
         """Register a tool by its name."""
         if not tool.name:
             raise ValueError("Tool name must be non-empty")
         self._tools[tool.name] = tool
 
-    def get_tool(self, name: str) -> Optional[Tool]:
+    def get_tool(self, name: str) -> Optional[ContextAwareTool]:
         """Return the tool with the given name, or None if not registered."""
         return self._tools.get(name)
 
-    def list_tools(self) -> Dict[str, Tool]:
+    def list_tools(self) -> Dict[str, ContextAwareTool]:
         """Return a copy of the name -> tool mapping."""
         return dict(self._tools)
 

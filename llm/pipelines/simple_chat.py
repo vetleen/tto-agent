@@ -14,8 +14,7 @@ from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse
 from llm.types.streaming import StreamEvent
 from llm.types.context import RunContext
-from llm.tools import tools_to_langchain_schemas
-from llm.tools.interfaces import Tool
+from llm.tools.interfaces import ContextAwareTool
 from llm.tools.registry import get_tool_registry
 
 
@@ -35,9 +34,8 @@ class SimpleChatPipeline(BasePipeline):
 
         if not request.model:
             raise ValueError("request.model must be set by the service before calling pipeline")
-        tools = self._resolve_tools(tool_names)
-        schemas = tools_to_langchain_schemas(tools)
-        req = request.model_copy(update={"tool_schemas": schemas})
+        tools = self._resolve_tools(tool_names, request.context)
+        req = request.model_copy(update={"tool_schemas": tools})
         return self._run_tool_loop(get_model_registry().get_model(req.model), req, tools)
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
@@ -51,21 +49,24 @@ class SimpleChatPipeline(BasePipeline):
 
         if not request.model:
             raise ValueError("request.model must be set by the service before calling pipeline")
-        tools = self._resolve_tools(tool_names)
-        schemas = tools_to_langchain_schemas(tools)
-        req = request.model_copy(update={"tool_schemas": schemas})
+        tools = self._resolve_tools(tool_names, request.context)
+        req = request.model_copy(update={"tool_schemas": tools})
         model = get_model_registry().get_model(req.model)
         run_id = req.context.run_id if req.context else ""
-        yield from self._stream_with_tools(model, req, tools, run_id, req.context)
+        yield from self._stream_with_tools(model, req, tools, run_id)
 
-    def _resolve_tools(self, tool_names: List[str]) -> List[Tool]:
+    def _resolve_tools(self, tool_names: List[str], context: RunContext | None = None) -> List[ContextAwareTool]:
         registry = get_tool_registry()
         tools = []
         for name in tool_names:
             t = registry.get_tool(name)
             if t is None:
                 raise ValueError(f"Unknown tool name: {name!r}")
-            tools.append(t)
+            # Copy to avoid shared state across concurrent requests
+            copy = t.model_copy()
+            if context:
+                copy.set_context(context)
+            tools.append(copy)
         return tools
 
     def _run_no_tools(self, request: ChatRequest) -> ChatResponse:
@@ -78,8 +79,7 @@ class SimpleChatPipeline(BasePipeline):
     @staticmethod
     def _execute_tool_calls(
         tool_calls: List[ToolCall],
-        tool_by_name: dict[str, Tool],
-        context: RunContext | None,
+        tool_by_name: dict[str, ContextAwareTool],
     ) -> List[Tuple[ToolCall, str]]:
         """Execute a batch of tool calls and return (tool_call, result_json) pairs."""
         results: List[Tuple[ToolCall, str]] = []
@@ -89,8 +89,9 @@ class SimpleChatPipeline(BasePipeline):
                 result_str = json.dumps({"error": f"Unknown tool: {tc.name}"})
             else:
                 try:
-                    result = tool.run(tc.arguments, context or RunContext.create())
-                    result_str = json.dumps(result)
+                    result = tool.invoke(tc.arguments)
+                    # BaseTool._run returns str; ensure it's a string
+                    result_str = result if isinstance(result, str) else json.dumps(result)
                 except Exception as e:
                     result_str = json.dumps({"error": str(e)})
             results.append((tc, result_str))
@@ -100,7 +101,7 @@ class SimpleChatPipeline(BasePipeline):
         self,
         chat_model: ChatModel,
         request: ChatRequest,
-        tools: List[Tool],
+        tools: List[ContextAwareTool],
     ) -> ChatResponse:
         tool_by_name = {t.name: t for t in tools}
         req = request
@@ -112,7 +113,7 @@ class SimpleChatPipeline(BasePipeline):
                 return response
 
             new_messages = list(req.messages) + [msg]
-            results = self._execute_tool_calls(msg.tool_calls, tool_by_name, req.context)
+            results = self._execute_tool_calls(msg.tool_calls, tool_by_name)
             for tc, result_str in results:
                 new_messages.append(
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
@@ -127,9 +128,8 @@ class SimpleChatPipeline(BasePipeline):
         self,
         chat_model: ChatModel,
         request: ChatRequest,
-        tools: List[Tool],
+        tools: List[ContextAwareTool],
         run_id: str,
-        context,
     ) -> Iterator[StreamEvent]:
         tool_by_name = {t.name: t for t in tools}
         req = request
@@ -144,7 +144,7 @@ class SimpleChatPipeline(BasePipeline):
                 return
 
             new_messages = list(req.messages) + [msg]
-            results = self._execute_tool_calls(msg.tool_calls, tool_by_name, context)
+            results = self._execute_tool_calls(msg.tool_calls, tool_by_name)
 
             for tc, result_str in results:
                 yield StreamEvent(
