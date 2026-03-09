@@ -59,7 +59,9 @@ class EditCanvasTool(ContextAwareTool):
         "Make targeted find-replace edits to the existing canvas document. "
         "Prefer this over write_canvas when the document already exists and you "
         "only need to change specific parts. Each edit specifies old_text to find "
-        "and new_text to replace it with. If no canvas exists yet, use write_canvas first."
+        "and new_text to replace it with. The old_text must match exactly once in "
+        "the document — if it appears multiple times, include more surrounding "
+        "context to make it unique. If no canvas exists yet, use write_canvas first."
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
@@ -92,11 +94,14 @@ class EditCanvasTool(ContextAwareTool):
                 new_text = edit.new_text
                 reason = edit.reason
 
-            if old_text in content:
+            count = content.count(old_text)
+            if count == 1:
                 content = content.replace(old_text, new_text, 1)
                 applied += 1
+            elif count > 1:
+                failed.append({"old_text": old_text[:80], "error": "Found %d matches — include more surrounding text to make it unique." % count})
             else:
-                failed.append({"old_text": old_text[:80], "reason": reason})
+                failed.append({"old_text": old_text[:80], "error": "Text not found in document."})
 
         canvas.content = content
         canvas.save(update_fields=["content", "updated_at"])

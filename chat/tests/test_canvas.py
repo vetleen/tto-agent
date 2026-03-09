@@ -104,6 +104,18 @@ class EditCanvasToolTests(TestCase):
         self.assertEqual(result["applied"], 1)
         self.assertEqual(len(result["failed"]), 1)
 
+    def test_rejects_duplicate_matches(self):
+        self._setup_canvas("The cat sat. The cat slept.")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "The cat", "new_text": "The dog", "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["applied"], 0)
+        self.assertEqual(len(result["failed"]), 1)
+        self.assertIn("2 matches", result["failed"][0]["error"])
+        # Content should be unchanged
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        self.assertEqual(canvas.content, "The cat sat. The cat slept.")
+
     def test_returns_error_when_no_canvas(self):
         result = _invoke(EditCanvasTool, {
             "edits": [{"old_text": "x", "new_text": "y", "reason": ""}]
