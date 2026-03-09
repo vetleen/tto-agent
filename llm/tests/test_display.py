@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from llm.display import get_display_name, supports_thinking
+from llm.display import get_display_name, supports_thinking, supports_vision
 
 
 class GetDisplayNameTests(TestCase):
@@ -96,3 +96,33 @@ class SupportsThinkingTests(TestCase):
 
     def test_plain_model_no_thinking(self):
         self.assertFalse(supports_thinking("custom/my-model"))
+
+
+class SupportsVisionTests(TestCase):
+
+    def test_anthropic_claude(self):
+        self.assertTrue(supports_vision("anthropic/claude-sonnet-4-5-20250929"))
+        self.assertTrue(supports_vision("anthropic/claude-opus-4-6"))
+        self.assertTrue(supports_vision("anthropic/claude-haiku-4-5-20251001"))
+
+    def test_openai_gpt4(self):
+        self.assertTrue(supports_vision("openai/gpt-4o"))
+        self.assertTrue(supports_vision("openai/gpt-4-turbo"))
+
+    def test_openai_gpt5(self):
+        self.assertTrue(supports_vision("openai/gpt-5"))
+        self.assertTrue(supports_vision("openai/gpt-5-mini"))
+
+    def test_openai_o_series_no_vision(self):
+        self.assertFalse(supports_vision("openai/o3"))
+        self.assertFalse(supports_vision("openai/o4-mini"))
+
+    def test_gemini(self):
+        self.assertTrue(supports_vision("gemini/gemini-2.5-flash"))
+        self.assertTrue(supports_vision("gemini/gemini-2.5-pro"))
+
+    def test_unknown_model(self):
+        self.assertFalse(supports_vision("custom/my-model"))
+
+    def test_openai_gpt3_no_vision(self):
+        self.assertFalse(supports_vision("openai/gpt-3.5-turbo"))

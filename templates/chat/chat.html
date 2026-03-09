@@ -234,8 +234,9 @@
       placeholder="Document title" />
     <div class="flex items-center gap-1 shrink-0">
       {# Import button #}
-      <label title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+      <label id="canvas-import-label" title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg id="canvas-import-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        <svg id="canvas-import-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
       </label>
       {# Export button #}
@@ -1168,17 +1169,56 @@
   if (canvasImportInput) {
     canvasImportInput.addEventListener("change", function() {
       var file = canvasImportInput.files[0];
-      if (!file || !activeThreadId) return;
-      var fd = new FormData();
-      fd.append("file", file);
-      fetch("/chat/threads/" + activeThreadId + "/canvas/import/", {
-        method: "POST",
-        headers: { "X-CSRFToken": getCSRFToken() },
-        body: fd,
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.title !== undefined) openCanvas(data.title, data.content);
-      }).catch(function() {});
+      if (!file) return;
       canvasImportInput.value = "";
+
+      var importIcon = document.getElementById("canvas-import-icon");
+      var importSpinner = document.getElementById("canvas-import-spinner");
+      var importLabel = document.getElementById("canvas-import-label");
+      function setImporting(on) {
+        if (importIcon) importIcon.classList.toggle("hidden", on);
+        if (importSpinner) importSpinner.classList.toggle("hidden", !on);
+        if (importLabel) { importLabel.style.pointerEvents = on ? "none" : ""; importLabel.title = on ? "Importing\u2026" : "Import .docx"; }
+      }
+      function doImport(threadId) {
+        var fd = new FormData();
+        fd.append("file", file);
+        setImporting(true);
+        fetch("/chat/threads/" + threadId + "/canvas/import/", {
+          method: "POST",
+          headers: { "X-CSRFToken": getCSRFToken() },
+          body: fd,
+        }).then(function(r) {
+          if (!r.ok) throw new Error("Import failed (status " + r.status + ")");
+          return r.json();
+        }).then(function(data) {
+          if (data.title !== undefined) openCanvas(data.title, data.content);
+        }).catch(function(err) {
+          alert("Failed to import document: " + err.message);
+        }).finally(function() {
+          setImporting(false);
+        });
+      }
+
+      if (activeThreadId) {
+        doImport(activeThreadId);
+      } else {
+        // Create a thread first so we have somewhere to attach the canvas
+        fetch("/chat/api/threads/create/", {
+          method: "POST",
+          headers: { "X-CSRFToken": getCSRFToken() },
+        }).then(function(r) {
+          if (!r.ok) throw new Error("Could not create thread");
+          return r.json();
+        }).then(function(data) {
+          activeThreadId = data.thread_id;
+          addThreadToSidebar(data.thread_id, "New chat");
+          canvasUpdateExportLink();
+          doImport(data.thread_id);
+        }).catch(function(err) {
+          alert("Failed to create conversation: " + err.message);
+        });
+      }
     });
   }
 

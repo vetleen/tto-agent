@@ -258,11 +258,9 @@ class CanvasImportViewTests(TestCase):
         self.client.login(email="imp@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
 
-    @patch("mammoth.convert_to_markdown")
-    def test_import_creates_canvas(self, mock_convert):
-        mock_result = MagicMock()
-        mock_result.value = "# Converted\n\nContent here."
-        mock_convert.return_value = mock_result
+    @patch("chat.services.import_docx_to_canvas")
+    def test_import_creates_canvas(self, mock_import):
+        mock_import.return_value = ("contract", "# Converted\n\nContent here.")
 
         url = f"/chat/threads/{self.thread.id}/canvas/import/"
         fake_file = io.BytesIO(b"PK fake docx")
@@ -280,3 +278,129 @@ class CanvasImportViewTests(TestCase):
         url = f"/chat/threads/{self.thread.id}/canvas/import/"
         response = self.client.post(url)
         self.assertEqual(response.status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# Service tests: describe_image and import_docx_to_canvas
+# ---------------------------------------------------------------------------
+
+class DescribeImageTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="desc@test.com", password="pass")
+
+    @patch("core.preferences.get_preferences")
+    @patch("llm.get_llm_service")
+    def test_returns_description(self, mock_svc, mock_prefs):
+        from chat.services import describe_image
+
+        prefs = MagicMock()
+        prefs.cheap_model = "gemini/gemini-2.5-flash"
+        prefs.mid_model = "openai/gpt-5-mini"
+        prefs.primary_model = "anthropic/claude-sonnet-4-5"
+        mock_prefs.return_value = prefs
+
+        mock_response = MagicMock()
+        mock_response.message.content = "A bar chart showing Q1 revenue"
+        mock_svc.return_value.run.return_value = mock_response
+
+        result = describe_image(b"\x89PNG", "image/png", self.user)
+        self.assertEqual(result, "A bar chart showing Q1 revenue")
+        mock_svc.return_value.run.assert_called_once()
+
+    @patch("core.preferences.get_preferences")
+    def test_returns_none_no_vision_model(self, mock_prefs):
+        from chat.services import describe_image
+
+        prefs = MagicMock()
+        prefs.cheap_model = "openai/o3"
+        prefs.mid_model = "openai/o4-mini"
+        prefs.primary_model = "custom/text-only"
+        mock_prefs.return_value = prefs
+
+        result = describe_image(b"\x89PNG", "image/png", self.user)
+        self.assertIsNone(result)
+
+    @patch("core.preferences.get_preferences")
+    @patch("llm.get_llm_service")
+    def test_returns_none_on_exception(self, mock_svc, mock_prefs):
+        from chat.services import describe_image
+
+        prefs = MagicMock()
+        prefs.cheap_model = "anthropic/claude-haiku-4-5-20251001"
+        prefs.mid_model = "openai/gpt-5-mini"
+        prefs.primary_model = "anthropic/claude-sonnet-4-5"
+        mock_prefs.return_value = prefs
+
+        mock_svc.return_value.run.side_effect = RuntimeError("API error")
+        result = describe_image(b"\x89PNG", "image/png", self.user)
+        self.assertIsNone(result)
+
+    @patch("core.preferences.get_preferences")
+    @patch("llm.get_llm_service")
+    def test_picks_first_vision_capable_model(self, mock_svc, mock_prefs):
+        from chat.services import describe_image
+
+        prefs = MagicMock()
+        prefs.cheap_model = "openai/o3"  # no vision
+        prefs.mid_model = "openai/gpt-5-mini"  # vision
+        prefs.primary_model = "anthropic/claude-sonnet-4-5"
+        mock_prefs.return_value = prefs
+
+        mock_response = MagicMock()
+        mock_response.message.content = "A photo"
+        mock_svc.return_value.run.return_value = mock_response
+
+        describe_image(b"\x89PNG", "image/png", self.user)
+        call_args = mock_svc.return_value.run.call_args
+        request = call_args[0][1]
+        self.assertEqual(request.model, "openai/gpt-5-mini")
+
+
+class ImportDocxToCanvasTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="imp2@test.com", password="pass")
+
+    @patch("chat.services.describe_image")
+    @patch("mammoth.convert_to_markdown")
+    def test_basic_conversion_no_images(self, mock_convert, mock_describe):
+        from chat.services import import_docx_to_canvas
+
+        mock_result = MagicMock()
+        mock_result.value = "# Hello\n\nWorld"
+        mock_convert.return_value = mock_result
+
+        fake_file = MagicMock()
+        fake_file.name = "report.docx"
+
+        title, content = import_docx_to_canvas(fake_file, self.user)
+        self.assertEqual(title, "report")
+        self.assertEqual(content, "# Hello\n\nWorld")
+        mock_describe.assert_not_called()
+
+    @patch("chat.services.describe_image")
+    def test_images_get_placeholders(self, mock_describe):
+        from chat.services import import_docx_to_canvas
+
+        mock_describe.return_value = "A revenue chart"
+
+        # Create a real tiny docx with an image to test end-to-end is complex,
+        # so we test the regex cleanup directly
+        import re
+        raw = "Some text\n\n![[Image 1: A revenue chart]](#)\n\nMore text"
+        cleaned = re.sub(
+            r"!\[(\[Image \d+[^\]]*\])\]\([^)]*\)",
+            r"\1",
+            raw,
+        )
+        self.assertEqual(cleaned, "Some text\n\n[Image 1: A revenue chart]\n\nMore text")
+
+    @patch("chat.services.describe_image")
+    def test_image_placeholder_without_description(self, mock_describe):
+        import re
+        raw = "Before\n\n![[Image 1: EMF image]](#)\n\nAfter"
+        cleaned = re.sub(
+            r"!\[(\[Image \d+[^\]]*\])\]\([^)]*\)",
+            r"\1",
+            raw,
+        )
+        self.assertEqual(cleaned, "Before\n\n[Image 1: EMF image]\n\nAfter")

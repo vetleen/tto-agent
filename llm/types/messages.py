@@ -12,7 +12,7 @@ class Message(BaseModel):
     """Generic chat message used across pipelines and providers."""
 
     role: Role
-    content: str
+    content: str | list
     name: Optional[str] = None
     tool_calls: Optional[list["ToolCall"]] = None  # assistant messages requesting tools
     tool_call_id: Optional[str] = None  # tool result messages

@@ -78,3 +78,25 @@ def supports_thinking(model_id: str) -> bool:
         return True
 
     return False
+
+
+def supports_vision(model_id: str) -> bool:
+    """Return True if the model supports vision (image) inputs."""
+    lower = model_id.lower()
+
+    # Strip provider prefix for name matching
+    name = lower.split("/", 1)[-1] if "/" in lower else lower
+
+    # Anthropic Claude models
+    if lower.startswith("anthropic/") and name.startswith("claude-"):
+        return True
+
+    # OpenAI GPT-4+ and GPT-5+ models
+    if lower.startswith("openai/") and re.match(r"^gpt-[45]", name):
+        return True
+
+    # Gemini models
+    if lower.startswith("gemini/") and name.startswith("gemini-"):
+        return True
+
+    return False

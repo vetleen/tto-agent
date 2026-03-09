@@ -142,20 +142,23 @@ def canvas_import(request, thread_id):
     if not uploaded:
         return HttpResponseBadRequest("No file uploaded.")
 
-    import mammoth
+    from chat.services import import_docx_to_canvas
 
-    result = mammoth.convert_to_markdown(uploaded)
-    content = result.value
-
-    # Derive title from filename
-    original_name = uploaded.name or "document"
-    title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
+    title, content = import_docx_to_canvas(uploaded, request.user)
 
     ChatCanvas.objects.update_or_create(
         thread=thread,
         defaults={"title": title, "content": content},
     )
     return JsonResponse({"title": title, "content": content})
+
+
+@login_required
+@require_POST
+def thread_create(request):
+    """Create a new empty thread and return its ID."""
+    thread = ChatThread.objects.create(created_by=request.user)
+    return JsonResponse({"thread_id": str(thread.id)})
 
 
 @login_required
