@@ -361,12 +361,12 @@ class ImportDocxToCanvasTests(TestCase):
         self.user = User.objects.create_user(email="imp2@test.com", password="pass")
 
     @patch("chat.services.describe_image")
-    @patch("mammoth.convert_to_markdown")
+    @patch("mammoth.convert_to_html")
     def test_basic_conversion_no_images(self, mock_convert, mock_describe):
         from chat.services import import_docx_to_canvas
 
         mock_result = MagicMock()
-        mock_result.value = "# Hello\n\nWorld"
+        mock_result.value = "<h1>Hello</h1><p>World</p>"
         mock_convert.return_value = mock_result
 
         fake_file = MagicMock()
@@ -375,6 +375,31 @@ class ImportDocxToCanvasTests(TestCase):
         title, content = import_docx_to_canvas(fake_file, self.user)
         self.assertEqual(title, "report")
         self.assertEqual(content, "# Hello\n\nWorld")
+        mock_describe.assert_not_called()
+
+    @patch("chat.services.describe_image")
+    @patch("mammoth.convert_to_html")
+    def test_table_conversion(self, mock_convert, mock_describe):
+        from chat.services import import_docx_to_canvas
+
+        mock_result = MagicMock()
+        mock_result.value = (
+            "<table>"
+            "<tr><th>Name</th><th>Value</th></tr>"
+            "<tr><td>A</td><td>1</td></tr>"
+            "<tr><td>B</td><td>2</td></tr>"
+            "</table>"
+        )
+        mock_convert.return_value = mock_result
+
+        fake_file = MagicMock()
+        fake_file.name = "data.docx"
+
+        title, content = import_docx_to_canvas(fake_file, self.user)
+        self.assertEqual(title, "data")
+        self.assertIn("| Name | Value |", content)
+        self.assertIn("| --- | --- |", content)
+        self.assertIn("| A | 1 |", content)
         mock_describe.assert_not_called()
 
     @patch("chat.services.describe_image")

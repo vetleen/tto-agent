@@ -188,16 +188,20 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str]:
             placeholder = f"[Image {idx}: {label}]"
 
         # mammoth.images.img_element uses these as <img> HTML attributes;
-        # with src="#" mammoth produces ![placeholder](#) in markdown.
+        # markdownify converts <img alt="placeholder" src="#"> to ![placeholder](#).
         return {"alt": placeholder, "src": "#"}
 
-    result = mammoth.convert_to_markdown(
+    from markdownify import markdownify as md
+
+    result = mammoth.convert_to_html(
         uploaded_file, convert_image=mammoth.images.img_element(convert_image)
     )
-    content = result.value
+    html = result.value
 
-    # mammoth wraps alt text in markdown image syntax: ![placeholder]()
-    # Replace ![...Image N...]() with just the placeholder text
+    # Convert HTML (with proper tables) to markdown
+    content = md(html, heading_style="ATX")
+
+    # Replace image HTML remnants with our placeholders
     content = re.sub(
         r"!\[(\[Image \d+[^\]]*\])\]\([^)]*\)",
         r"\1",
