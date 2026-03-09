@@ -218,7 +218,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if self.data_room_ids:
                 data_rooms = await self._get_data_room_info(self.data_room_ids)
             org_name = await self._get_organization_name()
-            canvas = await self._get_canvas(str(thread.id))
+            try:
+                canvas = await self._get_canvas(str(thread.id))
+            except Exception:
+                logger.exception("Failed to load canvas for thread %s", thread.id)
+                canvas = None
             system_prompt = build_system_prompt(
                 data_rooms=data_rooms,
                 history_meta=meta,
@@ -281,16 +285,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
         doc_tools = {"search_documents", "read_document"}
-        canvas_tools = {"write_canvas", "edit_canvas"}
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
-            tools = all_tools
+            tools = list(all_tools)
         else:
             tools = [t for t in all_tools if t not in doc_tools]
-        # Ensure canvas tools are always present
-        for ct in canvas_tools:
-            if ct not in tools and ct in (prefs.allowed_tools if prefs else all_tools):
-                tools = list(tools) + [ct]
 
         request = ChatRequest(
             messages=messages,
