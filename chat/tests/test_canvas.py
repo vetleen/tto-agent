@@ -260,7 +260,7 @@ class CanvasImportViewTests(TestCase):
 
     @patch("chat.services.import_docx_to_canvas")
     def test_import_creates_canvas(self, mock_import):
-        mock_import.return_value = ("contract", "# Converted\n\nContent here.")
+        mock_import.return_value = ("contract", "# Converted\n\nContent here.", False)
 
         url = f"/chat/threads/{self.thread.id}/canvas/import/"
         fake_file = io.BytesIO(b"PK fake docx")
@@ -372,9 +372,10 @@ class ImportDocxToCanvasTests(TestCase):
         fake_file = MagicMock()
         fake_file.name = "report.docx"
 
-        title, content = import_docx_to_canvas(fake_file, self.user)
+        title, content, truncated = import_docx_to_canvas(fake_file, self.user)
         self.assertEqual(title, "report")
         self.assertEqual(content, "# Hello\n\nWorld")
+        self.assertFalse(truncated)
         mock_describe.assert_not_called()
 
     @patch("chat.services.describe_image")
@@ -395,8 +396,9 @@ class ImportDocxToCanvasTests(TestCase):
         fake_file = MagicMock()
         fake_file.name = "data.docx"
 
-        title, content = import_docx_to_canvas(fake_file, self.user)
+        title, content, truncated = import_docx_to_canvas(fake_file, self.user)
         self.assertEqual(title, "data")
+        self.assertFalse(truncated)
         self.assertIn("| Name | Value |", content)
         self.assertIn("| --- | --- |", content)
         self.assertIn("| A | 1 |", content)

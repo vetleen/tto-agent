@@ -147,9 +147,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _handle_canvas_save(self, data):
         """Save user edits to the canvas."""
+        from chat.services import CANVAS_MAX_CHARS
+
         thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
         title = data.get("title", "Untitled document")
         content = data.get("content", "")
+        content = content[:CANVAS_MAX_CHARS]
         if thread_id:
             await self._save_canvas(thread_id, title, content)
 

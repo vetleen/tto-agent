@@ -144,13 +144,16 @@ def canvas_import(request, thread_id):
 
     from chat.services import import_docx_to_canvas
 
-    title, content = import_docx_to_canvas(uploaded, request.user)
+    title, content, truncated = import_docx_to_canvas(uploaded, request.user)
 
     ChatCanvas.objects.update_or_create(
         thread=thread,
         defaults={"title": title, "content": content},
     )
-    return JsonResponse({"title": title, "content": content})
+    resp = {"title": title, "content": content}
+    if truncated:
+        resp["truncated"] = True
+    return JsonResponse(resp)
 
 
 @login_required

@@ -262,6 +262,7 @@
   <div class="flex-1 overflow-hidden relative">
     <textarea id="canvas-textarea"
       class="absolute inset-0 w-full h-full px-4 py-3 text-sm text-heading bg-transparent border-0 focus:outline-none focus:ring-0 resize-none font-mono"
+      maxlength="75000"
       placeholder="Start writing..."></textarea>
     <div id="canvas-preview"
       class="hidden absolute inset-0 overflow-y-auto px-4 py-3 text-sm text-body markdown-content"></div>
@@ -879,6 +880,13 @@
   });
 
   function getCSRFToken() { const cookie = document.cookie.split(";").find(function(c) { return c.trim().startsWith("csrftoken="); }); return cookie ? cookie.split("=")[1] : ""; }
+  function showToast(msg) {
+    var el = document.createElement("div");
+    el.textContent = msg;
+    el.className = "fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-neutral-800 text-white text-sm shadow-lg transition-opacity duration-300";
+    document.body.appendChild(el);
+    setTimeout(function() { el.style.opacity = "0"; setTimeout(function() { el.remove(); }, 300); }, 4000);
+  }
   function removeThreadLi(threadId) { const li = document.querySelector('[data-thread-li="' + threadId + '"]'); if (li) li.remove(); updateArchivedCount(); showEmptyIfNeeded(); }
   function moveThread(threadId, toArchived) {
     const li = document.querySelector('[data-thread-li="' + threadId + '"]'); if (!li) return;
@@ -1032,10 +1040,22 @@
     }
   }
 
+  var CANVAS_MAX_CHARS = 75000;
+
   function updateWordCount() {
     var text = canvasTextarea.value.trim();
-    var count = text ? text.split(/\s+/).length : 0;
-    if (canvasWordCount) canvasWordCount.textContent = count + " word" + (count !== 1 ? "s" : "");
+    var wordCount = text ? text.split(/\s+/).length : 0;
+    var charCount = canvasTextarea.value.length;
+    if (canvasWordCount) {
+      canvasWordCount.textContent = wordCount + " word" + (wordCount !== 1 ? "s" : "") + " \u00b7 " + charCount.toLocaleString() + " / " + CANVAS_MAX_CHARS.toLocaleString() + " chars";
+      if (charCount > 70000) {
+        canvasWordCount.classList.add("text-red-500");
+        canvasWordCount.classList.remove("text-body");
+      } else {
+        canvasWordCount.classList.remove("text-red-500");
+        canvasWordCount.classList.add("text-body");
+      }
+    }
   }
 
   function saveCanvasNow() {
@@ -1055,6 +1075,9 @@
 
   if (canvasTextarea) {
     canvasTextarea.addEventListener("input", function() {
+      if (canvasTextarea.value.length > CANVAS_MAX_CHARS) {
+        canvasTextarea.value = canvasTextarea.value.slice(0, CANVAS_MAX_CHARS);
+      }
       canvasLastTyped = Date.now();
       updateWordCount();
       debouncedSave();
@@ -1085,6 +1108,9 @@
   if (canvasApplyBtn) {
     canvasApplyBtn.addEventListener("click", function() {
       if (canvasPendingUpdate) {
+        if (canvasPendingUpdate.content && canvasPendingUpdate.content.length > CANVAS_MAX_CHARS) {
+          canvasPendingUpdate.content = canvasPendingUpdate.content.slice(0, CANVAS_MAX_CHARS);
+        }
         openCanvas(canvasPendingUpdate.title, canvasPendingUpdate.content);
         canvasPendingUpdate = null;
       }
@@ -1193,6 +1219,9 @@
           return r.json();
         }).then(function(data) {
           if (data.title !== undefined) openCanvas(data.title, data.content);
+          if (data.truncated) {
+            showToast("Document was truncated to 75,000 characters.");
+          }
         }).catch(function(err) {
           alert("Failed to import document: " + err.message);
         }).finally(function() {

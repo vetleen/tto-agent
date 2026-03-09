@@ -39,11 +39,13 @@ class WriteCanvasTool(ContextAwareTool):
 
     def _run(self, title: str, content: str) -> str:
         from chat.models import ChatCanvas
+        from chat.services import CANVAS_MAX_CHARS
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
+        content = content[:CANVAS_MAX_CHARS]
         ChatCanvas.objects.update_or_create(
             thread_id=thread_id,
             defaults={"title": title, "content": content},
@@ -103,16 +105,25 @@ class EditCanvasTool(ContextAwareTool):
             else:
                 failed.append({"old_text": old_text[:80], "error": "Text not found in document."})
 
+        from chat.services import CANVAS_MAX_CHARS
+
+        truncated = len(content) > CANVAS_MAX_CHARS
+        if truncated:
+            content = content[:CANVAS_MAX_CHARS]
+
         canvas.content = content
         canvas.save(update_fields=["content", "updated_at"])
 
-        return json.dumps({
+        result = {
             "status": "ok",
             "applied": applied,
             "failed": failed,
             "title": canvas.title,
             "content": content,
-        })
+        }
+        if truncated:
+            result["note"] = "Content truncated to %d character limit." % CANVAS_MAX_CHARS
+        return json.dumps(result)
 
 
 # Register on import

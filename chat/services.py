@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+CANVAS_MAX_CHARS = 75_000
+CANVAS_MAX_IMAGES = 25
 SUMMARY_TARGET_TOKENS = 2_000
 
 
@@ -159,10 +161,10 @@ def describe_image(
         return None
 
 
-def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str]:
+def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, bool]:
     """Convert a .docx upload to markdown with LLM-described image placeholders.
 
-    Returns (title, content).
+    Returns (title, content, truncated).
     """
     import mammoth
 
@@ -172,6 +174,10 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str]:
         nonlocal image_counter
         image_counter += 1
         idx = image_counter
+
+        if idx > CANVAS_MAX_IMAGES:
+            placeholder = f"[Image {idx}: image skipped – import limit reached]"
+            return {"alt": placeholder, "src": "#"}
 
         with image.open() as img_file:
             img_bytes = img_file.read()
@@ -208,8 +214,13 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str]:
         content,
     )
 
+    # Truncate to character limit
+    truncated = len(content) > CANVAS_MAX_CHARS
+    if truncated:
+        content = content[:CANVAS_MAX_CHARS]
+
     # Derive title from filename
     original_name = uploaded_file.name or "document"
     title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
-    return title, content
+    return title, content, truncated
