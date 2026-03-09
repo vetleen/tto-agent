@@ -32,7 +32,11 @@
    npm install
    ```
 
-3. **Redis** must be running (e.g. `docker run -d -p 6379:6379 redis:latest` or local install).
+3. **Redis** must be running.
+   ``` bash
+   sudo service redis-server start
+   redis-cli ping
+   ```
 
 4. **Database and static:**
    ```bash
@@ -48,7 +52,10 @@
 # Terminal 1
 python manage.py runserver 8000
 
-# Terminal 2 (required for document processing)
+# Terminal 2 — CSS (Tailwind v4 + Flowbite): watches for changes and rebuilds
+npx @tailwindcss/cli -i ./static/src/input.css -o ./static/src/output.css --watch
+
+# Terminal 3 (required for document processing)
 celery -A config worker -l info
 ```
 
