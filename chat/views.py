@@ -1,12 +1,13 @@
+import io
 import json
 import logging
 
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
+from django.http import FileResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods, require_POST
 
-from chat.models import ChatThread
+from chat.models import ChatCanvas, ChatThread
 from documents.models import DataRoom
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,57 @@ def thread_archive(request, thread_id):
     thread.is_archived = not thread.is_archived
     thread.save(update_fields=["is_archived"])
     return JsonResponse({"ok": True, "is_archived": thread.is_archived})
+
+
+@login_required
+@require_http_methods(["GET"])
+def canvas_export(request, thread_id):
+    """Export the canvas as a .docx file."""
+    thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
+    canvas = get_object_or_404(ChatCanvas, thread=thread)
+
+    import markdown as md
+    from html2docx import html2docx
+
+    html_content = md.markdown(canvas.content, extensions=["tables", "fenced_code"])
+    # html2docx expects a full HTML document or just body content
+    full_html = f"<html><body>{html_content}</body></html>"
+    buf = html2docx(full_html, title=canvas.title)
+
+    safe_title = "".join(c for c in canvas.title if c.isalnum() or c in " _-").strip() or "document"
+    filename = f"{safe_title}.docx"
+    return FileResponse(
+        io.BytesIO(buf.getvalue()),
+        as_attachment=True,
+        filename=filename,
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@login_required
+@require_POST
+def canvas_import(request, thread_id):
+    """Import a .docx file and convert to markdown canvas content."""
+    thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
+
+    uploaded = request.FILES.get("file")
+    if not uploaded:
+        return HttpResponseBadRequest("No file uploaded.")
+
+    import mammoth
+
+    result = mammoth.convert_to_markdown(uploaded)
+    content = result.value
+
+    # Derive title from filename
+    original_name = uploaded.name or "document"
+    title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
+
+    ChatCanvas.objects.update_or_create(
+        thread=thread,
+        defaults={"title": title, "content": content},
+    )
+    return JsonResponse({"title": title, "content": content})
 
 
 @login_required

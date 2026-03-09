@@ -69,6 +69,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_detach_data_room(data)
         elif msg_type == "chat.load_thread":
             await self._handle_load_thread(data)
+        elif msg_type == "chat.canvas_save":
+            await self._handle_canvas_save(data)
+        elif msg_type == "chat.canvas_open":
+            await self._handle_canvas_open(data)
         elif msg_type == "pong":
             pass  # heartbeat acknowledgment
 
@@ -119,7 +123,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def _handle_load_thread(self, data):
-        """Load a thread's data rooms into the session."""
+        """Load a thread's data rooms and canvas into the session."""
         thread_id = data.get("thread_id")
         if not thread_id:
             return
@@ -132,6 +136,34 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "thread_id": thread_id,
                 "data_rooms": thread_data["data_rooms"],
             }))
+            # Send canvas state if one exists
+            canvas_data = await self._load_canvas(thread_id)
+            if canvas_data:
+                await self.send(text_data=json.dumps({
+                    "event_type": "canvas.loaded",
+                    "title": canvas_data["title"],
+                    "content": canvas_data["content"],
+                }))
+
+    async def _handle_canvas_save(self, data):
+        """Save user edits to the canvas."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        title = data.get("title", "Untitled document")
+        content = data.get("content", "")
+        if thread_id:
+            await self._save_canvas(thread_id, title, content)
+
+    async def _handle_canvas_open(self, data):
+        """Return existing canvas or create a blank one."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        if not thread_id:
+            return
+        canvas_data = await self._get_or_create_canvas(thread_id)
+        await self.send(text_data=json.dumps({
+            "event_type": "canvas.loaded",
+            "title": canvas_data["title"],
+            "content": canvas_data["content"],
+        }))
 
     async def _handle_chat_message(self, data):
         content = (data.get("content") or "").strip()
@@ -153,6 +185,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             # Get or create thread
             thread, created = await self._get_or_create_thread(thread_id)
+            self._active_thread_id = str(thread.id)
 
             if created:
                 # Persist session data_room_ids as M2M for new threads
@@ -185,11 +218,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if self.data_room_ids:
                 data_rooms = await self._get_data_room_info(self.data_room_ids)
             org_name = await self._get_organization_name()
+            canvas = await self._get_canvas(str(thread.id))
             system_prompt = build_system_prompt(
                 data_rooms=data_rooms,
                 history_meta=meta,
                 doc_context=doc_context,
                 organization_name=org_name,
+                canvas=canvas,
             )
 
             # Stream LLM response
@@ -243,14 +278,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             model = prefs.primary_model if prefs else None
 
-        # Web tools always available; document tools only with data rooms
+        # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
         doc_tools = {"search_documents", "read_document"}
+        canvas_tools = {"write_canvas", "edit_canvas"}
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
             tools = all_tools
         else:
             tools = [t for t in all_tools if t not in doc_tools]
+        # Ensure canvas tools are always present
+        for ct in canvas_tools:
+            if ct not in tools and ct in (prefs.allowed_tools if prefs else all_tools):
+                tools = list(tools) + [ct]
 
         request = ChatRequest(
             messages=messages,
@@ -273,6 +313,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if event.event_type == "token":
                     token_text = event.data.get("text", "")
                     accumulated_content += token_text
+
+                # Intercept canvas tool results and broadcast canvas.updated
+                if event.event_type == "tool_end":
+                    tool_name = event.data.get("tool_name", "")
+                    if tool_name in ("write_canvas", "edit_canvas"):
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok":
+                                await self.send(text_data=json.dumps({
+                                    "event_type": "canvas.updated",
+                                    "title": result.get("title", ""),
+                                    "content": result.get("content", ""),
+                                }))
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
 
             # Persist assistant message
             if accumulated_content.strip():
@@ -550,6 +605,42 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "data_room_ids": [r["pk"] for r in rooms],
             "data_rooms": [{"id": r["pk"], "name": r["name"]} for r in rooms],
         }
+
+    # -- Canvas helpers --
+
+    @database_sync_to_async
+    def _load_canvas(self, thread_id):
+        from chat.models import ChatCanvas
+        try:
+            c = ChatCanvas.objects.get(thread_id=thread_id)
+            return {"title": c.title, "content": c.content}
+        except ChatCanvas.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def _get_canvas(self, thread_id):
+        from chat.models import ChatCanvas
+        try:
+            return ChatCanvas.objects.get(thread_id=thread_id)
+        except ChatCanvas.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def _save_canvas(self, thread_id, title, content):
+        from chat.models import ChatCanvas
+        ChatCanvas.objects.update_or_create(
+            thread_id=thread_id,
+            defaults={"title": title, "content": content},
+        )
+
+    @database_sync_to_async
+    def _get_or_create_canvas(self, thread_id):
+        from chat.models import ChatCanvas
+        canvas, _ = ChatCanvas.objects.get_or_create(
+            thread_id=thread_id,
+            defaults={"title": "Untitled document", "content": ""},
+        )
+        return {"title": canvas.title, "content": canvas.content}
 
     # -- Database helpers --
 

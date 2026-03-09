@@ -77,8 +77,11 @@
   </div>
 </aside>
 
-{# Full-height chat layout #}
-<div class="flex flex-col sm:ml-64" style="height: calc(100vh - 4rem);" id="chat-layout">
+{# Full-height content area: chat pane + canvas panel side by side #}
+<div id="content-area" class="flex sm:ml-64" style="height: calc(100vh - 4rem);">
+
+{# Chat pane #}
+<div id="chat-pane" class="flex flex-col flex-1 min-w-0 transition-all duration-200" id="chat-layout">
   {# Model selector dropdown #}
   <div class="relative px-4 pt-2 pb-0 max-w-3xl mx-auto w-full">
     <button type="button" id="model-selector-btn" class="inline-flex items-center gap-1.5 px-2.5 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors">
@@ -176,6 +179,10 @@
                   <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
                   Attach data room
                 </button>
+                <button type="button" id="open-canvas-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
+                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  Open canvas
+                </button>
               </div>
             </div>
             <textarea
@@ -200,6 +207,57 @@
     </div>
   </div>
 </div>
+
+</div>{# end #chat-pane #}
+
+{# Canvas panel #}
+<div id="canvas-panel" class="hidden flex-col border-l border-default bg-white dark:bg-neutral-900" style="width: 50%; min-width: 0; transition: width 0.2s;">
+  {# Canvas header #}
+  <div class="flex items-center gap-2 px-4 py-2 border-b border-default bg-neutral-primary-soft shrink-0">
+    <input id="canvas-title-input" type="text" value="Untitled document"
+      class="flex-1 text-sm font-semibold text-heading bg-transparent border-0 focus:outline-none focus:ring-0 min-w-0"
+      placeholder="Document title" />
+    <div class="flex items-center gap-1 shrink-0">
+      {# Import button #}
+      <label title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
+      </label>
+      {# Export button #}
+      <a id="canvas-export-link" href="#" title="Export as .docx" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      </a>
+      {# Edit/Preview toggle #}
+      <button id="canvas-preview-btn" title="Toggle preview" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+      </button>
+      {# Close button #}
+      <button id="canvas-close-btn" title="Close canvas" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+  {# AI-updated banner (hidden by default) #}
+  <div id="canvas-update-banner" class="hidden px-4 py-2 bg-brand/10 border-b border-brand/20 flex items-center justify-between shrink-0">
+    <span class="text-xs text-fg-brand">AI updated the document</span>
+    <button id="canvas-apply-btn" class="text-xs text-fg-brand font-medium hover:underline">Apply</button>
+  </div>
+  {# Canvas body #}
+  <div class="flex-1 overflow-hidden relative">
+    <textarea id="canvas-textarea"
+      class="absolute inset-0 w-full h-full px-4 py-3 text-sm text-heading bg-transparent border-0 focus:outline-none focus:ring-0 resize-none font-mono"
+      placeholder="Start writing..."></textarea>
+    <div id="canvas-preview"
+      class="hidden absolute inset-0 overflow-y-auto px-4 py-3 text-sm text-body markdown-content"></div>
+  </div>
+  {# Canvas footer #}
+  <div class="flex items-center justify-between px-4 py-1.5 border-t border-default bg-neutral-primary-soft shrink-0">
+    <span id="canvas-word-count" class="text-xs text-body">0 words</span>
+    <span id="canvas-save-status" class="text-xs text-body"></span>
+  </div>
+</div>
+
+</div>{# end #content-area #}
 
 {# Data room attach modal #}
 <div id="attach-data-room-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto">
@@ -619,7 +677,9 @@
 
   function handleEvent(data) {
     const et = data.event_type;
-    if (et === "thread.created") { activeThreadId = data.thread_id; addThreadToSidebar(data.thread_id, "New chat"); return; }
+    if (et === "canvas.updated") { canvasHandleUpdated(data.title || "", data.content || ""); return; }
+    if (et === "canvas.loaded") { canvasHandleLoaded(data.title || "", data.content || ""); return; }
+    if (et === "thread.created") { activeThreadId = data.thread_id; addThreadToSidebar(data.thread_id, "New chat"); canvasUpdateExportLink(); return; }
     if (et === "thread.title_updated") {
       var tid = data.thread_id, title = data.title || "";
       if (tid && title) { var link = threadList.querySelector('a[data-thread-id="' + tid + '"]'); if (link) { link.title = title; var span = link.querySelector("span"); if (span) span.textContent = title.length > 30 ? title.substring(0, 27) + "..." : title; } }
@@ -830,6 +890,163 @@
   connect();
   setTimeout(scrollToBottom, 100);
   window.addEventListener("beforeunload", disconnect);
+
+  // -- Canvas --
+  var canvasPanel = document.getElementById("canvas-panel");
+  var canvasTitleInput = document.getElementById("canvas-title-input");
+  var canvasTextarea = document.getElementById("canvas-textarea");
+  var canvasPreview = document.getElementById("canvas-preview");
+  var canvasCloseBtn = document.getElementById("canvas-close-btn");
+  var canvasPreviewBtn = document.getElementById("canvas-preview-btn");
+  var canvasWordCount = document.getElementById("canvas-word-count");
+  var canvasSaveStatus = document.getElementById("canvas-save-status");
+  var canvasExportLink = document.getElementById("canvas-export-link");
+  var canvasImportInput = document.getElementById("canvas-import-input");
+  var canvasUpdateBanner = document.getElementById("canvas-update-banner");
+  var canvasApplyBtn = document.getElementById("canvas-apply-btn");
+  var openCanvasBtn = document.getElementById("open-canvas-btn");
+
+  var canvasIsOpen = false;
+  var canvasPreviewMode = false;
+  var canvasSaveTimer = null;
+  var canvasLastTyped = 0;
+  var canvasPendingUpdate = null;
+
+  function canvasUpdateExportLink() {
+    if (canvasExportLink && activeThreadId) {
+      canvasExportLink.href = "/chat/threads/" + activeThreadId + "/canvas/export/";
+    }
+  }
+  function canvasHandleUpdated(title, content) {
+    canvasUpdateExportLink();
+    updateCanvas(title, content);
+  }
+  function canvasHandleLoaded(title, content) {
+    canvasUpdateExportLink();
+    openCanvas(title, content);
+  }
+
+  function openCanvas(title, content) {
+    canvasTitleInput.value = title || "Untitled document";
+    canvasTextarea.value = content || "";
+    updateWordCount();
+    if (!canvasIsOpen) {
+      canvasPanel.classList.remove("hidden");
+      canvasPanel.classList.add("flex");
+      canvasIsOpen = true;
+    }
+    if (canvasPreviewMode) {
+      canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
+    }
+    canvasUpdateExportLink();
+  }
+
+  function closeCanvas() {
+    canvasPanel.classList.add("hidden");
+    canvasPanel.classList.remove("flex");
+    canvasIsOpen = false;
+  }
+
+  function updateCanvas(title, content) {
+    var now = Date.now();
+    if (now - canvasLastTyped < 2000) {
+      // User typed recently — queue as pending
+      canvasPendingUpdate = { title: title, content: content };
+      canvasUpdateBanner.classList.remove("hidden");
+    } else {
+      openCanvas(title, content);
+    }
+  }
+
+  function updateWordCount() {
+    var text = canvasTextarea.value.trim();
+    var count = text ? text.split(/\s+/).length : 0;
+    if (canvasWordCount) canvasWordCount.textContent = count + " word" + (count !== 1 ? "s" : "");
+  }
+
+  function saveCanvasNow() {
+    if (!activeThreadId || !canvasIsOpen) return;
+    var title = canvasTitleInput.value.trim() || "Untitled document";
+    var content = canvasTextarea.value;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "chat.canvas_save", thread_id: activeThreadId, title: title, content: content }));
+      if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 2000); }
+    }
+  }
+
+  function debouncedSave() {
+    clearTimeout(canvasSaveTimer);
+    canvasSaveTimer = setTimeout(saveCanvasNow, 1000);
+  }
+
+  if (canvasTextarea) {
+    canvasTextarea.addEventListener("input", function() {
+      canvasLastTyped = Date.now();
+      updateWordCount();
+      debouncedSave();
+    });
+  }
+  if (canvasTitleInput) {
+    canvasTitleInput.addEventListener("input", debouncedSave);
+  }
+
+  if (canvasCloseBtn) {
+    canvasCloseBtn.addEventListener("click", function() { saveCanvasNow(); closeCanvas(); });
+  }
+
+  if (canvasPreviewBtn) {
+    canvasPreviewBtn.addEventListener("click", function() {
+      canvasPreviewMode = !canvasPreviewMode;
+      if (canvasPreviewMode) {
+        canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
+        canvasPreview.classList.remove("hidden");
+        canvasTextarea.classList.add("hidden");
+      } else {
+        canvasPreview.classList.add("hidden");
+        canvasTextarea.classList.remove("hidden");
+      }
+    });
+  }
+
+  if (canvasApplyBtn) {
+    canvasApplyBtn.addEventListener("click", function() {
+      if (canvasPendingUpdate) {
+        openCanvas(canvasPendingUpdate.title, canvasPendingUpdate.content);
+        canvasPendingUpdate = null;
+      }
+      canvasUpdateBanner.classList.add("hidden");
+    });
+  }
+
+  if (openCanvasBtn) {
+    openCanvasBtn.addEventListener("click", function() {
+      var dd = document.getElementById("attach-dropdown");
+      if (dd) dd.classList.add("hidden");
+      if (activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "chat.canvas_open", thread_id: activeThreadId }));
+      } else {
+        openCanvas("Untitled document", "");
+      }
+    });
+  }
+
+  if (canvasImportInput) {
+    canvasImportInput.addEventListener("change", function() {
+      var file = canvasImportInput.files[0];
+      if (!file || !activeThreadId) return;
+      var fd = new FormData();
+      fd.append("file", file);
+      fetch("/chat/threads/" + activeThreadId + "/canvas/import/", {
+        method: "POST",
+        headers: { "X-CSRFToken": getCSRFToken() },
+        body: fd,
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.title !== undefined) openCanvas(data.title, data.content);
+      }).catch(function() {});
+      canvasImportInput.value = "";
+    });
+  }
+
 })();
 </script>
 {% endblock %}

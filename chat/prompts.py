@@ -11,6 +11,7 @@ def build_system_prompt(
     history_meta: dict[str, Any] | None = None,
     doc_context: dict[str, Any] | None = None,
     organization_name: str | None = None,
+    canvas: Any = None,
 ) -> str:
     """Build the system prompt for a chat session.
 
@@ -84,6 +85,36 @@ When the user asks about document-specific topics, use search_documents to find 
 """
     elif data_rooms:
         prompt += "\nThe attached data rooms have no documents uploaded yet.\n\n"
+
+    # -- Canvas section --
+    if canvas:
+        prompt += f"""\
+
+# Canvas Document
+The user has an active canvas document titled "{canvas.title}". Current content:
+
+```markdown
+{canvas.content}
+```
+
+Use **edit_canvas** to make targeted changes to specific sections of this document.
+Use **write_canvas** only if the user asks for a complete rewrite.
+"""
+    else:
+        prompt += """\
+
+# Canvas
+No canvas document exists yet. If the user asks you to draft, write, or create a document,
+use **write_canvas** to create one. The canvas will appear as a panel alongside the chat.
+"""
+
+    # -- Canvas tools always available --
+    prompt += """\
+# Canvas Tools
+- **write_canvas(title, content)**: Create or completely rewrite the canvas document (markdown).
+- **edit_canvas(edits)**: Apply targeted find-replace edits. Each edit: {old_text, new_text, reason}.
+
+"""
 
     if history_meta:
         total = history_meta.get("total_messages", 0)
