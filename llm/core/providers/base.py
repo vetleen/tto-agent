@@ -36,9 +36,18 @@ class BaseLangChainChatModel(ChatModel):
         """Assemble the raw_prompt dict from callback messages + request tool schemas."""
         if callback.captured_messages is None:
             return None
+        serialized_tools = []
+        for tool in (tool_schemas or []):
+            try:
+                serialized_tools.append({
+                    "name": getattr(tool, "name", str(tool)),
+                    "description": getattr(tool, "description", ""),
+                })
+            except Exception:
+                serialized_tools.append(str(tool))
         return {
             "messages": callback.captured_messages,
-            "tools": tool_schemas or [],
+            "tools": serialized_tools,
         }
 
     def _get_streaming_client(self, request: ChatRequest):
