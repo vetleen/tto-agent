@@ -356,6 +356,116 @@ class DescribeImageTests(TestCase):
         self.assertEqual(request.model, "openai/gpt-5-mini")
 
 
+class GenerateCanvasTitleTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="gentitle@test.com", password="pass")
+
+    @patch("core.preferences.get_preferences")
+    @patch("llm.get_llm_service")
+    def test_returns_generated_title(self, mock_svc, mock_prefs):
+        from chat.services import generate_canvas_title
+
+        prefs = MagicMock()
+        prefs.cheap_model = "openai/gpt-5-mini"
+        mock_prefs.return_value = prefs
+
+        mock_response = MagicMock()
+        mock_response.message.content = '"Patent License Agreement"'
+        mock_svc.return_value.run.return_value = mock_response
+
+        result = generate_canvas_title("license.docx", "This is a patent license...", self.user)
+        self.assertEqual(result, "Patent License Agreement")
+        mock_svc.return_value.run.assert_called_once()
+
+    @patch("core.preferences.get_preferences")
+    @patch("llm.get_llm_service")
+    def test_returns_none_on_exception(self, mock_svc, mock_prefs):
+        from chat.services import generate_canvas_title
+
+        prefs = MagicMock()
+        prefs.cheap_model = "openai/gpt-5-mini"
+        mock_prefs.return_value = prefs
+
+        mock_svc.return_value.run.side_effect = RuntimeError("API down")
+        result = generate_canvas_title("doc", "content", self.user)
+        self.assertIsNone(result)
+
+    @patch("core.preferences.get_preferences")
+    @patch("llm.get_llm_service")
+    def test_truncates_long_title(self, mock_svc, mock_prefs):
+        from chat.services import generate_canvas_title
+
+        prefs = MagicMock()
+        prefs.cheap_model = "openai/gpt-5-mini"
+        mock_prefs.return_value = prefs
+
+        mock_response = MagicMock()
+        mock_response.message.content = "A" * 300
+        mock_svc.return_value.run.return_value = mock_response
+
+        result = generate_canvas_title("doc", "content", self.user)
+        self.assertEqual(len(result), 255)
+
+
+class CanvasImportTitleIntegrationTests(TestCase):
+    """Test that canvas_import generates a title for untitled threads."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="imptitle@test.com", password="pass")
+        self.client.login(email="imptitle@test.com", password="pass")
+
+    @patch("chat.services.generate_canvas_title", return_value="Generated Title")
+    @patch("chat.services.import_docx_to_canvas")
+    def test_generates_title_for_untitled_thread(self, mock_import, mock_gen):
+        mock_import.return_value = ("contract", "# Content", False)
+        thread = ChatThread.objects.create(created_by=self.user)
+
+        url = f"/chat/threads/{thread.id}/canvas/import/"
+        fake_file = io.BytesIO(b"PK fake docx")
+        fake_file.name = "contract.docx"
+        response = self.client.post(url, {"file": fake_file}, format="multipart")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["thread_title"], "Generated Title")
+        thread.refresh_from_db()
+        self.assertEqual(thread.title, "Generated Title")
+
+    @patch("chat.services.generate_canvas_title")
+    @patch("chat.services.import_docx_to_canvas")
+    def test_does_not_overwrite_existing_title(self, mock_import, mock_gen):
+        mock_import.return_value = ("contract", "# Content", False)
+        thread = ChatThread.objects.create(created_by=self.user, title="Existing Title")
+
+        url = f"/chat/threads/{thread.id}/canvas/import/"
+        fake_file = io.BytesIO(b"PK fake docx")
+        fake_file.name = "contract.docx"
+        response = self.client.post(url, {"file": fake_file}, format="multipart")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertNotIn("thread_title", data)
+        mock_gen.assert_not_called()
+        thread.refresh_from_db()
+        self.assertEqual(thread.title, "Existing Title")
+
+    @patch("chat.services.generate_canvas_title", return_value=None)
+    @patch("chat.services.import_docx_to_canvas")
+    def test_llm_failure_does_not_break_import(self, mock_import, mock_gen):
+        mock_import.return_value = ("contract", "# Content", False)
+        thread = ChatThread.objects.create(created_by=self.user)
+
+        url = f"/chat/threads/{thread.id}/canvas/import/"
+        fake_file = io.BytesIO(b"PK fake docx")
+        fake_file.name = "contract.docx"
+        response = self.client.post(url, {"file": fake_file}, format="multipart")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertNotIn("thread_title", data)
+        self.assertEqual(data["title"], "contract")
+
+
 class ImportDocxToCanvasTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="imp2@test.com", password="pass")

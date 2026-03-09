@@ -150,7 +150,18 @@ def canvas_import(request, thread_id):
         thread=thread,
         defaults={"title": title, "content": content},
     )
+
+    generated_title = None
+    if not thread.title:
+        from chat.services import generate_canvas_title
+
+        generated_title = generate_canvas_title(title, content, request.user)
+        if generated_title:
+            ChatThread.objects.filter(pk=thread.pk).update(title=generated_title)
+
     resp = {"title": title, "content": content}
+    if generated_title:
+        resp["thread_title"] = generated_title
     if truncated:
         resp["truncated"] = True
     return JsonResponse(resp)

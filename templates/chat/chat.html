@@ -1219,6 +1219,15 @@
           return r.json();
         }).then(function(data) {
           if (data.title !== undefined) openCanvas(data.title, data.content);
+          if (data.thread_title && activeThreadId) {
+            var link = threadList.querySelector('a[data-thread-id="' + activeThreadId + '"]');
+            if (link) {
+              link.title = data.thread_title;
+              var span = link.querySelector("span");
+              if (span) span.textContent = data.thread_title.length > 30
+                ? data.thread_title.substring(0, 27) + "..." : data.thread_title;
+            }
+          }
           if (data.truncated) {
             showToast("Document was truncated to 75,000 characters.");
           }

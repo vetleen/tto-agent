@@ -161,6 +161,41 @@ def describe_image(
         return None
 
 
+def generate_canvas_title(doc_title: str, doc_content: str, user) -> str | None:
+    """Generate a short title for an imported canvas document using the cheap LLM.
+
+    Returns the title string or None on failure (never raises).
+    """
+    from core.preferences import get_preferences
+    from llm import get_llm_service
+    from llm.types import ChatRequest, Message, RunContext
+
+    prefs = get_preferences(user)
+    prompt = (
+        f"Generate a short title (max 5 words) for a document titled: {doc_title}. "
+        f"Document starts with: {doc_content[:1000]}. "
+        "Reply with ONLY the title."
+    )
+
+    context = RunContext.create(user_id=user.pk)
+    request = ChatRequest(
+        messages=[Message(role="user", content=prompt)],
+        model=prefs.cheap_model,
+        stream=False,
+        tools=[],
+        context=context,
+    )
+
+    try:
+        service = get_llm_service()
+        response = service.run("simple_chat", request)
+        title = response.message.content.strip().strip("\"'")
+        return title[:255] if title else None
+    except Exception:
+        logger.exception("Failed to generate canvas title")
+        return None
+
+
 def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, bool]:
     """Convert a .docx upload to markdown with LLM-described image placeholders.
 
