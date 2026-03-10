@@ -156,7 +156,7 @@ class ReadDocumentTool(ContextAwareTool):
                     is_archived=False,
                 ).first()
 
-            chunks = doc.chunks.order_by("chunk_index").values_list("text", flat=True)
+            chunks = doc.chunks.filter(is_child=False).order_by("chunk_index").values_list("text", flat=True)
             content = "\n\n".join(chunks)
 
             remaining = self._MAX_TOTAL_CHARS - total_chars

@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
-    """Return chunks for a document in order (from DB)."""
-    chunks = DataRoomDocumentChunk.objects.filter(document_id=document_id).order_by("chunk_index")
+    """Return parent chunks for a document in order (from DB)."""
+    chunks = DataRoomDocumentChunk.objects.filter(
+        document_id=document_id, is_child=False,
+    ).order_by("chunk_index")
     return [
         {
             "id": c.id,
@@ -33,9 +35,11 @@ def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
 
 
 def get_chunks_by_data_room(data_room_id: int) -> list[dict[str, Any]]:
-    """Return all chunks for a data room, grouped by document (order preserved). Excludes failed documents."""
+    """Return parent chunks for a data room, grouped by document (order preserved). Excludes failed documents."""
     chunks = (
-        DataRoomDocumentChunk.objects.filter(document__data_room_id=data_room_id)
+        DataRoomDocumentChunk.objects.filter(
+            document__data_room_id=data_room_id, is_child=False,
+        )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
         .select_related("document")
@@ -69,6 +73,7 @@ def fulltext_search_chunks(
     qs = (
         DataRoomDocumentChunk.objects.filter(
             document__data_room_id__in=data_room_ids,
+            is_child=False,
             search_vector__isnull=False,
         )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
@@ -156,8 +161,34 @@ def hybrid_search_chunks(
                 if (getattr(doc, "metadata", {}) or {}).get("document_id") not in archived_doc_ids
             ]
 
+    # ---- Resolve child chunks to parents --------------------------------------
+    # Semantic results may return child chunks; resolve them to parent text.
+    # Collect child chunk IDs to look up their parent.
+    semantic_chunk_ids = set()
+    for doc in semantic_results:
+        meta = getattr(doc, "metadata", {}) or {}
+        cid = meta.get("chunk_id")
+        if cid is not None:
+            semantic_chunk_ids.add(cid)
+
+    # Map child chunk IDs -> parent chunk info
+    child_to_parent: dict[int, dict[str, Any]] = {}
+    if semantic_chunk_ids:
+        child_chunks = DataRoomDocumentChunk.objects.filter(
+            pk__in=semantic_chunk_ids, is_child=True,
+        ).select_related("parent").only("id", "parent__id", "parent__text", "parent__heading", "parent__chunk_index", "parent__document_id")
+        for cc in child_chunks:
+            if cc.parent_id:
+                child_to_parent[cc.pk] = {
+                    "parent_id": cc.parent.pk,
+                    "parent_text": cc.parent.text,
+                    "parent_heading": cc.parent.heading,
+                    "parent_chunk_index": cc.parent.chunk_index,
+                    "document_id": cc.parent.document_id,
+                }
+
     # ---- Fuse with RRF -------------------------------------------------------
-    # Keyed by chunk DB id → merged dict
+    # Keyed by parent chunk DB id → merged dict (deduplicates children of same parent)
     scored: dict[int, dict[str, Any]] = {}
 
     for rank_pos, doc in enumerate(semantic_results):
@@ -165,12 +196,28 @@ def hybrid_search_chunks(
         chunk_id = meta.get("chunk_id")
         if chunk_id is None:
             continue
-        entry = scored.setdefault(chunk_id, {
-            "id": chunk_id,
-            "chunk_index": meta.get("chunk_index", 0),
-            "text": getattr(doc, "page_content", ""),
-            "heading": None,
-            "document_id": meta.get("document_id"),
+
+        # Resolve child to parent
+        parent_info = child_to_parent.get(chunk_id)
+        if parent_info:
+            resolved_id = parent_info["parent_id"]
+            resolved_text = parent_info["parent_text"]
+            resolved_heading = parent_info["parent_heading"]
+            resolved_chunk_index = parent_info["parent_chunk_index"]
+            resolved_doc_id = parent_info["document_id"]
+        else:
+            resolved_id = chunk_id
+            resolved_text = getattr(doc, "page_content", "")
+            resolved_heading = None
+            resolved_chunk_index = meta.get("chunk_index", 0)
+            resolved_doc_id = meta.get("document_id")
+
+        entry = scored.setdefault(resolved_id, {
+            "id": resolved_id,
+            "chunk_index": resolved_chunk_index,
+            "text": resolved_text,
+            "heading": resolved_heading,
+            "document_id": resolved_doc_id,
             "data_room_id": meta.get("data_room_id"),
             "rrf_score": 0.0,
         })

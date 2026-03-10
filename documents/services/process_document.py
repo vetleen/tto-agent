@@ -51,18 +51,39 @@ def process_document(document_id: int) -> None:
         chunks_data = extract_and_chunk_file(file_path, ext)
         logger.info("process_document: document_id=%s stage=chunked count=%s", document_id, len(chunks_data))
         doc.parser_type = "pypdf" if ext == "pdf" else "text"
-        doc.chunking_strategy = "markdown_first" if any(c.get("heading") for c in chunks_data) else "recursive_token"
+
+        # Determine chunking strategy from structure
+        has_children = any(c.get("children") for c in chunks_data)
+        if has_children:
+            has_headings = any(c.get("heading") for c in chunks_data)
+            # Detect slides by checking if all children map 1:1 to parents
+            is_slides = all(
+                len(c.get("children", [])) == 1
+                and c.get("children", [{}])[0].get("text") == c["text"]
+                for c in chunks_data if c.get("children")
+            )
+            if is_slides:
+                doc.chunking_strategy = "slides_parent_child"
+            elif has_headings:
+                doc.chunking_strategy = "markdown_parent_child"
+            else:
+                doc.chunking_strategy = "structure_parent_child"
+        else:
+            doc.chunking_strategy = "markdown_first" if any(c.get("heading") for c in chunks_data) else "recursive_token"
 
         # Remove existing chunks (idempotent re-run)
         doc.chunks.all().delete()
 
-        chunk_objects = [
+        # Bulk-create parent chunks
+        parent_objects = [
             DataRoomDocumentChunk(
                 document=doc,
                 chunk_index=i,
                 heading=c.get("heading"),
                 text=c["text"],
                 token_count=c.get("token_count", 0),
+                is_child=False,
+                parent=None,
                 source_page_start=c.get("source_page_start"),
                 source_page_end=c.get("source_page_end"),
                 source_offset_start=c.get("source_offset_start"),
@@ -70,14 +91,45 @@ def process_document(document_id: int) -> None:
             )
             for i, c in enumerate(chunks_data)
         ]
-        DataRoomDocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
+        DataRoomDocumentChunk.objects.bulk_create(parent_objects, batch_size=500)
 
-        # Populate full-text search vectors for hybrid retrieval.
+        # Refresh parent objects to get their PKs
+        parent_map = {
+            obj.chunk_index: obj
+            for obj in doc.chunks.filter(is_child=False).order_by("chunk_index")
+        }
+
+        # Bulk-create child chunks with globally sequential chunk_index
+        child_objects = []
+        global_child_index = 0
+        for i, c in enumerate(chunks_data):
+            parent_obj = parent_map.get(i)
+            for child in c.get("children", []):
+                child_objects.append(
+                    DataRoomDocumentChunk(
+                        document=doc,
+                        chunk_index=global_child_index,
+                        heading=child.get("heading"),
+                        text=child["text"],
+                        token_count=child.get("token_count", 0),
+                        is_child=True,
+                        parent=parent_obj,
+                        source_page_start=None,
+                        source_page_end=None,
+                        source_offset_start=None,
+                        source_offset_end=None,
+                    )
+                )
+                global_child_index += 1
+        if child_objects:
+            DataRoomDocumentChunk.objects.bulk_create(child_objects, batch_size=500)
+
+        # Populate full-text search vectors for parent chunks only.
         # Wrapped in its own savepoint so a failure (e.g. SQLite in dev/test) does
         # not abort the outer transaction and leave the document stuck as PROCESSING.
         try:
             with transaction.atomic():
-                doc.chunks.filter(search_vector__isnull=True).update(
+                doc.chunks.filter(is_child=False, search_vector__isnull=True).update(
                     search_vector=(
                         SearchVector("heading", weight="A", config="english")
                         + SearchVector("text", weight="B", config="english")
@@ -91,11 +143,18 @@ def process_document(document_id: int) -> None:
         doc.token_count = sum(c.get("token_count", 0) for c in chunks_data)
         doc.save(update_fields=["parser_type", "chunking_strategy", "token_count", "updated_at"])
 
-        # Embed and index in vector store (non-critical — failures are logged, not raised)
+        # Embed and index in vector store: child chunks only (precise retrieval)
+        # Falls back to parent chunks if no children exist (backward compat)
         from documents.services import vector_store as vs
-        chunk_records = list(
-            doc.chunks.order_by("chunk_index").values("id", "text", "chunk_index")
-        )
+        if child_objects:
+            chunk_records = list(
+                doc.chunks.filter(is_child=True).order_by("parent__chunk_index", "chunk_index")
+                .values("id", "text", "chunk_index", "parent_id")
+            )
+        else:
+            chunk_records = list(
+                doc.chunks.order_by("chunk_index").values("id", "text", "chunk_index")
+            )
         if chunk_records and getattr(settings, "PGVECTOR_CONNECTION", None):
             try:
                 logger.info("process_document: document_id=%s stage=vector_delete", document_id)

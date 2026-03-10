@@ -289,6 +289,11 @@ DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
 TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
 MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
 CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", "100"))
+
+# Parent-child chunking settings
+CHILD_CHUNK_TARGET_TOKENS = int(os.environ.get("CHILD_CHUNK_TARGET_TOKENS", "300"))
+CHILD_CHUNK_MAX_TOKENS = int(os.environ.get("CHILD_CHUNK_MAX_TOKENS", "600"))
+CHILD_CHUNK_OVERLAP_PCT = float(os.environ.get("CHILD_CHUNK_OVERLAP_PCT", "0.20"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 # pgvector: use same DB as Django when DATABASE_URL is Postgres
 PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATABASE_URL", ""))

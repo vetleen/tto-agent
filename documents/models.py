@@ -106,6 +106,14 @@ class DataRoomDocumentChunk(models.Model):
     heading = models.CharField(max_length=512, null=True, blank=True)
     text = models.TextField()
     token_count = models.PositiveIntegerField()
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="children",
+    )
+    is_child = models.BooleanField(default=False, db_index=True)
     source_page_start = models.PositiveIntegerField(null=True, blank=True)
     source_page_end = models.PositiveIntegerField(null=True, blank=True)
     source_offset_start = models.PositiveIntegerField(null=True, blank=True)
@@ -117,7 +125,7 @@ class DataRoomDocumentChunk(models.Model):
         ordering = ["document", "chunk_index"]
         constraints = [
             models.UniqueConstraint(
-                fields=["document", "chunk_index"],
+                fields=["document", "chunk_index", "is_child"],
                 name="documents_chunk_unique_per_document",
             ),
         ]
