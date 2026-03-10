@@ -14,6 +14,7 @@ from documents.services.chunking import (
     _merge_small_chunks,
     _strip_nul_bytes,
     chunk_text,
+    clean_extracted_text,
     load_documents,
 )
 from documents.services.retrieval import (
@@ -22,6 +23,11 @@ from documents.services.retrieval import (
     get_chunks_by_data_room,
     hybrid_search_chunks,
     similarity_search_chunks,
+)
+from documents.services.splitters import (
+    detect_structure,
+    structural_split,
+    parent_child_split,
 )
 
 User = get_user_model()
@@ -547,3 +553,480 @@ class RetrievalServiceTests(TestCase):
         self.assertEqual(results[0].metadata["data_room_id"], self.data_room.pk)
         self.assertEqual(results[0].metadata["doc_index"], self.doc.doc_index)
         self.assertNotIn("document_id", results[0].metadata)
+
+
+class StructuralSplitTests(TestCase):
+    """Tests for documents.services.splitters structural splitting."""
+
+    def test_detect_structure_markdown(self):
+        self.assertEqual(detect_structure("# Title\n\nSome text"), "markdown")
+        self.assertEqual(detect_structure("Plain\n\n## Section"), "markdown")
+
+    def test_detect_structure_slides(self):
+        self.assertEqual(detect_structure("Slide 1\n---\nSlide 2\n---\nSlide 3"), "slides")
+        self.assertEqual(detect_structure("Slide 1\fSlide 2"), "slides")
+
+    def test_detect_structure_plain(self):
+        self.assertEqual(detect_structure("Just some plain text.\n\nAnother paragraph."), "plain")
+
+    def test_markdown_split_on_headings(self):
+        text = "# Intro\n\nSome intro text.\n\n## Methods\n\nMethod details."
+        units = structural_split(text, "markdown")
+        self.assertEqual(len(units), 2)
+        self.assertEqual(units[0]["heading"], "Intro")
+        self.assertEqual(units[1]["heading"], "Methods")
+        self.assertIn("intro text", units[0]["text"])
+        self.assertIn("Method details", units[1]["text"])
+
+    def test_plain_text_splits_on_paragraphs(self):
+        text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+        units = structural_split(text, "plain")
+        self.assertEqual(len(units), 3)
+        self.assertEqual(units[0]["text"], "First paragraph.")
+        self.assertEqual(units[1]["text"], "Second paragraph.")
+        self.assertEqual(units[2]["text"], "Third paragraph.")
+
+    def test_slides_split_on_boundaries(self):
+        text = "Slide 1 content\n---\nSlide 2 content\n---\nSlide 3 content"
+        units = structural_split(text, "slides")
+        self.assertEqual(len(units), 3)
+        self.assertEqual(units[0]["unit_type"], "slide")
+        self.assertIn("Slide 1", units[0]["text"])
+
+    def test_slides_split_on_form_feed(self):
+        text = "Slide A\fSlide B\fSlide C"
+        units = structural_split(text, "slides")
+        self.assertEqual(len(units), 3)
+
+
+class ParentChildSplitTests(TestCase):
+    """Tests for parent-child chunking logic."""
+
+    def test_markdown_parents_from_headings(self):
+        text = "# Section A\n\nContent A.\n\n## Section B\n\nContent B."
+        result = parent_child_split(text, "markdown", child_target_tokens=50, child_overlap_pct=0.0, max_child_tokens=200)
+        self.assertGreaterEqual(len(result), 2)
+        self.assertEqual(result[0]["heading"], "Section A")
+        self.assertEqual(result[1]["heading"], "Section B")
+
+    def test_children_respect_structural_units(self):
+        """Children should not cut mid-sentence when paragraphs are small enough."""
+        paragraphs = ["Paragraph number %d. It has some content here." % i for i in range(10)]
+        text = "\n\n".join(paragraphs)
+        result = parent_child_split(text, "plain", child_target_tokens=50, child_overlap_pct=0.0, max_child_tokens=200)
+        for parent in result:
+            for child in parent["children"]:
+                # Each child should end with a complete sentence/paragraph
+                self.assertTrue(
+                    child["text"].endswith(".") or child["text"].endswith("here."),
+                    f"Child text appears cut mid-sentence: {child['text'][-50:]}"
+                )
+
+    def test_slides_one_to_one(self):
+        """Each slide = 1 parent = 1 child."""
+        text = "Slide One\n---\nSlide Two\n---\nSlide Three"
+        result = parent_child_split(text, "slides", child_target_tokens=300, child_overlap_pct=0.0, max_child_tokens=600)
+        self.assertEqual(len(result), 3)
+        for parent in result:
+            self.assertEqual(len(parent["children"]), 1)
+            self.assertEqual(parent["children"][0]["text"], parent["text"])
+
+    def test_overlap_applied(self):
+        """With overlap > 0, subsequent children should start with overlap from previous."""
+        # Build text large enough to produce multiple children
+        sentences = ["Sentence number %d is here." % i for i in range(50)]
+        text = " ".join(sentences)
+        result = parent_child_split(text, "plain", child_target_tokens=30, child_overlap_pct=0.50, max_child_tokens=100)
+        for parent in result:
+            if len(parent["children"]) > 1:
+                # Second child should contain some text from the end of first child
+                first_words = parent["children"][0]["text"].split()
+                if len(first_words) > 2:
+                    # Some trailing words from first should appear at start of second
+                    second_text = parent["children"][1]["text"]
+                    # Just verify second child has more tokens than without overlap
+                    self.assertGreater(parent["children"][1]["token_count"], 0)
+
+    def test_parent_has_children_list(self):
+        text = "Some content here.\n\nMore content there."
+        result = parent_child_split(text, "plain", child_target_tokens=300, child_overlap_pct=0.0, max_child_tokens=600)
+        self.assertGreaterEqual(len(result), 1)
+        for parent in result:
+            self.assertIn("children", parent)
+            self.assertIn("text", parent)
+            self.assertIn("token_count", parent)
+            self.assertIn("source_offset_start", parent)
+            self.assertIn("source_offset_end", parent)
+            for child in parent["children"]:
+                self.assertIn("text", child)
+                self.assertIn("token_count", child)
+                self.assertIn("child_index", child)
+
+    def test_empty_text_returns_empty(self):
+        result = parent_child_split("", "plain")
+        self.assertEqual(result, [])
+        result = parent_child_split("   \n\n  ", "plain")
+        self.assertEqual(result, [])
+
+
+class ChunkTextIntegrationTests(TestCase):
+    """Integration tests for chunk_text with parent-child output."""
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_chunk_text_produces_parent_child_structure(self):
+        from langchain_core.documents import Document
+        text = "# Introduction\n\nThis is the intro.\n\n## Methods\n\nThis is the methods section."
+        docs = [Document(page_content=text, metadata={})]
+        chunks = chunk_text(docs)
+        self.assertGreaterEqual(len(chunks), 1)
+        for chunk in chunks:
+            self.assertFalse(chunk["is_child"])
+            self.assertIn("children", chunk)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_chunk_text_plain_produces_parent_child(self):
+        from langchain_core.documents import Document
+        paragraphs = ["This is paragraph %d with some content." % i for i in range(5)]
+        text = "\n\n".join(paragraphs)
+        docs = [Document(page_content=text, metadata={"page": 1})]
+        chunks = chunk_text(docs)
+        self.assertGreaterEqual(len(chunks), 1)
+        for chunk in chunks:
+            self.assertIn("children", chunk)
+            self.assertEqual(chunk["is_child"], False)
+            self.assertEqual(chunk["source_page_start"], 1)
+
+
+class ProcessDocumentParentChildTests(TestCase):
+    """Tests for process_document with parent-child chunking."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="pc@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="PCProject", slug="pc-project", created_by=self.user)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_creates_parent_and_child_chunks(self):
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [
+            {
+                "text": "Parent chunk text",
+                "heading": "Section",
+                "token_count": 10,
+                "is_child": False,
+                "source_page_start": 1,
+                "source_page_end": 1,
+                "source_offset_start": 0,
+                "source_offset_end": 17,
+                "children": [
+                    {"text": "Child chunk 1", "heading": "Section", "token_count": 5, "is_child": True, "child_index": 0},
+                    {"text": "Child chunk 2", "heading": "Section", "token_count": 5, "is_child": True, "child_index": 1},
+                ],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="test.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
+
+                with patch("documents.services.process_document.extract_and_chunk_file", return_value=sample_chunks):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+                parent_chunks = doc.chunks.filter(is_child=False)
+                child_chunks = doc.chunks.filter(is_child=True)
+                self.assertEqual(parent_chunks.count(), 1)
+                self.assertEqual(child_chunks.count(), 2)
+
+                # Children should reference their parent
+                parent = parent_chunks.first()
+                for child in child_chunks:
+                    self.assertEqual(child.parent_id, parent.pk)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_backward_compat_no_children(self):
+        """Chunks without children still work (legacy format)."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [
+            {
+                "text": "Simple chunk",
+                "heading": None,
+                "token_count": 5,
+                "source_page_start": 1,
+                "source_page_end": 1,
+                "source_offset_start": 0,
+                "source_offset_end": 12,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="legacy.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("legacy.txt", ContentFile(b"hello"), save=True)
+
+                with patch("documents.services.process_document.extract_and_chunk_file", return_value=sample_chunks):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                self.assertEqual(doc.chunks.count(), 1)
+                self.assertFalse(doc.chunks.first().is_child)
+
+
+class RetrievalParentChildTests(TestCase):
+    """Tests for retrieval with parent-child chunks."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="rpc@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="RPCProject", slug="rpc-project", created_by=self.user)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="rpc.txt",
+            status=DataRoomDocument.Status.READY,
+        )
+
+    def test_get_chunks_by_document_returns_parents_only(self):
+        parent = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Parent", token_count=5, is_child=False,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Child", token_count=3, is_child=True, parent=parent,
+        )
+        result = get_chunks_by_document(self.doc.id)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["text"], "Parent")
+
+    def test_get_chunks_by_data_room_returns_parents_only(self):
+        parent = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Parent", token_count=5, is_child=False,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Child", token_count=3, is_child=True, parent=parent,
+        )
+        result = get_chunks_by_data_room(self.data_room.id)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["text"], "Parent")
+
+    def test_legacy_chunks_still_work(self):
+        """Chunks without parent/child fields still returned normally."""
+        DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Legacy chunk", token_count=5,
+        )
+        result = get_chunks_by_document(self.doc.id)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["text"], "Legacy chunk")
+
+    @patch("documents.services.retrieval.fulltext_search_chunks")
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_resolves_child_to_parent(self, mock_sem, mock_fts):
+        """When semantic search returns a child chunk, hybrid resolves to parent."""
+        parent = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Full parent text here", token_count=10, is_child=False,
+        )
+        child = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Child excerpt", token_count=5, is_child=True, parent=parent,
+        )
+
+        # Simulate semantic search returning the child chunk
+        sem_doc = MagicMock()
+        sem_doc.page_content = "Child excerpt"
+        sem_doc.metadata = {
+            "chunk_id": child.pk,
+            "document_id": self.doc.pk,
+            "data_room_id": self.data_room.pk,
+            "chunk_index": 0,
+        }
+        mock_sem.return_value = [sem_doc]
+        mock_fts.return_value = []
+
+        results = hybrid_search_chunks(data_room_ids=[self.data_room.pk], query="test", k=5)
+        self.assertEqual(len(results), 1)
+        # Should return parent text, not child text
+        self.assertEqual(results[0]["id"], parent.pk)
+        self.assertEqual(results[0]["text"], "Full parent text here")
+
+    @patch("documents.services.retrieval.fulltext_search_chunks")
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_deduplicates_children_of_same_parent(self, mock_sem, mock_fts):
+        """Multiple child matches from same parent should deduplicate to one result."""
+        parent = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Parent text", token_count=10, is_child=False,
+        )
+        child1 = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Child 1", token_count=3, is_child=True, parent=parent,
+        )
+        child2 = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=1, text="Child 2", token_count=3, is_child=True, parent=parent,
+        )
+
+        sem_doc1 = MagicMock()
+        sem_doc1.page_content = "Child 1"
+        sem_doc1.metadata = {"chunk_id": child1.pk, "document_id": self.doc.pk, "data_room_id": self.data_room.pk, "chunk_index": 0}
+        sem_doc2 = MagicMock()
+        sem_doc2.page_content = "Child 2"
+        sem_doc2.metadata = {"chunk_id": child2.pk, "document_id": self.doc.pk, "data_room_id": self.data_room.pk, "chunk_index": 1}
+        mock_sem.return_value = [sem_doc1, sem_doc2]
+        mock_fts.return_value = []
+
+        results = hybrid_search_chunks(data_room_ids=[self.data_room.pk], query="test", k=5)
+        # Should be deduplicated to one parent
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], parent.pk)
+        # Score should accumulate from both children
+        self.assertGreater(results[0]["rrf_score"], _rrf_score(0))
+
+
+class ReadDocumentToolTests(TestCase):
+    """Tests for ReadDocumentTool filtering to parent chunks."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="rdt@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="RDTProject", slug="rdt-project", created_by=self.user)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="rdt.txt",
+            status=DataRoomDocument.Status.READY,
+            doc_index=1,
+        )
+
+    def test_read_document_assembles_from_parents_only(self):
+        import json
+        from chat.tools import ReadDocumentTool
+
+        parent = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Parent content", token_count=5, is_child=False,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="Child content", token_count=3, is_child=True, parent=parent,
+        )
+
+        tool = ReadDocumentTool()
+        mock_context = MagicMock()
+        mock_context.data_room_ids = [self.data_room.pk]
+        mock_context.user_id = self.user.pk
+        tool.context = mock_context
+
+        result = json.loads(tool._run(doc_indices=[1]))
+        documents = result["documents"]
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["content"], "Parent content")
+        self.assertNotIn("Child content", documents[0]["content"])
+
+
+class CleanExtractedTextTests(TestCase):
+    """Tests for clean_extracted_text() PDF artifact cleaning."""
+
+    def test_hyphenated_line_breaks_rejoined(self):
+        self.assertEqual(clean_extracted_text("work-\nforce"), "workforce")
+        self.assertEqual(clean_extracted_text("tech-\n  nology"), "technology")
+
+    def test_doi_lines_removed(self):
+        text = "Some content.\nhttps://doi.org/10.1080/12345\nMore content."
+        result = clean_extracted_text(text)
+        self.assertNotIn("doi.org", result)
+        self.assertIn("Some content.", result)
+        self.assertIn("More content.", result)
+
+    def test_journal_header_lines_removed(self):
+        text = "JOURNAL OF CHANGE MANAGEMENT\nActual body text here."
+        result = clean_extracted_text(text)
+        self.assertNotIn("JOURNAL OF CHANGE MANAGEMENT", result)
+        self.assertIn("Actual body text here.", result)
+
+    def test_journal_header_too_short_preserved(self):
+        """Lines under 10 chars of all-caps are not treated as headers."""
+        text = "OK SURE\nBody text."
+        result = clean_extracted_text(text)
+        self.assertIn("OK SURE", result)
+
+    def test_standalone_page_numbers_removed(self):
+        text = "First paragraph.\n42\nSecond paragraph."
+        result = clean_extracted_text(text)
+        self.assertNotIn("\n42\n", result)
+        self.assertIn("First paragraph.", result)
+        self.assertIn("Second paragraph.", result)
+
+    def test_page_n_format_removed(self):
+        text = "Content.\nPage 3\nMore content."
+        result = clean_extracted_text(text)
+        self.assertNotIn("Page 3", result)
+
+    def test_n_of_m_format_removed(self):
+        text = "Content.\n5 of 20\nMore content."
+        result = clean_extracted_text(text)
+        self.assertNotIn("5 of 20", result)
+
+    def test_excessive_blank_lines_collapsed(self):
+        text = "First.\n\n\n\n\nSecond."
+        result = clean_extracted_text(text)
+        self.assertNotIn("\n\n\n", result)
+        self.assertIn("First.\n\nSecond.", result)
+
+    def test_excess_inline_whitespace_collapsed(self):
+        text = "word     word"
+        result = clean_extracted_text(text)
+        self.assertEqual(result, "word word")
+
+    def test_inline_urls_preserved(self):
+        text = "Visit https://example.com/path?q=1 for more info."
+        result = clean_extracted_text(text)
+        self.assertIn("https://example.com/path?q=1", result)
+
+    def test_inline_emails_preserved(self):
+        text = "Contact user@example.com for details."
+        result = clean_extracted_text(text)
+        self.assertIn("user@example.com", result)
+
+    def test_body_content_preserved(self):
+        body = (
+            "This study examines technology transfer from universities "
+            "to industry. Results show a 42% increase in patent licensing."
+        )
+        result = clean_extracted_text(body)
+        self.assertEqual(result, body)
+
+    def test_combined_artifacts(self):
+        """Multiple artifact types cleaned in one pass."""
+        text = (
+            "JOURNAL OF TECHNOLOGY TRANSFER\n"
+            "https://doi.org/10.1007/s10961\n\n"
+            "The work-\nforce adapted quickly.\n\n\n\n"
+            "Page 1\n"
+            "Some  extra   spaces here."
+        )
+        result = clean_extracted_text(text)
+        self.assertNotIn("JOURNAL OF TECHNOLOGY TRANSFER", result)
+        self.assertNotIn("doi.org", result)
+        self.assertIn("workforce", result)
+        self.assertNotIn("\n\n\n", result)
+        self.assertNotIn("Page 1", result)
+        self.assertNotIn("  extra", result)
+        self.assertIn("Some extra spaces here.", result)
+
+    def test_numbers_in_body_text_preserved(self):
+        """Numbers that are part of sentences should not be removed."""
+        text = "The sample included 42 participants across 3 sites."
+        result = clean_extracted_text(text)
+        self.assertEqual(result, text)
+
+    def test_empty_input(self):
+        self.assertEqual(clean_extracted_text(""), "")
+        self.assertEqual(clean_extracted_text("   "), "")

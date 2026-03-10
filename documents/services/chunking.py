@@ -8,6 +8,7 @@ heading, token_count, and source location fields.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,40 @@ from django.conf import settings
 from core.tokens import count_tokens as _count_tokens
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Compiled regexes for clean_extracted_text
+# ---------------------------------------------------------------------------
+_RE_HYPHENATED_BREAK = re.compile(r"(\w)-\s*\n\s*(\w)")
+_RE_DOI_LINE = re.compile(r"^\s*https?://doi\.org/\S+\s*$", re.MULTILINE)
+_RE_JOURNAL_HEADER = re.compile(r"^[A-Z :&]{10,80}$", re.MULTILINE)
+_RE_PAGE_NUMBER = re.compile(
+    r"^\s*(?:Page\s+\d+(?:\s+of\s+\d+)?|\d+\s+of\s+\d+|\d+)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_RE_EXCESS_INLINE_WS = re.compile(r"[^\S\n]{2,}")
+_RE_EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
+
+
+def clean_extracted_text(text: str) -> str:
+    """Apply general-purpose cleaning to PDF-extracted text.
+
+    Order matters:
+    1. Rejoin hyphenated line breaks (before line-level removals)
+    2. Remove DOI-only lines
+    3. Remove all-caps journal/publication header lines
+    4. Remove standalone page numbers
+    5. Collapse excess inline whitespace
+    6. Collapse 3+ consecutive newlines to \\n\\n
+    """
+    text = _RE_HYPHENATED_BREAK.sub(r"\1\2", text)
+    text = _RE_DOI_LINE.sub("", text)
+    text = _RE_JOURNAL_HEADER.sub("", text)
+    text = _RE_PAGE_NUMBER.sub("", text)
+    text = _RE_EXCESS_INLINE_WS.sub(" ", text)
+    text = _RE_EXCESS_BLANK_LINES.sub("\n\n", text)
+    return text.strip()
+
 
 # Lazy imports to avoid loading LangChain at module import when not needed
 def _get_loaders():
@@ -146,17 +181,18 @@ def chunk_text(
     chunk_overlap_tokens: int | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Chunk a list of LangChain Documents (e.g. from load_documents).
-    Uses MarkdownHeaderTextSplitter when content looks like markdown,
-    then enforces max token size. Otherwise uses RecursiveCharacterTextSplitter
-    with tiktoken. Returns list of dicts with keys: text, heading, token_count,
-    source_page_start, source_page_end, source_offset_start, source_offset_end.
-    """
-    from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+    Chunk a list of LangChain Documents using structure-first parent-child splitting.
 
-    target = target_chunk_tokens or getattr(settings, "TARGET_CHUNK_TOKENS", 768)
-    max_tokens = max_chunk_tokens or getattr(settings, "MAX_CHUNK_TOKENS", 1200)
-    overlap = chunk_overlap_tokens or getattr(settings, "CHUNK_OVERLAP_TOKENS", 100)
+    Returns list of parent chunk dicts, each with a "children" list containing
+    child chunk dicts. Parent dicts have keys: text, heading, token_count, is_child,
+    source_page_start, source_page_end, source_offset_start, source_offset_end, children.
+    Child dicts have: text, heading, token_count, is_child, child_index.
+    """
+    from documents.services.splitters import detect_structure, parent_child_split
+
+    child_target = getattr(settings, "CHILD_CHUNK_TARGET_TOKENS", 300)
+    child_max = getattr(settings, "CHILD_CHUNK_MAX_TOKENS", 600)
+    child_overlap_pct = getattr(settings, "CHILD_CHUNK_OVERLAP_PCT", 0.20)
 
     # Combine all document contents with page metadata
     full_parts = []
@@ -171,105 +207,57 @@ def chunk_text(
     if not combined_text.strip():
         return []
 
-    total_tokens = _count_tokens(combined_text)
-    if total_tokens <= max_tokens:
-        first_meta = full_parts[0]["metadata"] if full_parts else {}
-        last_meta = full_parts[-1]["metadata"] if full_parts else {}
-        page_start = first_meta.get("page") if first_meta else None
-        page_end = last_meta.get("page") if last_meta else None
-        return [{
-            "text": combined_text.strip(),
-            "heading": None,
-            "token_count": total_tokens,
+    # Clean extraction artifacts (page numbers, DOI lines, etc.)
+    combined_text = clean_extracted_text(combined_text)
+
+    # Detect structure (uses \f for slide boundaries)
+    structure_type = detect_structure(combined_text)
+
+    # Strip form-feed characters after structure detection but before splitting
+    combined_text = combined_text.replace("\f", "")
+
+    pc_result = parent_child_split(
+        combined_text,
+        structure_type=structure_type,
+        child_target_tokens=child_target,
+        child_overlap_pct=child_overlap_pct,
+        max_child_tokens=child_max,
+    )
+
+    if not pc_result:
+        return []
+
+    # Resolve page info from document metadata
+    first_meta = full_parts[0]["metadata"] if full_parts else {}
+    last_meta = full_parts[-1]["metadata"] if full_parts else {}
+    page_start = first_meta.get("page") if first_meta else None
+    page_end = last_meta.get("page") if last_meta else None
+
+    # Convert to chunk dicts
+    chunks_out = []
+    for parent_data in pc_result:
+        children_out = []
+        for child in parent_data.get("children", []):
+            children_out.append({
+                "text": child["text"],
+                "heading": parent_data.get("heading"),
+                "token_count": child["token_count"],
+                "is_child": True,
+                "child_index": child["child_index"],
+            })
+        chunks_out.append({
+            "text": parent_data["text"],
+            "heading": parent_data.get("heading"),
+            "token_count": parent_data["token_count"],
+            "is_child": False,
             "source_page_start": page_start,
             "source_page_end": page_end,
-            "source_offset_start": 0,
-            "source_offset_end": len(combined_text),
-        }]
+            "source_offset_start": parent_data.get("source_offset_start"),
+            "source_offset_end": parent_data.get("source_offset_end"),
+            "children": children_out,
+        })
 
-    chunks_out = []
-    use_markdown = _looks_like_markdown(combined_text)
-    md_splits = []
-
-    if use_markdown:
-        headers_to_split_on = [
-            ("#", "Header 1"),
-            ("##", "Header 2"),
-            ("###", "Header 3"),
-        ]
-        splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
-        try:
-            md_splits = splitter.split_text(combined_text)
-        except Exception as e:
-            logger.warning("Markdown split failed, falling back to recursive: %s", e)
-            use_markdown = False
-
-    if use_markdown and md_splits:
-        token_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-            chunk_size=max_tokens,
-            chunk_overlap=overlap,
-            encoding_name="cl100k_base",
-        )
-        current_offset = 0
-        for i, split_doc in enumerate(md_splits):
-            content = getattr(split_doc, "page_content", "") or ""
-            meta = getattr(split_doc, "metadata", None) or {}
-            heading = meta.get("Header 1") or meta.get("Header 2") or meta.get("Header 3") or ""
-            if _count_tokens(content) <= max_tokens and content.strip():
-                chunks_out.append({
-                    "text": content.strip(),
-                    "heading": heading[:512] if heading else None,
-                    "token_count": _count_tokens(content),
-                    "source_page_start": None,
-                    "source_page_end": None,
-                    "source_offset_start": current_offset,
-                    "source_offset_end": current_offset + len(content),
-                })
-                current_offset += len(content)
-            else:
-                sub_splits = token_splitter.split_text(content)
-                for j, sub in enumerate(sub_splits):
-                    if not sub.strip():
-                        continue
-                    tok = _count_tokens(sub)
-                    chunks_out.append({
-                        "text": sub.strip(),
-                        "heading": heading[:512] if heading else None,
-                        "token_count": tok,
-                        "source_page_start": None,
-                        "source_page_end": None,
-                        "source_offset_start": current_offset,
-                        "source_offset_end": current_offset + len(sub),
-                    })
-                    current_offset += len(sub)
-    else:
-        token_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-            chunk_size=max_tokens,
-            chunk_overlap=overlap,
-            encoding_name="cl100k_base",
-        )
-        page_start = None
-        for doc in documents:
-            content = getattr(doc, "page_content", "") or ""
-            meta = getattr(doc, "metadata", None) or {}
-            page = meta.get("page") if meta else None
-            if page is not None and page_start is None:
-                page_start = page
-            splits = token_splitter.split_text(content)
-            for part in splits:
-                if not part.strip():
-                    continue
-                chunks_out.append({
-                    "text": part.strip(),
-                    "heading": None,
-                    "token_count": _count_tokens(part),
-                    "source_page_start": page if page is not None else None,
-                    "source_page_end": page if page is not None else None,
-                    "source_offset_start": None,
-                    "source_offset_end": None,
-                })
-
-    return _merge_small_chunks(chunks_out)
+    return chunks_out
 
 
 def extract_and_chunk_file(
