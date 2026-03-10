@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 MAX_BATCH_TOKENS = 1000
 OVERLAP_TOKENS = 200
 MAX_RETRIES = 2
-MAX_WORKERS = 20
+MAX_WORKERS = 10
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
 
