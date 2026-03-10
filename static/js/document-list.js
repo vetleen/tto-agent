@@ -124,6 +124,18 @@
   var activeList = setupListSelection('active', 'select-all-active', 'active-bulk-actions', 'active-selection-count', 'active-selection-label');
   var archivedList = setupListSelection('archived', 'select-all-archived', 'archived-bulk-actions', 'archived-selection-count', 'archived-selection-label');
 
+  function setButtonLoading(btn, loading) {
+    if (!btn) return;
+    if (loading) {
+      btn.disabled = true;
+      btn.dataset.origHtml = btn.innerHTML;
+      btn.innerHTML = '<svg class="w-4 h-4 animate-spin inline-block mr-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>Deleting\u2026';
+    } else {
+      btn.disabled = false;
+      if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
+    }
+  }
+
   function doFetch(url, body) {
     return fetch(url, {
       method: 'POST',
@@ -145,7 +157,10 @@
       var ids = activeList.getSelectedIds();
       if (!ids.length) return;
       if (!confirm('Are you sure you want to delete ' + ids.length + ' document(s)?')) return;
-      doFetch(bulkDeleteUrl, { document_ids: ids }).then(function () { location.reload(); });
+      setButtonLoading(activeBulkDelete, true);
+      doFetch(bulkDeleteUrl, { document_ids: ids })
+        .then(function (r) { if (!r.ok) throw new Error('Delete failed'); location.reload(); })
+        .catch(function () { alert('Failed to delete documents. Please try again.'); setButtonLoading(activeBulkDelete, false); });
     });
   }
 
@@ -166,7 +181,10 @@
       var ids = archivedList.getSelectedIds();
       if (!ids.length) return;
       if (!confirm('Are you sure you want to delete ' + ids.length + ' document(s)?')) return;
-      doFetch(bulkDeleteUrl, { document_ids: ids }).then(function () { location.reload(); });
+      setButtonLoading(archivedBulkDelete, true);
+      doFetch(bulkDeleteUrl, { document_ids: ids })
+        .then(function (r) { if (!r.ok) throw new Error('Delete failed'); location.reload(); })
+        .catch(function () { alert('Failed to delete documents. Please try again.'); setButtonLoading(archivedBulkDelete, false); });
     });
   }
 
