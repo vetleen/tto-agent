@@ -13,6 +13,7 @@ class ContextAwareTool(BaseTool):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     context: RunContext | None = None
+    section: str = "chat"
 
     def set_context(self, ctx: RunContext) -> "ContextAwareTool":
         self.context = ctx

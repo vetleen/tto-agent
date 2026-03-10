@@ -112,20 +112,62 @@ def org_settings_page(request):
     org_models = org_prefs.get("models", {})
     org_tools = org_prefs.get("tools", {})
 
+    SECTION_META = {
+        "chat": {
+            "label": "Wilfred Chat",
+            "description": "Tools available during chat conversations.",
+        },
+        "document_processing": {
+            "label": "Document Processing",
+            "description": "Tools used during automated document processing.",
+        },
+    }
+    TOOL_NOTES = {
+        "normalize_document": "Disabling this tool disables LLM-powered document normalization. Documents will be processed without markdown formatting.",
+    }
+
     system_models = get_allowed_models()
     system_defaults = get_system_defaults()
     all_tools = get_tool_registry().list_tools()
-    tool_list = [
-        {"name": name, "description": tool.description, "enabled": org_tools.get(name, True) is not False}
-        for name, tool in sorted(all_tools.items())
-    ]
+
+    # Group tools by section
+    tool_sections = {}
+    for name, tool in sorted(all_tools.items()):
+        section_key = getattr(tool, "section", "chat")
+        if section_key not in tool_sections:
+            meta = SECTION_META.get(section_key, {"label": section_key.replace("_", " ").title(), "description": ""})
+            tool_sections[section_key] = {
+                "label": meta["label"],
+                "description": meta["description"],
+                "tools": [],
+            }
+        tool_sections[section_key]["tools"].append({
+            "name": name,
+            "description": tool.description,
+            "enabled": org_tools.get(name, True) is not False,
+            "note": TOOL_NOTES.get(name, ""),
+        })
+
+    # Add normalization feature toggle (not a registered tool)
+    if "document_processing" not in tool_sections:
+        tool_sections["document_processing"] = {
+            "label": SECTION_META["document_processing"]["label"],
+            "description": SECTION_META["document_processing"]["description"],
+            "tools": [],
+        }
+    tool_sections["document_processing"]["tools"].append({
+        "name": "normalize_document",
+        "description": "LLM-powered document normalization that converts extracted text to clean markdown.",
+        "enabled": org_tools.get("normalize_document", True) is not False,
+        "note": TOOL_NOTES["normalize_document"],
+    })
 
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "system_models": system_models,
         "org_allowed": org_allowed,
         "org_models": org_models,
-        "org_tools": tool_list,
+        "tool_sections": tool_sections,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},

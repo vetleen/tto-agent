@@ -45,6 +45,51 @@ def _prepare_document_text(chunks_text: str) -> str:
     return f"{head}\n\n[... middle {omitted} tokens omitted ...]\n\n{tail}"
 
 
+def generate_description_from_text(
+    text: str,
+    user_id: int | None = None,
+    data_room_id: int | None = None,
+) -> str:
+    """Generate a one-paragraph description from raw text using the cheap LLM.
+
+    Unlike generate_document_description(), this takes text directly instead
+    of loading chunks from DB. Used early in the pipeline before chunks exist.
+    """
+    from llm import get_llm_service
+    from llm.types import ChatRequest, Message, RunContext
+
+    if not text.strip():
+        return ""
+
+    document_text = _prepare_document_text(text)
+
+    context = RunContext.create(
+        user_id=user_id,
+        conversation_id=data_room_id,
+    )
+    request = ChatRequest(
+        messages=[
+            Message(role="system", content=_SYSTEM_PROMPT),
+            Message(role="user", content=document_text),
+        ],
+        model=settings.LLM_DEFAULT_CHEAP_MODEL,
+        stream=False,
+        tools=[],
+        context=context,
+    )
+
+    service = get_llm_service()
+    response = service.run("simple_chat", request)
+    description = response.message.content.strip()
+
+    logger.info(
+        "generate_description_from_text: user_id=%s len=%s",
+        user_id,
+        len(description),
+    )
+    return description
+
+
 def generate_document_description(document_id: int) -> str:
     """Generate a one-paragraph description of a document using the cheap LLM.
 

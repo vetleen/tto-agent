@@ -235,6 +235,22 @@ class OrgSettingsAccessTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "TestOrg")
 
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_tools_grouped_by_section(self, mock_reg, mock_models):
+        from unittest.mock import MagicMock
+        chat_tool = MagicMock(section="chat", description="Fetch a URL")
+        mock_reg.return_value.list_tools.return_value = {
+            "web_fetch": chat_tool,
+        }
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Wilfred Chat")
+        # normalize_document is manually appended, not from registry
+        self.assertContains(response, "Document Processing")
+        self.assertContains(response, "normalize_document")
+
     def test_member_gets_403(self):
         self.client.login(email=self.member_user.email, password=self.password)
         response = self.client.get(self.url)

@@ -27,6 +27,13 @@ class SimpleChatPipeline(BasePipeline):
     def __init__(self, max_tool_iterations: int = 10) -> None:
         self.max_tool_iterations = max_tool_iterations
 
+    def _get_max_iterations(self, request: ChatRequest) -> int:
+        """Return max tool iterations, allowing per-request override via params."""
+        override = (request.params or {}).get("max_tool_iterations")
+        if override is not None:
+            return int(override)
+        return self.max_tool_iterations
+
     def run(self, request: ChatRequest) -> ChatResponse:
         tool_names = request.tools or []
         if not tool_names:
@@ -36,7 +43,8 @@ class SimpleChatPipeline(BasePipeline):
             raise ValueError("request.model must be set by the service before calling pipeline")
         tools = self._resolve_tools(tool_names, request.context)
         req = request.model_copy(update={"tool_schemas": tools})
-        return self._run_tool_loop(get_model_registry().get_model(req.model), req, tools)
+        max_iter = self._get_max_iterations(request)
+        return self._run_tool_loop(get_model_registry().get_model(req.model), req, tools, max_iter)
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         tool_names = request.tools or []
@@ -102,11 +110,12 @@ class SimpleChatPipeline(BasePipeline):
         chat_model: ChatModel,
         request: ChatRequest,
         tools: List[ContextAwareTool],
+        max_iterations: int | None = None,
     ) -> ChatResponse:
         tool_by_name = {t.name: t for t in tools}
         req = request
 
-        for _ in range(self.max_tool_iterations):
+        for _ in range(max_iterations if max_iterations is not None else self.max_tool_iterations):
             response = chat_model.generate(req)
             msg = response.message
             if not msg.tool_calls:

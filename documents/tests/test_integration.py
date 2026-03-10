@@ -15,6 +15,7 @@ User = get_user_model()
 @override_settings(
     CELERY_TASK_ALWAYS_EAGER=True,
     PGVECTOR_CONNECTION="",  # Disable vector store so no OpenAI/pgvector calls
+    LLM_DEFAULT_CHEAP_MODEL="",  # Disable LLM normalization/description in integration test
 )
 class UploadProcessRetrieveIntegrationTest(TestCase):
     """Test full flow: upload file → task processes → document READY → chunks API returns data."""

@@ -56,28 +56,37 @@
   <!-- Tools -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">Tools</h2>
-    <p class="mt-1 text-sm text-body">Enable or disable tools for all members. Disabled tools will not be available in chat.</p>
+    <p class="mt-1 text-sm text-body">Enable or disable tools for all members.</p>
 
-    <div class="mt-4 space-y-2">
-      {% for tool in org_tools %}
-      <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
-        <div>
-          <span class="text-sm font-medium text-heading">{{ tool.name }}</span>
-          {% if tool.description %}
-          <p class="text-xs text-body mt-0.5">{{ tool.description }}</p>
-          {% endif %}
-        </div>
-        <input
-          type="checkbox"
-          class="tool-toggle rounded border-default text-brand focus:ring-brand-medium"
-          data-tool="{{ tool.name }}"
-          {% if tool.enabled %}checked{% endif %}
-        >
-      </label>
-      {% empty %}
-      <p class="text-sm text-body italic">No tools registered.</p>
-      {% endfor %}
+    {% for section_key, section in tool_sections.items %}
+    <div class="mt-6">
+      <h3 class="text-base font-medium text-heading">{{ section.label }}</h3>
+      <p class="mt-1 text-sm text-body">{{ section.description }}</p>
+      <div class="mt-3 space-y-2">
+        {% for tool in section.tools %}
+        <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
+          <div>
+            <span class="text-sm font-medium text-heading">{{ tool.name }}</span>
+            {% if tool.description %}
+            <p class="text-xs text-body mt-0.5">{{ tool.description }}</p>
+            {% endif %}
+            {% if tool.note %}
+            <p class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">{{ tool.note }}</p>
+            {% endif %}
+          </div>
+          <input
+            type="checkbox"
+            class="tool-toggle rounded border-default text-brand focus:ring-brand-medium"
+            data-tool="{{ tool.name }}"
+            {% if tool.enabled %}checked{% endif %}
+          >
+        </label>
+        {% endfor %}
+      </div>
     </div>
+    {% empty %}
+    <p class="mt-4 text-sm text-body italic">No tools registered.</p>
+    {% endfor %}
   </section>
 </main>
 

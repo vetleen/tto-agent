@@ -33,7 +33,9 @@ def get_preferences(user) -> ResolvedPreferences:
     system_mid = getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or ""
     system_cheap = getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or ""
 
-    all_tools = list(get_tool_registry().list_tools().keys())
+    registry = get_tool_registry()
+    all_tools_dict = registry.list_tools()
+    chat_tools = [n for n, t in all_tools_dict.items() if getattr(t, "section", "chat") == "chat"]
 
     # --- Organization level ---
     org_prefs = _get_org_preferences(user)
@@ -75,9 +77,9 @@ def get_preferences(user) -> ResolvedPreferences:
         system_allowed=system_allowed,
     )
 
-    # Resolve tools: start with all, filter out org-disabled
+    # Resolve tools: filter by section, then apply org toggles
     allowed_tools = [
-        t for t in all_tools
+        t for t in chat_tools
         if org_tools.get(t, True) is not False
     ]
 

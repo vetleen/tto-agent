@@ -410,10 +410,10 @@ class ProcessDocumentServiceTests(TestCase):
 
         sample_chunks = [
             {"text": "First chunk", "heading": None, "token_count": 10,
-             "source_page_start": 1, "source_page_end": 1,
+             "source_page_start": None, "source_page_end": None,
              "source_offset_start": 0, "source_offset_end": 11},
             {"text": "Second chunk", "heading": "Section", "token_count": 12,
-             "source_page_start": 1, "source_page_end": 1,
+             "source_page_start": None, "source_page_end": None,
              "source_offset_start": 12, "source_offset_end": 24},
         ]
 
@@ -427,7 +427,9 @@ class ProcessDocumentServiceTests(TestCase):
                 )
                 doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
 
-                with patch("documents.services.process_document.extract_and_chunk_file", return_value=sample_chunks):
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
+                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks), \
+                     patch("documents.services.normalization.normalize_text", return_value="hello world"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
@@ -470,7 +472,7 @@ class ProcessDocumentServiceTests(TestCase):
                 doc.original_file.save("bad.txt", ContentFile(b"content"), save=True)
 
                 with patch(
-                    "documents.services.process_document.extract_and_chunk_file",
+                    "documents.services.process_document.load_documents",
                     side_effect=RuntimeError("parse error"),
                 ):
                     process_document(doc.id)
@@ -736,7 +738,9 @@ class ProcessDocumentParentChildTests(TestCase):
                 )
                 doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
 
-                with patch("documents.services.process_document.extract_and_chunk_file", return_value=sample_chunks):
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
+                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks), \
+                     patch("documents.services.normalization.normalize_text", return_value="hello world"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
@@ -780,13 +784,89 @@ class ProcessDocumentParentChildTests(TestCase):
                 )
                 doc.original_file.save("legacy.txt", ContentFile(b"hello"), save=True)
 
-                with patch("documents.services.process_document.extract_and_chunk_file", return_value=sample_chunks):
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello")]), \
+                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks), \
+                     patch("documents.services.normalization.normalize_text", return_value="hello"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.READY)
                 self.assertEqual(doc.chunks.count(), 1)
                 self.assertFalse(doc.chunks.first().is_child)
+
+
+class ProcessDocumentNormalizationTests(TestCase):
+    """Tests that process_document calls normalization before chunking."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="norm@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="NormProject", slug="norm-project", created_by=self.user)
+
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_normalization_called_before_chunking(self):
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        call_order = []
+
+        def track_normalize(*args, **kwargs):
+            call_order.append("normalize")
+            return "normalized text"
+
+        def track_chunk(*args, **kwargs):
+            call_order.append("chunk")
+            return [{"text": "chunk", "heading": None, "token_count": 5,
+                      "source_page_start": None, "source_page_end": None,
+                      "source_offset_start": 0, "source_offset_end": 5}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="test.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
+                     patch("documents.services.normalization.normalize_text", side_effect=track_normalize) as mock_norm, \
+                     patch("documents.services.process_document.chunk_from_string", side_effect=track_chunk), \
+                     patch("documents.services.description.generate_description_from_text", return_value="A test doc"):
+                    process_document(doc.id)
+
+                self.assertEqual(call_order, ["normalize", "chunk"])
+                mock_norm.assert_called_once()
+
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_normalization_failure_falls_back_to_cleaned_text(self):
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="fallback.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("fallback.txt", ContentFile(b"hello world"), save=True)
+
+                sample_chunks = [{"text": "chunk", "heading": None, "token_count": 5,
+                                  "source_page_start": None, "source_page_end": None,
+                                  "source_offset_start": 0, "source_offset_end": 5}]
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
+                     patch("documents.services.normalization.normalize_text", side_effect=RuntimeError("LLM down")), \
+                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks) as mock_chunk, \
+                     patch("documents.services.description.generate_description_from_text", return_value=""):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                # chunk_from_string should still be called with cleaned text
+                mock_chunk.assert_called_once()
 
 
 class RetrievalParentChildTests(TestCase):

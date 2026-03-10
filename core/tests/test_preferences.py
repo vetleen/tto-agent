@@ -5,6 +5,8 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 
 from accounts.models import Membership, Organization, UserSettings
+from unittest.mock import MagicMock
+
 from core.preferences import ResolvedPreferences, get_preferences
 
 
@@ -251,3 +253,29 @@ class OrgDefaultRemovedFromAllowedTest(TestCase):
         # Must NOT resolve to claude since it's not in the org's allowed list
         self.assertNotEqual(prefs.primary_model, "anthropic/claude-sonnet-4-5")
         self.assertEqual(prefs.primary_model, "openai/gpt-5")
+
+
+class SectionAwareToolFilteringTest(TestCase):
+    """Processing tools (document_processing section) are excluded from chat allowed_tools."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_processing_tools_excluded_from_allowed_tools(self, mock_registry, mock_allowed):
+        chat_tool = MagicMock(section="chat")
+        proc_tool = MagicMock(section="document_processing")
+
+        mock_registry.return_value.list_tools.return_value = {
+            "search_documents": chat_tool,
+            "normalize_document": proc_tool,
+        }
+
+        user = _create_user(email="section@example.com")
+        prefs = get_preferences(user)
+
+        self.assertIn("search_documents", prefs.allowed_tools)
+        self.assertNotIn("normalize_document", prefs.allowed_tools)

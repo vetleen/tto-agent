@@ -260,6 +260,61 @@ def chunk_text(
     return chunks_out
 
 
+def chunk_from_string(text: str) -> list[dict[str, Any]]:
+    """Chunk a pre-processed text string. Skips loading and cleaning.
+
+    Used when text has already been extracted, cleaned, and optionally
+    normalized to markdown. Returns the same chunk dict format as chunk_text().
+    """
+    from documents.services.splitters import detect_structure, parent_child_split
+
+    child_target = getattr(settings, "CHILD_CHUNK_TARGET_TOKENS", 300)
+    child_max = getattr(settings, "CHILD_CHUNK_MAX_TOKENS", 600)
+    child_overlap_pct = getattr(settings, "CHILD_CHUNK_OVERLAP_PCT", 0.20)
+
+    if not text.strip():
+        return []
+
+    structure_type = detect_structure(text)
+    text = text.replace("\f", "")
+
+    pc_result = parent_child_split(
+        text,
+        structure_type=structure_type,
+        child_target_tokens=child_target,
+        child_overlap_pct=child_overlap_pct,
+        max_child_tokens=child_max,
+    )
+
+    if not pc_result:
+        return []
+
+    chunks_out = []
+    for parent_data in pc_result:
+        children_out = []
+        for child in parent_data.get("children", []):
+            children_out.append({
+                "text": child["text"],
+                "heading": parent_data.get("heading"),
+                "token_count": child["token_count"],
+                "is_child": True,
+                "child_index": child["child_index"],
+            })
+        chunks_out.append({
+            "text": parent_data["text"],
+            "heading": parent_data.get("heading"),
+            "token_count": parent_data["token_count"],
+            "is_child": False,
+            "source_page_start": None,
+            "source_page_end": None,
+            "source_offset_start": parent_data.get("source_offset_start"),
+            "source_offset_end": parent_data.get("source_offset_end"),
+            "children": children_out,
+        })
+
+    return chunks_out
+
+
 def extract_and_chunk_file(
     file_path: str | Path,
     file_extension: str,

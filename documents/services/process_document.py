@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.contrib.postgres.search import SearchVector
 
 from documents.models import DataRoomDocument, DataRoomDocumentChunk
-from documents.services.chunking import extract_and_chunk_file
+from documents.services.chunking import chunk_from_string, clean_extracted_text, load_documents
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +47,42 @@ def process_document(document_id: int) -> None:
             raise FileNotFoundError(f"Document file not found: {doc.original_file}")
 
         ext = (doc.original_filename or "").rsplit(".", 1)[-1].lower() or "txt"
-        logger.info("process_document: document_id=%s stage=extracting", document_id)
-        chunks_data = extract_and_chunk_file(file_path, ext)
-        logger.info("process_document: document_id=%s stage=chunked count=%s", document_id, len(chunks_data))
         doc.parser_type = "pypdf" if ext == "pdf" else "text"
+
+        # 1. Extract
+        logger.info("process_document: document_id=%s stage=extracting", document_id)
+        docs = load_documents(file_path, ext)
+        combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
+        cleaned = clean_extracted_text(combined)
+
+        # 2. Generate description early (before normalization)
+        description = ""
+        if getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", ""):
+            try:
+                from documents.services.description import generate_description_from_text
+                description = generate_description_from_text(
+                    cleaned, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id
+                )
+                doc.description = description
+                doc.save(update_fields=["description", "updated_at"])
+            except Exception:
+                logger.exception("process_document: document_id=%s description generation failed", document_id)
+
+        # 3. Normalize to markdown
+        try:
+            from documents.services.normalization import normalize_text
+            normalized = normalize_text(
+                cleaned, description=description,
+                user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id,
+            )
+        except Exception:
+            logger.exception("process_document: document_id=%s normalization failed, using cleaned text", document_id)
+            normalized = cleaned
+
+        # 4. Chunk from normalized string
+        logger.info("process_document: document_id=%s stage=chunking", document_id)
+        chunks_data = chunk_from_string(normalized)
+        logger.info("process_document: document_id=%s stage=chunked count=%s", document_id, len(chunks_data))
 
         # Determine chunking strategy from structure
         has_children = any(c.get("children") for c in chunks_data)
@@ -173,13 +205,6 @@ def process_document(document_id: int) -> None:
         doc.processed_at = timezone.now()
         doc.save(update_fields=["status", "processing_error", "processed_at", "embedding_model", "updated_at"])
 
-        # Generate document description (non-critical — failures are logged, not raised)
-        if getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", ""):
-            try:
-                from documents.services.description import generate_document_description
-                generate_document_description(document_id)
-            except Exception:
-                logger.exception("process_document: document_id=%s description generation failed", document_id)
         duration_seconds = time.perf_counter() - started_at
         logger.info(
             "process_document: document_id=%s data_room_id=%s stage=ready chunk_count=%s duration_seconds=%.2f",

@@ -29,6 +29,13 @@ class ToolRegistry:
         """Return a copy of the name -> tool mapping."""
         return dict(self._tools)
 
+    def list_tools_by_section(self, section: str) -> Dict[str, ContextAwareTool]:
+        """Return tools filtered by section."""
+        return {
+            name: tool for name, tool in self._tools.items()
+            if getattr(tool, "section", "chat") == section
+        }
+
     def clear(self) -> None:
         """Remove all registered tools."""
         self._tools.clear()
