@@ -112,8 +112,6 @@ def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, data_room_
             "data_room_id": data_room_id,
             "chunk_index": chunk.get("chunk_index", i),
         }
-        if chunk.get("parent_id"):
-            meta["parent_chunk_id"] = chunk["parent_id"]
         doc = Document(page_content=chunk["text"], metadata=meta)
         docs.append(doc)
     store.add_documents(docs)

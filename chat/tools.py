@@ -81,10 +81,14 @@ class SearchDocumentsTool(ContextAwareTool):
                 "error_type": type(exc).__name__,
             })
 
+        from documents.services.retrieval import get_chunk_with_context
+
         results = []
         for doc in docs:
+            chunk_id = doc.metadata.get("chunk_id")
+            context = get_chunk_with_context(chunk_id) if chunk_id else {}
             results.append({
-                "text": doc.page_content,
+                "text": context.get("context_text", doc.page_content),
                 "metadata": doc.metadata,
             })
 
@@ -156,7 +160,7 @@ class ReadDocumentTool(ContextAwareTool):
                     is_archived=False,
                 ).first()
 
-            chunks = doc.chunks.filter(is_child=False).order_by("chunk_index").values_list("text", flat=True)
+            chunks = doc.chunks.order_by("chunk_index").values_list("text", flat=True)
             content = "\n\n".join(chunks)
 
             remaining = self._MAX_TOTAL_CHARS - total_chars

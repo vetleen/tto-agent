@@ -1,12 +1,14 @@
 """
 Backend retrieval: get chunks by data room/document (ordered), by similarity
 search, by full-text search, or hybrid (semantic + full-text with RRF).
+Provides dynamic context expansion via get_chunk_with_context().
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
+from django.conf import settings as django_settings
 from django.contrib.postgres.search import SearchQuery, SearchRank
 
 from documents.models import DataRoomDocumentChunk, DataRoomDocument
@@ -16,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
-    """Return parent chunks for a document in order (from DB)."""
+    """Return chunks for a document in order (from DB)."""
     chunks = DataRoomDocumentChunk.objects.filter(
-        document_id=document_id, is_child=False,
+        document_id=document_id,
     ).order_by("chunk_index")
     return [
         {
@@ -35,10 +37,10 @@ def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
 
 
 def get_chunks_by_data_room(data_room_id: int) -> list[dict[str, Any]]:
-    """Return parent chunks for a data room, grouped by document (order preserved). Excludes failed documents."""
+    """Return chunks for a data room, grouped by document (order preserved). Excludes failed documents."""
     chunks = (
         DataRoomDocumentChunk.objects.filter(
-            document__data_room_id=data_room_id, is_child=False,
+            document__data_room_id=data_room_id,
         )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
@@ -73,7 +75,6 @@ def fulltext_search_chunks(
     qs = (
         DataRoomDocumentChunk.objects.filter(
             document__data_room_id__in=data_room_ids,
-            is_child=False,
             search_vector__isnull=False,
         )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
@@ -161,34 +162,8 @@ def hybrid_search_chunks(
                 if (getattr(doc, "metadata", {}) or {}).get("document_id") not in archived_doc_ids
             ]
 
-    # ---- Resolve child chunks to parents --------------------------------------
-    # Semantic results may return child chunks; resolve them to parent text.
-    # Collect child chunk IDs to look up their parent.
-    semantic_chunk_ids = set()
-    for doc in semantic_results:
-        meta = getattr(doc, "metadata", {}) or {}
-        cid = meta.get("chunk_id")
-        if cid is not None:
-            semantic_chunk_ids.add(cid)
-
-    # Map child chunk IDs -> parent chunk info
-    child_to_parent: dict[int, dict[str, Any]] = {}
-    if semantic_chunk_ids:
-        child_chunks = DataRoomDocumentChunk.objects.filter(
-            pk__in=semantic_chunk_ids, is_child=True,
-        ).select_related("parent").only("id", "parent__id", "parent__text", "parent__heading", "parent__chunk_index", "parent__document_id")
-        for cc in child_chunks:
-            if cc.parent_id:
-                child_to_parent[cc.pk] = {
-                    "parent_id": cc.parent.pk,
-                    "parent_text": cc.parent.text,
-                    "parent_heading": cc.parent.heading,
-                    "parent_chunk_index": cc.parent.chunk_index,
-                    "document_id": cc.parent.document_id,
-                }
-
     # ---- Fuse with RRF -------------------------------------------------------
-    # Keyed by parent chunk DB id → merged dict (deduplicates children of same parent)
+    # Keyed by chunk DB id
     scored: dict[int, dict[str, Any]] = {}
 
     for rank_pos, doc in enumerate(semantic_results):
@@ -197,27 +172,12 @@ def hybrid_search_chunks(
         if chunk_id is None:
             continue
 
-        # Resolve child to parent
-        parent_info = child_to_parent.get(chunk_id)
-        if parent_info:
-            resolved_id = parent_info["parent_id"]
-            resolved_text = parent_info["parent_text"]
-            resolved_heading = parent_info["parent_heading"]
-            resolved_chunk_index = parent_info["parent_chunk_index"]
-            resolved_doc_id = parent_info["document_id"]
-        else:
-            resolved_id = chunk_id
-            resolved_text = getattr(doc, "page_content", "")
-            resolved_heading = None
-            resolved_chunk_index = meta.get("chunk_index", 0)
-            resolved_doc_id = meta.get("document_id")
-
-        entry = scored.setdefault(resolved_id, {
-            "id": resolved_id,
-            "chunk_index": resolved_chunk_index,
-            "text": resolved_text,
-            "heading": resolved_heading,
-            "document_id": resolved_doc_id,
+        entry = scored.setdefault(chunk_id, {
+            "id": chunk_id,
+            "chunk_index": meta.get("chunk_index", 0),
+            "text": getattr(doc, "page_content", ""),
+            "heading": None,
+            "document_id": meta.get("document_id"),
             "data_room_id": meta.get("data_room_id"),
             "rrf_score": 0.0,
         })
@@ -279,3 +239,88 @@ def similarity_search_chunks(
         )
         for r in results
     ]
+
+
+def get_chunk_with_context(
+    chunk_id: int,
+    target_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Fetch a chunk and expand with neighboring chunks until reaching token budget.
+
+    Expands symmetrically (alternating left/right neighbors by chunk_index).
+    Returns dict with: id, document_id, chunk_index, text, context_text,
+    token_count, context_token_count, chunks_included.
+    """
+    if target_tokens is None:
+        target_tokens = getattr(django_settings, "RETRIEVAL_CONTEXT_TARGET_TOKENS", 1200)
+
+    try:
+        center = DataRoomDocumentChunk.objects.get(pk=chunk_id)
+    except DataRoomDocumentChunk.DoesNotExist:
+        return {"error": f"Chunk {chunk_id} not found"}
+
+    # Fetch all chunks for the same document, ordered by chunk_index
+    all_chunks = list(
+        DataRoomDocumentChunk.objects.filter(document_id=center.document_id)
+        .order_by("chunk_index")
+        .values("id", "chunk_index", "text", "token_count")
+    )
+
+    # Find center position in list
+    center_pos = None
+    for i, c in enumerate(all_chunks):
+        if c["id"] == chunk_id:
+            center_pos = i
+            break
+
+    if center_pos is None:
+        return {"error": f"Chunk {chunk_id} not found in document chunks"}
+
+    # Start with center chunk
+    included_indices = [center_pos]
+    total_tokens = all_chunks[center_pos]["token_count"]
+
+    # Expand symmetrically
+    left = center_pos - 1
+    right = center_pos + 1
+
+    while total_tokens < target_tokens:
+        added = False
+        # Try left
+        if left >= 0:
+            candidate_tokens = all_chunks[left]["token_count"]
+            if total_tokens + candidate_tokens <= target_tokens:
+                included_indices.insert(0, left)
+                total_tokens += candidate_tokens
+                left -= 1
+                added = True
+            else:
+                left = -1  # Stop trying left
+        # Try right
+        if right < len(all_chunks):
+            candidate_tokens = all_chunks[right]["token_count"]
+            if total_tokens + candidate_tokens <= target_tokens:
+                included_indices.append(right)
+                total_tokens += candidate_tokens
+                right += 1
+                added = True
+            else:
+                right = len(all_chunks)  # Stop trying right
+
+        if not added:
+            break
+
+    included_indices.sort()
+    context_chunks = [all_chunks[i] for i in included_indices]
+    context_text = "\n\n".join(c["text"] for c in context_chunks)
+
+    return {
+        "id": chunk_id,
+        "document_id": center.document_id,
+        "chunk_index": center.chunk_index,
+        "text": center.text,
+        "context_text": context_text,
+        "token_count": center.token_count,
+        "context_token_count": total_tokens,
+        "chunks_included": [c["chunk_index"] for c in context_chunks],
+    }

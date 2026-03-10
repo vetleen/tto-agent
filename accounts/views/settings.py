@@ -122,9 +122,7 @@ def org_settings_page(request):
             "description": "Tools used during automated document processing.",
         },
     }
-    TOOL_NOTES = {
-        "normalize_document": "Disabling this tool disables LLM-powered document normalization. Documents will be processed without markdown formatting.",
-    }
+    TOOL_NOTES = {}
 
     system_models = get_allowed_models()
     system_defaults = get_system_defaults()
@@ -147,20 +145,6 @@ def org_settings_page(request):
             "enabled": org_tools.get(name, True) is not False,
             "note": TOOL_NOTES.get(name, ""),
         })
-
-    # Add normalization feature toggle (not a registered tool)
-    if "document_processing" not in tool_sections:
-        tool_sections["document_processing"] = {
-            "label": SECTION_META["document_processing"]["label"],
-            "description": SECTION_META["document_processing"]["description"],
-            "tools": [],
-        }
-    tool_sections["document_processing"]["tools"].append({
-        "name": "normalize_document",
-        "description": "LLM-powered document normalization that converts extracted text to clean markdown.",
-        "enabled": org_tools.get("normalize_document", True) is not False,
-        "note": TOOL_NOTES["normalize_document"],
-    })
 
     return render(request, "accounts/org_settings.html", {
         "org": org,

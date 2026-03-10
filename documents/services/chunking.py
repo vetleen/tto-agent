@@ -1,9 +1,8 @@
 """
-Text extraction and chunking for project documents.
+Text extraction and semantic chunking for project documents.
 
-Uses LangChain loaders and splitters: heading-first for markdown,
-token-based fallback with tiktoken. Outputs chunk dicts with text,
-heading, token_count, and source location fields.
+Uses LangChain loaders for extraction and SemanticChunker for
+embedding-based splitting into ~300-token flat chunks.
 """
 from __future__ import annotations
 
@@ -11,8 +10,6 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
-
-from django.conf import settings
 
 from core.tokens import count_tokens as _count_tokens
 
@@ -99,229 +96,36 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     raise ValueError(f"Unsupported file type: {ext}")
 
 
-def _looks_like_markdown(text: str) -> bool:
-    trimmed = text.strip()
-    return bool(trimmed.startswith("#") or "\n## " in trimmed or "\n# " in trimmed)
+def semantic_chunk(text: str) -> list[dict[str, Any]]:
+    """Split text into semantic chunks using embedding-based breakpoints.
 
-
-MIN_CHUNK_TOKENS = 200
-
-
-def _safe_min(a: int | None, b: int | None) -> int | None:
-    if a is None:
-        return b
-    if b is None:
-        return a
-    return min(a, b)
-
-
-def _safe_max(a: int | None, b: int | None) -> int | None:
-    if a is None:
-        return b
-    if b is None:
-        return a
-    return max(a, b)
-
-
-def _merge_small_chunks(
-    chunks: list[dict[str, Any]],
-    min_tokens: int = MIN_CHUNK_TOKENS,
-) -> list[dict[str, Any]]:
+    Uses SemanticChunker from langchain_experimental with OpenAI embeddings.
+    Returns flat list of dicts: {text, token_count, chunk_index}.
     """
-    Iteratively merge any chunk with token_count < min_tokens into the smallest
-    adjacent chunk (prev or next). Merged chunks may exceed max chunk size; we
-    leave them as-is. Recomputes token_count and source fields after each merge.
-    """
-    chunks = [dict(c) for c in chunks]
-    while True:
-        i = next((idx for idx, c in enumerate(chunks) if c["token_count"] < min_tokens), None)
-        if i is None:
-            break
-        c = chunks[i]
-        prev = chunks[i - 1] if i > 0 else None
-        nxt = chunks[i + 1] if i < len(chunks) - 1 else None
-        if prev is None and nxt is None:
-            break
-        if prev is None:
-            target_idx = i + 1
-            target = chunks[i + 1]
-            new_text = c["text"] + "\n\n" + target["text"]
-        elif nxt is None:
-            target_idx = i - 1
-            target = chunks[i - 1]
-            new_text = target["text"] + "\n\n" + c["text"]
-        else:
-            if prev["token_count"] <= nxt["token_count"]:
-                target_idx = i - 1
-                target = chunks[i - 1]
-                new_text = target["text"] + "\n\n" + c["text"]
-            else:
-                target_idx = i + 1
-                target = chunks[i + 1]
-                new_text = c["text"] + "\n\n" + target["text"]
-        new_text = new_text.strip()
-        chunks[target_idx] = {
-            "text": new_text,
-            "heading": target.get("heading"),
-            "token_count": _count_tokens(new_text),
-            "source_page_start": _safe_min(c.get("source_page_start"), target.get("source_page_start")),
-            "source_page_end": _safe_max(c.get("source_page_end"), target.get("source_page_end")),
-            "source_offset_start": _safe_min(c.get("source_offset_start"), target.get("source_offset_start")),
-            "source_offset_end": _safe_max(c.get("source_offset_end"), target.get("source_offset_end")),
-        }
-        chunks.pop(i)
-    return chunks
-
-
-def chunk_text(
-    documents: list[Any],
-    *,
-    target_chunk_tokens: int | None = None,
-    max_chunk_tokens: int | None = None,
-    chunk_overlap_tokens: int | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Chunk a list of LangChain Documents using structure-first parent-child splitting.
-
-    Returns list of parent chunk dicts, each with a "children" list containing
-    child chunk dicts. Parent dicts have keys: text, heading, token_count, is_child,
-    source_page_start, source_page_end, source_offset_start, source_offset_end, children.
-    Child dicts have: text, heading, token_count, is_child, child_index.
-    """
-    from documents.services.splitters import detect_structure, parent_child_split
-
-    child_target = getattr(settings, "CHILD_CHUNK_TARGET_TOKENS", 300)
-    child_max = getattr(settings, "CHILD_CHUNK_MAX_TOKENS", 600)
-    child_overlap_pct = getattr(settings, "CHILD_CHUNK_OVERLAP_PCT", 0.20)
-
-    # Combine all document contents with page metadata
-    full_parts = []
-    for doc in documents:
-        content = getattr(doc, "page_content", "") or ""
-        meta = getattr(doc, "metadata", None) or {}
-        full_parts.append({"content": content, "metadata": meta})
-    if not full_parts:
-        return []
-
-    combined_text = "\n\n".join(p["content"] for p in full_parts)
-    if not combined_text.strip():
-        return []
-
-    # Clean extraction artifacts (page numbers, DOI lines, etc.)
-    combined_text = clean_extracted_text(combined_text)
-
-    # Detect structure (uses \f for slide boundaries)
-    structure_type = detect_structure(combined_text)
-
-    # Strip form-feed characters after structure detection but before splitting
-    combined_text = combined_text.replace("\f", "")
-
-    pc_result = parent_child_split(
-        combined_text,
-        structure_type=structure_type,
-        child_target_tokens=child_target,
-        child_overlap_pct=child_overlap_pct,
-        max_child_tokens=child_max,
-    )
-
-    if not pc_result:
-        return []
-
-    # Resolve page info from document metadata
-    first_meta = full_parts[0]["metadata"] if full_parts else {}
-    last_meta = full_parts[-1]["metadata"] if full_parts else {}
-    page_start = first_meta.get("page") if first_meta else None
-    page_end = last_meta.get("page") if last_meta else None
-
-    # Convert to chunk dicts
-    chunks_out = []
-    for parent_data in pc_result:
-        children_out = []
-        for child in parent_data.get("children", []):
-            children_out.append({
-                "text": child["text"],
-                "heading": parent_data.get("heading"),
-                "token_count": child["token_count"],
-                "is_child": True,
-                "child_index": child["child_index"],
-            })
-        chunks_out.append({
-            "text": parent_data["text"],
-            "heading": parent_data.get("heading"),
-            "token_count": parent_data["token_count"],
-            "is_child": False,
-            "source_page_start": page_start,
-            "source_page_end": page_end,
-            "source_offset_start": parent_data.get("source_offset_start"),
-            "source_offset_end": parent_data.get("source_offset_end"),
-            "children": children_out,
-        })
-
-    return chunks_out
-
-
-def chunk_from_string(text: str) -> list[dict[str, Any]]:
-    """Chunk a pre-processed text string. Skips loading and cleaning.
-
-    Used when text has already been extracted, cleaned, and optionally
-    normalized to markdown. Returns the same chunk dict format as chunk_text().
-    """
-    from documents.services.splitters import detect_structure, parent_child_split
-
-    child_target = getattr(settings, "CHILD_CHUNK_TARGET_TOKENS", 300)
-    child_max = getattr(settings, "CHILD_CHUNK_MAX_TOKENS", 600)
-    child_overlap_pct = getattr(settings, "CHILD_CHUNK_OVERLAP_PCT", 0.20)
-
     if not text.strip():
         return []
 
-    structure_type = detect_structure(text)
-    text = text.replace("\f", "")
+    from langchain_experimental.text_splitter import SemanticChunker
+    from langchain_openai import OpenAIEmbeddings
 
-    pc_result = parent_child_split(
-        text,
-        structure_type=structure_type,
-        child_target_tokens=child_target,
-        child_overlap_pct=child_overlap_pct,
-        max_child_tokens=child_max,
+    embeddings = OpenAIEmbeddings(
+        model="text-embedding-3-large",
+    )
+    chunker = SemanticChunker(
+        embeddings,
+        breakpoint_threshold_type="percentile",
+        breakpoint_threshold_amount=90,
     )
 
-    if not pc_result:
-        return []
-
-    chunks_out = []
-    for parent_data in pc_result:
-        children_out = []
-        for child in parent_data.get("children", []):
-            children_out.append({
-                "text": child["text"],
-                "heading": parent_data.get("heading"),
-                "token_count": child["token_count"],
-                "is_child": True,
-                "child_index": child["child_index"],
+    docs = chunker.create_documents([text])
+    chunks = []
+    for i, doc in enumerate(docs):
+        chunk_text = doc.page_content.strip()
+        if chunk_text:
+            chunks.append({
+                "text": chunk_text,
+                "token_count": _count_tokens(chunk_text),
+                "chunk_index": i,
             })
-        chunks_out.append({
-            "text": parent_data["text"],
-            "heading": parent_data.get("heading"),
-            "token_count": parent_data["token_count"],
-            "is_child": False,
-            "source_page_start": None,
-            "source_page_end": None,
-            "source_offset_start": parent_data.get("source_offset_start"),
-            "source_offset_end": parent_data.get("source_offset_end"),
-            "children": children_out,
-        })
 
-    return chunks_out
-
-
-def extract_and_chunk_file(
-    file_path: str | Path,
-    file_extension: str,
-) -> list[dict[str, Any]]:
-    """
-    Load a file, then chunk it. Returns list of chunk dicts ready for
-    ProjectDocumentChunk creation.
-    """
-    docs = load_documents(file_path, file_extension)
-    return chunk_text(docs)
+    return chunks

@@ -247,9 +247,6 @@ class OrgSettingsAccessTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Wilfred Chat")
-        # normalize_document is manually appended, not from registry
-        self.assertContains(response, "Document Processing")
-        self.assertContains(response, "normalize_document")
 
     def test_member_gets_403(self):
         self.client.login(email=self.member_user.email, password=self.password)

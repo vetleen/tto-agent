@@ -8,26 +8,18 @@ from django.test import TestCase, override_settings
 
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 from documents.services.chunking import (
-    MIN_CHUNK_TOKENS,
     _count_tokens,
-    _looks_like_markdown,
-    _merge_small_chunks,
     _strip_nul_bytes,
-    chunk_text,
     clean_extracted_text,
     load_documents,
 )
 from documents.services.retrieval import (
     _rrf_score,
+    get_chunk_with_context,
     get_chunks_by_document,
     get_chunks_by_data_room,
     hybrid_search_chunks,
     similarity_search_chunks,
-)
-from documents.services.splitters import (
-    detect_structure,
-    structural_split,
-    parent_child_split,
 )
 
 User = get_user_model()
@@ -37,6 +29,12 @@ try:
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
+
+try:
+    import langchain_openai  # noqa: F401
+    LANGCHAIN_OPENAI_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_OPENAI_AVAILABLE = False
 
 
 class ChunkingTests(TestCase):
@@ -54,58 +52,6 @@ class ChunkingTests(TestCase):
         n = _count_tokens(text, encoding_name="definitely_missing_encoding")
         self.assertEqual(n, 101)
 
-    def test_looks_like_markdown(self):
-        self.assertTrue(_looks_like_markdown("# Title"))
-        self.assertTrue(_looks_like_markdown("\n## Section"))
-        self.assertFalse(_looks_like_markdown("Plain text"))
-
-    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
-    def test_chunk_text_single_chunk_when_under_max_tokens(self):
-        """Documents under max_chunk_tokens are returned as one chunk."""
-        from langchain_core.documents import Document
-        short_text = "This is a short document. It has only a few words."
-        docs = [Document(page_content=short_text, metadata={"page": 1})]
-        chunks = chunk_text(docs, max_chunk_tokens=1200, chunk_overlap_tokens=100)
-        self.assertEqual(len(chunks), 1, "should be one chunk when under token limit")
-        self.assertEqual(chunks[0]["text"], short_text)
-        self.assertEqual(chunks[0]["token_count"], _count_tokens(short_text))
-        self.assertIsNone(chunks[0]["heading"])
-        self.assertEqual(chunks[0]["source_page_start"], 1)
-        self.assertEqual(chunks[0]["source_page_end"], 1)
-        self.assertEqual(chunks[0]["source_offset_start"], 0)
-        self.assertEqual(chunks[0]["source_offset_end"], len(short_text))
-
-    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
-    @patch("tiktoken.get_encoding")
-    def test_chunk_text_multiple_chunks_when_over_max_tokens(self, mock_get_encoding):
-        """Documents over max_chunk_tokens are split, then small chunks merged (min 200).
-
-        tiktoken.get_encoding is mocked to avoid a network download of the BPE data file
-        which is blocked in CI. The mock uses a character-based encoder (len(text)//4
-        tokens) — the same heuristic as _count_tokens' fallback — to drive the splitter.
-        """
-        mock_enc = Mock()
-        mock_enc.encode = lambda text, **kwargs: list(range(max(1, len(text) // 4)))
-        mock_get_encoding.return_value = mock_enc
-
-        from langchain_core.documents import Document
-        docs = [Document(page_content="First paragraph. " * 50, metadata={})]
-        chunks = chunk_text(docs, max_chunk_tokens=50, chunk_overlap_tokens=5)
-        self.assertGreaterEqual(len(chunks), 1)
-        for c in chunks:
-            self.assertIn("text", c)
-            self.assertIn("token_count", c)
-            # After merge, chunks are >= MIN_CHUNK_TOKENS (200) or the only chunk
-            self.assertGreaterEqual(c["token_count"], 1)
-
-    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
-    def test_chunk_text_markdown_preserves_heading(self):
-        from langchain_core.documents import Document
-        docs = [Document(page_content="# Intro\n\nSome text here.", metadata={})]
-        chunks = chunk_text(docs, max_chunk_tokens=500, chunk_overlap_tokens=10)
-        self.assertGreaterEqual(len(chunks), 1)
-        self.assertTrue(any(c.get("heading") for c in chunks) or "Intro" in chunks[0]["text"])
-
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
     def test_load_documents_txt(self):
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
@@ -118,69 +64,6 @@ class ChunkingTests(TestCase):
             self.assertIn("Hello from file", docs[0].page_content)
         finally:
             path.unlink(missing_ok=True)
-
-    def _chunk(self, text: str, token_count: int, page: int | None = None, offset_start: int | None = None, offset_end: int | None = None) -> dict:
-        return {
-            "text": text,
-            "heading": None,
-            "token_count": token_count,
-            "source_page_start": page,
-            "source_page_end": page,
-            "source_offset_start": offset_start,
-            "source_offset_end": offset_end,
-        }
-
-    def test_merge_small_chunks_merges_into_smallest_adjacent_and_iterates(self):
-        """Chunks under min merge into smallest adjacent; repeat until none under min."""
-        chunks = [
-            self._chunk("first", 50, page=1, offset_start=0, offset_end=5),
-            self._chunk("second", 300, page=1, offset_start=6, offset_end=12),
-            self._chunk("third", 50, page=2, offset_start=0, offset_end=4),
-        ]
-        result = _merge_small_chunks(chunks, min_tokens=200)
-        self.assertEqual(len(result), 1, "three chunks (50, 300, 50) should merge to one")
-        self.assertIn("first", result[0]["text"])
-        self.assertIn("second", result[0]["text"])
-        self.assertIn("third", result[0]["text"])
-        self.assertEqual(result[0]["source_page_start"], 1)
-        self.assertEqual(result[0]["source_page_end"], 2)
-        self.assertEqual(result[0]["token_count"], _count_tokens(result[0]["text"]))
-
-    def test_merge_small_chunks_single_under_min_left_alone(self):
-        """Single chunk under min has no adjacent; left unchanged."""
-        chunks = [self._chunk("alone", 100, page=1)]
-        result = _merge_small_chunks(chunks, min_tokens=200)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["text"], "alone")
-        self.assertEqual(result[0]["token_count"], 100)
-
-    def test_merge_small_chunks_all_above_min_unchanged(self):
-        """Chunks all >= min are not merged."""
-        chunks = [
-            self._chunk("a", 250, page=1),
-            self._chunk("b", 250, page=2),
-        ]
-        result = _merge_small_chunks(chunks, min_tokens=200)
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["token_count"], 250)
-        self.assertEqual(result[1]["token_count"], 250)
-
-    def test_merge_small_chunks_recomputes_token_count_and_source_span(self):
-        """Merged chunk has token_count from combined text and source span min/max."""
-        chunks = [
-            self._chunk("left", 50, page=1, offset_start=0, offset_end=4),
-            self._chunk("right", 50, page=2, offset_start=0, offset_end=5),
-        ]
-        result = _merge_small_chunks(chunks, min_tokens=200)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["token_count"], _count_tokens(result[0]["text"]))
-        self.assertEqual(result[0]["source_page_start"], 1)
-        self.assertEqual(result[0]["source_page_end"], 2)
-        self.assertEqual(result[0]["source_offset_start"], 0)
-        self.assertEqual(result[0]["source_offset_end"], 5)
-
-    def test_merge_small_chunks_min_constant(self):
-        self.assertEqual(MIN_CHUNK_TOKENS, 200)
 
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
     def test_strip_nul_bytes_removes_null_characters(self):
@@ -203,6 +86,62 @@ class ChunkingTests(TestCase):
                 load_documents(path, "xyz")
         finally:
             path.unlink(missing_ok=True)
+
+
+class SemanticChunkTests(TestCase):
+    """Tests for semantic_chunk() function."""
+
+    @unittest.skipIf(not LANGCHAIN_OPENAI_AVAILABLE, "langchain-openai not installed")
+    @patch("langchain_experimental.text_splitter.SemanticChunker")
+    @patch("langchain_openai.OpenAIEmbeddings")
+    def test_semantic_chunk_output_format(self, mock_embeddings_cls, mock_chunker_cls):
+        from langchain_core.documents import Document as LCDoc
+        from documents.services.chunking import semantic_chunk
+
+        mock_chunker = MagicMock()
+        mock_chunker.create_documents.return_value = [
+            LCDoc(page_content="First semantic chunk."),
+            LCDoc(page_content="Second semantic chunk."),
+        ]
+        mock_chunker_cls.return_value = mock_chunker
+
+        result = semantic_chunk("First semantic chunk. Second semantic chunk.")
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["text"], "First semantic chunk.")
+        self.assertEqual(result[0]["chunk_index"], 0)
+        self.assertIn("token_count", result[0])
+        self.assertGreater(result[0]["token_count"], 0)
+        self.assertEqual(result[1]["chunk_index"], 1)
+
+    def test_semantic_chunk_empty_text(self):
+        from documents.services.chunking import semantic_chunk
+        result = semantic_chunk("")
+        self.assertEqual(result, [])
+
+    def test_semantic_chunk_whitespace_only(self):
+        from documents.services.chunking import semantic_chunk
+        result = semantic_chunk("   \n\n  ")
+        self.assertEqual(result, [])
+
+    @unittest.skipIf(not LANGCHAIN_OPENAI_AVAILABLE, "langchain-openai not installed")
+    @patch("langchain_experimental.text_splitter.SemanticChunker")
+    @patch("langchain_openai.OpenAIEmbeddings")
+    def test_semantic_chunk_skips_empty_chunks(self, mock_embeddings_cls, mock_chunker_cls):
+        from langchain_core.documents import Document as LCDoc
+        from documents.services.chunking import semantic_chunk
+
+        mock_chunker = MagicMock()
+        mock_chunker.create_documents.return_value = [
+            LCDoc(page_content="Real content."),
+            LCDoc(page_content="   "),  # whitespace-only
+            LCDoc(page_content="More content."),
+        ]
+        mock_chunker_cls.return_value = mock_chunker
+
+        result = semantic_chunk("Real content. More content.")
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["text"], "Real content.")
+        self.assertEqual(result[1]["text"], "More content.")
 
 
 class VectorStoreTests(TestCase):
@@ -404,15 +343,17 @@ class ProcessDocumentServiceTests(TestCase):
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_happy_path(self):
-        """UPLOADED doc with a real file becomes READY and gets chunks persisted."""
+        """UPLOADED doc with a real file becomes READY and gets flat chunks persisted."""
         from django.core.files.base import ContentFile
         from documents.services.process_document import process_document
 
         sample_chunks = [
             {"text": "First chunk", "heading": None, "token_count": 10,
+             "chunk_index": 0,
              "source_page_start": None, "source_page_end": None,
              "source_offset_start": 0, "source_offset_end": 11},
             {"text": "Second chunk", "heading": "Section", "token_count": 12,
+             "chunk_index": 1,
              "source_page_start": None, "source_page_end": None,
              "source_offset_start": 12, "source_offset_end": 24},
         ]
@@ -428,14 +369,14 @@ class ProcessDocumentServiceTests(TestCase):
                 doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
-                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks), \
-                     patch("documents.services.normalization.normalize_text", return_value="hello world"):
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.READY)
                 self.assertEqual(doc.chunks.count(), 2)
                 self.assertEqual(doc.token_count, 22)
+                self.assertEqual(doc.chunking_strategy, "semantic")
                 self.assertIsNotNone(doc.processed_at)
 
     @override_settings(PGVECTOR_CONNECTION="")
@@ -489,6 +430,108 @@ class ProcessDocumentServiceTests(TestCase):
             process_document(99999)
 
         self.assertTrue(any("not found" in line for line in cm.output))
+
+
+class ProcessDocumentSemanticTests(TestCase):
+    """Tests specific to the semantic chunking pipeline."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="sem@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="SemProject", slug="sem-project", created_by=self.user)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_flat_chunks_created(self):
+        """Verify flat chunks are created with sequential indexes."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [
+            {"text": f"Chunk {i}", "token_count": 10, "chunk_index": i}
+            for i in range(5)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="flat.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("flat.txt", ContentFile(b"test content"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test content")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                self.assertEqual(doc.chunks.count(), 5)
+
+                # All chunks should have sequential indexes
+                indexes = list(doc.chunks.order_by("chunk_index").values_list("chunk_index", flat=True))
+                self.assertEqual(indexes, [0, 1, 2, 3, 4])
+
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_description_runs_after_ready(self):
+        """Description generation happens after doc is marked READY."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        call_order = []
+
+        def track_save(fields, **kwargs):
+            if "status" in fields:
+                call_order.append(f"save_status:{doc_ref.status}")
+            if "description" in fields:
+                call_order.append("save_description")
+
+        sample_chunks = [{"text": "chunk", "token_count": 5, "chunk_index": 0}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc_ref = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="desc.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc_ref.original_file.save("desc.txt", ContentFile(b"test"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.description.generate_description_from_text", return_value="A description"):
+                    process_document(doc_ref.id)
+
+                doc_ref.refresh_from_db()
+                self.assertEqual(doc_ref.status, DataRoomDocument.Status.READY)
+                self.assertEqual(doc_ref.description, "A description")
+
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_description_failure_doesnt_fail_doc(self):
+        """Description generation failure doesn't affect doc status."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [{"text": "chunk", "token_count": 5, "chunk_index": 0}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="desc_fail.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("desc_fail.txt", ContentFile(b"test"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.description.generate_description_from_text", side_effect=RuntimeError("LLM down")):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
 
 
 class RetrievalServiceTests(TestCase):
@@ -557,458 +600,91 @@ class RetrievalServiceTests(TestCase):
         self.assertNotIn("document_id", results[0].metadata)
 
 
-class StructuralSplitTests(TestCase):
-    """Tests for documents.services.splitters structural splitting."""
-
-    def test_detect_structure_markdown(self):
-        self.assertEqual(detect_structure("# Title\n\nSome text"), "markdown")
-        self.assertEqual(detect_structure("Plain\n\n## Section"), "markdown")
-
-    def test_detect_structure_slides(self):
-        self.assertEqual(detect_structure("Slide 1\n---\nSlide 2\n---\nSlide 3"), "slides")
-        self.assertEqual(detect_structure("Slide 1\fSlide 2"), "slides")
-
-    def test_detect_structure_plain(self):
-        self.assertEqual(detect_structure("Just some plain text.\n\nAnother paragraph."), "plain")
-
-    def test_markdown_split_on_headings(self):
-        text = "# Intro\n\nSome intro text.\n\n## Methods\n\nMethod details."
-        units = structural_split(text, "markdown")
-        self.assertEqual(len(units), 2)
-        self.assertEqual(units[0]["heading"], "Intro")
-        self.assertEqual(units[1]["heading"], "Methods")
-        self.assertIn("intro text", units[0]["text"])
-        self.assertIn("Method details", units[1]["text"])
-
-    def test_plain_text_splits_on_paragraphs(self):
-        text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
-        units = structural_split(text, "plain")
-        self.assertEqual(len(units), 3)
-        self.assertEqual(units[0]["text"], "First paragraph.")
-        self.assertEqual(units[1]["text"], "Second paragraph.")
-        self.assertEqual(units[2]["text"], "Third paragraph.")
-
-    def test_slides_split_on_boundaries(self):
-        text = "Slide 1 content\n---\nSlide 2 content\n---\nSlide 3 content"
-        units = structural_split(text, "slides")
-        self.assertEqual(len(units), 3)
-        self.assertEqual(units[0]["unit_type"], "slide")
-        self.assertIn("Slide 1", units[0]["text"])
-
-    def test_slides_split_on_form_feed(self):
-        text = "Slide A\fSlide B\fSlide C"
-        units = structural_split(text, "slides")
-        self.assertEqual(len(units), 3)
-
-
-class ParentChildSplitTests(TestCase):
-    """Tests for parent-child chunking logic."""
-
-    def test_markdown_parents_from_headings(self):
-        text = "# Section A\n\nContent A.\n\n## Section B\n\nContent B."
-        result = parent_child_split(text, "markdown", child_target_tokens=50, child_overlap_pct=0.0, max_child_tokens=200)
-        self.assertGreaterEqual(len(result), 2)
-        self.assertEqual(result[0]["heading"], "Section A")
-        self.assertEqual(result[1]["heading"], "Section B")
-
-    def test_children_respect_structural_units(self):
-        """Children should not cut mid-sentence when paragraphs are small enough."""
-        paragraphs = ["Paragraph number %d. It has some content here." % i for i in range(10)]
-        text = "\n\n".join(paragraphs)
-        result = parent_child_split(text, "plain", child_target_tokens=50, child_overlap_pct=0.0, max_child_tokens=200)
-        for parent in result:
-            for child in parent["children"]:
-                # Each child should end with a complete sentence/paragraph
-                self.assertTrue(
-                    child["text"].endswith(".") or child["text"].endswith("here."),
-                    f"Child text appears cut mid-sentence: {child['text'][-50:]}"
-                )
-
-    def test_slides_one_to_one(self):
-        """Each slide = 1 parent = 1 child."""
-        text = "Slide One\n---\nSlide Two\n---\nSlide Three"
-        result = parent_child_split(text, "slides", child_target_tokens=300, child_overlap_pct=0.0, max_child_tokens=600)
-        self.assertEqual(len(result), 3)
-        for parent in result:
-            self.assertEqual(len(parent["children"]), 1)
-            self.assertEqual(parent["children"][0]["text"], parent["text"])
-
-    def test_overlap_applied(self):
-        """With overlap > 0, subsequent children should start with overlap from previous."""
-        # Build text large enough to produce multiple children
-        sentences = ["Sentence number %d is here." % i for i in range(50)]
-        text = " ".join(sentences)
-        result = parent_child_split(text, "plain", child_target_tokens=30, child_overlap_pct=0.50, max_child_tokens=100)
-        for parent in result:
-            if len(parent["children"]) > 1:
-                # Second child should contain some text from the end of first child
-                first_words = parent["children"][0]["text"].split()
-                if len(first_words) > 2:
-                    # Some trailing words from first should appear at start of second
-                    second_text = parent["children"][1]["text"]
-                    # Just verify second child has more tokens than without overlap
-                    self.assertGreater(parent["children"][1]["token_count"], 0)
-
-    def test_parent_has_children_list(self):
-        text = "Some content here.\n\nMore content there."
-        result = parent_child_split(text, "plain", child_target_tokens=300, child_overlap_pct=0.0, max_child_tokens=600)
-        self.assertGreaterEqual(len(result), 1)
-        for parent in result:
-            self.assertIn("children", parent)
-            self.assertIn("text", parent)
-            self.assertIn("token_count", parent)
-            self.assertIn("source_offset_start", parent)
-            self.assertIn("source_offset_end", parent)
-            for child in parent["children"]:
-                self.assertIn("text", child)
-                self.assertIn("token_count", child)
-                self.assertIn("child_index", child)
-
-    def test_empty_text_returns_empty(self):
-        result = parent_child_split("", "plain")
-        self.assertEqual(result, [])
-        result = parent_child_split("   \n\n  ", "plain")
-        self.assertEqual(result, [])
-
-
-class ChunkTextIntegrationTests(TestCase):
-    """Integration tests for chunk_text with parent-child output."""
-
-    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
-    def test_chunk_text_produces_parent_child_structure(self):
-        from langchain_core.documents import Document
-        text = "# Introduction\n\nThis is the intro.\n\n## Methods\n\nThis is the methods section."
-        docs = [Document(page_content=text, metadata={})]
-        chunks = chunk_text(docs)
-        self.assertGreaterEqual(len(chunks), 1)
-        for chunk in chunks:
-            self.assertFalse(chunk["is_child"])
-            self.assertIn("children", chunk)
-
-    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
-    def test_chunk_text_plain_produces_parent_child(self):
-        from langchain_core.documents import Document
-        paragraphs = ["This is paragraph %d with some content." % i for i in range(5)]
-        text = "\n\n".join(paragraphs)
-        docs = [Document(page_content=text, metadata={"page": 1})]
-        chunks = chunk_text(docs)
-        self.assertGreaterEqual(len(chunks), 1)
-        for chunk in chunks:
-            self.assertIn("children", chunk)
-            self.assertEqual(chunk["is_child"], False)
-            self.assertEqual(chunk["source_page_start"], 1)
-
-
-class ProcessDocumentParentChildTests(TestCase):
-    """Tests for process_document with parent-child chunking."""
+class DynamicContextTests(TestCase):
+    """Tests for get_chunk_with_context() dynamic expansion."""
 
     def setUp(self):
-        self.user = User.objects.create_user(email="pc@example.com", password="testpass")
-        self.data_room = DataRoom.objects.create(name="PCProject", slug="pc-project", created_by=self.user)
-
-    @override_settings(PGVECTOR_CONNECTION="")
-    def test_process_creates_parent_and_child_chunks(self):
-        from django.core.files.base import ContentFile
-        from documents.services.process_document import process_document
-
-        sample_chunks = [
-            {
-                "text": "Parent chunk text",
-                "heading": "Section",
-                "token_count": 10,
-                "is_child": False,
-                "source_page_start": 1,
-                "source_page_end": 1,
-                "source_offset_start": 0,
-                "source_offset_end": 17,
-                "children": [
-                    {"text": "Child chunk 1", "heading": "Section", "token_count": 5, "is_child": True, "child_index": 0},
-                    {"text": "Child chunk 2", "heading": "Section", "token_count": 5, "is_child": True, "child_index": 1},
-                ],
-            },
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.settings(MEDIA_ROOT=tmpdir):
-                doc = DataRoomDocument(
-                    data_room=self.data_room,
-                    uploaded_by=self.user,
-                    original_filename="test.txt",
-                    status=DataRoomDocument.Status.UPLOADED,
-                )
-                doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
-
-                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
-                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks), \
-                     patch("documents.services.normalization.normalize_text", return_value="hello world"):
-                    process_document(doc.id)
-
-                doc.refresh_from_db()
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
-
-                parent_chunks = doc.chunks.filter(is_child=False)
-                child_chunks = doc.chunks.filter(is_child=True)
-                self.assertEqual(parent_chunks.count(), 1)
-                self.assertEqual(child_chunks.count(), 2)
-
-                # Children should reference their parent
-                parent = parent_chunks.first()
-                for child in child_chunks:
-                    self.assertEqual(child.parent_id, parent.pk)
-
-    @override_settings(PGVECTOR_CONNECTION="")
-    def test_backward_compat_no_children(self):
-        """Chunks without children still work (legacy format)."""
-        from django.core.files.base import ContentFile
-        from documents.services.process_document import process_document
-
-        sample_chunks = [
-            {
-                "text": "Simple chunk",
-                "heading": None,
-                "token_count": 5,
-                "source_page_start": 1,
-                "source_page_end": 1,
-                "source_offset_start": 0,
-                "source_offset_end": 12,
-            },
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.settings(MEDIA_ROOT=tmpdir):
-                doc = DataRoomDocument(
-                    data_room=self.data_room,
-                    uploaded_by=self.user,
-                    original_filename="legacy.txt",
-                    status=DataRoomDocument.Status.UPLOADED,
-                )
-                doc.original_file.save("legacy.txt", ContentFile(b"hello"), save=True)
-
-                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello")]), \
-                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks), \
-                     patch("documents.services.normalization.normalize_text", return_value="hello"):
-                    process_document(doc.id)
-
-                doc.refresh_from_db()
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
-                self.assertEqual(doc.chunks.count(), 1)
-                self.assertFalse(doc.chunks.first().is_child)
-
-
-class ProcessDocumentNormalizationTests(TestCase):
-    """Tests that process_document calls normalization before chunking."""
-
-    def setUp(self):
-        self.user = User.objects.create_user(email="norm@example.com", password="testpass")
-        self.data_room = DataRoom.objects.create(name="NormProject", slug="norm-project", created_by=self.user)
-
-    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
-    def test_normalization_called_before_chunking(self):
-        from django.core.files.base import ContentFile
-        from documents.services.process_document import process_document
-
-        call_order = []
-
-        def track_normalize(*args, **kwargs):
-            call_order.append("normalize")
-            return "normalized text"
-
-        def track_chunk(*args, **kwargs):
-            call_order.append("chunk")
-            return [{"text": "chunk", "heading": None, "token_count": 5,
-                      "source_page_start": None, "source_page_end": None,
-                      "source_offset_start": 0, "source_offset_end": 5}]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.settings(MEDIA_ROOT=tmpdir):
-                doc = DataRoomDocument(
-                    data_room=self.data_room,
-                    uploaded_by=self.user,
-                    original_filename="test.txt",
-                    status=DataRoomDocument.Status.UPLOADED,
-                )
-                doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
-
-                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
-                     patch("documents.services.normalization.normalize_text", side_effect=track_normalize) as mock_norm, \
-                     patch("documents.services.process_document.chunk_from_string", side_effect=track_chunk), \
-                     patch("documents.services.description.generate_description_from_text", return_value="A test doc"):
-                    process_document(doc.id)
-
-                self.assertEqual(call_order, ["normalize", "chunk"])
-                mock_norm.assert_called_once()
-
-    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
-    def test_normalization_failure_falls_back_to_cleaned_text(self):
-        from django.core.files.base import ContentFile
-        from documents.services.process_document import process_document
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.settings(MEDIA_ROOT=tmpdir):
-                doc = DataRoomDocument(
-                    data_room=self.data_room,
-                    uploaded_by=self.user,
-                    original_filename="fallback.txt",
-                    status=DataRoomDocument.Status.UPLOADED,
-                )
-                doc.original_file.save("fallback.txt", ContentFile(b"hello world"), save=True)
-
-                sample_chunks = [{"text": "chunk", "heading": None, "token_count": 5,
-                                  "source_page_start": None, "source_page_end": None,
-                                  "source_offset_start": 0, "source_offset_end": 5}]
-
-                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
-                     patch("documents.services.normalization.normalize_text", side_effect=RuntimeError("LLM down")), \
-                     patch("documents.services.process_document.chunk_from_string", return_value=sample_chunks) as mock_chunk, \
-                     patch("documents.services.description.generate_description_from_text", return_value=""):
-                    process_document(doc.id)
-
-                doc.refresh_from_db()
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
-                # chunk_from_string should still be called with cleaned text
-                mock_chunk.assert_called_once()
-
-
-class RetrievalParentChildTests(TestCase):
-    """Tests for retrieval with parent-child chunks."""
-
-    def setUp(self):
-        self.user = User.objects.create_user(email="rpc@example.com", password="testpass")
-        self.data_room = DataRoom.objects.create(name="RPCProject", slug="rpc-project", created_by=self.user)
+        self.user = User.objects.create_user(email="ctx@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="CtxProject", slug="ctx-project", created_by=self.user)
         self.doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
             uploaded_by=self.user,
-            original_filename="rpc.txt",
+            original_filename="ctx.txt",
             status=DataRoomDocument.Status.READY,
         )
 
-    def test_get_chunks_by_document_returns_parents_only(self):
-        parent = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Parent", token_count=5, is_child=False,
-        )
-        DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Child", token_count=3, is_child=True, parent=parent,
-        )
-        result = get_chunks_by_document(self.doc.id)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["text"], "Parent")
+    def _create_chunks(self, count, tokens_each=100):
+        """Create sequential chunks with given token counts."""
+        chunks = []
+        for i in range(count):
+            text = f"Chunk {i} content. " * (tokens_each // 5)
+            c = DataRoomDocumentChunk.objects.create(
+                document=self.doc,
+                chunk_index=i,
+                text=text,
+                token_count=tokens_each,
+            )
+            chunks.append(c)
+        return chunks
 
-    def test_get_chunks_by_data_room_returns_parents_only(self):
-        parent = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Parent", token_count=5, is_child=False,
-        )
-        DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Child", token_count=3, is_child=True, parent=parent,
-        )
-        result = get_chunks_by_data_room(self.data_room.id)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["text"], "Parent")
+    def test_symmetric_expansion(self):
+        """Context expands symmetrically around center chunk."""
+        chunks = self._create_chunks(5, tokens_each=100)
+        center = chunks[2]
 
-    def test_legacy_chunks_still_work(self):
-        """Chunks without parent/child fields still returned normally."""
-        DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Legacy chunk", token_count=5,
-        )
-        result = get_chunks_by_document(self.doc.id)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["text"], "Legacy chunk")
+        result = get_chunk_with_context(center.id, target_tokens=300)
+        self.assertEqual(result["id"], center.id)
+        self.assertIn(center.chunk_index, result["chunks_included"])
+        # Should include center + 1 left + 1 right = 3 chunks
+        self.assertEqual(len(result["chunks_included"]), 3)
+        self.assertEqual(result["chunks_included"], [1, 2, 3])
 
-    @patch("documents.services.retrieval.fulltext_search_chunks")
-    @patch("documents.services.retrieval.vs.similarity_search")
-    def test_hybrid_resolves_child_to_parent(self, mock_sem, mock_fts):
-        """When semantic search returns a child chunk, hybrid resolves to parent."""
-        parent = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Full parent text here", token_count=10, is_child=False,
-        )
-        child = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Child excerpt", token_count=5, is_child=True, parent=parent,
-        )
+    def test_edge_of_document_left(self):
+        """First chunk can only expand right."""
+        chunks = self._create_chunks(5, tokens_each=100)
 
-        # Simulate semantic search returning the child chunk
-        sem_doc = MagicMock()
-        sem_doc.page_content = "Child excerpt"
-        sem_doc.metadata = {
-            "chunk_id": child.pk,
-            "document_id": self.doc.pk,
-            "data_room_id": self.data_room.pk,
-            "chunk_index": 0,
-        }
-        mock_sem.return_value = [sem_doc]
-        mock_fts.return_value = []
+        result = get_chunk_with_context(chunks[0].id, target_tokens=300)
+        self.assertEqual(result["chunks_included"][0], 0)
+        self.assertEqual(len(result["chunks_included"]), 3)
+        self.assertEqual(result["chunks_included"], [0, 1, 2])
 
-        results = hybrid_search_chunks(data_room_ids=[self.data_room.pk], query="test", k=5)
-        self.assertEqual(len(results), 1)
-        # Should return parent text, not child text
-        self.assertEqual(results[0]["id"], parent.pk)
-        self.assertEqual(results[0]["text"], "Full parent text here")
+    def test_edge_of_document_right(self):
+        """Last chunk can only expand left."""
+        chunks = self._create_chunks(5, tokens_each=100)
 
-    @patch("documents.services.retrieval.fulltext_search_chunks")
-    @patch("documents.services.retrieval.vs.similarity_search")
-    def test_hybrid_deduplicates_children_of_same_parent(self, mock_sem, mock_fts):
-        """Multiple child matches from same parent should deduplicate to one result."""
-        parent = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Parent text", token_count=10, is_child=False,
-        )
-        child1 = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Child 1", token_count=3, is_child=True, parent=parent,
-        )
-        child2 = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=1, text="Child 2", token_count=3, is_child=True, parent=parent,
-        )
+        result = get_chunk_with_context(chunks[4].id, target_tokens=300)
+        self.assertIn(4, result["chunks_included"])
+        self.assertEqual(len(result["chunks_included"]), 3)
+        self.assertEqual(result["chunks_included"], [2, 3, 4])
 
-        sem_doc1 = MagicMock()
-        sem_doc1.page_content = "Child 1"
-        sem_doc1.metadata = {"chunk_id": child1.pk, "document_id": self.doc.pk, "data_room_id": self.data_room.pk, "chunk_index": 0}
-        sem_doc2 = MagicMock()
-        sem_doc2.page_content = "Child 2"
-        sem_doc2.metadata = {"chunk_id": child2.pk, "document_id": self.doc.pk, "data_room_id": self.data_room.pk, "chunk_index": 1}
-        mock_sem.return_value = [sem_doc1, sem_doc2]
-        mock_fts.return_value = []
+    def test_budget_respected(self):
+        """Total tokens should not exceed target_tokens."""
+        chunks = self._create_chunks(10, tokens_each=100)
+        center = chunks[5]
 
-        results = hybrid_search_chunks(data_room_ids=[self.data_room.pk], query="test", k=5)
-        # Should be deduplicated to one parent
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["id"], parent.pk)
-        # Score should accumulate from both children
-        self.assertGreater(results[0]["rrf_score"], _rrf_score(0))
+        result = get_chunk_with_context(center.id, target_tokens=350)
+        self.assertLessEqual(result["context_token_count"], 350)
 
+    def test_single_chunk_document(self):
+        """Single chunk returns just that chunk."""
+        chunks = self._create_chunks(1, tokens_each=100)
 
-class ReadDocumentToolTests(TestCase):
-    """Tests for ReadDocumentTool filtering to parent chunks."""
+        result = get_chunk_with_context(chunks[0].id, target_tokens=1200)
+        self.assertEqual(len(result["chunks_included"]), 1)
+        self.assertEqual(result["context_text"], chunks[0].text)
 
-    def setUp(self):
-        self.user = User.objects.create_user(email="rdt@example.com", password="testpass")
-        self.data_room = DataRoom.objects.create(name="RDTProject", slug="rdt-project", created_by=self.user)
-        self.doc = DataRoomDocument.objects.create(
-            data_room=self.data_room,
-            uploaded_by=self.user,
-            original_filename="rdt.txt",
-            status=DataRoomDocument.Status.READY,
-            doc_index=1,
-        )
+    def test_nonexistent_chunk(self):
+        """Non-existent chunk ID returns error."""
+        result = get_chunk_with_context(99999)
+        self.assertIn("error", result)
 
-    def test_read_document_assembles_from_parents_only(self):
-        import json
-        from chat.tools import ReadDocumentTool
+    def test_context_text_joins_chunks(self):
+        """context_text should contain text from all included chunks."""
+        chunks = self._create_chunks(3, tokens_each=100)
 
-        parent = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Parent content", token_count=5, is_child=False,
-        )
-        DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="Child content", token_count=3, is_child=True, parent=parent,
-        )
-
-        tool = ReadDocumentTool()
-        mock_context = MagicMock()
-        mock_context.data_room_ids = [self.data_room.pk]
-        mock_context.user_id = self.user.pk
-        tool.context = mock_context
-
-        result = json.loads(tool._run(doc_indices=[1]))
-        documents = result["documents"]
-        self.assertEqual(len(documents), 1)
-        self.assertEqual(documents[0]["content"], "Parent content")
-        self.assertNotIn("Child content", documents[0]["content"])
+        result = get_chunk_with_context(chunks[1].id, target_tokens=400)
+        for c in chunks:
+            self.assertIn(f"Chunk {c.chunk_index} content.", result["context_text"])
 
 
 class CleanExtractedTextTests(TestCase):
