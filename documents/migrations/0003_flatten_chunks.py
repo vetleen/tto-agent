@@ -1,6 +1,6 @@
-"""Flatten parent/child chunks to a single flat chunk model."""
+"""Flatten parent/child chunks: step 1 — delete child chunk rows."""
 
-from django.db import migrations, models
+from django.db import migrations
 
 
 def delete_child_chunks(apps, schema_editor):
@@ -16,29 +16,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # 1. Delete child chunk rows
         migrations.RunPython(delete_child_chunks, migrations.RunPython.noop),
-        # 2. Drop the constraint that includes is_child
-        migrations.RemoveConstraint(
-            model_name="dataroomdocumentchunk",
-            name="documents_chunk_unique_per_document",
-        ),
-        # 3. Remove parent FK
-        migrations.RemoveField(
-            model_name="dataroomdocumentchunk",
-            name="parent",
-        ),
-        # 4. Remove is_child field
-        migrations.RemoveField(
-            model_name="dataroomdocumentchunk",
-            name="is_child",
-        ),
-        # 5. Add new constraint on (document, chunk_index)
-        migrations.AddConstraint(
-            model_name="dataroomdocumentchunk",
-            constraint=models.UniqueConstraint(
-                fields=("document", "chunk_index"),
-                name="documents_chunk_unique_per_document",
-            ),
-        ),
     ]
