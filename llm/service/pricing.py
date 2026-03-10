@@ -12,7 +12,7 @@ from typing import Optional, Tuple
 # (input_per_1M, cached_input_per_1M, output_per_1M)
 _PRICING: dict[str, Tuple[Decimal, Decimal, Decimal]] = {
     # OpenAI
-    "gpt-5.2": (Decimal("1.75"), Decimal("0.175"), Decimal("14.00")),
+    "gpt-5.4": (Decimal("1.75"), Decimal("0.175"), Decimal("14.00")),
     "gpt-5-mini": (Decimal("0.25"), Decimal("0.025"), Decimal("2.00")),
     "gpt-5-nano": (Decimal("0.05"), Decimal("0.005"), Decimal("0.40")),
     # Anthropic
