@@ -780,8 +780,8 @@
           try { const result = JSON.parse(resultStr); if (toolName === "search_documents" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "read_document" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); } catch (e) {}
           if (toolName === "search_documents") doneLabel = "Searched documents";
           else if (toolName === "read_document") doneLabel = "Read document";
-          else if (toolName === "write_canvas") doneLabel = "Wrote document";
-          else if (toolName === "edit_canvas") doneLabel = "Edited document";
+          else if (toolName === "write_canvas") doneLabel = "Rewrote the canvas text from scratch";
+          else if (toolName === "edit_canvas") doneLabel = "Edited the canvas text";
           card.innerHTML = '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="tool-card-text">' + escapeHtml(doneLabel) + '</span>';
         }
       }
