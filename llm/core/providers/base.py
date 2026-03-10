@@ -32,6 +32,38 @@ class BaseLangChainChatModel(ChatModel):
     _provider_label: str = "LLM"
 
     @staticmethod
+    def _extract_usage_dict(result: object) -> dict | None:
+        """Extract a usage dict with input/output/total tokens from a LangChain result.
+
+        Checks ``usage_metadata`` first (standard path), then falls back to
+        ``response_metadata`` which may contain raw provider data (e.g. OpenAI
+        Responses API puts usage in ``response_metadata["usage"]``).
+        """
+        # Primary: usage_metadata (populated by most LangChain providers)
+        usage_meta = getattr(result, "usage_metadata", None)
+        if isinstance(usage_meta, dict) and usage_meta.get("output_tokens"):
+            return usage_meta
+
+        # Fallback: response_metadata.usage (OpenAI Responses API / raw provider data)
+        resp_meta = getattr(result, "response_metadata", None)
+        if isinstance(resp_meta, dict):
+            # OpenAI Responses API: response_metadata["usage"]
+            usage = resp_meta.get("usage")
+            if isinstance(usage, dict) and usage.get("output_tokens"):
+                return usage
+            # Chat Completions API fallback: response_metadata["token_usage"]
+            token_usage = resp_meta.get("token_usage")
+            if isinstance(token_usage, dict):
+                # Normalize prompt_tokens/completion_tokens to input/output
+                return {
+                    "input_tokens": token_usage.get("prompt_tokens") or token_usage.get("input_tokens"),
+                    "output_tokens": token_usage.get("completion_tokens") or token_usage.get("output_tokens"),
+                    "total_tokens": token_usage.get("total_tokens"),
+                }
+
+        return None
+
+    @staticmethod
     def _build_raw_prompt(callback: PromptCaptureCallback, tool_schemas: list | None) -> dict | None:
         """Assemble the raw_prompt dict from callback messages + request tool schemas."""
         if callback.captured_messages is None:
@@ -75,12 +107,13 @@ class BaseLangChainChatModel(ChatModel):
         """Build usage dict from the final streaming chunk.
 
         Checks ``last_chunk.usage_metadata`` for provider-reported token counts
-        (OpenAI with ``stream_usage=True``, Anthropic, Gemini). Falls back to
-        estimating output tokens via tiktoken if no provider data is available.
+        (OpenAI with ``stream_usage=True``, Anthropic, Gemini), then falls back
+        to ``response_metadata`` (OpenAI Responses API).  Last resort: estimate
+        output tokens via tiktoken.
         """
         data: dict = {}
-        usage_meta = getattr(last_chunk, "usage_metadata", None) if last_chunk else None
-        if isinstance(usage_meta, dict) and usage_meta.get("output_tokens"):
+        usage_meta = self._extract_usage_dict(last_chunk) if last_chunk else None
+        if usage_meta and usage_meta.get("output_tokens"):
             input_tokens = usage_meta.get("input_tokens")
             output_tokens = usage_meta.get("output_tokens")
             total_tokens = usage_meta.get("total_tokens")
@@ -128,8 +161,8 @@ class BaseLangChainChatModel(ChatModel):
         )
 
         usage = None
-        usage_meta = getattr(result, "usage_metadata", None)
-        if isinstance(usage_meta, dict):
+        usage_meta = self._extract_usage_dict(result)
+        if usage_meta:
             input_tokens = usage_meta.get("input_tokens")
             output_tokens = usage_meta.get("output_tokens")
             # Extract cached token count from input_token_details
