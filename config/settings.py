@@ -289,8 +289,11 @@ DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
 TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
 MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
 CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", "100"))
+CHUNKING_STRATEGY = os.environ.get("CHUNKING_STRATEGY", "structure_aware")
 
 RETRIEVAL_CONTEXT_TARGET_TOKENS = int(os.environ.get("RETRIEVAL_CONTEXT_TARGET_TOKENS", "1200"))
+RERANK_ENABLED = _get_env_bool(os.environ.get("RERANK_ENABLED"), True)
+RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "5"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 # pgvector: use same DB as Django when DATABASE_URL is Postgres
 PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATABASE_URL", ""))

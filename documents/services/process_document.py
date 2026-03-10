@@ -16,7 +16,7 @@ from django.utils import timezone
 from django.contrib.postgres.search import SearchVector
 
 from documents.models import DataRoomDocument, DataRoomDocumentChunk
-from documents.services.chunking import clean_extracted_text, load_documents, semantic_chunk
+from documents.services.chunking import clean_extracted_text, load_documents, semantic_chunk, structure_aware_chunk
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +56,16 @@ def process_document(document_id: int) -> None:
         combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
         cleaned = clean_extracted_text(combined)
 
-        # 2. Chunk semantically
+        # 2. Chunk (strategy from settings)
         logger.info("process_document: document_id=%s stage=chunking", document_id)
-        chunks_data = semantic_chunk(cleaned)
-        logger.info("process_document: document_id=%s stage=chunked count=%s", document_id, len(chunks_data))
-
-        doc.chunking_strategy = "semantic"
+        strategy = getattr(settings, "CHUNKING_STRATEGY", "structure_aware")
+        if strategy == "structure_aware":
+            chunks_data = structure_aware_chunk(cleaned)
+            doc.chunking_strategy = "structure_aware"
+        else:
+            chunks_data = semantic_chunk(cleaned)
+            doc.chunking_strategy = "semantic"
+        logger.info("process_document: document_id=%s stage=chunked count=%s strategy=%s", document_id, len(chunks_data), doc.chunking_strategy)
 
         # Remove existing chunks (idempotent re-run)
         doc.chunks.all().delete()

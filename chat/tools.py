@@ -81,15 +81,33 @@ class SearchDocumentsTool(ContextAwareTool):
                 "error_type": type(exc).__name__,
             })
 
-        from documents.services.retrieval import get_chunk_with_context
+        from documents.services.retrieval import get_merged_context_windows
 
+        # Collect chunk IDs and build metadata lookup (preserves rank order)
+        chunk_ids = [doc.metadata["chunk_id"] for doc in docs if doc.metadata.get("chunk_id")]
+        meta_by_chunk_id = {doc.metadata["chunk_id"]: doc.metadata for doc in docs if doc.metadata.get("chunk_id")}
+
+        windows = get_merged_context_windows(chunk_ids)
+
+        # Build chunk_id → window mapping; emit each window once using
+        # the highest-ranked hit's metadata (first in chunk_ids order)
         results = []
-        for doc in docs:
-            chunk_id = doc.metadata.get("chunk_id")
-            context = get_chunk_with_context(chunk_id) if chunk_id else {}
+        emitted_windows: set[int] = set()
+        for win_idx, window in enumerate(windows):
+            if win_idx in emitted_windows:
+                continue
+            emitted_windows.add(win_idx)
+            # Use the first (highest-ranked) hit's metadata for this window
+            best_meta = None
+            for cid in chunk_ids:
+                if cid in window["chunk_ids"]:
+                    best_meta = meta_by_chunk_id.get(cid)
+                    break
+            if best_meta is None and window["chunk_ids"]:
+                best_meta = meta_by_chunk_id.get(window["chunk_ids"][0], {})
             results.append({
-                "text": context.get("context_text", doc.page_content),
-                "metadata": doc.metadata,
+                "text": window["context_text"],
+                "metadata": best_meta or {},
             })
 
         return json.dumps({"results": results, "count": len(results)})

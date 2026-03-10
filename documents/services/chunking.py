@@ -96,6 +96,240 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     raise ValueError(f"Unsupported file type: {ext}")
 
 
+def _is_list_line(line: str) -> bool:
+    """Check if a line starts a list item (-, *, or numbered)."""
+    stripped = line.lstrip()
+    if stripped.startswith(("- ", "* ")):
+        return True
+    # Numbered list: "1. ", "2. ", etc.
+    if re.match(r"\d+\.\s", stripped):
+        return True
+    return False
+
+
+def _is_table_line(line: str) -> bool:
+    """Check if a line is part of a Markdown table (contains pipes)."""
+    stripped = line.strip()
+    return "|" in stripped and len(stripped) > 1
+
+
+# Regex for Markdown headings: ATX style (# Heading) and underline style (===, ---)
+_RE_ATX_HEADING = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+_RE_UNDERLINE_HEADING = re.compile(r"^(.+)\n([=\-]{3,})\s*$", re.MULTILINE)
+
+
+def _split_into_structural_sections(text: str) -> list[dict[str, Any]]:
+    """Split text into sections based on structural boundaries.
+
+    Returns list of dicts: {heading: str|None, text: str}
+    """
+    lines = text.split("\n")
+    sections: list[dict[str, Any]] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Check for ATX-style heading: # Heading
+        atx_match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if atx_match:
+            # Flush current section
+            if current_lines:
+                section_text = "\n".join(current_lines).strip()
+                if section_text:
+                    sections.append({"heading": current_heading, "text": section_text})
+                current_lines = []
+            current_heading = atx_match.group(2).strip()
+            i += 1
+            continue
+
+        # Check for underline-style heading: text followed by === or ---
+        if (
+            i + 1 < len(lines)
+            and line.strip()
+            and re.match(r"^[=\-]{3,}\s*$", lines[i + 1])
+        ):
+            # Flush current section
+            if current_lines:
+                section_text = "\n".join(current_lines).strip()
+                if section_text:
+                    sections.append({"heading": current_heading, "text": section_text})
+                current_lines = []
+            current_heading = line.strip()
+            i += 2  # Skip heading and underline
+            continue
+
+        current_lines.append(line)
+        i += 1
+
+    # Flush final section
+    if current_lines:
+        section_text = "\n".join(current_lines).strip()
+        if section_text:
+            sections.append({"heading": current_heading, "text": section_text})
+
+    return sections
+
+
+def _split_section_preserving_blocks(text: str) -> list[str]:
+    """Split a section's text into blocks, keeping tables and lists atomic.
+
+    Returns a list of text blocks. Tables and lists are kept as single blocks.
+    Paragraph breaks (double newlines) serve as secondary boundaries.
+    """
+    lines = text.split("\n")
+    blocks: list[str] = []
+    current_block: list[str] = []
+    in_table = False
+    in_list = False
+
+    for line in lines:
+        is_table = _is_table_line(line)
+        is_list = _is_list_line(line)
+        is_blank = not line.strip()
+
+        # Transition out of table
+        if in_table and not is_table and not is_blank:
+            if current_block:
+                blocks.append("\n".join(current_block))
+                current_block = []
+            in_table = False
+
+        # Transition out of list
+        if in_list and not is_list and not line.startswith("  ") and is_blank:
+            if current_block:
+                blocks.append("\n".join(current_block))
+                current_block = []
+            in_list = False
+
+        # Start table
+        if is_table and not in_table:
+            # Flush any pending paragraph
+            if current_block and not in_list:
+                blocks.append("\n".join(current_block))
+                current_block = []
+            in_table = True
+
+        # Start list
+        if is_list and not in_list and not in_table:
+            # Flush any pending paragraph
+            if current_block:
+                blocks.append("\n".join(current_block))
+                current_block = []
+            in_list = True
+
+        # Paragraph break (double newline) — split if not in atomic block
+        if is_blank and not in_table and not in_list:
+            if current_block:
+                blocks.append("\n".join(current_block))
+                current_block = []
+            continue
+
+        current_block.append(line)
+
+    if current_block:
+        blocks.append("\n".join(current_block))
+
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def structure_aware_chunk(text: str) -> list[dict[str, Any]]:
+    """Split text into chunks using structural boundaries (headings, tables, lists).
+
+    Algorithm:
+    1. Pre-split on structural boundaries (headings, tables, lists, paragraph breaks)
+    2. Group into sections under headings
+    3. Per section: if tokens <= TARGET_CHUNK_TOKENS, emit as single chunk.
+       If larger, delegate to semantic_chunk() for sub-splitting.
+    4. Propagate headings to each chunk
+    5. Number all chunks sequentially 0, 1, 2, ...
+
+    Returns list of dicts: {text, token_count, chunk_index, heading}
+    """
+    if not text.strip():
+        return []
+
+    from django.conf import settings
+    target = getattr(settings, "TARGET_CHUNK_TOKENS", 768)
+
+    sections = _split_into_structural_sections(text)
+    chunks: list[dict[str, Any]] = []
+
+    for section in sections:
+        heading = section["heading"]
+        section_text = section["text"]
+        section_tokens = _count_tokens(section_text)
+
+        if section_tokens <= target:
+            # Small enough — emit as single chunk
+            chunks.append({
+                "text": section_text,
+                "token_count": section_tokens,
+                "chunk_index": 0,  # Will be renumbered
+                "heading": heading,
+            })
+        else:
+            # Large section — split into blocks first, then group/delegate
+            blocks = _split_section_preserving_blocks(section_text)
+            # Try to group blocks into chunks under the token budget
+            current_group: list[str] = []
+            current_tokens = 0
+
+            for block in blocks:
+                block_tokens = _count_tokens(block)
+
+                if block_tokens > target:
+                    # Flush current group
+                    if current_group:
+                        group_text = "\n\n".join(current_group)
+                        chunks.append({
+                            "text": group_text,
+                            "token_count": _count_tokens(group_text),
+                            "chunk_index": 0,
+                            "heading": heading,
+                        })
+                        current_group = []
+                        current_tokens = 0
+
+                    # Oversized block — delegate to semantic_chunk
+                    sub_chunks = semantic_chunk(block)
+                    for sc in sub_chunks:
+                        sc["heading"] = heading
+                        chunks.append(sc)
+                elif current_tokens + block_tokens > target:
+                    # Group is full, flush it
+                    group_text = "\n\n".join(current_group)
+                    chunks.append({
+                        "text": group_text,
+                        "token_count": _count_tokens(group_text),
+                        "chunk_index": 0,
+                        "heading": heading,
+                    })
+                    current_group = [block]
+                    current_tokens = block_tokens
+                else:
+                    current_group.append(block)
+                    current_tokens += block_tokens
+
+            # Flush remaining group
+            if current_group:
+                group_text = "\n\n".join(current_group)
+                chunks.append({
+                    "text": group_text,
+                    "token_count": _count_tokens(group_text),
+                    "chunk_index": 0,
+                    "heading": heading,
+                })
+
+    # Renumber all chunks sequentially
+    for i, chunk in enumerate(chunks):
+        chunk["chunk_index"] = i
+
+    return chunks
+
+
 def semantic_chunk(text: str) -> list[dict[str, Any]]:
     """Split text into semantic chunks using embedding-based breakpoints.
 
