@@ -424,7 +424,24 @@
     autoResize(input);
   }
 
-  function scrollToBottom() { requestAnimationFrame(function() { scrollContainer.scrollTop = scrollContainer.scrollHeight; }); }
+  function scrollToBottom() {
+    requestAnimationFrame(function() {
+      if (currentStreamingElement) {
+        // During streaming: pin the top of the response near the top of the viewport
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const bubbleRect = currentStreamingElement.getBoundingClientRect();
+        const margin = 24;
+        const distanceFromTop = bubbleRect.top - containerRect.top;
+        // Only scroll down to pin the bubble top; never scroll up
+        // Skip if bubble is off-screen below (user scrolled far up)
+        if (distanceFromTop > margin && distanceFromTop < scrollContainer.clientHeight) {
+          scrollContainer.scrollTop += (distanceFromTop - margin);
+        }
+      } else {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
+    });
+  }
 
   function addThreadToSidebar(threadId, title) {
     var emptyEl = threadList.querySelector('[data-empty="true"]');
