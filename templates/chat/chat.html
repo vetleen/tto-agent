@@ -192,8 +192,8 @@
                   Attach data room
                 </button>
                 <button type="button" id="open-canvas-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
-                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                  Open canvas
+                  <svg id="open-canvas-btn-icon" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  <span id="open-canvas-btn-label">Open canvas</span>
                 </button>
               </div>
             </div>
@@ -275,7 +275,11 @@
         <svg id="canvas-import-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
       </label>
-      {# 7. Close #}
+      {# 7. Clear canvas (trash) #}
+      <button id="canvas-clear-btn" title="Clear canvas" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+      </button>
+      {# 8. Close #}
       <button id="canvas-close-btn" title="Close canvas" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
@@ -1002,6 +1006,7 @@
   var canvasSaveToDrBtn = document.getElementById("canvas-save-to-dr-btn");
   var canvasSaveToDrDropdown = document.getElementById("canvas-save-to-dr-dropdown");
   var canvasSaveToDrList = document.getElementById("canvas-save-to-dr-list");
+  var canvasClearBtn = document.getElementById("canvas-clear-btn");
   var openCanvasBtn = document.getElementById("open-canvas-btn");
   var canvasToggleBtn = document.getElementById("canvas-toggle-btn");
   var canvasToggleArrow = document.getElementById("canvas-toggle-arrow");
@@ -1134,6 +1139,19 @@
         canvasToggleBtnMobile.innerHTML = '<span class="sr-only">Toggle canvas</span><svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>';
       }
     }
+    // "+" menu button label and icon
+    var openCanvasBtnLabel = document.getElementById("open-canvas-btn-label");
+    var openCanvasBtnIcon = document.getElementById("open-canvas-btn-icon");
+    if (openCanvasBtnLabel) {
+      openCanvasBtnLabel.textContent = canvasIsOpen ? "Close canvas" : "Open canvas";
+    }
+    if (openCanvasBtnIcon) {
+      if (canvasIsOpen) {
+        openCanvasBtnIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>';
+      } else {
+        openCanvasBtnIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>';
+      }
+    }
   }
 
   function toggleCanvas() {
@@ -1211,6 +1229,32 @@
     canvasCloseBtn.addEventListener("click", function() { saveCanvasNow(); closeCanvas(); });
   }
 
+  if (canvasClearBtn) {
+    canvasClearBtn.addEventListener("click", function() {
+      if (!confirm("Clear the canvas? Previous versions will still be available in version history.")) return;
+      // Save current content as a version checkpoint first (if non-empty)
+      var currentContent = canvasTextarea.value.trim();
+      if (currentContent && activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "chat.canvas_save_version",
+          thread_id: activeThreadId,
+          title: canvasTitleInput.value,
+          content: canvasTextarea.value
+        }));
+      }
+      // Clear canvas
+      canvasTitleInput.value = "Untitled document";
+      canvasTextarea.value = "";
+      canvasAcceptedContent = null;
+      canvasUpdateBanner.classList.add("hidden");
+      canvasPendingUpdate = null;
+      updateWordCount();
+      if (canvasPreviewMode) { canvasRenderPreview(); }
+      // Save the empty state
+      saveCanvasNow();
+    });
+  }
+
   function canvasRenderPreview() {
     if (canvasHasPendingChanges()) {
       canvasPreview.innerHTML = renderDiffPreview(canvasAcceptedContent, canvasTextarea.value);
@@ -1272,10 +1316,15 @@
     openCanvasBtn.addEventListener("click", function() {
       var dd = document.getElementById("attach-dropdown");
       if (dd) dd.classList.add("hidden");
-      if (activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "chat.canvas_open", thread_id: activeThreadId }));
+      if (canvasIsOpen) {
+        saveCanvasNow();
+        closeCanvas();
       } else {
-        openCanvas("Untitled document", "");
+        if (activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "chat.canvas_open", thread_id: activeThreadId }));
+        } else {
+          openCanvas("Untitled document", "");
+        }
       }
     });
   }
