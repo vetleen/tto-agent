@@ -697,6 +697,37 @@ class EditCanvasToolCheckpointTests(TestCase):
         self.assertEqual(len(cps), 2)
         self.assertEqual(cps[1].content, "Brand new")
 
+    def test_ai_edit_after_accept_creates_new_checkpoint(self):
+        """After user accepts, next AI edit must NOT coalesce into the accepted checkpoint."""
+        canvas = self._setup_canvas("Hello world. Goodbye world.")
+        ctx = _ctx(self.user.pk, self.thread.id)
+
+        # First AI edit
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}]
+        }, ctx)
+        canvas.refresh_from_db()
+        # 2 checkpoints: original + ai_edit
+        self.assertEqual(CanvasCheckpoint.objects.filter(canvas=canvas).count(), 2)
+
+        # User accepts — set accepted_checkpoint to latest
+        latest = CanvasCheckpoint.objects.filter(canvas=canvas).order_by("-order").first()
+        canvas.accepted_checkpoint = latest
+        canvas.save(update_fields=["accepted_checkpoint"])
+
+        # Second AI edit — should NOT coalesce into accepted checkpoint
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Goodbye", "new_text": "Bye", "reason": ""}]
+        }, ctx)
+        canvas.refresh_from_db()
+        cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
+        # Should now have 3: original, ai_edit (accepted), ai_edit (new)
+        self.assertEqual(len(cps), 3)
+        self.assertEqual(cps[1].pk, latest.pk)  # accepted one unchanged
+        self.assertIn("Hi", cps[1].content)
+        self.assertNotIn("Bye", cps[1].content)  # NOT updated
+        self.assertIn("Bye", cps[2].content)  # new checkpoint has it
+
 
 # ---------------------------------------------------------------------------
 # Consumer checkpoint tests

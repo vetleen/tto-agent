@@ -32,8 +32,14 @@ def create_canvas_checkpoint(canvas, source, description=""):
         .first()
     )
 
-    # Coalesce consecutive AI edits into a single checkpoint
-    if source == "ai_edit" and latest and latest.source == "ai_edit":
+    # Coalesce consecutive AI edits into a single checkpoint, but never
+    # update the accepted checkpoint (that's the diff baseline).
+    if (
+        source == "ai_edit"
+        and latest
+        and latest.source == "ai_edit"
+        and latest.pk != canvas.accepted_checkpoint_id
+    ):
         latest.title = canvas.title
         latest.content = canvas.content
         latest.description = description
