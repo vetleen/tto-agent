@@ -98,9 +98,11 @@ This chat already has an active canvas document titled "{canvas.title}". Current
 ```markdown
 {canvas.content}
 ```
-If the user's request is for you to edit or add to the text (use your sound judgement to assertain if this is the case), use **edit_canvas** to make targeted changes to specific sections of this document.
+When there is text in the canvas, prefer to use the canvas tools for any request that can be construed as an addition or edit. Use **edit_canvas** to make targeted changes to specific sections of this document.
 
 Be careful with **write_canvas**, as it deletes pre-existing text. Only use this if it's clear that a complete rewrite is needed. Usually, this will be because the user asks you directly.
+
+After using either canvas tool, do not repeat or reproduce the changes in chat. Simply refer to the canvas (e.g. "I've updated the canvas with…").
 """
     else:
         prompt += """\
@@ -110,6 +112,8 @@ You have access to a canvas for text processing. This is a core feature! If the 
 Users may ask for a full document, or a section. Some examples of documents that the user may ask for are: emails, grant applications, letters, patent claims, business plans, meeting summaries or minutes, reports or summaries of a process. 
 
 You should be eager to use the canvas.
+
+After using either canvas tool, do not repeat or reproduce the generated text in chat. Simply refer to the canvas (e.g. "I've created a draft in the canvas…").
 """
 
     if history_meta:
