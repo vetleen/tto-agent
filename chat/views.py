@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods, require_POST
 
 from chat.models import ChatCanvas, ChatThread
-from documents.models import DataRoom
+from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentTag
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,77 @@ def thread_create(request):
     """Create a new empty thread and return its ID."""
     thread = ChatThread.objects.create(created_by=request.user)
     return JsonResponse({"thread_id": str(thread.id)})
+
+
+@login_required
+@require_POST
+def canvas_save_to_data_room(request, thread_id):
+    """Save canvas content as a markdown document in a data room."""
+    thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
+    canvas = get_object_or_404(ChatCanvas, thread=thread)
+
+    body = json.loads(request.body)
+    data_room_id = body.get("data_room_id")
+    if not data_room_id:
+        return JsonResponse({"error": "data_room_id required"}, status=400)
+
+    data_room = get_object_or_404(DataRoom, pk=data_room_id)
+
+    from documents.views import _user_can_access_data_room
+
+    if not _user_can_access_data_room(request.user, data_room):
+        return JsonResponse({"error": "Access denied"}, status=403)
+
+    title = canvas.title or "Untitled document"
+    content = canvas.content or ""
+
+    from django.core.files.base import ContentFile
+
+    safe_title = (
+        "".join(c for c in title if c.isalnum() or c in " _-").strip() or "document"
+    )
+    filename = f"{safe_title}.md"
+    file_bytes = content.encode("utf-8")
+    file_content = ContentFile(file_bytes, name=filename)
+
+    doc = DataRoomDocument.objects.create(
+        data_room=data_room,
+        uploaded_by=request.user,
+        original_file=file_content,
+        original_filename=filename,
+        mime_type="text/markdown",
+        size_bytes=len(file_bytes),
+        status=DataRoomDocument.Status.UPLOADED,
+    )
+    DataRoomDocumentTag.objects.create(
+        document=doc, key="source", value="canvas_export"
+    )
+
+    try:
+        from documents.tasks import process_document_task
+
+        process_document_task.delay(doc.id)
+    except ImportError:
+        from documents.services.process_document import process_document
+
+        process_document(doc.id)
+    except Exception as exc:
+        logger.exception(
+            "canvas_save_to_data_room: failed to enqueue processing for document_id=%s",
+            doc.id,
+        )
+        doc.status = DataRoomDocument.Status.FAILED
+        doc.processing_error = str(exc)[:2000]
+        doc.save(update_fields=["status", "processing_error", "updated_at"])
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "document_id": doc.id,
+            "filename": filename,
+            "data_room_name": data_room.name,
+        }
+    )
 
 
 @login_required

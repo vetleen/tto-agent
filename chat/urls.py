@@ -9,5 +9,6 @@ urlpatterns = [
     path("threads/<uuid:thread_id>/canvas/export/", views.canvas_export, name="canvas_export"),
     path("threads/<uuid:thread_id>/canvas/import/", views.canvas_import, name="canvas_import"),
     path("api/threads/create/", views.thread_create, name="thread_create"),
+    path("api/threads/<uuid:thread_id>/canvas/save-to-data-room/", views.canvas_save_to_data_room, name="canvas_save_to_data_room"),
     path("api/data-rooms/", views.data_rooms_for_user, name="chat_data_rooms_api"),
 ]

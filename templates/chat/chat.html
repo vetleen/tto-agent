@@ -233,20 +233,30 @@
       class="flex-1 text-sm font-semibold text-heading bg-transparent border-0 focus:outline-none focus:ring-0 min-w-0"
       placeholder="Document title" />
     <div class="flex items-center gap-1 shrink-0">
-      {# Import button #}
-      <label id="canvas-import-label" title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg id="canvas-import-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-        <svg id="canvas-import-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-        <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
-      </label>
-      {# Save version button #}
+      {# 1. Save version (floppy disk) #}
       <button id="canvas-save-version-btn" title="Save version" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-8H7v8M7 3v5h8"/></svg>
       </button>
-      {# Version history button #}
+      {# 2. Save to data room (bookmark) #}
+      <div class="relative">
+        <button id="canvas-save-to-dr-btn" title="Save to data room" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/></svg>
+        </button>
+        <div id="canvas-save-to-dr-dropdown" class="hidden absolute right-0 top-full mt-1 z-50 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg w-64 max-h-72 overflow-y-auto">
+          <div class="px-3 py-2 border-b border-default text-xs font-semibold text-heading">Save to data room</div>
+          <div id="canvas-save-to-dr-list" class="py-1">
+            <div class="px-3 py-2 text-xs text-body">Loading…</div>
+          </div>
+        </div>
+      </div>
+      {# 3. Export as .docx #}
+      <a id="canvas-export-link" href="#" title="Export as .docx" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      </a>
+      {# 4. Version history #}
       <div class="relative">
         <button id="canvas-history-btn" title="Version history" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 119 9m-9-9H1m2 0l3-3m-3 3l3 3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 7v5l3 3"/></svg>
         </button>
         <div id="canvas-history-dropdown" class="hidden absolute right-0 top-full mt-1 z-50 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg w-72 max-h-80 overflow-y-auto">
           <div class="px-3 py-2 border-b border-default text-xs font-semibold text-heading">Version history</div>
@@ -255,15 +265,17 @@
           </div>
         </div>
       </div>
-      {# Export button #}
-      <a id="canvas-export-link" href="#" title="Export as .docx" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-      </a>
-      {# Edit/Preview toggle #}
+      {# 5. Preview toggle #}
       <button id="canvas-preview-btn" title="Toggle preview" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
       </button>
-      {# Close button #}
+      {# 6. Import .docx #}
+      <label id="canvas-import-label" title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg id="canvas-import-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        <svg id="canvas-import-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
+      </label>
+      {# 7. Close #}
       <button id="canvas-close-btn" title="Close canvas" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
@@ -987,6 +999,9 @@
   var canvasHistoryBtn = document.getElementById("canvas-history-btn");
   var canvasHistoryDropdown = document.getElementById("canvas-history-dropdown");
   var canvasHistoryList = document.getElementById("canvas-history-list");
+  var canvasSaveToDrBtn = document.getElementById("canvas-save-to-dr-btn");
+  var canvasSaveToDrDropdown = document.getElementById("canvas-save-to-dr-dropdown");
+  var canvasSaveToDrList = document.getElementById("canvas-save-to-dr-list");
   var openCanvasBtn = document.getElementById("open-canvas-btn");
   var canvasToggleBtn = document.getElementById("canvas-toggle-btn");
   var canvasToggleArrow = document.getElementById("canvas-toggle-arrow");
@@ -1387,6 +1402,83 @@
         }
         canvasHistoryDropdown.classList.add("hidden");
       });
+    });
+  }
+
+  // -- Save to data room dropdown --
+  if (canvasSaveToDrBtn && canvasSaveToDrDropdown) {
+    canvasSaveToDrBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var isOpen = !canvasSaveToDrDropdown.classList.contains("hidden");
+      canvasSaveToDrDropdown.classList.toggle("hidden");
+      if (!isOpen) {
+        canvasSaveToDrList.innerHTML = '<div class="px-3 py-2 text-xs text-body">Loading\u2026</div>';
+        fetch("{% url 'chat_data_rooms_api' %}")
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var rooms = data.data_rooms || [];
+            if (!rooms.length) {
+              canvasSaveToDrList.innerHTML = '<div class="px-3 py-2 text-xs text-body">No data rooms yet.</div>';
+              return;
+            }
+            // Sort: attached rooms first
+            var attached = [], other = [];
+            rooms.forEach(function(r) {
+              if (attachedDataRoomIds.includes(r.pk)) attached.push(r);
+              else other.push(r);
+            });
+            var sorted = attached.concat(other);
+            var html = "";
+            if (attached.length && other.length) {
+              html += '<div class="px-3 py-1.5 text-xs font-semibold text-body/60 uppercase tracking-wide">Attached</div>';
+            }
+            attached.forEach(function(r) {
+              html += '<button type="button" class="save-to-dr-select flex items-center gap-2 w-full px-3 py-2 text-sm text-heading hover:bg-neutral-tertiary text-left" data-room-id="' + r.pk + '">';
+              html += '<svg class="w-4 h-4 shrink-0 text-body" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>';
+              html += '<span class="truncate">' + escapeHtml(r.name) + '</span></button>';
+            });
+            if (attached.length && other.length) {
+              html += '<div class="border-t border-default my-1"></div>';
+              html += '<div class="px-3 py-1.5 text-xs font-semibold text-body/60 uppercase tracking-wide">Other</div>';
+            }
+            other.forEach(function(r) {
+              html += '<button type="button" class="save-to-dr-select flex items-center gap-2 w-full px-3 py-2 text-sm text-heading hover:bg-neutral-tertiary text-left" data-room-id="' + r.pk + '">';
+              html += '<svg class="w-4 h-4 shrink-0 text-body" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>';
+              html += '<span class="truncate">' + escapeHtml(r.name) + '</span></button>';
+            });
+            canvasSaveToDrList.innerHTML = html;
+            canvasSaveToDrList.querySelectorAll(".save-to-dr-select").forEach(function(btn) {
+              btn.addEventListener("click", function(e) {
+                e.stopPropagation();
+                var roomId = parseInt(btn.getAttribute("data-room-id"));
+                canvasSaveToDrDropdown.classList.add("hidden");
+                if (!activeThreadId) return;
+                btn.disabled = true;
+                fetch("/chat/api/threads/" + activeThreadId + "/canvas/save-to-data-room/", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "X-CSRFToken": getCSRFToken() },
+                  body: JSON.stringify({ data_room_id: roomId })
+                })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                  if (data.ok) {
+                    if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved to " + data.data_room_name; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                  } else {
+                    if (canvasSaveStatus) { canvasSaveStatus.textContent = data.error || "Save failed"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                  }
+                })
+                .catch(function() {
+                  if (canvasSaveStatus) { canvasSaveStatus.textContent = "Save failed"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                });
+              });
+            });
+          });
+      }
+    });
+    document.addEventListener("click", function(e) {
+      if (!canvasSaveToDrDropdown.contains(e.target) && e.target !== canvasSaveToDrBtn) {
+        canvasSaveToDrDropdown.classList.add("hidden");
+      }
     });
   }
 
