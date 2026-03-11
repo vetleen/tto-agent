@@ -22,7 +22,7 @@ def chat_home(request):
 
     if request.GET.get("thread"):
         thread_id = request.GET["thread"]
-        thread = ChatThread.objects.filter(
+        thread = ChatThread.objects.select_related("skill").filter(
             id=thread_id, created_by=request.user
         ).first()
         if thread:
@@ -50,10 +50,22 @@ def chat_home(request):
 
     # If thread selected, get its attached data rooms
     thread_data_rooms = []
+    thread_skill = None
     if thread:
         thread_data_rooms = list(
             thread.data_rooms.values("pk", "uuid", "name")
         )
+        if thread.skill_id:
+            thread_skill = {"id": str(thread.skill_id), "name": thread.skill.name}
+
+    # Skills for the skill modal
+    from agent_skills.services import get_available_skills
+
+    skills = get_available_skills(request.user)
+    skills_json = json.dumps([
+        {"id": str(s.pk), "name": s.name, "description": s.description}
+        for s in skills
+    ])
 
     # Model choices for the model selector dropdown
     from core.preferences import get_preferences
@@ -79,6 +91,8 @@ def chat_home(request):
             "messages": chat_messages,
             "data_rooms": data_rooms,
             "thread_data_rooms": thread_data_rooms,
+            "skills_json": skills_json,
+            "thread_skill": thread_skill,
             "model_choices_json": json.dumps(model_choices),
             "default_model": prefs.primary_model,
             "default_model_display": get_display_name(prefs.primary_model),
@@ -178,6 +192,21 @@ def thread_create(request):
     """Create a new empty thread and return its ID."""
     thread = ChatThread.objects.create(created_by=request.user)
     return JsonResponse({"thread_id": str(thread.id)})
+
+
+@login_required
+@require_http_methods(["GET"])
+def skills_for_user(request):
+    """JSON API returning the user's available skills."""
+    from agent_skills.services import get_available_skills
+
+    skills = get_available_skills(request.user)
+    return JsonResponse({
+        "skills": [
+            {"id": str(s.pk), "name": s.name, "description": s.description}
+            for s in skills
+        ]
+    })
 
 
 @login_required

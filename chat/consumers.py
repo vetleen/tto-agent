@@ -21,6 +21,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.user = self.scope.get("user")
         self.resolved_prefs = None
         self.data_room_ids: list[int] = []
+        self.active_skill_id: str | None = None
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
@@ -69,6 +70,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_detach_data_room(data)
         elif msg_type == "chat.load_thread":
             await self._handle_load_thread(data)
+        elif msg_type == "chat.attach_skill":
+            await self._handle_attach_skill(data)
+        elif msg_type == "chat.detach_skill":
+            await self._handle_detach_skill(data)
         elif msg_type == "chat.canvas_save":
             await self._handle_canvas_save(data)
         elif msg_type == "chat.canvas_open":
@@ -132,8 +137,45 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "data_room_id": data_room_id,
         }))
 
+    async def _handle_attach_skill(self, data):
+        """Attach a skill to the current session."""
+        skill_id = data.get("skill_id")
+        thread_id = data.get("thread_id")
+        if not skill_id:
+            await self.send(text_data=json.dumps({"error": "skill_id required"}))
+            return
+
+        skill = await self._validate_skill(skill_id)
+        if not skill:
+            await self.send(text_data=json.dumps({"error": "Skill not found or access denied"}))
+            return
+
+        self.active_skill_id = str(skill["id"])
+
+        if thread_id:
+            await self._persist_thread_skill(thread_id, skill["id"])
+
+        await self.send(text_data=json.dumps({
+            "event_type": "skill.attached",
+            "skill_id": str(skill["id"]),
+            "skill_name": skill["name"],
+        }))
+
+    async def _handle_detach_skill(self, data):
+        """Detach the skill from the current session."""
+        thread_id = data.get("thread_id")
+
+        self.active_skill_id = None
+
+        if thread_id:
+            await self._persist_thread_skill(thread_id, None)
+
+        await self.send(text_data=json.dumps({
+            "event_type": "skill.detached",
+        }))
+
     async def _handle_load_thread(self, data):
-        """Load a thread's data rooms and canvas into the session."""
+        """Load a thread's data rooms, skill, and canvas into the session."""
         thread_id = data.get("thread_id")
         if not thread_id:
             return
@@ -141,10 +183,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thread_data = await self._load_thread_data_rooms(thread_id)
         if thread_data is not None:
             self.data_room_ids = thread_data["data_room_ids"]
+
+            # Load skill
+            skill_data = await self._load_thread_skill(thread_id)
+            self.active_skill_id = skill_data["skill_id"] if skill_data else None
+
             await self.send(text_data=json.dumps({
                 "event_type": "thread.loaded",
                 "thread_id": thread_id,
                 "data_rooms": thread_data["data_rooms"],
+                "skill": skill_data,
             }))
             # Send canvas state if one exists
             canvas_data = await self._load_canvas(thread_id)
@@ -265,6 +313,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if payload_room_ids and isinstance(payload_room_ids, list):
             self.data_room_ids = payload_room_ids
 
+        # Allow payload to specify skill_id
+        payload_skill_id = data.get("skill_id")
+        if payload_skill_id:
+            self.active_skill_id = str(payload_skill_id)
+        elif payload_skill_id == "":
+            self.active_skill_id = None
+
         try:
             # Get or create thread
             thread, created = await self._get_or_create_thread(thread_id)
@@ -274,6 +329,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # Persist session data_room_ids as M2M for new threads
                 if self.data_room_ids:
                     await self._persist_data_room_links(thread.id, self.data_room_ids)
+                # Persist skill FK for new threads
+                if self.active_skill_id:
+                    await self._persist_thread_skill(str(thread.id), self.active_skill_id)
 
                 await self.send(text_data=json.dumps({
                     "event_type": "thread.created",
@@ -306,12 +364,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except Exception:
                 logger.exception("Failed to load canvas for thread %s", thread.id)
                 canvas = None
+            skill_obj = None
+            if self.active_skill_id:
+                skill_obj = await self._load_skill(self.active_skill_id)
             system_prompt = build_system_prompt(
                 data_rooms=data_rooms,
                 history_meta=meta,
                 doc_context=doc_context,
                 organization_name=org_name,
                 canvas=canvas,
+                skill=skill_obj,
             )
 
             # Stream LLM response
@@ -373,6 +435,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             tools = list(all_tools)
         else:
             tools = [t for t in all_tools if t not in doc_tools]
+
+        # Extend with skill-specific tools
+        if self.active_skill_id:
+            skill_tool_names = await self._get_skill_tool_names(self.active_skill_id)
+            for t in skill_tool_names:
+                if t not in tools:
+                    tools.append(t)
 
         request = ChatRequest(
             messages=messages,
@@ -827,6 +896,58 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
             for cp in checkpoints
         ]
+
+    # -- Skill helpers --
+
+    @database_sync_to_async
+    def _validate_skill(self, skill_id):
+        from agent_skills.services import get_skill_for_user
+
+        skill = get_skill_for_user(self.user, skill_id)
+        if not skill:
+            return None
+        return {"id": str(skill.pk), "name": skill.name}
+
+    @database_sync_to_async
+    def _persist_thread_skill(self, thread_id, skill_id):
+        from chat.models import ChatThread
+
+        ChatThread.objects.filter(pk=thread_id, created_by=self.user).update(
+            skill_id=skill_id
+        )
+
+    @database_sync_to_async
+    def _load_thread_skill(self, thread_id):
+        from chat.models import ChatThread
+
+        try:
+            thread = ChatThread.objects.select_related("skill").get(
+                pk=thread_id, created_by=self.user
+            )
+        except ChatThread.DoesNotExist:
+            return None
+        if thread.skill:
+            return {"skill_id": str(thread.skill.pk), "skill_name": thread.skill.name}
+        return None
+
+    @database_sync_to_async
+    def _load_skill(self, skill_id):
+        from agent_skills.models import AgentSkill
+
+        try:
+            return AgentSkill.objects.get(pk=skill_id, is_active=True)
+        except AgentSkill.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def _get_skill_tool_names(self, skill_id):
+        from agent_skills.models import AgentSkill
+
+        try:
+            skill = AgentSkill.objects.get(pk=skill_id, is_active=True)
+            return skill.tool_names or []
+        except AgentSkill.DoesNotExist:
+            return []
 
     # -- Database helpers --
 

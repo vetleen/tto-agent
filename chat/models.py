@@ -14,6 +14,13 @@ class ChatThread(models.Model):
         related_name="chat_threads",
         blank=True,
     )
+    skill = models.ForeignKey(
+        "agent_skills.AgentSkill",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="chat_threads",
+    )
     title = models.CharField(max_length=255, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
