@@ -43,10 +43,10 @@ class SearchDocumentsTool(ContextAwareTool):
 
     name: str = "search_documents"
     description: str = (
-        "Search the attached data rooms' documents for information relevant to a query. "
-        "Returns document titles, types, descriptions, section headings, and chunk ranges. "
-        "Use this when the user asks about document contents, wants summaries, "
-        "or needs specific information from their files."
+        "Search the attached data rooms' documents for information relevant to a query, using "
+        "hybrid retrieval and reranking to find the most relevant passages. "
+        "Returns document titles, types, descriptions, section headings, chunk text, and chunk ranges. "
+        "Use this when data in the attached data room(s) is probably relevant to the user request/message. "
     )
     args_schema: type[BaseModel] = SearchDocumentsInput
 
@@ -214,10 +214,9 @@ class ReadDocumentTool(ContextAwareTool):
 
     name: str = "read_document"
     description: str = (
-        "Read the full text content of one or more documents by their "
-        "index number. Use this when you need the complete content of a specific "
-        "document rather than search excerpts. Supports optional chunk_start/chunk_end "
-        "for reading a specific chunk range instead of the full document."
+        "Read content from one or more documents by their index number — "
+        "either the full text or a specific chunk range (via chunk_start/chunk_end). "
+        "Use this when you need the actual document content rather than search excerpts."
     )
     args_schema: type[BaseModel] = ReadDocumentInput
 

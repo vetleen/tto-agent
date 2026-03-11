@@ -61,7 +61,7 @@ def build_system_prompt(
         prompt += f"\n# Documents\nThe attached data rooms contain {total} document{'s' if total != 1 else ''} total."
 
         if docs:
-            prompt += " Based on the user's latest message, these documents may be relevant:\n\n"
+            prompt += " Based on a hybrid retrieval RAG search on the user's latest message, these documents may be relevant:\n\n"
             for doc in docs:
                 idx = doc["doc_index"]
                 fname = doc["filename"]
@@ -81,17 +81,9 @@ def build_system_prompt(
             shown = len(docs)
             remaining = total - shown
             if remaining > 0:
-                prompt += f"\nThere {'is' if remaining == 1 else 'are'} {remaining} other document{'s' if remaining != 1 else ''} not shown here.\n"
+                prompt += f"\nThe data room contains {'is' if remaining == 1 else 'are'} {remaining} other document{'s' if remaining != 1 else ''} not shown here.\n"
         prompt += "\n"
 
-        # -- Tools section (only when data rooms attached) --
-        prompt += """\
-# Tools
-- **search_documents(query, k)**: Search the attached data rooms' documents for relevant passages. Returns document titles, types, descriptions, section headings, and chunk ranges. You can use the user's exact wording or sharpen the search query for better results.
-- **read_document(doc_indices, chunk_start, chunk_end)**: Read specific documents by their index number (e.g. [1, 3]). Optionally pass chunk_start and chunk_end to read a specific chunk range instead of the full document.
-
-When the user asks about document-specific topics, use search_documents to find relevant passages. Use read_document when you need the full context of a specific document, or use chunk_start/chunk_end for partial reads of large documents.
-"""
     elif data_rooms:
         prompt += "\nThe attached data rooms have no documents uploaded yet.\n\n"
 
@@ -99,31 +91,25 @@ When the user asks about document-specific topics, use search_documents to find 
     if canvas:
         prompt += f"""\
 
-# Canvas Document
-The user has an active canvas document titled "{canvas.title}". Current content:
+# Canvas 
+You have access to a canvas for text processing. 
+This chat already has an active canvas document titled "{canvas.title}". Current content:
 
 ```markdown
 {canvas.content}
 ```
+If the user's request is for you to edit or add to the text (use your sound judgement to assertain if this is the case), use **edit_canvas** to make targeted changes to specific sections of this document.
 
-Use **edit_canvas** to make targeted changes to specific sections of this document.
-Use **write_canvas** only if the user asks for a complete rewrite.
+Be careful with **write_canvas**, as it deletes pre-existing text. Only use this if it's clear that a complete rewrite is needed. Usually, this will be because the user asks you directly.
 """
     else:
         prompt += """\
 
 # Canvas
-No canvas document exists yet. If the user asks you to draft, write, or create a document,
-or if it's otherwise practical or appropriate in serving the user best,
-use **write_canvas** to create one. The canvas will appear as a panel alongside the chat.
-"""
+You have access to a canvas for text processing. This is a core feature! If the user's request is for you to generate a text (use your sound judgement to assertain if this is the case), use **write_canvas** to create the initial text in the canvas. The canvas will appear as a panel alongside the chat, and is a user friendly way to deliver the request.
+Users may ask for a full document, or a section. Some examples of documents that the user may ask for are: emails, grant applications, letters, patent claims, business plans, meeting summaries or minutes, reports or summaries of a process. 
 
-    # -- Canvas tools always available --
-    prompt += """\
-# Canvas Tools
-- **write_canvas(title, content)**: Create or completely rewrite the canvas document (markdown).
-- **edit_canvas(edits)**: Apply targeted find-replace edits. Each edit: {old_text, new_text, reason}.
-
+You should be eager to use the canvas.
 """
 
     if history_meta:

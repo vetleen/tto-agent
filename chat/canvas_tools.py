@@ -33,7 +33,7 @@ class WriteCanvasTool(ContextAwareTool):
     description: str = (
         "Create or completely rewrite the canvas document for this conversation. "
         "Use this when starting a document from scratch or doing a full rewrite. "
-        "For targeted changes to an existing document, prefer edit_canvas instead."
+        "For targeted changes to an existing document, prefer the edit_canvas tool instead."
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
