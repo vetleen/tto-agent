@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 
-from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
+from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 
 
 logger = logging.getLogger(__name__)
@@ -239,6 +239,11 @@ def document_upload(request, data_room_id):
             status=DataRoomDocument.Status.UPLOADED,
         )
         created_docs.append(doc)
+
+    if created_docs:
+        DataRoomDocumentTag.objects.bulk_create(
+            [DataRoomDocumentTag(document=doc, key="source", value="user_uploaded") for doc in created_docs]
+        )
 
     for doc in created_docs:
         try:

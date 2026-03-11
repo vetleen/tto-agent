@@ -12,7 +12,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
+from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from documents.views import _relative_upload_date
 
 User = get_user_model()
@@ -113,6 +113,19 @@ class DocumentViewsTests(TestCase):
             doc.status,
             (DataRoomDocument.Status.UPLOADED, DataRoomDocument.Status.READY, DataRoomDocument.Status.FAILED),
         )
+
+    def test_document_upload_tags_source_user_uploaded(self):
+        self.client.force_login(self.user)
+        f = BytesIO(b"Hello world")
+        f.name = "tagged.txt"
+        self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
+        tag = DataRoomDocumentTag.objects.get(document=doc, key="source")
+        self.assertEqual(tag.value, "user_uploaded")
 
     def test_document_upload_marks_failed_when_task_enqueue_fails(self):
         self.client.force_login(self.user)
