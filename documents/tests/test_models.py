@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
+from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 
 User = get_user_model()
 
@@ -100,6 +100,70 @@ class DataRoomDocumentChunkModelTests(TestCase):
         # Should not raise; result should be a non-empty string
         self.assertIsInstance(str(chunk), str)
         self.assertTrue(len(str(chunk)) > 0)
+
+
+class DataRoomDescriptionTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="testpass")
+
+    def test_data_room_description_default_empty(self):
+        data_room = DataRoom.objects.create(name="Test", slug="test-desc", created_by=self.user)
+        self.assertEqual(data_room.description, "")
+
+    def test_data_room_description_saved(self):
+        data_room = DataRoom.objects.create(
+            name="Test", slug="test-desc2", created_by=self.user,
+            description="Contains patent files",
+        )
+        data_room.refresh_from_db()
+        self.assertEqual(data_room.description, "Contains patent files")
+
+
+class DataRoomDocumentTagTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="taguser@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="P", slug="p-tag", created_by=self.user)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="x.txt",
+            status=DataRoomDocument.Status.READY,
+        )
+
+    def test_create_tag(self):
+        tag = DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+        self.assertEqual(tag.key, "document_type")
+        self.assertEqual(tag.value, "Agreement")
+        self.assertEqual(tag.document_id, self.doc.pk)
+
+    def test_tag_str(self):
+        tag = DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Patent")
+        self.assertIn("document_type=Patent", str(tag))
+
+    def test_unique_constraint_per_document_key(self):
+        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+        with self.assertRaises(Exception):
+            DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Report")
+
+    def test_same_key_different_documents(self):
+        doc2 = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="y.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+        DataRoomDocumentTag.objects.create(document=doc2, key="document_type", value="Report")
+        self.assertEqual(DataRoomDocumentTag.objects.count(), 2)
+
+    def test_cascade_delete_with_document(self):
+        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+        self.assertEqual(DataRoomDocumentTag.objects.count(), 1)
+        self.doc.delete()
+        self.assertEqual(DataRoomDocumentTag.objects.count(), 0)
+
+    def test_related_name_tags(self):
+        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+        DataRoomDocumentTag.objects.create(document=self.doc, key="category", value="Legal")
+        self.assertEqual(self.doc.tags.count(), 2)
 
 
 class DataRoomDocumentStatusTests(TestCase):

@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from chat.tools import ReadDocumentTool, SearchDocumentsTool
-from documents.models import DataRoom
+from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from llm.types.context import RunContext
 
 User = get_user_model()
@@ -17,7 +17,10 @@ class SearchDocumentsToolTests(TestCase):
     def setUp(self):
         self.tool = SearchDocumentsTool()
         self.user = User.objects.create_user(email="tooluser@test.com", password="pass")
-        self.data_room = DataRoom.objects.create(name="Test", slug="test-tools", created_by=self.user)
+        self.data_room = DataRoom.objects.create(
+            name="Test", slug="test-tools", created_by=self.user,
+            description="A test data room with patents",
+        )
 
     def _ctx(self, user_id=None, data_room_pks=None):
         return RunContext.create(
@@ -29,7 +32,11 @@ class SearchDocumentsToolTests(TestCase):
         """Set context and invoke the tool."""
         tool = self.tool.model_copy()
         tool.set_context(ctx)
-        result = tool.invoke(args)
+        return tool.invoke(args)
+
+    def _invoke_json(self, args, ctx):
+        """Set context, invoke, and parse as JSON (for error cases)."""
+        result = self._invoke(args, ctx)
         return json.loads(result)
 
     def test_has_required_attributes(self):
@@ -69,30 +76,88 @@ class SearchDocumentsToolTests(TestCase):
 
     def test_empty_data_room_ids_returns_error(self):
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[])
-        result = self._invoke({"query": "test"}, ctx)
+        result = self._invoke_json({"query": "test"}, ctx)
         self.assertIn("error", result)
         self.assertEqual(result["count"], 0)
 
     @patch("documents.services.retrieval.similarity_search_chunks")
-    def test_returns_results(self, mock_search):
+    @patch("documents.services.retrieval.get_merged_context_windows")
+    def test_returns_formatted_text(self, mock_windows, mock_search):
+        """Search results should be formatted as human-readable text, not JSON."""
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="License.pdf", description="A license agreement",
+            status=DataRoomDocument.Status.READY, doc_index=1,
+        )
+        DataRoomDocumentTag.objects.create(document=doc, key="document_type", value="Agreement")
+        chunk = DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=0, text="Grant of license...", token_count=10,
+            heading="Grant of License",
+        )
+
         mock_doc = MagicMock()
-        mock_doc.page_content = "Some text"
-        mock_doc.metadata = {"chunk_id": 1}
+        mock_doc.page_content = "Grant of license..."
+        mock_doc.metadata = {"chunk_id": chunk.id, "doc_index": 1, "data_room_id": self.data_room.pk, "chunk_index": 0}
         mock_search.return_value = [mock_doc]
 
-        result = self._invoke({"query": "test"}, self._ctx())
+        mock_windows.return_value = [{
+            "chunk_ids": [chunk.id],
+            "document_id": doc.pk,
+            "context_text": "Grant of license...",
+            "context_token_count": 10,
+            "chunks_included": [0],
+        }]
 
-        self.assertEqual(result["count"], 1)
-        self.assertEqual(len(result["results"]), 1)
-        self.assertEqual(result["results"][0]["text"], "Some text")
-        self.assertEqual(result["results"][0]["metadata"], {"chunk_id": 1})
+        result = self._invoke({"query": "license"}, self._ctx())
+
+        # Should be formatted text, not JSON
+        self.assertIn("# Search Results", result)
+        self.assertIn("License.pdf", result)
+        self.assertIn("Agreement", result)
+        self.assertIn("Grant of License", result)
+        self.assertIn("A license agreement", result)
+        self.assertIn("Grant of license...", result)
+
+    @patch("documents.services.retrieval.similarity_search_chunks")
+    @patch("documents.services.retrieval.get_merged_context_windows")
+    def test_includes_data_room_context(self, mock_windows, mock_search):
+        """Should include data room name and description at the bottom."""
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="doc.pdf", status=DataRoomDocument.Status.READY, doc_index=1,
+        )
+        chunk = DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=0, text="Some text", token_count=5,
+        )
+
+        mock_doc = MagicMock()
+        mock_doc.metadata = {"chunk_id": chunk.id}
+        mock_search.return_value = [mock_doc]
+        mock_windows.return_value = [{
+            "chunk_ids": [chunk.id],
+            "document_id": doc.pk,
+            "context_text": "Some text",
+            "context_token_count": 5,
+            "chunks_included": [0],
+        }]
+
+        result = self._invoke({"query": "test"}, self._ctx())
+        self.assertIn("# Data Room Context", result)
+        self.assertIn("Test", result)
+        self.assertIn("A test data room with patents", result)
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     def test_handles_search_exception(self, mock_search):
         mock_search.side_effect = Exception("DB error")
-        result = self._invoke({"query": "test"}, self._ctx())
+        result = self._invoke_json({"query": "test"}, self._ctx())
         self.assertEqual(result["count"], 0)
         self.assertIn("error", result)
+
+    @patch("documents.services.retrieval.similarity_search_chunks")
+    def test_no_results(self, mock_search):
+        mock_search.return_value = []
+        result = self._invoke({"query": "nothing"}, self._ctx())
+        self.assertIn("No results found", result)
 
     def test_registered_in_tool_registry(self):
         from llm.tools import get_tool_registry
@@ -112,7 +177,7 @@ class SearchDocumentsToolTests(TestCase):
         ctx = RunContext.create(data_room_ids=[self.data_room.pk])
         # Without a user_id the tool skips the ownership check and proceeds
         result = self._invoke({"query": "test"}, ctx)
-        self.assertIn("count", result)
+        self.assertIsInstance(result, str)
 
 
 class ReadDocumentToolTests(TestCase):
@@ -157,3 +222,91 @@ class ReadDocumentToolTests(TestCase):
         tool = registry.get_tool("read_document")
         self.assertIsNotNone(tool)
         self.assertEqual(tool.name, "read_document")
+
+    def test_full_document_read(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="test.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="Chunk 0", token_count=2)
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="Chunk 1", token_count=2)
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=2, text="Chunk 2", token_count=2)
+
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        self.assertEqual(len(result["documents"]), 1)
+        d = result["documents"][0]
+        self.assertIn("Chunk 0", d["content"])
+        self.assertIn("Chunk 1", d["content"])
+        self.assertIn("Chunk 2", d["content"])
+        self.assertEqual(d["total_chunks"], 3)
+        self.assertNotIn("chunk_range", d)
+
+    def test_chunk_range_read(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="range.txt", status=DataRoomDocument.Status.READY,
+        )
+        for i in range(5):
+            DataRoomDocumentChunk.objects.create(
+                document=doc, chunk_index=i, text=f"Chunk {i}", token_count=2,
+                heading=f"Section {i}" if i % 2 == 0 else None,
+            )
+
+        result = self._invoke({
+            "doc_indices": [doc.doc_index],
+            "chunk_start": 1,
+            "chunk_end": 3,
+        }, self._ctx())
+
+        self.assertEqual(len(result["documents"]), 1)
+        d = result["documents"][0]
+        self.assertIn("Chunk 1", d["content"])
+        self.assertIn("Chunk 2", d["content"])
+        self.assertIn("Chunk 3", d["content"])
+        self.assertNotIn("Chunk 0", d["content"])
+        self.assertNotIn("Chunk 4", d["content"])
+        self.assertEqual(d["chunk_range"], "1-3")
+        self.assertEqual(d["chunks_returned"], 3)
+        self.assertEqual(d["total_chunks"], 5)
+
+    def test_chunk_range_with_headings(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="headings.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=0, text="text0", token_count=2, heading="Intro",
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=1, text="text1", token_count=2, heading="Body",
+        )
+
+        result = self._invoke({
+            "doc_indices": [doc.doc_index],
+            "chunk_start": 0,
+            "chunk_end": 1,
+        }, self._ctx())
+
+        d = result["documents"][0]
+        self.assertIn("Intro", d["headings"])
+        self.assertIn("Body", d["headings"])
+
+    def test_chunk_range_only_start_ignored(self):
+        """When only chunk_start is provided without chunk_end, full doc is returned."""
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="partial.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="A", token_count=1)
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="B", token_count=1)
+
+        result = self._invoke({
+            "doc_indices": [doc.doc_index],
+            "chunk_start": 1,
+        }, self._ctx())
+
+        d = result["documents"][0]
+        # Without chunk_end, should return full document
+        self.assertIn("A", d["content"])
+        self.assertIn("B", d["content"])
+        self.assertNotIn("chunk_range", d)

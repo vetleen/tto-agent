@@ -31,5 +31,7 @@ urlpatterns = [
         views.document_chunks,
         name="document_chunks",
     ),
+    path("<uuid:data_room_id>/generate-description/", views.data_room_generate_description, name="data_room_generate_description"),
+    path("<uuid:data_room_id>/description/", views.data_room_update_description, name="data_room_update_description"),
     path("<uuid:data_room_id>/documents/", views.data_room_documents, name="data_room_documents"),
 ]

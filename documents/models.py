@@ -19,6 +19,7 @@ class DataRoom(models.Model):
     )
     is_archived = models.BooleanField(default=False)
     is_shared = models.BooleanField(default=False)
+    description = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -128,3 +129,22 @@ class DataRoomDocumentChunk(models.Model):
 
     def __str__(self) -> str:
         return f"Chunk {self.chunk_index} of {self.document_id}"
+
+
+class DataRoomDocumentTag(models.Model):
+    document = models.ForeignKey(DataRoomDocument, on_delete=models.CASCADE, related_name="tags")
+    key = models.CharField(max_length=100)
+    value = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["document", "key"],
+                name="documents_tag_unique_per_document",
+            ),
+        ]
+        ordering = ["key"]
+
+    def __str__(self) -> str:
+        return f"{self.key}={self.value} (doc={self.document_id})"

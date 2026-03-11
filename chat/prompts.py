@@ -15,7 +15,8 @@ def build_system_prompt(
 ) -> str:
     """Build the system prompt for a chat session.
 
-    *data_rooms*, when provided, should be a list of dicts with ``id`` and ``name``.
+    *data_rooms*, when provided, should be a list of dicts with ``id``, ``name``,
+    and optionally ``description``.
 
     *history_meta*, when provided, should contain keys like
     ``total_messages``, ``included_messages``, and ``has_summary``.
@@ -23,7 +24,8 @@ def build_system_prompt(
     *doc_context*, when provided, should contain:
     - ``total_doc_count``: int
     - ``documents``: list of dicts with ``doc_index``, ``filename``,
-      ``description``, ``token_count``, and optionally ``data_room_name``
+      ``description``, ``token_count``, ``document_type``, and optionally
+      ``data_room_name``
     """
     org_line = f" {organization_name}," if organization_name else ""
     prompt = f'''\
@@ -41,8 +43,13 @@ def build_system_prompt(
 
     # -- Data rooms section --
     if data_rooms:
-        room_names = ", ".join(f'"{r["name"]}"' for r in data_rooms)
-        prompt += f"\n# Attached Data Rooms\nYou have access to the following data rooms: {room_names}.\n"
+        prompt += "\n# Attached Data Rooms\n"
+        for r in data_rooms:
+            desc = r.get("description", "")
+            if desc:
+                prompt += f'- **"{r["name"]}"**: {desc}\n'
+            else:
+                prompt += f'- "{r["name"]}"\n'
     else:
         prompt += "\n# Data Rooms\nNo data rooms are attached to this conversation. You are answering off-the-cuff without access to any uploaded documents.\n"
 
@@ -61,8 +68,10 @@ def build_system_prompt(
                 tokens = doc.get("token_count") or 0
                 desc = doc.get("description", "")
                 room_name = doc.get("data_room_name", "")
+                doc_type = doc.get("document_type", "")
                 token_note = f" (~{tokens:,} tokens)" if tokens else ""
-                line = f'{idx}. [{idx}] "{fname}"{token_note}'
+                type_note = f" ({doc_type})" if doc_type else ""
+                line = f'{idx}. [{idx}] "{fname}"{type_note}{token_note}'
                 if room_name:
                     line += f" (data room: {room_name})"
                 if desc:
@@ -78,10 +87,10 @@ def build_system_prompt(
         # -- Tools section (only when data rooms attached) --
         prompt += """\
 # Tools
-- **search_documents(query, k)**: Search the attached data rooms' documents for relevant passages. You can use the user's exact wording or sharpen the search query for better results.
-- **read_document(doc_indices)**: Read the full content of specific documents by their index number (e.g. [1, 3]).
+- **search_documents(query, k)**: Search the attached data rooms' documents for relevant passages. Returns document titles, types, descriptions, section headings, and chunk ranges. You can use the user's exact wording or sharpen the search query for better results.
+- **read_document(doc_indices, chunk_start, chunk_end)**: Read specific documents by their index number (e.g. [1, 3]). Optionally pass chunk_start and chunk_end to read a specific chunk range instead of the full document.
 
-When the user asks about document-specific topics, use search_documents to find relevant passages. Use read_document when you need the full context of a specific document.
+When the user asks about document-specific topics, use search_documents to find relevant passages. Use read_document when you need the full context of a specific document, or use chunk_start/chunk_end for partial reads of large documents.
 """
     elif data_rooms:
         prompt += "\nThe attached data rooms have no documents uploaded yet.\n\n"

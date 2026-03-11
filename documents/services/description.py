@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import tiktoken
@@ -20,6 +21,16 @@ _SYSTEM_PROMPT = (
     "Read this document and write a single paragraph (target ~100 tokens) "
     "describing what the document contains. Focus on the type of document, "
     "its subject matter, and the key topics it covers. Output ONLY the description."
+)
+
+_STRUCTURED_SYSTEM_PROMPT = (
+    "Read this document and return a JSON object with two fields:\n"
+    '1. "description": A single paragraph (~100 tokens) describing contents, '
+    "subject matter, and key topics.\n"
+    '2. "document_type": A concise document type classification (e.g. Agreement, '
+    "Patent, License, Report, Correspondence, Policy, Technical Specification, "
+    "Disclosure, Application, Financial, Research Paper, Presentation, or Other).\n"
+    "Output ONLY valid JSON, no markdown fences."
 )
 
 
@@ -45,21 +56,21 @@ def _prepare_document_text(chunks_text: str) -> str:
     return f"{head}\n\n[... middle {omitted} tokens omitted ...]\n\n{tail}"
 
 
-def generate_description_from_text(
+def generate_description_and_tags_from_text(
     text: str,
     user_id: int | None = None,
     data_room_id: int | None = None,
-) -> str:
-    """Generate a one-paragraph description from raw text using the cheap LLM.
+) -> dict:
+    """Generate a description and document_type tag from raw text using the cheap LLM.
 
-    Unlike generate_document_description(), this takes text directly instead
-    of loading chunks from DB. Used early in the pipeline before chunks exist.
+    Returns ``{"description": "...", "tags": {"document_type": "Agreement"}}``.
+    Falls back to treating the full response as a description if JSON parsing fails.
     """
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
 
     if not text.strip():
-        return ""
+        return {"description": "", "tags": {}}
 
     document_text = _prepare_document_text(text)
 
@@ -69,7 +80,7 @@ def generate_description_from_text(
     )
     request = ChatRequest(
         messages=[
-            Message(role="system", content=_SYSTEM_PROMPT),
+            Message(role="system", content=_STRUCTURED_SYSTEM_PROMPT),
             Message(role="user", content=document_text),
         ],
         model=settings.LLM_DEFAULT_CHEAP_MODEL,
@@ -80,14 +91,41 @@ def generate_description_from_text(
 
     service = get_llm_service()
     response = service.run("simple_chat", request)
-    description = response.message.content.strip()
+    raw = response.message.content.strip()
+
+    # Try to parse as JSON
+    try:
+        parsed = json.loads(raw)
+        description = parsed.get("description", raw).strip()
+        doc_type = parsed.get("document_type", "").strip()
+    except (json.JSONDecodeError, AttributeError):
+        logger.warning("generate_description_and_tags_from_text: JSON parse failed, using raw response")
+        description = raw
+        doc_type = ""
+
+    tags = {}
+    if doc_type:
+        tags["document_type"] = doc_type[:255]
 
     logger.info(
-        "generate_description_from_text: user_id=%s len=%s",
-        user_id,
-        len(description),
+        "generate_description_and_tags_from_text: user_id=%s desc_len=%s tags=%s",
+        user_id, len(description), list(tags.keys()),
     )
-    return description
+    return {"description": description, "tags": tags}
+
+
+def generate_description_from_text(
+    text: str,
+    user_id: int | None = None,
+    data_room_id: int | None = None,
+) -> str:
+    """Generate a one-paragraph description from raw text using the cheap LLM.
+
+    Unlike generate_document_description(), this takes text directly instead
+    of loading chunks from DB. Used early in the pipeline before chunks exist.
+    """
+    result = generate_description_and_tags_from_text(text, user_id, data_room_id)
+    return result["description"]
 
 
 def generate_document_description(document_id: int) -> str:

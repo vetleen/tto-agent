@@ -26,6 +26,14 @@ class ReadDocumentInput(BaseModel):
         default=None,
         description="Optional data room ID to disambiguate when multiple data rooms are attached.",
     )
+    chunk_start: Optional[int] = Field(
+        default=None,
+        description="Start chunk index (inclusive, 0-based). Use with chunk_end to read a specific range.",
+    )
+    chunk_end: Optional[int] = Field(
+        default=None,
+        description="End chunk index (inclusive). Use with chunk_start to read a range instead of the full document.",
+    )
 
 
 # --- Tools ---
@@ -36,13 +44,16 @@ class SearchDocumentsTool(ContextAwareTool):
     name: str = "search_documents"
     description: str = (
         "Search the attached data rooms' documents for information relevant to a query. "
+        "Returns document titles, types, descriptions, section headings, and chunk ranges. "
         "Use this when the user asks about document contents, wants summaries, "
         "or needs specific information from their files."
     )
     args_schema: type[BaseModel] = SearchDocumentsInput
 
     def _run(self, query: str, k: int = 5) -> str:
-        from documents.models import DataRoom
+        from django.db.models import Count
+
+        from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
         from documents.services.retrieval import similarity_search_chunks
 
         query = query.strip()
@@ -89,28 +100,113 @@ class SearchDocumentsTool(ContextAwareTool):
 
         windows = get_merged_context_windows(chunk_ids)
 
-        # Build chunk_id → window mapping; emit each window once using
-        # the highest-ranked hit's metadata (first in chunk_ids order)
-        results = []
+        if not windows:
+            return "# Search Results\n\nNo results found."
+
+        # --- Batch-fetch enrichment data ---
+        doc_pks = list({w["document_id"] for w in windows})
+
+        # Document metadata
+        doc_rows = DataRoomDocument.objects.filter(pk__in=doc_pks).values(
+            "pk", "original_filename", "description", "doc_index",
+            "data_room_id", "data_room__name", "data_room__description",
+        )
+        doc_meta = {r["pk"]: r for r in doc_rows}
+
+        # Document tags (document_type)
+        tag_rows = DataRoomDocumentTag.objects.filter(
+            document_id__in=doc_pks, key="document_type",
+        ).values_list("document_id", "value")
+        doc_type_map = dict(tag_rows)
+
+        # Total chunk counts per document
+        chunk_counts = dict(
+            DataRoomDocumentChunk.objects.filter(document_id__in=doc_pks)
+            .values("document_id")
+            .annotate(total=Count("id"))
+            .values_list("document_id", "total")
+        )
+
+        # Chunk headings for the first chunk in each window
+        first_chunk_indices = []
+        for w in windows:
+            if w["chunks_included"]:
+                first_chunk_indices.append((w["document_id"], w["chunks_included"][0]))
+        heading_map = {}
+        if first_chunk_indices:
+            for doc_id, ci in first_chunk_indices:
+                chunk_obj = DataRoomDocumentChunk.objects.filter(
+                    document_id=doc_id, chunk_index=ci,
+                ).values_list("heading", flat=True).first()
+                if chunk_obj:
+                    heading_map[(doc_id, ci)] = chunk_obj
+
+        # --- Build formatted output ---
+        lines = ["# Search Results\n"]
         emitted_windows: set[int] = set()
+        result_num = 0
+
         for win_idx, window in enumerate(windows):
             if win_idx in emitted_windows:
                 continue
             emitted_windows.add(win_idx)
-            # Use the first (highest-ranked) hit's metadata for this window
-            best_meta = None
-            for cid in chunk_ids:
-                if cid in window["chunk_ids"]:
-                    best_meta = meta_by_chunk_id.get(cid)
-                    break
-            if best_meta is None and window["chunk_ids"]:
-                best_meta = meta_by_chunk_id.get(window["chunk_ids"][0], {})
-            results.append({
-                "text": window["context_text"],
-                "metadata": best_meta or {},
-            })
+            result_num += 1
 
-        return json.dumps({"results": results, "count": len(results)})
+            doc_id = window["document_id"]
+            dm = doc_meta.get(doc_id, {})
+            filename = dm.get("original_filename", "Unknown")
+            doc_index = dm.get("doc_index", 0)
+            doc_desc = dm.get("description", "")
+            doc_type = doc_type_map.get(doc_id, "")
+            room_name = dm.get("data_room__name", "")
+            total_chunks = chunk_counts.get(doc_id, 0)
+
+            chunks_included = window.get("chunks_included", [])
+            if chunks_included:
+                chunk_range = f"#{chunks_included[0]}" if len(chunks_included) == 1 else f"#{chunks_included[0]}–#{chunks_included[-1]}"
+                chunk_label = f"Chunk{'s' if len(chunks_included) > 1 else ''} {chunk_range} of {total_chunks}"
+            else:
+                chunk_label = ""
+
+            # Heading from first chunk
+            heading = ""
+            if chunks_included:
+                heading = heading_map.get((doc_id, chunks_included[0]), "") or ""
+
+            lines.append(f"## {result_num}.")
+            lines.append(f'**Document:** "{filename}" [doc #{doc_index}]')
+            if doc_type:
+                lines.append(f"**Type:** {doc_type}")
+            if doc_desc:
+                lines.append(f"**Description:** {doc_desc}")
+            if room_name:
+                lines.append(f"**Data room:** {room_name}")
+            if heading:
+                lines.append(f"**Section:** {heading}")
+            if chunk_label:
+                lines.append(f"**{chunk_label}:**")
+            lines.append(window["context_text"])
+            lines.append("")
+
+        # --- Data room context section ---
+        room_ids_in_results = list({dm.get("data_room_id") for dm in doc_meta.values() if dm.get("data_room_id")})
+        if room_ids_in_results:
+            lines.append("---")
+            lines.append("# Data Room Context")
+            seen_rooms = set()
+            for dm in doc_meta.values():
+                rid = dm.get("data_room_id")
+                if rid and rid not in seen_rooms:
+                    seen_rooms.add(rid)
+                    rname = dm.get("data_room__name", "")
+                    rdesc = dm.get("data_room__description", "")
+                    if rname:
+                        line = f'- **"{rname}"**'
+                        if rdesc:
+                            line += f": {rdesc}"
+                        lines.append(line)
+
+        return "\n".join(lines)
 
 
 class ReadDocumentTool(ContextAwareTool):
@@ -120,14 +216,21 @@ class ReadDocumentTool(ContextAwareTool):
     description: str = (
         "Read the full text content of one or more documents by their "
         "index number. Use this when you need the complete content of a specific "
-        "document rather than search excerpts."
+        "document rather than search excerpts. Supports optional chunk_start/chunk_end "
+        "for reading a specific chunk range instead of the full document."
     )
     args_schema: type[BaseModel] = ReadDocumentInput
 
     # Cap total output to ~8000 tokens worth of characters (~32k chars)
     _MAX_TOTAL_CHARS: int = 32_000
 
-    def _run(self, doc_indices: list[int], data_room_id: int | None = None) -> str:
+    def _run(
+        self,
+        doc_indices: list[int],
+        data_room_id: int | None = None,
+        chunk_start: int | None = None,
+        chunk_end: int | None = None,
+    ) -> str:
         from documents.models import DataRoom, DataRoomDocument
 
         if not doc_indices or not isinstance(doc_indices, list):
@@ -154,6 +257,8 @@ class ReadDocumentTool(ContextAwareTool):
             if not data_room_ids:
                 raise ValueError("Data rooms not found or access denied")
 
+        use_chunk_range = chunk_start is not None and chunk_end is not None
+
         documents = []
         total_chars = 0
 
@@ -178,8 +283,23 @@ class ReadDocumentTool(ContextAwareTool):
                     is_archived=False,
                 ).first()
 
-            chunks = doc.chunks.order_by("chunk_index").values_list("text", flat=True)
-            content = "\n\n".join(chunks)
+            chunks_qs = doc.chunks.order_by("chunk_index")
+            total_chunk_count = chunks_qs.count()
+
+            if use_chunk_range:
+                chunks_qs = chunks_qs.filter(
+                    chunk_index__gte=chunk_start,
+                    chunk_index__lte=chunk_end,
+                )
+
+            chunk_list = list(chunks_qs.values_list("chunk_index", "heading", "text"))
+            content_parts = []
+            headings = []
+            for ci, heading, text in chunk_list:
+                content_parts.append(text)
+                if heading:
+                    headings.append(heading)
+            content = "\n\n".join(content_parts)
 
             remaining = self._MAX_TOTAL_CHARS - total_chars
             if remaining <= 0:
@@ -194,12 +314,20 @@ class ReadDocumentTool(ContextAwareTool):
                 content = content[:remaining] + "\n\n[... truncated due to size limit ...]"
 
             total_chars += len(content)
-            documents.append({
+            doc_entry = {
                 "doc_index": idx,
                 "filename": doc.original_filename,
                 "data_room_id": doc.data_room_id,
+                "total_chunks": total_chunk_count,
                 "content": content,
-            })
+            }
+            if use_chunk_range:
+                doc_entry["chunk_range"] = f"{chunk_start}-{chunk_end}"
+                doc_entry["chunks_returned"] = len(chunk_list)
+            if headings:
+                doc_entry["headings"] = headings
+
+            documents.append(doc_entry)
 
         return json.dumps({"documents": documents})
 

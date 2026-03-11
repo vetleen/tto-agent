@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from django.contrib.postgres.search import SearchVector
 
-from documents.models import DataRoomDocument, DataRoomDocumentChunk
+from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from documents.services.chunking import clean_extracted_text, load_documents, semantic_chunk, structure_aware_chunk
 
 logger = logging.getLogger(__name__)
@@ -137,15 +137,20 @@ def process_document(document_id: int) -> None:
             document_id, doc.data_room_id, len(chunks_data), duration_seconds,
         )
 
-        # Generate description (fire-and-forget, after READY)
+        # Generate description + tags (fire-and-forget, after READY)
         if getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", ""):
             try:
-                from documents.services.description import generate_description_from_text
-                description = generate_description_from_text(
+                from documents.services.description import generate_description_and_tags_from_text
+                result = generate_description_and_tags_from_text(
                     cleaned, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id
                 )
-                doc.description = description
+                doc.description = result["description"]
                 doc.save(update_fields=["description", "updated_at"])
+                for tag_key, tag_value in result.get("tags", {}).items():
+                    DataRoomDocumentTag.objects.update_or_create(
+                        document=doc, key=tag_key,
+                        defaults={"value": tag_value},
+                    )
             except Exception:
                 logger.exception("process_document: document_id=%s description generation failed (non-critical)", document_id)
 

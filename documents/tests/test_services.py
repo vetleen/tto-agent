@@ -503,7 +503,8 @@ class ProcessDocumentSemanticTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("documents.services.description.generate_description_from_text", return_value="A description"):
+                     patch("documents.services.description.generate_description_and_tags_from_text",
+                           return_value={"description": "A description", "tags": {"document_type": "Report"}}):
                     process_document(doc_ref.id)
 
                 doc_ref.refresh_from_db()
@@ -530,7 +531,7 @@ class ProcessDocumentSemanticTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("documents.services.description.generate_description_from_text", side_effect=RuntimeError("LLM down")):
+                     patch("documents.services.description.generate_description_and_tags_from_text", side_effect=RuntimeError("LLM down")):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
@@ -1117,3 +1118,69 @@ class MergedContextWindowTests(TestCase):
     def test_empty_input(self):
         """Empty chunk_ids returns empty list."""
         self.assertEqual(get_merged_context_windows([]), [])
+
+
+class GenerateDescriptionAndTagsTests(TestCase):
+    """Tests for generate_description_and_tags_from_text."""
+
+    def test_empty_text_returns_empty(self):
+        from documents.services.description import generate_description_and_tags_from_text
+        result = generate_description_and_tags_from_text("   ")
+        self.assertEqual(result["description"], "")
+        self.assertEqual(result["tags"], {})
+
+    @patch("llm.get_llm_service")
+    def test_valid_json_response(self, mock_get_service):
+        from documents.services.description import generate_description_and_tags_from_text
+
+        mock_response = Mock()
+        mock_response.message.content = '{"description": "A patent document.", "document_type": "Patent"}'
+        mock_service = Mock()
+        mock_service.run.return_value = mock_response
+        mock_get_service.return_value = mock_service
+
+        result = generate_description_and_tags_from_text("Some patent text", user_id=1)
+        self.assertEqual(result["description"], "A patent document.")
+        self.assertEqual(result["tags"], {"document_type": "Patent"})
+
+    @patch("llm.get_llm_service")
+    def test_fallback_on_invalid_json(self, mock_get_service):
+        from documents.services.description import generate_description_and_tags_from_text
+
+        mock_response = Mock()
+        mock_response.message.content = "Just a plain description paragraph."
+        mock_service = Mock()
+        mock_service.run.return_value = mock_response
+        mock_get_service.return_value = mock_service
+
+        result = generate_description_and_tags_from_text("Some text", user_id=1)
+        self.assertEqual(result["description"], "Just a plain description paragraph.")
+        self.assertEqual(result["tags"], {})
+
+    @patch("llm.get_llm_service")
+    def test_json_without_document_type(self, mock_get_service):
+        from documents.services.description import generate_description_and_tags_from_text
+
+        mock_response = Mock()
+        mock_response.message.content = '{"description": "A document about something."}'
+        mock_service = Mock()
+        mock_service.run.return_value = mock_response
+        mock_get_service.return_value = mock_service
+
+        result = generate_description_and_tags_from_text("Some text", user_id=1)
+        self.assertEqual(result["description"], "A document about something.")
+        self.assertEqual(result["tags"], {})
+
+    @patch("llm.get_llm_service")
+    def test_generate_description_from_text_backward_compat(self, mock_get_service):
+        from documents.services.description import generate_description_from_text
+
+        mock_response = Mock()
+        mock_response.message.content = '{"description": "A license agreement.", "document_type": "Agreement"}'
+        mock_service = Mock()
+        mock_service.run.return_value = mock_response
+        mock_get_service.return_value = mock_service
+
+        result = generate_description_from_text("Some text", user_id=1)
+        self.assertIsInstance(result, str)
+        self.assertEqual(result, "A license agreement.")

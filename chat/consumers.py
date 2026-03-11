@@ -509,6 +509,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Fetch document metadata
         documents = []
         if seen_doc_ids:
+            from documents.models import DataRoomDocumentTag
+
             docs = DataRoomDocument.objects.filter(
                 pk__in=seen_doc_ids,
                 status=DataRoomDocument.Status.READY,
@@ -519,6 +521,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
 
             doc_map = {d["pk"]: d for d in docs}
+
+            # Fetch document_type tags
+            doc_type_map = dict(
+                DataRoomDocumentTag.objects.filter(
+                    document_id__in=seen_doc_ids, key="document_type",
+                ).values_list("document_id", "value")
+            )
+
             multi_room = len(data_room_ids) > 1
             for doc_id in seen_doc_ids:
                 d = doc_map.get(doc_id)
@@ -528,6 +538,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         "filename": d["original_filename"],
                         "description": d["description"] or "",
                         "token_count": d["token_count"],
+                        "document_type": doc_type_map.get(doc_id, ""),
                     }
                     if multi_room:
                         entry["data_room_name"] = d["data_room__name"]
@@ -563,8 +574,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _get_data_room_info(self, data_room_ids):
         from documents.models import DataRoom
 
-        rooms = DataRoom.objects.filter(pk__in=data_room_ids).values("pk", "name")
-        return [{"id": r["pk"], "name": r["name"]} for r in rooms]
+        rooms = DataRoom.objects.filter(pk__in=data_room_ids).values("pk", "name", "description")
+        return [{"id": r["pk"], "name": r["name"], "description": r["description"] or ""} for r in rooms]
 
     @database_sync_to_async
     def _persist_data_room_link(self, thread_id, data_room_id):

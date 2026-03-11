@@ -71,7 +71,11 @@ def data_room_list(request):
             while True:
                 slug = base_slug if n == 0 else f"{base_slug}-{n}"
                 try:
-                    data_room = DataRoom.objects.create(name=name, slug=slug, created_by=request.user)
+                    description = (request.POST.get("description") or "").strip()[:2000]
+                    data_room = DataRoom.objects.create(
+                        name=name, slug=slug, created_by=request.user,
+                        description=description,
+                    )
                     break
                 except IntegrityError:
                     n += 1
@@ -376,3 +380,34 @@ def document_status(request, data_room_id):
         for pk, status in data_room.documents.values_list("id", "status")
     }
     return JsonResponse({"statuses": statuses})
+
+
+@login_required
+@require_POST
+def data_room_generate_description(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    try:
+        from documents.services.data_room_description import generate_data_room_description
+        description = generate_data_room_description(data_room.pk, user_id=request.user.pk)
+        return JsonResponse({"description": description})
+    except Exception:
+        logger.exception("data_room_generate_description failed for %s", data_room_id)
+        return JsonResponse({"error": "Failed to generate description"}, status=500)
+
+
+@login_required
+@require_POST
+def data_room_update_description(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    description = (body.get("description") or "").strip()[:2000]
+    data_room.description = description
+    data_room.save(update_fields=["description", "updated_at"])
+    return JsonResponse({"status": "ok"})

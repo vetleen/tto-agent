@@ -3,7 +3,7 @@ import sys
 import types
 from datetime import timedelta
 from io import BytesIO
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, call, patch, MagicMock
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -78,8 +78,8 @@ class DocumentViewsTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(mock_create.call_count, 2)
-        self.assertEqual(mock_create.call_args_list[0], call(name="Test Retry", slug="test-retry", created_by=self.user))
-        self.assertEqual(mock_create.call_args_list[1], call(name="Test Retry", slug="test-retry-1", created_by=self.user))
+        self.assertEqual(mock_create.call_args_list[0], call(name="Test Retry", slug="test-retry", created_by=self.user, description=""))
+        self.assertEqual(mock_create.call_args_list[1], call(name="Test Retry", slug="test-retry-1", created_by=self.user, description=""))
 
     def test_data_room_list_renders_for_owner(self):
         self.client.force_login(self.user)
@@ -677,3 +677,93 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         doc_ids = [d.id for d in response.context["documents"]]
         self.assertIn(failed_doc.id, doc_ids)
+
+    # ------------------------------------------------------------------ #
+    # data_room_list POST — description                                    #
+    # ------------------------------------------------------------------ #
+
+    def test_create_data_room_with_description(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("data_room_list"),
+            {"name": "Described Room", "description": "Contains patents"},
+        )
+        self.assertEqual(response.status_code, 302)
+        dr = DataRoom.objects.get(name="Described Room")
+        self.assertEqual(dr.description, "Contains patents")
+
+    def test_create_data_room_without_description(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("data_room_list"),
+            {"name": "No Desc Room"},
+        )
+        self.assertEqual(response.status_code, 302)
+        dr = DataRoom.objects.get(name="No Desc Room")
+        self.assertEqual(dr.description, "")
+
+    # ------------------------------------------------------------------ #
+    # data_room_update_description                                         #
+    # ------------------------------------------------------------------ #
+
+    def test_update_description_saves(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("data_room_update_description", kwargs={"data_room_id": self.data_room.uuid}),
+            data=json.dumps({"description": "Updated desc"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+        self.data_room.refresh_from_db()
+        self.assertEqual(self.data_room.description, "Updated desc")
+
+    def test_update_description_truncates_at_2000(self):
+        self.client.force_login(self.user)
+        long_desc = "x" * 3000
+        self.client.post(
+            reverse("data_room_update_description", kwargs={"data_room_id": self.data_room.uuid}),
+            data=json.dumps({"description": long_desc}),
+            content_type="application/json",
+        )
+        self.data_room.refresh_from_db()
+        self.assertLessEqual(len(self.data_room.description), 2000)
+
+    def test_update_description_blocks_other_user(self):
+        self.client.force_login(self.other)
+        response = self.client.post(
+            reverse("data_room_update_description", kwargs={"data_room_id": self.data_room.uuid}),
+            data=json.dumps({"description": "hacked"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_update_description_rejects_bad_json(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("data_room_update_description", kwargs={"data_room_id": self.data_room.uuid}),
+            data="not json",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    # ------------------------------------------------------------------ #
+    # data_room_generate_description                                       #
+    # ------------------------------------------------------------------ #
+
+    @patch("documents.services.data_room_description.generate_data_room_description")
+    def test_generate_description_returns_result(self, mock_gen):
+        mock_gen.return_value = "AI-generated description"
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("data_room_generate_description", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["description"], "AI-generated description")
+
+    def test_generate_description_blocks_other_user(self):
+        self.client.force_login(self.other)
+        response = self.client.post(
+            reverse("data_room_generate_description", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertEqual(response.status_code, 403)
