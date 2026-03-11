@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "Based on the data room name and the document descriptions below, "
-    "write two to four sentences with a concise description (100 tokens) of what this data room contains "
-    "and its purpose. Output ONLY the description paragraph."
+    "write one to two sentences with a concise description (50 tokens) of what this data room contains "
+    "and what its purpose is. Output ONLY the description paragraph."
 )
 
 

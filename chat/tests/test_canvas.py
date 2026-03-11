@@ -10,7 +10,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 
 from chat.canvas_tools import EditCanvasTool, WriteCanvasTool
-from chat.models import ChatCanvas, ChatThread
+from chat.models import CanvasCheckpoint, ChatCanvas, ChatThread
 from llm.types.context import RunContext
 
 User = get_user_model()
@@ -541,3 +541,297 @@ class ImportDocxToCanvasTests(TestCase):
             raw,
         )
         self.assertEqual(cleaned, "Before\n\n[Image 1: EMF image]\n\nAfter")
+
+
+# ---------------------------------------------------------------------------
+# CanvasCheckpoint model tests
+# ---------------------------------------------------------------------------
+
+class CanvasCheckpointModelTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="cpmodel@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.canvas = ChatCanvas.objects.create(thread=self.thread, title="Doc", content="Hello")
+
+    def test_create_checkpoint(self):
+        cp = CanvasCheckpoint.objects.create(
+            canvas=self.canvas, title="Doc", content="Hello",
+            source=CanvasCheckpoint.Source.ORIGINAL, order=1,
+        )
+        self.assertEqual(cp.source, "original")
+        self.assertEqual(cp.order, 1)
+
+    def test_ordering(self):
+        CanvasCheckpoint.objects.create(canvas=self.canvas, title="A", content="1", source="original", order=1)
+        CanvasCheckpoint.objects.create(canvas=self.canvas, title="B", content="2", source="ai_edit", order=2)
+        cps = list(CanvasCheckpoint.objects.filter(canvas=self.canvas))
+        self.assertEqual(cps[0].order, 1)
+        self.assertEqual(cps[1].order, 2)
+
+    def test_source_choices(self):
+        for val, label in CanvasCheckpoint.Source.choices:
+            cp = CanvasCheckpoint.objects.create(
+                canvas=self.canvas, title="T", content="C",
+                source=val, order=0,
+            )
+            self.assertEqual(cp.source, val)
+
+
+# ---------------------------------------------------------------------------
+# WriteCanvasTool checkpoint tests
+# ---------------------------------------------------------------------------
+
+class WriteCanvasToolCheckpointTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="wcp@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_first_call_creates_original_checkpoint_and_sets_accepted(self):
+        result = _invoke(WriteCanvasTool, {"title": "NDA", "content": "# NDA"}, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "ok")
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        cps = list(CanvasCheckpoint.objects.filter(canvas=canvas))
+        self.assertEqual(len(cps), 1)
+        self.assertEqual(cps[0].source, "original")
+        self.assertIsNotNone(canvas.accepted_checkpoint)
+        self.assertEqual(canvas.accepted_checkpoint.pk, cps[0].pk)
+
+    def test_second_call_creates_ai_edit_without_updating_accepted(self):
+        _invoke(WriteCanvasTool, {"title": "Draft 1", "content": "old"}, _ctx(self.user.pk, self.thread.id))
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        original_accepted_pk = canvas.accepted_checkpoint.pk
+
+        _invoke(WriteCanvasTool, {"title": "Draft 2", "content": "new"}, _ctx(self.user.pk, self.thread.id))
+        canvas.refresh_from_db()
+        cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
+        self.assertEqual(len(cps), 2)
+        self.assertEqual(cps[1].source, "ai_edit")
+        # accepted_checkpoint should NOT be updated
+        self.assertEqual(canvas.accepted_checkpoint.pk, original_accepted_pk)
+
+    def test_accepted_content_in_result(self):
+        result = _invoke(WriteCanvasTool, {"title": "T", "content": "C"}, _ctx(self.user.pk, self.thread.id))
+        self.assertIn("accepted_content", result)
+        self.assertEqual(result["accepted_content"], "C")
+
+
+# ---------------------------------------------------------------------------
+# EditCanvasTool checkpoint tests
+# ---------------------------------------------------------------------------
+
+class EditCanvasToolCheckpointTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="ecp@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _setup_canvas(self, content):
+        canvas = ChatCanvas.objects.create(thread=self.thread, title="Doc", content=content)
+        from chat.services import create_canvas_checkpoint
+        cp = create_canvas_checkpoint(canvas, source="original")
+        canvas.accepted_checkpoint = cp
+        canvas.save(update_fields=["accepted_checkpoint"])
+        return canvas
+
+    def test_successful_edit_creates_ai_edit_checkpoint(self):
+        self._setup_canvas("The term is 3 years.")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "3 years", "new_text": "5 years", "reason": "update"}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["applied"], 1)
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
+        self.assertEqual(len(cps), 2)
+        self.assertEqual(cps[1].source, "ai_edit")
+
+    def test_failed_edit_does_not_create_checkpoint(self):
+        self._setup_canvas("Some content.")
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "nonexistent", "new_text": "x", "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        cps = list(CanvasCheckpoint.objects.filter(canvas=canvas))
+        self.assertEqual(len(cps), 1)  # only the original
+
+    def test_accepted_content_in_result(self):
+        self._setup_canvas("Hello world.")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertIn("accepted_content", result)
+        # accepted_content is from original checkpoint
+        self.assertEqual(result["accepted_content"], "Hello world.")
+
+
+# ---------------------------------------------------------------------------
+# Consumer checkpoint tests
+# ---------------------------------------------------------------------------
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class ConsumerCheckpointTests(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="cpws@test.com", password="pass")
+
+    async def _communicator(self):
+        from channels.routing import URLRouter
+        from channels.testing import WebsocketCommunicator
+        from chat.routing import websocket_urlpatterns
+
+        app = URLRouter(websocket_urlpatterns)
+        comm = WebsocketCommunicator(app, "/ws/chat/")
+        comm.scope["user"] = self.user
+        connected, _ = await comm.connect()
+        assert connected
+        return comm
+
+    async def test_canvas_accept(self):
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="v1"
+        )
+
+        def setup_checkpoints():
+            cp1 = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp1
+            canvas.save(update_fields=["accepted_checkpoint"])
+            canvas.content = "v2"
+            canvas.save(update_fields=["content"])
+            create_canvas_checkpoint(canvas, source="ai_edit")
+        await database_sync_to_async(setup_checkpoints)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({"type": "chat.canvas_accept", "thread_id": str(thread.id)})
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.accepted")
+        self.assertEqual(msg["accepted_content"], "v2")
+
+        def check_accepted():
+            c = ChatCanvas.objects.get(thread=thread)
+            self.assertEqual(c.accepted_checkpoint.content, "v2")
+        await database_sync_to_async(check_accepted)()
+        await comm.disconnect()
+
+    async def test_canvas_revert(self):
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="original content"
+        )
+
+        def setup():
+            cp = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+            canvas.content = "ai changed this"
+            canvas.save(update_fields=["content"])
+        await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({"type": "chat.canvas_revert", "thread_id": str(thread.id)})
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.reverted")
+        self.assertEqual(msg["content"], "original content")
+
+        def check_content():
+            c = ChatCanvas.objects.get(thread=thread)
+            self.assertEqual(c.content, "original content")
+        await database_sync_to_async(check_content)()
+        await comm.disconnect()
+
+    async def test_canvas_save_version(self):
+        from channels.db import database_sync_to_async
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="content"
+        )
+
+        comm = await self._communicator()
+        await comm.send_json_to({
+            "type": "chat.canvas_save_version",
+            "thread_id": str(thread.id),
+            "title": "Doc",
+            "content": "user edited content",
+        })
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.version_saved")
+
+        def check():
+            c = ChatCanvas.objects.get(thread=thread)
+            self.assertIsNotNone(c.accepted_checkpoint)
+            self.assertEqual(c.accepted_checkpoint.source, "user_save")
+            cps = CanvasCheckpoint.objects.filter(canvas=c)
+            self.assertEqual(cps.count(), 1)
+        await database_sync_to_async(check)()
+        await comm.disconnect()
+
+    async def test_canvas_loaded_includes_accepted_content(self):
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="current"
+        )
+
+        def setup():
+            cp = create_canvas_checkpoint(canvas, source="original", description="first")
+            canvas.accepted_checkpoint = cp
+            canvas.content = "current"
+            canvas.save(update_fields=["accepted_checkpoint", "content"])
+        await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({"type": "chat.load_thread", "thread_id": str(thread.id)})
+        # thread.loaded
+        msg1 = await comm.receive_json_from()
+        self.assertEqual(msg1["event_type"], "thread.loaded")
+        # canvas.loaded
+        msg2 = await comm.receive_json_from()
+        self.assertEqual(msg2["event_type"], "canvas.loaded")
+        self.assertIn("accepted_content", msg2)
+        self.assertEqual(msg2["accepted_content"], "current")
+        await comm.disconnect()
+
+    async def test_canvas_restore_version(self):
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="v1"
+        )
+
+        def setup():
+            cp1 = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp1
+            canvas.save(update_fields=["accepted_checkpoint"])
+            canvas.content = "v2"
+            canvas.save(update_fields=["content"])
+            create_canvas_checkpoint(canvas, source="ai_edit")
+            return cp1.pk
+        cp1_pk = await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({
+            "type": "chat.canvas_restore_version",
+            "thread_id": str(thread.id),
+            "checkpoint_id": cp1_pk,
+        })
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.restored")
+        self.assertEqual(msg["content"], "v1")
+
+        def check():
+            c = ChatCanvas.objects.get(thread=thread)
+            self.assertEqual(c.content, "v1")
+            self.assertIsNotNone(c.accepted_checkpoint)
+            self.assertEqual(c.accepted_checkpoint.source, "restore")
+        await database_sync_to_async(check)()
+        await comm.disconnect()

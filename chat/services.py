@@ -15,6 +15,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CANVAS_MAX_CHARS = 75_000
+
+
+def create_canvas_checkpoint(canvas, source, description=""):
+    """Create a new checkpoint for the given canvas, using its current title/content."""
+    from chat.models import CanvasCheckpoint
+
+    last_order = (
+        CanvasCheckpoint.objects.filter(canvas=canvas)
+        .order_by("-order")
+        .values_list("order", flat=True)
+        .first()
+    ) or 0
+    return CanvasCheckpoint.objects.create(
+        canvas=canvas,
+        title=canvas.title,
+        content=canvas.content,
+        source=source,
+        description=description,
+        order=last_order + 1,
+    )
 CANVAS_MAX_IMAGES = 25
 SUMMARY_TARGET_TOKENS = 2_000
 

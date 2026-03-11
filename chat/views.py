@@ -146,10 +146,15 @@ def canvas_import(request, thread_id):
 
     title, content, truncated = import_docx_to_canvas(uploaded, request.user)
 
-    ChatCanvas.objects.update_or_create(
+    canvas, _ = ChatCanvas.objects.update_or_create(
         thread=thread,
         defaults={"title": title, "content": content},
     )
+
+    from chat.services import create_canvas_checkpoint
+    cp = create_canvas_checkpoint(canvas, source="import", description="Imported from .docx")
+    canvas.accepted_checkpoint = cp
+    canvas.save(update_fields=["accepted_checkpoint"])
 
     generated_title = None
     if not thread.title:

@@ -105,8 +105,41 @@ class ChatCanvas(models.Model):
     )
     title = models.CharField(max_length=255, blank=True, default="Untitled document")
     content = models.TextField(blank=True, default="")
+    accepted_checkpoint = models.ForeignKey(
+        "CanvasCheckpoint",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"Canvas for thread {self.thread_id}: {self.title}"
+
+
+class CanvasCheckpoint(models.Model):
+    class Source(models.TextChoices):
+        ORIGINAL = "original", "Original"
+        AI_EDIT = "ai_edit", "AI Edit"
+        USER_SAVE = "user_save", "User Save"
+        IMPORT = "import", "Import"
+        RESTORE = "restore", "Restore"
+
+    canvas = models.ForeignKey(
+        ChatCanvas, on_delete=models.CASCADE, related_name="checkpoints"
+    )
+    title = models.CharField(max_length=255, blank=True, default="")
+    content = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=20, choices=Source.choices)
+    description = models.CharField(max_length=255, blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["order"]
+        indexes = [models.Index(fields=["canvas", "order"])]
+
+    def __str__(self):
+        return f"Checkpoint #{self.order} ({self.source}) for canvas {self.canvas_id}"

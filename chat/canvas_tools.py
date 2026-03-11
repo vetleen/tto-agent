@@ -39,18 +39,28 @@ class WriteCanvasTool(ContextAwareTool):
 
     def _run(self, title: str, content: str) -> str:
         from chat.models import ChatCanvas
-        from chat.services import CANVAS_MAX_CHARS
+        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
         content = content[:CANVAS_MAX_CHARS]
-        ChatCanvas.objects.update_or_create(
+        canvas, created = ChatCanvas.objects.update_or_create(
             thread_id=thread_id,
             defaults={"title": title, "content": content},
         )
-        return json.dumps({"status": "ok", "title": title, "content": content})
+        source = "original" if created else "ai_edit"
+        cp = create_canvas_checkpoint(canvas, source=source, description="Full rewrite")
+        if created:
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+
+        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
+        return json.dumps({
+            "status": "ok", "title": title, "content": content,
+            "accepted_content": accepted_content,
+        })
 
 
 class EditCanvasTool(ContextAwareTool):
@@ -105,7 +115,7 @@ class EditCanvasTool(ContextAwareTool):
             else:
                 failed.append({"old_text": old_text[:80], "error": "Text not found in document."})
 
-        from chat.services import CANVAS_MAX_CHARS
+        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
 
         truncated = len(content) > CANVAS_MAX_CHARS
         if truncated:
@@ -114,12 +124,23 @@ class EditCanvasTool(ContextAwareTool):
         canvas.content = content
         canvas.save(update_fields=["content", "updated_at"])
 
+        if applied > 0:
+            create_canvas_checkpoint(
+                canvas, source="ai_edit",
+                description="Edited %d section(s)" % applied,
+            )
+
+        # Reload to get accepted_checkpoint
+        canvas.refresh_from_db()
+        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint_id else ""
+
         result = {
             "status": "ok",
             "applied": applied,
             "failed": failed,
             "title": canvas.title,
             "content": content,
+            "accepted_content": accepted_content,
         }
         if truncated:
             result["note"] = "Content truncated to %d character limit." % CANVAS_MAX_CHARS

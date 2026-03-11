@@ -239,6 +239,22 @@
         <svg id="canvas-import-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
       </label>
+      {# Save version button #}
+      <button id="canvas-save-version-btn" title="Save version" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
+      </button>
+      {# Version history button #}
+      <div class="relative">
+        <button id="canvas-history-btn" title="Version history" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </button>
+        <div id="canvas-history-dropdown" class="hidden absolute right-0 top-full mt-1 z-50 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg w-72 max-h-80 overflow-y-auto">
+          <div class="px-3 py-2 border-b border-default text-xs font-semibold text-heading">Version history</div>
+          <div id="canvas-history-list" class="py-1">
+            <div class="px-3 py-2 text-xs text-body">No versions yet.</div>
+          </div>
+        </div>
+      </div>
       {# Export button #}
       <a id="canvas-export-link" href="#" title="Export as .docx" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
@@ -253,10 +269,13 @@
       </button>
     </div>
   </div>
-  {# AI-updated banner (hidden by default) #}
+  {# AI-updated banner with accept/revert (hidden by default) #}
   <div id="canvas-update-banner" class="hidden px-4 py-2 bg-brand/10 border-b border-brand/20 flex items-center justify-between shrink-0">
-    <span class="text-xs text-fg-brand">AI updated the document</span>
-    <button id="canvas-apply-btn" class="text-xs text-fg-brand font-medium hover:underline">Apply</button>
+    <span id="canvas-banner-text" class="text-xs text-fg-brand">Pending changes</span>
+    <div class="flex items-center gap-2">
+      <button id="canvas-revert-btn" class="text-xs text-body hover:text-heading font-medium hover:underline">Revert</button>
+      <button id="canvas-accept-btn" class="text-xs text-fg-brand font-medium hover:underline">Accept</button>
+    </div>
   </div>
   {# Canvas body #}
   <div class="flex-1 overflow-hidden relative">
@@ -311,6 +330,7 @@
 {# Markdown rendering libraries #}
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/diff@7.0.0/dist/diff.min.js"></script>
 
 {# Markdown styling #}
 <style>
@@ -352,6 +372,10 @@
   .thinking-block.collapsed .thinking-chevron { transform: rotate(0deg); }
   .thinking-block.collapsed .thinking-content { display: none; }
   .thinking-content { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; scrollbar-width: thin; }
+  .diff-add { background-color: rgb(187 247 208); }
+  .diff-del { background-color: rgb(254 202 202); text-decoration: line-through; }
+  .dark .diff-add { background-color: rgb(20 83 45 / 0.4); }
+  .dark .diff-del { background-color: rgb(127 29 29 / 0.4); text-decoration: line-through; }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
 
@@ -395,8 +419,8 @@
       text = text.replace(/:[a-z_]+:/g, function(match) { return emojiMap[match] || match; });
       const html = marked.parse(text);
       return DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td'],
-        ALLOWED_ATTR: ['href','title','target']
+        ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td','div','span'],
+        ALLOWED_ATTR: ['href','title','target','class']
       });
     } catch (e) { return escapeHtml(text).replace(/\n/g, "<br>"); }
   }
@@ -711,8 +735,13 @@
 
   function handleEvent(data) {
     const et = data.event_type;
-    if (et === "canvas.updated") { canvasHandleUpdated(data.title || "", data.content || ""); return; }
-    if (et === "canvas.loaded") { canvasHandleLoaded(data.title || "", data.content || ""); return; }
+    if (et === "canvas.updated") { canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content); return; }
+    if (et === "canvas.loaded") { canvasHandleLoaded(data.title || "", data.content || "", data.accepted_content); return; }
+    if (et === "canvas.accepted") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); if (canvasPreviewMode) canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); return; }
+    if (et === "canvas.reverted") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
+    if (et === "canvas.version_saved") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); return; }
+    if (et === "canvas.restored") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
+    if (et === "canvas.checkpoints") { renderCheckpointHistory(data.checkpoints || []); return; }
     if (et === "thread.created") { activeThreadId = data.thread_id; addThreadToSidebar(data.thread_id, "New chat"); canvasUpdateExportLink(); return; }
     if (et === "thread.title_updated") {
       var tid = data.thread_id, title = data.title || "";
@@ -838,6 +867,7 @@
     // Force scroll to absolute bottom so user sees their message + Wilfred's spinner
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
     if (ws && ws.readyState === WebSocket.OPEN) {
+      canvasAutoSaveBeforeChat();
       ws.send(JSON.stringify({ type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, model: selectedModel, thinking: thinkingEnabled }));
     }
     setTimeout(function() { locked = false; }, 500);
@@ -950,7 +980,13 @@
   var canvasExportLink = document.getElementById("canvas-export-link");
   var canvasImportInput = document.getElementById("canvas-import-input");
   var canvasUpdateBanner = document.getElementById("canvas-update-banner");
-  var canvasApplyBtn = document.getElementById("canvas-apply-btn");
+  var canvasBannerText = document.getElementById("canvas-banner-text");
+  var canvasAcceptBtn = document.getElementById("canvas-accept-btn");
+  var canvasRevertBtn = document.getElementById("canvas-revert-btn");
+  var canvasSaveVersionBtn = document.getElementById("canvas-save-version-btn");
+  var canvasHistoryBtn = document.getElementById("canvas-history-btn");
+  var canvasHistoryDropdown = document.getElementById("canvas-history-dropdown");
+  var canvasHistoryList = document.getElementById("canvas-history-list");
   var openCanvasBtn = document.getElementById("open-canvas-btn");
   var canvasToggleBtn = document.getElementById("canvas-toggle-btn");
   var canvasToggleArrow = document.getElementById("canvas-toggle-arrow");
@@ -965,19 +1001,69 @@
   var canvasSaveTimer = null;
   var canvasLastTyped = 0;
   var canvasPendingUpdate = null;
+  var canvasAcceptedContent = null;
 
   function canvasUpdateExportLink() {
     if (canvasExportLink && activeThreadId) {
       canvasExportLink.href = "/chat/threads/" + activeThreadId + "/canvas/export/";
     }
   }
-  function canvasHandleUpdated(title, content) {
-    canvasUpdateExportLink();
-    updateCanvas(title, content);
+  function renderDiffPreview(oldText, newText) {
+    // Diff the raw markdown at the line level, then render each chunk
+    // through the markdown renderer independently. Unchanged and changed
+    // blocks are rendered separately so block-level constructs (headings,
+    // tables, lists) stay intact inside each chunk.
+    var diff = Diff.diffLines(oldText || "", newText || "");
+
+    // Merge consecutive same-type parts to reduce rendering fragments.
+    var merged = [];
+    diff.forEach(function(part) {
+      var type = part.added ? "add" : part.removed ? "del" : "same";
+      if (merged.length > 0 && merged[merged.length - 1].type === type) {
+        merged[merged.length - 1].value += part.value;
+      } else {
+        merged.push({ type: type, value: part.value });
+      }
+    });
+
+    var html = "";
+    merged.forEach(function(part) {
+      var rendered = renderMarkdown(part.value);
+      if (part.type === "add") {
+        html += '<div class="diff-add">' + rendered + '</div>';
+      } else if (part.type === "del") {
+        html += '<div class="diff-del">' + rendered + '</div>';
+      } else {
+        html += rendered;
+      }
+    });
+    return html;
   }
-  function canvasHandleLoaded(title, content) {
+
+  function canvasHasPendingChanges() {
+    return canvasAcceptedContent !== null && canvasAcceptedContent !== canvasTextarea.value;
+  }
+
+  function canvasShowBannerIfNeeded() {
+    if (canvasHasPendingChanges() || canvasPendingUpdate) {
+      canvasUpdateBanner.classList.remove("hidden");
+      if (canvasBannerText) canvasBannerText.textContent = canvasPendingUpdate ? "AI updated the document" : "Pending changes";
+    } else {
+      canvasUpdateBanner.classList.add("hidden");
+    }
+  }
+
+  function canvasHandleUpdated(title, content, acceptedContent) {
     canvasUpdateExportLink();
+    if (acceptedContent !== undefined) canvasAcceptedContent = acceptedContent;
+    updateCanvas(title, content);
+    canvasShowBannerIfNeeded();
+  }
+  function canvasHandleLoaded(title, content, acceptedContent) {
+    canvasUpdateExportLink();
+    if (acceptedContent !== undefined) canvasAcceptedContent = acceptedContent;
     openCanvas(title, content);
+    canvasShowBannerIfNeeded();
   }
 
   function openCanvas(title, content) {
@@ -997,7 +1083,7 @@
       }
     }
     if (canvasPreviewMode) {
-      canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
+      canvasRenderPreview();
     }
     updateCanvasToggleVisuals();
     canvasUpdateExportLink();
@@ -1110,11 +1196,19 @@
     canvasCloseBtn.addEventListener("click", function() { saveCanvasNow(); closeCanvas(); });
   }
 
+  function canvasRenderPreview() {
+    if (canvasHasPendingChanges()) {
+      canvasPreview.innerHTML = renderDiffPreview(canvasAcceptedContent, canvasTextarea.value);
+    } else {
+      canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
+    }
+  }
+
   if (canvasPreviewBtn) {
     canvasPreviewBtn.addEventListener("click", function() {
       canvasPreviewMode = !canvasPreviewMode;
       if (canvasPreviewMode) {
-        canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
+        canvasRenderPreview();
         canvasPreview.classList.remove("hidden");
         canvasTextarea.classList.add("hidden");
       } else {
@@ -1124,8 +1218,9 @@
     });
   }
 
-  if (canvasApplyBtn) {
-    canvasApplyBtn.addEventListener("click", function() {
+  if (canvasAcceptBtn) {
+    canvasAcceptBtn.addEventListener("click", function() {
+      // Apply any queued AI update first
       if (canvasPendingUpdate) {
         if (canvasPendingUpdate.content && canvasPendingUpdate.content.length > CANVAS_MAX_CHARS) {
           canvasPendingUpdate.content = canvasPendingUpdate.content.slice(0, CANVAS_MAX_CHARS);
@@ -1133,7 +1228,28 @@
         openCanvas(canvasPendingUpdate.title, canvasPendingUpdate.content);
         canvasPendingUpdate = null;
       }
+      // Optimistically set accepted content to current canvas content
+      canvasAcceptedContent = canvasTextarea.value;
       canvasUpdateBanner.classList.add("hidden");
+      if (canvasPreviewMode) canvasRenderPreview();
+      if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
+        ws.send(JSON.stringify({ type: "chat.canvas_accept", thread_id: activeThreadId }));
+      }
+    });
+  }
+
+  if (canvasRevertBtn) {
+    canvasRevertBtn.addEventListener("click", function() {
+      if (canvasAcceptedContent !== null) {
+        canvasTextarea.value = canvasAcceptedContent;
+        canvasPendingUpdate = null;
+        updateWordCount();
+        canvasUpdateBanner.classList.add("hidden");
+        if (canvasPreviewMode) canvasRenderPreview();
+        if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
+          ws.send(JSON.stringify({ type: "chat.canvas_revert", thread_id: activeThreadId }));
+        }
+      }
     });
   }
 
@@ -1210,6 +1326,80 @@
       document.body.style.userSelect = "";
     });
   })();
+
+  // -- Save version button --
+  if (canvasSaveVersionBtn) {
+    canvasSaveVersionBtn.addEventListener("click", function() {
+      if (!activeThreadId || !canvasIsOpen) return;
+      var title = canvasTitleInput.value.trim() || "Untitled document";
+      var content = canvasTextarea.value;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content }));
+      }
+      canvasAcceptedContent = content;
+      canvasShowBannerIfNeeded();
+      if (canvasSaveStatus) { canvasSaveStatus.textContent = "Version saved"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 2000); }
+    });
+  }
+
+  // -- Version history dropdown --
+  if (canvasHistoryBtn && canvasHistoryDropdown) {
+    canvasHistoryBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      canvasHistoryDropdown.classList.toggle("hidden");
+      if (!canvasHistoryDropdown.classList.contains("hidden") && activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "chat.canvas_get_checkpoints", thread_id: activeThreadId }));
+      }
+    });
+    document.addEventListener("click", function(e) {
+      if (!canvasHistoryDropdown.contains(e.target) && e.target !== canvasHistoryBtn) {
+        canvasHistoryDropdown.classList.add("hidden");
+      }
+    });
+  }
+
+  function renderCheckpointHistory(checkpoints) {
+    if (!canvasHistoryList) return;
+    if (!checkpoints.length) {
+      canvasHistoryList.innerHTML = '<div class="px-3 py-2 text-xs text-body">No versions yet.</div>';
+      return;
+    }
+    var sourceLabels = { original: "Created", ai_edit: "AI edit", user_save: "Saved", "import": "Imported", restore: "Restored" };
+    var html = "";
+    checkpoints.forEach(function(cp) {
+      var label = sourceLabels[cp.source] || cp.source;
+      var ts = new Date(cp.created_at);
+      var timeStr = ts.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      html += '<div class="flex items-center justify-between px-3 py-2 hover:bg-neutral-tertiary group">';
+      html += '<div class="min-w-0 flex-1"><div class="text-xs font-medium text-heading">' + escapeHtml(label) + '</div>';
+      if (cp.description) html += '<div class="text-xs text-body truncate">' + escapeHtml(cp.description) + '</div>';
+      html += '<div class="text-xs text-body/60">' + escapeHtml(timeStr) + '</div></div>';
+      html += '<button type="button" class="checkpoint-restore-btn hidden group-hover:inline-flex text-xs text-fg-brand hover:underline ml-2 shrink-0" data-checkpoint-id="' + cp.id + '">Restore</button>';
+      html += '</div>';
+    });
+    canvasHistoryList.innerHTML = html;
+    canvasHistoryList.querySelectorAll(".checkpoint-restore-btn").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        var cpId = parseInt(btn.getAttribute("data-checkpoint-id"));
+        if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
+          ws.send(JSON.stringify({ type: "chat.canvas_restore_version", thread_id: activeThreadId, checkpoint_id: cpId }));
+        }
+        canvasHistoryDropdown.classList.add("hidden");
+      });
+    });
+  }
+
+  // -- Auto-save canvas version before sending chat message --
+  function canvasAutoSaveBeforeChat() {
+    if (!canvasIsOpen || !activeThreadId || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (canvasHasPendingChanges()) {
+      var title = canvasTitleInput.value.trim() || "Untitled document";
+      var content = canvasTextarea.value;
+      ws.send(JSON.stringify({ type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content }));
+      canvasAcceptedContent = content;
+      canvasShowBannerIfNeeded();
+    }
+  }
 
   if (canvasImportInput) {
     canvasImportInput.addEventListener("change", function() {

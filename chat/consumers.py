@@ -73,6 +73,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_canvas_save(data)
         elif msg_type == "chat.canvas_open":
             await self._handle_canvas_open(data)
+        elif msg_type == "chat.canvas_accept":
+            await self._handle_canvas_accept(data)
+        elif msg_type == "chat.canvas_revert":
+            await self._handle_canvas_revert(data)
+        elif msg_type == "chat.canvas_save_version":
+            await self._handle_canvas_save_version(data)
+        elif msg_type == "chat.canvas_restore_version":
+            await self._handle_canvas_restore_version(data)
+        elif msg_type == "chat.canvas_get_checkpoints":
+            await self._handle_canvas_get_checkpoints(data)
         elif msg_type == "pong":
             pass  # heartbeat acknowledgment
 
@@ -139,11 +149,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Send canvas state if one exists
             canvas_data = await self._load_canvas(thread_id)
             if canvas_data:
-                await self.send(text_data=json.dumps({
+                event = {
                     "event_type": "canvas.loaded",
                     "title": canvas_data["title"],
                     "content": canvas_data["content"],
-                }))
+                }
+                if canvas_data.get("accepted_content") is not None:
+                    event["accepted_content"] = canvas_data["accepted_content"]
+                await self.send(text_data=json.dumps(event))
 
     async def _handle_canvas_save(self, data):
         """Save user edits to the canvas."""
@@ -162,10 +175,77 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not thread_id:
             return
         canvas_data = await self._get_or_create_canvas(thread_id)
-        await self.send(text_data=json.dumps({
+        event = {
             "event_type": "canvas.loaded",
             "title": canvas_data["title"],
             "content": canvas_data["content"],
+        }
+        if canvas_data.get("accepted_content") is not None:
+            event["accepted_content"] = canvas_data["accepted_content"]
+        await self.send(text_data=json.dumps(event))
+
+    async def _handle_canvas_accept(self, data):
+        """Set accepted_checkpoint to the latest checkpoint."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        if not thread_id:
+            return
+        result = await self._canvas_accept(thread_id)
+        if result:
+            await self.send(text_data=json.dumps({
+                "event_type": "canvas.accepted",
+                "accepted_content": result["accepted_content"],
+            }))
+
+    async def _handle_canvas_revert(self, data):
+        """Restore canvas to its accepted checkpoint."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        if not thread_id:
+            return
+        result = await self._canvas_revert(thread_id)
+        if result:
+            await self.send(text_data=json.dumps({
+                "event_type": "canvas.reverted",
+                "title": result["title"],
+                "content": result["content"],
+            }))
+
+    async def _handle_canvas_save_version(self, data):
+        """Save current canvas state as a user checkpoint and set as accepted."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        title = data.get("title", "")
+        content = data.get("content", "")
+        if not thread_id:
+            return
+        result = await self._canvas_save_version(thread_id, title, content)
+        if result:
+            await self.send(text_data=json.dumps({
+                "event_type": "canvas.version_saved",
+                "accepted_content": result["accepted_content"],
+            }))
+
+    async def _handle_canvas_restore_version(self, data):
+        """Restore canvas to a specific checkpoint by ID."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        checkpoint_id = data.get("checkpoint_id")
+        if not thread_id or not checkpoint_id:
+            return
+        result = await self._canvas_restore_version(thread_id, checkpoint_id)
+        if result:
+            await self.send(text_data=json.dumps({
+                "event_type": "canvas.restored",
+                "title": result["title"],
+                "content": result["content"],
+            }))
+
+    async def _handle_canvas_get_checkpoints(self, data):
+        """Return list of checkpoints for the canvas."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        if not thread_id:
+            return
+        checkpoints = await self._canvas_get_checkpoints(thread_id)
+        await self.send(text_data=json.dumps({
+            "event_type": "canvas.checkpoints",
+            "checkpoints": checkpoints,
         }))
 
     async def _handle_chat_message(self, data):
@@ -323,11 +403,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
-                                await self.send(text_data=json.dumps({
+                                canvas_event = {
                                     "event_type": "canvas.updated",
                                     "title": result.get("title", ""),
                                     "content": result.get("content", ""),
-                                }))
+                                }
+                                if "accepted_content" in result:
+                                    canvas_event["accepted_content"] = result["accepted_content"]
+                                await self.send(text_data=json.dumps(canvas_event))
                         except (json.JSONDecodeError, AttributeError):
                             pass
 
@@ -625,8 +708,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _load_canvas(self, thread_id):
         from chat.models import ChatCanvas
         try:
-            c = ChatCanvas.objects.get(thread_id=thread_id)
-            return {"title": c.title, "content": c.content}
+            c = ChatCanvas.objects.select_related("accepted_checkpoint").get(thread_id=thread_id)
+            accepted_content = c.accepted_checkpoint.content if c.accepted_checkpoint else None
+            return {"title": c.title, "content": c.content, "accepted_content": accepted_content}
         except ChatCanvas.DoesNotExist:
             return None
 
@@ -649,11 +733,100 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _get_or_create_canvas(self, thread_id):
         from chat.models import ChatCanvas
-        canvas, _ = ChatCanvas.objects.get_or_create(
+        canvas, _ = ChatCanvas.objects.select_related("accepted_checkpoint").get_or_create(
             thread_id=thread_id,
             defaults={"title": "Untitled document", "content": ""},
         )
+        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else None
+        return {"title": canvas.title, "content": canvas.content, "accepted_content": accepted_content}
+
+    @database_sync_to_async
+    def _canvas_accept(self, thread_id):
+        from chat.models import CanvasCheckpoint, ChatCanvas
+        try:
+            canvas = ChatCanvas.objects.get(thread_id=thread_id)
+        except ChatCanvas.DoesNotExist:
+            return None
+        latest = CanvasCheckpoint.objects.filter(canvas=canvas).order_by("-order").first()
+        if not latest:
+            return None
+        canvas.accepted_checkpoint = latest
+        canvas.save(update_fields=["accepted_checkpoint"])
+        return {"accepted_content": latest.content}
+
+    @database_sync_to_async
+    def _canvas_revert(self, thread_id):
+        from chat.models import ChatCanvas
+        try:
+            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(thread_id=thread_id)
+        except ChatCanvas.DoesNotExist:
+            return None
+        if not canvas.accepted_checkpoint:
+            return None
+        canvas.title = canvas.accepted_checkpoint.title
+        canvas.content = canvas.accepted_checkpoint.content
+        canvas.save(update_fields=["title", "content", "updated_at"])
         return {"title": canvas.title, "content": canvas.content}
+
+    @database_sync_to_async
+    def _canvas_save_version(self, thread_id, title, content):
+        from chat.models import CanvasCheckpoint, ChatCanvas
+        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
+        try:
+            canvas = ChatCanvas.objects.get(thread_id=thread_id)
+        except ChatCanvas.DoesNotExist:
+            return None
+        # Skip if content matches latest checkpoint
+        latest = CanvasCheckpoint.objects.filter(canvas=canvas).order_by("-order").first()
+        if latest and latest.content == content and latest.title == title:
+            return {"accepted_content": content}
+        content = content[:CANVAS_MAX_CHARS]
+        canvas.title = title or canvas.title
+        canvas.content = content
+        canvas.save(update_fields=["title", "content", "updated_at"])
+        cp = create_canvas_checkpoint(canvas, source="user_save", description="User saved version")
+        canvas.accepted_checkpoint = cp
+        canvas.save(update_fields=["accepted_checkpoint"])
+        return {"accepted_content": cp.content}
+
+    @database_sync_to_async
+    def _canvas_restore_version(self, thread_id, checkpoint_id):
+        from chat.models import CanvasCheckpoint, ChatCanvas
+        from chat.services import create_canvas_checkpoint
+        try:
+            canvas = ChatCanvas.objects.get(thread_id=thread_id)
+        except ChatCanvas.DoesNotExist:
+            return None
+        try:
+            checkpoint = CanvasCheckpoint.objects.get(pk=checkpoint_id, canvas=canvas)
+        except CanvasCheckpoint.DoesNotExist:
+            return None
+        canvas.title = checkpoint.title
+        canvas.content = checkpoint.content
+        canvas.save(update_fields=["title", "content", "updated_at"])
+        cp = create_canvas_checkpoint(canvas, source="restore", description="Restored to checkpoint #%d" % checkpoint.order)
+        canvas.accepted_checkpoint = cp
+        canvas.save(update_fields=["accepted_checkpoint"])
+        return {"title": canvas.title, "content": canvas.content}
+
+    @database_sync_to_async
+    def _canvas_get_checkpoints(self, thread_id):
+        from chat.models import CanvasCheckpoint, ChatCanvas
+        try:
+            canvas = ChatCanvas.objects.get(thread_id=thread_id)
+        except ChatCanvas.DoesNotExist:
+            return []
+        checkpoints = CanvasCheckpoint.objects.filter(canvas=canvas).order_by("-order")
+        return [
+            {
+                "id": cp.pk,
+                "source": cp.source,
+                "description": cp.description,
+                "order": cp.order,
+                "created_at": cp.created_at.isoformat(),
+            }
+            for cp in checkpoints
+        ]
 
     # -- Database helpers --
 
