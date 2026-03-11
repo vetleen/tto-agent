@@ -425,6 +425,32 @@ class ProcessDocumentServiceTests(TestCase):
                 self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
                 self.assertIn("parse error", doc.processing_error)
 
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_fails_when_no_text_extracted(self):
+        """A PDF that yields no extractable text (e.g. scanned) should be marked FAILED."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="scanned.pdf",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("scanned.pdf", ContentFile(b"fake"), save=True)
+
+                with patch(
+                    "documents.services.process_document.load_documents",
+                    return_value=[Mock(page_content="")],
+                ):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+                self.assertIn("No text could be extracted", doc.processing_error)
+
     def test_process_document_skips_nonexistent_document(self):
         """Calling with a non-existent ID logs a warning and returns without raising."""
         from documents.services.process_document import process_document

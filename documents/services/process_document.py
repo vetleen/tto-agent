@@ -56,6 +56,12 @@ def process_document(document_id: int) -> None:
         combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
         cleaned = clean_extracted_text(combined)
 
+        if not cleaned or not cleaned.strip():
+            raise ValueError(
+                "No text could be extracted from this document. "
+                "It may be a scanned PDF or image-only file that requires OCR."
+            )
+
         # 2. Chunk (strategy from settings)
         logger.info("process_document: document_id=%s stage=chunking", document_id)
         strategy = getattr(settings, "CHUNKING_STRATEGY", "structure_aware")
