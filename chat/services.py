@@ -18,15 +18,29 @@ CANVAS_MAX_CHARS = 75_000
 
 
 def create_canvas_checkpoint(canvas, source, description=""):
-    """Create a new checkpoint for the given canvas, using its current title/content."""
+    """Create a new checkpoint for the given canvas, using its current title/content.
+
+    For AI edits, if the latest checkpoint is already an ai_edit, update it
+    in-place so that multiple tool calls in one assistant turn produce only
+    one checkpoint.
+    """
     from chat.models import CanvasCheckpoint
 
-    last_order = (
+    latest = (
         CanvasCheckpoint.objects.filter(canvas=canvas)
         .order_by("-order")
-        .values_list("order", flat=True)
         .first()
-    ) or 0
+    )
+
+    # Coalesce consecutive AI edits into a single checkpoint
+    if source == "ai_edit" and latest and latest.source == "ai_edit":
+        latest.title = canvas.title
+        latest.content = canvas.content
+        latest.description = description
+        latest.save(update_fields=["title", "content", "description"])
+        return latest
+
+    last_order = latest.order if latest else 0
     return CanvasCheckpoint.objects.create(
         canvas=canvas,
         title=canvas.title,

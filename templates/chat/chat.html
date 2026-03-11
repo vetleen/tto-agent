@@ -1374,12 +1374,13 @@
       html += '<div class="min-w-0 flex-1"><div class="text-xs font-medium text-heading">' + escapeHtml(label) + '</div>';
       if (cp.description) html += '<div class="text-xs text-body truncate">' + escapeHtml(cp.description) + '</div>';
       html += '<div class="text-xs text-body/60">' + escapeHtml(timeStr) + '</div></div>';
-      html += '<button type="button" class="checkpoint-restore-btn hidden group-hover:inline-flex text-xs text-fg-brand hover:underline ml-2 shrink-0" data-checkpoint-id="' + cp.id + '">Restore</button>';
+      html += '<button type="button" class="checkpoint-restore-btn text-xs text-fg-brand hover:underline ml-2 shrink-0" data-checkpoint-id="' + cp.id + '">Restore</button>';
       html += '</div>';
     });
     canvasHistoryList.innerHTML = html;
     canvasHistoryList.querySelectorAll(".checkpoint-restore-btn").forEach(function(btn) {
-      btn.addEventListener("click", function() {
+      btn.addEventListener("click", function(e) {
+        e.stopPropagation();
         var cpId = parseInt(btn.getAttribute("data-checkpoint-id"));
         if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
           ws.send(JSON.stringify({ type: "chat.canvas_restore_version", thread_id: activeThreadId, checkpoint_id: cpId }));

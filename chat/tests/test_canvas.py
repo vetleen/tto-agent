@@ -661,6 +661,42 @@ class EditCanvasToolCheckpointTests(TestCase):
         # accepted_content is from original checkpoint
         self.assertEqual(result["accepted_content"], "Hello world.")
 
+    def test_consecutive_ai_edits_coalesce_into_one_checkpoint(self):
+        """Multiple AI edits in one turn should produce only one checkpoint."""
+        self._setup_canvas("Hello world. Goodbye world.")
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}]
+        }, ctx)
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Goodbye", "new_text": "Bye", "reason": ""}]
+        }, ctx)
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
+        # Should have 2: original + one coalesced ai_edit
+        self.assertEqual(len(cps), 2)
+        self.assertEqual(cps[0].source, "original")
+        self.assertEqual(cps[1].source, "ai_edit")
+        # The coalesced checkpoint should have the final content
+        self.assertIn("Hi", cps[1].content)
+        self.assertIn("Bye", cps[1].content)
+
+    def test_write_after_edit_creates_separate_checkpoints(self):
+        """A write_canvas after edit_canvas should NOT coalesce (different tool, still ai_edit source though)."""
+        self._setup_canvas("Hello world.")
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}]
+        }, ctx)
+        # Write canvas also produces ai_edit source (since canvas already exists)
+        _invoke(WriteCanvasTool, {"title": "New", "content": "Brand new"}, ctx)
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
+        # original + ai_edit (from edit) — but write_canvas on existing canvas
+        # also produces ai_edit, which coalesces with the previous ai_edit
+        self.assertEqual(len(cps), 2)
+        self.assertEqual(cps[1].content, "Brand new")
+
 
 # ---------------------------------------------------------------------------
 # Consumer checkpoint tests
@@ -834,4 +870,81 @@ class ConsumerCheckpointTests(TransactionTestCase):
             self.assertIsNotNone(c.accepted_checkpoint)
             self.assertEqual(c.accepted_checkpoint.source, "restore")
         await database_sync_to_async(check)()
+        await comm.disconnect()
+
+    async def test_canvas_restore_via_get_checkpoints_flow(self):
+        """Full user flow: get checkpoints → pick one → restore it."""
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="original text"
+        )
+
+        def setup():
+            cp1 = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp1
+            canvas.save(update_fields=["accepted_checkpoint"])
+            # AI edits the canvas
+            canvas.content = "ai changed text"
+            canvas.title = "AI Doc"
+            canvas.save(update_fields=["title", "content"])
+            create_canvas_checkpoint(canvas, source="ai_edit")
+        await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+
+        # Step 1: Get checkpoints
+        await comm.send_json_to({
+            "type": "chat.canvas_get_checkpoints",
+            "thread_id": str(thread.id),
+        })
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.checkpoints")
+        checkpoints = msg["checkpoints"]
+        self.assertEqual(len(checkpoints), 2)
+        # Checkpoints are ordered by -order, so first is the latest (ai_edit)
+        self.assertEqual(checkpoints[0]["source"], "ai_edit")
+        self.assertEqual(checkpoints[1]["source"], "original")
+
+        # Step 2: Restore the original checkpoint using its ID from the list
+        original_cp_id = checkpoints[1]["id"]
+        await comm.send_json_to({
+            "type": "chat.canvas_restore_version",
+            "thread_id": str(thread.id),
+            "checkpoint_id": original_cp_id,
+        })
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.restored")
+        self.assertEqual(msg["title"], "Doc")
+        self.assertEqual(msg["content"], "original text")
+
+        # Step 3: Verify DB state
+        def check():
+            c = ChatCanvas.objects.get(thread=thread)
+            self.assertEqual(c.content, "original text")
+            self.assertEqual(c.title, "Doc")
+            self.assertIsNotNone(c.accepted_checkpoint)
+            self.assertEqual(c.accepted_checkpoint.source, "restore")
+        await database_sync_to_async(check)()
+        await comm.disconnect()
+
+    async def test_canvas_get_checkpoints_empty(self):
+        """get_checkpoints returns empty list when no checkpoints exist."""
+        from channels.db import database_sync_to_async
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="text"
+        )
+
+        comm = await self._communicator()
+        await comm.send_json_to({
+            "type": "chat.canvas_get_checkpoints",
+            "thread_id": str(thread.id),
+        })
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.checkpoints")
+        self.assertEqual(msg["checkpoints"], [])
         await comm.disconnect()
