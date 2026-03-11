@@ -718,16 +718,16 @@ class DocumentViewsTests(TestCase):
         self.data_room.refresh_from_db()
         self.assertEqual(self.data_room.description, "Updated desc")
 
-    def test_update_description_truncates_at_2000(self):
+    def test_update_description_truncates_at_1000(self):
         self.client.force_login(self.user)
-        long_desc = "x" * 3000
+        long_desc = "x" * 2000
         self.client.post(
             reverse("data_room_update_description", kwargs={"data_room_id": self.data_room.uuid}),
             data=json.dumps({"description": long_desc}),
             content_type="application/json",
         )
         self.data_room.refresh_from_db()
-        self.assertLessEqual(len(self.data_room.description), 2000)
+        self.assertLessEqual(len(self.data_room.description), 1000)
 
     def test_update_description_blocks_other_user(self):
         self.client.force_login(self.other)

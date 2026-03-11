@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "Based on the data room name and the document descriptions below, "
-    "write a concise description (100-150 words) of what this data room contains "
+    "write two to four sentences with a concise description (100 tokens) of what this data room contains "
     "and its purpose. Output ONLY the description paragraph."
 )
 
@@ -48,6 +48,15 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
     )
     user_content = f"Data room name: {room.name}\n\nDocuments:\n{doc_lines}"
 
+    if room.description:
+        user_content += (
+            f"\n\nCurrent description: {room.description}\n"
+            "The user has asked you to suggest a new description, so don't "
+            "feel bound by the current one — but it's included for reference, "
+            "since it may contain information that isn't apparent from the "
+            "documents in the room alone."
+        )
+
     context = RunContext.create(
         user_id=user_id,
         conversation_id=data_room_id,
@@ -65,7 +74,7 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
 
     service = get_llm_service()
     response = service.run("simple_chat", request)
-    description = response.message.content.strip()
+    description = response.message.content.strip()[:1000]
 
     logger.info(
         "generate_data_room_description: data_room_id=%s len=%s",

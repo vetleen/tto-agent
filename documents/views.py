@@ -71,7 +71,7 @@ def data_room_list(request):
             while True:
                 slug = base_slug if n == 0 else f"{base_slug}-{n}"
                 try:
-                    description = (request.POST.get("description") or "").strip()[:2000]
+                    description = (request.POST.get("description") or "").strip()[:1000]
                     data_room = DataRoom.objects.create(
                         name=name, slug=slug, created_by=request.user,
                         description=description,
@@ -407,7 +407,7 @@ def data_room_update_description(request, data_room_id):
         body = json.loads(request.body)
     except (json.JSONDecodeError, ValueError):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
-    description = (body.get("description") or "").strip()[:2000]
+    description = (body.get("description") or "").strip()[:1000]
     data_room.description = description
     data_room.save(update_fields=["description", "updated_at"])
     return JsonResponse({"status": "ok"})
