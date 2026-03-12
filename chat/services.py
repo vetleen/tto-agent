@@ -309,60 +309,67 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, 
 MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
 
 
-async def _render_mermaid_png(source: str) -> bytes | None:
-    """Render a single mermaid diagram to PNG using Playwright."""
+def _render_mermaid_pngs(sources: list[str]) -> list[bytes | None]:
+    """Render multiple mermaid diagrams to PNG using a single Playwright browser.
+
+    Uses the sync API so it works regardless of whether an event loop is
+    already running (e.g. under Daphne / ASGI).
+    """
     from html import escape
+    from urllib.parse import quote
 
-    from playwright.async_api import async_playwright
+    from playwright.sync_api import sync_playwright
 
-    escaped = escape(source)
-    html = (
-        "<!DOCTYPE html><html><head>"
-        '<script src="' + MERMAID_CDN + '"></script>'
-        "</head><body>"
-        '<div class="mermaid">' + escaped + "</div>"
-        "<script>mermaid.initialize({startOnLoad:true});</script>"
-        "</body></html>"
-    )
+    results: list[bytes | None] = [None] * len(sources)
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page()
-            await page.set_content(html)
-            await page.wait_for_selector(".mermaid svg", timeout=15_000)
-            el = await page.query_selector(".mermaid")
-            png_bytes = await el.screenshot(type="png") if el else None
-            await browser.close()
-            return png_bytes
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            for i, source in enumerate(sources):
+                escaped = escape(source)
+                html = (
+                    "<!DOCTYPE html><html><head>"
+                    '<script src="' + MERMAID_CDN + '"></script>'
+                    "</head><body>"
+                    '<pre class="mermaid">' + escaped + "</pre>"
+                    "<script>mermaid.initialize({startOnLoad:true});</script>"
+                    "</body></html>"
+                )
+                try:
+                    # Use a data: URL so the browser actually loads the page
+                    # and fetches the CDN script (set_content won't fetch
+                    # remote scripts).
+                    data_url = "data:text/html;charset=utf-8," + quote(html)
+                    page.goto(data_url, wait_until="networkidle")
+                    page.wait_for_selector(".mermaid svg", timeout=15_000)
+                    el = page.query_selector(".mermaid")
+                    results[i] = el.screenshot(type="png") if el else None
+                except Exception:
+                    logger.exception(
+                        "Failed to render mermaid diagram %d", i
+                    )
+            browser.close()
     except Exception:
-        logger.exception("Failed to render mermaid diagram")
-        return None
+        logger.exception("Failed to launch browser for mermaid rendering")
+    return results
 
 
 def replace_mermaid_with_images(content: str) -> str:
     """Replace ```mermaid blocks with base64 <img> tags for docx export."""
-    import asyncio
-
     matches = list(MERMAID_BLOCK_RE.finditer(content))
     if not matches:
         return content
 
-    async def _render_all():
-        results = []
-        for m in matches:
-            png = await _render_mermaid_png(m.group(1))
-            results.append((m, png))
-        return results
+    sources = [m.group(1) for m in matches]
+    rendered_pngs = _render_mermaid_pngs(sources)
 
-    rendered = asyncio.run(_render_all())
-
-    # Replace in reverse order to preserve offsets
-    for m, png in reversed(rendered):
+    # Replace in reverse order to preserve string offsets
+    for m, png in reversed(list(zip(matches, rendered_pngs))):
         if png:
             b64 = base64.b64encode(png).decode()
             replacement = f'<img src="data:image/png;base64,{b64}" alt="Diagram" />'
         else:
-            # Keep original code block on failure
+            # Keep original code block on render failure
             replacement = m.group(0)
         content = content[: m.start()] + replacement + content[m.end() :]
 

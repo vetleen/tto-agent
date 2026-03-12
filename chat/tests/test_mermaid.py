@@ -1,7 +1,7 @@
 """Tests for mermaid diagram rendering in canvas export."""
 
 import base64
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -49,10 +49,10 @@ class ReplaceMermaidWithImagesTests(TestCase):
         result = replace_mermaid_with_images(content)
         self.assertEqual(result, content)
 
-    @patch("chat.services._render_mermaid_png", new_callable=AsyncMock)
+    @patch("chat.services._render_mermaid_pngs")
     def test_replaces_single_block_with_image(self, mock_render):
         png_data = b"\x89PNG\r\n\x1a\nfake"
-        mock_render.return_value = png_data
+        mock_render.return_value = [png_data]
 
         content = "Before\n\n```mermaid\ngraph TD\n    A --> B\n```\n\nAfter"
         result = replace_mermaid_with_images(content)
@@ -64,10 +64,10 @@ class ReplaceMermaidWithImagesTests(TestCase):
         self.assertIn(f'<img src="data:image/png;base64,{b64}"', result)
         self.assertIn('alt="Diagram"', result)
 
-    @patch("chat.services._render_mermaid_png", new_callable=AsyncMock)
+    @patch("chat.services._render_mermaid_pngs")
     def test_replaces_multiple_blocks(self, mock_render):
         png_data = b"\x89PNG\r\n\x1a\nfake"
-        mock_render.return_value = png_data
+        mock_render.return_value = [png_data, png_data]
 
         content = (
             "```mermaid\ngraph TD\n    A --> B\n```\n\n"
@@ -80,9 +80,9 @@ class ReplaceMermaidWithImagesTests(TestCase):
         self.assertIn("Middle text", result)
         self.assertEqual(result.count("<img"), 2)
 
-    @patch("chat.services._render_mermaid_png", new_callable=AsyncMock)
+    @patch("chat.services._render_mermaid_pngs")
     def test_keeps_block_on_render_failure(self, mock_render):
-        mock_render.return_value = None  # Render failed
+        mock_render.return_value = [None]  # Render failed
 
         content = "```mermaid\ngraph TD\n    A --> B\n```"
         result = replace_mermaid_with_images(content)
@@ -91,10 +91,10 @@ class ReplaceMermaidWithImagesTests(TestCase):
         self.assertIn("```mermaid", result)
         self.assertNotIn("<img", result)
 
-    @patch("chat.services._render_mermaid_png", new_callable=AsyncMock)
+    @patch("chat.services._render_mermaid_pngs")
     def test_preserves_surrounding_content(self, mock_render):
         png_data = b"fakepng"
-        mock_render.return_value = png_data
+        mock_render.return_value = [png_data]
 
         content = "# Title\n\nParagraph 1\n\n```mermaid\ngraph TD\n    A --> B\n```\n\nParagraph 2\n\n- List item"
         result = replace_mermaid_with_images(content)
@@ -103,3 +103,20 @@ class ReplaceMermaidWithImagesTests(TestCase):
         self.assertIn("Paragraph 1", result)
         self.assertIn("Paragraph 2", result)
         self.assertIn("- List item", result)
+
+    @patch("chat.services._render_mermaid_pngs")
+    def test_passes_sources_to_renderer(self, mock_render):
+        """Verify all diagram sources are passed in a single batch call."""
+        mock_render.return_value = [b"png1", b"png2"]
+
+        content = (
+            "```mermaid\ngraph TD\n    A --> B\n```\n\n"
+            "```mermaid\nsequenceDiagram\n    X->>Y: Z\n```"
+        )
+        replace_mermaid_with_images(content)
+
+        mock_render.assert_called_once()
+        sources = mock_render.call_args[0][0]
+        self.assertEqual(len(sources), 2)
+        self.assertIn("graph TD", sources[0])
+        self.assertIn("sequenceDiagram", sources[1])

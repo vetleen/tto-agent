@@ -535,20 +535,30 @@
   }
 
   function downloadMermaidAsPng(svgString, name) {
-    var svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-    var url = URL.createObjectURL(svgBlob);
+    // Parse the SVG to get its intrinsic dimensions for the canvas
+    var parser = new DOMParser();
+    var svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
+    var svgEl = svgDoc.querySelector('svg');
+    // Ensure the SVG has explicit width/height so the Image element sizes correctly
+    var w = parseFloat(svgEl.getAttribute('width')) || svgEl.viewBox.baseVal.width || 800;
+    var h = parseFloat(svgEl.getAttribute('height')) || svgEl.viewBox.baseVal.height || 600;
+    svgEl.setAttribute('width', w);
+    svgEl.setAttribute('height', h);
+    var fixedSvg = new XMLSerializer().serializeToString(svgEl);
+    // Use a data: URL instead of blob URL to avoid canvas tainting
+    var encoded = btoa(unescape(encodeURIComponent(fixedSvg)));
+    var dataUrl = 'data:image/svg+xml;base64,' + encoded;
     var img = new Image();
     img.onload = function() {
       var canvas = document.createElement('canvas');
       var scale = 2; // retina quality
-      canvas.width = img.width * scale;
-      canvas.height = img.height * scale;
+      canvas.width = w * scale;
+      canvas.height = h * scale;
       var ctx = canvas.getContext('2d');
       ctx.scale(scale, scale);
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, img.width, img.height);
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
       canvas.toBlob(function(blob) {
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
@@ -557,7 +567,7 @@
         URL.revokeObjectURL(a.href);
       }, 'image/png');
     };
-    img.src = url;
+    img.src = dataUrl;
   }
 
   const form = document.getElementById("chat-form");
