@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CANVAS_MAX_CHARS = 75_000
+MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
 
 
 def create_canvas_checkpoint(canvas, source, description=""):
@@ -299,3 +300,77 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, 
     title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
     return title, content, truncated
+
+
+# ---------------------------------------------------------------------------
+# Mermaid diagram rendering (for .docx export)
+# ---------------------------------------------------------------------------
+
+MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+
+
+def _render_mermaid_pngs(sources: list[str]) -> list[bytes | None]:
+    """Render multiple mermaid diagrams to PNG using a single Playwright browser.
+
+    Uses the sync API so it works regardless of whether an event loop is
+    already running (e.g. under Daphne / ASGI).
+    """
+    from html import escape
+    from urllib.parse import quote
+
+    from playwright.sync_api import sync_playwright
+
+    results: list[bytes | None] = [None] * len(sources)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            for i, source in enumerate(sources):
+                escaped = escape(source)
+                html = (
+                    "<!DOCTYPE html><html><head>"
+                    '<script src="' + MERMAID_CDN + '"></script>'
+                    "</head><body>"
+                    '<pre class="mermaid">' + escaped + "</pre>"
+                    "<script>mermaid.initialize({startOnLoad:true});</script>"
+                    "</body></html>"
+                )
+                try:
+                    # Use a data: URL so the browser actually loads the page
+                    # and fetches the CDN script (set_content won't fetch
+                    # remote scripts).
+                    data_url = "data:text/html;charset=utf-8," + quote(html)
+                    page.goto(data_url, wait_until="networkidle")
+                    page.wait_for_selector(".mermaid svg", timeout=15_000)
+                    el = page.query_selector(".mermaid")
+                    results[i] = el.screenshot(type="png") if el else None
+                except Exception:
+                    logger.exception(
+                        "Failed to render mermaid diagram %d", i
+                    )
+            browser.close()
+    except Exception:
+        logger.exception("Failed to launch browser for mermaid rendering")
+    return results
+
+
+def replace_mermaid_with_images(content: str) -> str:
+    """Replace ```mermaid blocks with base64 <img> tags for docx export."""
+    matches = list(MERMAID_BLOCK_RE.finditer(content))
+    if not matches:
+        return content
+
+    sources = [m.group(1) for m in matches]
+    rendered_pngs = _render_mermaid_pngs(sources)
+
+    # Replace in reverse order to preserve string offsets
+    for m, png in reversed(list(zip(matches, rendered_pngs))):
+        if png:
+            b64 = base64.b64encode(png).decode()
+            replacement = f'<img src="data:image/png;base64,{b64}" alt="Diagram" />'
+        else:
+            # Keep original code block on render failure
+            replacement = m.group(0)
+        content = content[: m.start()] + replacement + content[m.end() :]
+
+    return content
