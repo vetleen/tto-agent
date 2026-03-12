@@ -12,8 +12,13 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "Based on the data room name and the document descriptions below, "
-    "write one to two sentences with a concise description (50 tokens) of what this data room contains "
-    "and what its purpose is. Output ONLY the description paragraph."
+    "write one to two sentences (~50 tokens) describing this data room. "
+    "This is not a summary — it is a relevance signal for an AI agent. "
+    "When the agent encounters a document, it will also see which data room "
+    "the document belongs to and this description. Focus on the scope, "
+    "subject matter, and purpose of the collection so the agent can quickly "
+    "judge whether documents in this room are relevant to its task. "
+    "Output ONLY the description."
 )
 
 

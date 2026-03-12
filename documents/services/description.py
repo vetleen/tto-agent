@@ -19,14 +19,18 @@ _TAIL_TOKENS = 2_000
 
 _SYSTEM_PROMPT = (
     "Read this document and write a single paragraph (target ~100 tokens) "
-    "describing what the document contains. Focus on the type of document, "
-    "its subject matter, and the key topics it covers. Output ONLY the description."
+    "that will help an AI agent decide whether to read the full document. "
+    "This is not a summary — it is a relevance signal. Focus on what kind "
+    "of document this is, what subject matter and entities it concerns, "
+    "and what questions it could answer. Output ONLY the description."
 )
 
 _STRUCTURED_SYSTEM_PROMPT = (
     "Read this document and return a JSON object with two fields:\n"
-    '1. "description": A single paragraph (~100 tokens) describing contents, '
-    "subject matter, and key topics.\n"
+    '1. "description": A single paragraph (~100 tokens) that will help an AI '
+    "agent decide whether to read the full document. This is not a summary — "
+    "it is a relevance signal. Focus on what kind of document this is, what "
+    "subject matter and entities it concerns, and what questions it could answer.\n"
     '2. "document_type": A concise document type classification (e.g. Agreement, '
     "Patent, License, Report, Correspondence, Policy, Technical Specification, "
     "Disclosure, Application, Financial, Research Paper, Presentation, or Other).\n"
