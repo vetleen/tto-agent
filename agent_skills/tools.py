@@ -320,7 +320,16 @@ class EditSkillTool(ContextAwareTool):
             skill.slug = updates["new_slug"]
             update_fields.append("slug")
         if "tool_names" in updates:
-            skill.tool_names = updates["tool_names"]
+            # Silently filter out standard (chat-section) tools — they're
+            # always available and don't need to be attached to a skill.
+            # Unknown tool names are kept (they may belong to another app).
+            registry = get_tool_registry()
+            filtered = []
+            for t in updates["tool_names"]:
+                tool_obj = registry.get_tool(t)
+                if tool_obj is None or getattr(tool_obj, "section", "chat") != "chat":
+                    filtered.append(t)
+            skill.tool_names = filtered
             update_fields.append("tool_names")
         if "is_active" in updates:
             skill.is_active = bool(updates["is_active"])
@@ -699,14 +708,15 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
 
 
 class ListAllToolsTool(ContextAwareTool):
-    """List skill-specific tools that can be attached to a skill."""
+    """List all tools grouped by availability."""
 
     name: str = "list_all_tools"
     description: str = (
-        "List tools that are only available when a skill declares them. "
-        "Standard tools (search, canvas, web) are always available and "
-        "don't need to be added to a skill. Use this to discover "
-        "skill-specific tools you can attach via tool_names."
+        "List all available tools, grouped into two categories: "
+        "standard tools (always available — no need to attach) and "
+        "skill-specific tools (must be explicitly attached via tool_names). "
+        "Use this to discover which tools exist and decide which ones "
+        "a skill needs."
     )
     args_schema: type[BaseModel] = BaseModel
     section: str = "skills"
@@ -714,11 +724,22 @@ class ListAllToolsTool(ContextAwareTool):
     def _run(self) -> str:
         registry = get_tool_registry()
         all_tools = registry.list_tools()
-        tools_list = []
+        standard_tools = []
+        skill_tools = []
         for name, tool in sorted(all_tools.items()):
+            first_sentence = (tool.description or "").split(". ")[0]
+            entry = {"name": name, "description": first_sentence}
             if getattr(tool, "section", "chat") == "skills":
-                tools_list.append({"name": name})
-        return json.dumps({"status": "ok", "tools": tools_list, "count": len(tools_list)})
+                skill_tools.append(entry)
+            else:
+                standard_tools.append(entry)
+        return json.dumps({
+            "status": "ok",
+            "standard_tools": standard_tools,
+            "standard_tools_note": "Always available. Do not need to be attached to a skill.",
+            "skill_tools": skill_tools,
+            "skill_tools_note": "Only available when explicitly listed in a skill's tool_names.",
+        })
 
 
 class InspectToolTool(ContextAwareTool):
