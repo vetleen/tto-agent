@@ -945,6 +945,20 @@
         else if (toolName === "read_document") displayText = "Reading document...";
         else if (toolName === "write_canvas") displayText = "Writing document...";
         else if (toolName === "edit_canvas") displayText = "Editing document...";
+        else if (toolName === "web_fetch") displayText = "Fetching web page...";
+        else if (toolName === "brave_search") displayText = "Searching the web...";
+        else if (toolName === "create_skill") displayText = "Creating skill...";
+        else if (toolName === "save_canvas_to_skill_field") displayText = "Saving to skill...";
+        else if (toolName === "show_skill_field_in_canvas") displayText = "Loading skill field...";
+        else if (toolName === "edit_skill") displayText = "Editing skill...";
+        else if (toolName === "delete_skill") displayText = "Deleting skill...";
+        else if (toolName === "add_skill_template") displayText = "Adding template...";
+        else if (toolName === "edit_skill_template") displayText = "Editing template...";
+        else if (toolName === "delete_skill_template") displayText = "Deleting template...";
+        else if (toolName === "view_template") displayText = "Loading template...";
+        else if (toolName === "load_template_to_canvas") displayText = "Loading template to canvas...";
+        else if (toolName === "list_all_tools") displayText = "Listing tools...";
+        else if (toolName === "inspect_tool") displayText = "Inspecting tool...";
         card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + '</span>';
         container.appendChild(card);
       }
@@ -963,6 +977,20 @@
           else if (toolName === "read_document") doneLabel = "Read document";
           else if (toolName === "write_canvas") doneLabel = "Rewrote the canvas text from scratch";
           else if (toolName === "edit_canvas") doneLabel = "Edited the canvas text";
+          else if (toolName === "web_fetch") doneLabel = "Fetched web page";
+          else if (toolName === "brave_search") doneLabel = "Searched the web";
+          else if (toolName === "create_skill") doneLabel = "Created skill";
+          else if (toolName === "save_canvas_to_skill_field") doneLabel = "Saved to skill";
+          else if (toolName === "show_skill_field_in_canvas") doneLabel = "Loaded skill field to canvas";
+          else if (toolName === "edit_skill") doneLabel = "Updated skill";
+          else if (toolName === "delete_skill") doneLabel = "Deleted skill";
+          else if (toolName === "add_skill_template") doneLabel = "Added template";
+          else if (toolName === "edit_skill_template") doneLabel = "Updated template";
+          else if (toolName === "delete_skill_template") doneLabel = "Deleted template";
+          else if (toolName === "view_template") doneLabel = "Viewed template";
+          else if (toolName === "load_template_to_canvas") doneLabel = "Loaded template to canvas";
+          else if (toolName === "list_all_tools") doneLabel = "Listed tools";
+          else if (toolName === "inspect_tool") doneLabel = "Inspected tool";
           card.innerHTML = '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="tool-card-text">' + escapeHtml(doneLabel) + '</span>';
         }
       }

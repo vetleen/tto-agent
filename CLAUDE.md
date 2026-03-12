@@ -46,6 +46,14 @@ Set `TEST_APIS=True` in `.env` for live LLM API tests.
 - **llm/** — Multi-provider LLM abstraction. Entry point: `get_llm_service()` in `llm/service/llm_service.py`.
 - **core/** — Shared utilities (tokens, preferences).
 
+## Chat Tool Labels
+
+When adding a new tool to the chat system, you **must** add corresponding display labels in `templates/chat/chat.html` for both:
+- **`tool_start`** — a present-tense "...ing" label shown while the tool runs (e.g., "Searching the web...")
+- **`tool_end`** — a past-tense completion label shown when the tool finishes (e.g., "Searched the web")
+
+Look for the `tool_start` and `tool_end` event handler blocks and add `else if` branches for the new tool name.
+
 ## Working Directory
 
 The working directory persists between Bash tool calls. If already in the repo root, don't redundantly prefix commands with `cd <path> &&` — just run them directly.
