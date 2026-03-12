@@ -1,5 +1,6 @@
 """Tests for chat.prompts.build_system_prompt."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from django.test import TestCase
@@ -129,3 +130,65 @@ class BuildSystemPromptTests(TestCase):
         # Should not have empty parentheses
         self.assertNotIn("()", prompt)
 
+
+    # ------------------------------------------------------------------ #
+    # Updated tool descriptions                                            #
+    # ------------------------------------------------------------------ #
+
+    def test_tool_descriptions_mention_chunk_range(self):
+        doc_context = {
+            "total_doc_count": 1,
+            "documents": [{
+                "doc_index": 1,
+                "filename": "test.pdf",
+                "description": "",
+                "token_count": 100,
+            }],
+        }
+        prompt = build_system_prompt(
+            data_rooms=[self.data_room],
+            doc_context=doc_context,
+        )
+        self.assertIn("chunk_start", prompt)
+        self.assertIn("chunk_end", prompt)
+
+    def test_search_tool_description_mentions_enriched_output(self):
+        doc_context = {
+            "total_doc_count": 1,
+            "documents": [{
+                "doc_index": 1,
+                "filename": "test.pdf",
+                "description": "",
+                "token_count": 100,
+            }],
+        }
+        prompt = build_system_prompt(
+            data_rooms=[self.data_room],
+            doc_context=doc_context,
+        )
+        self.assertIn("document titles", prompt.lower())
+        self.assertIn("types", prompt.lower())
+
+    # ------------------------------------------------------------------ #
+    # Skill injection                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_skill_instructions_injected(self):
+        skill = SimpleNamespace(name="Patent Drafter", instructions="Draft patents carefully.")
+        prompt = build_system_prompt(skill=skill)
+        self.assertIn("# SKILL", prompt)
+        self.assertIn("## Patent Drafter", prompt)
+        self.assertIn("Draft patents carefully.", prompt)
+
+    def test_skill_appears_after_instructions_before_data_rooms(self):
+        skill = SimpleNamespace(name="Test Skill", instructions="Do the test.")
+        prompt = build_system_prompt(skill=skill, data_rooms=[self.data_room])
+        skill_pos = prompt.index("# SKILL")
+        instructions_pos = prompt.index("# Instructions")
+        data_rooms_pos = prompt.index("# Attached Data Rooms")
+        self.assertGreater(skill_pos, instructions_pos)
+        self.assertLess(skill_pos, data_rooms_pos)
+
+    def test_no_skill_no_skill_section(self):
+        prompt = build_system_prompt()
+        self.assertNotIn("# SKILL", prompt)
