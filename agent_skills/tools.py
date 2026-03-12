@@ -555,7 +555,15 @@ class EditSkillTemplateTool(ContextAwareTool):
             tmpl.content = content
             update_fields.append("content")
 
-        tmpl.save(update_fields=update_fields)
+        from django.db import IntegrityError
+
+        try:
+            tmpl.save(update_fields=update_fields)
+        except IntegrityError:
+            return json.dumps({
+                "status": "error",
+                "message": f"Template '{new_name}' already exists on skill '{skill_slug}'.",
+            })
 
         return json.dumps({
             "status": "ok",
