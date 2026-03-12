@@ -216,16 +216,20 @@ won't be able to access the templates at runtime.
 
 ## Step 5: Attach tools
 
-Standard tools (canvas, web search, document search, etc.) are always
-available to Wilfred and don't need to be added to a skill. But some
-specialized tools are only available when a skill explicitly declares them
-in its `tool_names`.
+Use `list_all_tools` to see every tool that exists. The output is split into
+two groups:
 
-To discover and attach specialized tools:
-1. Use `list_all_tools` to see which skill-specific tools exist
-2. Use `inspect_tool` to read a tool's description and understand better what it does
-3. You may discuss with the user which tools the skill actually needs
-4. Save the list via `edit_skill`, passing the tool names in the `updates` parameter, e.g. `updates={"tool_names": ["search_documents", "read_document"]}`
+- **Standard tools** — always available to Wilfred (e.g. web search, canvas,
+  document search). These do **not** need to be attached to a skill. If you
+  accidentally include one in `tool_names` it will be silently ignored.
+- **Skill-specific tools** — only available when a skill explicitly lists them
+  in its `tool_names`. These are the ones you need to attach.
+
+To discover and attach tools:
+1. Use `list_all_tools` to see both groups
+2. Use `inspect_tool` to read a tool's full description
+3. Discuss with the user which skill-specific tools the skill actually needs
+4. Save the list via `edit_skill`, e.g. `updates={"tool_names": ["view_template", "load_template_to_canvas"]}`
 
 The user's organization admin can disable specific tools per-skill, so the
 effective tool set may be narrower than what you declare.

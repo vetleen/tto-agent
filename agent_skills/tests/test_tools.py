@@ -80,6 +80,27 @@ class EditSkillToolTests(TestCase):
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.description, "Updated desc.")
 
+    def test_tool_names_filters_out_standard_tools(self):
+        """Standard (chat-section) tools are silently removed from tool_names."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable",
+            updates={"tool_names": ["view_template", "write_canvas", "brave_search"]},
+        ))
+        self.assertEqual(result["status"], "ok")
+        # write_canvas and brave_search are chat-section tools — silently removed
+        self.assertEqual(result["tool_names"], ["view_template"])
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.tool_names, ["view_template"])
+
+    def test_tool_names_all_standard_results_in_empty_list(self):
+        """If only standard tools are passed, tool_names becomes empty."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable",
+            updates={"tool_names": ["write_canvas", "edit_canvas"]},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["tool_names"], [])
+
     def test_system_skill_not_editable(self):
         AgentSkill.objects.create(
             slug="sys", name="System", instructions="Inst.", level="system",
@@ -305,17 +326,28 @@ class ListAllToolsToolTests(TestCase):
         self.tool = ListAllToolsTool()
         self.tool.context = _make_context(self.user)
 
-    def test_lists_only_skill_section_tools(self):
+    def test_returns_both_standard_and_skill_tools(self):
         result = json.loads(self.tool._run())
         self.assertEqual(result["status"], "ok")
-        self.assertGreater(result["count"], 0)
-        names = [t["name"] for t in result["tools"]]
-        # Should include skill-section tools
-        self.assertIn("create_skill", names)
-        self.assertIn("inspect_tool", names)
-        # Should NOT include chat-section tools
-        self.assertNotIn("write_canvas", names)
-        self.assertNotIn("edit_canvas", names)
+        # Both groups present
+        self.assertIn("standard_tools", result)
+        self.assertIn("skill_tools", result)
+        skill_names = [t["name"] for t in result["skill_tools"]]
+        standard_names = [t["name"] for t in result["standard_tools"]]
+        # Skill-section tools in skill_tools
+        self.assertIn("create_skill", skill_names)
+        self.assertIn("inspect_tool", skill_names)
+        # Chat-section tools in standard_tools
+        self.assertIn("write_canvas", standard_names)
+        self.assertIn("edit_canvas", standard_names)
+        # No overlap
+        self.assertFalse(set(skill_names) & set(standard_names))
+
+    def test_each_entry_has_name_and_description(self):
+        result = json.loads(self.tool._run())
+        for tool_entry in result["skill_tools"] + result["standard_tools"]:
+            self.assertIn("name", tool_entry)
+            self.assertIn("description", tool_entry)
 
 
 class InspectToolToolTests(TestCase):
