@@ -131,7 +131,10 @@ def canvas_export(request, thread_id):
     import markdown as md
     from html2docx import html2docx
 
-    html_content = md.markdown(canvas.content, extensions=["tables", "fenced_code"])
+    from chat.services import replace_mermaid_with_images
+
+    content = replace_mermaid_with_images(canvas.content)
+    html_content = md.markdown(content, extensions=["tables", "fenced_code"])
     # html2docx expects a full HTML document or just body content
     full_html = f"<html><body>{html_content}</body></html>"
     buf = html2docx(full_html, title=canvas.title)

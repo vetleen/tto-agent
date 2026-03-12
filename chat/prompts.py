@@ -124,16 +124,41 @@ Be careful with **write_canvas**, as it deletes pre-existing text. Only use this
 
 After using either canvas tool, do not repeat or reproduce the changes in chat. Simply refer to the canvas (e.g. "I've updated the canvas with…").
 """
+        prompt += """
+## Diagrams
+You can include Mermaid diagrams in the canvas using fenced code blocks with the `mermaid` language tag. These render as visual diagrams in preview mode and export as images in .docx. Example:
+
+```mermaid
+graph TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Action]
+    B -->|No| D[End]
+```
+
+Use mermaid diagrams when the user asks for flowcharts, process diagrams, org charts, timelines, sequence diagrams, pie charts, or any visual representation of relationships or processes.
+"""
     else:
         prompt += """\
 
 # Canvas
 You have access to a canvas for text processing. This is a core feature! If the user's request is for you to generate a text (use your sound judgement to assertain if this is the case), use **write_canvas** to create the initial text in the canvas. The canvas will appear as a panel alongside the chat, and is a user friendly way to deliver the request.
-Users may ask for a full document, or a section. Some examples of documents that the user may ask for are: emails, grant applications, letters, patent claims, business plans, meeting summaries or minutes, reports or summaries of a process. 
+Users may ask for a full document, or a section. Some examples of documents that the user may ask for are: emails, grant applications, letters, patent claims, business plans, meeting summaries or minutes, reports or summaries of a process.
 
 You should be eager to use the canvas.
 
 After using either canvas tool, do not repeat or reproduce the generated text in chat. Simply refer to the canvas (e.g. "I've created a draft in the canvas…").
+
+## Diagrams
+You can include Mermaid diagrams in the canvas using fenced code blocks with the `mermaid` language tag. These render as visual diagrams in preview mode and export as images in .docx. Example:
+
+```mermaid
+graph TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Action]
+    B -->|No| D[End]
+```
+
+Use mermaid diagrams when the user asks for flowcharts, process diagrams, org charts, timelines, sequence diagrams, pie charts, or any visual representation of relationships or processes.
 """
 
     if history_meta:

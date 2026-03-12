@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CANVAS_MAX_CHARS = 75_000
+MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
 
 
 def create_canvas_checkpoint(canvas, source, description=""):
@@ -299,3 +300,70 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, 
     title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
     return title, content, truncated
+
+
+# ---------------------------------------------------------------------------
+# Mermaid diagram rendering (for .docx export)
+# ---------------------------------------------------------------------------
+
+MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+
+
+async def _render_mermaid_png(source: str) -> bytes | None:
+    """Render a single mermaid diagram to PNG using Playwright."""
+    from html import escape
+
+    from playwright.async_api import async_playwright
+
+    escaped = escape(source)
+    html = (
+        "<!DOCTYPE html><html><head>"
+        '<script src="' + MERMAID_CDN + '"></script>'
+        "</head><body>"
+        '<div class="mermaid">' + escaped + "</div>"
+        "<script>mermaid.initialize({startOnLoad:true});</script>"
+        "</body></html>"
+    )
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            await page.wait_for_selector(".mermaid svg", timeout=15_000)
+            el = await page.query_selector(".mermaid")
+            png_bytes = await el.screenshot(type="png") if el else None
+            await browser.close()
+            return png_bytes
+    except Exception:
+        logger.exception("Failed to render mermaid diagram")
+        return None
+
+
+def replace_mermaid_with_images(content: str) -> str:
+    """Replace ```mermaid blocks with base64 <img> tags for docx export."""
+    import asyncio
+
+    matches = list(MERMAID_BLOCK_RE.finditer(content))
+    if not matches:
+        return content
+
+    async def _render_all():
+        results = []
+        for m in matches:
+            png = await _render_mermaid_png(m.group(1))
+            results.append((m, png))
+        return results
+
+    rendered = asyncio.run(_render_all())
+
+    # Replace in reverse order to preserve offsets
+    for m, png in reversed(rendered):
+        if png:
+            b64 = base64.b64encode(png).decode()
+            replacement = f'<img src="data:image/png;base64,{b64}" alt="Diagram" />'
+        else:
+            # Keep original code block on failure
+            replacement = m.group(0)
+        content = content[: m.start()] + replacement + content[m.end() :]
+
+    return content

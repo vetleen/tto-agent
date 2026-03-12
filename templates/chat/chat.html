@@ -383,6 +383,7 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/diff@7.0.0/dist/diff.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 
 {# Markdown styling #}
 <style>
@@ -428,6 +429,12 @@
   .diff-del { background-color: rgb(254 202 202); text-decoration: line-through; }
   .dark .diff-add { background-color: rgb(20 83 45 / 0.4); }
   .dark .diff-del { background-color: rgb(127 29 29 / 0.4); text-decoration: line-through; }
+  .mermaid-placeholder { margin: 0.75rem 0; }
+  .mermaid-placeholder svg { max-width: 100%; height: auto; }
+  .mermaid-wrapper { position: relative; }
+  .mermaid-download-btn { position: absolute; top: 0.5rem; right: 0.5rem; opacity: 0; background: rgba(255,255,255,0.9); border: 1px solid rgb(209 213 219); border-radius: 0.375rem; padding: 0.25rem 0.5rem; font-size: 0.75rem; cursor: pointer; transition: opacity 0.15s; z-index: 10; }
+  .mermaid-wrapper:hover .mermaid-download-btn { opacity: 1; }
+  .dark .mermaid-download-btn { background: rgba(55,65,81,0.9); border-color: rgb(75 85 99); color: rgb(209 213 219); }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
 
@@ -467,6 +474,22 @@
   let activeSkillId = {% if thread_skill %}"{{ thread_skill.id|escapejs }}"{% else %}null{% endif %};
   let activeSkillName = {% if thread_skill %}"{{ thread_skill.name|escapejs }}"{% else %}null{% endif %};
 
+  // -- Mermaid init --
+  mermaid.initialize({ startOnLoad: false, theme: 'default' });
+  var mermaidIdCounter = 0;
+
+  // Custom marked renderer: mermaid code blocks become placeholder divs
+  var mermaidRenderer = new marked.Renderer();
+  var origCodeRenderer = mermaidRenderer.code.bind(mermaidRenderer);
+  mermaidRenderer.code = function(token) {
+    if (token.lang === 'mermaid') {
+      var escaped = token.text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return '<div class="mermaid-placeholder" data-mermaid="' + escaped + '"></div>';
+    }
+    return origCodeRenderer(token);
+  };
+  marked.use({ renderer: mermaidRenderer });
+
   // -- Emoji shortcodes --
   const emojiMap = {':sparkles:':'\u2728',':tada:':'\ud83c\udf89',':smile:':'\ud83d\ude04',':heart:':'\u2764\ufe0f',':thumbsup:':'\ud83d\udc4d',':thumbsdown:':'\ud83d\udc4e',':fire:':'\ud83d\udd25',':rocket:':'\ud83d\ude80',':star:':'\u2b50',':check:':'\u2705',':x:':'\u274c',':warning:':'\u26a0\ufe0f',':bulb:':'\ud83d\udca1',':muscle:':'\ud83d\udcaa',':clap:':'\ud83d\udc4f',':eyes:':'\ud83d\udc40',':thinking:':'\ud83e\udd14',':party:':'\ud83c\udf89',':confetti:':'\ud83c\udf8a',':trophy:':'\ud83c\udfc6',':zap:':'\u26a1',':boom:':'\ud83d\udca5',':100:':'\ud83d\udcaf',':ok_hand:':'\ud83d\udc4c',':raised_hands:':'\ud83d\ude4c',':pray:':'\ud83d\ude4f',':coffee:':'\u2615',':pizza:':'\ud83c\udf55',':cake:':'\ud83c\udf82',':gift:':'\ud83c\udf81',':balloon:':'\ud83c\udf88'};
 
@@ -477,12 +500,65 @@
       const html = marked.parse(text);
       return DOMPurify.sanitize(html, {
         ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td','div','span'],
-        ALLOWED_ATTR: ['href','title','target','class']
+        ALLOWED_ATTR: ['href','title','target','class','data-mermaid']
       });
     } catch (e) { return escapeHtml(text).replace(/\n/g, "<br>"); }
   }
 
   function escapeHtml(text) { const div = document.createElement("div"); div.textContent = text; return div.innerHTML; }
+
+  // -- Mermaid rendering & PNG export --
+  function renderMermaidBlocks(container) {
+    var placeholders = container.querySelectorAll('.mermaid-placeholder');
+    placeholders.forEach(function(el) {
+      var source = el.getAttribute('data-mermaid');
+      if (!source) return;
+      // Unescape HTML entities
+      var tmp = document.createElement('textarea');
+      tmp.innerHTML = source;
+      source = tmp.value;
+      var id = 'mermaid-' + (++mermaidIdCounter);
+      try {
+        mermaid.render(id, source).then(function(result) {
+          el.innerHTML = '<div class="mermaid-wrapper">' + result.svg +
+            '<button class="mermaid-download-btn" title="Download as PNG">PNG</button></div>';
+          el.querySelector('.mermaid-download-btn').addEventListener('click', function() {
+            downloadMermaidAsPng(result.svg, 'diagram');
+          });
+        }).catch(function(err) {
+          el.innerHTML = '<pre style="color:rgb(239 68 68);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
+        });
+      } catch (err) {
+        el.innerHTML = '<pre style="color:rgb(239 68 68);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
+      }
+    });
+  }
+
+  function downloadMermaidAsPng(svgString, name) {
+    var svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    var url = URL.createObjectURL(svgBlob);
+    var img = new Image();
+    img.onload = function() {
+      var canvas = document.createElement('canvas');
+      var scale = 2; // retina quality
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      var ctx = canvas.getContext('2d');
+      ctx.scale(scale, scale);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, img.width, img.height);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(function(blob) {
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = (name || 'diagram') + '.png';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }, 'image/png');
+    };
+    img.src = url;
+  }
 
   const form = document.getElementById("chat-form");
   const input = document.getElementById("message-input");
@@ -494,7 +570,7 @@
 
   function renderServerMarkdown() {
     const els = messagesContainer.querySelectorAll('.markdown-content');
-    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) el.innerHTML = renderMarkdown(text); });
+    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); } });
   }
   if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', renderServerMarkdown); } else { renderServerMarkdown(); }
 
@@ -885,7 +961,7 @@
     const et = data.event_type;
     if (et === "canvas.updated") { canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content); return; }
     if (et === "canvas.loaded") { canvasHandleLoaded(data.title || "", data.content || "", data.accepted_content); return; }
-    if (et === "canvas.accepted") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); if (canvasPreviewMode) canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); return; }
+    if (et === "canvas.accepted") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); } return; }
     if (et === "canvas.reverted") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
     if (et === "canvas.version_saved") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); return; }
     if (et === "canvas.restored") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
@@ -1010,7 +1086,7 @@
   function finishStreaming(suffix) {
     if (!currentStreamingElement) return; if (isThinking) collapseThinking(); hideWaitingIndicator();
     const contentEl = currentStreamingElement.querySelector(".message-content");
-    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; }
+    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
@@ -1425,6 +1501,7 @@
     } else {
       canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
     }
+    renderMermaidBlocks(canvasPreview);
   }
 
   if (canvasPreviewBtn) {
