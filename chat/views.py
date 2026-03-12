@@ -55,23 +55,21 @@ def chat_home(request):
         thread_data_rooms = list(
             thread.data_rooms.values("pk", "uuid", "name")
         )
-        if thread.skill_id:
+        if thread.skill_id and thread.skill and thread.skill.is_active:
             thread_skill = {"id": str(thread.skill_id), "name": thread.skill.name}
 
-    # Skills for the skill modal
-    from agent_skills.services import get_available_skills
-
-    skills = get_available_skills(request.user)
-    skills_json = json.dumps([
-        {"id": str(s.pk), "name": s.name, "description": s.description}
-        for s in skills
-    ])
-
-    # Model choices for the model selector dropdown
+    # Resolve preferences (model choices, allowed skills, etc.)
     from core.preferences import get_preferences
     from llm.display import get_display_name, supports_thinking
 
     prefs = get_preferences(request.user)
+
+    # Skills for the skill modal — use prefs.allowed_skills which respects
+    # org admin enable/disable settings, rather than raw get_available_skills()
+    skills_json = json.dumps([
+        {"id": s["id"], "name": s["name"], "description": s.get("description", "")}
+        for s in prefs.allowed_skills
+    ])
     model_choices = [
         {
             "id": m,
@@ -281,13 +279,13 @@ def canvas_save_to_data_room(request, thread_id):
 @require_http_methods(["GET"])
 def skills_for_user(request):
     """JSON API returning the user's available skills."""
-    from agent_skills.services import get_available_skills
+    from core.preferences import get_preferences
 
-    skills = get_available_skills(request.user)
+    prefs = get_preferences(request.user)
     return JsonResponse({
         "skills": [
-            {"id": str(s.pk), "name": s.name, "description": s.description}
-            for s in skills
+            {"id": s["id"], "name": s["name"], "description": s.get("description", "")}
+            for s in prefs.allowed_skills
         ]
     })
 

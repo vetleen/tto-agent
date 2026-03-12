@@ -106,6 +106,7 @@ def get_preferences(user) -> ResolvedPreferences:
             "id": str(skill.id),
             "slug": skill.slug,
             "name": skill.name,
+            "description": skill.description,
             "tool_names": filtered_tools,
         })
 

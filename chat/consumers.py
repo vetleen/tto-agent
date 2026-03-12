@@ -939,7 +939,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
         except ChatThread.DoesNotExist:
             return None
-        if thread.skill:
+        if thread.skill and thread.skill.is_active:
             return {"skill_id": str(thread.skill.pk), "skill_name": thread.skill.name}
         return None
 
