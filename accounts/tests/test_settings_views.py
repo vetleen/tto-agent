@@ -319,3 +319,163 @@ class OrgToolsUpdateTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertFalse(self.org.preferences["tools"]["read_document"])
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgSkillsUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="skilladmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="skillmember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="SkillOrg", slug="skillorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_skills_update")
+
+    def test_admin_can_toggle_skill(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"slug": "skill-creator", "enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.preferences["skills"]["skill-creator"]["enabled"])
+
+    def test_admin_can_toggle_per_tool(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"slug": "skill-creator", "tool": "create_skill", "enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertFalse(
+            self.org.preferences["skills"]["skill-creator"]["tools"]["create_skill"]
+        )
+
+    def test_non_admin_gets_403(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"slug": "skill-creator", "enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"slug": "skill-creator", "enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_missing_slug_returns_400(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PreferencesSkillCascadeTests(TestCase):
+    """Test that the preferences resolver respects skill toggles."""
+
+    def setUp(self):
+        from agent_skills.models import AgentSkill
+
+        AgentSkill.objects.all().delete()
+
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="cascade@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="CascadeOrg", slug="cascadeorg")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.ADMIN)
+
+        self.skill = AgentSkill.objects.create(
+            slug="test-skill", name="Test Skill", instructions="Inst.",
+            level="system", tool_names=["create_skill", "edit_skill"],
+        )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_disabled_skill_excluded(self, mock_reg, mock_models):
+        from unittest.mock import MagicMock
+
+        mock_reg.return_value.list_tools.return_value = {}
+        # Disable the skill in org prefs
+        self.org.preferences = {"skills": {"test-skill": {"enabled": False}}}
+        self.org.save(update_fields=["preferences"])
+
+        from core.preferences import get_preferences
+
+        prefs = get_preferences(self.user)
+        skill_slugs = [s["slug"] for s in prefs.allowed_skills]
+        self.assertNotIn("test-skill", skill_slugs)
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_enabled_skill_included(self, mock_reg, mock_models):
+        from unittest.mock import MagicMock
+
+        mock_reg.return_value.list_tools.return_value = {}
+
+        from core.preferences import get_preferences
+
+        prefs = get_preferences(self.user)
+        skill_slugs = [s["slug"] for s in prefs.allowed_skills]
+        self.assertIn("test-skill", skill_slugs)
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_per_tool_toggle(self, mock_reg, mock_models):
+        from unittest.mock import MagicMock
+
+        mock_reg.return_value.list_tools.return_value = {}
+        self.org.preferences = {
+            "skills": {"test-skill": {"tools": {"create_skill": False}}}
+        }
+        self.org.save(update_fields=["preferences"])
+
+        from core.preferences import get_preferences
+
+        prefs = get_preferences(self.user)
+        skill_entry = next(s for s in prefs.allowed_skills if s["slug"] == "test-skill")
+        self.assertNotIn("create_skill", skill_entry["tool_names"])
+        self.assertIn("edit_skill", skill_entry["tool_names"])
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_skill_tools_gated_by_tool_names(self, mock_reg, mock_models):
+        from unittest.mock import MagicMock
+
+        mock_reg.return_value.list_tools.return_value = {}
+
+        from core.preferences import get_preferences
+
+        prefs = get_preferences(self.user)
+        # Skill tools should NOT be in the base allowed_tools — they are
+        # only injected at chat time when the skill is active
+        self.assertNotIn("create_skill", prefs.allowed_tools)
+        self.assertNotIn("edit_skill", prefs.allowed_tools)
+        # But they should be listed in the skill's allowed_skills entry
+        skill_entry = next(s for s in prefs.allowed_skills if s["slug"] == "test-skill")
+        self.assertIn("create_skill", skill_entry["tool_names"])
+        self.assertIn("edit_skill", skill_entry["tool_names"])

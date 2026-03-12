@@ -436,8 +436,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             tools = [t for t in all_tools if t not in doc_tools]
 
-        # Extend with skill-specific tools
-        if self.active_skill_id:
+        # Extend with skill-specific tools (filtered through prefs.allowed_skills)
+        if self.active_skill_id and prefs and prefs.allowed_skills:
+            for s in prefs.allowed_skills:
+                if s["id"] == self.active_skill_id:
+                    for t in s["tool_names"]:
+                        if t not in tools:
+                            tools.append(t)
+                    break
+            else:
+                # Fallback: skill not in allowed_skills, use raw tool_names
+                skill_tool_names = await self._get_skill_tool_names(self.active_skill_id)
+                for t in skill_tool_names:
+                    if t not in tools:
+                        tools.append(t)
+        elif self.active_skill_id:
             skill_tool_names = await self._get_skill_tool_names(self.active_skill_id)
             for t in skill_tool_names:
                 if t not in tools:
@@ -468,7 +481,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # Intercept canvas tool results and broadcast canvas.updated
                 if event.event_type == "tool_end":
                     tool_name = event.data.get("tool_name", "")
-                    if tool_name in ("write_canvas", "edit_canvas"):
+                    if tool_name in ("write_canvas", "edit_canvas", "show_skill_field_in_canvas", "load_template_to_canvas"):
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
@@ -935,7 +948,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from agent_skills.models import AgentSkill
 
         try:
-            return AgentSkill.objects.get(pk=skill_id, is_active=True)
+            return (
+                AgentSkill.objects
+                .prefetch_related("templates")
+                .get(pk=skill_id, is_active=True)
+            )
         except AgentSkill.DoesNotExist:
             return None
 

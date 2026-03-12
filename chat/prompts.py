@@ -50,6 +50,17 @@ def build_system_prompt(
         prompt += f"## {skill.name}\n\n"
         prompt += skill.instructions + "\n\n"
 
+        templates = list(skill.templates.all())
+        if templates:
+            prompt += "## Skill Templates\n\n"
+            prompt += "This skill has the following templates available. "
+            prompt += "Use `view_template` to read a template's content, "
+            prompt += "or `load_template_to_canvas` to load one into the canvas "
+            prompt += "as a starting point.\n\n"
+            for tmpl in templates:
+                prompt += f"- **{tmpl.name}**\n"
+            prompt += "\n"
+
     # -- Data rooms section --
     if data_rooms:
         prompt += "\n# Attached Data Rooms\n"

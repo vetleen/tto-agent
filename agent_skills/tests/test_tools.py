@@ -1,0 +1,417 @@
+"""Tests for agent_skills.tools — skill management tools."""
+
+import json
+import uuid
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+
+from accounts.models import Membership, Organization
+from agent_skills.models import AgentSkill, SkillTemplate
+from agent_skills.tools import (
+    AddSkillTemplateTool,
+    CreateSkillTool,
+    DeleteSkillTemplateTool,
+    DeleteSkillTool,
+    EditSkillTemplateTool,
+    EditSkillTool,
+    InspectToolTool,
+    ListAllToolsTool,
+    LoadTemplateToCanvasTool,
+    SaveCanvasToSkillFieldTool,
+    ShowSkillFieldInCanvasTool,
+    ViewTemplateTool,
+)
+from llm.types import RunContext
+
+User = get_user_model()
+
+
+def _make_context(user, thread_id=None):
+    return RunContext.create(
+        user_id=user.pk,
+        conversation_id=thread_id or str(uuid.uuid4()),
+    )
+
+
+class CreateSkillToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="tool@example.com", password="pass")
+        self.tool = CreateSkillTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_create_skill(self):
+        result = json.loads(self.tool._run(name="My Skill"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["name"], "My Skill")
+        self.assertEqual(result["slug"], "my-skill")
+        self.assertTrue(AgentSkill.objects.filter(slug="my-skill", created_by=self.user).exists())
+
+
+class EditSkillToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="edit@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="editable", name="Editable", instructions="Original instructions.",
+            description="Original desc.", level="user", created_by=self.user,
+        )
+        self.tool = EditSkillTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_update_name(self):
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"name": "Renamed"}, text_edits=[],
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["name"], "Renamed")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.name, "Renamed")
+
+    def test_find_replace_description(self):
+        result = json.loads(self.tool._run(
+            skill_slug="editable",
+            updates={},
+            text_edits=[{"field": "description", "old_text": "Original desc.", "new_text": "Updated desc."}],
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["edits_applied"], 1)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.description, "Updated desc.")
+
+    def test_system_skill_not_editable(self):
+        AgentSkill.objects.create(
+            slug="sys", name="System", instructions="Inst.", level="system",
+        )
+        result = json.loads(self.tool._run(skill_slug="sys", updates={"name": "Hacked"}))
+        self.assertEqual(result["status"], "error")
+
+
+class DeleteSkillToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="del@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="doomed", name="Doomed", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        self.tool = DeleteSkillTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_delete_skill(self):
+        result = json.loads(self.tool._run(skill_slug="doomed"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["deleted"], "doomed")
+        self.assertFalse(AgentSkill.objects.filter(slug="doomed").exists())
+
+    def test_delete_system_skill_denied(self):
+        AgentSkill.objects.create(
+            slug="sys", name="System", instructions="Inst.", level="system",
+        )
+        result = json.loads(self.tool._run(skill_slug="sys"))
+        self.assertEqual(result["status"], "error")
+
+    def test_delete_other_user_skill_denied(self):
+        other = User.objects.create_user(email="other@example.com", password="pass")
+        AgentSkill.objects.create(
+            slug="other", name="Other", instructions="Inst.",
+            level="user", created_by=other,
+        )
+        result = json.loads(self.tool._run(skill_slug="other"))
+        self.assertEqual(result["status"], "error")
+
+
+class SaveCanvasToSkillFieldToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="canvas@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="canvas-skill", name="Canvas Skill", instructions="Old inst.",
+            level="user", created_by=self.user,
+        )
+        # Create a thread and canvas
+        from chat.models import ChatCanvas, ChatThread
+
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.canvas = ChatCanvas.objects.create(
+            thread=self.thread, title="Draft", content="Canvas content here.",
+        )
+        self.tool = SaveCanvasToSkillFieldTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_save_instructions(self):
+        result = json.loads(self.tool._run(skill_slug="canvas-skill", field_name="instructions"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["field"], "instructions")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.instructions, "Canvas content here.")
+
+    def test_save_description(self):
+        result = json.loads(self.tool._run(skill_slug="canvas-skill", field_name="description"))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.description, "Canvas content here.")
+
+    def test_save_to_template(self):
+        result = json.loads(self.tool._run(skill_slug="canvas-skill", field_name="Patent Claim"))
+        self.assertEqual(result["status"], "ok")
+        tmpl = SkillTemplate.objects.get(skill=self.skill, name="Patent Claim")
+        self.assertEqual(tmpl.content, "Canvas content here.")
+
+    def test_not_editable_denied(self):
+        AgentSkill.objects.create(
+            slug="sys", name="System", instructions="Inst.", level="system",
+        )
+        result = json.loads(self.tool._run(skill_slug="sys", field_name="instructions"))
+        self.assertEqual(result["status"], "error")
+
+
+class ShowSkillFieldInCanvasToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="show@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="show-skill", name="Show Skill",
+            instructions="Skill instructions here.",
+            description="Skill desc.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=self.skill, name="My Template", content="Template content.",
+        )
+        from chat.models import ChatThread
+
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.tool = ShowSkillFieldInCanvasTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_show_instructions(self):
+        result = json.loads(self.tool._run(skill_slug="show-skill", field_name="instructions"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["content"], "Skill instructions here.")
+        self.assertIn("title", result)
+        self.assertIn("accepted_content", result)
+
+    def test_show_template(self):
+        result = json.loads(self.tool._run(skill_slug="show-skill", field_name="My Template"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["content"], "Template content.")
+
+    def test_nonexistent_template(self):
+        result = json.loads(self.tool._run(skill_slug="show-skill", field_name="No Such"))
+        self.assertEqual(result["status"], "error")
+
+    def test_nonexistent_skill(self):
+        result = json.loads(self.tool._run(skill_slug="no-such-skill", field_name="instructions"))
+        self.assertEqual(result["status"], "error")
+
+
+class AddSkillTemplateToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="addtmpl@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="tmpl-skill", name="Tmpl Skill", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        self.tool = AddSkillTemplateTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_add_template(self):
+        result = json.loads(self.tool._run(
+            skill_slug="tmpl-skill", template_name="Report", content="# Report\n...",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["template_name"], "Report")
+        self.assertTrue(SkillTemplate.objects.filter(skill=self.skill, name="Report").exists())
+
+    def test_system_skill_denied(self):
+        AgentSkill.objects.create(
+            slug="sys", name="System", instructions="Inst.", level="system",
+        )
+        result = json.loads(self.tool._run(skill_slug="sys", template_name="Tmpl"))
+        self.assertEqual(result["status"], "error")
+
+
+class EditSkillTemplateToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="edittmpl@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="et-skill", name="ET Skill", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        self.tmpl = SkillTemplate.objects.create(
+            skill=self.skill, name="Original", content="Hello world.",
+        )
+        self.tool = EditSkillTemplateTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_rename_template(self):
+        result = json.loads(self.tool._run(
+            skill_slug="et-skill", template_name="Original", new_name="Renamed",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["template_name"], "Renamed")
+        self.tmpl.refresh_from_db()
+        self.assertEqual(self.tmpl.name, "Renamed")
+
+    def test_find_replace_content(self):
+        result = json.loads(self.tool._run(
+            skill_slug="et-skill", template_name="Original",
+            edits=[{"old_text": "Hello", "new_text": "Goodbye"}],
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["edits_applied"], 1)
+        self.tmpl.refresh_from_db()
+        self.assertEqual(self.tmpl.content, "Goodbye world.")
+
+    def test_nonexistent_template(self):
+        result = json.loads(self.tool._run(
+            skill_slug="et-skill", template_name="NoSuch",
+        ))
+        self.assertEqual(result["status"], "error")
+
+
+class DeleteSkillTemplateToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="deltmpl@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="dt-skill", name="DT Skill", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=self.skill, name="Doomed", content="X",
+        )
+        self.tool = DeleteSkillTemplateTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_delete_template(self):
+        result = json.loads(self.tool._run(skill_slug="dt-skill", template_name="Doomed"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["deleted_template"], "Doomed")
+        self.assertFalse(SkillTemplate.objects.filter(skill=self.skill, name="Doomed").exists())
+
+    def test_nonexistent_template(self):
+        result = json.loads(self.tool._run(skill_slug="dt-skill", template_name="NoSuch"))
+        self.assertEqual(result["status"], "error")
+
+
+class ListAllToolsToolTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="listtools@example.com", password="pass")
+        self.tool = ListAllToolsTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_lists_only_skill_section_tools(self):
+        result = json.loads(self.tool._run())
+        self.assertEqual(result["status"], "ok")
+        self.assertGreater(result["count"], 0)
+        names = [t["name"] for t in result["tools"]]
+        # Should include skill-section tools
+        self.assertIn("create_skill", names)
+        self.assertIn("inspect_tool", names)
+        # Should NOT include chat-section tools
+        self.assertNotIn("write_canvas", names)
+        self.assertNotIn("edit_canvas", names)
+
+
+class InspectToolToolTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="inspect@example.com", password="pass")
+        self.tool = InspectToolTool()
+        self.tool.context = _make_context(self.user)
+
+    def test_inspect_existing_tool(self):
+        result = json.loads(self.tool._run(tool_name="create_skill"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["name"], "create_skill")
+        self.assertIn("description", result)
+        self.assertTrue(len(result["description"]) > 0)
+
+    def test_inspect_nonexistent_tool(self):
+        result = json.loads(self.tool._run(tool_name="no_such_tool"))
+        self.assertEqual(result["status"], "error")
+
+
+class ViewTemplateToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="viewtmpl@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="vt-skill", name="VT Skill", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=self.skill, name="Report Format", content="# Title\n## Summary\n## Details",
+        )
+        from chat.models import ChatThread
+
+        self.thread = ChatThread.objects.create(created_by=self.user, skill=self.skill)
+        self.tool = ViewTemplateTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_view_existing_template(self):
+        result = json.loads(self.tool._run(template_name="Report Format"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["template_name"], "Report Format")
+        self.assertEqual(result["content"], "# Title\n## Summary\n## Details")
+
+    def test_view_nonexistent_template(self):
+        result = json.loads(self.tool._run(template_name="No Such"))
+        self.assertEqual(result["status"], "error")
+
+    def test_no_skill_attached(self):
+        from chat.models import ChatThread
+
+        bare_thread = ChatThread.objects.create(created_by=self.user)
+        self.tool.context = _make_context(self.user, thread_id=str(bare_thread.id))
+        result = json.loads(self.tool._run(template_name="Report Format"))
+        self.assertEqual(result["status"], "error")
+
+
+class LoadTemplateToCanvasToolTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="loadtmpl@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="lt-skill", name="LT Skill", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=self.skill, name="Claim Template",
+            content="1. A method comprising:\n   a) step one\n   b) step two",
+        )
+        from chat.models import ChatThread
+
+        self.thread = ChatThread.objects.create(created_by=self.user, skill=self.skill)
+        self.tool = LoadTemplateToCanvasTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_loads_template_to_canvas(self):
+        result = json.loads(self.tool._run(template_name="Claim Template"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["title"], "Claim Template")
+        self.assertIn("step one", result["content"])
+        self.assertIn("accepted_content", result)
+
+        # Verify canvas was created
+        from chat.models import ChatCanvas
+
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        self.assertEqual(canvas.title, "Claim Template")
+        self.assertIn("step one", canvas.content)
+
+    def test_nonexistent_template(self):
+        result = json.loads(self.tool._run(template_name="No Such"))
+        self.assertEqual(result["status"], "error")
+
+    def test_no_skill_attached(self):
+        from chat.models import ChatThread
+
+        bare_thread = ChatThread.objects.create(created_by=self.user)
+        self.tool.context = _make_context(self.user, thread_id=str(bare_thread.id))
+        result = json.loads(self.tool._run(template_name="Claim Template"))
+        self.assertEqual(result["status"], "error")

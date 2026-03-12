@@ -81,3 +81,23 @@ class AgentSkill(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.get_level_display()})"
+
+
+class SkillTemplate(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    skill = models.ForeignKey(AgentSkill, on_delete=models.CASCADE, related_name="templates")
+    name = models.CharField(max_length=255)
+    content = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["skill", "name"], name="unique_template_per_skill"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} (template for {self.skill.name})"

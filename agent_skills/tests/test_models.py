@@ -1,11 +1,11 @@
-"""Tests for AgentSkill model."""
+"""Tests for AgentSkill and SkillTemplate models."""
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
 
 from accounts.models import Organization
-from agent_skills.models import AgentSkill
+from agent_skills.models import AgentSkill, SkillTemplate
 
 User = get_user_model()
 
@@ -136,3 +136,63 @@ class AgentSkillModelTests(TestCase):
             description="",
         )
         self.assertEqual(skill.description, "")
+
+
+class SkillTemplateModelTests(TestCase):
+    def setUp(self):
+        self.skill = AgentSkill.objects.create(
+            slug="tmpl-skill",
+            name="Template Skill",
+            instructions="Inst.",
+            level="system",
+        )
+
+    def test_create_template(self):
+        tmpl = SkillTemplate.objects.create(
+            skill=self.skill,
+            name="Patent Claim",
+            content="1. A method comprising...",
+        )
+        tmpl.refresh_from_db()
+        self.assertEqual(tmpl.name, "Patent Claim")
+        self.assertEqual(tmpl.content, "1. A method comprising...")
+        self.assertEqual(tmpl.skill, self.skill)
+
+    def test_str_output(self):
+        tmpl = SkillTemplate.objects.create(
+            skill=self.skill, name="Report", content="",
+        )
+        self.assertIn("Report", str(tmpl))
+        self.assertIn(self.skill.name, str(tmpl))
+
+    def test_unique_constraint_per_skill(self):
+        SkillTemplate.objects.create(
+            skill=self.skill, name="Unique Name", content="A",
+        )
+        with self.assertRaises(IntegrityError):
+            SkillTemplate.objects.create(
+                skill=self.skill, name="Unique Name", content="B",
+            )
+
+    def test_same_name_different_skills(self):
+        other_skill = AgentSkill.objects.create(
+            slug="other-skill",
+            name="Other Skill",
+            instructions="Inst.",
+            level="system",
+        )
+        SkillTemplate.objects.create(skill=self.skill, name="Shared", content="A")
+        SkillTemplate.objects.create(skill=other_skill, name="Shared", content="B")
+        self.assertEqual(SkillTemplate.objects.filter(name="Shared").count(), 2)
+
+    def test_cascade_delete(self):
+        SkillTemplate.objects.create(skill=self.skill, name="Doomed", content="X")
+        self.assertEqual(SkillTemplate.objects.count(), 1)
+        self.skill.delete()
+        self.assertEqual(SkillTemplate.objects.count(), 0)
+
+    def test_blank_content(self):
+        tmpl = SkillTemplate.objects.create(
+            skill=self.skill, name="Empty", content="",
+        )
+        self.assertEqual(tmpl.content, "")

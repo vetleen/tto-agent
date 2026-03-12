@@ -4,8 +4,15 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from accounts.models import Membership, Organization
-from agent_skills.models import AgentSkill
-from agent_skills.services import get_available_skills, get_skill_for_user
+from agent_skills.models import AgentSkill, SkillTemplate
+from agent_skills.services import (
+    can_edit_skill,
+    create_user_skill,
+    fork_skill,
+    get_available_skills,
+    get_editable_skill_for_user,
+    get_skill_for_user,
+)
 
 User = get_user_model()
 
@@ -153,3 +160,142 @@ class GetSkillForUserTests(TestCase):
             level="system", is_active=False,
         )
         self.assertIsNone(get_skill_for_user(self.user, str(skill.pk)))
+
+
+class CanEditSkillTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="editor@example.com", password="pass")
+        self.other_user = User.objects.create_user(email="other@example.com", password="pass")
+        self.org = Organization.objects.create(name="Edit Org", slug="edit-org")
+        self.admin_membership = Membership.objects.create(
+            user=self.user, org=self.org, role=Membership.Role.ADMIN,
+        )
+
+    def test_system_skill_not_editable(self):
+        skill = AgentSkill.objects.create(
+            slug="sys", name="Sys", instructions="Inst.", level="system",
+        )
+        self.assertFalse(can_edit_skill(self.user, skill))
+
+    def test_org_skill_editable_by_admin(self):
+        skill = AgentSkill.objects.create(
+            slug="org", name="Org", instructions="Inst.",
+            level="org", organization=self.org,
+        )
+        self.assertTrue(can_edit_skill(self.user, skill))
+
+    def test_org_skill_not_editable_by_non_admin(self):
+        member = User.objects.create_user(email="member@example.com", password="pass")
+        Membership.objects.create(user=member, org=self.org, role=Membership.Role.MEMBER)
+        skill = AgentSkill.objects.create(
+            slug="org", name="Org", instructions="Inst.",
+            level="org", organization=self.org,
+        )
+        self.assertFalse(can_edit_skill(member, skill))
+
+    def test_user_skill_editable_by_creator(self):
+        skill = AgentSkill.objects.create(
+            slug="usr", name="Usr", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        self.assertTrue(can_edit_skill(self.user, skill))
+
+    def test_user_skill_not_editable_by_other(self):
+        skill = AgentSkill.objects.create(
+            slug="usr", name="Usr", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        self.assertFalse(can_edit_skill(self.other_user, skill))
+
+
+class CreateUserSkillTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="creator@example.com", password="pass")
+
+    def test_creates_with_auto_slug(self):
+        skill = create_user_skill(self.user, "My Cool Skill")
+        self.assertEqual(skill.slug, "my-cool-skill")
+        self.assertEqual(skill.name, "My Cool Skill")
+        self.assertEqual(skill.level, "user")
+        self.assertEqual(skill.created_by, self.user)
+        self.assertEqual(skill.instructions, "")
+        self.assertEqual(skill.description, "")
+
+    def test_deduplicates_slug(self):
+        create_user_skill(self.user, "Dupe Skill")
+        skill2 = create_user_skill(self.user, "Dupe Skill")
+        self.assertEqual(skill2.slug, "dupe-skill-1")
+
+    def test_custom_slug(self):
+        skill = create_user_skill(self.user, "Custom", slug="custom-slug")
+        self.assertEqual(skill.slug, "custom-slug")
+
+
+class GetEditableSkillForUserTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="ed@example.com", password="pass")
+        self.org = Organization.objects.create(name="Ed Org", slug="ed-org")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.ADMIN)
+
+    def test_returns_editable_user_skill(self):
+        AgentSkill.objects.create(
+            slug="my-skill", name="Mine", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        result = get_editable_skill_for_user(self.user, "my-skill")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.name, "Mine")
+
+    def test_returns_none_for_system_skill(self):
+        AgentSkill.objects.create(
+            slug="sys-skill", name="Sys", instructions="Inst.", level="system",
+        )
+        result = get_editable_skill_for_user(self.user, "sys-skill")
+        self.assertIsNone(result)
+
+    def test_returns_none_for_nonexistent(self):
+        result = get_editable_skill_for_user(self.user, "no-such-skill")
+        self.assertIsNone(result)
+
+
+class ForkSkillTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="fork@example.com", password="pass")
+
+    def test_forks_skill_with_templates(self):
+        source = AgentSkill.objects.create(
+            slug="source", name="Source", instructions="Do stuff.",
+            description="A source skill.", level="system",
+            tool_names=["search_documents"],
+        )
+        SkillTemplate.objects.create(skill=source, name="Template A", content="Content A")
+        SkillTemplate.objects.create(skill=source, name="Template B", content="Content B")
+
+        forked = fork_skill(self.user, source)
+
+        self.assertEqual(forked.slug, "source")
+        self.assertEqual(forked.name, "Source")
+        self.assertEqual(forked.instructions, "Do stuff.")
+        self.assertEqual(forked.description, "A source skill.")
+        self.assertEqual(forked.tool_names, ["search_documents"])
+        self.assertEqual(forked.level, "user")
+        self.assertEqual(forked.created_by, self.user)
+        self.assertEqual(forked.parent, source)
+
+        templates = list(forked.templates.order_by("name"))
+        self.assertEqual(len(templates), 2)
+        self.assertEqual(templates[0].name, "Template A")
+        self.assertEqual(templates[0].content, "Content A")
+
+    def test_fork_deduplicates_slug(self):
+        source = AgentSkill.objects.create(
+            slug="dup", name="Dup", instructions="Inst.", level="system",
+        )
+        fork1 = fork_skill(self.user, source)
+        self.assertEqual(fork1.slug, "dup")
+        fork2 = fork_skill(self.user, source)
+        self.assertEqual(fork2.slug, "dup-1")

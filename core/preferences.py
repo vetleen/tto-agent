@@ -15,6 +15,7 @@ class ResolvedPreferences:
     cheap_model: str
     allowed_models: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
+    allowed_skills: list[dict] = field(default_factory=list)
     theme: str = "light"
 
 
@@ -77,11 +78,38 @@ def get_preferences(user) -> ResolvedPreferences:
         system_allowed=system_allowed,
     )
 
-    # Resolve tools: filter by section, then apply org toggles
-    allowed_tools = [
-        t for t in chat_tools
-        if org_tools.get(t, True) is not False
-    ]
+    # Resolve tools: base chat-section tools filtered by org toggles
+    base_allowed = [t for t in chat_tools if org_tools.get(t, True) is not False]
+
+    # Resolve allowed skills — skill-section tools are gated by the skill's
+    # tool_names field, so they only appear in a chat when the active skill
+    # declares them.  They are further filtered by org per-skill tool toggles
+    # and by the org-level tool toggles.
+    from agent_skills.services import get_available_skills
+
+    org_skills_prefs = org_prefs.get("skills", {}) if org_prefs else {}
+    user_skills = get_available_skills(user)
+    allowed_skills = []
+
+    for skill in user_skills:
+        skill_pref = org_skills_prefs.get(skill.slug, {})
+        if skill_pref.get("enabled", True) is False:
+            continue
+        # Filter tool_names through org per-skill tool settings AND org tool toggles
+        tool_toggles = skill_pref.get("tools", {})
+        filtered_tools = [
+            t for t in (skill.tool_names or [])
+            if tool_toggles.get(t, True) is not False
+            and org_tools.get(t, True) is not False
+        ]
+        allowed_skills.append({
+            "id": str(skill.id),
+            "slug": skill.slug,
+            "name": skill.name,
+            "tool_names": filtered_tools,
+        })
+
+    allowed_tools = base_allowed
 
     return ResolvedPreferences(
         primary_model=primary_model,
@@ -89,6 +117,7 @@ def get_preferences(user) -> ResolvedPreferences:
         cheap_model=cheap_model,
         allowed_models=effective_allowed,
         allowed_tools=allowed_tools,
+        allowed_skills=allowed_skills,
         theme=user_theme,
     )
 

@@ -98,6 +98,7 @@ def _get_admin_membership(user):
 @login_required
 @require_GET
 def org_settings_page(request):
+    from agent_skills.models import AgentSkill
     from core.preferences import get_system_defaults
     from llm.service.policies import get_allowed_models
     from llm.tools.registry import get_tool_registry
@@ -111,6 +112,7 @@ def org_settings_page(request):
     org_allowed = org_prefs.get("allowed_models") or []
     org_models = org_prefs.get("models", {})
     org_tools = org_prefs.get("tools", {})
+    org_skills_prefs = org_prefs.get("skills", {})
 
     SECTION_META = {
         "chat": {
@@ -146,12 +148,32 @@ def org_settings_page(request):
             "note": TOOL_NOTES.get(name, ""),
         })
 
+    # Build skills data for the settings page
+    visible_skills = list(
+        AgentSkill.objects.filter(level="system", is_active=True)
+    ) + list(
+        AgentSkill.objects.filter(level="org", organization=org, is_active=True)
+    )
+    skills_data = []
+    for skill in sorted(visible_skills, key=lambda s: s.name):
+        sp = org_skills_prefs.get(skill.slug, {})
+        tool_toggles = sp.get("tools", {})
+        skills_data.append({
+            "slug": skill.slug,
+            "name": skill.name,
+            "description": skill.description,
+            "tool_names": skill.tool_names or [],
+            "enabled": sp.get("enabled", True) is not False,
+            "tools": {t: tool_toggles.get(t, True) is not False for t in (skill.tool_names or [])},
+        })
+
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "system_models": system_models,
         "org_allowed": org_allowed,
         "org_models": org_models,
         "tool_sections": tool_sections,
+        "skills_data": skills_data,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},
@@ -257,3 +279,46 @@ def org_tools_update(request):
     org.save(update_fields=["preferences"])
 
     return JsonResponse({"ok": True, "name": tool_name, "enabled": bool(enabled)})
+
+
+@login_required
+@require_POST
+def org_skills_update(request):
+    """Toggle a skill or a per-skill tool on/off for the org."""
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    slug = data.get("slug", "").strip()
+    if not slug:
+        return JsonResponse({"error": "Skill slug required"}, status=400)
+
+    org = membership.org
+    prefs = org.preferences or {}
+    skills = prefs.get("skills", {})
+
+    if slug not in skills:
+        skills[slug] = {}
+
+    tool_name = data.get("tool", "").strip() if "tool" in data else None
+    enabled = data.get("enabled", True)
+
+    if tool_name:
+        # Per-tool toggle within a skill
+        tool_toggles = skills[slug].get("tools", {})
+        tool_toggles[tool_name] = bool(enabled)
+        skills[slug]["tools"] = tool_toggles
+    else:
+        # Skill-level toggle
+        skills[slug]["enabled"] = bool(enabled)
+
+    prefs["skills"] = skills
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True, "slug": slug, "enabled": bool(enabled)})

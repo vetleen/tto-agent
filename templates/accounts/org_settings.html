@@ -88,6 +88,52 @@
     <p class="mt-4 text-sm text-body italic">No tools registered.</p>
     {% endfor %}
   </section>
+
+  <!-- Skills -->
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Skills</h2>
+    <p class="mt-1 text-sm text-body">Enable or disable skills and their tools for all members.</p>
+
+    <div class="mt-4 space-y-4">
+      {% for skill in skills_data %}
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="flex items-center justify-between cursor-pointer">
+          <div>
+            <span class="text-sm font-medium text-heading">{{ skill.name }}</span>
+            {% if skill.description %}
+            <p class="text-xs text-body mt-0.5 max-w-lg truncate">{{ skill.description|truncatechars:120 }}</p>
+            {% endif %}
+          </div>
+          <input
+            type="checkbox"
+            class="skill-toggle rounded border-default text-brand focus:ring-brand-medium"
+            data-skill="{{ skill.slug }}"
+            {% if skill.enabled %}checked{% endif %}
+          >
+        </label>
+
+        {% if skill.tool_names %}
+        <div class="mt-3 ml-4 space-y-1 skill-tools" data-parent-skill="{{ skill.slug }}">
+          {% for tool_name in skill.tool_names %}
+          <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary p-2 cursor-pointer hover:bg-neutral-secondary-soft text-xs">
+            <span class="text-body">{{ tool_name }}</span>
+            <input
+              type="checkbox"
+              class="skill-tool-toggle rounded border-default text-brand focus:ring-brand-medium"
+              data-skill="{{ skill.slug }}"
+              data-tool="{{ tool_name }}"
+              {% if not skill.enabled %}disabled{% endif %}
+            >
+          </label>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% empty %}
+      <p class="text-sm text-body italic">No skills available.</p>
+      {% endfor %}
+    </div>
+  </section>
 </main>
 
 <script>
@@ -140,6 +186,49 @@
         method: 'POST',
         headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: this.dataset.tool, enabled: this.checked }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  });
+
+  // Skills: set initial tool checkbox states from server data
+  var skillsData = {{ skills_data|safe }};
+  (skillsData || []).forEach(function(skill) {
+    Object.keys(skill.tools || {}).forEach(function(toolName) {
+      var cb = document.querySelector('.skill-tool-toggle[data-skill="' + skill.slug + '"][data-tool="' + toolName + '"]');
+      if (cb) cb.checked = skill.tools[toolName];
+    });
+  });
+
+  // Skill toggles
+  document.querySelectorAll('.skill-toggle').forEach(function(cb) {
+    cb.addEventListener('change', function() {
+      var slug = this.dataset.skill;
+      var enabled = this.checked;
+      // Enable/disable nested tool checkboxes
+      document.querySelectorAll('.skill-tools[data-parent-skill="' + slug + '"] .skill-tool-toggle').forEach(function(tcb) {
+        tcb.disabled = !enabled;
+      });
+      fetch('{% url "accounts:org_skills_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: slug, enabled: enabled }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  });
+
+  // Skill per-tool toggles
+  document.querySelectorAll('.skill-tool-toggle').forEach(function(cb) {
+    cb.addEventListener('change', function() {
+      fetch('{% url "accounts:org_skills_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: this.dataset.skill, tool: this.dataset.tool, enabled: this.checked }),
         credentials: 'same-origin',
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) alert(data.error);

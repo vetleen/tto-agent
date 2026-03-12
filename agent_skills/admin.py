@@ -1,6 +1,11 @@
 from django.contrib import admin
 
-from agent_skills.models import AgentSkill
+from agent_skills.models import AgentSkill, SkillTemplate
+
+
+class SkillTemplateInline(admin.TabularInline):
+    model = SkillTemplate
+    extra = 0
 
 
 @admin.register(AgentSkill)
@@ -16,3 +21,4 @@ class AgentSkillAdmin(admin.ModelAdmin):
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
     readonly_fields = ("created_at", "updated_at")
+    inlines = [SkillTemplateInline]
