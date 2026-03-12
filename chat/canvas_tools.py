@@ -85,7 +85,7 @@ class EditCanvasTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "No thread context available."})
 
         try:
-            canvas = ChatCanvas.objects.get(thread_id=thread_id)
+            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(thread_id=thread_id)
         except ChatCanvas.DoesNotExist:
             return json.dumps({
                 "status": "error",
@@ -130,9 +130,9 @@ class EditCanvasTool(ContextAwareTool):
                 description="Edited %d section(s)" % applied,
             )
 
-        # Reload to get accepted_checkpoint
-        canvas.refresh_from_db()
-        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint_id else ""
+        # Reload with select_related to get accepted_checkpoint
+        canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(pk=canvas.pk)
+        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
 
         result = {
             "status": "ok",

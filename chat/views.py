@@ -246,9 +246,18 @@ def canvas_save_to_data_room(request, thread_id):
 
         process_document_task.delay(doc.id)
     except ImportError:
-        from documents.services.process_document import process_document
+        try:
+            from documents.services.process_document import process_document
 
-        process_document(doc.id)
+            process_document(doc.id)
+        except Exception as exc:
+            logger.exception(
+                "canvas_save_to_data_room: failed to process document_id=%s (sync fallback)",
+                doc.id,
+            )
+            doc.status = DataRoomDocument.Status.FAILED
+            doc.processing_error = str(exc)[:2000]
+            doc.save(update_fields=["status", "processing_error", "updated_at"])
     except Exception as exc:
         logger.exception(
             "canvas_save_to_data_room: failed to enqueue processing for document_id=%s",
