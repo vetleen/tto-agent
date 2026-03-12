@@ -91,7 +91,7 @@ def can_edit_skill(user, skill: AgentSkill) -> bool:
 
     if skill.level == "org":
         return Membership.objects.filter(
-            user=user, org_id=skill.organization_id, role="admin"
+            user=user, org_id=skill.organization_id, role=Membership.Role.ADMIN
         ).exists()
 
     if skill.level == "user":

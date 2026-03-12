@@ -451,9 +451,17 @@ class AddSkillTemplateTool(ContextAwareTool):
                 "message": f"Skill '{skill_slug}' not found or not editable.",
             })
 
-        tmpl = SkillTemplate.objects.create(
-            skill=skill, name=template_name, content=content,
-        )
+        from django.db import IntegrityError
+
+        try:
+            tmpl = SkillTemplate.objects.create(
+                skill=skill, name=template_name, content=content,
+            )
+        except IntegrityError:
+            return json.dumps({
+                "status": "error",
+                "message": f"Template '{template_name}' already exists on skill '{skill_slug}'.",
+            })
         return json.dumps({
             "status": "ok",
             "skill_slug": skill.slug,
