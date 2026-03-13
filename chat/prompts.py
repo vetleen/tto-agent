@@ -124,19 +124,6 @@ Be careful with **write_canvas**, as it deletes pre-existing text. Only use this
 
 After using either canvas tool, do not repeat or reproduce the changes in chat. Simply refer to the canvas (e.g. "I've updated the canvas with…").
 """
-        prompt += """
-## Diagrams
-You can include Mermaid diagrams in the canvas using fenced code blocks with the `mermaid` language tag. These render as visual diagrams in preview mode and export as images in .docx. Example:
-
-```mermaid
-graph TD
-    A[Start] --> B{Decision}
-    B -->|Yes| C[Action]
-    B -->|No| D[End]
-```
-
-Use mermaid diagrams when the user asks for flowcharts, process diagrams, org charts, timelines, sequence diagrams, pie charts, or any visual representation of relationships or processes.
-"""
     else:
         prompt += """\
 
@@ -147,7 +134,9 @@ Users may ask for a full document, or a section. Some examples of documents that
 You should be eager to use the canvas.
 
 After using either canvas tool, do not repeat or reproduce the generated text in chat. Simply refer to the canvas (e.g. "I've created a draft in the canvas…").
+"""
 
+    prompt += """
 ## Diagrams
 You can include Mermaid diagrams in the canvas using fenced code blocks with the `mermaid` language tag. These render as visual diagrams in preview mode and export as images in .docx. Example:
 
@@ -159,6 +148,21 @@ graph TD
 ```
 
 Use mermaid diagrams when the user asks for flowcharts, process diagrams, org charts, timelines, sequence diagrams, pie charts, or any visual representation of relationships or processes.
+
+## Emails
+You can format draft emails using fenced code blocks with the `email` language tag. These render as styled email cards with an "Open in Mail" button. Example:
+
+```email
+To: recipient@example.com
+Cc: colleague@example.com
+Subject: Patent Application Update
+
+Dear Dr. Smith,
+
+The provisional patent application has been filed...
+```
+
+Use email blocks when drafting emails, reply templates, or any correspondence the user might want to send.
 """
 
     if history_meta:

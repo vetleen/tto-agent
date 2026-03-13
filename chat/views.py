@@ -133,11 +133,12 @@ async def canvas_export(request, thread_id):
     import markdown as md
     from html2docx import html2docx
 
-    from chat.services import replace_mermaid_with_images
+    from chat.services import replace_email_with_html, replace_mermaid_with_images
 
     # Run the slow mermaid rendering in a thread so the event loop stays
     # free and WebSocket connections are not disrupted.
     content = await asyncio.to_thread(replace_mermaid_with_images, canvas.content)
+    content = replace_email_with_html(content)
     html_content = md.markdown(content, extensions=["tables", "fenced_code"])
     full_html = f"<html><body>{html_content}</body></html>"
     buf = html2docx(full_html, title=canvas.title)

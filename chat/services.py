@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 CANVAS_MAX_CHARS = 75_000
 MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
 
 
 def create_canvas_checkpoint(canvas, source, description=""):
@@ -301,6 +302,85 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, 
     title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
     return title, content, truncated
+
+
+# ---------------------------------------------------------------------------
+# Email block rendering (for .docx export)
+# ---------------------------------------------------------------------------
+
+_EMAIL_HEADER_FIELDS = ("To", "Cc", "Bcc", "Subject")
+
+
+def _parse_email_block(raw: str) -> tuple[dict[str, str], str]:
+    """Parse an email block into (headers_dict, body_text).
+
+    Headers are lines at the top matching ``Key: value`` for known fields.
+    The body starts after the first blank line or the first non-header line.
+    """
+    lines = raw.split("\n")
+    headers: dict[str, str] = {}
+    body_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            body_start = i + 1
+            break
+        found = False
+        for field in _EMAIL_HEADER_FIELDS:
+            if stripped.lower().startswith(field.lower() + ":"):
+                headers[field] = stripped[len(field) + 1 :].strip()
+                found = True
+                break
+        if not found:
+            body_start = i
+            break
+    else:
+        # All lines were headers, no body
+        body_start = len(lines)
+    body = "\n".join(lines[body_start:]).strip()
+    return headers, body
+
+
+def replace_email_with_html(content: str) -> str:
+    """Replace ```email blocks with styled HTML tables for docx export."""
+    matches = list(EMAIL_BLOCK_RE.finditer(content))
+    if not matches:
+        return content
+
+    for m in reversed(matches):
+        headers, body = _parse_email_block(m.group(1))
+
+        rows = ""
+        for field in _EMAIL_HEADER_FIELDS:
+            if field in headers:
+                from html import escape
+                rows += (
+                    f'<tr><td style="padding:4px 8px;font-weight:bold;'
+                    f'vertical-align:top;">{field}:</td>'
+                    f'<td style="padding:4px 8px;">'
+                    f'{escape(headers[field])}</td></tr>'
+                )
+
+        escaped_body = ""
+        if body:
+            from html import escape
+            escaped_body = escape(body).replace("\n", "<br/>")
+
+        replacement = (
+            '<table style="border:1px solid #ccc;border-collapse:collapse;'
+            'width:100%;margin:1em 0;">'
+            f"{rows}"
+            "</table>"
+        )
+        if escaped_body:
+            replacement += (
+                '<div style="padding:8px;border:1px solid #ccc;'
+                f'border-top:none;margin-bottom:1em;">{escaped_body}</div>'
+            )
+
+        content = content[: m.start()] + replacement + content[m.end() :]
+
+    return content
 
 
 # ---------------------------------------------------------------------------

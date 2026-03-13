@@ -30,7 +30,8 @@ DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_aut
 **Create tests:** When planning new features always consider what should be tested, and ensure the plan includes creating good test coverage for the new feature.
 
 **Notes:**
-- Tests can take 3+ minutes to run. Use a generous timeout (e.g., 5–10 min) or run in background.
+- The full test suite takes ~10 minutes. As a general rule, only run the tests relevant to your changes (single app, module, or test class). Only run the full suite when changes are cross-cutting or when explicitly asked.
+- Use a generous timeout (e.g., 5–10 min) or run in background.
 - Tracebacks in test output (e.g., "DB locked", "Failed to write LLM call log") are **expected** — they come from tests that verify error-handling paths, not from actual failures. Check the final summary line for pass/fail counts.
 
 Set `TEST_APIS=True` in `.env` for live LLM API tests.

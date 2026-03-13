@@ -435,6 +435,22 @@
   .mermaid-download-btn { position: absolute; top: 0.5rem; right: 0.5rem; opacity: 0; background: rgba(255,255,255,0.9); border: 1px solid rgb(209 213 219); border-radius: 0.375rem; padding: 0.25rem 0.5rem; font-size: 0.75rem; cursor: pointer; transition: opacity 0.15s; z-index: 10; }
   .mermaid-wrapper:hover .mermaid-download-btn { opacity: 1; }
   .dark .mermaid-download-btn { background: rgba(55,65,81,0.9); border-color: rgb(75 85 99); color: rgb(209 213 219); }
+  .email-placeholder { margin: 0.75rem 0; }
+  .email-card { position: relative; border: 1px solid rgb(209 213 219); border-radius: 0.5rem; overflow: hidden; }
+  .dark .email-card { border-color: rgb(75 85 99); }
+  .email-header { background: rgb(249 250 251); padding: 0.75rem 1rem; border-bottom: 1px solid rgb(229 231 235); font-size: 0.875rem; line-height: 1.5; }
+  .dark .email-header { background: rgb(31 41 55); border-bottom-color: rgb(55 65 81); color: rgb(209 213 219); }
+  .email-header-field { color: rgb(107 114 128); }
+  .dark .email-header-field { color: rgb(156 163 175); }
+  .email-header-value { color: rgb(17 24 39); }
+  .dark .email-header-value { color: rgb(243 244 246); }
+  .email-subject { font-weight: 600; color: rgb(17 24 39); font-size: 1rem; }
+  .dark .email-subject { color: rgb(243 244 246); }
+  .email-body { padding: 0.75rem 1rem; white-space: pre-wrap; word-break: break-word; font-size: 0.875rem; color: rgb(55 65 81); line-height: 1.6; }
+  .dark .email-body { color: rgb(209 213 219); }
+  .email-action-btn { position: absolute; top: 0.5rem; right: 0.5rem; opacity: 0; background: rgb(37 99 235); color: white; border: none; border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-size: 0.75rem; cursor: pointer; transition: opacity 0.15s; z-index: 10; display: flex; align-items: center; gap: 0.25rem; }
+  .email-card:hover .email-action-btn { opacity: 1; }
+  .email-action-btn:hover { background: rgb(29 78 216); }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
 
@@ -489,9 +505,14 @@
         } else {
           text = codeTextOrToken; lang = infostring;
         }
-        if (typeof lang === 'string' && lang.trim().toLowerCase() === 'mermaid') {
+        var langNorm = typeof lang === 'string' ? lang.trim().toLowerCase() : '';
+        if (langNorm === 'mermaid') {
           var esc = text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
           return '<div class="mermaid-placeholder" data-mermaid="' + esc + '"></div>';
+        }
+        if (langNorm === 'email') {
+          var esc = text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          return '<div class="email-placeholder" data-email="' + esc + '"></div>';
         }
         return false;
       }
@@ -508,7 +529,7 @@
       const html = marked.parse(text);
       return DOMPurify.sanitize(html, {
         ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td','div','span'],
-        ALLOWED_ATTR: ['href','title','target','class','data-mermaid']
+        ALLOWED_ATTR: ['href','title','target','class','data-mermaid','data-email']
       });
     } catch (e) { return escapeHtml(text).replace(/\n/g, "<br>"); }
   }
@@ -588,6 +609,61 @@
     img.src = dataUrl;
   }
 
+  // -- Email block rendering --
+  function parseEmailBlock(raw) {
+    var lines = raw.split('\n');
+    var headers = {};
+    var bodyStart = 0;
+    var headerPattern = /^(to|cc|bcc|subject)\s*:\s*(.*)/i;
+    for (var i = 0; i < lines.length; i++) {
+      var m = lines[i].match(headerPattern);
+      if (m) {
+        headers[m[1].toLowerCase()] = m[2].trim();
+        bodyStart = i + 1;
+      } else {
+        // First non-header line: skip one blank line if present
+        if (lines[i].trim() === '') bodyStart = i + 1;
+        break;
+      }
+    }
+    return { to: headers.to || '', cc: headers.cc || '', bcc: headers.bcc || '', subject: headers.subject || '', body: lines.slice(bodyStart).join('\n').trim() };
+  }
+
+  function buildMailtoUrl(parsed) {
+    var url = 'mailto:' + encodeURIComponent(parsed.to);
+    var params = [];
+    if (parsed.cc) params.push('cc=' + encodeURIComponent(parsed.cc));
+    if (parsed.bcc) params.push('bcc=' + encodeURIComponent(parsed.bcc));
+    if (parsed.subject) params.push('subject=' + encodeURIComponent(parsed.subject));
+    if (parsed.body) params.push('body=' + encodeURIComponent(parsed.body));
+    if (params.length) url += '?' + params.join('&');
+    return url;
+  }
+
+  function renderEmailBlocks(container) {
+    var placeholders = container.querySelectorAll('.email-placeholder');
+    placeholders.forEach(function(el) {
+      var source = el.getAttribute('data-email');
+      if (!source) return;
+      var tmp = document.createElement('textarea');
+      tmp.innerHTML = source;
+      source = tmp.value;
+      var parsed = parseEmailBlock(source);
+      var headerHtml = '';
+      if (parsed.to) headerHtml += '<div><span class="email-header-field">To: </span><span class="email-header-value">' + escapeHtml(parsed.to) + '</span></div>';
+      if (parsed.cc) headerHtml += '<div><span class="email-header-field">Cc: </span><span class="email-header-value">' + escapeHtml(parsed.cc) + '</span></div>';
+      if (parsed.bcc) headerHtml += '<div><span class="email-header-field">Bcc: </span><span class="email-header-value">' + escapeHtml(parsed.bcc) + '</span></div>';
+      if (parsed.subject) headerHtml += '<div class="email-subject">' + escapeHtml(parsed.subject) + '</div>';
+      var html = '<div class="email-card">';
+      if (headerHtml) html += '<div class="email-header">' + headerHtml + '</div>';
+      html += '<div class="email-body">' + escapeHtml(parsed.body) + '</div>';
+      html += '<a class="email-action-btn" title="Open in default mail app"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg> Open in Mail</a>';
+      html += '</div>';
+      el.innerHTML = html;
+      el.querySelector('.email-action-btn').href = buildMailtoUrl(parsed);
+    });
+  }
+
   const form = document.getElementById("chat-form");
   const input = document.getElementById("message-input");
   const button = document.getElementById("send-button");
@@ -598,7 +674,7 @@
 
   function renderServerMarkdown() {
     const els = messagesContainer.querySelectorAll('.markdown-content');
-    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); } });
+    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); renderEmailBlocks(el); } });
   }
   if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', renderServerMarkdown); } else { renderServerMarkdown(); }
 
@@ -989,7 +1065,7 @@
     const et = data.event_type;
     if (et === "canvas.updated") { canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content); return; }
     if (et === "canvas.loaded") { canvasHandleLoaded(data.title || "", data.content || "", data.accepted_content); return; }
-    if (et === "canvas.accepted") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); } return; }
+    if (et === "canvas.accepted") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); } return; }
     if (et === "canvas.reverted") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
     if (et === "canvas.version_saved") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); return; }
     if (et === "canvas.restored") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
@@ -1103,7 +1179,7 @@
     if (et === "message_end") {
       if (isThinking) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {
-        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); }
+        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
         const toolCards = currentStreamingElement.querySelector(".tool-cards"); if (toolCards && toolCards.children.length > 0) toolCards.classList.add("tool-cards-done");
         currentStreamingElement = null; accumulatedContent = "";
       }
@@ -1114,7 +1190,7 @@
   function finishStreaming(suffix) {
     if (!currentStreamingElement) return; if (isThinking) collapseThinking(); hideWaitingIndicator();
     const contentEl = currentStreamingElement.querySelector(".message-content");
-    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); }
+    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { locked = false; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
@@ -1580,6 +1656,7 @@
       canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
     }
     renderMermaidBlocks(canvasPreview);
+    renderEmailBlocks(canvasPreview);
   }
 
   if (canvasPreviewBtn) {
