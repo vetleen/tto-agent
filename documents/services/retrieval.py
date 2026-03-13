@@ -307,12 +307,13 @@ def similarity_search_chunks(
             page_content=r["text"],
             metadata={
                 "chunk_id": r["id"],
-                "doc_index": doc_index_map.get(r["document_id"], 0),
-                "data_room_id": doc_room_map.get(r["document_id"], 0),
+                "doc_index": doc_index_map[r["document_id"]],
+                "data_room_id": doc_room_map[r["document_id"]],
                 "chunk_index": r["chunk_index"],
             },
         )
         for r in results
+        if r.get("document_id") in doc_index_map
     ]
 
 

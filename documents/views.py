@@ -370,7 +370,9 @@ def document_bulk_archive(request, data_room_id):
     if action not in ("archive", "restore"):
         return JsonResponse({"error": "action must be 'archive' or 'restore'"}, status=400)
     is_archived = action == "archive"
-    updated = DataRoomDocument.objects.filter(pk__in=doc_ids, data_room=data_room).update(is_archived=is_archived)
+    updated = DataRoomDocument.objects.filter(pk__in=doc_ids, data_room=data_room).update(
+        is_archived=is_archived, updated_at=timezone.now()
+    )
     return JsonResponse({"updated": updated})
 
 

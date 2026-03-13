@@ -33,11 +33,14 @@ def process_document(document_id: int) -> None:
             .select_for_update(skip_locked=True)
             .first()
         )
-    if not doc:
-        logger.warning("process_document: document_id=%s not found or locked by another task", document_id)
-        return
-    doc.status = DataRoomDocument.Status.PROCESSING
-    doc.save(update_fields=["status", "updated_at"])
+        if not doc:
+            logger.warning("process_document: document_id=%s not found or locked by another task", document_id)
+            return
+        if doc.status == DataRoomDocument.Status.PROCESSING:
+            logger.info("process_document: document_id=%s already processing, skipping", document_id)
+            return
+        doc.status = DataRoomDocument.Status.PROCESSING
+        doc.save(update_fields=["status", "updated_at"])
     logger.info("process_document: document_id=%s data_room_id=%s stage=processing", document_id, doc.data_room_id)
     started_at = time.perf_counter()
     try:
