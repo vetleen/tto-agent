@@ -56,6 +56,7 @@ def create_canvas_checkpoint(canvas, source, description=""):
         description=description,
         order=last_order + 1,
     )
+
 CANVAS_MAX_IMAGES = 25
 SUMMARY_TARGET_TOKENS = 2_000
 
@@ -92,9 +93,9 @@ async def generate_summary(
     user_prompt = "\n".join(parts)
 
     system_prompt = (
-        "Produce a concise summary for an LLM chatbot"
-        f"of its conversation with a user. Target ~{SUMMARY_TARGET_TOKENS} tokens.  "
-        "Preserve key facts, decisions, important points as well as"
+        "Produce a concise summary for an LLM chatbot "
+        f"of its conversation with a user. Target ~{SUMMARY_TARGET_TOKENS} tokens. "
+        "Preserve key facts, decisions, important points as well as "
         "any context the assistant would need to continue the conversation "
         "coherently. Do NOT include any preamble — output only the summary."
     )
