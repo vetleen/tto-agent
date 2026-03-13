@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -11,7 +12,11 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from chat.models import ChatThread, SubAgentRun
-from chat.subagent_limits import check_subagent_limits
+from chat.subagent_limits import (
+    _expire_stale_runs,
+    check_subagent_limits,
+    create_subagent_run_if_allowed,
+)
 from chat.subagent_prompts import build_subagent_system_prompt
 from chat.subagent_service import resolve_subagent_model, resolve_subagent_tools
 from chat.subagent_tool import CheckSubagentStatusTool, CreateSubagentTool
@@ -274,6 +279,132 @@ class CheckSubagentLimitsTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# create_subagent_run_if_allowed (atomic) tests
+# ---------------------------------------------------------------------------
+
+class CreateSubagentRunIfAllowedTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="atomic@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_creates_run_when_under_limit(self):
+        run, err = create_subagent_run_if_allowed(
+            self.user,
+            thread_id=self.thread.id,
+            prompt="research task",
+            model_tier="mid",
+        )
+        self.assertIsNotNone(run)
+        self.assertEqual(err, "")
+        self.assertEqual(run.prompt, "research task")
+        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
+
+    @patch("chat.subagent_limits.SUBAGENT_MAX_PER_USER", 1)
+    def test_denies_at_per_user_limit(self):
+        SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="existing", status=SubAgentRun.Status.RUNNING,
+        )
+        run, err = create_subagent_run_if_allowed(
+            self.user,
+            thread_id=self.thread.id,
+            prompt="new task",
+        )
+        self.assertIsNone(run)
+        self.assertIn("too many", err)
+
+    @patch("chat.subagent_limits.SUBAGENT_MAX_SYSTEM", 1)
+    def test_denies_at_system_limit(self):
+        other_user = User.objects.create_user(email="other2@test.com", password="pass")
+        other_thread = ChatThread.objects.create(created_by=other_user)
+        SubAgentRun.objects.create(
+            thread=other_thread, user=other_user,
+            prompt="running", status=SubAgentRun.Status.RUNNING,
+        )
+        run, err = create_subagent_run_if_allowed(
+            self.user,
+            thread_id=self.thread.id,
+            prompt="new task",
+        )
+        self.assertIsNone(run)
+        self.assertIn("busy", err)
+
+
+# ---------------------------------------------------------------------------
+# Stale run expiration tests
+# ---------------------------------------------------------------------------
+
+class StaleRunExpirationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="stale@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_stale_pending_runs_expired(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="stuck", status=SubAgentRun.Status.PENDING,
+        )
+        # Backdate created_at to 11 minutes ago
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - timedelta(minutes=11),
+        )
+
+        expired = _expire_stale_runs()
+        self.assertEqual(expired, 1)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertIn("pending", run.error)
+        self.assertIsNotNone(run.completed_at)
+
+    def test_stale_running_runs_expired(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="stuck", status=SubAgentRun.Status.RUNNING,
+        )
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - timedelta(minutes=16),
+        )
+
+        expired = _expire_stale_runs()
+        self.assertEqual(expired, 1)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertIn("running", run.error)
+
+    def test_recent_runs_not_expired(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="fresh", status=SubAgentRun.Status.PENDING,
+        )
+        # 5 minutes ago — within the threshold
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        expired = _expire_stale_runs()
+        self.assertEqual(expired, 0)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
+
+    def test_stale_runs_freed_on_limit_check(self):
+        """Stale runs should be cleaned up during limit checks, freeing slots."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="stuck", status=SubAgentRun.Status.RUNNING,
+        )
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - timedelta(minutes=16),
+        )
+
+        # The stale run is cleaned up, so this user should be allowed
+        allowed, msg = check_subagent_limits(self.user)
+        self.assertTrue(allowed)
+
+
+# ---------------------------------------------------------------------------
 # CreateSubagentTool tests
 # ---------------------------------------------------------------------------
 
@@ -282,11 +413,8 @@ class CreateSubagentToolBlockingTests(TestCase):
         self.user = User.objects.create_user(email="blocking@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
 
-    @patch("core.preferences.get_preferences")
     @patch("chat.subagent_service.run_subagent")
-    def test_blocking_returns_result(self, mock_run, mock_prefs):
-        mock_prefs.return_value = _prefs()
-
+    def test_blocking_returns_result(self, mock_run):
         def side_effect(run_id, **kwargs):
             run = SubAgentRun.objects.get(pk=run_id)
             run.status = SubAgentRun.Status.COMPLETED
@@ -308,14 +436,11 @@ class CreateSubagentToolBlockingTests(TestCase):
         run = SubAgentRun.objects.first()
         self.assertTrue(run.blocking)
 
-    @patch("core.preferences.get_preferences")
     @patch("chat.subagent_service.run_subagent")
-    def test_blocking_failed_returns_error(self, mock_run, mock_prefs):
-        mock_prefs.return_value = _prefs()
-
+    def test_blocking_failed_returns_error(self, mock_run):
         def side_effect(run_id, **kwargs):
             run = SubAgentRun.objects.get(pk=run_id)
-            run.status = SubAgentRun.Status.PENDING
+            run.status = SubAgentRun.Status.FAILED
             run.error = "LLM API error"
             run.save(update_fields=["status", "error"])
             raise RuntimeError("LLM API error")
@@ -335,10 +460,8 @@ class CreateSubagentToolNonBlockingTests(TestCase):
         self.user = User.objects.create_user(email="nonblock@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
 
-    @patch("core.preferences.get_preferences")
     @patch("chat.tasks.run_subagent_task")
-    def test_nonblocking_returns_started(self, mock_task, mock_prefs):
-        mock_prefs.return_value = _prefs()
+    def test_nonblocking_returns_started(self, mock_task):
         mock_task.delay.return_value = MagicMock(id="celery-task-123")
 
         ctx = _ctx(self.user.pk, self.thread.id)
@@ -350,16 +473,17 @@ class CreateSubagentToolNonBlockingTests(TestCase):
         self.assertIn("run_id", result)
         mock_task.delay.assert_called_once()
 
-        # Verify run record
+        # Verify run record — model_used and tool_names are left empty
+        # (the service fills them in when executing)
         run = SubAgentRun.objects.first()
         self.assertEqual(run.status, SubAgentRun.Status.PENDING)
         self.assertFalse(run.blocking)
         self.assertEqual(run.celery_task_id, "celery-task-123")
+        self.assertEqual(run.model_used, "")
+        self.assertEqual(run.tool_names, [])
 
-    @patch("core.preferences.get_preferences")
     @patch("chat.tasks.run_subagent_task")
-    def test_invalid_tier_defaults_to_mid(self, mock_task, mock_prefs):
-        mock_prefs.return_value = _prefs()
+    def test_invalid_tier_defaults_to_mid(self, mock_task):
         mock_task.delay.return_value = MagicMock(id="t1")
 
         ctx = _ctx(self.user.pk, self.thread.id)
@@ -376,10 +500,8 @@ class CreateSubagentToolLimitTests(TestCase):
         self.user = User.objects.create_user(email="limits@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
 
-    @patch("core.preferences.get_preferences")
     @patch("chat.subagent_limits.SUBAGENT_MAX_PER_USER", 1)
-    def test_limit_hit_returns_error(self, mock_prefs):
-        mock_prefs.return_value = _prefs()
+    def test_limit_hit_returns_error(self):
         SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
             prompt="running", status=SubAgentRun.Status.RUNNING,
@@ -438,6 +560,27 @@ class CheckSubagentStatusToolTests(TestCase):
         result = _invoke(CheckSubagentStatusTool, {"run_id": str(uuid.uuid4())}, ctx)
         self.assertEqual(result["status"], "error")
         self.assertIn("not found", result["message"])
+
+    def test_cannot_see_other_users_runs(self):
+        """Runs from other users on the same thread should not be visible."""
+        other_user = User.objects.create_user(email="other_check@test.com", password="pass")
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=other_user,
+            prompt="other's task", status=SubAgentRun.Status.COMPLETED,
+            result="other's result",
+        )
+
+        # Query as self.user — should not see other_user's run
+        ctx = _ctx(self.user.pk, self.thread.id)
+
+        # By specific run_id
+        result = _invoke(CheckSubagentStatusTool, {"run_id": str(run.id)}, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("not found", result["message"])
+
+        # List all — should be empty
+        result = _invoke(CheckSubagentStatusTool, {}, ctx)
+        self.assertEqual(result["count"], 0)
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +692,47 @@ class RunSubagentServiceTests(TestCase):
         request = call_args[0][1]
         self.assertEqual(request.context.data_room_ids, [1, 2])
 
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_blocking_failure_sets_failed_in_service(self, mock_prefs, mock_svc):
+        """When blocking=True, run_subagent should set FAILED directly."""
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run.side_effect = RuntimeError("LLM exploded")
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task",
+        )
+
+        from chat.subagent_service import run_subagent
+        with self.assertRaises(RuntimeError):
+            run_subagent(run.id, blocking=True)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertIn("LLM exploded", run.error)
+        self.assertIsNotNone(run.completed_at)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_nonblocking_failure_sets_pending_for_retry(self, mock_prefs, mock_svc):
+        """When blocking=False (default), run_subagent should set PENDING for Celery retry."""
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run.side_effect = RuntimeError("Transient error")
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task",
+        )
+
+        from chat.subagent_service import run_subagent
+        with self.assertRaises(RuntimeError):
+            run_subagent(run.id, blocking=False)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
+        self.assertIn("Transient error", run.error)
+
 
 # ---------------------------------------------------------------------------
 # Blocking timeout tests
@@ -559,15 +743,13 @@ class BlockingFailureTests(TestCase):
         self.user = User.objects.create_user(email="timeout@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
 
-    @patch("core.preferences.get_preferences")
     @patch("chat.subagent_service.run_subagent")
-    def test_blocking_exception_sets_failed_permanently(self, mock_run, mock_prefs):
+    def test_blocking_exception_sets_failed_permanently(self, mock_run):
         """Blocking sub-agent that raises sets FAILED (no Celery retry)."""
-        mock_prefs.return_value = _prefs()
 
         def side_effect(run_id, **kwargs):
             run = SubAgentRun.objects.get(pk=run_id)
-            run.status = SubAgentRun.Status.PENDING
+            run.status = SubAgentRun.Status.FAILED
             run.error = "LLM provider timeout"
             run.save(update_fields=["status", "error"])
             raise RuntimeError("LLM provider timeout")
@@ -585,15 +767,14 @@ class BlockingFailureTests(TestCase):
         run = SubAgentRun.objects.first()
         self.assertEqual(run.status, SubAgentRun.Status.FAILED)
 
-    @patch("core.preferences.get_preferences")
     @patch("chat.subagent_service.run_subagent")
-    def test_blocking_passes_deadline_seconds(self, mock_run, mock_prefs):
-        """Blocking sub-agent passes deadline_seconds to run_subagent."""
-        mock_prefs.return_value = _prefs()
+    def test_blocking_passes_deadline_and_blocking_flag(self, mock_run):
+        """Blocking sub-agent passes deadline_seconds and blocking=True to run_subagent."""
 
         def side_effect(run_id, **kwargs):
-            # Verify deadline_seconds was passed
+            # Verify deadline_seconds and blocking were passed
             assert kwargs.get("deadline_seconds") == 270
+            assert kwargs.get("blocking") is True
             run = SubAgentRun.objects.get(pk=run_id)
             run.status = SubAgentRun.Status.COMPLETED
             run.result = "Done"
