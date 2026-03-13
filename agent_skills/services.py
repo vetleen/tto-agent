@@ -115,6 +115,8 @@ def create_user_skill(user, name: str, slug: str | None = None) -> AgentSkill:
     """Create a user-level skill with auto-generated slug."""
     if not slug:
         slug = slugify(name)[:64]
+    if not slug:
+        slug = "skill"
 
     # Ensure uniqueness for this user
     base_slug = slug

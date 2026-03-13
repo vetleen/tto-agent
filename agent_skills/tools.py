@@ -241,10 +241,12 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
         if field_name in ("instructions", "description"):
             content = getattr(skill, field_name) or ""
         else:
+            from agent_skills.models import SkillTemplate
+
             try:
                 tmpl = skill.templates.get(name=field_name)
                 content = tmpl.content
-            except Exception:
+            except SkillTemplate.DoesNotExist:
                 return json.dumps({
                     "status": "error",
                     "message": f"Template '{field_name}' not found on skill '{skill_slug}'.",
@@ -317,7 +319,21 @@ class EditSkillTool(ContextAwareTool):
             skill.name = updates["name"]
             update_fields.append("name")
         if "new_slug" in updates:
-            skill.slug = updates["new_slug"]
+            from agent_skills.models import AgentSkill
+
+            new_slug = updates["new_slug"]
+            conflict = AgentSkill.objects.filter(
+                slug=new_slug, level=skill.level, **{
+                    "organization": skill.organization} if skill.level == "org"
+                    else {"created_by": skill.created_by} if skill.level == "user"
+                    else {}
+            ).exclude(pk=skill.pk).exists()
+            if conflict:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Slug '{new_slug}' is already taken.",
+                })
+            skill.slug = new_slug
             update_fields.append("slug")
         if "tool_names" in updates:
             # Silently filter out standard (chat-section) tools — they're
@@ -372,7 +388,8 @@ class EditSkillTool(ContextAwareTool):
                     "error": "Text not found.",
                 })
 
-        skill.save(update_fields=update_fields)
+        if len(update_fields) > 1 or applied > 0:
+            skill.save(update_fields=update_fields)
 
         return json.dumps({
             "status": "ok",

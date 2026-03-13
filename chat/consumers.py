@@ -444,13 +444,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         if t not in tools:
                             tools.append(t)
                     break
-            else:
-                # Fallback: skill not in allowed_skills, use raw tool_names
-                skill_tool_names = await self._get_skill_tool_names(self.active_skill_id)
-                for t in skill_tool_names:
-                    if t not in tools:
-                        tools.append(t)
+            # If the skill is not in allowed_skills, it was disabled by the
+            # org — do NOT fall back to raw tool_names as that would bypass
+            # org-level filtering.
         elif self.active_skill_id:
+            # No prefs available (e.g. no org) — fall back to raw tool_names
             skill_tool_names = await self._get_skill_tool_names(self.active_skill_id)
             for t in skill_tool_names:
                 if t not in tools:
