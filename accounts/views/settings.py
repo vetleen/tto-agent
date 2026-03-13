@@ -130,10 +130,12 @@ def org_settings_page(request):
     system_defaults = get_system_defaults()
     all_tools = get_tool_registry().list_tools()
 
-    # Group tools by section
+    # Group tools by section (skip "skills" — managed in Skills section)
     tool_sections = {}
     for name, tool in sorted(all_tools.items()):
         section_key = getattr(tool, "section", "chat")
+        if section_key == "skills":
+            continue
         if section_key not in tool_sections:
             meta = SECTION_META.get(section_key, {"label": section_key.replace("_", " ").title(), "description": ""})
             tool_sections[section_key] = {
@@ -172,8 +174,11 @@ def org_settings_page(request):
         "system_models": system_models,
         "org_allowed": org_allowed,
         "org_models": org_models,
+        "org_models_json": json.dumps(org_models),
+        "org_tools_json": json.dumps(org_tools),
         "tool_sections": tool_sections,
         "skills_data": skills_data,
+        "skills_data_json": json.dumps(skills_data),
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},

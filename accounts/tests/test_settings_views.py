@@ -118,7 +118,7 @@ class SettingsPageTests(TestCase):
     def test_renders_settings_page(self, mock_prefs):
         from core.preferences import ResolvedPreferences
         mock_prefs.return_value = ResolvedPreferences(
-            primary_model="openai/gpt-5",
+            top_model="openai/gpt-5",
             mid_model="openai/gpt-5-mini",
             cheap_model="",
             allowed_models=["openai/gpt-5", "openai/gpt-5-mini"],
@@ -146,7 +146,7 @@ class PreferencesModelsUpdateTests(TestCase):
     def test_update_model_preference(self, mock_prefs):
         from core.preferences import ResolvedPreferences
         mock_prefs.return_value = ResolvedPreferences(
-            primary_model="openai/gpt-5",
+            top_model="openai/gpt-5",
             mid_model="",
             cheap_model="",
             allowed_models=["openai/gpt-5", "anthropic/claude-sonnet-4-5"],
@@ -170,7 +170,7 @@ class PreferencesModelsUpdateTests(TestCase):
     def test_reject_model_not_in_allowed(self, mock_prefs):
         from core.preferences import ResolvedPreferences
         mock_prefs.return_value = ResolvedPreferences(
-            primary_model="openai/gpt-5",
+            top_model="openai/gpt-5",
             mid_model="",
             cheap_model="",
             allowed_models=["openai/gpt-5"],
@@ -247,6 +247,53 @@ class OrgSettingsAccessTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Wilfred Chat")
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_skills_section_tools_excluded_from_tool_sections(self, mock_reg, mock_models):
+        from unittest.mock import MagicMock
+        chat_tool = MagicMock(section="chat", description="Fetch a URL")
+        skills_tool = MagicMock(section="skills", description="Create a skill")
+        mock_reg.return_value.list_tools.return_value = {
+            "web_fetch": chat_tool,
+            "create_skill": skills_tool,
+        }
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        tool_sections = response.context["tool_sections"]
+        self.assertIn("chat", tool_sections)
+        self.assertNotIn("skills", tool_sections)
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_json_serialized_context_vars(self, mock_reg, mock_models):
+        mock_reg.return_value.list_tools.return_value = {}
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        # Verify JSON-serialized vars are in context
+        self.assertIn("org_tools_json", response.context)
+        self.assertIn("skills_data_json", response.context)
+        self.assertIn("org_models_json", response.context)
+        # Verify they are valid JSON strings
+        import json
+        json.loads(response.context["org_tools_json"])
+        json.loads(response.context["skills_data_json"])
+        json.loads(response.context["org_models_json"])
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_globally_disabled_tool_in_org_tools_json(self, mock_reg, mock_models):
+        mock_reg.return_value.list_tools.return_value = {}
+        self.org.preferences = {"tools": {"create_skill": False}}
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        import json
+        org_tools = json.loads(response.context["org_tools_json"])
+        self.assertFalse(org_tools["create_skill"])
 
     def test_member_gets_403(self):
         self.client.login(email=self.member_user.email, password=self.password)
