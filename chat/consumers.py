@@ -243,6 +243,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "event_type": "canvas.accepted",
                 "accepted_content": result["accepted_content"],
             }))
+        else:
+            await self.send(text_data=json.dumps({
+                "event_type": "error",
+                "data": {"message": "Could not accept canvas changes — no checkpoint found."},
+            }))
 
     async def _handle_canvas_revert(self, data):
         """Restore canvas to its accepted checkpoint."""
@@ -255,6 +260,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "event_type": "canvas.reverted",
                 "title": result["title"],
                 "content": result["content"],
+            }))
+        else:
+            await self.send(text_data=json.dumps({
+                "event_type": "error",
+                "data": {"message": "Could not revert canvas — no accepted version found."},
             }))
 
     async def _handle_canvas_save_version(self, data):
