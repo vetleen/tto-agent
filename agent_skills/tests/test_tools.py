@@ -84,10 +84,10 @@ class EditSkillToolTests(TestCase):
         """Standard (chat-section) tools are silently removed from tool_names."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["view_template", "write_canvas", "brave_search"]},
+            updates={"tool_names": ["view_template", "write_canvas", "search_documents"]},
         ))
         self.assertEqual(result["status"], "ok")
-        # write_canvas and brave_search are chat-section tools — silently removed
+        # write_canvas and search_documents are chat-section tools — silently removed
         self.assertEqual(result["tool_names"], ["view_template"])
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.tool_names, ["view_template"])

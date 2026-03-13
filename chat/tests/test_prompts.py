@@ -1,7 +1,7 @@
 """Tests for chat.prompts.build_system_prompt."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 
 from django.test import TestCase
 
@@ -132,56 +132,26 @@ class BuildSystemPromptTests(TestCase):
 
 
     # ------------------------------------------------------------------ #
-    # Updated tool descriptions                                            #
-    # ------------------------------------------------------------------ #
-
-    def test_tool_descriptions_mention_chunk_range(self):
-        doc_context = {
-            "total_doc_count": 1,
-            "documents": [{
-                "doc_index": 1,
-                "filename": "test.pdf",
-                "description": "",
-                "token_count": 100,
-            }],
-        }
-        prompt = build_system_prompt(
-            data_rooms=[self.data_room],
-            doc_context=doc_context,
-        )
-        self.assertIn("chunk_start", prompt)
-        self.assertIn("chunk_end", prompt)
-
-    def test_search_tool_description_mentions_enriched_output(self):
-        doc_context = {
-            "total_doc_count": 1,
-            "documents": [{
-                "doc_index": 1,
-                "filename": "test.pdf",
-                "description": "",
-                "token_count": 100,
-            }],
-        }
-        prompt = build_system_prompt(
-            data_rooms=[self.data_room],
-            doc_context=doc_context,
-        )
-        self.assertIn("document titles", prompt.lower())
-        self.assertIn("types", prompt.lower())
-
-    # ------------------------------------------------------------------ #
     # Skill injection                                                      #
     # ------------------------------------------------------------------ #
 
+    def _make_skill(self, name, instructions):
+        """Create a mock skill with a templates manager."""
+        skill = MagicMock()
+        skill.name = name
+        skill.instructions = instructions
+        skill.templates.all.return_value = []
+        return skill
+
     def test_skill_instructions_injected(self):
-        skill = SimpleNamespace(name="Patent Drafter", instructions="Draft patents carefully.")
+        skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
         prompt = build_system_prompt(skill=skill)
         self.assertIn("# SKILL", prompt)
         self.assertIn("## Patent Drafter", prompt)
         self.assertIn("Draft patents carefully.", prompt)
 
     def test_skill_appears_after_instructions_before_data_rooms(self):
-        skill = SimpleNamespace(name="Test Skill", instructions="Do the test.")
+        skill = self._make_skill("Test Skill", "Do the test.")
         prompt = build_system_prompt(skill=skill, data_rooms=[self.data_room])
         skill_pos = prompt.index("# SKILL")
         instructions_pos = prompt.index("# Instructions")

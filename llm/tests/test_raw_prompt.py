@@ -116,7 +116,7 @@ class GenerateRawPromptTests(TestCase):
         model, client, bound_client = _make_model_with_mock_client()
         bound_client.invoke.side_effect = _invoke_with_callback(_make_lc_ai_message("OK"))
 
-        schemas = [_make_tool_schema("search_documents"), _make_tool_schema("search_documents")]
+        schemas = [_fake_tool("search_documents"), _fake_tool("read_document")]
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=False,
@@ -129,9 +129,9 @@ class GenerateRawPromptTests(TestCase):
         raw_prompt = response.metadata["raw_prompt"]
         self.assertIsNotNone(raw_prompt)
         self.assertEqual(len(raw_prompt["tools"]), 2)
-        tool_names = [t["function"]["name"] for t in raw_prompt["tools"]]
+        tool_names = [t["name"] for t in raw_prompt["tools"]]
         self.assertIn("search_documents", tool_names)
-        self.assertIn("search_documents", tool_names)
+        self.assertIn("read_document", tool_names)
 
     def test_raw_prompt_tools_empty_when_no_tool_schemas(self):
         model, client, bound_client = _make_model_with_mock_client()
@@ -192,10 +192,10 @@ class GenerateRawPromptTests(TestCase):
 
         raw_prompt = response.metadata["raw_prompt"]
         self.assertEqual(len(raw_prompt["tools"]), 1)
-        # tools_to_langchain_schemas now passes through BaseTool instances
+        # _build_raw_prompt serializes BaseTool instances to dicts
         tool = raw_prompt["tools"][0]
-        self.assertEqual(tool.name, "search_documents")
-        self.assertEqual(tool.description, "Add two numbers")
+        self.assertEqual(tool["name"], "search_documents")
+        self.assertEqual(tool["description"], "Add two numbers")
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ class StreamRawPromptTests(TestCase):
         chunk.content = "Hello"
         bound_client.stream.side_effect = _stream_with_callback([chunk])
 
-        schemas = [_make_tool_schema("search_documents")]
+        schemas = [_fake_tool("search_documents")]
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=True,
@@ -227,7 +227,7 @@ class StreamRawPromptTests(TestCase):
 
         raw_prompt = raw_prompt_events[0].data["raw_prompt"]
         self.assertEqual(len(raw_prompt["tools"]), 1)
-        self.assertEqual(raw_prompt["tools"][0]["function"]["name"], "search_documents")
+        self.assertEqual(raw_prompt["tools"][0]["name"], "search_documents")
 
     def test_raw_prompt_event_tools_empty_without_schemas(self):
         model, client, bound_client = _make_model_with_mock_client()
