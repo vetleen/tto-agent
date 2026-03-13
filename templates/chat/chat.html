@@ -547,9 +547,19 @@
     var parser = new DOMParser();
     var svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
     var svgEl = svgDoc.querySelector('svg');
-    // Ensure the SVG has explicit width/height so the Image element sizes correctly
-    var w = parseFloat(svgEl.getAttribute('width')) || svgEl.viewBox.baseVal.width || 800;
-    var h = parseFloat(svgEl.getAttribute('height')) || svgEl.viewBox.baseVal.height || 600;
+    // Prefer viewBox for accurate intrinsic size (Mermaid often sets width="100%")
+    var w, h;
+    var vb = svgEl.getAttribute('viewBox');
+    if (vb) {
+      var parts = vb.split(/[\s,]+/);
+      if (parts.length >= 4) { w = parseFloat(parts[2]); h = parseFloat(parts[3]); }
+    }
+    if (!w || !h) {
+      var wA = svgEl.getAttribute('width'), hA = svgEl.getAttribute('height');
+      if (wA && wA.indexOf('%') === -1) w = w || parseFloat(wA);
+      if (hA && hA.indexOf('%') === -1) h = h || parseFloat(hA);
+    }
+    w = w || 800; h = h || 600;
     svgEl.setAttribute('width', w);
     svgEl.setAttribute('height', h);
     var fixedSvg = new XMLSerializer().serializeToString(svgEl);
@@ -1317,7 +1327,27 @@
     // through the markdown renderer independently. Unchanged and changed
     // blocks are rendered separately so block-level constructs (headings,
     // tables, lists) stay intact inside each chunk.
-    var diff = Diff.diffLines(oldText || "", newText || "");
+
+    // Extract fenced code blocks (mermaid, etc.) into single-line
+    // placeholders before diffing so they aren't split across chunks.
+    var codeBlockMap = {};
+    var codeBlockCounter = 0;
+    var codeBlockRe = /```[a-zA-Z]*\s*\n[\s\S]*?```/g;
+    function extractCodeBlocks(text) {
+      return (text || "").replace(codeBlockRe, function(match) {
+        // Reuse placeholder for identical blocks so diff sees them as equal
+        for (var k in codeBlockMap) {
+          if (codeBlockMap[k] === match) return k;
+        }
+        var key = '\x00CODEBLOCK_' + (codeBlockCounter++) + '\x00';
+        codeBlockMap[key] = match;
+        return key;
+      });
+    }
+    var oldProcessed = extractCodeBlocks(oldText);
+    var newProcessed = extractCodeBlocks(newText);
+
+    var diff = Diff.diffLines(oldProcessed, newProcessed);
 
     // Merge consecutive same-type parts to reduce rendering fragments.
     var merged = [];
@@ -1332,7 +1362,11 @@
 
     var html = "";
     merged.forEach(function(part) {
-      var rendered = renderMarkdown(part.value);
+      // Restore code blocks before rendering markdown
+      var text = part.value.replace(/\x00CODEBLOCK_\d+\x00/g, function(key) {
+        return codeBlockMap[key] || key;
+      });
+      var rendered = renderMarkdown(text);
       if (part.type === "add") {
         html += '<div class="diff-add">' + rendered + '</div>';
       } else if (part.type === "del") {
