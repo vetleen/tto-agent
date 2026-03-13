@@ -59,10 +59,9 @@ class CreateSubagentTool(ContextAwareTool):
     ) -> str:
         from django.contrib.auth import get_user_model
 
-        from chat.models import ChatThread, SubAgentRun
-        from chat.subagent_limits import check_subagent_limits
-        from chat.subagent_service import resolve_subagent_model, resolve_subagent_tools, run_subagent
-        from core.preferences import get_preferences
+        from chat.models import SubAgentRun
+        from chat.subagent_limits import create_subagent_run_if_allowed
+        from chat.subagent_service import run_subagent
 
         context = self.context
         if not context or not context.user_id:
@@ -83,55 +82,30 @@ class CreateSubagentTool(ContextAwareTool):
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
 
-        # Check concurrency limits
-        allowed, err_msg = check_subagent_limits(user)
-        if not allowed:
-            return json.dumps({"status": "error", "message": err_msg})
-
-        # Resolve preferences, tools, model
-        prefs = get_preferences(user)
         data_room_ids = context.data_room_ids if context else []
 
-        # Load skill if specified
-        skill = None
-        if skill_slug:
-            from agent_skills.services import get_available_skills
-            for s in get_available_skills(user):
-                if s.slug == skill_slug:
-                    skill = s
-                    break
-
-        tool_list = resolve_subagent_tools(prefs, data_room_ids, skill=skill)
-        model = resolve_subagent_model(model_tier, prefs)
-
-        # Create run record
-        run = SubAgentRun.objects.create(
+        # Atomically check limits and create the run record.
+        # The service resolves model_used and tool_names when it executes.
+        run, err_msg = create_subagent_run_if_allowed(
+            user,
             thread_id=thread_id,
-            user=user,
             prompt=prompt,
             skill_slug=skill_slug,
             model_tier=model_tier,
-            model_used=model,
             blocking=blocking,
             data_room_ids=data_room_ids,
-            tool_names=tool_list,
         )
+        if run is None:
+            return json.dumps({"status": "error", "message": err_msg})
 
         if blocking:
             # Execute synchronously with a deadline so the LLM service
             # will abort if the sub-agent takes too long.
             BLOCKING_TIMEOUT = 270  # seconds, matches Celery soft_time_limit
             try:
-                run_subagent(run.id, deadline_seconds=BLOCKING_TIMEOUT)
+                run_subagent(run.id, deadline_seconds=BLOCKING_TIMEOUT, blocking=True)
             except Exception:
-                # run_subagent sets PENDING on error (for Celery retry), but
-                # blocking calls don't retry — mark FAILED permanently.
-                from django.utils import timezone as tz
-                run.refresh_from_db()
-                if run.status != SubAgentRun.Status.COMPLETED:
-                    run.status = SubAgentRun.Status.FAILED
-                    run.completed_at = tz.now()
-                    run.save(update_fields=["status", "completed_at"])
+                pass  # run_subagent already set FAILED for blocking calls
 
             run.refresh_from_db()
             if run.status == SubAgentRun.Status.COMPLETED:
@@ -169,13 +143,17 @@ class CheckSubagentStatusTool(ContextAwareTool):
         from chat.models import SubAgentRun
 
         context = self.context
+        if not context or not context.user_id:
+            return json.dumps({"status": "error", "message": "No user context available."})
         thread_id = context.conversation_id if context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
         if run_id:
             try:
-                run = SubAgentRun.objects.get(pk=run_id, thread_id=thread_id)
+                run = SubAgentRun.objects.get(
+                    pk=run_id, thread_id=thread_id, user_id=context.user_id,
+                )
             except SubAgentRun.DoesNotExist:
                 return json.dumps({"status": "error", "message": f"Sub-agent run {run_id} not found."})
 
@@ -191,8 +169,10 @@ class CheckSubagentStatusTool(ContextAwareTool):
                 result["error"] = run.error
             return json.dumps(result)
 
-        # Return all runs for this thread
-        runs = SubAgentRun.objects.filter(thread_id=thread_id).order_by("-created_at")[:20]
+        # Return all runs for this thread belonging to the current user
+        runs = SubAgentRun.objects.filter(
+            thread_id=thread_id, user_id=context.user_id,
+        ).order_by("-created_at")[:20]
         results = []
         for run in runs:
             entry = {
