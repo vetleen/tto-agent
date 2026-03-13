@@ -311,48 +311,97 @@ MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
 
 
 def _render_mermaid_pngs(sources: list[str]) -> list[bytes | None]:
-    """Render multiple mermaid diagrams to PNG using a single Playwright browser.
+    """Render multiple mermaid diagrams to PNG using a separate subprocess.
 
-    Uses the sync API so it works regardless of whether an event loop is
-    already running (e.g. under Daphne / ASGI).
+    Playwright needs ProactorEventLoop on Windows but Daphne uses
+    SelectorEventLoop.  Changing the policy in-process would break the
+    WebSocket connections, so we isolate the rendering in a child process.
     """
-    from html import escape
-    from urllib.parse import quote
-
-    from playwright.sync_api import sync_playwright
+    import json
+    import subprocess
+    import sys
+    import tempfile
 
     results: list[bytes | None] = [None] * len(sources)
+
+    # Write sources to a temp file for the subprocess to read.
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            for i, source in enumerate(sources):
-                escaped = escape(source)
-                html = (
-                    "<!DOCTYPE html><html><head>"
-                    '<script src="' + MERMAID_CDN + '"></script>'
-                    "</head><body>"
-                    '<pre class="mermaid">' + escaped + "</pre>"
-                    "<script>mermaid.initialize({startOnLoad:true});</script>"
-                    "</body></html>"
-                )
-                try:
-                    # Use a data: URL so the browser actually loads the page
-                    # and fetches the CDN script (set_content won't fetch
-                    # remote scripts).
-                    data_url = "data:text/html;charset=utf-8," + quote(html)
-                    page.goto(data_url, wait_until="networkidle")
-                    page.wait_for_selector(".mermaid svg", timeout=15_000)
-                    el = page.query_selector(".mermaid")
-                    results[i] = el.screenshot(type="png") if el else None
-                except Exception:
-                    logger.exception(
-                        "Failed to render mermaid diagram %d", i
-                    )
-            browser.close()
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump(sources, f)
+            tmp_input = f.name
+
+        # The subprocess sets ProactorEventLoop itself, rendering each
+        # diagram and writing base64-encoded results as JSON to stdout.
+        script = _MERMAID_SUBPROCESS_SCRIPT
+        proc = subprocess.run(
+            [sys.executable, "-c", script, tmp_input],
+            capture_output=True,
+            text=True,
+            timeout=60 + 20 * len(sources),
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            encoded_list = json.loads(proc.stdout)
+            for i, b64 in enumerate(encoded_list):
+                if b64:
+                    results[i] = base64.b64decode(b64)
+        else:
+            logger.error(
+                "Mermaid subprocess failed (rc=%d): %s",
+                proc.returncode,
+                proc.stderr[:500],
+            )
     except Exception:
-        logger.exception("Failed to launch browser for mermaid rendering")
+        logger.exception("Failed to run mermaid rendering subprocess")
+    finally:
+        import os
+        try:
+            os.unlink(tmp_input)
+        except Exception:
+            pass
     return results
+
+
+_MERMAID_SUBPROCESS_SCRIPT = r'''
+import asyncio, base64, json, sys
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+from html import escape
+from urllib.parse import quote
+from playwright.sync_api import sync_playwright
+
+MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+sources = json.load(open(sys.argv[1], encoding="utf-8"))
+results = [None] * len(sources)
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        for i, source in enumerate(sources):
+            esc = escape(source)
+            html = (
+                "<!DOCTYPE html><html><head>"
+                '<script src="' + MERMAID_CDN + '"></script>'
+                "</head><body>"
+                '<pre class="mermaid">' + esc + "</pre>"
+                "<script>mermaid.initialize({startOnLoad:true});</script>"
+                "</body></html>"
+            )
+            try:
+                data_url = "data:text/html;charset=utf-8," + quote(html)
+                page.goto(data_url, wait_until="networkidle")
+                page.wait_for_selector(".mermaid svg", timeout=15000)
+                el = page.query_selector(".mermaid")
+                if el:
+                    results[i] = base64.b64encode(el.screenshot(type="png")).decode()
+            except Exception:
+                pass
+        browser.close()
+except Exception:
+    pass
+print(json.dumps(results))
+'''
 
 
 def replace_mermaid_with_images(content: str) -> str:

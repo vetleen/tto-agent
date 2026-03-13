@@ -266,9 +266,9 @@
         </div>
       </div>
       {# 3. Export as .docx #}
-      <a id="canvas-export-link" href="#" title="Export as .docx" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+      <button id="canvas-export-link" title="Export as .docx" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-      </a>
+      </button>
       {# 4. Version history #}
       <div class="relative">
         <button id="canvas-history-btn" title="Version history" class="p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
@@ -475,20 +475,28 @@
   let activeSkillName = {% if thread_skill %}"{{ thread_skill.name|escapejs }}"{% else %}null{% endif %};
 
   // -- Mermaid init --
-  mermaid.initialize({ startOnLoad: false, theme: 'default' });
   var mermaidIdCounter = 0;
+  try { mermaid.initialize({ startOnLoad: false, theme: 'default' }); } catch (e) { console.warn('Mermaid init failed:', e); }
 
   // Custom marked renderer: mermaid code blocks become placeholder divs
-  var mermaidRenderer = new marked.Renderer();
-  var origCodeRenderer = mermaidRenderer.code.bind(mermaidRenderer);
-  mermaidRenderer.code = function(token) {
-    if (token.lang === 'mermaid') {
-      var escaped = token.text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      return '<div class="mermaid-placeholder" data-mermaid="' + escaped + '"></div>';
+  // marked v12 uses positional args: code(codeText, infostring, escaped)
+  marked.use({
+    renderer: {
+      code: function(codeTextOrToken, infostring, escaped) {
+        var lang, text;
+        if (codeTextOrToken && typeof codeTextOrToken === 'object' && 'lang' in codeTextOrToken) {
+          lang = codeTextOrToken.lang; text = codeTextOrToken.text;
+        } else {
+          text = codeTextOrToken; lang = infostring;
+        }
+        if (typeof lang === 'string' && lang.trim().toLowerCase() === 'mermaid') {
+          var esc = text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          return '<div class="mermaid-placeholder" data-mermaid="' + esc + '"></div>';
+        }
+        return false;
+      }
     }
-    return origCodeRenderer(token);
-  };
-  marked.use({ renderer: mermaidRenderer });
+  });
 
   // -- Emoji shortcodes --
   const emojiMap = {':sparkles:':'\u2728',':tada:':'\ud83c\udf89',':smile:':'\ud83d\ude04',':heart:':'\u2764\ufe0f',':thumbsup:':'\ud83d\udc4d',':thumbsdown:':'\ud83d\udc4e',':fire:':'\ud83d\udd25',':rocket:':'\ud83d\ude80',':star:':'\u2b50',':check:':'\u2705',':x:':'\u274c',':warning:':'\u26a0\ufe0f',':bulb:':'\ud83d\udca1',':muscle:':'\ud83d\udcaa',':clap:':'\ud83d\udc4f',':eyes:':'\ud83d\udc40',':thinking:':'\ud83e\udd14',':party:':'\ud83c\udf89',':confetti:':'\ud83c\udf8a',':trophy:':'\ud83c\udfc6',':zap:':'\u26a1',':boom:':'\ud83d\udca5',':100:':'\ud83d\udcaf',':ok_hand:':'\ud83d\udc4c',':raised_hands:':'\ud83d\ude4c',':pray:':'\ud83d\ude4f',':coffee:':'\u2615',':pizza:':'\ud83c\udf55',':cake:':'\ud83c\udf82',':gift:':'\ud83c\udf81',':balloon:':'\ud83c\udf88'};
@@ -1085,7 +1093,7 @@
     if (et === "message_end") {
       if (isThinking) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {
-        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent);
+        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); }
         const toolCards = currentStreamingElement.querySelector(".tool-cards"); if (toolCards && toolCards.children.length > 0) toolCards.classList.add("tool-cards-done");
         currentStreamingElement = null; accumulatedContent = "";
       }
@@ -1273,10 +1281,36 @@
   var canvasPendingUpdate = null;
   var canvasAcceptedContent = null;
 
+  var canvasExportUrl = "";
   function canvasUpdateExportLink() {
-    if (canvasExportLink && activeThreadId) {
-      canvasExportLink.href = "/chat/threads/" + activeThreadId + "/canvas/export/";
+    if (activeThreadId) {
+      canvasExportUrl = "/chat/threads/" + activeThreadId + "/canvas/export/";
     }
+  }
+  if (canvasExportLink) {
+    canvasExportLink.addEventListener("click", function() {
+      if (!canvasExportUrl) return;
+      canvasExportLink.disabled = true;
+      canvasExportLink.title = "Exporting...";
+      fetch(canvasExportUrl)
+        .then(function(resp) {
+          if (!resp.ok) throw new Error("Export failed");
+          var cd = resp.headers.get("Content-Disposition") || "";
+          var match = cd.match(/filename="?([^"]+)"?/);
+          var filename = match ? match[1] : "document.docx";
+          return resp.blob().then(function(blob) { return { blob: blob, filename: filename }; });
+        })
+        .then(function(data) {
+          var url = URL.createObjectURL(data.blob);
+          var a = document.createElement("a");
+          a.href = url; a.download = data.filename;
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        })
+        .catch(function(err) { alert("Export failed: " + err.message); })
+        .finally(function() { canvasExportLink.disabled = false; canvasExportLink.title = "Export as .docx"; });
+    });
   }
   function renderDiffPreview(oldText, newText) {
     // Diff the raw markdown at the line level, then render each chunk
