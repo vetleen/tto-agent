@@ -151,12 +151,21 @@ class BaseLangChainChatModel(ChatModel):
                 f"{self._provider_label} generate failed for model={self.name}"
             ) from exc
 
-        content = getattr(result, "content", "") or ""
+        raw_content = getattr(result, "content", "") or ""
+        # Responses API may return content as a list of typed blocks;
+        # normalise to a plain string.
+        if isinstance(raw_content, list):
+            content = "".join(
+                block.get("text", "") for block in raw_content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        else:
+            content = str(raw_content)
         message_tool_calls = parse_tool_calls_from_ai_message(result)
 
         message = Message(
             role="assistant",
-            content=str(content),
+            content=content,
             tool_calls=message_tool_calls,
         )
 

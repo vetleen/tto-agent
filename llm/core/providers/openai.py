@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 _REASONING_PREFIXES = ("o1", "o3", "o4")
 
+# Models that require OpenAI's Responses API (LangChain may not recognise all of
+# them yet via its built-in _model_prefers_responses_api check).
+_RESPONSES_API_PREFIXES = ("gpt-5.4", "gpt-5.2-pro")
+
 
 class OpenAIChatModel(BaseLangChainChatModel):
     """ChatModel backed by LangChain's ChatOpenAI."""
@@ -47,8 +51,14 @@ class OpenAIChatModel(BaseLangChainChatModel):
         if model_name.startswith(self._API_MODEL_PREFIX):
             api_model = model_name[len(self._API_MODEL_PREFIX) :]
         self._api_model = api_model
+
+        use_responses = any(api_model.startswith(p) for p in _RESPONSES_API_PREFIXES)
         # Let ChatOpenAI read configuration from environment; enable streaming usage accounting.
-        self._client = ChatOpenAI(model=api_model, stream_usage=True)
+        self._client = ChatOpenAI(
+            model=api_model,
+            stream_usage=True,
+            **({"use_responses_api": True} if use_responses else {}),
+        )
 
     # -- Reasoning support for o-series models --
 
@@ -59,10 +69,14 @@ class OpenAIChatModel(BaseLangChainChatModel):
         client = self._client
         if request.params.get("thinking") and self._is_reasoning_model():
             try:
+                use_responses = any(
+                    self._api_model.startswith(p) for p in _RESPONSES_API_PREFIXES
+                )
                 client = ChatOpenAI(
                     model=self._api_model,
                     stream_usage=True,
                     model_kwargs={"reasoning_effort": "medium"},
+                    **({"use_responses_api": True} if use_responses else {}),
                 )
             except Exception:
                 logger.warning(
@@ -75,6 +89,23 @@ class OpenAIChatModel(BaseLangChainChatModel):
             client = client.bind_tools(request.tool_schemas)
         return client
 
+    @staticmethod
+    def _extract_text(content) -> str:
+        """Extract plain text from chunk content.
+
+        The Responses API returns content as a list of dicts
+        (e.g. ``[{'type': 'text', 'text': 'hello', 'index': 0}]``)
+        while the Chat Completions API returns a plain string.
+        """
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                block.get("text", "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        return str(content) if content else ""
+
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         events: list[tuple[str, dict]] = []
         # Check for reasoning content in additional_kwargs
@@ -83,9 +114,9 @@ class OpenAIChatModel(BaseLangChainChatModel):
         if reasoning:
             events.append(("thinking", {"text": str(reasoning)}))
         # Regular text content
-        text = getattr(chunk, "content", "") or ""
+        text = self._extract_text(getattr(chunk, "content", None))
         if text:
-            events.append(("token", {"text": str(text)}))
+            events.append(("token", {"text": text}))
         return events
 
 
