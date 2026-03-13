@@ -135,10 +135,11 @@ class BuildSystemPromptTests(TestCase):
     # Skill injection                                                      #
     # ------------------------------------------------------------------ #
 
-    def _make_skill(self, name, instructions):
+    def _make_skill(self, name, instructions, description=""):
         """Create a mock skill with a templates manager."""
         skill = MagicMock()
         skill.name = name
+        skill.description = description
         skill.instructions = instructions
         skill.templates.all.return_value = []
         return skill
@@ -146,19 +147,48 @@ class BuildSystemPromptTests(TestCase):
     def test_skill_instructions_injected(self):
         skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
         prompt = build_system_prompt(skill=skill)
-        self.assertIn("# SKILL", prompt)
+        self.assertIn("# Relevant skill", prompt)
         self.assertIn("## Patent Drafter", prompt)
         self.assertIn("Draft patents carefully.", prompt)
+
+    def test_skill_description_included(self):
+        skill = self._make_skill(
+            "Patent Drafter",
+            "Draft patents carefully.",
+            description="Helps draft patent applications.",
+        )
+        prompt = build_system_prompt(skill=skill)
+        self.assertIn("Helps draft patent applications.", prompt)
+
+    def test_skill_no_description_no_blank(self):
+        skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
+        prompt = build_system_prompt(skill=skill)
+        # The description is empty so it should not leave an extra blank line
+        self.assertNotIn("## Patent Drafter\n\n\n", prompt)
 
     def test_skill_appears_after_instructions_before_data_rooms(self):
         skill = self._make_skill("Test Skill", "Do the test.")
         prompt = build_system_prompt(skill=skill, data_rooms=[self.data_room])
-        skill_pos = prompt.index("# SKILL")
-        instructions_pos = prompt.index("# Instructions")
+        skill_pos = prompt.index("# Relevant skill")
+        instructions_pos = prompt.index("# General instructions")
         data_rooms_pos = prompt.index("# Attached Data Rooms")
         self.assertGreater(skill_pos, instructions_pos)
         self.assertLess(skill_pos, data_rooms_pos)
 
+    def test_skill_headers_deepened(self):
+        skill = self._make_skill(
+            "Deep Skill",
+            "# Top heading\nSome text\n## Sub heading\nMore text",
+        )
+        prompt = build_system_prompt(skill=skill)
+        self.assertIn("### Top heading", prompt)
+        self.assertIn("#### Sub heading", prompt)
+        # Original single-# should not appear outside of the skill name line
+        lines = prompt.split("\n")
+        for line in lines:
+            if line.strip() == "# Top heading" or line.strip() == "## Top heading":
+                self.fail("Expected '# Top heading' to be deepened to '### Top heading'")
+
     def test_no_skill_no_skill_section(self):
         prompt = build_system_prompt()
-        self.assertNotIn("# SKILL", prompt)
+        self.assertNotIn("# Relevant skill", prompt)
