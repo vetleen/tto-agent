@@ -1,0 +1,549 @@
+"""Tests for the sub-agent system."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from unittest.mock import MagicMock, patch
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
+from django.utils import timezone
+
+from chat.models import ChatThread, SubAgentRun
+from chat.subagent_limits import check_subagent_limits
+from chat.subagent_prompts import build_subagent_system_prompt
+from chat.subagent_service import resolve_subagent_model, resolve_subagent_tools
+from chat.subagent_tool import CheckSubagentStatusTool, CreateSubagentTool
+from core.preferences import ResolvedPreferences
+from llm.types.context import RunContext
+
+User = get_user_model()
+
+
+def _prefs(**overrides):
+    """Create a ResolvedPreferences with sensible defaults."""
+    defaults = dict(
+        top_model="openai/gpt-5",
+        mid_model="openai/gpt-5-mini",
+        cheap_model="openai/gpt-5-nano",
+        allowed_models=["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano"],
+        allowed_tools=[
+            "search_documents", "read_document", "web_fetch", "brave_search",
+            "write_canvas", "edit_canvas", "create_subagent", "check_subagent_status",
+        ],
+        allowed_skills=[],
+        theme="light",
+    )
+    defaults.update(overrides)
+    return ResolvedPreferences(**defaults)
+
+
+def _ctx(user_id, thread_id, data_room_ids=None):
+    return RunContext.create(
+        user_id=user_id,
+        conversation_id=str(thread_id),
+        data_room_ids=data_room_ids or [],
+    )
+
+
+def _invoke(tool_cls, args, ctx):
+    tool = tool_cls()
+    tool.set_context(ctx)
+    return json.loads(tool.invoke(args))
+
+
+# ---------------------------------------------------------------------------
+# SubAgentRun model tests
+# ---------------------------------------------------------------------------
+
+class SubAgentRunModelTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="sub@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_create_run(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread,
+            user=self.user,
+            prompt="Analyze patent claims",
+            model_tier="mid",
+        )
+        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
+        self.assertEqual(run.prompt, "Analyze patent claims")
+        self.assertFalse(run.blocking)
+        self.assertEqual(run.data_room_ids, [])
+        self.assertEqual(run.tool_names, [])
+
+    def test_status_transitions(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread,
+            user=self.user,
+            prompt="task",
+        )
+        self.assertEqual(run.status, "pending")
+
+        run.status = SubAgentRun.Status.RUNNING
+        run.save(update_fields=["status"])
+        run.refresh_from_db()
+        self.assertEqual(run.status, "running")
+
+        run.status = SubAgentRun.Status.COMPLETED
+        run.result = "Done"
+        run.completed_at = timezone.now()
+        run.save(update_fields=["status", "result", "completed_at"])
+        run.refresh_from_db()
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(run.result, "Done")
+        self.assertIsNotNone(run.completed_at)
+
+    def test_json_fields_serialize(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread,
+            user=self.user,
+            prompt="task",
+            data_room_ids=[1, 2, 3],
+            tool_names=["search_documents", "web_fetch"],
+        )
+        run.refresh_from_db()
+        self.assertEqual(run.data_room_ids, [1, 2, 3])
+        self.assertEqual(run.tool_names, ["search_documents", "web_fetch"])
+
+    def test_str_representation(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread,
+            user=self.user,
+            prompt="task",
+        )
+        self.assertIn("pending", str(run))
+
+
+# ---------------------------------------------------------------------------
+# resolve_subagent_model tests
+# ---------------------------------------------------------------------------
+
+class ResolveSubagentModelTests(TestCase):
+    def test_fast_maps_to_cheap(self):
+        prefs = _prefs()
+        self.assertEqual(resolve_subagent_model("fast", prefs), "openai/gpt-5-nano")
+
+    def test_mid_maps_to_mid(self):
+        prefs = _prefs()
+        self.assertEqual(resolve_subagent_model("mid", prefs), "openai/gpt-5-mini")
+
+    def test_top_maps_to_top(self):
+        prefs = _prefs()
+        self.assertEqual(resolve_subagent_model("top", prefs), "openai/gpt-5")
+
+    def test_invalid_tier_defaults_to_mid(self):
+        prefs = _prefs()
+        self.assertEqual(resolve_subagent_model("invalid", prefs), "openai/gpt-5-mini")
+
+
+# ---------------------------------------------------------------------------
+# resolve_subagent_tools tests
+# ---------------------------------------------------------------------------
+
+class ResolveSubagentToolsTests(TestCase):
+    def test_removes_canvas_and_subagent_tools(self):
+        prefs = _prefs()
+        tools = resolve_subagent_tools(prefs, data_room_ids=[1])
+        self.assertNotIn("write_canvas", tools)
+        self.assertNotIn("edit_canvas", tools)
+        self.assertNotIn("create_subagent", tools)
+        self.assertNotIn("check_subagent_status", tools)
+
+    def test_keeps_doc_tools_with_data_rooms(self):
+        prefs = _prefs()
+        tools = resolve_subagent_tools(prefs, data_room_ids=[1])
+        self.assertIn("search_documents", tools)
+        self.assertIn("read_document", tools)
+
+    def test_removes_doc_tools_without_data_rooms(self):
+        prefs = _prefs()
+        tools = resolve_subagent_tools(prefs, data_room_ids=[])
+        self.assertNotIn("search_documents", tools)
+        self.assertNotIn("read_document", tools)
+
+    def test_keeps_web_tools(self):
+        prefs = _prefs()
+        tools = resolve_subagent_tools(prefs, data_room_ids=[])
+        self.assertIn("web_fetch", tools)
+        self.assertIn("brave_search", tools)
+
+    def test_adds_skill_tools(self):
+        prefs = _prefs(allowed_skills=[{
+            "id": "1", "slug": "test-skill", "name": "Test",
+            "description": "", "tool_names": ["custom_tool"],
+        }])
+        skill = MagicMock(slug="test-skill")
+        tools = resolve_subagent_tools(prefs, data_room_ids=[], skill=skill)
+        self.assertIn("custom_tool", tools)
+
+    def test_skill_tools_not_added_without_skill(self):
+        prefs = _prefs(allowed_skills=[{
+            "id": "1", "slug": "test-skill", "name": "Test",
+            "description": "", "tool_names": ["custom_tool"],
+        }])
+        tools = resolve_subagent_tools(prefs, data_room_ids=[])
+        self.assertNotIn("custom_tool", tools)
+
+
+# ---------------------------------------------------------------------------
+# build_subagent_system_prompt tests
+# ---------------------------------------------------------------------------
+
+class BuildSubagentSystemPromptTests(TestCase):
+    def test_contains_identity_and_task(self):
+        prompt = build_subagent_system_prompt("Analyze the patent")
+        self.assertIn("sub-agent of Wilfred", prompt)
+        self.assertIn("Analyze the patent", prompt)
+
+    def test_includes_org_name(self):
+        prompt = build_subagent_system_prompt(
+            "task", organization_name="MIT TTO",
+        )
+        self.assertIn("MIT TTO", prompt)
+
+    def test_includes_skill_instructions(self):
+        skill = MagicMock(name="Patent Review", instructions="Review all claims carefully.")
+        prompt = build_subagent_system_prompt("task", skill=skill)
+        self.assertIn("Review all claims carefully.", prompt)
+
+    def test_includes_data_rooms(self):
+        rooms = [{"name": "Room A", "description": "Patent docs"}]
+        prompt = build_subagent_system_prompt("task", data_rooms=rooms)
+        self.assertIn("Room A", prompt)
+        self.assertIn("Patent docs", prompt)
+
+    def test_minimal_prompt_without_extras(self):
+        prompt = build_subagent_system_prompt("Simple task")
+        self.assertIn("# Identity", prompt)
+        self.assertIn("# Task", prompt)
+        self.assertIn("# General instructions", prompt)
+        self.assertNotIn("# Skill", prompt)
+        self.assertNotIn("# Attached Data Rooms", prompt)
+
+
+# ---------------------------------------------------------------------------
+# check_subagent_limits tests
+# ---------------------------------------------------------------------------
+
+class CheckSubagentLimitsTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="limit@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_allows_when_under_limit(self):
+        allowed, msg = check_subagent_limits(self.user)
+        self.assertTrue(allowed)
+        self.assertEqual(msg, "")
+
+    @patch("chat.subagent_limits.SUBAGENT_MAX_PER_USER", 2)
+    def test_denies_at_per_user_limit(self):
+        for _ in range(2):
+            SubAgentRun.objects.create(
+                thread=self.thread, user=self.user,
+                prompt="task", status=SubAgentRun.Status.RUNNING,
+            )
+        allowed, msg = check_subagent_limits(self.user)
+        self.assertFalse(allowed)
+        self.assertIn("too many", msg)
+
+    @patch("chat.subagent_limits.SUBAGENT_MAX_SYSTEM", 2)
+    def test_denies_at_system_limit(self):
+        other_user = User.objects.create_user(email="other@test.com", password="pass")
+        other_thread = ChatThread.objects.create(created_by=other_user)
+        for _ in range(2):
+            SubAgentRun.objects.create(
+                thread=other_thread, user=other_user,
+                prompt="task", status=SubAgentRun.Status.PENDING,
+            )
+        allowed, msg = check_subagent_limits(self.user)
+        self.assertFalse(allowed)
+        self.assertIn("busy", msg)
+
+    def test_completed_runs_dont_count(self):
+        for _ in range(10):
+            SubAgentRun.objects.create(
+                thread=self.thread, user=self.user,
+                prompt="task", status=SubAgentRun.Status.COMPLETED,
+            )
+        allowed, msg = check_subagent_limits(self.user)
+        self.assertTrue(allowed)
+
+
+# ---------------------------------------------------------------------------
+# CreateSubagentTool tests
+# ---------------------------------------------------------------------------
+
+class CreateSubagentToolBlockingTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="blocking@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("core.preferences.get_preferences")
+    @patch("chat.subagent_service.run_subagent")
+    def test_blocking_returns_result(self, mock_run, mock_prefs):
+        mock_prefs.return_value = _prefs()
+
+        def side_effect(run_id):
+            run = SubAgentRun.objects.get(pk=run_id)
+            run.status = SubAgentRun.Status.COMPLETED
+            run.result = "Analysis complete: 3 claims found."
+            run.save(update_fields=["status", "result"])
+
+        mock_run.side_effect = side_effect
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        tool = CreateSubagentTool()
+        tool.set_context(ctx)
+        result = tool.invoke({
+            "prompt": "Analyze patent claims",
+            "blocking": True,
+        })
+
+        self.assertEqual(result, "Analysis complete: 3 claims found.")
+        self.assertEqual(SubAgentRun.objects.count(), 1)
+        run = SubAgentRun.objects.first()
+        self.assertTrue(run.blocking)
+
+    @patch("core.preferences.get_preferences")
+    @patch("chat.subagent_service.run_subagent")
+    def test_blocking_failed_returns_error(self, mock_run, mock_prefs):
+        mock_prefs.return_value = _prefs()
+
+        def side_effect(run_id):
+            run = SubAgentRun.objects.get(pk=run_id)
+            run.status = SubAgentRun.Status.FAILED
+            run.error = "LLM API error"
+            run.save(update_fields=["status", "error"])
+
+        mock_run.side_effect = side_effect
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CreateSubagentTool, {
+            "prompt": "task", "blocking": True,
+        }, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("LLM API error", result["message"])
+
+
+class CreateSubagentToolNonBlockingTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="nonblock@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("core.preferences.get_preferences")
+    @patch("chat.tasks.run_subagent_task")
+    def test_nonblocking_returns_started(self, mock_task, mock_prefs):
+        mock_prefs.return_value = _prefs()
+        mock_task.delay.return_value = MagicMock(id="celery-task-123")
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CreateSubagentTool, {
+            "prompt": "Background research",
+        }, ctx)
+
+        self.assertEqual(result["status"], "started")
+        self.assertIn("run_id", result)
+        mock_task.delay.assert_called_once()
+
+        # Verify run record
+        run = SubAgentRun.objects.first()
+        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
+        self.assertFalse(run.blocking)
+        self.assertEqual(run.celery_task_id, "celery-task-123")
+
+    @patch("core.preferences.get_preferences")
+    @patch("chat.tasks.run_subagent_task")
+    def test_invalid_tier_defaults_to_mid(self, mock_task, mock_prefs):
+        mock_prefs.return_value = _prefs()
+        mock_task.delay.return_value = MagicMock(id="t1")
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(CreateSubagentTool, {
+            "prompt": "task", "model_tier": "invalid",
+        }, ctx)
+
+        run = SubAgentRun.objects.first()
+        self.assertEqual(run.model_tier, "mid")
+
+
+class CreateSubagentToolLimitTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="limits@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("core.preferences.get_preferences")
+    @patch("chat.subagent_limits.SUBAGENT_MAX_PER_USER", 1)
+    def test_limit_hit_returns_error(self, mock_prefs):
+        mock_prefs.return_value = _prefs()
+        SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="running", status=SubAgentRun.Status.RUNNING,
+        )
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CreateSubagentTool, {"prompt": "new task"}, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("too many", result["message"])
+
+
+# ---------------------------------------------------------------------------
+# CheckSubagentStatusTool tests
+# ---------------------------------------------------------------------------
+
+class CheckSubagentStatusToolTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="check@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_returns_status_for_specific_run(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="Analyze patents", status=SubAgentRun.Status.COMPLETED,
+            result="Found 5 patents.",
+        )
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CheckSubagentStatusTool, {"run_id": str(run.id)}, ctx)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["result"], "Found 5 patents.")
+
+    def test_returns_error_for_failed_run(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.FAILED,
+            error="API timeout",
+        )
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CheckSubagentStatusTool, {"run_id": str(run.id)}, ctx)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("API timeout", result["error"])
+
+    def test_returns_all_thread_runs(self):
+        for i in range(3):
+            SubAgentRun.objects.create(
+                thread=self.thread, user=self.user,
+                prompt=f"task {i}", status=SubAgentRun.Status.COMPLETED,
+                result=f"result {i}",
+            )
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CheckSubagentStatusTool, {}, ctx)
+        self.assertEqual(result["count"], 3)
+
+    def test_unknown_run_id_returns_error(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CheckSubagentStatusTool, {"run_id": str(uuid.uuid4())}, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("not found", result["message"])
+
+
+# ---------------------------------------------------------------------------
+# Celery task tests
+# ---------------------------------------------------------------------------
+
+class RunSubagentTaskTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="celery@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_task_runs_subagent(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = "Task completed successfully."
+        mock_response.usage.total_tokens = 500
+        mock_response.usage.cost_usd = 0.01
+        mock_svc.return_value.run.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="Do research",
+        )
+
+        # Call the task function directly (not through broker)
+        from chat.tasks import run_subagent_task
+        run_subagent_task(str(run.id))
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+        self.assertEqual(run.result, "Task completed successfully.")
+        self.assertEqual(run.tokens_used, 500)
+        self.assertIsNotNone(run.completed_at)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_task_handles_failure(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run.side_effect = RuntimeError("Provider down")
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="Do research",
+        )
+
+        from chat.tasks import run_subagent_task
+        with self.assertRaises(RuntimeError):
+            run_subagent_task(str(run.id))
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertIn("Provider down", run.error)
+        self.assertIsNotNone(run.completed_at)
+
+
+# ---------------------------------------------------------------------------
+# run_subagent service tests
+# ---------------------------------------------------------------------------
+
+class RunSubagentServiceTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="svc@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_sets_model_used(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 100
+        mock_response.usage.cost_usd = 0.001
+        mock_svc.return_value.run.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task", model_tier="fast",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.model_used, "openai/gpt-5-nano")
+        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_passes_data_room_ids(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 100
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task", data_room_ids=[1, 2],
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        # Verify the request included data room IDs in context
+        call_args = mock_svc.return_value.run.call_args
+        request = call_args[0][1]
+        self.assertEqual(request.context.data_room_ids, [1, 2])

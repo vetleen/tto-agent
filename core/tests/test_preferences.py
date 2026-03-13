@@ -35,7 +35,7 @@ class NoOrgPreferencesTest(TestCase):
         user = _create_user()
         prefs = get_preferences(user)
 
-        self.assertEqual(prefs.primary_model, "openai/gpt-5")
+        self.assertEqual(prefs.top_model, "openai/gpt-5")
         self.assertEqual(prefs.mid_model, "openai/gpt-5-mini")
         self.assertEqual(prefs.cheap_model, "openai/gpt-5-nano")
         self.assertEqual(prefs.allowed_models, [
@@ -101,7 +101,7 @@ class UserPicksModelTest(TestCase):
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.primary_model, "anthropic/claude-sonnet-4-5")
+        self.assertEqual(prefs.top_model, "anthropic/claude-sonnet-4-5")
 
 
 class UserPicksOutsideAllowedTest(TestCase):
@@ -133,7 +133,7 @@ class UserPicksOutsideAllowedTest(TestCase):
 
         prefs = get_preferences(user)
         # Falls back to system default (gpt-5) since user's choice is not in org allowed
-        self.assertEqual(prefs.primary_model, "openai/gpt-5")
+        self.assertEqual(prefs.top_model, "openai/gpt-5")
 
 
 class OrgDisablesToolTest(TestCase):
@@ -221,7 +221,7 @@ class OrgDefaultModelTest(TestCase):
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.primary_model, "anthropic/claude-sonnet-4-5")
+        self.assertEqual(prefs.top_model, "anthropic/claude-sonnet-4-5")
 
 
 class OrgDefaultRemovedFromAllowedTest(TestCase):
@@ -251,8 +251,8 @@ class OrgDefaultRemovedFromAllowedTest(TestCase):
 
         prefs = get_preferences(user)
         # Must NOT resolve to claude since it's not in the org's allowed list
-        self.assertNotEqual(prefs.primary_model, "anthropic/claude-sonnet-4-5")
-        self.assertEqual(prefs.primary_model, "openai/gpt-5")
+        self.assertNotEqual(prefs.top_model, "anthropic/claude-sonnet-4-5")
+        self.assertEqual(prefs.top_model, "openai/gpt-5")
 
 
 class SectionAwareToolFilteringTest(TestCase):

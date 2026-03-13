@@ -150,3 +150,49 @@ class CanvasCheckpoint(models.Model):
 
     def __str__(self):
         return f"Checkpoint #{self.order} ({self.source}) for canvas {self.canvas_id}"
+
+
+class SubAgentRun(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        RUNNING = "running"
+        COMPLETED = "completed"
+        FAILED = "failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE, related_name="subagent_runs")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="subagent_runs")
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+
+    # Task spec
+    prompt = models.TextField()
+    skill_slug = models.CharField(max_length=64, blank=True)
+    model_tier = models.CharField(max_length=10, default="mid")
+    model_used = models.CharField(max_length=128, blank=True)
+    blocking = models.BooleanField(default=False)
+
+    # Context (copied at creation time)
+    data_room_ids = models.JSONField(default=list)
+    tool_names = models.JSONField(default=list)
+
+    # Result
+    result = models.TextField(blank=True)
+    error = models.TextField(blank=True)
+    celery_task_id = models.CharField(max_length=255, blank=True)
+
+    # Metrics
+    tokens_used = models.PositiveIntegerField(default=0)
+    cost_usd = models.FloatField(default=0.0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["thread", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"SubAgentRun {self.id} ({self.status})"

@@ -92,8 +92,8 @@ def chat_home(request):
             "skills_json": skills_json,
             "thread_skill": thread_skill,
             "model_choices_json": json.dumps(model_choices),
-            "default_model": prefs.primary_model,
-            "default_model_display": get_display_name(prefs.primary_model),
+            "default_model": prefs.top_model,
+            "default_model_display": get_display_name(prefs.top_model),
         },
     )
 

@@ -139,7 +139,7 @@ def describe_image(
 
     prefs = get_preferences(user)
     model = None
-    for candidate in [prefs.cheap_model, prefs.mid_model, prefs.primary_model]:
+    for candidate in [prefs.cheap_model, prefs.mid_model, prefs.top_model]:
         if supports_vision(candidate):
             model = candidate
             break

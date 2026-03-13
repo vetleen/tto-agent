@@ -300,7 +300,8 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATABASE_URL", ""))
 
 # LLM model tiers
-LLM_DEFAULT_MODEL = os.environ.get("LLM_DEFAULT_MODEL") or os.environ.get("DEFAULT_LLM_MODEL", "")
+LLM_DEFAULT_TOP_MODEL = os.environ.get("LLM_DEFAULT_TOP_MODEL") or os.environ.get("LLM_DEFAULT_MODEL") or os.environ.get("DEFAULT_LLM_MODEL", "")
+LLM_DEFAULT_MODEL = LLM_DEFAULT_TOP_MODEL  # backward compat alias
 LLM_DEFAULT_MID_MODEL = os.environ.get("LLM_DEFAULT_MID_MODEL", "")
 LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")

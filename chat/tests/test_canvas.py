@@ -296,7 +296,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.cheap_model = "gemini/gemini-2.5-flash"
         prefs.mid_model = "openai/gpt-5-mini"
-        prefs.primary_model = "anthropic/claude-sonnet-4-5"
+        prefs.top_model = "anthropic/claude-sonnet-4-5"
         mock_prefs.return_value = prefs
 
         mock_response = MagicMock()
@@ -314,7 +314,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.cheap_model = "openai/o3"
         prefs.mid_model = "openai/o4-mini"
-        prefs.primary_model = "custom/text-only"
+        prefs.top_model = "custom/text-only"
         mock_prefs.return_value = prefs
 
         result = describe_image(b"\x89PNG", "image/png", self.user)
@@ -328,7 +328,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.cheap_model = "anthropic/claude-haiku-4-5-20251001"
         prefs.mid_model = "openai/gpt-5-mini"
-        prefs.primary_model = "anthropic/claude-sonnet-4-5"
+        prefs.top_model = "anthropic/claude-sonnet-4-5"
         mock_prefs.return_value = prefs
 
         mock_svc.return_value.run.side_effect = RuntimeError("API error")
@@ -343,7 +343,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.cheap_model = "openai/o3"  # no vision
         prefs.mid_model = "openai/gpt-5-mini"  # vision
-        prefs.primary_model = "anthropic/claude-sonnet-4-5"
+        prefs.top_model = "anthropic/claude-sonnet-4-5"
         mock_prefs.return_value = prefs
 
         mock_response = MagicMock()

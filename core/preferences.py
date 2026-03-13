@@ -10,7 +10,7 @@ from django.conf import settings as django_settings
 
 @dataclass
 class ResolvedPreferences:
-    primary_model: str
+    top_model: str
     mid_model: str
     cheap_model: str
     allowed_models: list[str] = field(default_factory=list)
@@ -56,7 +56,7 @@ def get_preferences(user) -> ResolvedPreferences:
     user_theme = user_prefs.get("theme", "light") if user_prefs else "light"
 
     # Resolve each model tier with cascade
-    primary_model = _resolve_tier(
+    top_model = _resolve_tier(
         user_choice=user_models.get("primary"),
         org_default=org_models.get("primary"),
         system_default=system_primary,
@@ -113,7 +113,7 @@ def get_preferences(user) -> ResolvedPreferences:
     allowed_tools = base_allowed
 
     return ResolvedPreferences(
-        primary_model=primary_model,
+        top_model=top_model,
         mid_model=mid_model,
         cheap_model=cheap_model,
         allowed_models=effective_allowed,

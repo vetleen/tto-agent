@@ -384,6 +384,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 organization_name=org_name,
                 canvas=canvas,
                 skill=skill_obj,
+                has_subagent_tool="create_subagent" in tools,
             )
 
             # Stream LLM response
@@ -435,7 +436,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if requested_model and prefs and requested_model in prefs.allowed_models:
             model = requested_model
         else:
-            model = prefs.primary_model if prefs else None
+            model = prefs.top_model if prefs else None
 
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry

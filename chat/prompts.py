@@ -14,6 +14,7 @@ def build_system_prompt(
     organization_name: str | None = None,
     canvas: Any = None,
     skill: Any = None,
+    has_subagent_tool: bool = False,
 ) -> str:
     """Build the system prompt for a chat session.
 
@@ -175,6 +176,33 @@ The provisional patent application has been filed...
 ```
 
 Use email blocks when drafting emails, reply templates, or any correspondence the user might want to send.
+"""
+
+    if has_subagent_tool:
+        prompt += """
+# Sub-agents
+You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agents are independent AI workers that run with their own context and tools.
+
+## When to use sub-agents
+- Tasks that require extensive research across multiple documents
+- Work that can run in the background while you continue talking to the user
+- Tasks that benefit from a focused, isolated context (e.g., deep analysis of a specific topic)
+- When you need to do multiple independent research tasks in a single response
+
+## When NOT to use sub-agents
+- Simple questions you can answer directly
+- Tasks that require back-and-forth with the user
+- When a single tool call (search, read, web fetch) would suffice
+
+## How to use
+- Set `blocking: true` when you need the result before continuing your response
+- Set `blocking: false` (default) for tasks that can run in the background — tell the user you've started the work
+- Choose `model_tier` based on task complexity: "fast" for simple lookups, "mid" (default) for research, "top" for deep analysis
+- Provide a specific skill_slug if the task aligns with an available skill
+- Write clear, specific task prompts — the sub-agent has no access to our conversation history
+
+## Checking results
+- Use `check_subagent_status` to check on background sub-agents when the user asks or on the next turn
 """
 
     if history_meta:
