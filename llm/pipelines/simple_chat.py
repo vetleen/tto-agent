@@ -61,7 +61,8 @@ class SimpleChatPipeline(BasePipeline):
         req = request.model_copy(update={"tool_schemas": tools})
         model = get_model_registry().get_model(req.model)
         run_id = req.context.run_id if req.context else ""
-        yield from self._stream_with_tools(model, req, tools, run_id)
+        max_iter = self._get_max_iterations(request)
+        yield from self._stream_with_tools(model, req, tools, run_id, max_iter)
 
     def _resolve_tools(self, tool_names: List[str], context: RunContext | None = None) -> List[ContextAwareTool]:
         registry = get_tool_registry()
@@ -139,23 +140,50 @@ class SimpleChatPipeline(BasePipeline):
         request: ChatRequest,
         tools: List[ContextAwareTool],
         run_id: str,
+        max_iterations: int,
     ) -> Iterator[StreamEvent]:
         tool_by_name = {t.name: t for t in tools}
         req = request
         sequence = 1
 
-        for _ in range(self.max_tool_iterations):
+        for _ in range(max_iterations):
             response = chat_model.generate(req)
             msg = response.message
             if not msg.tool_calls:
-                # Final round: stream the real response token-by-token.
-                yield from chat_model.stream(req)
+                # Emit the already-fetched response as stream events
+                # instead of calling the LLM a second time via stream().
+                yield StreamEvent(
+                    event_type="message_start",
+                    data={"model": req.model},
+                    sequence=sequence,
+                    run_id=run_id,
+                )
+                sequence += 1
+                if msg.content:
+                    yield StreamEvent(
+                        event_type="token",
+                        data={"text": msg.content},
+                        sequence=sequence,
+                        run_id=run_id,
+                    )
+                    sequence += 1
+                usage_data = {}
+                if response.usage:
+                    usage_data = response.usage.model_dump(exclude_none=True)
+                yield StreamEvent(
+                    event_type="message_end",
+                    data=usage_data,
+                    sequence=sequence,
+                    run_id=run_id,
+                )
                 return
 
             new_messages = list(req.messages) + [msg]
-            results = self._execute_tool_calls(msg.tool_calls, tool_by_name)
 
-            for tc, result_str in results:
+            # Execute tools one-by-one, yielding tool_start BEFORE and
+            # tool_end AFTER each execution so the client gets real-time
+            # feedback.
+            for tc in msg.tool_calls:
                 yield StreamEvent(
                     event_type="tool_start",
                     data={
@@ -167,6 +195,16 @@ class SimpleChatPipeline(BasePipeline):
                     run_id=run_id,
                 )
                 sequence += 1
+
+                tool = tool_by_name.get(tc.name)
+                if not tool:
+                    result_str = json.dumps({"error": f"Unknown tool: {tc.name}"})
+                else:
+                    try:
+                        result = tool.invoke(tc.arguments)
+                        result_str = result if isinstance(result, str) else json.dumps(result)
+                    except Exception as e:
+                        result_str = json.dumps({"error": str(e)})
 
                 yield StreamEvent(
                     event_type="tool_end",
@@ -186,8 +224,33 @@ class SimpleChatPipeline(BasePipeline):
 
             req = req.model_copy(update={"messages": new_messages})
 
-        # Max iterations reached: stream the final response.
-        yield from chat_model.stream(req)
+        # Max iterations reached: one final generate, emitted as stream events.
+        response = chat_model.generate(req)
+        msg = response.message
+        yield StreamEvent(
+            event_type="message_start",
+            data={"model": req.model},
+            sequence=sequence,
+            run_id=run_id,
+        )
+        sequence += 1
+        if msg.content:
+            yield StreamEvent(
+                event_type="token",
+                data={"text": msg.content},
+                sequence=sequence,
+                run_id=run_id,
+            )
+            sequence += 1
+        usage_data = {}
+        if response.usage:
+            usage_data = response.usage.model_dump(exclude_none=True)
+        yield StreamEvent(
+            event_type="message_end",
+            data=usage_data,
+            sequence=sequence,
+            run_id=run_id,
+        )
 
 
 # Register so LLMService can resolve "simple_chat"

@@ -118,8 +118,21 @@ class CreateSubagentTool(ContextAwareTool):
         )
 
         if blocking:
-            # Execute synchronously
-            run_subagent(run.id)
+            # Execute synchronously with a deadline so the LLM service
+            # will abort if the sub-agent takes too long.
+            BLOCKING_TIMEOUT = 270  # seconds, matches Celery soft_time_limit
+            try:
+                run_subagent(run.id, deadline_seconds=BLOCKING_TIMEOUT)
+            except Exception:
+                # run_subagent sets PENDING on error (for Celery retry), but
+                # blocking calls don't retry — mark FAILED permanently.
+                from django.utils import timezone as tz
+                run.refresh_from_db()
+                if run.status != SubAgentRun.Status.COMPLETED:
+                    run.status = SubAgentRun.Status.FAILED
+                    run.completed_at = tz.now()
+                    run.save(update_fields=["status", "completed_at"])
+
             run.refresh_from_db()
             if run.status == SubAgentRun.Status.COMPLETED:
                 return run.result

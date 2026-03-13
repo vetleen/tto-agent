@@ -287,7 +287,7 @@ class CreateSubagentToolBlockingTests(TestCase):
     def test_blocking_returns_result(self, mock_run, mock_prefs):
         mock_prefs.return_value = _prefs()
 
-        def side_effect(run_id):
+        def side_effect(run_id, **kwargs):
             run = SubAgentRun.objects.get(pk=run_id)
             run.status = SubAgentRun.Status.COMPLETED
             run.result = "Analysis complete: 3 claims found."
@@ -313,11 +313,12 @@ class CreateSubagentToolBlockingTests(TestCase):
     def test_blocking_failed_returns_error(self, mock_run, mock_prefs):
         mock_prefs.return_value = _prefs()
 
-        def side_effect(run_id):
+        def side_effect(run_id, **kwargs):
             run = SubAgentRun.objects.get(pk=run_id)
-            run.status = SubAgentRun.Status.FAILED
+            run.status = SubAgentRun.Status.PENDING
             run.error = "LLM API error"
             run.save(update_fields=["status", "error"])
+            raise RuntimeError("LLM API error")
 
         mock_run.side_effect = side_effect
 
@@ -475,7 +476,8 @@ class RunSubagentTaskTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
-    def test_task_handles_failure(self, mock_prefs, mock_svc):
+    def test_task_handles_failure_sets_pending_for_retry(self, mock_prefs, mock_svc):
+        """On failure, run_subagent sets PENDING (not FAILED) so Celery can retry."""
         mock_prefs.return_value = _prefs()
         mock_svc.return_value.run.side_effect = RuntimeError("Provider down")
 
@@ -489,9 +491,8 @@ class RunSubagentTaskTests(TestCase):
             run_subagent_task(str(run.id))
 
         run.refresh_from_db()
-        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
         self.assertIn("Provider down", run.error)
-        self.assertIsNotNone(run.completed_at)
 
 
 # ---------------------------------------------------------------------------
@@ -547,3 +548,93 @@ class RunSubagentServiceTests(TestCase):
         call_args = mock_svc.return_value.run.call_args
         request = call_args[0][1]
         self.assertEqual(request.context.data_room_ids, [1, 2])
+
+
+# ---------------------------------------------------------------------------
+# Blocking timeout tests
+# ---------------------------------------------------------------------------
+
+class BlockingFailureTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="timeout@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("core.preferences.get_preferences")
+    @patch("chat.subagent_service.run_subagent")
+    def test_blocking_exception_sets_failed_permanently(self, mock_run, mock_prefs):
+        """Blocking sub-agent that raises sets FAILED (no Celery retry)."""
+        mock_prefs.return_value = _prefs()
+
+        def side_effect(run_id, **kwargs):
+            run = SubAgentRun.objects.get(pk=run_id)
+            run.status = SubAgentRun.Status.PENDING
+            run.error = "LLM provider timeout"
+            run.save(update_fields=["status", "error"])
+            raise RuntimeError("LLM provider timeout")
+
+        mock_run.side_effect = side_effect
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CreateSubagentTool, {
+            "prompt": "slow task", "blocking": True,
+        }, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("LLM provider timeout", result["message"])
+
+        # Blocking path should set FAILED permanently (not PENDING)
+        run = SubAgentRun.objects.first()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+
+    @patch("core.preferences.get_preferences")
+    @patch("chat.subagent_service.run_subagent")
+    def test_blocking_passes_deadline_seconds(self, mock_run, mock_prefs):
+        """Blocking sub-agent passes deadline_seconds to run_subagent."""
+        mock_prefs.return_value = _prefs()
+
+        def side_effect(run_id, **kwargs):
+            # Verify deadline_seconds was passed
+            assert kwargs.get("deadline_seconds") == 270
+            run = SubAgentRun.objects.get(pk=run_id)
+            run.status = SubAgentRun.Status.COMPLETED
+            run.result = "Done"
+            run.save(update_fields=["status", "result"])
+
+        mock_run.side_effect = side_effect
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        tool = CreateSubagentTool()
+        tool.set_context(ctx)
+        result = tool.invoke({"prompt": "task", "blocking": True})
+        self.assertEqual(result, "Done")
+
+
+# ---------------------------------------------------------------------------
+# Celery on_failure handler tests
+# ---------------------------------------------------------------------------
+
+class CeleryOnFailureTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="onfail@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_on_failure_sets_permanent_failed_status(self):
+        """on_failure handler should mark run as FAILED after retries exhausted."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="doomed task", status=SubAgentRun.Status.PENDING,
+        )
+
+        from chat.tasks import run_subagent_task
+        # Call the on_failure method on the task instance
+        run_subagent_task.on_failure(
+            RuntimeError("Final failure"),
+            "fake-task-id",
+            [str(run.id)],
+            {},
+            None,
+        )
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertIn("Final failure", run.error)
+        self.assertIsNotNone(run.completed_at)
