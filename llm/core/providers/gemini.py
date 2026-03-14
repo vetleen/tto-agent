@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from llm.core.providers.base import BaseLangChainChatModel
@@ -13,6 +14,8 @@ except Exception as exc:
     _import_error: Exception | None = exc
 else:
     _import_error = None
+
+logger = logging.getLogger(__name__)
 
 
 class GeminiChatModel(BaseLangChainChatModel):
