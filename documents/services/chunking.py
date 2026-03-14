@@ -51,8 +51,8 @@ def clean_extracted_text(text: str) -> str:
 
 # Lazy imports to avoid loading LangChain at module import when not needed
 def _get_loaders():
-    from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
-    return Docx2txtLoader, PyPDFLoader, TextLoader
+    from langchain_community.document_loaders import PyPDFLoader, TextLoader
+    return PyPDFLoader, TextLoader
 
 
 def _strip_nul_bytes(docs: list[Any]) -> list[Any]:
@@ -66,6 +66,37 @@ def _strip_nul_bytes(docs: list[Any]) -> list[Any]:
     return docs
 
 
+def _load_docx_as_markdown(path: Path) -> list[Any]:
+    """Extract DOCX content as Markdown using mammoth + markdownify.
+
+    Produces much richer text than docx2txt: headings, lists, tables and
+    bold/italic are preserved as Markdown, which the structure-aware chunker
+    can then split on.  Images are replaced with a simple placeholder.
+    """
+    import mammoth
+    from langchain.schema import Document
+    from markdownify import markdownify as md
+
+    image_counter = 0
+
+    def _image_placeholder(image):
+        nonlocal image_counter
+        image_counter += 1
+        return {"alt": f"[Image {image_counter}]", "src": "#"}
+
+    with open(path, "rb") as f:
+        result = mammoth.convert_to_html(
+            f, convert_image=mammoth.images.img_element(_image_placeholder)
+        )
+
+    content = md(result.value, heading_style="ATX")
+
+    # Clean up markdownify image syntax — ![alt](#) → just alt
+    content = re.sub(r"!\[(\[Image \d+\])\]\([^)]*\)", r"\1", content)
+
+    return [Document(page_content=content.strip())]
+
+
 def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     """
     Load a file into a list of LangChain Document objects.
@@ -75,7 +106,7 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
     ext = file_extension.lower().lstrip(".")
-    Docx2txtLoader, PyPDFLoader, TextLoader = _get_loaders()
+    PyPDFLoader, TextLoader = _get_loaders()
     if ext == "pdf":
         loader = PyPDFLoader(str(path))
         docs = loader.load()
@@ -83,8 +114,7 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
         logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
         return docs
     if ext == "docx":
-        loader = Docx2txtLoader(str(path))
-        docs = loader.load()
+        docs = _load_docx_as_markdown(path)
         logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
         return docs
     if ext in ("txt", "md", "html", "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log"):
