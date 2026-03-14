@@ -38,6 +38,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from core.preferences import get_preferences
         return get_preferences(self.user)
 
+    def _has_tool(self, tool_name: str) -> bool:
+        """Check if a tool is available given current prefs."""
+        if self.resolved_prefs:
+            return tool_name in self.resolved_prefs.allowed_tools
+        from llm.tools.registry import get_tool_registry
+        return tool_name in get_tool_registry().list_tools()
+
     @database_sync_to_async
     def _get_organization_name(self) -> str | None:
         from accounts.models import Membership
@@ -384,7 +391,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 organization_name=org_name,
                 canvas=canvas,
                 skill=skill_obj,
-                has_subagent_tool="create_subagent" in tools,
+                has_subagent_tool=self._has_tool("create_subagent"),
             )
 
             # Stream LLM response
