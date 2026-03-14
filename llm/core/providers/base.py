@@ -6,17 +6,21 @@ need to supply a configured LangChain chat model client.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Iterator
 
 from llm.core.callbacks import PromptCaptureCallback
 from llm.core.interfaces import ChatModel
 from llm.core.langchain_utils import to_langchain_messages, parse_tool_calls_from_ai_message
-from llm.service.errors import LLMProviderError
+from llm.service.errors import LLMProviderError, LLMRateLimitError
 from llm.service.pricing import calculate_cost
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
+
+logger = logging.getLogger(__name__)
 
 
 class BaseLangChainChatModel(ChatModel):
@@ -30,6 +34,14 @@ class BaseLangChainChatModel(ChatModel):
     name: str
     _client: object  # LangChain BaseChatModel instance
     _provider_label: str = "LLM"
+
+    _RATE_LIMIT_MAX_RETRIES = 2  # 3 total attempts
+    _RATE_LIMIT_BACKOFF_BASE = 1.0  # delays: 1s, 2s
+
+    @staticmethod
+    def _is_rate_limit_error(exc: BaseException) -> bool:
+        """Check if an exception is a 429 rate-limit error."""
+        return getattr(exc, "status_code", None) == 429
 
     @staticmethod
     def _extract_usage_dict(result: object) -> dict | None:
@@ -144,12 +156,35 @@ class BaseLangChainChatModel(ChatModel):
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         callback = PromptCaptureCallback()
-        try:
-            result = client.invoke(lc_messages, config={"callbacks": [callback]})
-        except Exception as exc:
-            raise LLMProviderError(
-                f"{self._provider_label} generate failed for model={self.name}"
-            ) from exc
+        last_exc: Exception | None = None
+        for attempt in range(1 + self._RATE_LIMIT_MAX_RETRIES):
+            try:
+                result = client.invoke(lc_messages, config={"callbacks": [callback]})
+                break
+            except Exception as exc:
+                last_exc = exc
+                if self._is_rate_limit_error(exc) and attempt < self._RATE_LIMIT_MAX_RETRIES:
+                    wait = self._RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning(
+                        "%s rate limited (attempt %d/%d), retrying in %.1fs",
+                        self._provider_label, attempt + 1,
+                        1 + self._RATE_LIMIT_MAX_RETRIES, wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                if self._is_rate_limit_error(exc):
+                    raise LLMRateLimitError(
+                        f"{self._provider_label} rate limited after "
+                        f"{1 + self._RATE_LIMIT_MAX_RETRIES} attempts for model={self.name}"
+                    ) from exc
+                raise LLMProviderError(
+                    f"{self._provider_label} generate failed for model={self.name}"
+                ) from exc
+        else:
+            raise LLMRateLimitError(
+                f"{self._provider_label} rate limited after "
+                f"{1 + self._RATE_LIMIT_MAX_RETRIES} attempts for model={self.name}"
+            ) from last_exc
 
         raw_content = getattr(result, "content", "") or ""
         # Responses API may return content as a list of typed blocks;
@@ -208,38 +243,53 @@ class BaseLangChainChatModel(ChatModel):
         last_chunk = None
         output_text_parts: list[str] = []
 
-        try:
-            for chunk in client.stream(lc_messages, config={"callbacks": [callback]}):
-                last_chunk = chunk
-                if not raw_prompt_yielded:
-                    raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
-                    yield StreamEvent(
-                        event_type="raw_prompt",
-                        data={"raw_prompt": raw_prompt},
-                        sequence=sequence,
-                        run_id=run_id,
-                    )
-                    sequence += 1
-                    raw_prompt_yielded = True
+        for attempt in range(1 + self._RATE_LIMIT_MAX_RETRIES):
+            try:
+                for chunk in client.stream(lc_messages, config={"callbacks": [callback]}):
+                    last_chunk = chunk
+                    if not raw_prompt_yielded:
+                        raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
+                        yield StreamEvent(
+                            event_type="raw_prompt",
+                            data={"raw_prompt": raw_prompt},
+                            sequence=sequence,
+                            run_id=run_id,
+                        )
+                        sequence += 1
+                        raw_prompt_yielded = True
 
-                for event_type, event_data in self._parse_chunk(chunk):
-                    if event_type == "token":
-                        output_text_parts.append(event_data.get("text", ""))
-                    yield StreamEvent(
-                        event_type=event_type,
-                        data=event_data,
-                        sequence=sequence,
-                        run_id=run_id,
+                    for event_type, event_data in self._parse_chunk(chunk):
+                        if event_type == "token":
+                            output_text_parts.append(event_data.get("text", ""))
+                        yield StreamEvent(
+                            event_type=event_type,
+                            data=event_data,
+                            sequence=sequence,
+                            run_id=run_id,
+                        )
+                        sequence += 1
+                break  # success
+            except Exception as exc:
+                if (
+                    self._is_rate_limit_error(exc)
+                    and not raw_prompt_yielded
+                    and attempt < self._RATE_LIMIT_MAX_RETRIES
+                ):
+                    wait = self._RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning(
+                        "%s stream rate limited (attempt %d/%d), retrying in %.1fs",
+                        self._provider_label, attempt + 1,
+                        1 + self._RATE_LIMIT_MAX_RETRIES, wait,
                     )
-                    sequence += 1
-        except Exception as exc:
-            yield StreamEvent(
-                event_type="error",
-                data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
-                sequence=sequence,
-                run_id=run_id,
-            )
-            return
+                    time.sleep(wait)
+                    continue
+                yield StreamEvent(
+                    event_type="error",
+                    data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
+                    sequence=sequence,
+                    run_id=run_id,
+                )
+                return
 
         end_data = self._extract_stream_usage(last_chunk, "".join(output_text_parts))
         end_data["model"] = self.name

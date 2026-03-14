@@ -21,11 +21,16 @@ class LLMTimeoutError(LLMError):
     """Timeout while waiting for a model or tool."""
 
 
+class LLMRateLimitError(LLMProviderError):
+    """Rate limit (429) from an LLM provider after retries exhausted."""
+
+
 __all__ = [
     "LLMError",
     "LLMPolicyDenied",
     "LLMConfigurationError",
     "LLMProviderError",
     "LLMTimeoutError",
+    "LLMRateLimitError",
 ]
 
