@@ -197,6 +197,113 @@ class LLMServiceTests(TestCase):
         self.assertEqual(result.message.content, "Hi")
         fake_pipeline.run.assert_called_once_with(request)
 
+    def test_run_logs_start_and_complete(self):
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.run.return_value = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        service = _make_service(fake_pipeline)
+        with self.assertLogs("llm.service.llm_service", level="INFO") as cm:
+            service.run("simple_chat", request)
+        log_output = "\n".join(cm.output)
+        self.assertIn("LLMService.run start", log_output)
+        self.assertIn("LLMService.run complete", log_output)
+        self.assertIn("pipeline=simple_chat", log_output)
+        self.assertIn("model=gpt-4o-mini", log_output)
+        self.assertIn(request.context.run_id, log_output)
+
+    def test_run_logs_error_on_failure(self):
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.run.side_effect = RuntimeError("API down")
+        service = _make_service(fake_pipeline)
+        with self.assertLogs("llm.service.llm_service", level="ERROR") as cm:
+            with self.assertRaises(LLMProviderError):
+                service.run("simple_chat", request)
+        log_output = "\n".join(cm.output)
+        self.assertIn("LLMService.run failed", log_output)
+        self.assertIn("error=RuntimeError", log_output)
+
+    def test_stream_logs_start_and_complete(self):
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hi")],
+            stream=True,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        run_id = request.context.run_id
+
+        def fake_stream(req):
+            yield StreamEvent(event_type="token", data={"text": "Hi"}, sequence=1, run_id=run_id)
+            yield StreamEvent(event_type="message_end", data={}, sequence=2, run_id=run_id)
+
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = fake_stream
+        service = _make_service(fake_pipeline)
+        with self.assertLogs("llm.service.llm_service", level="INFO") as cm:
+            list(service.stream("simple_chat", request))
+        log_output = "\n".join(cm.output)
+        self.assertIn("LLMService.stream start", log_output)
+        self.assertIn("LLMService.stream complete", log_output)
+        self.assertIn("pipeline=simple_chat", log_output)
+
+    def test_stream_logs_error_on_failure(self):
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hi")],
+            stream=True,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = ConnectionError("Network error")
+        service = _make_service(fake_pipeline)
+        with self.assertLogs("llm.service.llm_service", level="ERROR") as cm:
+            with self.assertRaises(LLMProviderError):
+                list(service.stream("simple_chat", request))
+        log_output = "\n".join(cm.output)
+        self.assertIn("LLMService.stream failed", log_output)
+        self.assertIn("error=ConnectionError", log_output)
+
+    def test_run_does_not_log_message_content(self):
+        request = ChatRequest(
+            messages=[Message(role="user", content="super secret prompt")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.run.return_value = ChatResponse(
+            message=Message(role="assistant", content="super secret response"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        service = _make_service(fake_pipeline)
+        with self.assertLogs("llm.service.llm_service", level="INFO") as cm:
+            service.run("simple_chat", request)
+        log_output = "\n".join(cm.output)
+        self.assertNotIn("super secret prompt", log_output)
+        self.assertNotIn("super secret response", log_output)
+
     async def test_astream_yields_events(self):
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],

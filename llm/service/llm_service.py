@@ -25,6 +25,7 @@ For streaming:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import queue
 import threading
@@ -39,6 +40,8 @@ from llm.types.context import RunContext
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse
 from llm.types.streaming import StreamEvent
+
+logger = logging.getLogger(__name__)
 
 LLM_MAX_CONCURRENT_STREAMS = int(os.environ.get("LLM_MAX_CONCURRENT_STREAMS", "20"))
 
@@ -81,16 +84,36 @@ class LLMService:
         pipeline = self._get_pipeline_registry().get_pipeline(pipeline_id)
         if request.stream and not pipeline.capabilities.get("streaming", False):
             raise LLMPolicyDenied(f"Pipeline {pipeline_id} does not support streaming")
+        run_id = request.context.run_id if request.context else "n/a"
+        logger.info(
+            "LLMService.run start pipeline=%s model=%s run_id=%s",
+            pipeline_id, request.model, run_id,
+        )
         t0 = time.monotonic()
         try:
             response = pipeline.run(request)
-            log_call(request, response, int((time.monotonic() - t0) * 1000))
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            log_call(request, response, duration_ms)
+            logger.info(
+                "LLMService.run complete pipeline=%s model=%s duration_ms=%d run_id=%s",
+                pipeline_id, request.model, duration_ms, run_id,
+            )
             return response
         except LLMError as exc:
-            log_error(request, exc, int((time.monotonic() - t0) * 1000))
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            log_error(request, exc, duration_ms)
+            logger.error(
+                "LLMService.run failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
+                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+            )
             raise
         except Exception as exc:
-            log_error(request, exc, int((time.monotonic() - t0) * 1000))
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            log_error(request, exc, duration_ms)
+            logger.error(
+                "LLMService.run failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
+                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+            )
             raise LLMProviderError(f"Pipeline {pipeline_id} run failed") from exc
 
     def stream(self, pipeline_id: str, request: ChatRequest) -> Iterator[StreamEvent]:
@@ -100,18 +123,38 @@ class LLMService:
         pipeline = self._get_pipeline_registry().get_pipeline(pipeline_id)
         if not pipeline.capabilities.get("streaming", False):
             raise LLMPolicyDenied(f"Pipeline {pipeline_id} does not support streaming")
+        run_id = request.context.run_id if request.context else "n/a"
+        logger.info(
+            "LLMService.stream start pipeline=%s model=%s run_id=%s",
+            pipeline_id, request.model, run_id,
+        )
         t0 = time.monotonic()
         events: list[StreamEvent] = []
         try:
             for event in pipeline.stream(request):
                 events.append(event)
                 yield event
-            log_stream(request, events, int((time.monotonic() - t0) * 1000))
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            log_stream(request, events, duration_ms)
+            logger.info(
+                "LLMService.stream complete pipeline=%s model=%s duration_ms=%d run_id=%s",
+                pipeline_id, request.model, duration_ms, run_id,
+            )
         except LLMError as exc:
-            log_error(request, exc, int((time.monotonic() - t0) * 1000), is_stream=True)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            log_error(request, exc, duration_ms, is_stream=True)
+            logger.error(
+                "LLMService.stream failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
+                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+            )
             raise
         except Exception as exc:
-            log_error(request, exc, int((time.monotonic() - t0) * 1000), is_stream=True)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            log_error(request, exc, duration_ms, is_stream=True)
+            logger.error(
+                "LLMService.stream failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
+                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+            )
             raise LLMProviderError(f"Pipeline {pipeline_id} stream failed") from exc
 
     # -- async bridge -------------------------------------------------------

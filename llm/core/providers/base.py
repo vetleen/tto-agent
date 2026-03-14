@@ -156,6 +156,11 @@ class BaseLangChainChatModel(ChatModel):
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         callback = PromptCaptureCallback()
+        run_id = request.context.run_id if request.context else "n/a"
+        logger.info(
+            "LLM generate start model=%s provider=%s messages=%d run_id=%s",
+            self.name, self._provider_label, len(request.messages), run_id,
+        )
         last_exc: Exception | None = None
         for attempt in range(1 + self._RATE_LIMIT_MAX_RETRIES):
             try:
@@ -173,14 +178,26 @@ class BaseLangChainChatModel(ChatModel):
                     time.sleep(wait)
                     continue
                 if self._is_rate_limit_error(exc):
+                    logger.error(
+                        "LLM generate rate limit exhausted model=%s provider=%s run_id=%s",
+                        self.name, self._provider_label, run_id,
+                    )
                     raise LLMRateLimitError(
                         f"{self._provider_label} rate limited after "
                         f"{1 + self._RATE_LIMIT_MAX_RETRIES} attempts for model={self.name}"
                     ) from exc
+                logger.exception(
+                    "LLM generate failed model=%s provider=%s run_id=%s",
+                    self.name, self._provider_label, run_id,
+                )
                 raise LLMProviderError(
                     f"{self._provider_label} generate failed for model={self.name}"
                 ) from exc
         else:
+            logger.error(
+                "LLM generate rate limit exhausted model=%s provider=%s run_id=%s",
+                self.name, self._provider_label, run_id,
+            )
             raise LLMRateLimitError(
                 f"{self._provider_label} rate limited after "
                 f"{1 + self._RATE_LIMIT_MAX_RETRIES} attempts for model={self.name}"
@@ -222,12 +239,25 @@ class BaseLangChainChatModel(ChatModel):
             )
 
         raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
+        logger.info(
+            "LLM generate complete model=%s provider=%s "
+            "input_tokens=%s output_tokens=%s cost_usd=%s run_id=%s",
+            self.name, self._provider_label,
+            usage.prompt_tokens if usage else None,
+            usage.completion_tokens if usage else None,
+            usage.cost_usd if usage else None,
+            run_id,
+        )
         return ChatResponse(message=message, model=self.name, usage=usage, metadata={"raw_prompt": raw_prompt})
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         lc_messages = to_langchain_messages(request.messages)
         client = self._get_streaming_client(request)
         run_id = request.context.run_id if request.context else ""
+        logger.info(
+            "LLM stream start model=%s provider=%s messages=%d run_id=%s",
+            self.name, self._provider_label, len(request.messages), run_id,
+        )
         sequence = 1
 
         yield StreamEvent(
@@ -283,6 +313,10 @@ class BaseLangChainChatModel(ChatModel):
                     )
                     time.sleep(wait)
                     continue
+                logger.exception(
+                    "LLM stream error model=%s provider=%s run_id=%s",
+                    self.name, self._provider_label, run_id,
+                )
                 yield StreamEvent(
                     event_type="error",
                     data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
@@ -293,6 +327,12 @@ class BaseLangChainChatModel(ChatModel):
 
         end_data = self._extract_stream_usage(last_chunk, "".join(output_text_parts))
         end_data["model"] = self.name
+        logger.info(
+            "LLM stream complete model=%s provider=%s "
+            "output_tokens=%s cost_usd=%s run_id=%s",
+            self.name, self._provider_label,
+            end_data.get("output_tokens"), end_data.get("cost_usd"), run_id,
+        )
         yield StreamEvent(
             event_type="message_end",
             data=end_data,
