@@ -55,6 +55,15 @@ When adding a new tool to the chat system, you **must** add corresponding displa
 
 Look for the `tool_start` and `tool_end` event handler blocks and add `else if` branches for the new tool name.
 
+## Logging
+
+- Use `logger = logging.getLogger(__name__)` in every module. The LOGGING config in `settings.py` routes by app name (`chat`, `documents`, `llm`, `core`, `accounts`).
+- Set `LOG_LEVEL` env var to control app log verbosity (default: `INFO`). Django framework logs stay at `WARNING`.
+- Every HTTP log line includes a `[request_id]` from Heroku's `X-Request-ID` header (or auto-generated UUID).
+- **Never log** passwords, tokens, API keys, session cookies, emails, or raw request/response bodies. Use object IDs instead.
+- Log levels: `DEBUG` for local troubleshooting only, `INFO` for normal business events, `WARNING` for unexpected but recoverable issues, `ERROR` for failed requests/tasks, `CRITICAL` for service health issues.
+- Log exceptions with `logger.exception()` to capture stack traces.
+
 ## Working Directory
 
 The working directory persists between Bash tool calls. If already in the repo root, don't redundantly prefix commands with `cd <path> &&` — just run them directly.
