@@ -100,7 +100,8 @@ class GenerateLoggingTests(SimpleTestCase):
         self.assertIn("LLM generate failed", log_output)
         self.assertIn("model=test-model", log_output)
 
-    def test_generate_logs_rate_limit_exhaustion(self):
+    @patch("llm.core.providers.base.time.sleep", return_value=None)
+    def test_generate_logs_rate_limit_exhaustion(self, mock_sleep):
         model = _TestModel()
         exc = Exception("rate limited")
         exc.status_code = 429

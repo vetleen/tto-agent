@@ -7,6 +7,7 @@ need to supply a configured LangChain chat model client.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Iterator
 
 from llm.core.interfaces import ChatModel
@@ -19,6 +20,17 @@ from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
 
 logger = logging.getLogger(__name__)
+
+# Rate-limit retry settings
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_INITIAL_WAIT = 30  # seconds
+_RATE_LIMIT_BACKOFF_FACTOR = 2
+_RATE_LIMIT_MAX_WAIT = 120  # seconds
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Check whether an exception is a 429 rate-limit error."""
+    return getattr(exc, "status_code", None) == 429
 
 
 class BaseLangChainChatModel(ChatModel):
@@ -179,24 +191,45 @@ class BaseLangChainChatModel(ChatModel):
             "LLM generate start model=%s provider=%s messages=%d run_id=%s",
             self.name, self._provider_label, len(request.messages), run_id,
         )
-        try:
-            result = client.invoke(lc_messages, config=config)
-        except Exception as exc:
-            if getattr(exc, "status_code", None) == 429:
-                logger.error(
-                    "LLM generate rate limited model=%s provider=%s run_id=%s",
-                    self.name, self._provider_label, run_id,
-                )
-                raise LLMRateLimitError(
-                    f"{self._provider_label} rate limited for model={self.name}"
-                ) from exc
-            logger.exception(
-                "LLM generate failed model=%s provider=%s run_id=%s",
+
+        result = None
+        last_exc: Exception | None = None
+        for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+            try:
+                result = client.invoke(lc_messages, config=config)
+                break
+            except Exception as exc:
+                if not _is_rate_limit_error(exc):
+                    logger.exception(
+                        "LLM generate failed model=%s provider=%s run_id=%s",
+                        self.name, self._provider_label, run_id,
+                    )
+                    raise LLMProviderError(
+                        f"{self._provider_label} generate failed for model={self.name}"
+                    ) from exc
+                last_exc = exc
+                if attempt < _RATE_LIMIT_MAX_RETRIES:
+                    wait = min(
+                        _RATE_LIMIT_INITIAL_WAIT * (_RATE_LIMIT_BACKOFF_FACTOR ** attempt),
+                        _RATE_LIMIT_MAX_WAIT,
+                    )
+                    logger.warning(
+                        "LLM generate rate limited model=%s provider=%s "
+                        "attempt=%d/%d waiting=%.0fs run_id=%s",
+                        self.name, self._provider_label,
+                        attempt + 1, _RATE_LIMIT_MAX_RETRIES + 1,
+                        wait, run_id,
+                    )
+                    time.sleep(wait)
+
+        if result is None:
+            logger.error(
+                "LLM generate rate limited (retries exhausted) model=%s provider=%s run_id=%s",
                 self.name, self._provider_label, run_id,
             )
-            raise LLMProviderError(
-                f"{self._provider_label} generate failed for model={self.name}"
-            ) from exc
+            raise LLMRateLimitError(
+                f"{self._provider_label} rate limited for model={self.name}"
+            ) from last_exc
 
         raw_content = getattr(result, "content", "") or ""
         # Responses API may return content as a list of typed blocks;
@@ -273,29 +306,73 @@ class BaseLangChainChatModel(ChatModel):
         accumulated = None  # AIMessageChunk accumulator for tool_calls aggregation
         output_text_parts: list[str] = []
 
-        try:
-            for chunk in client.stream(lc_messages, config=config):
-                last_chunk = chunk
-                accumulated = chunk if accumulated is None else accumulated + chunk
+        stream_succeeded = False
+        for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+            try:
+                for chunk in client.stream(lc_messages, config=config):
+                    last_chunk = chunk
+                    accumulated = chunk if accumulated is None else accumulated + chunk
 
-                for event_type, event_data in self._parse_chunk(chunk):
-                    if event_type == "token":
-                        output_text_parts.append(event_data.get("text", ""))
+                    for event_type, event_data in self._parse_chunk(chunk):
+                        if event_type == "token":
+                            output_text_parts.append(event_data.get("text", ""))
+                        yield StreamEvent(
+                            event_type=event_type,
+                            data=event_data,
+                            sequence=sequence,
+                            run_id=run_id,
+                        )
+                        sequence += 1
+                stream_succeeded = True
+                break
+            except Exception as exc:
+                if _is_rate_limit_error(exc) and attempt < _RATE_LIMIT_MAX_RETRIES:
+                    # Only retry if no tokens have been streamed yet
+                    if output_text_parts:
+                        logger.error(
+                            "LLM stream rate limited mid-stream model=%s provider=%s run_id=%s",
+                            self.name, self._provider_label, run_id,
+                        )
+                        yield StreamEvent(
+                            event_type="error",
+                            data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
+                            sequence=sequence,
+                            run_id=run_id,
+                        )
+                        return
+                    wait = min(
+                        _RATE_LIMIT_INITIAL_WAIT * (_RATE_LIMIT_BACKOFF_FACTOR ** attempt),
+                        _RATE_LIMIT_MAX_WAIT,
+                    )
+                    logger.warning(
+                        "LLM stream rate limited model=%s provider=%s "
+                        "attempt=%d/%d waiting=%.0fs run_id=%s",
+                        self.name, self._provider_label,
+                        attempt + 1, _RATE_LIMIT_MAX_RETRIES + 1,
+                        wait, run_id,
+                    )
+                    time.sleep(wait)
+                    # Reset state for retry
+                    last_chunk = None
+                    accumulated = None
+                    output_text_parts = []
+                else:
+                    logger.exception(
+                        "LLM stream error model=%s provider=%s run_id=%s",
+                        self.name, self._provider_label, run_id,
+                    )
                     yield StreamEvent(
-                        event_type=event_type,
-                        data=event_data,
+                        event_type="error",
+                        data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
                         sequence=sequence,
                         run_id=run_id,
                     )
-                    sequence += 1
-        except Exception as exc:
-            logger.exception(
-                "LLM stream error model=%s provider=%s run_id=%s",
-                self.name, self._provider_label, run_id,
-            )
+                    return
+
+        if not stream_succeeded:
             yield StreamEvent(
                 event_type="error",
-                data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
+                data={"message": f"{self._provider_label} rate limited (retries exhausted)"},
                 sequence=sequence,
                 run_id=run_id,
             )
