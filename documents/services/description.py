@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 
 import tiktoken
@@ -26,15 +25,14 @@ _SYSTEM_PROMPT = (
 )
 
 _STRUCTURED_SYSTEM_PROMPT = (
-    "Read this document and return a JSON object with two fields:\n"
+    "Read this document and provide:\n"
     '1. "description": A single paragraph (~100 tokens) that will help an AI '
     "agent decide whether to read the full document. This is not a summary — "
     "it is a relevance signal. Focus on what kind of document this is, what "
     "subject matter and entities it concerns, and what questions it could answer.\n"
     '2. "document_type": A concise document type classification (e.g. Agreement, '
     "Patent, License, Report, Correspondence, Policy, Technical Specification, "
-    "Disclosure, Application, Financial, Research Paper, Presentation, or Other).\n"
-    "Output ONLY valid JSON, no markdown fences."
+    "Disclosure, Application, Financial, Research Paper, Presentation, or Other)."
 )
 
 
@@ -67,11 +65,12 @@ def generate_description_and_tags_from_text(
 ) -> dict:
     """Generate a description and document_type tag from raw text using the cheap LLM.
 
+    Uses structured output (with_structured_output) for reliable JSON parsing.
     Returns ``{"description": "...", "tags": {"document_type": "Agreement"}}``.
-    Falls back to treating the full response as a description if JSON parsing fails.
     """
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
+    from llm.types.structured import DocumentDescriptionOutput
 
     if not text.strip():
         return {"description": "", "tags": {}}
@@ -94,18 +93,10 @@ def generate_description_and_tags_from_text(
     )
 
     service = get_llm_service()
-    response = service.run("simple_chat", request)
-    raw = response.message.content.strip()
+    parsed, usage = service.run_structured(request, DocumentDescriptionOutput)
 
-    # Try to parse as JSON
-    try:
-        parsed = json.loads(raw)
-        description = parsed.get("description", raw).strip()
-        doc_type = parsed.get("document_type", "").strip()
-    except (json.JSONDecodeError, AttributeError):
-        logger.warning("generate_description_and_tags_from_text: JSON parse failed, using raw response")
-        description = raw
-        doc_type = ""
+    description = parsed.description.strip()
+    doc_type = parsed.document_type.strip()
 
     tags = {}
     if doc_type:

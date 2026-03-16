@@ -80,3 +80,75 @@ class ToLangchainMessagesTests(TestCase):
     def test_empty_list_returns_empty(self):
         result = to_langchain_messages([])
         self.assertEqual(result, [])
+
+
+class AnthropicCacheControlTests(TestCase):
+    """Test Anthropic prompt caching via cache_control breakpoints."""
+
+    def test_system_message_gets_cache_control_for_anthropic(self):
+        messages = [
+            Message(role="system", content="You are helpful"),
+            Message(role="user", content="Hi"),
+        ]
+        result = to_langchain_messages(messages, provider="anthropic")
+        self.assertIsInstance(result[0], SystemMessage)
+        # System message should have content-block format with cache_control
+        self.assertIsInstance(result[0].content, list)
+        self.assertEqual(len(result[0].content), 1)
+        block = result[0].content[0]
+        self.assertEqual(block["type"], "text")
+        self.assertEqual(block["text"], "You are helpful")
+        self.assertEqual(block["cache_control"], {"type": "ephemeral"})
+
+    def test_second_to_last_gets_cache_control_with_3_plus_messages(self):
+        messages = [
+            Message(role="system", content="System"),
+            Message(role="user", content="First question"),
+            Message(role="assistant", content="First answer"),
+            Message(role="user", content="Second question"),
+        ]
+        result = to_langchain_messages(messages, provider="anthropic")
+        # Second-to-last (index 2) should have cache_control in additional_kwargs
+        self.assertIn("cache_control", result[2].additional_kwargs)
+        self.assertEqual(result[2].additional_kwargs["cache_control"], {"type": "ephemeral"})
+        # Last message should NOT have cache_control
+        self.assertNotIn("cache_control", result[3].additional_kwargs)
+
+    def test_no_cache_control_when_provider_is_none(self):
+        messages = [
+            Message(role="system", content="System"),
+            Message(role="user", content="First question"),
+            Message(role="assistant", content="First answer"),
+            Message(role="user", content="Second question"),
+        ]
+        result = to_langchain_messages(messages)
+        # System message should be plain string content
+        self.assertIsInstance(result[0].content, str)
+        # No cache_control on any message
+        for msg in result:
+            self.assertNotIn("cache_control", getattr(msg, "additional_kwargs", {}))
+
+    def test_no_cache_control_when_provider_is_openai(self):
+        messages = [
+            Message(role="system", content="System"),
+            Message(role="user", content="Question"),
+            Message(role="assistant", content="Answer"),
+            Message(role="user", content="Follow-up"),
+        ]
+        result = to_langchain_messages(messages, provider="openai")
+        self.assertIsInstance(result[0].content, str)
+        for msg in result:
+            self.assertNotIn("cache_control", getattr(msg, "additional_kwargs", {}))
+
+    def test_short_conversation_only_caches_system(self):
+        """With < 3 messages, only system gets cache_control (no second breakpoint)."""
+        messages = [
+            Message(role="system", content="System"),
+            Message(role="user", content="Hello"),
+        ]
+        result = to_langchain_messages(messages, provider="anthropic")
+        # System gets cache_control
+        self.assertIsInstance(result[0].content, list)
+        self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral"})
+        # User message should NOT have cache_control
+        self.assertNotIn("cache_control", result[1].additional_kwargs)

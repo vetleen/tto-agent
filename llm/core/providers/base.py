@@ -7,7 +7,6 @@ need to supply a configured LangChain chat model client.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Iterator
 
 from llm.core.callbacks import PromptCaptureCallback
@@ -26,32 +25,28 @@ logger = logging.getLogger(__name__)
 class BaseLangChainChatModel(ChatModel):
     """Shared generate/stream logic for all LangChain-backed providers.
 
-    Subclasses must set ``self.name`` and ``self._client`` in their
-    ``__init__`` (the LangChain chat model instance, e.g. ``ChatOpenAI``).
-    They may override ``_provider_label`` for error messages.
+    Constructed by the model factory with a pre-built LangChain client.
+    Subclasses may override ``_parse_chunk`` and ``_get_streaming_client``
+    for provider-specific behavior (thinking/reasoning).
     """
 
     name: str
     _client: object  # LangChain BaseChatModel instance
     _provider_label: str = "LLM"
+    _provider_id: str | None = None  # e.g. "openai", "anthropic", "google_genai"
 
-    _RATE_LIMIT_MAX_RETRIES = 2  # 3 total attempts
-    _RATE_LIMIT_BACKOFF_BASE = 1.0  # delays: 1s, 2s
-
-    @staticmethod
-    def _is_rate_limit_error(exc: BaseException) -> bool:
-        """Check if an exception is a 429 rate-limit error."""
-        return getattr(exc, "status_code", None) == 429
+    def __init__(self, model_name: str, client: object) -> None:
+        self.name = model_name
+        self._client = client
 
     @staticmethod
     def _extract_usage_dict(result: object) -> dict | None:
         """Extract a usage dict with input/output/total tokens from a LangChain result.
 
         Checks ``usage_metadata`` first (standard path), then falls back to
-        ``response_metadata`` which may contain raw provider data (e.g. OpenAI
-        Responses API puts usage in ``response_metadata["usage"]``).
+        ``response_metadata["usage"]`` (OpenAI Responses API edge case).
         """
-        # Primary: usage_metadata (populated by most LangChain providers)
+        # Primary: usage_metadata (populated by all LangChain providers with stream_usage=True)
         usage_meta = getattr(result, "usage_metadata", None)
         if isinstance(usage_meta, dict) and usage_meta.get("output_tokens"):
             return usage_meta
@@ -59,19 +54,9 @@ class BaseLangChainChatModel(ChatModel):
         # Fallback: response_metadata.usage (OpenAI Responses API / raw provider data)
         resp_meta = getattr(result, "response_metadata", None)
         if isinstance(resp_meta, dict):
-            # OpenAI Responses API: response_metadata["usage"]
             usage = resp_meta.get("usage")
             if isinstance(usage, dict) and usage.get("output_tokens"):
                 return usage
-            # Chat Completions API fallback: response_metadata["token_usage"]
-            token_usage = resp_meta.get("token_usage")
-            if isinstance(token_usage, dict):
-                # Normalize prompt_tokens/completion_tokens to input/output
-                return {
-                    "input_tokens": token_usage.get("prompt_tokens") or token_usage.get("input_tokens"),
-                    "output_tokens": token_usage.get("completion_tokens") or token_usage.get("output_tokens"),
-                    "total_tokens": token_usage.get("total_tokens"),
-                }
 
         return None
 
@@ -118,10 +103,8 @@ class BaseLangChainChatModel(ChatModel):
     def _extract_stream_usage(self, last_chunk: object | None, output_text: str) -> dict:
         """Build usage dict from the final streaming chunk.
 
-        Checks ``last_chunk.usage_metadata`` for provider-reported token counts
-        (OpenAI with ``stream_usage=True``, Anthropic, Gemini), then falls back
-        to ``response_metadata`` (OpenAI Responses API).  Last resort: estimate
-        output tokens via tiktoken.
+        With ``stream_usage=True`` set consistently via the factory, usage_metadata
+        is populated reliably on the final chunk for all providers.
         """
         data: dict = {}
         usage_meta = self._extract_usage_dict(last_chunk) if last_chunk else None
@@ -138,70 +121,51 @@ class BaseLangChainChatModel(ChatModel):
             data["cached_tokens"] = cached_tokens
             data["cost_usd"] = float(cost) if cost is not None else None
         elif output_text:
-            # Fallback: estimate output tokens only
-            try:
-                import tiktoken
-                enc = tiktoken.get_encoding("cl100k_base")
-                output_tokens = len(enc.encode(output_text))
-            except Exception:
-                output_tokens = len(output_text) // 4  # rough estimate
-            cost = calculate_cost(self.name, None, output_tokens)
-            data["output_tokens"] = output_tokens
-            data["cost_usd"] = float(cost) if cost is not None else None
+            logger.warning(
+                "No usage_metadata on final stream chunk for model=%s; "
+                "usage data will be incomplete.",
+                self.name,
+            )
         return data
 
+    def _get_callbacks(self, request: ChatRequest, callback: PromptCaptureCallback) -> list:
+        """Build the callbacks list for a generate/stream call."""
+        callbacks = [callback]
+        usage_cb = (request.params or {}).get("_usage_callback")
+        if usage_cb is not None:
+            callbacks.append(usage_cb)
+        return callbacks
+
     def generate(self, request: ChatRequest) -> ChatResponse:
-        lc_messages = to_langchain_messages(request.messages)
+        lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
         client = self._client
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         callback = PromptCaptureCallback()
+        callbacks = self._get_callbacks(request, callback)
         run_id = request.context.run_id if request.context else "n/a"
         logger.info(
             "LLM generate start model=%s provider=%s messages=%d run_id=%s",
             self.name, self._provider_label, len(request.messages), run_id,
         )
-        last_exc: Exception | None = None
-        for attempt in range(1 + self._RATE_LIMIT_MAX_RETRIES):
-            try:
-                result = client.invoke(lc_messages, config={"callbacks": [callback]})
-                break
-            except Exception as exc:
-                last_exc = exc
-                if self._is_rate_limit_error(exc) and attempt < self._RATE_LIMIT_MAX_RETRIES:
-                    wait = self._RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
-                    logger.warning(
-                        "%s rate limited (attempt %d/%d), retrying in %.1fs",
-                        self._provider_label, attempt + 1,
-                        1 + self._RATE_LIMIT_MAX_RETRIES, wait,
-                    )
-                    time.sleep(wait)
-                    continue
-                if self._is_rate_limit_error(exc):
-                    logger.error(
-                        "LLM generate rate limit exhausted model=%s provider=%s run_id=%s",
-                        self.name, self._provider_label, run_id,
-                    )
-                    raise LLMRateLimitError(
-                        f"{self._provider_label} rate limited after "
-                        f"{1 + self._RATE_LIMIT_MAX_RETRIES} attempts for model={self.name}"
-                    ) from exc
-                logger.exception(
-                    "LLM generate failed model=%s provider=%s run_id=%s",
+        try:
+            result = client.invoke(lc_messages, config={"callbacks": callbacks})
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 429:
+                logger.error(
+                    "LLM generate rate limited model=%s provider=%s run_id=%s",
                     self.name, self._provider_label, run_id,
                 )
-                raise LLMProviderError(
-                    f"{self._provider_label} generate failed for model={self.name}"
+                raise LLMRateLimitError(
+                    f"{self._provider_label} rate limited for model={self.name}"
                 ) from exc
-        else:
-            logger.error(
-                "LLM generate rate limit exhausted model=%s provider=%s run_id=%s",
+            logger.exception(
+                "LLM generate failed model=%s provider=%s run_id=%s",
                 self.name, self._provider_label, run_id,
             )
-            raise LLMRateLimitError(
-                f"{self._provider_label} rate limited after "
-                f"{1 + self._RATE_LIMIT_MAX_RETRIES} attempts for model={self.name}"
-            ) from last_exc
+            raise LLMProviderError(
+                f"{self._provider_label} generate failed for model={self.name}"
+            ) from exc
 
         raw_content = getattr(result, "content", "") or ""
         # Responses API may return content as a list of typed blocks;
@@ -251,7 +215,7 @@ class BaseLangChainChatModel(ChatModel):
         return ChatResponse(message=message, model=self.name, usage=usage, metadata={"raw_prompt": raw_prompt})
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
-        lc_messages = to_langchain_messages(request.messages)
+        lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
         client = self._get_streaming_client(request)
         run_id = request.context.run_id if request.context else ""
         logger.info(
@@ -269,61 +233,47 @@ class BaseLangChainChatModel(ChatModel):
         sequence += 1
 
         callback = PromptCaptureCallback()
+        callbacks = self._get_callbacks(request, callback)
         raw_prompt_yielded = False
         last_chunk = None
         output_text_parts: list[str] = []
 
-        for attempt in range(1 + self._RATE_LIMIT_MAX_RETRIES):
-            try:
-                for chunk in client.stream(lc_messages, config={"callbacks": [callback]}):
-                    last_chunk = chunk
-                    if not raw_prompt_yielded:
-                        raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
-                        yield StreamEvent(
-                            event_type="raw_prompt",
-                            data={"raw_prompt": raw_prompt},
-                            sequence=sequence,
-                            run_id=run_id,
-                        )
-                        sequence += 1
-                        raw_prompt_yielded = True
-
-                    for event_type, event_data in self._parse_chunk(chunk):
-                        if event_type == "token":
-                            output_text_parts.append(event_data.get("text", ""))
-                        yield StreamEvent(
-                            event_type=event_type,
-                            data=event_data,
-                            sequence=sequence,
-                            run_id=run_id,
-                        )
-                        sequence += 1
-                break  # success
-            except Exception as exc:
-                if (
-                    self._is_rate_limit_error(exc)
-                    and not raw_prompt_yielded
-                    and attempt < self._RATE_LIMIT_MAX_RETRIES
-                ):
-                    wait = self._RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
-                    logger.warning(
-                        "%s stream rate limited (attempt %d/%d), retrying in %.1fs",
-                        self._provider_label, attempt + 1,
-                        1 + self._RATE_LIMIT_MAX_RETRIES, wait,
+        try:
+            for chunk in client.stream(lc_messages, config={"callbacks": callbacks}):
+                last_chunk = chunk
+                if not raw_prompt_yielded:
+                    raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
+                    yield StreamEvent(
+                        event_type="raw_prompt",
+                        data={"raw_prompt": raw_prompt},
+                        sequence=sequence,
+                        run_id=run_id,
                     )
-                    time.sleep(wait)
-                    continue
-                logger.exception(
-                    "LLM stream error model=%s provider=%s run_id=%s",
-                    self.name, self._provider_label, run_id,
-                )
-                yield StreamEvent(
-                    event_type="error",
-                    data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
-                    sequence=sequence,
-                    run_id=run_id,
-                )
-                return
+                    sequence += 1
+                    raw_prompt_yielded = True
+
+                for event_type, event_data in self._parse_chunk(chunk):
+                    if event_type == "token":
+                        output_text_parts.append(event_data.get("text", ""))
+                    yield StreamEvent(
+                        event_type=event_type,
+                        data=event_data,
+                        sequence=sequence,
+                        run_id=run_id,
+                    )
+                    sequence += 1
+        except Exception as exc:
+            logger.exception(
+                "LLM stream error model=%s provider=%s run_id=%s",
+                self.name, self._provider_label, run_id,
+            )
+            yield StreamEvent(
+                event_type="error",
+                data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
+                sequence=sequence,
+                run_id=run_id,
+            )
+            return
 
         end_data = self._extract_stream_usage(last_chunk, "".join(output_text_parts))
         end_data["model"] = self.name

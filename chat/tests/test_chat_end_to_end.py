@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Iterator, List, Optional
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from channels.db import database_sync_to_async
 from channels.routing import URLRouter
@@ -16,7 +16,6 @@ from django.test import TransactionTestCase, override_settings
 from chat.models import ChatMessage, ChatThread
 from chat.routing import websocket_urlpatterns
 from documents.models import DataRoom
-from llm.core.registry import get_model_registry
 from llm.types.messages import Message, ToolCall
 from llm.types.responses import ChatResponse
 from llm.types.streaming import StreamEvent
@@ -59,8 +58,9 @@ class _FakeChatModel:
                 )
             ]
 
+        content = "" if tool_calls else self.tokens
         return ChatResponse(
-            message=Message(role="assistant", content="", tool_calls=tool_calls),
+            message=Message(role="assistant", content=content, tool_calls=tool_calls),
             model=self.model_name,
             usage=None,
             metadata={},
@@ -90,12 +90,13 @@ class ChatEndToEndTests(TransactionTestCase):
             name="Test", slug="test-project", created_by=self.user
         )
 
-        self._model_registry = get_model_registry()
-        self._orig_prefix_factories = dict(self._model_registry._prefix_factories)
+        # Patch create_chat_model so we can inject fake models
+        self._mock_create = MagicMock()
+        self._patcher = patch("llm.pipelines.simple_chat.create_chat_model", self._mock_create)
+        self._patcher.start()
 
     def tearDown(self):
-        # Restore global registry (tests run in-process).
-        self._model_registry._prefix_factories = dict(self._orig_prefix_factories)
+        self._patcher.stop()
 
     async def _connect(self):
         app = make_application()
@@ -106,8 +107,7 @@ class ChatEndToEndTests(TransactionTestCase):
         return communicator
 
     def _register_fake_model(self, fake: _FakeChatModel) -> None:
-        # ModelRegistry resolves by prefix match.
-        self._model_registry.register_model_prefix("test-", lambda _name: fake)
+        self._mock_create.return_value = fake
 
     async def _db_messages(self):
         return await database_sync_to_async(list)(
@@ -147,9 +147,10 @@ class ChatEndToEndTests(TransactionTestCase):
         self.assertEqual(msgs[0][1], "Hi")
         self.assertEqual(msgs[1][1], "Hello")
 
-        # Without data_room_ids, no tools → pipeline calls stream() not generate().
-        self.assertGreaterEqual(len(fake.stream_requests), 1)
-        req = fake.stream_requests[0]
+        # With globally registered tools (web_fetch, canvas, etc.) the pipeline
+        # routes through _stream_with_tools() which calls generate() internally.
+        self.assertGreaterEqual(len(fake.generate_requests), 1)
+        req = fake.generate_requests[0]
         roles = [m.role for m in req.messages]
         self.assertEqual(roles[0], "system")
         self.assertIn("helpful assistant", req.messages[0].content.lower())
@@ -206,7 +207,7 @@ class ChatEndToEndTests(TransactionTestCase):
 
     @patch.dict(os.environ, {"LLM_ALLOWED_MODELS": "", "DEFAULT_LLM_MODEL": ""}, clear=False)
     async def test_missing_llm_allowed_models_surfaces_as_error_event(self):
-        # Intentionally do not register any model; resolve_model should fail before registry lookup.
+        # Intentionally do not register any model; resolve_model should fail before factory.
         communicator = await self._connect()
         await communicator.send_json_to({"type": "chat.message", "content": "Hi"})
 

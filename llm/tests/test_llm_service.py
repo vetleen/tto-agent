@@ -1,8 +1,9 @@
 """Tests for LLMService (routing, context injection, model resolution, error wrapping)."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
+from pydantic import BaseModel, Field
 
 from llm.pipelines.registry import PipelineRegistry
 from llm.service.llm_service import LLMService, get_llm_service
@@ -329,3 +330,90 @@ class LLMServiceTests(TestCase):
         self.assertEqual(events[0].event_type, "message_start")
         self.assertEqual(events[1].data, {"text": "Hi"})
         self.assertEqual(events[2].event_type, "message_end")
+
+
+class _TestSchema(BaseModel):
+    description: str = Field(description="A description")
+    document_type: str = Field(description="Document type")
+
+
+class RunStructuredTests(TestCase):
+    """Test LLMService.run_structured."""
+
+    @patch("llm.core.model_factory.create_chat_model")
+    def test_run_structured_returns_parsed_and_usage(self, mock_create):
+        fake_raw_msg = MagicMock()
+        fake_raw_msg.usage_metadata = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        }
+        fake_parsed = _TestSchema(description="A patent.", document_type="Patent")
+        fake_structured = MagicMock()
+        fake_structured.invoke.return_value = {
+            "raw": fake_raw_msg,
+            "parsed": fake_parsed,
+            "parsing_error": None,
+        }
+        fake_client = MagicMock()
+        fake_client.with_structured_output.return_value = fake_structured
+        fake_model = MagicMock()
+        fake_model._client = fake_client
+        mock_create.return_value = fake_model
+
+        service = LLMService(resolve_model_fn=_stub_resolve)
+        request = ChatRequest(
+            messages=[Message(role="user", content="Describe this")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        parsed, usage = service.run_structured(request, _TestSchema)
+        self.assertEqual(parsed.description, "A patent.")
+        self.assertEqual(parsed.document_type, "Patent")
+        self.assertIsNotNone(usage)
+        self.assertEqual(usage.prompt_tokens, 100)
+        self.assertEqual(usage.completion_tokens, 50)
+
+    @patch("llm.core.model_factory.create_chat_model")
+    def test_run_structured_wraps_exceptions(self, mock_create):
+        mock_create.side_effect = RuntimeError("Provider down")
+
+        service = LLMService(resolve_model_fn=_stub_resolve)
+        request = ChatRequest(
+            messages=[Message(role="user", content="Describe")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        with self.assertRaises(LLMProviderError) as ctx:
+            service.run_structured(request, _TestSchema)
+        self.assertIn("Structured output failed", str(ctx.exception))
+
+    @patch("llm.core.model_factory.create_chat_model")
+    def test_run_structured_no_usage(self, mock_create):
+        fake_raw_msg = MagicMock()
+        fake_raw_msg.usage_metadata = None
+        fake_parsed = _TestSchema(description="A doc.", document_type="Report")
+        fake_structured = MagicMock()
+        fake_structured.invoke.return_value = {
+            "raw": fake_raw_msg,
+            "parsed": fake_parsed,
+            "parsing_error": None,
+        }
+        fake_client = MagicMock()
+        fake_client.with_structured_output.return_value = fake_structured
+        fake_model = MagicMock()
+        fake_model._client = fake_client
+        mock_create.return_value = fake_model
+
+        service = LLMService(resolve_model_fn=_stub_resolve)
+        request = ChatRequest(
+            messages=[Message(role="user", content="Describe")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        parsed, usage = service.run_structured(request, _TestSchema)
+        self.assertEqual(parsed.description, "A doc.")
+        self.assertIsNone(usage)

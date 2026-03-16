@@ -3,19 +3,61 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Iterator, List, Tuple
 
 from llm.core.interfaces import ChatModel
-from llm.core.registry import get_model_registry
+from llm.core.model_factory import create_chat_model
 from llm.pipelines.base import BasePipeline
 from llm.pipelines.registry import get_pipeline_registry
 from llm.types.messages import Message, ToolCall
 from llm.types.requests import ChatRequest
-from llm.types.responses import ChatResponse
+from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
 from llm.types.context import RunContext
 from llm.tools.interfaces import ContextAwareTool
 from llm.tools.registry import get_tool_registry
+
+try:  # pragma: no cover
+    from langchain_core.callbacks import BaseCallbackHandler
+except Exception:
+    BaseCallbackHandler = object  # type: ignore[assignment,misc]
+
+logger = logging.getLogger(__name__)
+
+
+class UsageMetadataCallbackHandler(BaseCallbackHandler):
+    """Aggregates token usage across multiple LLM calls within a pipeline run.
+
+    Collects usage_metadata from each on_llm_end callback and sums them,
+    giving accurate totals for multi-turn tool-calling conversations.
+    """
+
+    def __init__(self) -> None:
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+        self.total_tokens: int = 0
+
+    def on_llm_end(self, response, *, run_id, **kwargs) -> None:
+        """Accumulate usage from each LLM call completion."""
+        for generation_list in (response.generations or []):
+            for generation in generation_list:
+                msg = getattr(generation, "message", None)
+                usage = getattr(msg, "usage_metadata", None)
+                if isinstance(usage, dict):
+                    self.total_input_tokens += usage.get("input_tokens", 0)
+                    self.total_output_tokens += usage.get("output_tokens", 0)
+                    self.total_tokens += usage.get("total_tokens", 0)
+
+    def get_aggregate_usage(self) -> dict:
+        """Return the aggregated usage across all calls."""
+        if self.total_tokens == 0 and self.total_input_tokens == 0:
+            return {}
+        return {
+            "input_tokens": self.total_input_tokens,
+            "output_tokens": self.total_output_tokens,
+            "total_tokens": self.total_tokens,
+        }
 
 
 class SimpleChatPipeline(BasePipeline):
@@ -43,8 +85,28 @@ class SimpleChatPipeline(BasePipeline):
             raise ValueError("request.model must be set by the service before calling pipeline")
         tools = self._resolve_tools(tool_names, request.context)
         req = request.model_copy(update={"tool_schemas": tools})
+
+        # Create usage callback to aggregate across tool loop rounds
+        usage_callback = UsageMetadataCallbackHandler()
+        params = dict(req.params or {})
+        params["_usage_callback"] = usage_callback
+        req = req.model_copy(update={"params": params})
+
         max_iter = self._get_max_iterations(request)
-        return self._run_tool_loop(get_model_registry().get_model(req.model), req, tools, max_iter)
+        response = self._run_tool_loop(create_chat_model(req.model), req, tools, max_iter)
+
+        # Attach aggregate usage if the response doesn't already have it
+        aggregate = usage_callback.get_aggregate_usage()
+        if aggregate and response.usage is None:
+            response = response.model_copy(update={
+                "usage": Usage(
+                    prompt_tokens=aggregate.get("input_tokens"),
+                    completion_tokens=aggregate.get("output_tokens"),
+                    total_tokens=aggregate.get("total_tokens"),
+                ),
+            })
+
+        return response
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         tool_names = request.tools or []
@@ -52,14 +114,21 @@ class SimpleChatPipeline(BasePipeline):
             model_name = request.model
             if not model_name:
                 raise ValueError("request.model must be set by the service before calling pipeline")
-            yield from get_model_registry().get_model(model_name).stream(request)
+            yield from create_chat_model(model_name).stream(request)
             return
 
         if not request.model:
             raise ValueError("request.model must be set by the service before calling pipeline")
         tools = self._resolve_tools(tool_names, request.context)
         req = request.model_copy(update={"tool_schemas": tools})
-        model = get_model_registry().get_model(req.model)
+
+        # Create usage callback to aggregate across tool loop rounds
+        usage_callback = UsageMetadataCallbackHandler()
+        params = dict(req.params or {})
+        params["_usage_callback"] = usage_callback
+        req = req.model_copy(update={"params": params})
+
+        model = create_chat_model(req.model)
         run_id = req.context.run_id if req.context else ""
         max_iter = self._get_max_iterations(request)
         yield from self._stream_with_tools(model, req, tools, run_id, max_iter)
@@ -82,7 +151,7 @@ class SimpleChatPipeline(BasePipeline):
         model_name = request.model
         if not model_name:
             raise ValueError("request.model must be set by the service before calling pipeline")
-        chat_model = get_model_registry().get_model(model_name)
+        chat_model = create_chat_model(model_name)
         return chat_model.generate(request)
 
     @staticmethod
@@ -258,4 +327,4 @@ _registry = get_pipeline_registry()
 _registry.register_pipeline(SimpleChatPipeline())
 
 
-__all__ = ["SimpleChatPipeline"]
+__all__ = ["SimpleChatPipeline", "UsageMetadataCallbackHandler"]

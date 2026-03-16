@@ -1,5 +1,4 @@
 from .interfaces import ChatModel
-from .registry import ModelRegistry, get_model_registry
+from .model_factory import create_chat_model
 
-__all__ = ["ChatModel", "ModelRegistry", "get_model_registry"]
-
+__all__ = ["ChatModel", "create_chat_model"]

@@ -1156,13 +1156,15 @@ class GenerateDescriptionAndTagsTests(TestCase):
         self.assertEqual(result["tags"], {})
 
     @patch("llm.get_llm_service")
-    def test_valid_json_response(self, mock_get_service):
+    def test_valid_structured_response(self, mock_get_service):
         from documents.services.description import generate_description_and_tags_from_text
+        from llm.types.structured import DocumentDescriptionOutput
 
-        mock_response = Mock()
-        mock_response.message.content = '{"description": "A patent document.", "document_type": "Patent"}'
+        mock_parsed = DocumentDescriptionOutput(
+            description="A patent document.", document_type="Patent"
+        )
         mock_service = Mock()
-        mock_service.run.return_value = mock_response
+        mock_service.run_structured.return_value = (mock_parsed, None)
         mock_get_service.return_value = mock_service
 
         result = generate_description_and_tags_from_text("Some patent text", user_id=1)
@@ -1170,27 +1172,15 @@ class GenerateDescriptionAndTagsTests(TestCase):
         self.assertEqual(result["tags"], {"document_type": "Patent"})
 
     @patch("llm.get_llm_service")
-    def test_fallback_on_invalid_json(self, mock_get_service):
+    def test_empty_document_type(self, mock_get_service):
         from documents.services.description import generate_description_and_tags_from_text
+        from llm.types.structured import DocumentDescriptionOutput
 
-        mock_response = Mock()
-        mock_response.message.content = "Just a plain description paragraph."
+        mock_parsed = DocumentDescriptionOutput(
+            description="A document about something.", document_type=""
+        )
         mock_service = Mock()
-        mock_service.run.return_value = mock_response
-        mock_get_service.return_value = mock_service
-
-        result = generate_description_and_tags_from_text("Some text", user_id=1)
-        self.assertEqual(result["description"], "Just a plain description paragraph.")
-        self.assertEqual(result["tags"], {})
-
-    @patch("llm.get_llm_service")
-    def test_json_without_document_type(self, mock_get_service):
-        from documents.services.description import generate_description_and_tags_from_text
-
-        mock_response = Mock()
-        mock_response.message.content = '{"description": "A document about something."}'
-        mock_service = Mock()
-        mock_service.run.return_value = mock_response
+        mock_service.run_structured.return_value = (mock_parsed, None)
         mock_get_service.return_value = mock_service
 
         result = generate_description_and_tags_from_text("Some text", user_id=1)
@@ -1200,11 +1190,13 @@ class GenerateDescriptionAndTagsTests(TestCase):
     @patch("llm.get_llm_service")
     def test_generate_description_from_text_backward_compat(self, mock_get_service):
         from documents.services.description import generate_description_from_text
+        from llm.types.structured import DocumentDescriptionOutput
 
-        mock_response = Mock()
-        mock_response.message.content = '{"description": "A license agreement.", "document_type": "Agreement"}'
+        mock_parsed = DocumentDescriptionOutput(
+            description="A license agreement.", document_type="Agreement"
+        )
         mock_service = Mock()
-        mock_service.run.return_value = mock_response
+        mock_service.run_structured.return_value = (mock_parsed, None)
         mock_get_service.return_value = mock_service
 
         result = generate_description_from_text("Some text", user_id=1)

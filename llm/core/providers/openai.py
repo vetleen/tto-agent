@@ -1,28 +1,16 @@
 from __future__ import annotations
 
 import logging
-import os
 
+from llm.core.model_factory import create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
-from llm.core.registry import get_model_registry
-from llm.service.errors import LLMConfigurationError, LLMProviderError
 from llm.types.requests import ChatRequest
-
-try:  # pragma: no cover - exercised via mocks in unit tests
-    from langchain_openai import ChatOpenAI
-except Exception as exc:  # ImportError or other environment issues
-    # Defer failure until provider is actually constructed
-    ChatOpenAI = None  # type: ignore[assignment]
-    _import_error: Exception | None = exc
-else:
-    _import_error = None
 
 logger = logging.getLogger(__name__)
 
 _REASONING_PREFIXES = ("o1", "o3", "o4")
 
-# Models that require OpenAI's Responses API (LangChain may not recognise all of
-# them yet via its built-in _model_prefers_responses_api check).
+# Models that require OpenAI's Responses API
 _RESPONSES_API_PREFIXES = ("gpt-5.4", "gpt-5.2-pro")
 
 
@@ -32,33 +20,15 @@ class OpenAIChatModel(BaseLangChainChatModel):
     # Prefix used in LLM_ALLOWED_MODELS; strip before sending to API.
     _API_MODEL_PREFIX = "openai/"
     _provider_label = "OpenAI"
+    _provider_id = "openai"
 
-    def __init__(self, model_name: str) -> None:
-        if _import_error is not None or ChatOpenAI is None:
-            raise LLMProviderError(
-                "langchain-openai is not installed or failed to import. "
-                "Install with `pip install langchain-openai`."
-            ) from _import_error
-
-        if not os.getenv("OPENAI_API_KEY"):
-            raise LLMConfigurationError(
-                "OPENAI_API_KEY is not set; cannot initialize OpenAIChatModel."
-            )
-
-        self.name = model_name
+    def __init__(self, model_name: str, client: object) -> None:
+        super().__init__(model_name, client)
         # API expects model id without provider prefix (e.g. gpt-5-mini, not openai/gpt-5-mini).
         api_model = model_name
         if model_name.startswith(self._API_MODEL_PREFIX):
-            api_model = model_name[len(self._API_MODEL_PREFIX) :]
+            api_model = model_name[len(self._API_MODEL_PREFIX):]
         self._api_model = api_model
-
-        use_responses = any(api_model.startswith(p) for p in _RESPONSES_API_PREFIXES)
-        # Let ChatOpenAI read configuration from environment; enable streaming usage accounting.
-        self._client = ChatOpenAI(
-            model=api_model,
-            stream_usage=True,
-            **({"use_responses_api": True} if use_responses else {}),
-        )
 
     # -- Reasoning support for o-series models --
 
@@ -69,14 +39,10 @@ class OpenAIChatModel(BaseLangChainChatModel):
         client = self._client
         if request.params.get("thinking") and self._is_reasoning_model():
             try:
-                use_responses = any(
-                    self._api_model.startswith(p) for p in _RESPONSES_API_PREFIXES
-                )
-                client = ChatOpenAI(
-                    model=self._api_model,
-                    stream_usage=True,
+                client = create_variant_client(
+                    self._api_model,
+                    provider="openai",
                     model_kwargs={"reasoning_effort": "medium"},
-                    **({"use_responses_api": True} if use_responses else {}),
                 )
             except Exception:
                 logger.warning(
@@ -118,13 +84,6 @@ class OpenAIChatModel(BaseLangChainChatModel):
         if text:
             events.append(("token", {"text": text}))
         return events
-
-
-# Register default prefixes for OpenAI models.
-_registry = get_model_registry()
-_registry.register_model_prefix("gpt-", lambda name: OpenAIChatModel(name))
-_registry.register_model_prefix("o1", lambda name: OpenAIChatModel(name))
-_registry.register_model_prefix("openai/", lambda name: OpenAIChatModel(name))
 
 
 __all__ = ["OpenAIChatModel"]

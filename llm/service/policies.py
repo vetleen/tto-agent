@@ -52,4 +52,15 @@ def resolve_model(requested: Optional[str] = None) -> str:
     return allowed[0]
 
 
-__all__ = ["get_allowed_models", "resolve_model"]
+def get_fallback_models() -> list[str]:
+    """Return fallback model names from LLM_FALLBACK_MODELS env var.
+
+    Not wired up yet -- reserved for future .with_fallbacks() support.
+    """
+    raw = os.environ.get("LLM_FALLBACK_MODELS", "").strip()
+    if not raw:
+        return []
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+__all__ = ["get_allowed_models", "resolve_model", "get_fallback_models"]

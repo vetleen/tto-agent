@@ -49,10 +49,10 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.return_value = fake_response
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
-            mock_registry.return_value.get_model.return_value = fake_model
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create:
+            mock_create.return_value = fake_model
             response = SimpleChatPipeline().run(request)
-            mock_registry.return_value.get_model.assert_called_once_with("gpt-4o-mini")
+            mock_create.assert_called_once_with("gpt-4o-mini")
             fake_model.generate.assert_called_once()
             # Request should not have tool_schemas
             call_args = fake_model.generate.call_args[0][0]
@@ -100,9 +100,9 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.side_effect = [response_with_tool, final_response]
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
-            mock_registry.return_value.get_model.return_value = fake_model
+            mock_create.return_value = fake_model
             response = SimpleChatPipeline().run(request)
 
         self.assertEqual(fake_model.generate.call_count, 2)
@@ -116,7 +116,7 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(second_call.messages[2].role, "tool")
         self.assertIn("5", second_call.messages[2].content)
 
-    def test_model_branch_calls_registry_and_returns_response(self):
+    def test_model_branch_calls_factory_and_returns_response(self):
         request = ChatRequest(
             messages=[Message(role="user", content="Hello")],
             stream=False,
@@ -132,10 +132,10 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.return_value = fake_response
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
-            mock_registry.return_value.get_model.return_value = fake_model
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create:
+            mock_create.return_value = fake_model
             response = SimpleChatPipeline().run(request)
-            mock_registry.return_value.get_model.assert_called_once_with("gpt-4o-mini")
+            mock_create.assert_called_once_with("gpt-4o-mini")
             fake_model.generate.assert_called_once()
         self.assertEqual(response.message.content, "Hi there")
 
@@ -154,8 +154,8 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.stream.side_effect = fake_stream
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
-            mock_registry.return_value.get_model.return_value = fake_model
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create:
+            mock_create.return_value = fake_model
             events = list(SimpleChatPipeline().stream(request))
         self.assertEqual(len(events), 3)
         self.assertEqual(events[1].data.get("text"), "Hello")
@@ -176,10 +176,10 @@ class SimpleChatPipelineTests(TestCase):
         )
         fake_model = MagicMock()
         fake_model.generate.return_value = fake_response
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
-            mock_registry.return_value.get_model.return_value = fake_model
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create:
+            mock_create.return_value = fake_model
             response = SimpleChatPipeline().run(request)
-            mock_registry.return_value.get_model.assert_called_once_with("gpt-4o-mini")
+            mock_create.assert_called_once_with("gpt-4o-mini")
         self.assertEqual(response.message.content, "Echo")
 
     def test_run_missing_model_raises_value_error(self):
@@ -234,9 +234,9 @@ class SimpleChatPipelineTests(TestCase):
         fake_model.generate.side_effect = [tool_response, tool_response, tool_response, final_response]
 
         pipeline = SimpleChatPipeline(max_tool_iterations=3)
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
-            mock_registry.return_value.get_model.return_value = fake_model
+            mock_create.return_value = fake_model
             response = pipeline.run(request)
 
         # 3 tool rounds + 1 final (tool_schemas preserved for raw_prompt capture)
@@ -291,9 +291,9 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.side_effect = [tool_response, final_response]
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
-            mock_registry.return_value.get_model.return_value = fake_model
+            mock_create.return_value = fake_model
             response = SimpleChatPipeline().run(request)
 
         self.assertEqual(fake_model.generate.call_count, 2)
@@ -322,7 +322,7 @@ class SimpleChatPipelineTests(TestCase):
             usage=None,
             metadata={},
         )
-        # Second generate() returns no tool_calls → emitted as synthetic events
+        # Second generate() returns no tool_calls -> emitted as synthetic events
         no_tool_response = ChatResponse(
             message=Message(role="assistant", content="The result is 3."),
             model="gpt-4o-mini",
@@ -333,9 +333,9 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.side_effect = [tool_response, no_tool_response]
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
-            mock_registry.return_value.get_model.return_value = fake_model
+            mock_create.return_value = fake_model
             events = list(SimpleChatPipeline().stream(request))
 
         # Verify tool events
@@ -390,9 +390,9 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.side_effect = [tool_response, final_response]
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
-            mock_registry.return_value.get_model.return_value = fake_model
+            mock_create.return_value = fake_model
             for event in SimpleChatPipeline().stream(request):
                 if event.event_type == "tool_start":
                     execution_log.append("tool_start_yielded")
@@ -407,7 +407,7 @@ class SimpleChatPipelineTests(TestCase):
         ])
 
     def test_stream_no_double_llm_call_on_final_response(self):
-        """Final response should NOT call stream() after generate() — uses synthetic events."""
+        """Final response should NOT call stream() after generate() -- uses synthetic events."""
         request = ChatRequest(
             messages=[Message(role="user", content="test")],
             stream=True,
@@ -428,12 +428,12 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.generate.side_effect = [tool_response, final_response]
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
-            mock_registry.return_value.get_model.return_value = fake_model
+            mock_create.return_value = fake_model
             list(SimpleChatPipeline().stream(request))
 
-        # stream() should never be called — we emit synthetic events instead
+        # stream() should never be called -- we emit synthetic events instead
         fake_model.stream.assert_not_called()
         self.assertEqual(fake_model.generate.call_count, 2)
 
@@ -462,9 +462,9 @@ class SimpleChatPipelineTests(TestCase):
         fake_model.generate.side_effect = [tool_response, tool_response, final_response]
 
         pipeline = SimpleChatPipeline(max_tool_iterations=10)  # default=10 but request says 2
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry, \
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
-            mock_registry.return_value.get_model.return_value = fake_model
+            mock_create.return_value = fake_model
             events = list(pipeline.stream(request))
 
         # Should be 2 tool rounds + 1 final = 3 generate calls
@@ -489,8 +489,8 @@ class SimpleChatPipelineTests(TestCase):
         fake_model = MagicMock()
         fake_model.stream.side_effect = fake_stream
 
-        with patch("llm.pipelines.simple_chat.get_model_registry") as mock_registry:
-            mock_registry.return_value.get_model.return_value = fake_model
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create:
+            mock_create.return_value = fake_model
             events = list(SimpleChatPipeline().stream(request))
 
         self.assertEqual(events[0].event_type, "message_start")

@@ -38,19 +38,6 @@ class ExtractUsageDictTests(SimpleTestCase):
         self.assertEqual(usage["output_tokens"], 163)
         self.assertEqual(usage["total_tokens"], 616)
 
-    def test_response_metadata_token_usage_fallback(self):
-        """Chat Completions API: usage may live in response_metadata['token_usage']."""
-        result = _FakeResult(
-            usage_metadata=None,
-            response_metadata={
-                "token_usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
-            },
-        )
-        usage = BaseLangChainChatModel._extract_usage_dict(result)
-        self.assertEqual(usage["input_tokens"], 100)
-        self.assertEqual(usage["output_tokens"], 50)
-        self.assertEqual(usage["total_tokens"], 150)
-
     def test_empty_usage_metadata_falls_through(self):
         """usage_metadata present but with no output_tokens should fall through."""
         result = _FakeResult(
