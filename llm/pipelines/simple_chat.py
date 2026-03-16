@@ -133,6 +133,30 @@ class SimpleChatPipeline(BasePipeline):
         max_iter = self._get_max_iterations(request)
         yield from self._stream_with_tools(model, req, tools, run_id, max_iter)
 
+    @staticmethod
+    def _build_message_end_data(response: ChatResponse) -> dict:
+        """Build message_end event data from a ChatResponse.
+
+        Uses key names matching the provider stream format (input_tokens/output_tokens)
+        so log_stream() can extract them correctly, and includes response metadata.
+        """
+        data: dict = {}
+        if response.usage:
+            usage_map = {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+                "cached_tokens": response.usage.cached_tokens,
+                "reasoning_tokens": response.usage.reasoning_tokens,
+                "cost_usd": response.usage.cost_usd,
+            }
+            data.update({k: v for k, v in usage_map.items() if v is not None})
+        if response.metadata:
+            for key in ("response_metadata", "stop_reason", "provider_model_id"):
+                if key in response.metadata:
+                    data[key] = response.metadata[key]
+        return data
+
     def _resolve_tools(self, tool_names: List[str], context: RunContext | None = None) -> List[ContextAwareTool]:
         registry = get_tool_registry()
         tools = []
@@ -236,12 +260,10 @@ class SimpleChatPipeline(BasePipeline):
                         run_id=run_id,
                     )
                     sequence += 1
-                usage_data = {}
-                if response.usage:
-                    usage_data = response.usage.model_dump(exclude_none=True)
+                end_data = self._build_message_end_data(response)
                 yield StreamEvent(
                     event_type="message_end",
-                    data=usage_data,
+                    data=end_data,
                     sequence=sequence,
                     run_id=run_id,
                 )
@@ -311,12 +333,10 @@ class SimpleChatPipeline(BasePipeline):
                 run_id=run_id,
             )
             sequence += 1
-        usage_data = {}
-        if response.usage:
-            usage_data = response.usage.model_dump(exclude_none=True)
+        end_data = self._build_message_end_data(response)
         yield StreamEvent(
             event_type="message_end",
-            data=usage_data,
+            data=end_data,
             sequence=sequence,
             run_id=run_id,
         )
