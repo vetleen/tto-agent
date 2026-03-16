@@ -6,10 +6,13 @@ SYSTEM_SKILLS = [
         "name": "Skill Creator",
         "description": """\
 Create a new agent skill, improve existing ones, and optimize skill \
-triggering. A skill is a set of instructions, tools and templates you drop into an AI agent's prompt \
+triggering.
+
+**Note:** A skill is a set of instructions, tools and templates you drop into an AI agent's prompt \
 that teaches it how to do something specific. At its core, a skill \
 is just markdown text with 3-5 parts: a name, a description,  \
-a body of instructions, and optionally, additional tools and templates. \
+a body of instructions, and optionally, additional tools and templates.
+
 Use this skill when the user wants to build \
 a skill from scratch, turn a workflow into a reusable skill, edit \
 or refine an existing skill, debug why a skill isn't triggering, \
@@ -26,7 +29,6 @@ A meta-skill for building high-quality agent skills for yourself (Wilfred, a Tec
 A skill is a database record with these fields:
 
 - **name** — Human-readable title (e.g. "Patent Claim Drafter")
-- **slug** — URL-safe identifier, auto-generated from name (e.g. `patent-claim-drafter`). 1-64 chars.
 - **description** — 1-1024 chars. This is the ONLY text the system sees when deciding whether to activate the skill. It is the primary trigger mechanism.
 - **instructions** — The full playbook injected into your system prompt when the skill is active. This is where the skill's logic lives.
 - **tool_names** — List of tool names the skill needs (e.g. `["search_documents", "read_document"]`). These tools become available only when this skill is active.
@@ -34,11 +36,9 @@ A skill is a database record with these fields:
 
 Skills exist at three levels: **system** (built-in, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it.
 
-## Workspace and capabilities
+## Workspace and tools
 
-### Tabbed canvas workspace
-
-The canvas supports up to 10 tabs per thread. Use one tab per skill field you are drafting:
+Use one canvas tab per skill field you are drafting:
 
 | Canvas tab title | Skill field | Persist with |
 |---|---|---|
@@ -46,26 +46,16 @@ The canvas supports up to 10 tabs per thread. Use one tab per skill field you ar
 | `Instructions` | `instructions` | `save_canvas_to_skill_field(canvas_name="Instructions", field_name="instructions")` |
 | `Template: <name>` | template `<name>` | `save_canvas_to_skill_field(canvas_name="Template: <name>", field_name="<name>")` |
 
-Use `write_canvas(title="...")` to create a tab, `edit_canvas(canvas_name="...")` to update it, and `show_skill_field_in_canvas` to load existing content back into a tab for editing.
-
-### Sub-agents
-
-`create_subagent` and `check_subagent_status` are always-available standard tools. Skills can instruct the agent to spawn sub-agents for parallel research, background processing, or delegated sub-tasks — no need to declare them in `tool_names`.
-
 ## Workflow
 
 You guide the user through a repeating loop:
 
 1. **Capture intent** — understand what the skill should do
-2. **Create the skill** — use `create_skill` to create the DB record
-3. **Draft in canvas tabs** — open "Description" and "Instructions" tabs
-4. **Iterate** — refine each tab independently with the user
-5. **Persist** — `save_canvas_to_skill_field` each tab to its field when ready
-6. **Create templates** — when relevant, add templates the skill should use
-7. **Attach tools** — choose which existing tools the skill needs via `edit_skill` with `tool_names`
-8. **Test** — have the user try the skill in a fresh conversation
-9. **Review & improve** — revise based on feedback
-10. **Optimize description** — tune trigger accuracy
+2. **Draft in canvas** — open one tab per field (Description, Instructions, Templates). Iterate with the user.
+3. **Create & persist** — `create_skill` to create the DB record, then `save_canvas_to_skill_field` for each tab
+4. **Attach tools** — choose which existing tools the skill needs via `edit_skill` with `tool_names`
+5. **Test** — have the user try the skill in a fresh conversation
+6. **Review & improve** — revise based on feedback, optimize the description for trigger accuracy
 
 Your job is to figure out where the user is in this loop and help them move
 forward. Maybe they already have a draft? Jump ahead to testing. Maybe
@@ -113,9 +103,9 @@ Come prepared with context to reduce the burden on the user.
 
 ---
 
-## Step 2: Create the skill and write the description
+## Step 2: Draft in canvas
 
-Use `create_skill` to create a new user-level skill. Then craft the description.
+Open one canvas tab per field you need to draft — typically Title, Description, Instructions, and optionally Templates. Iterate with the user on all tabs before persisting.
 
 ### Writing a great description
 
@@ -154,18 +144,10 @@ description means the skill never fires, no matter how good the instructions are
 **Bad example:**
 > Helps with patents.
 
-Save the description via `edit_skill` with a text edit on the description field.
-
----
-
-## Step 3: Draft the instructions
+### Writing instructions
 
 The instructions are the actual playbook the agent follows once the skill
 activates. They are loaded into the system prompt, so every token counts.
-
-**Use the canvas as your workspace** — open one tab per field (see the tab mapping in "Workspace and capabilities"), iterate, then persist.
-
-**Writing rules:**
 
 - **Keep instructions as short and concise as possible while maintaining maximum effectiveness.** The agent's context window is a
   shared resource.
@@ -191,33 +173,16 @@ activates. They are loaded into the system prompt, so every token counts.
   ```
 
 - **Define output formats explicitly** when the output needs structure.
-  Consider whether a template (see Step 4) would be more appropriate for
+  Consider whether a template would be more appropriate for
   reusable output skeletons.
 
-- **Leverage sub-agents** when designing skill instructions. Skills can
-  instruct the agent to use `create_subagent` for parallel research,
-  background processing, or delegated sub-tasks.
+### Creating templates
 
----
+Use templates when the skill should produce output in a very specific format
+(e.g. a report skeleton, email template, meeting minutes format).
 
-## Step 4: Create templates
-
-Templates are named text blocks associated with a skill. When the skill is
-active, template names are listed in the system prompt. The agent accesses
-their full content on demand via `view_template` or `load_template_to_canvas`.
-
-Use templates when the skill should produce output in a very specific format:
-- A report skeleton
-- A very specific email template
-- A meeting minutes format
-- A funding application template
-
-**Workflow:**
-1. Draft template in a new canvas: `write_canvas(title="Template: <name>", content="...")`
-2. Iterate with the user
-3. Save: `save_canvas_to_skill_field(canvas_name="Template: <name>", field_name="<template_name>")`
-
-To view an existing template, use `show_skill_field_in_canvas` to load it into the canvas.
+Draft each template in its own canvas tab (`Template: <name>`), iterate with
+the user, then persist alongside the other fields in Step 3.
 
 **Important:** When a skill has templates, add `view_template` and
 `load_template_to_canvas` to the skill's `tool_names` — otherwise the agent
@@ -225,14 +190,24 @@ won't be able to access the templates at runtime.
 
 ---
 
-## Step 5: Attach tools
+## Step 3: Create & persist
+
+Once the user is happy with the drafts:
+
+1. `create_skill` to create the DB record
+2. `save_canvas_to_skill_field` for each canvas tab (Description, Instructions, and any Templates)
+
+---
+
+## Step 4: Attach tools
 
 Use `list_all_tools` to see every tool that exists. The output is split into
 two groups:
 
 - **Standard tools** — always available to Wilfred (e.g. web search, canvas,
   document search, sub-agents). These do **not** need to be attached to a skill.
-  If you accidentally include one in `tool_names` it will be silently ignored.
+  Note: Sub-agents (`create_subagent`) are standard tools — use them for parallel research or delegated sub-tasks when designing skills. No need to declare them in `tool_names`.
+
 - **Skill-specific tools** — only available when a skill explicitly lists them
   in its `tool_names`. These are the ones you need to attach.
 
@@ -242,12 +217,9 @@ To discover and attach tools:
 3. Discuss with the user which skill-specific tools the skill actually needs
 4. Save the list via `edit_skill`, e.g. `updates={"tool_names": ["view_template", "load_template_to_canvas"]}`
 
-The user's organization admin can disable specific tools per-skill, so the
-effective tool set may be narrower than what you declare.
-
 ---
 
-## Step 6: Test the skill
+## Step 5: Test the skill
 
 After creating an initial version, ask the user to test it. You may suggest 2-5 realistic test prompts — things a real user
 would actually say, or have the user come up with the prompts themselves.
@@ -263,11 +235,11 @@ attached. They can then come back to this conversation to give feedback.
 
 ---
 
-## Step 7: Review and improve
+## Step 6: Review & improve
 
 Based on test results, iterate on the skill:
 
-1. Use `show_skill_field_in_canvas` to load the instructions into the canvas
+1. Use `show_skill_field_in_canvas` to load fields into canvas tabs
 2. Edit with the user
 3. Save back with `save_canvas_to_skill_field`
 
@@ -281,18 +253,11 @@ Based on test results, iterate on the skill:
 - **Explain the why.** Instead of "ALWAYS include axis labels", explain why
   labels matter. The model generalizes better from reasoning than from rules.
 
+- **Revisit the description.** Did the skill trigger correctly? Were there
+  false positives or negatives? Are there keywords users might use that
+  aren't captured? Update via `edit_skill`.
+
 Repeat until the user is satisfied.
-
----
-
-## Step 8: Optimize the description
-
-After the instructions are solid, revisit the description. Think about:
-- Did the skill trigger correctly during testing?
-- Were there false positives or false negatives?
-- Are there keywords users might use that aren't captured?
-
-Update the description via `edit_skill` with text edits.
 
 ---
 
@@ -310,8 +275,8 @@ Update the description via `edit_skill` with text edits.
 1. **The description is the skill.** If it doesn't trigger, nothing else
    matters. Invest disproportionate effort here.
 
-2. **One canvas tab per skill field.** Draft, iterate, persist.
-   Don't try to write perfect instructions in one shot.
+2. **Draft first, persist later.** Get the text right in canvas before
+   committing to the database.
 
 3. **Explain why, not just what.** Reasoning scales better than rules.
 
