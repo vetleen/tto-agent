@@ -24,12 +24,24 @@ class LoadHistoryTests(TransactionTestCase):
         self.consumer = ChatConsumer()
 
     @database_sync_to_async
-    def _make_msg(self, content, role="user"):
+    def _make_msg(self, content, role="user", tool_call_id=None):
         return ChatMessage.objects.create(
             thread=self.thread,
             role=role,
             content=content,
+            tool_call_id=tool_call_id,
             token_count=count_tokens(content),
+        )
+
+    @database_sync_to_async
+    def _make_tool_call_msg(self, tool_calls):
+        """Create an assistant message with tool_calls stored in metadata."""
+        return ChatMessage.objects.create(
+            thread=self.thread,
+            role="assistant",
+            content="",
+            metadata={"tool_calls": tool_calls},
+            token_count=0,
         )
 
     @database_sync_to_async
@@ -123,6 +135,31 @@ class LoadHistoryTests(TransactionTestCase):
         contents = [m["content"] for m in non_system]
         self.assertIn("Short old message", contents)
         self.assertIn("Short new message", contents)
+
+    async def test_tool_messages_included_in_history(self):
+        """Tool and assistant-with-tool-calls messages are loaded from history."""
+        await self._make_msg("What's the weather?")
+        # Assistant requesting tool call (metadata stores tool_calls)
+        await self._make_tool_call_msg(
+            [{"id": "tc1", "name": "get_weather", "arguments": {"city": "Oslo"}}]
+        )
+        # Tool result
+        await self._make_msg('{"temp": 5}', role="tool", tool_call_id="tc1")
+        # Final assistant response
+        await self._make_msg("It's 5 degrees in Oslo.", role="assistant")
+
+        result = await self.consumer._load_history(self.thread)
+        messages = result["messages"]
+
+        # Should have 4 messages total
+        self.assertEqual(len(messages), 4)
+        # 2nd message: assistant with tool_calls in metadata
+        self.assertEqual(messages[1]["role"], "assistant")
+        self.assertIn("tool_calls", messages[1])
+        self.assertEqual(messages[1]["tool_calls"][0]["name"], "get_weather")
+        # 3rd message: tool result
+        self.assertEqual(messages[2]["role"], "tool")
+        self.assertEqual(messages[2]["tool_call_id"], "tc1")
 
     async def test_large_summarised_msgs_excluded_from_raw_history(self):
         """A summarised message that is outside the overlap window is not shown raw."""

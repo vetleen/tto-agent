@@ -61,6 +61,37 @@ class BaseLangChainChatModel(ChatModel):
         return None
 
     @staticmethod
+    def _extract_response_metadata(result: object) -> dict:
+        """Extract stop_reason, provider_model_id, and full response_metadata."""
+        resp_meta = getattr(result, "response_metadata", None) or {}
+        stop = (
+            resp_meta.get("stop_reason")       # Anthropic
+            or resp_meta.get("finish_reason")   # OpenAI
+            or ""
+        )
+        model_id = (
+            resp_meta.get("model_id")           # Anthropic
+            or resp_meta.get("model_name")      # OpenAI
+            or resp_meta.get("model")           # generic
+            or ""
+        )
+        return {
+            "response_metadata": resp_meta,
+            "stop_reason": stop,
+            "provider_model_id": model_id,
+        }
+
+    @staticmethod
+    def _extract_reasoning_tokens(usage_meta: dict | None) -> int | None:
+        """Extract reasoning/thinking output tokens from usage metadata."""
+        if not usage_meta:
+            return None
+        details = usage_meta.get("output_token_details") or {}
+        if isinstance(details, dict):
+            return details.get("reasoning") or details.get("reasoning_tokens")
+        return None
+
+    @staticmethod
     def _build_raw_prompt(callback: PromptCaptureCallback, tool_schemas: list | None) -> dict | None:
         """Assemble the raw_prompt dict from callback messages + request tool schemas."""
         if callback.captured_messages is None:
@@ -78,6 +109,24 @@ class BaseLangChainChatModel(ChatModel):
             "messages": callback.captured_messages,
             "tools": serialized_tools,
         }
+
+    def _build_config(self, request: ChatRequest, callbacks: list) -> dict:
+        """Build LangChain RunnableConfig with tracing metadata."""
+        config: dict = {"callbacks": callbacks}
+        ctx = request.context
+        if ctx:
+            config["metadata"] = {
+                "run_id": ctx.run_id,
+                "trace_id": ctx.trace_id,
+                "user_id": ctx.user_id,
+                "conversation_id": ctx.conversation_id,
+            }
+            config["tags"] = [
+                f"user:{ctx.user_id or 'anon'}",
+                f"model:{self.name}",
+            ]
+            config["run_name"] = f"{self._provider_label}/{self.name}"
+        return config
 
     def _get_streaming_client(self, request: ChatRequest):
         """Return the LangChain client for streaming.
@@ -114,11 +163,13 @@ class BaseLangChainChatModel(ChatModel):
             total_tokens = usage_meta.get("total_tokens")
             details = usage_meta.get("input_token_details") or {}
             cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
+            reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
             cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens)
             data["input_tokens"] = input_tokens
             data["output_tokens"] = output_tokens
             data["total_tokens"] = total_tokens
             data["cached_tokens"] = cached_tokens
+            data["reasoning_tokens"] = reasoning_tokens
             data["cost_usd"] = float(cost) if cost is not None else None
         elif output_text:
             logger.warning(
@@ -143,13 +194,14 @@ class BaseLangChainChatModel(ChatModel):
             client = client.bind_tools(request.tool_schemas)
         callback = PromptCaptureCallback()
         callbacks = self._get_callbacks(request, callback)
+        config = self._build_config(request, callbacks)
         run_id = request.context.run_id if request.context else "n/a"
         logger.info(
             "LLM generate start model=%s provider=%s messages=%d run_id=%s",
             self.name, self._provider_label, len(request.messages), run_id,
         )
         try:
-            result = client.invoke(lc_messages, config={"callbacks": callbacks})
+            result = client.invoke(lc_messages, config=config)
         except Exception as exc:
             if getattr(exc, "status_code", None) == 429:
                 logger.error(
@@ -193,16 +245,19 @@ class BaseLangChainChatModel(ChatModel):
             # Extract cached token count from input_token_details
             details = usage_meta.get("input_token_details") or {}
             cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
+            reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
             cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens)
             usage = Usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 total_tokens=usage_meta.get("total_tokens"),
                 cached_tokens=cached_tokens,
+                reasoning_tokens=reasoning_tokens,
                 cost_usd=float(cost) if cost is not None else None,
             )
 
         raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
+        resp_meta = self._extract_response_metadata(result)
         logger.info(
             "LLM generate complete model=%s provider=%s "
             "input_tokens=%s output_tokens=%s cost_usd=%s run_id=%s",
@@ -212,7 +267,9 @@ class BaseLangChainChatModel(ChatModel):
             usage.cost_usd if usage else None,
             run_id,
         )
-        return ChatResponse(message=message, model=self.name, usage=usage, metadata={"raw_prompt": raw_prompt})
+        metadata = {"raw_prompt": raw_prompt}
+        metadata.update(resp_meta)
+        return ChatResponse(message=message, model=self.name, usage=usage, metadata=metadata)
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
@@ -234,12 +291,13 @@ class BaseLangChainChatModel(ChatModel):
 
         callback = PromptCaptureCallback()
         callbacks = self._get_callbacks(request, callback)
+        config = self._build_config(request, callbacks)
         raw_prompt_yielded = False
         last_chunk = None
         output_text_parts: list[str] = []
 
         try:
-            for chunk in client.stream(lc_messages, config={"callbacks": callbacks}):
+            for chunk in client.stream(lc_messages, config=config):
                 last_chunk = chunk
                 if not raw_prompt_yielded:
                     raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
@@ -277,6 +335,10 @@ class BaseLangChainChatModel(ChatModel):
 
         end_data = self._extract_stream_usage(last_chunk, "".join(output_text_parts))
         end_data["model"] = self.name
+        # Include response metadata from last chunk
+        if last_chunk:
+            resp_meta = self._extract_response_metadata(last_chunk)
+            end_data.update(resp_meta)
         logger.info(
             "LLM stream complete model=%s provider=%s "
             "output_tokens=%s cost_usd=%s run_id=%s",

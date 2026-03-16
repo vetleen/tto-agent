@@ -42,21 +42,28 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         "created_at",
     ]
     list_filter = ["status", "model", "is_stream"]
-    search_fields = ["run_id", "user__email", "error_type"]
+    search_fields = ["run_id", "trace_id", "conversation_id", "user__email", "error_type"]
     readonly_fields = [
         "id",
         "created_at",
         "duration_ms",
         "user",
         "run_id",
+        "trace_id",
+        "conversation_id",
         "model",
         "is_stream",
         "formatted_prompt",
         "formatted_raw_prompt",
         "formatted_raw_output",
+        "formatted_response_metadata",
+        "stop_reason",
+        "provider_model_id",
         "input_tokens",
         "output_tokens",
         "total_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
         "cost_usd",
         "status",
         "error_type",
@@ -66,14 +73,17 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         ("Identity", {
             "fields": ("id", "created_at", "duration_ms", "user", "run_id"),
         }),
+        ("Tracing", {
+            "fields": ("trace_id", "conversation_id"),
+        }),
         ("Request", {
             "fields": ("model", "is_stream", "formatted_prompt", "formatted_raw_prompt"),
         }),
         ("Response", {
-            "fields": ("formatted_raw_output",),
+            "fields": ("formatted_raw_output", "formatted_response_metadata", "stop_reason", "provider_model_id"),
         }),
         ("Usage", {
-            "fields": ("input_tokens", "output_tokens", "total_tokens", "cost_usd"),
+            "fields": ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "reasoning_tokens", "cost_usd"),
         }),
         ("Status", {
             "fields": ("status", "error_type", "error_message"),
@@ -108,6 +118,10 @@ class LLMCallLogAdmin(admin.ModelAdmin):
     @admin.display(description="Raw Output (formatted)")
     def formatted_raw_output(self, obj):
         return _pretty_json_html(obj.raw_output)
+
+    @admin.display(description="Response Metadata (formatted)")
+    def formatted_response_metadata(self, obj):
+        return _pretty_json_html(obj.response_metadata)
 
     def has_add_permission(self, request):
         return False

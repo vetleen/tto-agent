@@ -10,8 +10,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 
 logger = logging.getLogger(__name__)
 
-MAX_HISTORY_TOKENS = 20_000
-OVERLAP_TOKENS = 2_000  # always show at least this many recent tokens as raw messages
+MAX_HISTORY_TOKENS = 20_000  # legacy default; overridden by dynamic budget when model is known
+OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when model is known
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -358,8 +358,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Persist user message
             await self._create_message(thread, "user", content)
 
-            # Load conversation history (token-aware)
-            history_result = await self._load_history(thread)
+            # Resolve model early for dynamic history budget
+            prefs = self.resolved_prefs
+            if requested_model and prefs and requested_model in prefs.allowed_models:
+                model = requested_model
+            else:
+                model = prefs.top_model if prefs else None
+
+            # Load conversation history (token-aware, model-aware budget)
+            history_result = await self._load_history(thread, model=model)
             history = history_result["messages"]
             meta = history_result["meta"]
 
@@ -398,6 +405,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._stream_response(
                 thread, system_prompt, history,
                 requested_model=requested_model, thinking=thinking,
+                resolved_model=model,
             )
 
             # Auto-generate title for new threads
@@ -406,7 +414,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             # Trigger summarization if history exceeds budget
             if meta.get("needs_summary"):
-                await self._trigger_summarization(thread)
+                await self._trigger_summarization(thread, model=model)
 
         except Exception:
             logger.exception("Error handling chat message")
@@ -417,7 +425,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _stream_response(
         self, thread, system_prompt, history,
-        requested_model=None, thinking=False,
+        requested_model=None, thinking=False, resolved_model=None,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
@@ -425,10 +433,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         messages = [Message(role="system", content=system_prompt)]
         for msg in history:
+            tool_calls = None
+            if msg.get("tool_calls"):
+                from llm.types.messages import ToolCall
+                tool_calls = [
+                    ToolCall(
+                        id=tc["id"], name=tc["name"],
+                        arguments=tc.get("arguments", {}),
+                    )
+                    for tc in msg["tool_calls"]
+                ]
             messages.append(Message(
                 role=msg["role"],
                 content=msg["content"],
                 tool_call_id=msg.get("tool_call_id"),
+                tool_calls=tool_calls,
             ))
 
         context = RunContext.create(
@@ -439,11 +458,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         prefs = self.resolved_prefs
 
-        # Validate requested model against user's allowed models
-        if requested_model and prefs and requested_model in prefs.allowed_models:
-            model = requested_model
-        else:
-            model = prefs.top_model if prefs else None
+        # Use pre-resolved model from _handle_chat_message, or resolve here
+        model = resolved_model
+        if model is None:
+            if requested_model and prefs and requested_model in prefs.allowed_models:
+                model = requested_model
+            else:
+                model = prefs.top_model if prefs else None
 
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
@@ -483,6 +504,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         service = get_llm_service()
         accumulated_content = ""
+        accumulated_thinking = ""
+        pending_tool_calls = []
+        pending_tool_results = []
 
         try:
             async for event in service.astream("simple_chat", request):
@@ -494,8 +518,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     token_text = event.data.get("text", "")
                     accumulated_content += token_text
 
-                # Intercept canvas tool results and broadcast canvas.updated
-                if event.event_type == "tool_end":
+                # Accumulate thinking/reasoning content
+                elif event.event_type == "thinking":
+                    accumulated_thinking += event.data.get("text", "")
+
+                # Track tool calls for persistence
+                elif event.event_type == "tool_start":
+                    pending_tool_calls.append(event.data)
+                elif event.event_type == "tool_end":
+                    pending_tool_results.append(event.data)
+                    # Intercept canvas tool results and broadcast canvas.updated
                     tool_name = event.data.get("tool_name", "")
                     if tool_name in ("write_canvas", "edit_canvas", "show_skill_field_in_canvas", "load_template_to_canvas"):
                         try:
@@ -511,10 +543,29 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 await self.send(text_data=json.dumps(canvas_event))
                         except (json.JSONDecodeError, AttributeError):
                             pass
+                elif event.event_type == "message_start" and pending_tool_calls:
+                    # Tool loop completed, new LLM turn starting — persist intermediate messages
+                    await self._persist_tool_loop_messages(
+                        thread, pending_tool_calls, pending_tool_results,
+                    )
+                    pending_tool_calls = []
+                    pending_tool_results = []
+                    accumulated_content = ""
 
-            # Persist assistant message
+            # Persist any remaining tool loop messages (if stream ends after tools)
+            if pending_tool_calls:
+                await self._persist_tool_loop_messages(
+                    thread, pending_tool_calls, pending_tool_results,
+                )
+
+            # Persist final assistant message (with thinking in metadata if present)
             if accumulated_content.strip():
-                await self._create_message(thread, "assistant", accumulated_content)
+                metadata = {}
+                if accumulated_thinking:
+                    metadata["thinking"] = accumulated_thinking
+                await self._create_message(
+                    thread, "assistant", accumulated_content, metadata=metadata,
+                )
 
         except LLMConfigurationError:
             logger.exception("LLM misconfigured for streaming response")
@@ -543,13 +594,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     # -- Summarization helpers --
 
-    async def _trigger_summarization(self, thread):
+    async def _trigger_summarization(self, thread, model=None):
         """Summarise messages outside the token window and save to thread."""
         try:
             from chat.services import generate_summary
 
             thread_data = await self._get_thread_summary_data(thread)
-            messages_to_summarise = await self._get_messages_to_summarise(thread)
+            messages_to_summarise = await self._get_messages_to_summarise(thread, model=model)
 
             if not messages_to_summarise:
                 return
@@ -582,13 +633,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def _get_messages_to_summarise(self, thread):
+    def _get_messages_to_summarise(self, thread, model=None):
         """Return unsummarised messages that fall outside the token budget window.
 
-        The overlap window (newest OVERLAP_TOKENS worth of messages) is always
-        preserved as raw context and is never summarised.
+        The overlap window is always preserved as raw context and is never summarised.
         """
         from chat.models import ChatMessage, ChatThread
+        from llm.model_info import get_history_budget
+
+        max_history_tokens = get_history_budget(model) if model else MAX_HISTORY_TOKENS
+        overlap_tokens = min(4_000, max_history_tokens // 10)
 
         t = ChatThread.objects.get(pk=thread.pk)
 
@@ -609,14 +663,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         for msg in all_msgs:
             overlap_used += msg.token_count
             overlap_count += 1
-            if overlap_used >= OVERLAP_TOKENS:
+            if overlap_used >= overlap_tokens:
                 break
 
         # Candidates for summarisation: everything beyond the overlap window
         non_overlap = all_msgs[overlap_count:]
 
         # Of those, keep what fits in the remaining budget
-        remaining_budget = max(0, MAX_HISTORY_TOKENS - t.summary_token_count - overlap_used)
+        remaining_budget = max(0, max_history_tokens - t.summary_token_count - overlap_used)
         keep_count = 0
         used = 0
         for msg in non_overlap:
@@ -1004,7 +1058,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return thread, True
 
     @database_sync_to_async
-    def _create_message(self, thread, role, content, tool_call_id=None):
+    def _create_message(self, thread, role, content, tool_call_id=None, metadata=None):
         from chat.models import ChatMessage
         from core.tokens import count_tokens
 
@@ -1013,8 +1067,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
             role=role,
             content=content,
             tool_call_id=tool_call_id,
+            metadata=metadata or {},
             token_count=count_tokens(content),
         )
+
+    async def _persist_tool_loop_messages(self, thread, tool_calls, tool_results):
+        """Persist assistant tool-call message and tool result messages."""
+        # 1. Assistant message requesting tools (content empty, tool_calls in metadata)
+        tc_data = [
+            {
+                "id": tc.get("tool_call_id", ""),
+                "name": tc.get("tool_name", ""),
+                "arguments": tc.get("arguments", {}),
+            }
+            for tc in tool_calls
+        ]
+        await self._create_message(
+            thread, "assistant", "", metadata={"tool_calls": tc_data},
+        )
+        # 2. Tool result messages
+        for tr in tool_results:
+            await self._create_message(
+                thread, "tool", tr.get("result", ""),
+                tool_call_id=tr.get("tool_call_id", ""),
+            )
 
     async def _generate_thread_title(self, thread, first_user_message):
         """Generate a short title for a new thread using a cheap LLM call."""
@@ -1060,12 +1136,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ChatThread.objects.filter(pk=thread.pk).update(title=title)
 
     @database_sync_to_async
-    def _load_history(self, thread):
+    def _load_history(self, thread, model=None):
         """Load token-aware conversation history with a recency overlap window.
 
-        The most recent OVERLAP_TOKENS worth of messages are always included as
+        The most recent *overlap_tokens* worth of messages are always included as
         raw messages (even if they are already covered by the summary).  Any
         remaining budget is filled with older unsummarised messages.
+
+        When *model* is provided the token budget scales with the model's context
+        window (up to 150k).  Falls back to the legacy ``MAX_HISTORY_TOKENS``
+        constant when unknown.
 
         Returns a dict with:
         - ``messages``: list of message dicts to send to the LLM
@@ -1073,6 +1153,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
           needs_summary
         """
         from chat.models import ChatMessage, ChatThread
+        from llm.model_info import get_history_budget
+
+        max_history_tokens = get_history_budget(model) if model else MAX_HISTORY_TOKENS
+        overlap_tokens = min(4_000, max_history_tokens // 10)
 
         t = ChatThread.objects.get(pk=thread.pk)
         total_messages = ChatMessage.objects.filter(thread=thread).count()
@@ -1093,14 +1177,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 },
             }
 
-        # 1. Build overlap window: newest messages up to OVERLAP_TOKENS.
+        # 1. Build overlap window: newest messages up to overlap_tokens.
         #    Always includes at least one message regardless of size.
         overlap: list = []
         overlap_tokens_used = 0
         for msg in all_msgs:
             overlap_tokens_used += msg.token_count
             overlap.append(msg)
-            if overlap_tokens_used >= OVERLAP_TOKENS:
+            if overlap_tokens_used >= overlap_tokens:
                 break
         # overlap is newest-first; oldest_overlap is the boundary
         oldest_overlap = overlap[-1]
@@ -1108,7 +1192,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # 2. Fill remaining budget with unsummarised messages between the
         #    summary cutoff and the start of the overlap window.
         remaining_budget = max(
-            0, MAX_HISTORY_TOKENS - t.summary_token_count - overlap_tokens_used
+            0, max_history_tokens - t.summary_token_count - overlap_tokens_used
         )
         add_qs = ChatMessage.objects.filter(
             thread=thread,
@@ -1143,11 +1227,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "content": f"Summary of earlier conversation:\n{t.summary}",
             })
         for m in included:
-            messages.append({
+            msg_dict = {
                 "role": m.role,
                 "content": m.content,
                 "tool_call_id": m.tool_call_id,
-            })
+            }
+            if m.metadata and m.metadata.get("tool_calls"):
+                msg_dict["tool_calls"] = m.metadata["tool_calls"]
+            messages.append(msg_dict)
 
         return {
             "messages": messages,

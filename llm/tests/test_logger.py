@@ -13,17 +13,18 @@ from llm.types.context import RunContext
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse, Usage
+from llm.types.messages import ToolCall
 from llm.types.streaming import StreamEvent
 
 User = get_user_model()
 
 
-def _make_request(model="gpt-4o-mini", user_id=None, stream=False):
+def _make_request(model="gpt-4o-mini", user_id=None, stream=False, conversation_id=None):
     return ChatRequest(
         messages=[Message(role="user", content="Hello")],
         stream=stream,
         model=model,
-        context=RunContext.create(user_id=user_id),
+        context=RunContext.create(user_id=user_id, conversation_id=conversation_id),
     )
 
 
@@ -202,6 +203,80 @@ class LogCallTests(TestCase):
         log = _get_log(request)
         self.assertIsNone(log.raw_prompt)
 
+    def test_populates_tracing_fields(self):
+        request = _make_request(conversation_id="conv-123")
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        log_call(request, response, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertEqual(log.trace_id, request.context.trace_id)
+        self.assertEqual(log.conversation_id, "conv-123")
+
+    def test_populates_response_metadata(self):
+        request = _make_request()
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={
+                "response_metadata": {"stop_reason": "end_turn", "model_id": "claude-sonnet-4-6"},
+                "stop_reason": "end_turn",
+                "provider_model_id": "claude-sonnet-4-6",
+            },
+        )
+        log_call(request, response, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertEqual(log.stop_reason, "end_turn")
+        self.assertEqual(log.provider_model_id, "claude-sonnet-4-6")
+        self.assertIsNotNone(log.response_metadata)
+
+    def test_populates_extended_usage_fields(self):
+        request = _make_request()
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini",
+            usage=Usage(
+                prompt_tokens=100, completion_tokens=50, total_tokens=150,
+                cached_tokens=30, reasoning_tokens=10, cost_usd=0.001,
+            ),
+            metadata={},
+        )
+        log_call(request, response, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertEqual(log.cached_tokens, 30)
+        self.assertEqual(log.reasoning_tokens, 10)
+
+    def test_serializes_tool_calls_in_prompt(self):
+        request = ChatRequest(
+            messages=[
+                Message(role="assistant", content="", tool_calls=[
+                    ToolCall(id="tc1", name="search", arguments={"q": "test"}),
+                ]),
+                Message(role="tool", content="result", tool_call_id="tc1"),
+            ],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        response = ChatResponse(
+            message=Message(role="assistant", content="Done"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        log_call(request, response, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertEqual(log.prompt[0]["tool_calls"][0]["name"], "search")
+        self.assertEqual(log.prompt[1]["tool_call_id"], "tc1")
+
 
 class LogStreamTests(TestCase):
     """Tests for log_stream (streaming success)."""
@@ -312,6 +387,44 @@ class LogStreamTests(TestCase):
         self.assertIsNone(log.total_tokens)
         self.assertIsNone(log.cost_usd)
 
+    def test_populates_tracing_fields_for_stream(self):
+        request = _make_request(stream=True, conversation_id="conv-456")
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="message_end", data={}, sequence=1, run_id=run_id),
+        ]
+        log_stream(request, events, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertEqual(log.trace_id, request.context.trace_id)
+        self.assertEqual(log.conversation_id, "conv-456")
+
+    def test_populates_response_metadata_for_stream(self):
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(
+                event_type="message_end",
+                data={
+                    "model": "claude-sonnet-4-6",
+                    "response_metadata": {"stop_reason": "end_turn"},
+                    "stop_reason": "end_turn",
+                    "provider_model_id": "claude-sonnet-4-6",
+                    "cached_tokens": 25,
+                    "reasoning_tokens": 15,
+                },
+                sequence=1,
+                run_id=run_id,
+            ),
+        ]
+        log_stream(request, events, duration_ms=100)
+
+        log = _get_log(request)
+        self.assertEqual(log.stop_reason, "end_turn")
+        self.assertEqual(log.provider_model_id, "claude-sonnet-4-6")
+        self.assertEqual(log.cached_tokens, 25)
+        self.assertEqual(log.reasoning_tokens, 15)
+
     def test_never_raises_on_db_error(self):
         request = _make_request(stream=True)
         with patch.object(LLMCallLog.objects, "create", side_effect=RuntimeError("DB is down")):
@@ -345,6 +458,70 @@ class LogErrorTests(TestCase):
         request = _make_request()
         with patch.object(LLMCallLog.objects, "create", side_effect=RuntimeError("DB is down")):
             log_error(request, ValueError("x"), duration_ms=10)
+
+
+class SerializeMessagesTests(TestCase):
+    """Tests for _serialize_messages including base64 truncation."""
+
+    def test_truncates_base64_in_content(self):
+        from llm.service.logger import _serialize_messages
+
+        big_b64 = "A" * 10000
+        request = ChatRequest(
+            messages=[Message(role="user", content=[
+                {"type": "text", "text": "Look at this:"},
+                {"type": "image", "base64": big_b64},
+            ])],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        # The base64 field should be replaced with a placeholder
+        img_block = result[0]["content"][1]
+        self.assertIn("10000 chars", img_block["base64"])
+
+    def test_truncates_data_uri_in_image_url(self):
+        from llm.service.logger import _serialize_messages
+
+        big_uri = "data:image/png;base64," + "A" * 10000
+        request = ChatRequest(
+            messages=[Message(role="user", content=[
+                {"type": "image_url", "image_url": {"url": big_uri}},
+            ])],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        img_block = result[0]["content"][0]
+        self.assertIn("data URI", img_block["image_url"]["url"])
+
+    def test_preserves_normal_image_url(self):
+        from llm.service.logger import _serialize_messages
+
+        request = ChatRequest(
+            messages=[Message(role="user", content=[
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+            ])],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        self.assertEqual(result[0]["content"][0]["image_url"]["url"], "https://example.com/img.png")
+
+    def test_string_content_unchanged(self):
+        from llm.service.logger import _serialize_messages
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        self.assertEqual(result[0]["content"], "Hello")
 
 
 class LogCallIntegrationTests(TestCase):

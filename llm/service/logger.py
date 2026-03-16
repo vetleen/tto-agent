@@ -25,12 +25,39 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _truncate_base64_in_content(content):
+    """Replace large base64 strings with placeholders in logged content."""
+    if not isinstance(content, list):
+        return content
+    truncated = []
+    for block in content:
+        if isinstance(block, dict) and "base64" in block:
+            truncated.append({**block, "base64": f"[{len(block['base64'])} chars]"})
+        elif isinstance(block, dict) and block.get("type") == "image_url":
+            url = block.get("image_url", {}).get("url", "")
+            if url.startswith("data:") and len(url) > 200:
+                truncated.append({**block, "image_url": {"url": f"[data URI, {len(url)} chars]"}})
+            else:
+                truncated.append(block)
+        else:
+            truncated.append(block)
+    return truncated
+
+
 def _serialize_messages(request: "ChatRequest") -> list:
     """Convert request messages to a plain list of dicts."""
-    return [
-        {"role": m.role, "content": m.content}
-        for m in request.messages
-    ]
+    result = []
+    for m in request.messages:
+        d = {"role": m.role, "content": _truncate_base64_in_content(m.content)}
+        if m.tool_call_id:
+            d["tool_call_id"] = m.tool_call_id
+        if m.tool_calls:
+            d["tool_calls"] = [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in m.tool_calls
+            ]
+        result.append(d)
+    return result
 
 
 def _resolve_user(user_id: str | None):
@@ -68,20 +95,28 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
                 cost = computed
 
         context = request.context
+        metadata = response.metadata or {}
         LLMCallLog.objects.create(
             user=_resolve_user(context.user_id if context else None),
             run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
             model=request.model or "",
             is_stream=False,
             prompt=_serialize_messages(request),
-            raw_prompt=response.metadata.get("raw_prompt"),
+            raw_prompt=metadata.get("raw_prompt"),
             raw_output=response.model_dump_json(),
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
             total_tokens=usage.total_tokens if usage else None,
+            cached_tokens=usage.cached_tokens if usage else None,
+            reasoning_tokens=usage.reasoning_tokens if usage else None,
             cost_usd=cost,
             duration_ms=duration_ms,
             status=LLMCallLog.Status.SUCCESS,
+            response_metadata=metadata.get("response_metadata"),
+            stop_reason=metadata.get("stop_reason", ""),
+            provider_model_id=metadata.get("provider_model_id", ""),
         )
     except Exception:
         logger.exception("Failed to write LLM call log (non-streaming)")
@@ -146,13 +181,22 @@ def log_stream(
         input_tokens = end_data.get("input_tokens")
         output_tokens = end_data.get("output_tokens")
         total_tokens = end_data.get("total_tokens")
+        cached_tokens = end_data.get("cached_tokens")
+        reasoning_tokens = end_data.get("reasoning_tokens")
         cost_raw = end_data.get("cost_usd")
         cost = Decimal(str(cost_raw)) if cost_raw is not None else None
+
+        # Response metadata from message_end
+        resp_metadata = end_data.get("response_metadata")
+        stop_reason = end_data.get("stop_reason", "")
+        provider_model_id = end_data.get("provider_model_id", "")
 
         context = request.context
         LLMCallLog.objects.create(
             user=_resolve_user(context.user_id if context else None),
             run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
             model=request.model or "",
             is_stream=True,
             prompt=_serialize_messages(request),
@@ -161,9 +205,14 @@ def log_stream(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
             cost_usd=cost,
             duration_ms=duration_ms,
             status=LLMCallLog.Status.SUCCESS,
+            response_metadata=resp_metadata,
+            stop_reason=stop_reason,
+            provider_model_id=provider_model_id,
         )
     except Exception:
         logger.exception("Failed to write LLM call log (streaming)")
@@ -184,6 +233,8 @@ def log_error(
         LLMCallLog.objects.create(
             user=_resolve_user(context.user_id if context else None),
             run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
             model=request.model or "",
             is_stream=is_stream,
             prompt=_serialize_messages(request),

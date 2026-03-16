@@ -171,6 +171,164 @@ class ConsumerMessageTests(TransactionTestCase):
         await communicator.disconnect()
 
     @patch("llm.get_llm_service")
+    async def test_tool_messages_persisted(self, mock_get_service):
+        """Tool call and tool result messages are persisted during streaming."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="tool_start", data={
+                "tool_call_id": "tc1", "tool_name": "search", "arguments": {"q": "test"},
+            }, sequence=1, run_id="r1"),
+            StreamEvent(event_type="tool_end", data={
+                "tool_call_id": "tc1", "tool_name": "search", "result": "found it",
+            }, sequence=2, run_id="r1"),
+            # New LLM turn after tool loop
+            StreamEvent(event_type="message_start", data={}, sequence=3, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Here"}, sequence=4, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=5, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+        })
+
+        # Consume all events
+        for _ in range(10):
+            try:
+                await communicator.receive_json_from(timeout=2)
+            except Exception:
+                break
+
+        # Verify tool messages persisted
+        assistant_with_tools = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(
+                role="assistant", metadata__tool_calls__isnull=False
+            ).exclude(metadata={}).first()
+        )()
+        self.assertIsNotNone(assistant_with_tools)
+        self.assertEqual(assistant_with_tools.metadata["tool_calls"][0]["name"], "search")
+
+        tool_msg = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(role="tool").first()
+        )()
+        self.assertIsNotNone(tool_msg)
+        self.assertEqual(tool_msg.tool_call_id, "tc1")
+        self.assertEqual(tool_msg.content, "found it")
+
+        # Final assistant message
+        final_assistant = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(role="assistant", content="Here").first()
+        )()
+        self.assertIsNotNone(final_assistant)
+
+        try:
+            await communicator.disconnect()
+        except BaseException:
+            pass  # CancelledError on disconnect is expected in tests
+
+    @patch("llm.get_llm_service")
+    async def test_thinking_persisted_in_metadata(self, mock_get_service):
+        """Thinking content is stored in assistant message metadata."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="thinking", data={"text": "Let me think..."}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="thinking", data={"text": " about this."}, sequence=2, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Answer"}, sequence=3, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=4, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+        })
+
+        # Consume all events
+        for _ in range(10):
+            try:
+                await communicator.receive_json_from(timeout=2)
+            except Exception:
+                break
+
+        assistant = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(role="assistant", content="Answer").first()
+        )()
+        self.assertIsNotNone(assistant)
+        self.assertEqual(assistant.metadata.get("thinking"), "Let me think... about this.")
+
+        try:
+            await communicator.disconnect()
+        except BaseException:
+            pass
+
+    @patch("llm.get_llm_service")
+    async def test_no_thinking_means_no_metadata_key(self, mock_get_service):
+        """When there's no thinking, metadata should not contain 'thinking' key."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=2, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+        })
+
+        # Consume all events
+        for _ in range(10):
+            try:
+                await communicator.receive_json_from(timeout=2)
+            except Exception:
+                break
+
+        assistant = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(role="assistant", content="Hi").first()
+        )()
+        self.assertIsNotNone(assistant)
+        self.assertNotIn("thinking", assistant.metadata)
+
+        try:
+            await communicator.disconnect()
+        except BaseException:
+            pass
+
+    @patch("llm.get_llm_service")
     async def test_user_message_persisted(self, mock_get_service):
         mock_service = MagicMock()
 

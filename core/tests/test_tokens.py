@@ -59,3 +59,44 @@ class CountTokensTests(TestCase):
             self.assertGreater(result, 1)
         finally:
             tiktoken.get_encoding = original
+
+
+class CountTokensListContentTests(TestCase):
+    """Test count_tokens with multimodal list content."""
+
+    def test_text_block(self):
+        content = [{"type": "text", "text": "Hello world"}]
+        result = count_tokens(content)
+        self.assertGreater(result, 0)
+
+    def test_image_block_returns_estimate(self):
+        content = [{"type": "image", "base64": "abc123"}]
+        result = count_tokens(content)
+        self.assertEqual(result, 170)
+
+    def test_image_url_block_returns_estimate(self):
+        content = [{"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}]
+        result = count_tokens(content)
+        self.assertEqual(result, 170)
+
+    def test_mixed_blocks(self):
+        content = [
+            {"type": "text", "text": "Describe this image:"},
+            {"type": "image", "base64": "abc123"},
+        ]
+        result = count_tokens(content)
+        text_tokens = count_tokens("Describe this image:")
+        self.assertEqual(result, text_tokens + 170)
+
+    def test_empty_list(self):
+        self.assertEqual(count_tokens([]), 0)
+
+    def test_non_dict_block(self):
+        content = ["plain string"]
+        result = count_tokens(content)
+        self.assertGreater(result, 0)
+
+    def test_unknown_block_type(self):
+        content = [{"type": "audio", "data": "binary"}]
+        result = count_tokens(content)
+        self.assertGreater(result, 0)

@@ -7,11 +7,32 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def count_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
-    """Count the number of tokens in *text* using tiktoken.
+def count_tokens(content, encoding_name: str = "cl100k_base") -> int:
+    """Count the number of tokens in *content* using tiktoken.
+
+    *content* may be a plain string or a list of multimodal content blocks
+    (dicts with ``type`` keys such as ``text``, ``image``, ``image_url``).
 
     Falls back to a heuristic estimate when tiktoken is unavailable.
     """
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    total += _count_text_tokens(block.get("text", ""), encoding_name)
+                elif block.get("type") in ("image", "image_url"):
+                    total += 170  # conservative estimate per image
+                else:
+                    total += _count_text_tokens(str(block), encoding_name)
+            else:
+                total += _count_text_tokens(str(block), encoding_name)
+        return total
+    return _count_text_tokens(content, encoding_name)
+
+
+def _count_text_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
+    """Count tokens in a plain text string."""
     text = text or ""
     if not text.strip():
         return 0

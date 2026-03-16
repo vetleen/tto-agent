@@ -42,6 +42,19 @@ class LLMCallLog(models.Model):
     total_tokens = models.PositiveIntegerField(null=True, blank=True)
     cost_usd = models.DecimalField(max_digits=12, decimal_places=8, null=True, blank=True)
 
+    # Tracing
+    trace_id = models.CharField(max_length=255, blank=True, db_index=True)
+    conversation_id = models.CharField(max_length=255, blank=True, db_index=True)
+
+    # Response metadata
+    response_metadata = models.JSONField(null=True, blank=True)
+    stop_reason = models.CharField(max_length=64, blank=True)
+    provider_model_id = models.CharField(max_length=255, blank=True)
+
+    # Extended usage
+    cached_tokens = models.PositiveIntegerField(null=True, blank=True)
+    reasoning_tokens = models.PositiveIntegerField(null=True, blank=True)
+
     # Status / errors
     status = models.CharField(
         max_length=32,

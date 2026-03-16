@@ -15,14 +15,33 @@ except Exception:
     AIMessage = HumanMessage = SystemMessage = ToolMessage = None  # type: ignore[assignment]
 
 
+def _truncate_base64_in_content(content):
+    """Replace large base64 strings with placeholders in logged content."""
+    if not isinstance(content, list):
+        return content
+    truncated = []
+    for block in content:
+        if isinstance(block, dict) and "base64" in block:
+            truncated.append({**block, "base64": f"[{len(block['base64'])} chars]"})
+        elif isinstance(block, dict) and block.get("type") == "image_url":
+            url = block.get("image_url", {}).get("url", "")
+            if url.startswith("data:") and len(url) > 200:
+                truncated.append({**block, "image_url": {"url": f"[data URI, {len(url)} chars]"}})
+            else:
+                truncated.append(block)
+        else:
+            truncated.append(block)
+    return truncated
+
+
 def _serialize_lc_message(msg: object) -> dict:
     """Serialize a LangChain BaseMessage to a plain dict."""
     if SystemMessage is not None and isinstance(msg, SystemMessage):
-        return {"role": "system", "content": msg.content}
+        return {"role": "system", "content": _truncate_base64_in_content(msg.content)}
     if HumanMessage is not None and isinstance(msg, HumanMessage):
-        return {"role": "user", "content": msg.content}
+        return {"role": "user", "content": _truncate_base64_in_content(msg.content)}
     if AIMessage is not None and isinstance(msg, AIMessage):
-        d: dict = {"role": "assistant", "content": msg.content}
+        d: dict = {"role": "assistant", "content": _truncate_base64_in_content(msg.content)}
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
             d["tool_calls"] = [

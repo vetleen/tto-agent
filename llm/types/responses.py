@@ -14,6 +14,7 @@ class Usage(BaseModel):
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     cached_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
 
 
