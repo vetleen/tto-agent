@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom
+from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, ThreadTask
 
 
 class ChatMessageInline(admin.TabularInline):
@@ -17,13 +17,20 @@ class ChatThreadDataRoomInline(admin.TabularInline):
     raw_id_fields = ("data_room",)
 
 
+class ThreadTaskInline(admin.TabularInline):
+    model = ThreadTask
+    extra = 0
+    readonly_fields = ("id", "created_at", "updated_at")
+    fields = ("order", "title", "status", "created_at", "updated_at")
+
+
 @admin.register(ChatThread)
 class ChatThreadAdmin(admin.ModelAdmin):
     list_display = ("id", "title", "created_by", "created_at", "updated_at")
     list_filter = ("created_at",)
     search_fields = ("title",)
     readonly_fields = ("id", "created_at", "updated_at")
-    inlines = [ChatThreadDataRoomInline, ChatMessageInline]
+    inlines = [ChatThreadDataRoomInline, ThreadTaskInline, ChatMessageInline]
 
 
 class CanvasCheckpointInline(admin.TabularInline):

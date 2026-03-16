@@ -11,6 +11,7 @@ def build_subagent_system_prompt(
     skill: Any = None,
     data_rooms: list[dict[str, Any]] | None = None,
     organization_name: str | None = None,
+    tasks: list[dict] | None = None,
 ) -> str:
     """Build a focused system prompt for a sub-agent.
 
@@ -46,5 +47,13 @@ You have been given a specific task. Complete it thoroughly and return your find
                 prompt += f'- **"{r["name"]}"**: {desc}\n'
             else:
                 prompt += f'- "{r["name"]}"\n'
+
+    if tasks:
+        status_icons = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+        prompt += "\n# Current Task Plan\nThe parent conversation is tracking this task plan. Update it using `update_tasks` as you make progress.\n\n"
+        for t in tasks:
+            icon = status_icons.get(t.get("status", "pending"), "[ ]")
+            prompt += f"{icon} {t['title']}\n"
+        prompt += "\n"
 
     return prompt

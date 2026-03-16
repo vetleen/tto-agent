@@ -15,6 +15,8 @@ def build_system_prompt(
     canvas: Any = None,
     skill: Any = None,
     has_subagent_tool: bool = False,
+    tasks: list[dict] | None = None,
+    has_task_tool: bool = False,
 ) -> str:
     """Build the system prompt for a chat session.
 
@@ -177,6 +179,20 @@ The provisional patent application has been filed...
 
 Use email blocks when drafting emails, reply templates, or any correspondence the user might want to send.
 """
+
+    if has_task_tool:
+        prompt += """
+# Task Planning
+When working on complex requests involving 3 or more distinct steps, use `update_tasks` to create a task plan. Update task statuses as you work. Keep exactly one task "in_progress" at a time. Keep titles short and action-oriented (e.g. "Search patents for prior art", "Draft comparison table").
+"""
+
+    if tasks:
+        prompt += "\n# Current Task Plan\nYou are tracking the following task plan for this conversation. Update it using `update_tasks` as you make progress.\n\n"
+        status_icons = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+        for t in tasks:
+            icon = status_icons.get(t.get("status", "pending"), "[ ]")
+            prompt += f"{icon} {t['title']}\n"
+        prompt += "\n"
 
     if has_subagent_tool:
         prompt += """

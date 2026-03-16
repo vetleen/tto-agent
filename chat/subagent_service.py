@@ -105,12 +105,21 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None, bloc
                 .values("id", "name", "description")
             )
 
+        # Load thread tasks for sub-agent context
+        from chat.models import ThreadTask
+        thread_tasks = list(
+            ThreadTask.objects.filter(thread_id=run.thread_id)
+            .order_by("order", "created_at")
+            .values("id", "title", "status")
+        )
+
         # Build system prompt
         system_prompt = build_subagent_system_prompt(
             run.prompt,
             skill=skill,
             data_rooms=data_rooms_info,
             organization_name=org_name,
+            tasks=thread_tasks if thread_tasks else None,
         )
 
         # Build LLM request

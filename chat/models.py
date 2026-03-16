@@ -196,3 +196,24 @@ class SubAgentRun(models.Model):
 
     def __str__(self) -> str:
         return f"SubAgentRun {self.id} ({self.status})"
+
+
+class ThreadTask(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        IN_PROGRESS = "in_progress", "In Progress"
+        COMPLETED = "completed", "Completed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE, related_name="tasks")
+    title = models.CharField(max_length=512)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "created_at"]
+
+    def __str__(self):
+        return f"[{self.status}] {self.title[:60]}"

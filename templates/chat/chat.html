@@ -151,6 +151,20 @@
     </div>
   </div>
 
+  {# Task plan card — collapsible, above input #}
+  <div id="task-plan-card" class="hidden border-t border-default bg-neutral-primary w-full">
+    <div class="max-w-3xl mx-auto w-full px-4 pt-2 pb-1">
+      <button id="task-plan-toggle" type="button" class="flex items-center gap-1.5 text-xs font-medium text-heading hover:text-brand transition-colors w-full text-left py-1">
+        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+        <span id="task-plan-badge">Task Plan</span>
+        <svg id="task-plan-chevron" class="w-3 h-3 ml-auto transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="task-plan-list" class="hidden pb-1 pt-0.5">
+        {# Task items rendered by JS #}
+      </div>
+    </div>
+  </div>
+
   {# Input area — sticky bottom, moves up when chat is empty #}
   <div id="chat-input-area" class="{% if messages %}border-t border-default{% endif %} bg-neutral-primary w-full">
     <div class="max-w-3xl mx-auto w-full px-4 py-3">
@@ -977,6 +991,52 @@
     });
   }
 
+  // -- Task Plan --
+  var taskPlanCard = document.getElementById("task-plan-card");
+  var taskPlanToggle = document.getElementById("task-plan-toggle");
+  var taskPlanList = document.getElementById("task-plan-list");
+  var taskPlanBadge = document.getElementById("task-plan-badge");
+  var taskPlanChevron = document.getElementById("task-plan-chevron");
+  var taskPlanExpanded = false;
+
+  if (taskPlanToggle) {
+    taskPlanToggle.addEventListener("click", function() {
+      taskPlanExpanded = !taskPlanExpanded;
+      taskPlanList.classList.toggle("hidden", !taskPlanExpanded);
+      taskPlanChevron.style.transform = taskPlanExpanded ? "rotate(180deg)" : "";
+    });
+  }
+
+  function renderTaskPlan(tasks) {
+    if (!taskPlanCard || !taskPlanList || !taskPlanBadge) return;
+    if (!tasks || tasks.length === 0) {
+      taskPlanCard.classList.add("hidden");
+      return;
+    }
+    var completed = tasks.filter(function(t) { return t.status === "completed"; }).length;
+    taskPlanBadge.textContent = "Task Plan (" + completed + "/" + tasks.length + ")";
+    var html = "";
+    tasks.forEach(function(t) {
+      var icon = "";
+      if (t.status === "completed") {
+        icon = '<svg class="w-3.5 h-3.5 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+      } else if (t.status === "in_progress") {
+        icon = '<svg class="w-3.5 h-3.5 shrink-0 animate-spin text-brand" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+      } else {
+        icon = '<svg class="w-3.5 h-3.5 shrink-0 text-body/40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-width="2"/></svg>';
+      }
+      var textClass = t.status === "completed" ? "text-body/50 line-through" : "text-heading";
+      html += '<div class="flex items-center gap-2 py-0.5 text-xs">' + icon + '<span class="' + textClass + '">' + escapeHtml(t.title) + '</span></div>';
+    });
+    taskPlanList.innerHTML = html;
+    taskPlanCard.classList.remove("hidden");
+  }
+
+  // Initial render from server context
+  {% if thread_tasks_json and thread_tasks_json != "[]" %}
+  renderTaskPlan(JSON.parse('{{ thread_tasks_json|escapejs }}'));
+  {% endif %}
+
   // -- WebSocket --
   let ws = null;
   let reconnectTimeout = null;
@@ -1065,6 +1125,7 @@
     const et = data.event_type;
     if (et === "canvas.updated") { canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content); return; }
     if (et === "canvas.loaded") { canvasHandleLoaded(data.title || "", data.content || "", data.accepted_content); return; }
+    if (et === "tasks.updated" || et === "tasks.loaded") { renderTaskPlan(data.tasks || []); return; }
     if (et === "canvas.accepted") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); } return; }
     if (et === "canvas.reverted") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
     if (et === "canvas.version_saved") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); return; }
@@ -1083,6 +1144,8 @@
       if (data.data_rooms) { data.data_rooms.forEach(function(r) { addDataRoomPill(r.id, r.name); }); }
       // Restore or clear skill pill
       if (data.skill && data.skill.skill_id) { addSkillPill(data.skill.skill_id, data.skill.skill_name); } else { removeSkillPill(); }
+      // Clear task plan (will be re-populated by tasks.loaded if tasks exist)
+      renderTaskPlan([]);
       return;
     }
     if (et === "skill.attached") { addSkillPill(data.skill_id, data.skill_name); return; }
@@ -1143,6 +1206,7 @@
         else if (toolName === "inspect_tool") displayText = "Inspecting tool...";
         else if (toolName === "create_subagent") displayText = "Starting sub-agent...";
         else if (toolName === "check_subagent_status") displayText = "Checking sub-agent...";
+        else if (toolName === "update_tasks") displayText = "Updating task plan...";
         card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + '</span>';
         container.appendChild(card);
       }
@@ -1176,7 +1240,8 @@
           else if (toolName === "list_all_tools") doneLabel = "Listed tools";
           else if (toolName === "inspect_tool") doneLabel = "Inspected tool";
           else if (toolName === "create_subagent") doneLabel = "Sub-agent started";
-          else if (toolName === "check_subagent_status") doneLabel = "Checked sub-agent status"; }
+          else if (toolName === "check_subagent_status") doneLabel = "Checked sub-agent status";
+          else if (toolName === "update_tasks") doneLabel = "Updated task plan"; }
           card.innerHTML = '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="tool-card-text">' + escapeHtml(doneLabel) + '</span>';
         }
       }

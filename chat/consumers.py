@@ -212,6 +212,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if canvas_data.get("accepted_content") is not None:
                     event["accepted_content"] = canvas_data["accepted_content"]
                 await self.send(text_data=json.dumps(event))
+            # Send task plan state if tasks exist
+            task_list = await self._get_thread_tasks(thread_id)
+            if task_list:
+                await self.send(text_data=json.dumps({
+                    "event_type": "tasks.loaded",
+                    "tasks": [{
+                        "id": str(t["id"]),
+                        "title": t["title"],
+                        "status": t["status"],
+                    } for t in task_list],
+                }))
 
     async def _handle_canvas_save(self, data):
         """Save user edits to the canvas."""
@@ -391,6 +402,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             skill_obj = None
             if self.active_skill_id:
                 skill_obj = await self._load_skill(self.active_skill_id)
+            tasks = await self._get_thread_tasks(str(thread.id))
             system_prompt = build_system_prompt(
                 data_rooms=data_rooms,
                 history_meta=meta,
@@ -399,6 +411,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 canvas=canvas,
                 skill=skill_obj,
                 has_subagent_tool=self._has_tool("create_subagent"),
+                tasks=tasks,
+                has_task_tool=self._has_tool("update_tasks"),
             )
 
             # Stream LLM response
@@ -541,6 +555,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 if "accepted_content" in result:
                                     canvas_event["accepted_content"] = result["accepted_content"]
                                 await self.send(text_data=json.dumps(canvas_event))
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    # Intercept task tool results and broadcast tasks.updated
+                    if tool_name == "update_tasks":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok":
+                                await self.send(text_data=json.dumps({
+                                    "event_type": "tasks.updated",
+                                    "tasks": result.get("tasks", []),
+                                }))
                         except (json.JSONDecodeError, AttributeError):
                             pass
                 elif event.event_type == "message_start" and pending_tool_calls:
@@ -854,6 +879,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "data_room_ids": [r["pk"] for r in rooms],
             "data_rooms": [{"id": r["pk"], "name": r["name"]} for r in rooms],
         }
+
+    # -- Task helpers --
+
+    @database_sync_to_async
+    def _get_thread_tasks(self, thread_id):
+        from chat.models import ThreadTask
+        return list(
+            ThreadTask.objects.filter(thread_id=thread_id)
+            .order_by("order", "created_at")
+            .values("id", "title", "status")
+        )
 
     # -- Canvas helpers --
 

@@ -7,7 +7,7 @@ from django.http import FileResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods, require_POST
 
-from chat.models import ChatCanvas, ChatThread
+from chat.models import ChatCanvas, ChatThread, ThreadTask
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentTag
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,20 @@ def chat_home(request):
         .order_by("-updated_at")
         .values("pk", "uuid", "name")
     )
+
+    # If thread selected, get its tasks
+    thread_tasks_json = "[]"
+    if thread:
+        thread_tasks = list(
+            ThreadTask.objects.filter(thread=thread)
+            .order_by("order", "created_at")
+            .values("id", "title", "status")
+        )
+        if thread_tasks:
+            # Convert UUIDs to strings for JSON serialization
+            for t in thread_tasks:
+                t["id"] = str(t["id"])
+            thread_tasks_json = json.dumps(thread_tasks)
 
     # If thread selected, get its attached data rooms
     thread_data_rooms = []
@@ -94,6 +108,7 @@ def chat_home(request):
             "model_choices_json": json.dumps(model_choices),
             "default_model": prefs.top_model,
             "default_model_display": get_display_name(prefs.top_model),
+            "thread_tasks_json": thread_tasks_json,
         },
     )
 
