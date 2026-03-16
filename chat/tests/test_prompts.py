@@ -192,3 +192,45 @@ class BuildSystemPromptTests(TestCase):
     def test_no_skill_no_skill_section(self):
         prompt = build_system_prompt()
         self.assertNotIn("# Relevant skill", prompt)
+
+    # ------------------------------------------------------------------ #
+    # Task planning prompt                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_task_planning_section_with_tool(self):
+        prompt = build_system_prompt(has_task_tool=True)
+        self.assertIn("# Task Planning", prompt)
+        self.assertIn("update_tasks", prompt)
+
+    def test_task_planning_includes_when_to_use(self):
+        prompt = build_system_prompt(has_task_tool=True)
+        self.assertIn("When to create a task plan", prompt)
+        self.assertIn("When NOT to create a task plan", prompt)
+
+    def test_task_planning_includes_management_rules(self):
+        prompt = build_system_prompt(has_task_tool=True)
+        self.assertIn("Task management rules", prompt)
+        self.assertIn("in_progress", prompt)
+
+    def test_task_planning_absent_without_tool(self):
+        prompt = build_system_prompt(has_task_tool=False)
+        self.assertNotIn("# Task Planning", prompt)
+
+    def test_current_tasks_rendered(self):
+        tasks = [
+            {"title": "Search prior art", "status": "completed"},
+            {"title": "Draft summary", "status": "in_progress"},
+            {"title": "Review claims", "status": "pending"},
+        ]
+        prompt = build_system_prompt(has_task_tool=True, tasks=tasks)
+        self.assertIn("[x] Search prior art", prompt)
+        self.assertIn("[~] Draft summary", prompt)
+        self.assertIn("[ ] Review claims", prompt)
+
+    def test_current_tasks_without_tool_flag(self):
+        """Tasks render even without has_task_tool (legacy threads)."""
+        tasks = [
+            {"title": "Old task", "status": "completed"},
+        ]
+        prompt = build_system_prompt(has_task_tool=False, tasks=tasks)
+        self.assertIn("[x] Old task", prompt)

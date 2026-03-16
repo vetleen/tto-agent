@@ -50,7 +50,9 @@ You have been given a specific task. Complete it thoroughly and return your find
 
     if tasks:
         status_icons = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
-        prompt += "\n# Current Task Plan\nThe parent conversation is tracking this task plan. Update it using `update_tasks` as you make progress.\n\n"
+        prompt += "\n# Current Task Plan\nThe parent conversation is tracking this task plan. "
+        prompt += "Update task statuses using `update_tasks` as you complete your assigned work. "
+        prompt += "Mark tasks completed when done. Do not add or remove tasks unless your work reveals necessary new steps.\n\n"
         for t in tasks:
             icon = status_icons.get(t.get("status", "pending"), "[ ]")
             prompt += f"{icon} {t['title']}\n"

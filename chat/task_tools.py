@@ -30,10 +30,12 @@ class UpdateTasksTool(ContextAwareTool):
 
     name: str = "update_tasks"
     description: str = (
-        "Set the full task plan for this conversation. Send the complete list of "
-        "tasks each time — any existing tasks not included will be deleted. "
+        "Create or update the task plan for this conversation. Use proactively "
+        "whenever work involves multiple steps — do not wait to be asked. "
+        "Send the complete list of tasks each time; omitted tasks are deleted. "
         "Each task has a title and status (pending, in_progress, completed). "
-        "Include the id field for existing tasks you want to keep or update."
+        "Include the id field for existing tasks to preserve them. "
+        "Mark tasks in_progress as you start them and completed when done."
     )
     args_schema: type[BaseModel] = UpdateTasksInput
     section: str = "chat"

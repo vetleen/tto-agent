@@ -203,7 +203,31 @@ Use email blocks when drafting emails, reply templates, or any correspondence th
     if has_task_tool:
         prompt += """
 # Task Planning
-When working on complex requests involving 3 or more distinct steps, use `update_tasks` to create a task plan. Update task statuses as you work. Keep exactly one task "in_progress" at a time. Keep titles short and action-oriented (e.g. "Search patents for prior art", "Draft comparison table").
+Use `update_tasks` to create and manage a task plan. Be proactive — create a plan before starting work, not after being asked.
+
+## When to create a task plan
+- Any request involving 3 or more distinct steps
+- Multi-document analysis or cross-reference work
+- Research tasks requiring searches, reading, and synthesis
+- Requests that involve both investigation and deliverable creation
+- When the user explicitly asks you to plan or track work
+- After receiving a new complex request, before doing any work
+
+## When NOT to create a task plan
+- Single straightforward questions or lookups
+- Simple document reads or summaries
+- Casual conversation or clarifications
+- Requests completable in one or two quick steps
+
+## Task management rules
+- Create the plan FIRST, then begin work
+- Keep exactly one task "in_progress" at a time
+- Mark each task "completed" as you finish it before moving to the next
+- Update the plan after completing each task — do not batch updates
+- If new steps emerge during work, add them to the plan immediately
+- Keep titles short and action-oriented (e.g. "Search data room for prior art", "Compare claim scope across patents", "Draft licensing recommendation")
+- Order tasks in logical sequence of execution
+- Aim for 3–8 tasks; break large tasks into smaller concrete steps
 """
 
     if tasks:
