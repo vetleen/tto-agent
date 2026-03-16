@@ -1097,7 +1097,9 @@
     if (et === "message_start") {
       const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
       if (!currentStreamingElement) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); }
-      accumulatedContent = ""; startStreamingTimeout(); scrollToBottom(); return;
+      accumulatedContent = "";
+      if (currentStreamingElement) { const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = ""; }
+      startStreamingTimeout(); scrollToBottom(); return;
     }
     if (et === "thinking") {
       const text = (data.data && data.data.text) || ""; if (!text) return;

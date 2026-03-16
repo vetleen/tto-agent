@@ -39,6 +39,7 @@ class _FakeChatModel:
     generate_requests: List[object] = None  # type: ignore[assignment]
     stream_requests: List[object] = None  # type: ignore[assignment]
     _generate_calls: int = 0
+    _stream_calls: int = 0
 
     def __post_init__(self) -> None:
         self.generate_requests = []
@@ -67,11 +68,28 @@ class _FakeChatModel:
         )
 
     def stream(self, request) -> Iterator[StreamEvent]:
+        self._stream_calls += 1
         self.stream_requests.append(request)
         run_id = request.context.run_id if request.context else ""
+
+        # Support tool_call_on_first_generate in stream mode too
+        tool_calls: Optional[list[ToolCall]] = None
+        if self.tool_call_on_first_generate and self._stream_calls == 1:
+            tool_calls = [
+                ToolCall(
+                    id="tc1",
+                    name="search_documents",
+                    arguments={"query": "foo", "k": 1},
+                )
+            ]
+
         yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id)
-        yield StreamEvent(event_type="token", data={"text": self.tokens}, sequence=2, run_id=run_id)
-        yield StreamEvent(event_type="message_end", data={}, sequence=3, run_id=run_id)
+        if not tool_calls:
+            yield StreamEvent(event_type="token", data={"text": self.tokens}, sequence=2, run_id=run_id)
+        end_data: dict = {"content": "" if tool_calls else self.tokens}
+        if tool_calls:
+            end_data["tool_calls"] = [tc.model_dump() for tc in tool_calls]
+        yield StreamEvent(event_type="message_end", data=end_data, sequence=3, run_id=run_id)
 
 
 @override_settings(
@@ -148,9 +166,9 @@ class ChatEndToEndTests(TransactionTestCase):
         self.assertEqual(msgs[1][1], "Hello")
 
         # With globally registered tools (web_fetch, canvas, etc.) the pipeline
-        # routes through _stream_with_tools() which calls generate() internally.
-        self.assertGreaterEqual(len(fake.generate_requests), 1)
-        req = fake.generate_requests[0]
+        # routes through _stream_with_tools() which calls stream() for real-time tokens.
+        self.assertGreaterEqual(len(fake.stream_requests), 1)
+        req = fake.stream_requests[0]
         roles = [m.role for m in req.messages]
         self.assertEqual(roles[0], "system")
         self.assertIn("helpful assistant", req.messages[0].content.lower())
@@ -185,9 +203,12 @@ class ChatEndToEndTests(TransactionTestCase):
         created = await communicator.receive_json_from(timeout=5)
         self.assertEqual(created["event_type"], "thread.created")
 
-        # Tool loop events then message stream (message_start, token, message_end)
+        # Streaming iteration 1: message_start, then tool events after stream ends
+        first_msg_start = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(first_msg_start["event_type"], "message_start")
         tool_start = await communicator.receive_json_from(timeout=5)
         tool_end = await communicator.receive_json_from(timeout=5)
+        # Streaming iteration 2: final response with real-time tokens
         msg_start = await communicator.receive_json_from(timeout=5)
         token_ev = await communicator.receive_json_from(timeout=5)
         msg_end = await communicator.receive_json_from(timeout=5)

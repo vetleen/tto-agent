@@ -270,11 +270,13 @@ class BaseLangChainChatModel(ChatModel):
         callbacks = self._get_callbacks(request)
         config = self._build_config(request, callbacks)
         last_chunk = None
+        accumulated = None  # AIMessageChunk accumulator for tool_calls aggregation
         output_text_parts: list[str] = []
 
         try:
             for chunk in client.stream(lc_messages, config=config):
                 last_chunk = chunk
+                accumulated = chunk if accumulated is None else accumulated + chunk
 
                 for event_type, event_data in self._parse_chunk(chunk):
                     if event_type == "token":
@@ -305,6 +307,20 @@ class BaseLangChainChatModel(ChatModel):
         if last_chunk:
             resp_meta = self._extract_response_metadata(last_chunk)
             end_data.update(resp_meta)
+
+        # Include accumulated content and tool_calls for pipeline consumption
+        if accumulated is not None:
+            raw_content = getattr(accumulated, "content", "") or ""
+            if isinstance(raw_content, list):
+                end_data["content"] = "".join(
+                    block.get("text", "") for block in raw_content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            else:
+                end_data["content"] = str(raw_content)
+            tool_calls = parse_tool_calls_from_ai_message(accumulated)
+            if tool_calls:
+                end_data["tool_calls"] = [tc.model_dump() for tc in tool_calls]
         logger.info(
             "LLM stream complete model=%s provider=%s "
             "output_tokens=%s cost_usd=%s run_id=%s",

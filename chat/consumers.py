@@ -551,6 +551,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     pending_tool_calls = []
                     pending_tool_results = []
                     accumulated_content = ""
+                    accumulated_thinking = ""
 
             # Persist any remaining tool loop messages (if stream ends after tools)
             if pending_tool_calls:

@@ -305,7 +305,7 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_stream_with_tools_emits_tool_start_and_tool_end(self):
         """When model returns tool_calls in stream path, tool_start/tool_end events are
-        emitted and the final response is emitted as synthetic stream events."""
+        emitted and the final response streams tokens in real-time."""
         mock_tool = self._make_mock_tool("search_documents")
         mock_tool._return_value = '{"result": 3}'
         request = ChatRequest(
@@ -315,23 +315,21 @@ class SimpleChatPipelineTests(TestCase):
             tools=["search_documents"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="s1", name="search_documents", arguments={"a": 1, "b": 2})
-        tool_response = ChatResponse(
-            message=Message(role="assistant", content="", tool_calls=[tool_call]),
-            model="gpt-4o-mini",
-            usage=None,
-            metadata={},
-        )
-        # Second generate() returns no tool_calls -> emitted as synthetic events
-        no_tool_response = ChatResponse(
-            message=Message(role="assistant", content="The result is 3."),
-            model="gpt-4o-mini",
-            usage=None,
-            metadata={},
-        )
+
+        def fake_tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "s1", "name": "search_documents", "arguments": {"a": 1, "b": 2}}],
+            }, sequence=2, run_id="")
+
+        def fake_final_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "The result is 3."}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "The result is 3."}, sequence=3, run_id="")
 
         fake_model = MagicMock()
-        fake_model.generate.side_effect = [tool_response, no_tool_response]
+        fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
 
         with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
@@ -349,11 +347,11 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(tool_ends[0].data["tool_name"], "search_documents")
         self.assertIn("3", tool_ends[0].data["result"])
 
-        # Verify final response uses generate() result directly (no double call)
-        fake_model.stream.assert_not_called()
-        self.assertEqual(fake_model.generate.call_count, 2)
+        # Verify stream() was called (not generate()) for all iterations
+        self.assertEqual(fake_model.stream.call_count, 2)
+        fake_model.generate.assert_not_called()
 
-        # Verify synthetic stream events for final response
+        # Verify streamed tokens for final response
         tokens = [e for e in events if e.event_type == "token"]
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0].data["text"], "The result is 3.")
@@ -378,17 +376,21 @@ class SimpleChatPipelineTests(TestCase):
             tools=["search_documents"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="t1", name="search_documents", arguments={"a": 1, "b": 1})
-        tool_response = ChatResponse(
-            message=Message(role="assistant", content="", tool_calls=[tool_call]),
-            model="gpt-4o-mini", usage=None, metadata={},
-        )
-        final_response = ChatResponse(
-            message=Message(role="assistant", content="Done"),
-            model="gpt-4o-mini", usage=None, metadata={},
-        )
+
+        def fake_tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+            }, sequence=2, run_id="")
+
+        def fake_final_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "Done"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "Done"}, sequence=3, run_id="")
+
         fake_model = MagicMock()
-        fake_model.generate.side_effect = [tool_response, final_response]
+        fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
 
         with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
@@ -406,8 +408,8 @@ class SimpleChatPipelineTests(TestCase):
             "tool_end_yielded",
         ])
 
-    def test_stream_no_double_llm_call_on_final_response(self):
-        """Final response should NOT call stream() after generate() -- uses synthetic events."""
+    def test_stream_uses_real_streaming_for_all_iterations(self):
+        """All iterations (tool-calling and final) should use stream(), not generate()."""
         request = ChatRequest(
             messages=[Message(role="user", content="test")],
             stream=True,
@@ -416,26 +418,30 @@ class SimpleChatPipelineTests(TestCase):
             context=RunContext.create(),
         )
         mock_tool = self._make_mock_tool("search_documents")
-        tool_call = ToolCall(id="t1", name="search_documents", arguments={"a": 1, "b": 1})
-        tool_response = ChatResponse(
-            message=Message(role="assistant", content="", tool_calls=[tool_call]),
-            model="gpt-4o-mini", usage=None, metadata={},
-        )
-        final_response = ChatResponse(
-            message=Message(role="assistant", content="Answer"),
-            model="gpt-4o-mini", usage=None, metadata={},
-        )
+
+        def fake_tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+            }, sequence=2, run_id="")
+
+        def fake_final_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "Answer"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "Answer"}, sequence=3, run_id="")
+
         fake_model = MagicMock()
-        fake_model.generate.side_effect = [tool_response, final_response]
+        fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
 
         with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
             mock_create.return_value = fake_model
             list(SimpleChatPipeline().stream(request))
 
-        # stream() should never be called -- we emit synthetic events instead
-        fake_model.stream.assert_not_called()
-        self.assertEqual(fake_model.generate.call_count, 2)
+        # stream() used for all iterations, generate() never called
+        self.assertEqual(fake_model.stream.call_count, 2)
+        fake_model.generate.assert_not_called()
 
     def test_stream_respects_per_request_max_iterations(self):
         """Per-request max_tool_iterations override should work in streaming mode."""
@@ -448,18 +454,24 @@ class SimpleChatPipelineTests(TestCase):
             context=RunContext.create(),
             params={"max_tool_iterations": 2},
         )
-        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
-        tool_response = ChatResponse(
-            message=Message(role="assistant", content="", tool_calls=[tool_call]),
-            model="gpt-4o-mini", usage=None, metadata={},
-        )
-        final_response = ChatResponse(
-            message=Message(role="assistant", content="Capped."),
-            model="gpt-4o-mini", usage=None, metadata={},
-        )
+
+        def fake_tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "c1", "name": "search_documents", "arguments": {"a": 1, "b": 2}}],
+            }, sequence=2, run_id="")
+
+        def fake_final_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "Capped."}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "Capped."}, sequence=3, run_id="")
+
         fake_model = MagicMock()
-        # 2 tool rounds + 1 final generate (after max iterations)
-        fake_model.generate.side_effect = [tool_response, tool_response, final_response]
+        # 2 tool rounds + 1 final stream (after max iterations)
+        fake_model.stream.side_effect = [
+            fake_tool_stream(None), fake_tool_stream(None), fake_final_stream(None),
+        ]
 
         pipeline = SimpleChatPipeline(max_tool_iterations=10)  # default=10 but request says 2
         with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
@@ -467,8 +479,8 @@ class SimpleChatPipelineTests(TestCase):
             mock_create.return_value = fake_model
             events = list(pipeline.stream(request))
 
-        # Should be 2 tool rounds + 1 final = 3 generate calls
-        self.assertEqual(fake_model.generate.call_count, 3)
+        # Should be 2 tool rounds + 1 final = 3 stream calls
+        self.assertEqual(fake_model.stream.call_count, 3)
         tokens = [e for e in events if e.event_type == "token"]
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0].data["text"], "Capped.")

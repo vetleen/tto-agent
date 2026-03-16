@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator, List, Tuple
 
 from llm.core.interfaces import ChatModel
@@ -122,12 +123,6 @@ class SimpleChatPipeline(BasePipeline):
         tools = self._resolve_tools(tool_names, request.context)
         req = request.model_copy(update={"tool_schemas": tools})
 
-        # Create usage callback to aggregate across tool loop rounds
-        usage_callback = UsageMetadataCallbackHandler()
-        params = dict(req.params or {})
-        params["_usage_callback"] = usage_callback
-        req = req.model_copy(update={"params": params})
-
         model = create_chat_model(req.model)
         run_id = req.context.run_id if req.context else ""
         max_iter = self._get_max_iterations(request)
@@ -183,21 +178,29 @@ class SimpleChatPipeline(BasePipeline):
         tool_calls: List[ToolCall],
         tool_by_name: dict[str, ContextAwareTool],
     ) -> List[Tuple[ToolCall, str]]:
-        """Execute a batch of tool calls and return (tool_call, result_json) pairs."""
-        results: List[Tuple[ToolCall, str]] = []
-        for tc in tool_calls:
+        """Execute a batch of tool calls and return (tool_call, result_json) pairs.
+
+        When multiple tool calls are present, they execute concurrently via
+        ThreadPoolExecutor (capped at 4 workers).  Single calls skip the pool.
+        """
+
+        def _run_one(tc: ToolCall) -> Tuple[ToolCall, str]:
             tool = tool_by_name.get(tc.name)
             if not tool:
-                result_str = json.dumps({"error": f"Unknown tool: {tc.name}"})
-            else:
-                try:
-                    result = tool.invoke(tc.arguments)
-                    # BaseTool._run returns str; ensure it's a string
-                    result_str = result if isinstance(result, str) else json.dumps(result)
-                except Exception as e:
-                    result_str = json.dumps({"error": str(e)})
-            results.append((tc, result_str))
-        return results
+                return (tc, json.dumps({"error": f"Unknown tool: {tc.name}"}))
+            try:
+                result = tool.invoke(tc.arguments)
+                result_str = result if isinstance(result, str) else json.dumps(result)
+            except Exception as e:
+                result_str = json.dumps({"error": str(e)})
+            return (tc, result_str)
+
+        if len(tool_calls) <= 1:
+            return [_run_one(tc) for tc in tool_calls]
+
+        with ThreadPoolExecutor(max_workers=min(len(tool_calls), 4)) as pool:
+            futures = [pool.submit(_run_one, tc) for tc in tool_calls]
+            return [f.result() for f in futures]
 
     def _run_tool_loop(
         self,
@@ -235,32 +238,68 @@ class SimpleChatPipeline(BasePipeline):
         run_id: str,
         max_iterations: int,
     ) -> Iterator[StreamEvent]:
+        """Stream tokens in real-time on every iteration, executing tools between rounds.
+
+        Instead of generate() + fake stream events, this uses chat_model.stream()
+        so tokens arrive in real-time. After each stream completes, the accumulated
+        message_end data is checked for tool_calls. If present, tools execute
+        (in parallel when multiple) and a new iteration begins.
+        """
         tool_by_name = {t.name: t for t in tools}
         req = request
         sequence = 1
 
-        for _ in range(max_iterations):
-            response = chat_model.generate(req)
-            msg = response.message
-            if not msg.tool_calls:
-                # Emit the already-fetched response as stream events
-                # instead of calling the LLM a second time via stream().
-                yield StreamEvent(
-                    event_type="message_start",
-                    data={"model": req.model},
-                    sequence=sequence,
-                    run_id=run_id,
-                )
-                sequence += 1
-                if msg.content:
+        # Aggregate usage across all iterations
+        agg_input_tokens = 0
+        agg_output_tokens = 0
+        agg_total_tokens = 0
+        agg_cost_usd = 0.0
+
+        def _do_stream_iteration(req, sequence):
+            """Stream one LLM call, forwarding events and returning (end_data, sequence)."""
+            end_data = {}
+            for event in chat_model.stream(req):
+                if event.event_type == "message_end":
+                    end_data = dict(event.data)
+                else:
+                    # Re-sequence with pipeline's sequence/run_id
                     yield StreamEvent(
-                        event_type="token",
-                        data={"text": msg.content},
+                        event_type=event.event_type,
+                        data=event.data,
                         sequence=sequence,
                         run_id=run_id,
                     )
                     sequence += 1
-                end_data = self._build_message_end_data(response)
+            # Yield a sentinel to pass end_data back
+            yield (end_data, sequence)
+
+        for _ in range(max_iterations):
+            # Stream from the model, forwarding all events except message_end
+            end_data = {}
+            for item in _do_stream_iteration(req, sequence):
+                if isinstance(item, StreamEvent):
+                    yield item
+                else:
+                    # Sentinel: (end_data, updated_sequence)
+                    end_data, sequence = item
+
+            # Accumulate usage from this iteration
+            agg_input_tokens += end_data.get("input_tokens") or 0
+            agg_output_tokens += end_data.get("output_tokens") or 0
+            agg_total_tokens += end_data.get("total_tokens") or 0
+            agg_cost_usd += end_data.get("cost_usd") or 0.0
+
+            # Check for tool calls
+            tool_call_dicts = end_data.get("tool_calls")
+            if not tool_call_dicts:
+                # Final iteration — response already streamed. Emit message_end with aggregates.
+                end_data["input_tokens"] = agg_input_tokens
+                end_data["output_tokens"] = agg_output_tokens
+                end_data["total_tokens"] = agg_total_tokens
+                end_data["cost_usd"] = agg_cost_usd
+                # Clean internal fields from end_data
+                end_data.pop("content", None)
+                end_data.pop("tool_calls", None)
                 yield StreamEvent(
                     event_type="message_end",
                     data=end_data,
@@ -269,12 +308,18 @@ class SimpleChatPipeline(BasePipeline):
                 )
                 return
 
-            new_messages = list(req.messages) + [msg]
+            # Reconstruct tool calls and assistant message for history
+            parsed_tool_calls = [
+                ToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments", {}))
+                for tc in tool_call_dicts
+            ]
+            assistant_content = end_data.get("content", "")
+            new_messages = list(req.messages) + [
+                Message(role="assistant", content=assistant_content, tool_calls=parsed_tool_calls)
+            ]
 
-            # Execute tools one-by-one, yielding tool_start BEFORE and
-            # tool_end AFTER each execution so the client gets real-time
-            # feedback.
-            for tc in msg.tool_calls:
+            # Emit tool_start for all tool calls (show spinners simultaneously)
+            for tc in parsed_tool_calls:
                 yield StreamEvent(
                     event_type="tool_start",
                     data={
@@ -287,16 +332,11 @@ class SimpleChatPipeline(BasePipeline):
                 )
                 sequence += 1
 
-                tool = tool_by_name.get(tc.name)
-                if not tool:
-                    result_str = json.dumps({"error": f"Unknown tool: {tc.name}"})
-                else:
-                    try:
-                        result = tool.invoke(tc.arguments)
-                        result_str = result if isinstance(result, str) else json.dumps(result)
-                    except Exception as e:
-                        result_str = json.dumps({"error": str(e)})
+            # Execute tools (in parallel when multiple)
+            results = self._execute_tool_calls(parsed_tool_calls, tool_by_name)
 
+            # Emit tool_end for all results and append to history
+            for tc, result_str in results:
                 yield StreamEvent(
                     event_type="tool_end",
                     data={
@@ -308,32 +348,29 @@ class SimpleChatPipeline(BasePipeline):
                     run_id=run_id,
                 )
                 sequence += 1
-
                 new_messages.append(
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
 
             req = req.model_copy(update={"messages": new_messages})
 
-        # Max iterations reached: one final generate, emitted as stream events.
-        response = chat_model.generate(req)
-        msg = response.message
-        yield StreamEvent(
-            event_type="message_start",
-            data={"model": req.model},
-            sequence=sequence,
-            run_id=run_id,
-        )
-        sequence += 1
-        if msg.content:
-            yield StreamEvent(
-                event_type="token",
-                data={"text": msg.content},
-                sequence=sequence,
-                run_id=run_id,
-            )
-            sequence += 1
-        end_data = self._build_message_end_data(response)
+        # Max iterations reached: one final streaming call
+        for item in _do_stream_iteration(req, sequence):
+            if isinstance(item, StreamEvent):
+                yield item
+            else:
+                end_data, sequence = item
+        # Add aggregate usage to final message_end
+        agg_input_tokens += end_data.get("input_tokens") or 0
+        agg_output_tokens += end_data.get("output_tokens") or 0
+        agg_total_tokens += end_data.get("total_tokens") or 0
+        agg_cost_usd += end_data.get("cost_usd") or 0.0
+        end_data["input_tokens"] = agg_input_tokens
+        end_data["output_tokens"] = agg_output_tokens
+        end_data["total_tokens"] = agg_total_tokens
+        end_data["cost_usd"] = agg_cost_usd
+        end_data.pop("content", None)
+        end_data.pop("tool_calls", None)
         yield StreamEvent(
             event_type="message_end",
             data=end_data,
