@@ -372,6 +372,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         thread_id = data.get("thread_id")
+        attachment_ids = data.get("attachment_ids") or []
 
         # Per-message model and thinking overrides
         requested_model = data.get("model") or None
@@ -408,7 +409,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 }))
 
             # Persist user message
-            await self._create_message(thread, "user", content)
+            user_metadata = {}
+            if attachment_ids:
+                user_metadata["attachment_ids"] = attachment_ids
+            user_message = await self._create_message(
+                thread, "user", content, metadata=user_metadata or None,
+            )
+
+            # Link attachments to the saved message
+            if attachment_ids:
+                await self._link_attachments(attachment_ids, thread, user_message)
 
             # Resolve model early for dynamic history budget
             prefs = self.resolved_prefs
@@ -505,6 +515,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 tool_call_id=msg.get("tool_call_id"),
                 tool_calls=tool_calls,
             ))
+
+        # Enrich user messages that have image attachments with multimodal content blocks
+        await self._enrich_with_attachments(messages, history, resolved_model)
 
         context = RunContext.create(
             user_id=self.user.pk,
@@ -1268,6 +1281,85 @@ class ChatConsumer(AsyncWebsocketConsumer):
             token_count=count_tokens(content),
         )
 
+    @database_sync_to_async
+    def _link_attachments(self, attachment_ids, thread, message):
+        from chat.models import ChatAttachment
+
+        ChatAttachment.objects.filter(
+            id__in=attachment_ids,
+            thread=thread,
+            uploaded_by=self.user,
+            message__isnull=True,
+        ).update(message=message)
+
+    async def _enrich_with_attachments(self, messages, history, model):
+        """Replace plain-text content with multimodal content blocks for messages with attachments."""
+        import base64
+
+        from chat.services import build_image_content_block
+
+        # Collect all attachment IDs from history
+        all_ids = []
+        for msg in history:
+            ids = msg.get("attachment_ids") or []
+            all_ids.extend(ids)
+        if not all_ids:
+            return
+
+        # Load attachment records
+        attachments_by_id = await self._load_attachments(all_ids)
+        if not attachments_by_id:
+            return
+
+        # Determine provider from model
+        provider = ""
+        if model and "/" in model:
+            provider = model.split("/", 1)[0].lower()
+
+        # messages[0] is system prompt, so history[i] corresponds to messages[i+1]
+        for i, msg in enumerate(history):
+            ids = msg.get("attachment_ids") or []
+            if not ids:
+                continue
+            message_obj = messages[i + 1]  # offset by system message
+            if message_obj.role != "user":
+                continue
+
+            content_blocks = []
+            text = message_obj.content if isinstance(message_obj.content, str) else ""
+            if text:
+                content_blocks.append({"type": "text", "text": text})
+
+            for att_id in ids:
+                att = attachments_by_id.get(str(att_id))
+                if not att:
+                    continue
+                try:
+                    file_bytes = await self._read_attachment_file(att)
+                    b64 = base64.b64encode(file_bytes).decode("ascii")
+                    block = build_image_content_block(b64, att.content_type, provider)
+                    content_blocks.append(block)
+                except Exception:
+                    logger.exception("Failed to read attachment %s", att_id)
+
+            if len(content_blocks) > 1:  # has at least text + one image
+                message_obj.content = content_blocks
+
+    @database_sync_to_async
+    def _load_attachments(self, attachment_ids):
+        from chat.models import ChatAttachment
+
+        atts = ChatAttachment.objects.filter(id__in=attachment_ids)
+        return {str(a.id): a for a in atts}
+
+    @database_sync_to_async
+    def _read_attachment_file(self, attachment):
+        attachment.file.open("rb")
+        try:
+            return attachment.file.read()
+        finally:
+            attachment.file.close()
+
     async def _persist_tool_loop_messages(self, thread, tool_calls, tool_results):
         """Persist assistant tool-call message and tool result messages."""
         # 1. Assistant message requesting tools (content empty, tool_calls in metadata)
@@ -1431,6 +1523,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
             if m.metadata and m.metadata.get("tool_calls"):
                 msg_dict["tool_calls"] = m.metadata["tool_calls"]
+            if m.metadata and m.metadata.get("attachment_ids"):
+                msg_dict["attachment_ids"] = m.metadata["attachment_ids"]
             messages.append(msg_dict)
 
         return {

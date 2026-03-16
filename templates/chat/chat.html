@@ -128,6 +128,16 @@
                     <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
                   </div>
                   <div class="text-sm py-2.5 text-body whitespace-pre-wrap">{{ m.content }}</div>
+                  {% if m.attachment_names %}
+                  <div class="flex flex-wrap gap-1 mt-1">
+                    {% for fname in m.attachment_names %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full">
+                      <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                      {{ fname }}
+                    </span>
+                    {% endfor %}
+                  </div>
+                  {% endif %}
                 </div>
               </div>
             </div>
@@ -180,6 +190,11 @@
         </span>
         {% endfor %}
       </div>
+      {# Hidden file input for image attachments #}
+      <input type="file" id="image-upload-input" class="hidden"
+             accept="image/jpeg,image/png,image/gif,image/webp" multiple />
+      {# Attached image pills #}
+      <div id="attached-images" class="flex flex-wrap gap-2 mb-2 empty:mb-0"></div>
       {# Attached skill pill #}
       <div id="attached-skill" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
         {% if thread_skill %}
@@ -224,6 +239,10 @@
                 <button type="button" id="open-skill-modal-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
                   <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                   Use skill
+                </button>
+                <button type="button" id="attach-images-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
+                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                  Add photos &amp; files
                 </button>
               </div>
             </div>
@@ -507,6 +526,10 @@
   const AVAILABLE_SKILLS = JSON.parse('{{ skills_json|escapejs }}');
   let activeSkillId = {% if thread_skill %}"{{ thread_skill.id|escapejs }}"{% else %}null{% endif %};
   let activeSkillName = {% if thread_skill %}"{{ thread_skill.name|escapejs }}"{% else %}null{% endif %};
+
+  // -- Image attachment state --
+  let pendingAttachmentIds = [];
+  let pendingAttachmentNames = [];
 
   // -- Mermaid init --
   var mermaidIdCounter = 0;
@@ -923,6 +946,115 @@
   }
   if (closeSkillModalBtn) { closeSkillModalBtn.addEventListener('click', function() { skillModal.classList.add('hidden'); }); }
   skillModal.addEventListener('click', function(e) { if (e.target === skillModal) skillModal.classList.add('hidden'); });
+
+  // -- Image attachments --
+  var imageUploadInput = document.getElementById('image-upload-input');
+  var attachImagesBtn = document.getElementById('attach-images-btn');
+  var attachedImagesContainer = document.getElementById('attached-images');
+  var SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  var MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+
+  if (attachImagesBtn) {
+    attachImagesBtn.addEventListener('click', function() {
+      // Check if selected model supports vision
+      var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
+      if (current && !current.supports_vision) {
+        showToast('The selected model does not support image inputs. Please select a vision-capable model.');
+      }
+      imageUploadInput.click();
+      var dd = document.getElementById('attach-dropdown');
+      if (dd) dd.classList.add('hidden');
+    });
+  }
+
+  function addImagePill(id, filename) {
+    var pill = document.createElement('span');
+    pill.className = 'image-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full';
+    pill.setAttribute('data-attachment-id', id);
+    pill.innerHTML = '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>' +
+      escapeHtml(filename) +
+      '<button type="button" class="remove-image-btn hover:text-fg-danger" aria-label="Remove ' + escapeHtml(filename) + '"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>';
+    attachedImagesContainer.appendChild(pill);
+  }
+
+  function removeImagePill(id) {
+    var idx = pendingAttachmentIds.indexOf(id);
+    if (idx !== -1) { pendingAttachmentIds.splice(idx, 1); pendingAttachmentNames.splice(idx, 1); }
+    var pill = attachedImagesContainer.querySelector('[data-attachment-id="' + id + '"]');
+    if (pill) pill.remove();
+  }
+
+  function clearImagePills() {
+    pendingAttachmentIds = [];
+    pendingAttachmentNames = [];
+    attachedImagesContainer.innerHTML = '';
+  }
+
+  attachedImagesContainer.addEventListener('click', function(e) {
+    var btn = e.target.closest('.remove-image-btn');
+    if (!btn) return;
+    var pill = btn.closest('.image-pill');
+    if (pill) removeImagePill(pill.getAttribute('data-attachment-id'));
+  });
+
+  if (imageUploadInput) {
+    imageUploadInput.addEventListener('change', function() {
+      var files = Array.from(imageUploadInput.files);
+      imageUploadInput.value = '';
+      if (!files.length) return;
+
+      // Client-side validation
+      for (var i = 0; i < files.length; i++) {
+        if (SUPPORTED_IMAGE_TYPES.indexOf(files[i].type) === -1) {
+          showToast('Unsupported file type: ' + files[i].name);
+          return;
+        }
+        if (files[i].size > MAX_ATTACHMENT_SIZE) {
+          showToast('File too large (max 10 MB): ' + files[i].name);
+          return;
+        }
+      }
+
+      function doUpload(threadId) {
+        var fd = new FormData();
+        files.forEach(function(f) { fd.append('files', f); });
+        fetch('/chat/api/threads/' + threadId + '/attachments/upload/', {
+          method: 'POST',
+          headers: { 'X-CSRFToken': getCSRFToken() },
+          body: fd,
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Upload failed'); });
+          return r.json();
+        }).then(function(data) {
+          (data.attachments || []).forEach(function(att) {
+            pendingAttachmentIds.push(att.id);
+            pendingAttachmentNames.push(att.filename);
+            addImagePill(att.id, att.filename);
+          });
+        }).catch(function(err) {
+          showToast('Upload failed: ' + err.message);
+        });
+      }
+
+      if (activeThreadId) {
+        doUpload(activeThreadId);
+      } else {
+        fetch('/chat/api/threads/create/', {
+          method: 'POST',
+          headers: { 'X-CSRFToken': getCSRFToken() },
+        }).then(function(r) {
+          if (!r.ok) throw new Error('Could not create thread');
+          return r.json();
+        }).then(function(data) {
+          activeThreadId = data.thread_id;
+          addThreadToSidebar(data.thread_id, 'New chat');
+          doUpload(data.thread_id);
+        }).catch(function(err) {
+          showToast('Failed to create conversation: ' + err.message);
+        });
+      }
+    });
+  }
 
   // -- Model selector --
   var modelSelectorBtn = document.getElementById('model-selector-btn');
@@ -1364,7 +1496,16 @@
     const now = new Date();
     const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
     const userDiv = document.createElement("div"); userDiv.className = "flex justify-end"; userDiv.setAttribute("data-role", "user");
-    userDiv.innerHTML = `<div class="flex items-start gap-2.5 flex-row-reverse"><span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">${escapeHtml(USER_INITIAL)}</span><div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base"><div class="flex items-center space-x-1.5 rtl:space-x-reverse"><span class="text-sm font-semibold text-heading">You</span><span class="text-sm text-body">${ts}</span></div><p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p></div></div>`;
+    // Build attachment badges HTML if any
+    var attBadges = "";
+    if (pendingAttachmentNames.length > 0) {
+      attBadges = '<div class="flex flex-wrap gap-1 mt-1">';
+      pendingAttachmentNames.forEach(function(fname) {
+        attBadges += '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full"><svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>' + escapeHtml(fname) + '</span>';
+      });
+      attBadges += '</div>';
+    }
+    userDiv.innerHTML = `<div class="flex items-start gap-2.5 flex-row-reverse"><span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">${escapeHtml(USER_INITIAL)}</span><div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base"><div class="flex items-center space-x-1.5 rtl:space-x-reverse"><span class="text-sm font-semibold text-heading">You</span><span class="text-sm text-body">${ts}</span></div><p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p>${attBadges}</div></div>`;
     const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
     // Switch from empty layout to normal chat layout
     scrollContainer.classList.add('flex-1');
@@ -1372,13 +1513,18 @@
     var inputArea = document.getElementById('chat-input-area');
     if (inputArea) { inputArea.classList.add('border-t', 'border-default'); }
     messagesContainer.appendChild(userDiv);
+    // Capture attachment IDs before clearing
+    var sendAttachmentIds = pendingAttachmentIds.slice();
+    clearImagePills();
     input.value = ""; autoResize(input); input.disabled = true; button.disabled = true; locked = true;
     currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); accumulatedContent = "";
     // Force scroll to absolute bottom so user sees their message + Wilfred's spinner
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
     if (ws && ws.readyState === WebSocket.OPEN) {
       canvasAutoSaveBeforeChat();
-      ws.send(JSON.stringify({ type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_id: activeSkillId || "", model: selectedModel, thinking: thinkingEnabled }));
+      var payload = { type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_id: activeSkillId || "", model: selectedModel, thinking: thinkingEnabled };
+      if (sendAttachmentIds.length > 0) payload.attachment_ids = sendAttachmentIds;
+      ws.send(JSON.stringify(payload));
     }
     setTimeout(function() { locked = false; }, 500);
   });

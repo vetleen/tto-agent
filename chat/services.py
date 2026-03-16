@@ -97,6 +97,28 @@ def create_canvas_checkpoint(canvas, source, description=""):
 CANVAS_MAX_IMAGES = 25
 SUMMARY_TARGET_TOKENS = 2_000
 
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def build_image_content_block(b64_data: str, media_type: str, provider: str) -> dict:
+    """Build a provider-specific image content block for multimodal messages."""
+    if provider == "anthropic":
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": b64_data,
+            },
+        }
+    else:
+        # OpenAI / Gemini style
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{b64_data}"},
+        }
+
 
 async def generate_summary(
     messages: list[ChatMessage],
@@ -183,9 +205,8 @@ def describe_image(
     if model is None:
         return None
 
-    SUPPORTED_MEDIA_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
     media_type = content_type or "image/png"
-    if media_type not in SUPPORTED_MEDIA_TYPES:
+    if media_type not in SUPPORTED_IMAGE_TYPES:
         return None
 
     b64 = base64.b64encode(image_bytes).decode("ascii")
@@ -200,22 +221,7 @@ def describe_image(
 
     # Determine provider to use the right content block format
     provider = model.split("/", 1)[0].lower() if "/" in model else ""
-
-    if provider == "anthropic":
-        image_block = {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": media_type,
-                "data": b64,
-            },
-        }
-    else:
-        # OpenAI / Gemini style
-        image_block = {
-            "type": "image_url",
-            "image_url": {"url": f"data:{media_type};base64,{b64}"},
-        }
+    image_block = build_image_content_block(b64, media_type, provider)
 
     content_blocks: list = [
         {"type": "text", "text": prompt},

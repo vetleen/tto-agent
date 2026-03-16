@@ -7,7 +7,7 @@ from django.http import FileResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods, require_POST
 
-from chat.models import ChatCanvas, ChatThread, ThreadTask
+from chat.models import ChatAttachment, ChatCanvas, ChatThread, ThreadTask
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentTag
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,19 @@ def chat_home(request):
                 thread.is_archived = False
                 thread.save(update_fields=["is_archived"])
             chat_messages = list(thread.messages.order_by("created_at")[:100])
+
+            # Annotate user messages with attachment filenames for rendering
+            msg_ids = [m.pk for m in chat_messages if m.role == "user"]
+            if msg_ids:
+                from collections import defaultdict
+                att_qs = ChatAttachment.objects.filter(
+                    message_id__in=msg_ids
+                ).values_list("message_id", "original_filename")
+                att_map = defaultdict(list)
+                for mid, fname in att_qs:
+                    att_map[mid].append(fname)
+                for m in chat_messages:
+                    m.attachment_names = att_map.get(m.pk, [])
 
     threads = list(
         ChatThread.objects.filter(created_by=request.user, is_archived=False)
@@ -74,7 +87,7 @@ def chat_home(request):
 
     # Resolve preferences (model choices, allowed skills, etc.)
     from core.preferences import get_preferences
-    from llm.display import get_display_name, supports_thinking
+    from llm.display import get_display_name, supports_thinking, supports_vision
 
     prefs = get_preferences(request.user)
 
@@ -89,6 +102,7 @@ def chat_home(request):
             "id": m,
             "display_name": get_display_name(m),
             "supports_thinking": supports_thinking(m),
+            "supports_vision": supports_vision(m),
         }
         for m in prefs.allowed_models
     ]
@@ -327,6 +341,50 @@ def skills_for_user(request):
             for s in prefs.allowed_skills
         ]
     })
+
+
+@login_required
+@require_POST
+def upload_attachments(request, thread_id):
+    """Upload image attachments for a chat message."""
+    from chat.services import MAX_ATTACHMENT_SIZE, SUPPORTED_IMAGE_TYPES
+
+    thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
+
+    files = request.FILES.getlist("files")
+    if not files:
+        return JsonResponse({"error": "No files uploaded"}, status=400)
+
+    results = []
+    for f in files:
+        if f.content_type not in SUPPORTED_IMAGE_TYPES:
+            return JsonResponse(
+                {"error": f"Unsupported file type: {f.content_type}"},
+                status=400,
+            )
+        if f.size > MAX_ATTACHMENT_SIZE:
+            return JsonResponse(
+                {"error": f"File too large: {f.name} ({f.size} bytes, max {MAX_ATTACHMENT_SIZE})"},
+                status=400,
+            )
+
+    for f in files:
+        att = ChatAttachment.objects.create(
+            thread=thread,
+            uploaded_by=request.user,
+            file=f,
+            original_filename=f.name[:255],
+            content_type=f.content_type,
+            size_bytes=f.size,
+        )
+        results.append({
+            "id": str(att.id),
+            "filename": att.original_filename,
+            "content_type": att.content_type,
+            "size_bytes": att.size_bytes,
+        })
+
+    return JsonResponse({"attachments": results})
 
 
 @login_required
