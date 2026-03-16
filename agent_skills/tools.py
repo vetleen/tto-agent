@@ -25,6 +25,10 @@ class SaveCanvasToSkillFieldInput(BaseModel):
             "or a template name."
         )
     )
+    canvas_name: str = Field(
+        default="",
+        description="Title of the canvas to save from. If omitted, uses the active canvas.",
+    )
 
 
 class ShowSkillFieldInCanvasInput(BaseModel):
@@ -33,6 +37,10 @@ class ShowSkillFieldInCanvasInput(BaseModel):
         description=(
             "Field to show: 'instructions', 'description', or a template name."
         )
+    )
+    canvas_name: str = Field(
+        default="",
+        description="Title for the canvas tab. If omitted, uses '{skill_name} — {field_name}'.",
     )
 
 
@@ -90,6 +98,10 @@ class ViewTemplateInput(BaseModel):
 
 class LoadTemplateToCanvasInput(BaseModel):
     template_name: str = Field(description="Name of the template to load into the canvas.")
+    canvas_name: str = Field(
+        default="",
+        description="Title for the canvas tab. If omitted, uses the template name.",
+    )
 
 
 class InspectToolInput(BaseModel):
@@ -144,10 +156,10 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
     args_schema: type[BaseModel] = SaveCanvasToSkillFieldInput
     section: str = "skills"
 
-    def _run(self, skill_slug: str, field_name: str) -> str:
+    def _run(self, skill_slug: str, field_name: str, canvas_name: str = "") -> str:
         from agent_skills.models import SkillTemplate
         from agent_skills.services import get_editable_skill_for_user
-        from chat.models import ChatCanvas
+        from chat.services import resolve_canvas
 
         user_id = self.context.user_id if self.context else None
         thread_id = self.context.conversation_id if self.context else None
@@ -169,12 +181,11 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
                 "message": f"Skill '{skill_slug}' not found or not editable.",
             })
 
-        try:
-            canvas = ChatCanvas.objects.get(thread_id=thread_id)
-        except ChatCanvas.DoesNotExist:
+        canvas, err = resolve_canvas(thread_id, canvas_name or None)
+        if err:
             return json.dumps({
                 "status": "error",
-                "message": "No canvas exists for this thread.",
+                "message": err,
             })
 
         content = canvas.content
@@ -207,10 +218,12 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
     args_schema: type[BaseModel] = ShowSkillFieldInCanvasInput
     section: str = "skills"
 
-    def _run(self, skill_slug: str, field_name: str) -> str:
+    def _run(self, skill_slug: str, field_name: str, canvas_name: str = "") -> str:
+        from django.db import IntegrityError
+
         from agent_skills.services import get_available_skills
         from chat.models import ChatCanvas
-        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
+        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint, set_active_canvas
 
         user_id = self.context.user_id if self.context else None
         thread_id = self.context.conversation_id if self.context else None
@@ -252,17 +265,36 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
                     "message": f"Template '{field_name}' not found on skill '{skill_slug}'.",
                 })
 
-        title = f"{skill.name} \u2014 {field_name}"
+        title = canvas_name or f"{skill.name} \u2014 {field_name}"
         content = content[:CANVAS_MAX_CHARS]
 
-        canvas, created = ChatCanvas.objects.update_or_create(
-            thread_id=thread_id,
-            defaults={"title": title, "content": content},
-        )
+        try:
+            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                thread_id=thread_id, title=title,
+            )
+            canvas.content = content
+            canvas.save(update_fields=["content", "updated_at"])
+            created = False
+        except ChatCanvas.DoesNotExist:
+            try:
+                canvas = ChatCanvas.objects.create(
+                    thread_id=thread_id, title=title, content=content,
+                )
+                created = True
+            except IntegrityError:
+                canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                    thread_id=thread_id, title=title,
+                )
+                canvas.content = content
+                canvas.save(update_fields=["content", "updated_at"])
+                created = False
+
         cp = create_canvas_checkpoint(canvas, source="import", description=f"Loaded {field_name}")
         if created:
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
+
+        set_active_canvas(thread_id, canvas)
 
         accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
 
@@ -271,6 +303,7 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
             "title": title,
             "content": content,
             "accepted_content": accepted_content,
+            "canvas_id": str(canvas.pk),
         })
 
 
@@ -693,10 +726,12 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     args_schema: type[BaseModel] = LoadTemplateToCanvasInput
     section: str = "skills"
 
-    def _run(self, template_name: str) -> str:
+    def _run(self, template_name: str, canvas_name: str = "") -> str:
+        from django.db import IntegrityError
+
         from agent_skills.models import SkillTemplate
         from chat.models import ChatCanvas, ChatThread
-        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
+        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint, set_active_canvas
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
@@ -719,16 +754,35 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
             })
 
         content = tmpl.content[:CANVAS_MAX_CHARS]
-        title = tmpl.name
+        title = canvas_name or tmpl.name
 
-        canvas, created = ChatCanvas.objects.update_or_create(
-            thread_id=thread_id,
-            defaults={"title": title, "content": content},
-        )
+        try:
+            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                thread_id=thread_id, title=title,
+            )
+            canvas.content = content
+            canvas.save(update_fields=["content", "updated_at"])
+            created = False
+        except ChatCanvas.DoesNotExist:
+            try:
+                canvas = ChatCanvas.objects.create(
+                    thread_id=thread_id, title=title, content=content,
+                )
+                created = True
+            except IntegrityError:
+                canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                    thread_id=thread_id, title=title,
+                )
+                canvas.content = content
+                canvas.save(update_fields=["content", "updated_at"])
+                created = False
+
         cp = create_canvas_checkpoint(canvas, source="import", description=f"Loaded template: {template_name}")
         if created:
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
+
+        set_active_canvas(thread_id, canvas)
 
         accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
 
@@ -737,6 +791,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
             "title": title,
             "content": content,
             "accepted_content": accepted_content,
+            "canvas_id": str(canvas.pk),
         })
 
 

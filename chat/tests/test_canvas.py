@@ -42,13 +42,17 @@ class WriteCanvasToolTests(TestCase):
         self.assertEqual(canvas.title, "My NDA")
         self.assertEqual(canvas.content, "# NDA\n...")
 
-    def test_overwrites_on_second_call(self):
+    def test_overwrites_canvas_with_same_title(self):
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "old"}, _ctx(self.user.pk, self.thread.id))
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "new"}, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(ChatCanvas.objects.filter(thread=self.thread).count(), 1)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Draft")
+        self.assertEqual(canvas.content, "new")
+
+    def test_creates_second_canvas_with_different_title(self):
         _invoke(WriteCanvasTool, {"title": "Draft 1", "content": "old"}, _ctx(self.user.pk, self.thread.id))
         _invoke(WriteCanvasTool, {"title": "Draft 2", "content": "new"}, _ctx(self.user.pk, self.thread.id))
-        self.assertEqual(ChatCanvas.objects.filter(thread=self.thread).count(), 1)
-        canvas = ChatCanvas.objects.get(thread=self.thread)
-        self.assertEqual(canvas.title, "Draft 2")
-        self.assertEqual(canvas.content, "new")
+        self.assertEqual(ChatCanvas.objects.filter(thread=self.thread).count(), 2)
 
     def test_returns_content_in_result(self):
         result = _invoke(WriteCanvasTool, {"title": "T", "content": "C"}, _ctx(self.user.pk, self.thread.id))
@@ -71,7 +75,9 @@ class EditCanvasToolTests(TestCase):
         self.thread = ChatThread.objects.create(created_by=self.user)
 
     def _setup_canvas(self, content):
-        ChatCanvas.objects.create(thread=self.thread, title="Doc", content=content)
+        canvas = ChatCanvas.objects.create(thread=self.thread, title="Doc", content=content)
+        self.thread.active_canvas = canvas
+        self.thread.save(update_fields=["active_canvas"])
 
     def test_applies_edit_correctly(self):
         self._setup_canvas("The term is 3 years.")
@@ -81,7 +87,7 @@ class EditCanvasToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["applied"], 1)
         self.assertIn("5 years", result["content"])
-        canvas = ChatCanvas.objects.get(thread=self.thread)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
         self.assertIn("5 years", canvas.content)
 
     def test_skips_unfound_old_text(self):
@@ -113,7 +119,7 @@ class EditCanvasToolTests(TestCase):
         self.assertEqual(len(result["failed"]), 1)
         self.assertIn("2 matches", result["failed"][0]["error"])
         # Content should be unchanged
-        canvas = ChatCanvas.objects.get(thread=self.thread)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
         self.assertEqual(canvas.content, "The cat sat. The cat slept.")
 
     def test_returns_error_when_no_canvas(self):
@@ -151,9 +157,12 @@ class ConsumerCanvasTests(TransactionTestCase):
         from channels.db import database_sync_to_async
 
         thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
-        await database_sync_to_async(ChatCanvas.objects.create)(
-            thread=thread, title="My Doc", content="hello"
-        )
+
+        def setup():
+            c = ChatCanvas.objects.create(thread=thread, title="My Doc", content="hello")
+            thread.active_canvas = c
+            thread.save(update_fields=["active_canvas"])
+        await database_sync_to_async(setup)()
 
         comm = await self._communicator()
         await comm.send_json_to({"type": "chat.load_thread", "thread_id": str(thread.id)})
@@ -162,11 +171,12 @@ class ConsumerCanvasTests(TransactionTestCase):
         msg1 = await comm.receive_json_from()
         self.assertEqual(msg1["event_type"], "thread.loaded")
 
-        # canvas.loaded event
+        # canvases.loaded event
         msg2 = await comm.receive_json_from()
-        self.assertEqual(msg2["event_type"], "canvas.loaded")
-        self.assertEqual(msg2["title"], "My Doc")
-        self.assertEqual(msg2["content"], "hello")
+        self.assertEqual(msg2["event_type"], "canvases.loaded")
+        self.assertEqual(len(msg2["canvases"]), 1)
+        self.assertEqual(msg2["active_canvas"]["title"], "My Doc")
+        self.assertEqual(msg2["active_canvas"]["content"], "hello")
 
         await comm.disconnect()
 
@@ -198,9 +208,9 @@ class ConsumerCanvasTests(TransactionTestCase):
         await comm.send_json_to({"type": "chat.canvas_open", "thread_id": str(thread.id)})
 
         msg = await comm.receive_json_from()
-        self.assertEqual(msg["event_type"], "canvas.loaded")
-        self.assertIn("title", msg)
-        self.assertIn("content", msg)
+        self.assertEqual(msg["event_type"], "canvases.loaded")
+        self.assertIn("canvases", msg)
+        self.assertIn("active_canvas", msg)
 
         await comm.disconnect()
 
@@ -219,6 +229,8 @@ class CanvasExportViewTests(TestCase):
             title="My NDA",
             content="# NDA\n\nThis is an agreement.",
         )
+        self.thread.active_canvas = self.canvas
+        self.thread.save(update_fields=["active_canvas"])
 
     @patch("html2docx.html2docx")
     @patch("markdown.markdown")
@@ -597,11 +609,11 @@ class WriteCanvasToolCheckpointTests(TestCase):
         self.assertEqual(canvas.accepted_checkpoint.pk, cps[0].pk)
 
     def test_second_call_creates_ai_edit_without_updating_accepted(self):
-        _invoke(WriteCanvasTool, {"title": "Draft 1", "content": "old"}, _ctx(self.user.pk, self.thread.id))
-        canvas = ChatCanvas.objects.get(thread=self.thread)
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "old"}, _ctx(self.user.pk, self.thread.id))
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Draft")
         original_accepted_pk = canvas.accepted_checkpoint.pk
 
-        _invoke(WriteCanvasTool, {"title": "Draft 2", "content": "new"}, _ctx(self.user.pk, self.thread.id))
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "new"}, _ctx(self.user.pk, self.thread.id))
         canvas.refresh_from_db()
         cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
         self.assertEqual(len(cps), 2)
@@ -626,6 +638,8 @@ class EditCanvasToolCheckpointTests(TestCase):
 
     def _setup_canvas(self, content):
         canvas = ChatCanvas.objects.create(thread=self.thread, title="Doc", content=content)
+        self.thread.active_canvas = canvas
+        self.thread.save(update_fields=["active_canvas"])
         from chat.services import create_canvas_checkpoint
         cp = create_canvas_checkpoint(canvas, source="original")
         canvas.accepted_checkpoint = cp
@@ -688,9 +702,9 @@ class EditCanvasToolCheckpointTests(TestCase):
         _invoke(EditCanvasTool, {
             "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}]
         }, ctx)
-        # Write canvas also produces ai_edit source (since canvas already exists)
-        _invoke(WriteCanvasTool, {"title": "New", "content": "Brand new"}, ctx)
-        canvas = ChatCanvas.objects.get(thread=self.thread)
+        # Write canvas with same title produces ai_edit source (since canvas already exists)
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "Brand new"}, ctx)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
         cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
         # original + ai_edit (from edit) — but write_canvas on existing canvas
         # also produces ai_edit, which coalesces with the previous ai_edit
@@ -762,6 +776,8 @@ class ConsumerCheckpointTests(TransactionTestCase):
         )
 
         def setup_checkpoints():
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
             cp1 = create_canvas_checkpoint(canvas, source="original")
             canvas.accepted_checkpoint = cp1
             canvas.save(update_fields=["accepted_checkpoint"])
@@ -792,6 +808,8 @@ class ConsumerCheckpointTests(TransactionTestCase):
         )
 
         def setup():
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
             cp = create_canvas_checkpoint(canvas, source="original")
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
@@ -815,9 +833,12 @@ class ConsumerCheckpointTests(TransactionTestCase):
         from channels.db import database_sync_to_async
 
         thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
-        await database_sync_to_async(ChatCanvas.objects.create)(
-            thread=thread, title="Doc", content="content"
-        )
+
+        def setup():
+            c = ChatCanvas.objects.create(thread=thread, title="Doc", content="content")
+            thread.active_canvas = c
+            thread.save(update_fields=["active_canvas"])
+        await database_sync_to_async(setup)()
 
         comm = await self._communicator()
         await comm.send_json_to({
@@ -848,6 +869,8 @@ class ConsumerCheckpointTests(TransactionTestCase):
         )
 
         def setup():
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
             cp = create_canvas_checkpoint(canvas, source="original", description="first")
             canvas.accepted_checkpoint = cp
             canvas.content = "current"
@@ -859,11 +882,11 @@ class ConsumerCheckpointTests(TransactionTestCase):
         # thread.loaded
         msg1 = await comm.receive_json_from()
         self.assertEqual(msg1["event_type"], "thread.loaded")
-        # canvas.loaded
+        # canvases.loaded
         msg2 = await comm.receive_json_from()
-        self.assertEqual(msg2["event_type"], "canvas.loaded")
-        self.assertIn("accepted_content", msg2)
-        self.assertEqual(msg2["accepted_content"], "current")
+        self.assertEqual(msg2["event_type"], "canvases.loaded")
+        self.assertIn("accepted_content", msg2["active_canvas"])
+        self.assertEqual(msg2["active_canvas"]["accepted_content"], "current")
         await comm.disconnect()
 
     async def test_canvas_restore_version(self):
@@ -876,6 +899,8 @@ class ConsumerCheckpointTests(TransactionTestCase):
         )
 
         def setup():
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
             cp1 = create_canvas_checkpoint(canvas, source="original")
             canvas.accepted_checkpoint = cp1
             canvas.save(update_fields=["accepted_checkpoint"])
@@ -914,6 +939,8 @@ class ConsumerCheckpointTests(TransactionTestCase):
         )
 
         def setup():
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
             cp1 = create_canvas_checkpoint(canvas, source="original")
             canvas.accepted_checkpoint = cp1
             canvas.save(update_fields=["accepted_checkpoint"])
@@ -966,9 +993,12 @@ class ConsumerCheckpointTests(TransactionTestCase):
         from channels.db import database_sync_to_async
 
         thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
-        await database_sync_to_async(ChatCanvas.objects.create)(
-            thread=thread, title="Doc", content="text"
-        )
+
+        def setup():
+            c = ChatCanvas.objects.create(thread=thread, title="Doc", content="text")
+            thread.active_canvas = c
+            thread.save(update_fields=["active_canvas"])
+        await database_sync_to_async(setup)()
 
         comm = await self._communicator()
         await comm.send_json_to({
@@ -979,3 +1009,283 @@ class ConsumerCheckpointTests(TransactionTestCase):
         self.assertEqual(msg["event_type"], "canvas.checkpoints")
         self.assertEqual(msg["checkpoints"], [])
         await comm.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Multi-canvas tool tests
+# ---------------------------------------------------------------------------
+
+class MultiCanvasToolTests(TestCase):
+    """Tests for multi-canvas behaviour in WriteCanvasTool and EditCanvasTool."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="multi@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_write_creates_new_canvas_with_new_title(self):
+        result = _invoke(WriteCanvasTool, {"title": "A", "content": "aaa"}, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(ChatCanvas.objects.filter(thread=self.thread).count(), 1)
+
+        result = _invoke(WriteCanvasTool, {"title": "B", "content": "bbb"}, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(ChatCanvas.objects.filter(thread=self.thread).count(), 2)
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="B").content, "bbb")
+
+    def test_write_overwrites_canvas_with_same_title(self):
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "v1"}, _ctx(self.user.pk, self.thread.id))
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "v2"}, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(ChatCanvas.objects.filter(thread=self.thread).count(), 1)
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Draft").content, "v2")
+
+    def test_write_sets_active_canvas(self):
+        _invoke(WriteCanvasTool, {"title": "First", "content": "f"}, _ctx(self.user.pk, self.thread.id))
+        self.thread.refresh_from_db()
+        first = ChatCanvas.objects.get(thread=self.thread, title="First")
+        self.assertEqual(self.thread.active_canvas_id, first.pk)
+
+        _invoke(WriteCanvasTool, {"title": "Second", "content": "s"}, _ctx(self.user.pk, self.thread.id))
+        self.thread.refresh_from_db()
+        second = ChatCanvas.objects.get(thread=self.thread, title="Second")
+        self.assertEqual(self.thread.active_canvas_id, second.pk)
+
+    def test_edit_targets_by_canvas_name(self):
+        _invoke(WriteCanvasTool, {"title": "Alpha", "content": "Hello world"}, _ctx(self.user.pk, self.thread.id))
+        _invoke(WriteCanvasTool, {"title": "Beta", "content": "Foo bar"}, _ctx(self.user.pk, self.thread.id))
+        # Active canvas is now "Beta" — edit "Alpha" by name
+        result = _invoke(EditCanvasTool, {
+            "canvas_name": "Alpha",
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}],
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["applied"], 1)
+        alpha = ChatCanvas.objects.get(thread=self.thread, title="Alpha")
+        self.assertIn("Hi", alpha.content)
+        # Beta untouched
+        beta = ChatCanvas.objects.get(thread=self.thread, title="Beta")
+        self.assertEqual(beta.content, "Foo bar")
+
+    def test_edit_defaults_to_active_canvas(self):
+        _invoke(WriteCanvasTool, {"title": "Active", "content": "Hello world"}, _ctx(self.user.pk, self.thread.id))
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}],
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["applied"], 1)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Active")
+        self.assertIn("Hi", canvas.content)
+
+    def test_edit_errors_with_unknown_canvas_name(self):
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "x"}, _ctx(self.user.pk, self.thread.id))
+        result = _invoke(EditCanvasTool, {
+            "canvas_name": "Nonexistent",
+            "edits": [{"old_text": "x", "new_text": "y", "reason": ""}],
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "error")
+
+    def test_unique_title_constraint_enforced(self):
+        """Two canvases with the same title cannot exist for one thread."""
+        ChatCanvas.objects.create(thread=self.thread, title="Dup", content="a")
+        from django.db import IntegrityError
+        with self.assertRaises(IntegrityError):
+            ChatCanvas.objects.create(thread=self.thread, title="Dup", content="b")
+
+    def test_max_canvases_per_thread(self):
+        from chat.services import MAX_CANVASES_PER_THREAD
+        ctx = _ctx(self.user.pk, self.thread.id)
+        for i in range(MAX_CANVASES_PER_THREAD):
+            result = _invoke(WriteCanvasTool, {"title": f"Canvas {i}", "content": "x"}, ctx)
+            self.assertEqual(result["status"], "ok")
+        result = _invoke(WriteCanvasTool, {"title": "One too many", "content": "x"}, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Maximum", result["message"])
+
+    def test_write_returns_canvas_id(self):
+        result = _invoke(WriteCanvasTool, {"title": "T", "content": "C"}, _ctx(self.user.pk, self.thread.id))
+        self.assertIn("canvas_id", result)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="T")
+        self.assertEqual(result["canvas_id"], str(canvas.pk))
+
+    def test_edit_returns_canvas_id(self):
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "Hello"}, _ctx(self.user.pk, self.thread.id))
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}],
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertIn("canvas_id", result)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertEqual(result["canvas_id"], str(canvas.pk))
+
+
+# ---------------------------------------------------------------------------
+# Multi-canvas consumer tests
+# ---------------------------------------------------------------------------
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class ConsumerMultiCanvasTests(TransactionTestCase):
+    """WebSocket tests for multi-canvas features."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="mws@test.com", password="pass")
+
+    async def _communicator(self):
+        from channels.routing import URLRouter
+        from channels.testing import WebsocketCommunicator
+        from chat.routing import websocket_urlpatterns
+
+        app = URLRouter(websocket_urlpatterns)
+        comm = WebsocketCommunicator(app, "/ws/chat/")
+        comm.scope["user"] = self.user
+        connected, _ = await comm.connect()
+        assert connected
+        return comm
+
+    async def test_canvases_loaded_on_thread_switch(self):
+        from channels.db import database_sync_to_async
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+
+        def setup():
+            c1 = ChatCanvas.objects.create(thread=thread, title="Doc 1", content="one")
+            c2 = ChatCanvas.objects.create(thread=thread, title="Doc 2", content="two")
+            thread.active_canvas = c2
+            thread.save(update_fields=["active_canvas"])
+        await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({"type": "chat.load_thread", "thread_id": str(thread.id)})
+
+        msg1 = await comm.receive_json_from()
+        self.assertEqual(msg1["event_type"], "thread.loaded")
+
+        msg2 = await comm.receive_json_from()
+        self.assertEqual(msg2["event_type"], "canvases.loaded")
+        self.assertEqual(len(msg2["canvases"]), 2)
+        titles = {c["title"] for c in msg2["canvases"]}
+        self.assertEqual(titles, {"Doc 1", "Doc 2"})
+        self.assertEqual(msg2["active_canvas"]["title"], "Doc 2")
+        self.assertEqual(msg2["active_canvas"]["content"], "two")
+
+        await comm.disconnect()
+
+    async def test_canvas_switch_changes_active(self):
+        from channels.db import database_sync_to_async
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+
+        def setup():
+            c1 = ChatCanvas.objects.create(thread=thread, title="Doc 1", content="one")
+            c2 = ChatCanvas.objects.create(thread=thread, title="Doc 2", content="two")
+            thread.active_canvas = c1
+            thread.save(update_fields=["active_canvas"])
+            return c2.pk
+        c2_pk = await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({
+            "type": "chat.canvas_switch",
+            "thread_id": str(thread.id),
+            "canvas_id": c2_pk,
+        })
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.loaded")
+        self.assertEqual(msg["title"], "Doc 2")
+        self.assertEqual(msg["content"], "two")
+
+        def check_active():
+            thread.refresh_from_db()
+            self.assertEqual(thread.active_canvas_id, c2_pk)
+        await database_sync_to_async(check_active)()
+        await comm.disconnect()
+
+    async def test_canvas_save_targets_specific_canvas(self):
+        from channels.db import database_sync_to_async
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+
+        def setup():
+            c1 = ChatCanvas.objects.create(thread=thread, title="Doc 1", content="one")
+            c2 = ChatCanvas.objects.create(thread=thread, title="Doc 2", content="two")
+            thread.active_canvas = c1
+            thread.save(update_fields=["active_canvas"])
+            return c2.pk
+        c2_pk = await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({
+            "type": "chat.canvas_save",
+            "thread_id": str(thread.id),
+            "canvas_id": c2_pk,
+            "title": "Doc 2 Renamed",
+            "content": "updated two",
+        })
+        await comm.disconnect()
+
+        def check():
+            c2 = ChatCanvas.objects.get(pk=c2_pk)
+            self.assertEqual(c2.title, "Doc 2 Renamed")
+            self.assertEqual(c2.content, "updated two")
+            # c1 unchanged
+            c1 = ChatCanvas.objects.get(thread=thread, title="Doc 1")
+            self.assertEqual(c1.content, "one")
+        await database_sync_to_async(check)()
+
+
+# ---------------------------------------------------------------------------
+# Multi-canvas prompt tests
+# ---------------------------------------------------------------------------
+
+class MultiCanvasPromptTests(TestCase):
+    """Tests for build_system_prompt with multi-canvas parameters."""
+
+    def test_all_canvas_titles_listed(self):
+        from chat.prompts import build_system_prompt
+
+        canvases = [
+            {"title": "Doc A", "chars": 100, "is_active": False},
+            {"title": "Doc B", "chars": 200, "is_active": True},
+        ]
+
+        class FakeCanvas:
+            title = "Doc B"
+            content = "B content here"
+
+        prompt = build_system_prompt(canvases=canvases, active_canvas=FakeCanvas())
+        self.assertIn("Doc A", prompt)
+        self.assertIn("Doc B", prompt)
+        self.assertIn("100 chars", prompt)
+        self.assertIn("200 chars", prompt)
+        self.assertIn("← active", prompt)
+        self.assertIn("B content here", prompt)
+
+    def test_active_canvas_content_shown(self):
+        from chat.prompts import build_system_prompt
+
+        canvases = [{"title": "Only", "chars": 42, "is_active": True}]
+
+        class FakeCanvas:
+            title = "Only"
+            content = "The actual content"
+
+        prompt = build_system_prompt(canvases=canvases, active_canvas=FakeCanvas())
+        self.assertIn("The actual content", prompt)
+        self.assertIn('Active canvas: "Only"', prompt)
+
+    def test_no_canvases_prompt(self):
+        from chat.prompts import build_system_prompt
+
+        prompt = build_system_prompt()
+        self.assertIn("Each unique title creates a new canvas tab", prompt)
+        self.assertNotIn("multiple document tabs", prompt)
+
+    def test_backward_compat_single_canvas(self):
+        from chat.prompts import build_system_prompt
+
+        class FakeCanvas:
+            title = "Old Style"
+            content = "old content"
+
+        prompt = build_system_prompt(canvas=FakeCanvas())
+        self.assertIn("Old Style", prompt)
+        self.assertIn("old content", prompt)

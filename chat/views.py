@@ -121,14 +121,17 @@ def thread_archive(request, thread_id):
 
 @login_required
 @require_http_methods(["GET"])
-async def canvas_export(request, thread_id):
+async def canvas_export(request, thread_id, canvas_id=None):
     """Export the canvas as a .docx file."""
     import asyncio
 
     from asgiref.sync import sync_to_async
 
     thread = await sync_to_async(get_object_or_404)(ChatThread, id=thread_id, created_by=request.user)
-    canvas = await sync_to_async(get_object_or_404)(ChatCanvas, thread=thread)
+    if canvas_id:
+        canvas = await sync_to_async(get_object_or_404)(ChatCanvas, pk=canvas_id, thread=thread)
+    else:
+        canvas = await sync_to_async(get_object_or_404)(ChatCanvas, pk=thread.active_canvas_id, thread=thread)
 
     import markdown as md
     from html2docx import html2docx
@@ -155,7 +158,7 @@ async def canvas_export(request, thread_id):
 
 @login_required
 @require_POST
-def canvas_import(request, thread_id):
+def canvas_import(request, thread_id, canvas_id=None):
     """Import a .docx file and convert to markdown canvas content."""
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
 
@@ -163,19 +166,31 @@ def canvas_import(request, thread_id):
     if not uploaded:
         return HttpResponseBadRequest("No file uploaded.")
 
-    from chat.services import import_docx_to_canvas
+    from chat.services import import_docx_to_canvas, set_active_canvas
 
     title, content, truncated = import_docx_to_canvas(uploaded, request.user)
 
-    canvas, _ = ChatCanvas.objects.update_or_create(
-        thread=thread,
-        defaults={"title": title, "content": content},
-    )
+    if canvas_id:
+        canvas = get_object_or_404(ChatCanvas, pk=canvas_id, thread=thread)
+        canvas.title = title
+        canvas.content = content
+        canvas.save(update_fields=["title", "content", "updated_at"])
+    else:
+        from django.db import IntegrityError
+        try:
+            canvas = ChatCanvas.objects.get(thread=thread, title=title)
+            canvas.content = content
+            canvas.save(update_fields=["content", "updated_at"])
+        except ChatCanvas.DoesNotExist:
+            canvas = ChatCanvas.objects.create(
+                thread=thread, title=title, content=content,
+            )
 
     from chat.services import create_canvas_checkpoint
     cp = create_canvas_checkpoint(canvas, source="import", description="Imported from .docx")
     canvas.accepted_checkpoint = cp
     canvas.save(update_fields=["accepted_checkpoint"])
+    set_active_canvas(thread.pk, canvas)
 
     generated_title = None
     if not thread.title:
@@ -203,10 +218,13 @@ def thread_create(request):
 
 @login_required
 @require_POST
-def canvas_save_to_data_room(request, thread_id):
+def canvas_save_to_data_room(request, thread_id, canvas_id=None):
     """Save canvas content as a markdown document in a data room."""
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
-    canvas = get_object_or_404(ChatCanvas, thread=thread)
+    if canvas_id:
+        canvas = get_object_or_404(ChatCanvas, pk=canvas_id, thread=thread)
+    else:
+        canvas = get_object_or_404(ChatCanvas, pk=thread.active_canvas_id, thread=thread)
 
     body = json.loads(request.body)
     data_room_id = body.get("data_room_id")
