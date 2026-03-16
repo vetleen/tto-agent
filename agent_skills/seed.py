@@ -34,12 +34,23 @@ A skill is a database record with these fields:
 
 Skills exist at three levels: **system** (built-in, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it.
 
-## Key workflow concept
+## Workspace and capabilities
 
-**The canvas workspace supports multiple tabs.** Each call to `write_canvas` with a
-unique title creates a new tab. Use `edit_canvas(canvas_name="...")` to target a specific
-canvas. Use `save_canvas_to_skill_field(canvas_name="...", ...)` to persist a canvas's
-content to a skill field. Use `show_skill_field_in_canvas` to load existing content back into a canvas tab for editing.
+### Tabbed canvas workspace
+
+The canvas supports up to 10 tabs per thread. Use one tab per skill field you are drafting:
+
+| Canvas tab title | Skill field | Persist with |
+|---|---|---|
+| `Description` | `description` | `save_canvas_to_skill_field(canvas_name="Description", field_name="description")` |
+| `Instructions` | `instructions` | `save_canvas_to_skill_field(canvas_name="Instructions", field_name="instructions")` |
+| `Template: <name>` | template `<name>` | `save_canvas_to_skill_field(canvas_name="Template: <name>", field_name="<name>")` |
+
+Use `write_canvas(title="...")` to create a tab, `edit_canvas(canvas_name="...")` to update it, and `show_skill_field_in_canvas` to load existing content back into a tab for editing.
+
+### Sub-agents
+
+`create_subagent` and `check_subagent_status` are always-available standard tools. Skills can instruct the agent to spawn sub-agents for parallel research, background processing, or delegated sub-tasks — no need to declare them in `tool_names`.
 
 ## Workflow
 
@@ -47,15 +58,14 @@ You guide the user through a repeating loop:
 
 1. **Capture intent** — understand what the skill should do
 2. **Create the skill** — use `create_skill` to create the DB record
-3. **Write the description** — craft the trigger description, save via `edit_skill`
-4. **Draft instructions** — write the instructions in the canvas
-5. **Iterate** — spar with the user, refine formulations in the canvas
-6. **Save** — use `save_canvas_to_skill_field` to persist instructions
-7. **Create templates** — when relevant, add templates the skill should use
-8. **Attach tools** — choose which existing tools the skill needs via `edit_skill` with `tool_names`
-9. **Test** — have the user try the skill in a fresh conversation
-10. **Review & improve** — revise based on feedback
-11. **Optimize description** — tune trigger accuracy
+3. **Draft in canvas tabs** — open "Description" and "Instructions" tabs
+4. **Iterate** — refine each tab independently with the user
+5. **Persist** — `save_canvas_to_skill_field` each tab to its field when ready
+6. **Create templates** — when relevant, add templates the skill should use
+7. **Attach tools** — choose which existing tools the skill needs via `edit_skill` with `tool_names`
+8. **Test** — have the user try the skill in a fresh conversation
+9. **Review & improve** — revise based on feedback
+10. **Optimize description** — tune trigger accuracy
 
 Your job is to figure out where the user is in this loop and help them move
 forward. Maybe they already have a draft? Jump ahead to testing. Maybe
@@ -153,12 +163,7 @@ Save the description via `edit_skill` with a text edit on the description field.
 The instructions are the actual playbook the agent follows once the skill
 activates. They are loaded into the system prompt, so every token counts.
 
-**Use the canvas as your workspace:**
-1. Draft description: `write_canvas(title="Description", content="...")`
-2. Draft instructions: `write_canvas(title="Instructions", content="...")`
-3. Iterate with the user on each canvas using `edit_canvas(canvas_name="...")`
-4. Save each: `save_canvas_to_skill_field(canvas_name="Description", field_name="description")`
-   and `save_canvas_to_skill_field(canvas_name="Instructions", field_name="instructions")`
+**Use the canvas as your workspace** — open one tab per field (see the tab mapping in "Workspace and capabilities"), iterate, then persist.
 
 **Writing rules:**
 
@@ -189,6 +194,10 @@ activates. They are loaded into the system prompt, so every token counts.
   Consider whether a template (see Step 4) would be more appropriate for
   reusable output skeletons.
 
+- **Leverage sub-agents** when designing skill instructions. Skills can
+  instruct the agent to use `create_subagent` for parallel research,
+  background processing, or delegated sub-tasks.
+
 ---
 
 ## Step 4: Create templates
@@ -208,8 +217,6 @@ Use templates when the skill should produce output in a very specific format:
 2. Iterate with the user
 3. Save: `save_canvas_to_skill_field(canvas_name="Template: <name>", field_name="<template_name>")`
 
-Or for short templates, use `add_skill_template` directly with content.
-
 To view an existing template, use `show_skill_field_in_canvas` to load it into the canvas.
 
 **Important:** When a skill has templates, add `view_template` and
@@ -224,8 +231,8 @@ Use `list_all_tools` to see every tool that exists. The output is split into
 two groups:
 
 - **Standard tools** — always available to Wilfred (e.g. web search, canvas,
-  document search). These do **not** need to be attached to a skill. If you
-  accidentally include one in `tool_names` it will be silently ignored.
+  document search, sub-agents). These do **not** need to be attached to a skill.
+  If you accidentally include one in `tool_names` it will be silently ignored.
 - **Skill-specific tools** — only available when a skill explicitly lists them
   in its `tool_names`. These are the ones you need to attach.
 
@@ -303,8 +310,8 @@ Update the description via `edit_skill` with text edits.
 1. **The description is the skill.** If it doesn't trigger, nothing else
    matters. Invest disproportionate effort here.
 
-2. **Canvases are your workspace — use separate tabs for different drafts.**
-   Draft, iterate, then save. Don't try to write perfect instructions in one shot.
+2. **One canvas tab per skill field.** Draft, iterate, persist.
+   Don't try to write perfect instructions in one shot.
 
 3. **Explain why, not just what.** Reasoning scales better than rules.
 
@@ -323,9 +330,6 @@ Update the description via `edit_skill` with text edits.
             "delete_skill",
             "save_canvas_to_skill_field",
             "show_skill_field_in_canvas",
-            "add_skill_template",
-            "edit_skill_template",
-            "delete_skill_template",
             "list_all_tools",
             "inspect_tool",
         ],

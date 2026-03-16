@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 from llm.tools import ContextAwareTool, get_tool_registry
@@ -60,36 +58,14 @@ class EditSkillInput(BaseModel):
         default_factory=list,
         description="Find-replace edits for text fields like description.",
     )
+    delete_templates: list[str] = Field(
+        default_factory=list,
+        description="Template names to delete.",
+    )
 
 
 class DeleteSkillInput(BaseModel):
     skill_slug: str = Field(description="Slug of the skill to delete.")
-
-
-class AddSkillTemplateInput(BaseModel):
-    skill_slug: str = Field(description="Slug of the skill.")
-    template_name: str = Field(description="Name for the new template.")
-    content: str = Field(default="", description="Initial template content.")
-
-
-class TemplateEdit(BaseModel):
-    old_text: str = Field(description="Exact text to find.")
-    new_text: str = Field(description="Replacement text.")
-
-
-class EditSkillTemplateInput(BaseModel):
-    skill_slug: str = Field(description="Slug of the skill.")
-    template_name: str = Field(description="Name of the template to edit.")
-    new_name: Optional[str] = Field(default=None, description="Rename template.")
-    edits: list[TemplateEdit] = Field(
-        default_factory=list,
-        description="Find-replace edits on template content.",
-    )
-
-
-class DeleteSkillTemplateInput(BaseModel):
-    skill_slug: str = Field(description="Slug of the skill.")
-    template_name: str = Field(description="Name of the template to delete.")
 
 
 class ViewTemplateInput(BaseModel):
@@ -323,6 +299,7 @@ class EditSkillTool(ContextAwareTool):
         skill_slug: str,
         updates: dict | None = None,
         text_edits: list[dict] | list[TextEdit] | None = None,
+        delete_templates: list[str] | None = None,
     ) -> str:
         from agent_skills.services import get_editable_skill_for_user
 
@@ -424,6 +401,16 @@ class EditSkillTool(ContextAwareTool):
         if len(update_fields) > 1 or applied > 0:
             skill.save(update_fields=update_fields)
 
+        # Delete templates by name
+        templates_deleted = 0
+        if delete_templates:
+            from agent_skills.models import SkillTemplate
+
+            deleted_count, _ = SkillTemplate.objects.filter(
+                skill=skill, name__in=delete_templates,
+            ).delete()
+            templates_deleted = deleted_count
+
         return json.dumps({
             "status": "ok",
             "slug": skill.slug,
@@ -433,6 +420,7 @@ class EditSkillTool(ContextAwareTool):
             "tool_names": skill.tool_names,
             "edits_applied": applied,
             "edits_failed": failed,
+            "templates_deleted": templates_deleted,
         })
 
 
@@ -468,208 +456,6 @@ class DeleteSkillTool(ContextAwareTool):
 
         skill.delete()
         return json.dumps({"status": "ok", "deleted": skill_slug})
-
-
-class AddSkillTemplateTool(ContextAwareTool):
-    """Add a template to a skill."""
-
-    name: str = "add_skill_template"
-    description: str = "Add a new named template to a skill."
-    args_schema: type[BaseModel] = AddSkillTemplateInput
-    section: str = "skills"
-
-    def _run(self, skill_slug: str, template_name: str, content: str = "") -> str:
-        from agent_skills.models import SkillTemplate
-        from agent_skills.services import get_editable_skill_for_user
-
-        user_id = self.context.user_id if self.context else None
-        if not user_id:
-            return json.dumps({"status": "error", "message": "No user context."})
-
-        from django.contrib.auth import get_user_model
-
-        User = get_user_model()
-        try:
-            user = User.objects.get(pk=user_id)
-        except User.DoesNotExist:
-            return json.dumps({"status": "error", "message": "User not found."})
-
-        skill = get_editable_skill_for_user(user, skill_slug)
-        if not skill:
-            return json.dumps({
-                "status": "error",
-                "message": f"Skill '{skill_slug}' not found or not editable.",
-            })
-
-        from django.db import IntegrityError
-
-        try:
-            tmpl = SkillTemplate.objects.create(
-                skill=skill, name=template_name, content=content,
-            )
-        except IntegrityError:
-            return json.dumps({
-                "status": "error",
-                "message": f"Template '{template_name}' already exists on skill '{skill_slug}'.",
-            })
-        return json.dumps({
-            "status": "ok",
-            "skill_slug": skill.slug,
-            "template_name": tmpl.name,
-            "id": str(tmpl.id),
-            "chars": len(tmpl.content),
-        })
-
-
-class EditSkillTemplateTool(ContextAwareTool):
-    """Edit a skill template's name or content via find-replace."""
-
-    name: str = "edit_skill_template"
-    description: str = (
-        "Edit a skill template. Optionally rename it and/or apply "
-        "find-replace edits to its content."
-    )
-    args_schema: type[BaseModel] = EditSkillTemplateInput
-    section: str = "skills"
-
-    def _run(
-        self,
-        skill_slug: str,
-        template_name: str,
-        new_name: str | None = None,
-        edits: list[dict] | list[TemplateEdit] | None = None,
-    ) -> str:
-        from agent_skills.models import SkillTemplate
-        from agent_skills.services import get_editable_skill_for_user
-
-        user_id = self.context.user_id if self.context else None
-        if not user_id:
-            return json.dumps({"status": "error", "message": "No user context."})
-
-        from django.contrib.auth import get_user_model
-
-        User = get_user_model()
-        try:
-            user = User.objects.get(pk=user_id)
-        except User.DoesNotExist:
-            return json.dumps({"status": "error", "message": "User not found."})
-
-        skill = get_editable_skill_for_user(user, skill_slug)
-        if not skill:
-            return json.dumps({
-                "status": "error",
-                "message": f"Skill '{skill_slug}' not found or not editable.",
-            })
-
-        try:
-            tmpl = SkillTemplate.objects.get(skill=skill, name=template_name)
-        except SkillTemplate.DoesNotExist:
-            return json.dumps({
-                "status": "error",
-                "message": f"Template '{template_name}' not found.",
-            })
-
-        update_fields = ["updated_at"]
-
-        if new_name:
-            tmpl.name = new_name
-            update_fields.append("name")
-
-        content = tmpl.content
-        applied = 0
-        failed = []
-        for edit in edits or []:
-            if isinstance(edit, dict):
-                old_text = edit.get("old_text", "")
-                new_text = edit.get("new_text", "")
-            else:
-                old_text = edit.old_text
-                new_text = edit.new_text
-
-            count = content.count(old_text)
-            if count == 1:
-                content = content.replace(old_text, new_text, 1)
-                applied += 1
-            elif count > 1:
-                failed.append({
-                    "old_text": old_text[:80],
-                    "error": f"Found {count} matches.",
-                })
-            else:
-                failed.append({
-                    "old_text": old_text[:80],
-                    "error": "Text not found.",
-                })
-
-        if applied > 0:
-            tmpl.content = content
-            update_fields.append("content")
-
-        from django.db import IntegrityError
-
-        try:
-            tmpl.save(update_fields=update_fields)
-        except IntegrityError:
-            return json.dumps({
-                "status": "error",
-                "message": f"Template '{new_name}' already exists on skill '{skill_slug}'.",
-            })
-
-        return json.dumps({
-            "status": "ok",
-            "skill_slug": skill.slug,
-            "template_name": tmpl.name,
-            "id": str(tmpl.id),
-            "edits_applied": applied,
-            "edits_failed": failed,
-        })
-
-
-class DeleteSkillTemplateTool(ContextAwareTool):
-    """Delete a template from a skill."""
-
-    name: str = "delete_skill_template"
-    description: str = "Delete a named template from a skill."
-    args_schema: type[BaseModel] = DeleteSkillTemplateInput
-    section: str = "skills"
-
-    def _run(self, skill_slug: str, template_name: str) -> str:
-        from agent_skills.models import SkillTemplate
-        from agent_skills.services import get_editable_skill_for_user
-
-        user_id = self.context.user_id if self.context else None
-        if not user_id:
-            return json.dumps({"status": "error", "message": "No user context."})
-
-        from django.contrib.auth import get_user_model
-
-        User = get_user_model()
-        try:
-            user = User.objects.get(pk=user_id)
-        except User.DoesNotExist:
-            return json.dumps({"status": "error", "message": "User not found."})
-
-        skill = get_editable_skill_for_user(user, skill_slug)
-        if not skill:
-            return json.dumps({
-                "status": "error",
-                "message": f"Skill '{skill_slug}' not found or not editable.",
-            })
-
-        try:
-            tmpl = SkillTemplate.objects.get(skill=skill, name=template_name)
-        except SkillTemplate.DoesNotExist:
-            return json.dumps({
-                "status": "error",
-                "message": f"Template '{template_name}' not found.",
-            })
-
-        tmpl.delete()
-        return json.dumps({
-            "status": "ok",
-            "skill_slug": skill.slug,
-            "deleted_template": template_name,
-        })
 
 
 class ViewTemplateTool(ContextAwareTool):
@@ -864,9 +650,6 @@ _registry.register_tool(SaveCanvasToSkillFieldTool())
 _registry.register_tool(ShowSkillFieldInCanvasTool())
 _registry.register_tool(EditSkillTool())
 _registry.register_tool(DeleteSkillTool())
-_registry.register_tool(AddSkillTemplateTool())
-_registry.register_tool(EditSkillTemplateTool())
-_registry.register_tool(DeleteSkillTemplateTool())
 _registry.register_tool(ViewTemplateTool())
 _registry.register_tool(LoadTemplateToCanvasTool())
 _registry.register_tool(ListAllToolsTool())
