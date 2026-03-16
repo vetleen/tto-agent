@@ -64,10 +64,17 @@ def _serialize_messages(request: "ChatRequest") -> list:
     return result
 
 
-def _serialize_tool_schemas(tool_schemas: list | None) -> list | None:
-    """Serialize tool schemas from the request to a compact list of dicts."""
+def _serialize_tool_schemas(tool_schemas: list | None, tool_names: list | None = None) -> list | None:
+    """Serialize tool schemas from the request to a compact list of dicts.
+
+    Falls back to tool_names (string list) when tool_schemas hasn't been
+    resolved — e.g. when the service logs the original request object while
+    the pipeline only populated tool_schemas on a local copy.
+    """
     if not tool_schemas:
-        return None
+        if not tool_names:
+            return None
+        return [{"name": n} for n in tool_names]
     result = []
     for tool in tool_schemas:
         try:
@@ -124,7 +131,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             model=request.model or "",
             is_stream=False,
             prompt=_serialize_messages(request),
-            tools=_serialize_tool_schemas(request.tool_schemas),
+            tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
             raw_output=response.model_dump_json(),
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
@@ -216,7 +223,7 @@ def log_stream(
             model=request.model or "",
             is_stream=True,
             prompt=_serialize_messages(request),
-            tools=_serialize_tool_schemas(request.tool_schemas),
+            tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
             raw_output=raw_output,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -254,7 +261,7 @@ def log_error(
             model=request.model or "",
             is_stream=is_stream,
             prompt=_serialize_messages(request),
-            tools=_serialize_tool_schemas(request.tool_schemas),
+            tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
             raw_output="",
             duration_ms=duration_ms,
             status=LLMCallLog.Status.ERROR,
