@@ -196,3 +196,42 @@ class SkillTemplateModelTests(TestCase):
             skill=self.skill, name="Empty", content="",
         )
         self.assertEqual(tmpl.content, "")
+
+
+class SeedSystemSkillsTests(TestCase):
+    def test_seed_creates_all_system_skills(self):
+        from agent_skills.seed import seed_system_skills
+
+        seed_system_skills()
+
+        self.assertTrue(
+            AgentSkill.objects.filter(slug="skill-creator", level="system").exists()
+        )
+        self.assertTrue(
+            AgentSkill.objects.filter(
+                slug="written-assignment-writer", level="system"
+            ).exists()
+        )
+
+    def test_seed_is_idempotent(self):
+        from agent_skills.seed import seed_system_skills
+
+        seed_system_skills()
+        seed_system_skills()
+
+        self.assertEqual(
+            AgentSkill.objects.filter(level="system").count(), 2
+        )
+
+    def test_written_assignment_writer_fields(self):
+        from agent_skills.seed import seed_system_skills
+
+        seed_system_skills()
+
+        skill = AgentSkill.objects.get(
+            slug="written-assignment-writer", level="system"
+        )
+        self.assertEqual(skill.name, "Written Assignment Writer")
+        self.assertIn("college-level", skill.description)
+        self.assertIn("Decode the prompt", skill.instructions)
+        self.assertEqual(skill.tool_names, [])
