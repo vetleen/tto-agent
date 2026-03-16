@@ -15,8 +15,44 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CANVAS_MAX_CHARS = 75_000
+MAX_CANVASES_PER_THREAD = 10
 MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
 EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
+
+
+def resolve_canvas(thread_id, canvas_name=None):
+    """Resolve a canvas by name or fall back to active canvas.
+
+    Returns (canvas, error_msg). One of the two is always None.
+    """
+    from chat.models import ChatCanvas, ChatThread
+
+    if canvas_name:
+        try:
+            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                thread_id=thread_id, title=canvas_name,
+            )
+            return canvas, None
+        except ChatCanvas.DoesNotExist:
+            return None, f"No canvas named '{canvas_name}' in this thread."
+
+    try:
+        thread = ChatThread.objects.select_related(
+            "active_canvas__accepted_checkpoint",
+        ).get(pk=thread_id)
+    except ChatThread.DoesNotExist:
+        return None, "Thread not found."
+
+    if thread.active_canvas:
+        return thread.active_canvas, None
+    return None, "No active canvas in this thread."
+
+
+def set_active_canvas(thread_id, canvas):
+    """Update the thread's active_canvas pointer."""
+    from chat.models import ChatThread
+
+    ChatThread.objects.filter(pk=thread_id).update(active_canvas=canvas)
 
 
 def create_canvas_checkpoint(canvas, source, description=""):

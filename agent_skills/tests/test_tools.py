@@ -158,6 +158,8 @@ class SaveCanvasToSkillFieldToolTests(TestCase):
         self.canvas = ChatCanvas.objects.create(
             thread=self.thread, title="Draft", content="Canvas content here.",
         )
+        self.thread.active_canvas = self.canvas
+        self.thread.save(update_fields=["active_canvas"])
         self.tool = SaveCanvasToSkillFieldTool()
         self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
 
@@ -186,6 +188,20 @@ class SaveCanvasToSkillFieldToolTests(TestCase):
         )
         result = json.loads(self.tool._run(skill_slug="sys", field_name="instructions"))
         self.assertEqual(result["status"], "error")
+
+    def test_save_from_named_canvas(self):
+        """canvas_name parameter targets a specific canvas by title."""
+        from chat.models import ChatCanvas
+
+        ChatCanvas.objects.create(
+            thread=self.thread, title="Instructions Draft", content="Named canvas content.",
+        )
+        result = json.loads(self.tool._run(
+            skill_slug="canvas-skill", field_name="instructions", canvas_name="Instructions Draft",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.instructions, "Named canvas content.")
 
 
 class ShowSkillFieldInCanvasToolTests(TestCase):
@@ -226,6 +242,28 @@ class ShowSkillFieldInCanvasToolTests(TestCase):
     def test_nonexistent_skill(self):
         result = json.loads(self.tool._run(skill_slug="no-such-skill", field_name="instructions"))
         self.assertEqual(result["status"], "error")
+
+    def test_returns_canvas_id(self):
+        result = json.loads(self.tool._run(skill_slug="show-skill", field_name="instructions"))
+        self.assertIn("canvas_id", result)
+
+    def test_sets_active_canvas(self):
+        from chat.models import ChatCanvas
+
+        json.loads(self.tool._run(skill_slug="show-skill", field_name="instructions"))
+        self.thread.refresh_from_db()
+        self.assertIsNotNone(self.thread.active_canvas)
+        canvas = ChatCanvas.objects.get(pk=self.thread.active_canvas_id)
+        self.assertIn("Show Skill", canvas.title)
+
+    def test_custom_canvas_name(self):
+        result = json.loads(self.tool._run(
+            skill_slug="show-skill", field_name="instructions", canvas_name="My Custom Tab",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["title"], "My Custom Tab")
+        from chat.models import ChatCanvas
+        self.assertTrue(ChatCanvas.objects.filter(thread=self.thread, title="My Custom Tab").exists())
 
 
 class AddSkillTemplateToolTests(TestCase):
@@ -447,3 +485,19 @@ class LoadTemplateToCanvasToolTests(TestCase):
         self.tool.context = _make_context(self.user, thread_id=str(bare_thread.id))
         result = json.loads(self.tool._run(template_name="Claim Template"))
         self.assertEqual(result["status"], "error")
+
+    def test_returns_canvas_id(self):
+        result = json.loads(self.tool._run(template_name="Claim Template"))
+        self.assertIn("canvas_id", result)
+
+    def test_sets_active_canvas(self):
+        json.loads(self.tool._run(template_name="Claim Template"))
+        self.thread.refresh_from_db()
+        self.assertIsNotNone(self.thread.active_canvas)
+
+    def test_custom_canvas_name(self):
+        result = json.loads(self.tool._run(template_name="Claim Template", canvas_name="My Tab"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["title"], "My Tab")
+        from chat.models import ChatCanvas
+        self.assertTrue(ChatCanvas.objects.filter(thread=self.thread, title="My Tab").exists())

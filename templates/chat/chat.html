@@ -315,6 +315,10 @@
       </button>
     </div>
   </div>
+  {# Canvas tab bar (shown when 2+ canvases) #}
+  <div id="canvas-tabs" class="hidden items-center gap-0.5 px-2 py-1 border-b border-default bg-neutral-primary-soft overflow-x-auto shrink-0">
+    {# Tabs populated by JS #}
+  </div>
   {# AI-updated banner with accept/revert (hidden by default) #}
   <div id="canvas-update-banner" class="hidden px-4 py-2 bg-brand/10 border-b border-brand/20 flex items-center justify-between shrink-0">
     <span id="canvas-banner-text" class="text-xs text-fg-brand">Pending changes</span>
@@ -1123,13 +1127,82 @@
 
   function handleEvent(data) {
     const et = data.event_type;
-    if (et === "canvas.updated") { canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content); return; }
-    if (et === "canvas.loaded") { canvasHandleLoaded(data.title || "", data.content || "", data.accepted_content); return; }
     if (et === "tasks.updated" || et === "tasks.loaded") { renderTaskPlan(data.tasks || []); return; }
-    if (et === "canvas.accepted") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); } return; }
-    if (et === "canvas.reverted") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
-    if (et === "canvas.version_saved") { canvasAcceptedContent = data.accepted_content; canvasShowBannerIfNeeded(); return; }
-    if (et === "canvas.restored") { canvasAcceptedContent = data.content; openCanvas(data.title, data.content); canvasShowBannerIfNeeded(); return; }
+    if (et === "canvases.loaded") {
+      canvasStates = {};
+      (data.canvases || []).forEach(function(c) {
+        canvasStates[c.id] = { title: c.title, content: "", acceptedContent: null, pendingUpdate: null };
+      });
+      if (data.active_canvas) {
+        var ac = data.active_canvas;
+        activeCanvasId = ac.id;
+        canvasStates[ac.id].content = ac.content || "";
+        canvasStates[ac.id].acceptedContent = ac.accepted_content !== undefined ? ac.accepted_content : null;
+        canvasAcceptedContent = canvasStates[ac.id].acceptedContent;
+        openCanvas(ac.title, ac.content);
+      }
+      renderCanvasTabs();
+      return;
+    }
+    if (et === "canvas.updated") {
+      var cid = data.canvas_id;
+      if (cid && !canvasStates[cid]) {
+        // New canvas created by LLM — add tab
+        canvasStates[cid] = { title: data.title, content: data.content, acceptedContent: data.accepted_content, pendingUpdate: null };
+        activeCanvasId = cid;
+        canvasAcceptedContent = data.accepted_content !== undefined ? data.accepted_content : null;
+        openCanvas(data.title, data.content);
+        renderCanvasTabs();
+      } else if (!cid || cid === activeCanvasId) {
+        canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content);
+        if (cid && canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; }
+      } else {
+        // Update non-active canvas state in memory
+        if (canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; }
+        renderCanvasTabs();
+      }
+      return;
+    }
+    if (et === "canvas.loaded") {
+      if (data.canvas_id) {
+        activeCanvasId = data.canvas_id;
+        if (canvasStates[data.canvas_id]) {
+          canvasStates[data.canvas_id].content = data.content || "";
+          canvasStates[data.canvas_id].title = data.title || "";
+          canvasStates[data.canvas_id].acceptedContent = data.accepted_content !== undefined ? data.accepted_content : null;
+        }
+      }
+      canvasHandleLoaded(data.title || "", data.content || "", data.accepted_content);
+      renderCanvasTabs();
+      return;
+    }
+    if (et === "canvas.accepted") {
+      canvasAcceptedContent = data.accepted_content;
+      if (data.canvas_id && canvasStates[data.canvas_id]) canvasStates[data.canvas_id].acceptedContent = data.accepted_content;
+      canvasShowBannerIfNeeded();
+      if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); }
+      return;
+    }
+    if (et === "canvas.reverted") {
+      canvasAcceptedContent = data.content;
+      if (data.canvas_id && canvasStates[data.canvas_id]) { canvasStates[data.canvas_id].acceptedContent = data.content; canvasStates[data.canvas_id].content = data.content; canvasStates[data.canvas_id].title = data.title; }
+      openCanvas(data.title, data.content);
+      canvasShowBannerIfNeeded();
+      return;
+    }
+    if (et === "canvas.version_saved") {
+      canvasAcceptedContent = data.accepted_content;
+      if (data.canvas_id && canvasStates[data.canvas_id]) canvasStates[data.canvas_id].acceptedContent = data.accepted_content;
+      canvasShowBannerIfNeeded();
+      return;
+    }
+    if (et === "canvas.restored") {
+      canvasAcceptedContent = data.content;
+      if (data.canvas_id && canvasStates[data.canvas_id]) { canvasStates[data.canvas_id].acceptedContent = data.content; canvasStates[data.canvas_id].content = data.content; canvasStates[data.canvas_id].title = data.title; }
+      openCanvas(data.title, data.content);
+      canvasShowBannerIfNeeded();
+      return;
+    }
     if (et === "canvas.checkpoints") { renderCheckpointHistory(data.checkpoints || []); return; }
     if (et === "thread.created") { activeThreadId = data.thread_id; addThreadToSidebar(data.thread_id, "New chat"); canvasUpdateExportLink(); return; }
     if (et === "thread.title_updated") {
@@ -1144,6 +1217,12 @@
       if (data.data_rooms) { data.data_rooms.forEach(function(r) { addDataRoomPill(r.id, r.name); }); }
       // Restore or clear skill pill
       if (data.skill && data.skill.skill_id) { addSkillPill(data.skill.skill_id, data.skill.skill_name); } else { removeSkillPill(); }
+      // Reset multi-canvas state (will be populated by canvases.loaded event)
+      canvasStates = {};
+      activeCanvasId = null;
+      canvasAcceptedContent = null;
+      canvasPendingUpdate = null;
+      if (canvasTabsEl) { canvasTabsEl.classList.add("hidden"); canvasTabsEl.classList.remove("flex"); }
       // Clear task plan (will be re-populated by tasks.loaded if tasks exist)
       renderTaskPlan([]);
       return;
@@ -1438,9 +1517,16 @@
   var canvasPendingUpdate = null;
   var canvasAcceptedContent = null;
 
+  // Multi-canvas state
+  var canvasStates = {};     // { canvasId: { title, content, acceptedContent, pendingUpdate } }
+  var activeCanvasId = null;
+  var canvasTabsEl = document.getElementById("canvas-tabs");
+
   var canvasExportUrl = "";
   function canvasUpdateExportLink() {
-    if (activeThreadId) {
+    if (activeThreadId && activeCanvasId) {
+      canvasExportUrl = "/chat/threads/" + activeThreadId + "/canvas/" + activeCanvasId + "/export/";
+    } else if (activeThreadId) {
       canvasExportUrl = "/chat/threads/" + activeThreadId + "/canvas/export/";
     }
   }
@@ -1469,6 +1555,69 @@
         .finally(function() { canvasExportLink.disabled = false; canvasExportLink.title = "Export as .docx"; });
     });
   }
+  function renderCanvasTabs() {
+    if (!canvasTabsEl) return;
+    var keys = Object.keys(canvasStates);
+    if (keys.length <= 1) {
+      canvasTabsEl.classList.add("hidden");
+      canvasTabsEl.classList.remove("flex");
+      return;
+    }
+    canvasTabsEl.classList.remove("hidden");
+    canvasTabsEl.classList.add("flex");
+    canvasTabsEl.innerHTML = "";
+    keys.forEach(function(cid) {
+      var s = canvasStates[cid];
+      var btn = document.createElement("button");
+      var displayTitle = s.title || "Untitled";
+      if (displayTitle.length > 25) displayTitle = displayTitle.slice(0, 22) + "...";
+      btn.textContent = displayTitle;
+      btn.title = s.title || "Untitled";
+      btn.className = "px-3 py-1 text-xs rounded-t-md whitespace-nowrap transition-colors " +
+        (cid === activeCanvasId
+          ? "bg-amber-50/50 dark:bg-neutral-800 text-heading font-semibold border border-b-0 border-default -mb-px"
+          : "text-body hover:text-heading hover:bg-neutral-tertiary");
+      btn.addEventListener("click", function() { switchCanvas(cid); });
+      canvasTabsEl.appendChild(btn);
+    });
+  }
+
+  function storeActiveCanvasState() {
+    if (!activeCanvasId || !canvasStates[activeCanvasId]) return;
+    canvasStates[activeCanvasId].title = canvasTitleInput.value.trim() || "Untitled document";
+    canvasStates[activeCanvasId].content = canvasTextarea.value;
+    canvasStates[activeCanvasId].acceptedContent = canvasAcceptedContent;
+    canvasStates[activeCanvasId].pendingUpdate = canvasPendingUpdate;
+  }
+
+  function loadCanvasStateIntoUI(canvasId) {
+    var s = canvasStates[canvasId];
+    if (!s) return;
+    canvasTitleInput.value = s.title || "Untitled document";
+    canvasTextarea.value = s.content || "";
+    canvasAcceptedContent = s.acceptedContent;
+    canvasPendingUpdate = s.pendingUpdate;
+    updateWordCount();
+    canvasShowBannerIfNeeded();
+    if (canvasPreviewMode) canvasRenderPreview();
+  }
+
+  function switchCanvas(canvasId) {
+    if (canvasId === activeCanvasId) return;
+    // Save current canvas state
+    saveCanvasNow();
+    storeActiveCanvasState();
+    // Switch
+    activeCanvasId = canvasId;
+    loadCanvasStateIntoUI(canvasId);
+    renderCanvasTabs();
+    canvasUpdateExportLink();
+    // Notify server
+    if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
+      ws.send(JSON.stringify({ type: "chat.canvas_switch", thread_id: activeThreadId, canvas_id: canvasId }));
+    }
+  }
+
   function renderDiffPreview(oldText, newText) {
     // Diff the raw markdown at the line level, then render each chunk
     // through the markdown renderer independently. Unchanged and changed
@@ -1586,6 +1735,7 @@
     canvasPanel.classList.add("w-full", "sm:w-1/2");
     chatPane.classList.remove("hidden");
     chatPane.classList.add("flex");
+    if (canvasTabsEl) { canvasTabsEl.classList.add("hidden"); canvasTabsEl.classList.remove("flex"); }
     updateCanvasToggleVisuals();
   }
 
@@ -1666,7 +1816,9 @@
     var title = canvasTitleInput.value.trim() || "Untitled document";
     var content = canvasTextarea.value;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "chat.canvas_save", thread_id: activeThreadId, title: title, content: content }));
+      var msg = { type: "chat.canvas_save", thread_id: activeThreadId, title: title, content: content };
+      if (activeCanvasId) msg.canvas_id = activeCanvasId;
+      ws.send(JSON.stringify(msg));
       if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 2000); }
     }
   }
@@ -1700,12 +1852,14 @@
       // Save current content as a version checkpoint first (if non-empty)
       var currentContent = canvasTextarea.value.trim();
       if (currentContent && activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
+        var clearMsg = {
           type: "chat.canvas_save_version",
           thread_id: activeThreadId,
           title: canvasTitleInput.value,
           content: canvasTextarea.value
-        }));
+        };
+        if (activeCanvasId) clearMsg.canvas_id = activeCanvasId;
+        ws.send(JSON.stringify(clearMsg));
       }
       // Clear canvas
       canvasTitleInput.value = "Untitled document";
@@ -1759,7 +1913,9 @@
       canvasUpdateBanner.classList.add("hidden");
       if (canvasPreviewMode) canvasRenderPreview();
       if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
-        ws.send(JSON.stringify({ type: "chat.canvas_accept", thread_id: activeThreadId }));
+        var acceptMsg = { type: "chat.canvas_accept", thread_id: activeThreadId };
+        if (activeCanvasId) acceptMsg.canvas_id = activeCanvasId;
+        ws.send(JSON.stringify(acceptMsg));
       }
     });
   }
@@ -1773,7 +1929,9 @@
         canvasUpdateBanner.classList.add("hidden");
         if (canvasPreviewMode) canvasRenderPreview();
         if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
-          ws.send(JSON.stringify({ type: "chat.canvas_revert", thread_id: activeThreadId }));
+          var revertMsg = { type: "chat.canvas_revert", thread_id: activeThreadId };
+          if (activeCanvasId) revertMsg.canvas_id = activeCanvasId;
+          ws.send(JSON.stringify(revertMsg));
         }
       }
     });
@@ -1865,7 +2023,9 @@
       var title = canvasTitleInput.value.trim() || "Untitled document";
       var content = canvasTextarea.value;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content }));
+        var svMsg = { type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content };
+        if (activeCanvasId) svMsg.canvas_id = activeCanvasId;
+        ws.send(JSON.stringify(svMsg));
       }
       canvasAcceptedContent = content;
       canvasShowBannerIfNeeded();
@@ -1879,7 +2039,9 @@
       e.stopPropagation();
       canvasHistoryDropdown.classList.toggle("hidden");
       if (!canvasHistoryDropdown.classList.contains("hidden") && activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "chat.canvas_get_checkpoints", thread_id: activeThreadId }));
+        var cpMsg = { type: "chat.canvas_get_checkpoints", thread_id: activeThreadId };
+        if (activeCanvasId) cpMsg.canvas_id = activeCanvasId;
+        ws.send(JSON.stringify(cpMsg));
       }
     });
     document.addEventListener("click", function(e) {
@@ -1914,7 +2076,9 @@
         e.stopPropagation();
         var cpId = parseInt(btn.getAttribute("data-checkpoint-id"));
         if (ws && ws.readyState === WebSocket.OPEN && activeThreadId) {
-          ws.send(JSON.stringify({ type: "chat.canvas_restore_version", thread_id: activeThreadId, checkpoint_id: cpId }));
+          var restoreMsg = { type: "chat.canvas_restore_version", thread_id: activeThreadId, checkpoint_id: cpId };
+          if (activeCanvasId) restoreMsg.canvas_id = activeCanvasId;
+          ws.send(JSON.stringify(restoreMsg));
         }
         canvasHistoryDropdown.classList.add("hidden");
       });
@@ -1970,7 +2134,8 @@
                 canvasSaveToDrDropdown.classList.add("hidden");
                 if (!activeThreadId) return;
                 btn.disabled = true;
-                fetch("/chat/api/threads/" + activeThreadId + "/canvas/save-to-data-room/", {
+                var saveToDrUrl = "/chat/api/threads/" + activeThreadId + "/canvas/" + (activeCanvasId ? activeCanvasId + "/" : "") + "save-to-data-room/";
+                fetch(saveToDrUrl, {
                   method: "POST",
                   headers: { "Content-Type": "application/json", "X-CSRFToken": getCSRFToken() },
                   body: JSON.stringify({ data_room_id: roomId })
@@ -2004,7 +2169,9 @@
     if (canvasHasPendingChanges()) {
       var title = canvasTitleInput.value.trim() || "Untitled document";
       var content = canvasTextarea.value;
-      ws.send(JSON.stringify({ type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content }));
+      var autoSvMsg = { type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content };
+      if (activeCanvasId) autoSvMsg.canvas_id = activeCanvasId;
+      ws.send(JSON.stringify(autoSvMsg));
       canvasAcceptedContent = content;
       canvasShowBannerIfNeeded();
     }
@@ -2028,7 +2195,8 @@
         var fd = new FormData();
         fd.append("file", file);
         setImporting(true);
-        fetch("/chat/threads/" + threadId + "/canvas/import/", {
+        var importUrl = "/chat/threads/" + threadId + "/canvas/" + (activeCanvasId ? activeCanvasId + "/" : "") + "import/";
+        fetch(importUrl, {
           method: "POST",
           headers: { "X-CSRFToken": getCSRFToken() },
           body: fd,

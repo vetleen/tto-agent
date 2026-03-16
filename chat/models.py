@@ -21,6 +21,13 @@ class ChatThread(models.Model):
         blank=True,
         related_name="chat_threads",
     )
+    active_canvas = models.ForeignKey(
+        "ChatCanvas",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     title = models.CharField(max_length=255, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -107,8 +114,8 @@ class ChatMessage(models.Model):
 
 
 class ChatCanvas(models.Model):
-    thread = models.OneToOneField(
-        ChatThread, on_delete=models.CASCADE, related_name="canvas"
+    thread = models.ForeignKey(
+        ChatThread, on_delete=models.CASCADE, related_name="canvases"
     )
     title = models.CharField(max_length=255, blank=True, default="Untitled document")
     content = models.TextField(blank=True, default="")
@@ -121,6 +128,16 @@ class ChatCanvas(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["thread", "title"],
+                name="unique_canvas_title_per_thread",
+            ),
+        ]
+        indexes = [models.Index(fields=["thread", "created_at"])]
 
     def __str__(self):
         return f"Canvas for thread {self.thread_id}: {self.title}"

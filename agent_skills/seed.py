@@ -36,7 +36,10 @@ Skills exist at three levels: **system** (built-in, not editable), **org** (shar
 
 ## Key workflow concept
 
-**The canvas is your workspace for long-form text.** Use `write_canvas` / `edit_canvas` to draft instructions or templates, iterate with the user, then `save_canvas_to_skill_field` to persist the final version to the skill. Use `show_skill_field_in_canvas` to load existing content back into the canvas for editing.
+**The canvas workspace supports multiple tabs.** Each call to `write_canvas` with a
+unique title creates a new tab. Use `edit_canvas(canvas_name="...")` to target a specific
+canvas. Use `save_canvas_to_skill_field(canvas_name="...", ...)` to persist a canvas's
+content to a skill field. Use `show_skill_field_in_canvas` to load existing content back into a canvas tab for editing.
 
 ## Workflow
 
@@ -151,9 +154,11 @@ The instructions are the actual playbook the agent follows once the skill
 activates. They are loaded into the system prompt, so every token counts.
 
 **Use the canvas as your workspace:**
-1. Write the instructions using `write_canvas`
-2. Iterate with the user using `edit_canvas`
-3. When the user is satisfied, persist with `save_canvas_to_skill_field`
+1. Draft description: `write_canvas(title="Description", content="...")`
+2. Draft instructions: `write_canvas(title="Instructions", content="...")`
+3. Iterate with the user on each canvas using `edit_canvas(canvas_name="...")`
+4. Save each: `save_canvas_to_skill_field(canvas_name="Description", field_name="description")`
+   and `save_canvas_to_skill_field(canvas_name="Instructions", field_name="instructions")`
 
 **Writing rules:**
 
@@ -199,10 +204,9 @@ Use templates when the skill should produce output in a very specific format:
 - A funding application template
 
 **Workflow:**
-1. Draft the template content in the canvas using `write_canvas`
+1. Draft template in a new canvas: `write_canvas(title="Template: <name>", content="...")`
 2. Iterate with the user
-3. Save to the skill with `save_canvas_to_skill_field` using the template name as the field_name
-   — this creates or updates a template with that name
+3. Save: `save_canvas_to_skill_field(canvas_name="Template: <name>", field_name="<template_name>")`
 
 Or for short templates, use `add_skill_template` directly with content.
 
@@ -299,8 +303,8 @@ Update the description via `edit_skill` with text edits.
 1. **The description is the skill.** If it doesn't trigger, nothing else
    matters. Invest disproportionate effort here.
 
-2. **The canvas is your workspace.** Draft, iterate, then save. Don't try
-   to write perfect instructions in one shot.
+2. **Canvases are your workspace — use separate tabs for different drafts.**
+   Draft, iterate, then save. Don't try to write perfect instructions in one shot.
 
 3. **Explain why, not just what.** Reasoning scales better than rules.
 

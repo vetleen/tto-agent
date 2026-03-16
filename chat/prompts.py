@@ -13,6 +13,8 @@ def build_system_prompt(
     doc_context: dict[str, Any] | None = None,
     organization_name: str | None = None,
     canvas: Any = None,
+    canvases: list | None = None,
+    active_canvas: Any = None,
     skill: Any = None,
     has_subagent_tool: bool = False,
     tasks: list[dict] | None = None,
@@ -123,11 +125,29 @@ as a starting point.
         prompt += "\nThe attached data rooms have no documents uploaded yet.\n\n"
 
     # -- Canvas section --
-    if canvas:
+    # Support both old single-canvas API and new multi-canvas API
+    if canvases:
+        prompt += "\n# Canvas\nYou have a canvas workspace with multiple document tabs. Available canvases:\n"
+        for c in canvases:
+            active_marker = " ← active" if c.get("is_active") else ""
+            prompt += f'- **{c["title"]}** ({c["chars"]} chars){active_marker}\n'
+        if active_canvas:
+            prompt += f"""\
+
+## Active canvas: "{active_canvas.title}"
+```markdown
+{active_canvas.content}
+```
+
+Use `write_canvas(title="...", content="...")` to create a new canvas tab or rewrite an existing one.
+Use `edit_canvas(canvas_name="...", edits=[...])` to make targeted edits. When canvas_name is omitted, the active canvas is used.
+After using canvas tools, don't reproduce the content in chat.
+"""
+    elif canvas:
         prompt += f"""\
 
-# Canvas 
-You have access to a canvas for text processing. 
+# Canvas
+You have access to a canvas for text processing.
 This chat already has an active canvas document titled "{canvas.title}". Current content:
 
 ```markdown
@@ -143,8 +163,8 @@ After using either canvas tool, do not repeat or reproduce the changes in chat. 
         prompt += """\
 
 # Canvas
-You have access to a canvas for text processing. This is a core feature! If the user's request is for you to generate a text (use your sound judgement to assertain if this is the case), use **write_canvas** to create the initial text in the canvas. The canvas will appear as a panel alongside the chat, and is a user friendly way to deliver the request.
-Users may ask for a full document, or a section. Some examples of documents that the user may ask for are: emails, grant applications, letters, patent claims, business plans, meeting summaries or minutes, reports or summaries of a process.
+You have a canvas workspace for text processing. Use **write_canvas** to create documents.
+Each unique title creates a new canvas tab. This is a core feature! If the user's request is for you to generate a text (use your sound judgement to assertain if this is the case), use **write_canvas** to create the initial text in the canvas. The canvas will appear as a panel alongside the chat, and is a user friendly way to deliver the request.
 
 You should be eager to use the canvas.
 

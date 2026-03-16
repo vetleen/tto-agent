@@ -12,6 +12,14 @@ from llm.tools import ContextAwareTool, get_tool_registry
 class WriteCanvasInput(BaseModel):
     title: str = Field(description="Title for the document.")
     content: str = Field(description="Full markdown content of the document.")
+    canvas_name: str = Field(
+        default="",
+        description=(
+            "Target an existing canvas by its title. Leave empty to create a "
+            "new canvas with the given title, or overwrite the active canvas "
+            "if titles match."
+        ),
+    )
 
 
 class EditItem(BaseModel):
@@ -23,6 +31,10 @@ class EditItem(BaseModel):
 class EditCanvasInput(BaseModel):
     edits: list[EditItem] = Field(
         description="List of targeted find-replace edits to apply sequentially."
+    )
+    canvas_name: str = Field(
+        default="",
+        description="Title of the canvas to edit. If omitted, edits the active canvas.",
     )
 
 
@@ -37,29 +49,69 @@ class WriteCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
-    def _run(self, title: str, content: str) -> str:
+    def _run(self, title: str, content: str, canvas_name: str = "") -> str:
+        from django.db import IntegrityError
+
         from chat.models import ChatCanvas
-        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
+        from chat.services import (
+            CANVAS_MAX_CHARS,
+            MAX_CANVASES_PER_THREAD,
+            create_canvas_checkpoint,
+            set_active_canvas,
+        )
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
         content = content[:CANVAS_MAX_CHARS]
-        canvas, created = ChatCanvas.objects.update_or_create(
-            thread_id=thread_id,
-            defaults={"title": title, "content": content},
-        )
+
+        # Resolve target canvas
+        lookup_title = canvas_name or title
+        try:
+            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                thread_id=thread_id, title=lookup_title,
+            )
+            # Update existing canvas
+            canvas.title = title
+            canvas.content = content
+            canvas.save(update_fields=["title", "content", "updated_at"])
+            created = False
+        except ChatCanvas.DoesNotExist:
+            # Check canvas cap
+            count = ChatCanvas.objects.filter(thread_id=thread_id).count()
+            if count >= MAX_CANVASES_PER_THREAD:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Maximum of {MAX_CANVASES_PER_THREAD} canvases per thread reached.",
+                })
+            try:
+                canvas = ChatCanvas.objects.create(
+                    thread_id=thread_id, title=title, content=content,
+                )
+                created = True
+            except IntegrityError:
+                # Race condition — title was created concurrently
+                canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                    thread_id=thread_id, title=title,
+                )
+                canvas.content = content
+                canvas.save(update_fields=["content", "updated_at"])
+                created = False
+
         source = "original" if created else "ai_edit"
         cp = create_canvas_checkpoint(canvas, source=source, description="Full rewrite")
         if created:
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
 
+        set_active_canvas(thread_id, canvas)
+
         accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
         return json.dumps({
             "status": "ok", "title": title, "content": content,
             "accepted_content": accepted_content,
+            "canvas_id": str(canvas.pk),
         })
 
 
@@ -77,19 +129,18 @@ class EditCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
-    def _run(self, edits: list[dict] | list[EditItem]) -> str:
-        from chat.models import ChatCanvas
+    def _run(self, edits: list[dict] | list[EditItem], canvas_name: str = "") -> str:
+        from chat.services import resolve_canvas
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
-        try:
-            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(thread_id=thread_id)
-        except ChatCanvas.DoesNotExist:
+        canvas, err = resolve_canvas(thread_id, canvas_name or None)
+        if err:
             return json.dumps({
                 "status": "error",
-                "message": "No canvas exists for this thread. Use write_canvas to create one first.",
+                "message": err if canvas_name else "No canvas exists for this thread. Use write_canvas to create one first.",
             })
 
         content = canvas.content
@@ -131,6 +182,8 @@ class EditCanvasTool(ContextAwareTool):
             )
 
         # Reload with select_related to get accepted_checkpoint
+        from chat.models import ChatCanvas
+
         canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(pk=canvas.pk)
         accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
 
@@ -141,6 +194,7 @@ class EditCanvasTool(ContextAwareTool):
             "title": canvas.title,
             "content": content,
             "accepted_content": accepted_content,
+            "canvas_id": str(canvas.pk),
         }
         if truncated:
             result["note"] = "Content truncated to %d character limit." % CANVAS_MAX_CHARS
