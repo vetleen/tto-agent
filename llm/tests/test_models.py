@@ -96,29 +96,29 @@ class LLMCallLogModelTests(TestCase):
         log.refresh_from_db()
         self.assertIsNone(log.user)
 
-    def test_raw_prompt_nullable(self):
+    def test_tools_nullable(self):
         log = LLMCallLog.objects.create(
             model="gpt-4o-mini",
             prompt=[{"role": "user", "content": "Hi"}],
             raw_output="",
         )
         log.refresh_from_db()
-        self.assertIsNone(log.raw_prompt)
+        self.assertIsNone(log.tools)
 
-    def test_raw_prompt_stores_messages_and_tools(self):
-        raw = {
-            "messages": [{"role": "user", "content": "Hello"}],
-            "tools": [{"type": "function", "function": {"name": "search"}}],
-        }
+    def test_tools_stores_list_of_tool_dicts(self):
+        tools = [
+            {"name": "search_documents", "description": "Search docs"},
+            {"name": "read_document", "description": "Read a doc"},
+        ]
         log = LLMCallLog.objects.create(
             model="gpt-4o-mini",
             prompt=[{"role": "user", "content": "Hi"}],
             raw_output="",
-            raw_prompt=raw,
+            tools=tools,
         )
         log.refresh_from_db()
-        self.assertEqual(log.raw_prompt, raw)
-        self.assertEqual(log.raw_prompt["tools"][0]["function"]["name"], "search")
+        self.assertEqual(log.tools, tools)
+        self.assertEqual(log.tools[0]["name"], "search_documents")
 
     def test_status_choices(self):
         self.assertEqual(LLMCallLog.Status.SUCCESS, "success")

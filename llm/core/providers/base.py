@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 from typing import Iterator
 
-from llm.core.callbacks import PromptCaptureCallback
 from llm.core.interfaces import ChatModel
 from llm.core.langchain_utils import to_langchain_messages, parse_tool_calls_from_ai_message
 from llm.service.errors import LLMProviderError, LLMRateLimitError
@@ -91,25 +90,6 @@ class BaseLangChainChatModel(ChatModel):
             return details.get("reasoning") or details.get("reasoning_tokens")
         return None
 
-    @staticmethod
-    def _build_raw_prompt(callback: PromptCaptureCallback, tool_schemas: list | None) -> dict | None:
-        """Assemble the raw_prompt dict from callback messages + request tool schemas."""
-        if callback.captured_messages is None:
-            return None
-        serialized_tools = []
-        for tool in (tool_schemas or []):
-            try:
-                serialized_tools.append({
-                    "name": getattr(tool, "name", str(tool)),
-                    "description": getattr(tool, "description", ""),
-                })
-            except Exception:
-                serialized_tools.append(str(tool))
-        return {
-            "messages": callback.captured_messages,
-            "tools": serialized_tools,
-        }
-
     def _build_config(self, request: ChatRequest, callbacks: list) -> dict:
         """Build LangChain RunnableConfig with tracing metadata."""
         config: dict = {"callbacks": callbacks}
@@ -179,9 +159,9 @@ class BaseLangChainChatModel(ChatModel):
             )
         return data
 
-    def _get_callbacks(self, request: ChatRequest, callback: PromptCaptureCallback) -> list:
+    def _get_callbacks(self, request: ChatRequest) -> list:
         """Build the callbacks list for a generate/stream call."""
-        callbacks = [callback]
+        callbacks = []
         usage_cb = (request.params or {}).get("_usage_callback")
         if usage_cb is not None:
             callbacks.append(usage_cb)
@@ -192,8 +172,7 @@ class BaseLangChainChatModel(ChatModel):
         client = self._client
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
-        callback = PromptCaptureCallback()
-        callbacks = self._get_callbacks(request, callback)
+        callbacks = self._get_callbacks(request)
         config = self._build_config(request, callbacks)
         run_id = request.context.run_id if request.context else "n/a"
         logger.info(
@@ -256,7 +235,6 @@ class BaseLangChainChatModel(ChatModel):
                 cost_usd=float(cost) if cost is not None else None,
             )
 
-        raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
         resp_meta = self._extract_response_metadata(result)
         logger.info(
             "LLM generate complete model=%s provider=%s "
@@ -267,7 +245,7 @@ class BaseLangChainChatModel(ChatModel):
             usage.cost_usd if usage else None,
             run_id,
         )
-        metadata = {"raw_prompt": raw_prompt}
+        metadata = {}
         metadata.update(resp_meta)
         return ChatResponse(message=message, model=self.name, usage=usage, metadata=metadata)
 
@@ -289,26 +267,14 @@ class BaseLangChainChatModel(ChatModel):
         )
         sequence += 1
 
-        callback = PromptCaptureCallback()
-        callbacks = self._get_callbacks(request, callback)
+        callbacks = self._get_callbacks(request)
         config = self._build_config(request, callbacks)
-        raw_prompt_yielded = False
         last_chunk = None
         output_text_parts: list[str] = []
 
         try:
             for chunk in client.stream(lc_messages, config=config):
                 last_chunk = chunk
-                if not raw_prompt_yielded:
-                    raw_prompt = self._build_raw_prompt(callback, request.tool_schemas)
-                    yield StreamEvent(
-                        event_type="raw_prompt",
-                        data={"raw_prompt": raw_prompt},
-                        sequence=sequence,
-                        run_id=run_id,
-                    )
-                    sequence += 1
-                    raw_prompt_yielded = True
 
                 for event_type, event_data in self._parse_chunk(chunk):
                     if event_type == "token":

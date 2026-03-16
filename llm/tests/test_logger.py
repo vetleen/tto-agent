@@ -172,25 +172,37 @@ class LogCallTests(TestCase):
         self.assertIsNotNone(log)
         self.assertIsNone(log.user)
 
-    def test_stores_raw_prompt_from_metadata(self):
-        request = _make_request()
-        raw = {
-            "messages": [{"role": "user", "content": "Hello"}],
-            "tools": [{"type": "function", "function": {"name": "search"}}],
-        }
+    def test_stores_tools_from_request(self):
+        from unittest.mock import MagicMock
+
+        tool1 = MagicMock()
+        tool1.name = "search_documents"
+        tool1.description = "Search docs"
+        tool2 = MagicMock()
+        tool2.name = "read_document"
+        tool2.description = "Read a doc"
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=False,
+            model="gpt-4o-mini",
+            tool_schemas=[tool1, tool2],
+            context=RunContext.create(),
+        )
         response = ChatResponse(
             message=Message(role="assistant", content="Hi"),
             model="gpt-4o-mini",
             usage=None,
-            metadata={"raw_prompt": raw},
+            metadata={},
         )
         log_call(request, response, duration_ms=50)
 
         log = _get_log(request)
-        self.assertEqual(log.raw_prompt, raw)
-        self.assertEqual(log.raw_prompt["tools"][0]["function"]["name"], "search")
+        self.assertEqual(len(log.tools), 2)
+        self.assertEqual(log.tools[0]["name"], "search_documents")
+        self.assertEqual(log.tools[1]["name"], "read_document")
 
-    def test_raw_prompt_none_when_not_in_metadata(self):
+    def test_tools_none_when_no_tool_schemas(self):
         request = _make_request()
         response = ChatResponse(
             message=Message(role="assistant", content="Hi"),
@@ -201,7 +213,7 @@ class LogCallTests(TestCase):
         log_call(request, response, duration_ms=50)
 
         log = _get_log(request)
-        self.assertIsNone(log.raw_prompt)
+        self.assertIsNone(log.tools)
 
     def test_populates_tracing_fields(self):
         request = _make_request(conversation_id="conv-123")
@@ -314,25 +326,33 @@ class LogStreamTests(TestCase):
         self.assertEqual(parsed["message"]["content"], "")
         self.assertEqual(parsed["tool_calls"], [])
 
-    def test_stores_raw_prompt_from_event(self):
-        request = _make_request(stream=True)
+    def test_stores_tools_from_request_in_stream(self):
+        from unittest.mock import MagicMock
+
+        tool = MagicMock()
+        tool.name = "search_documents"
+        tool.description = "Search docs"
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=True,
+            model="gpt-4o-mini",
+            tool_schemas=[tool],
+            context=RunContext.create(),
+        )
         run_id = request.context.run_id
-        raw = {
-            "messages": [{"role": "user", "content": "Hello"}],
-            "tools": [{"type": "function", "function": {"name": "search"}}],
-        }
         events = [
             StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id),
-            StreamEvent(event_type="raw_prompt", data={"raw_prompt": raw}, sequence=2, run_id=run_id),
-            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=3, run_id=run_id),
-            StreamEvent(event_type="message_end", data={}, sequence=4, run_id=run_id),
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=2, run_id=run_id),
+            StreamEvent(event_type="message_end", data={}, sequence=3, run_id=run_id),
         ]
         log_stream(request, events, duration_ms=200)
 
         log = _get_log(request)
-        self.assertEqual(log.raw_prompt, raw)
+        self.assertEqual(len(log.tools), 1)
+        self.assertEqual(log.tools[0]["name"], "search_documents")
 
-    def test_raw_prompt_none_when_event_absent(self):
+    def test_tools_none_when_no_tool_schemas_in_stream(self):
         request = _make_request(stream=True)
         run_id = request.context.run_id
         events = [
@@ -342,7 +362,7 @@ class LogStreamTests(TestCase):
         log_stream(request, events, duration_ms=100)
 
         log = _get_log(request)
-        self.assertIsNone(log.raw_prompt)
+        self.assertIsNone(log.tools)
 
     def test_extracts_usage_from_message_end(self):
         """log_stream should populate token/cost fields from message_end data."""

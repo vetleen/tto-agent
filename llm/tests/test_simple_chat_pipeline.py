@@ -239,7 +239,7 @@ class SimpleChatPipelineTests(TestCase):
             mock_create.return_value = fake_model
             response = pipeline.run(request)
 
-        # 3 tool rounds + 1 final (tool_schemas preserved for raw_prompt capture)
+        # 3 tool rounds + 1 final (tool_schemas preserved for tools field logging)
         self.assertEqual(fake_model.generate.call_count, 4)
         last_call = fake_model.generate.call_args_list[3][0][0]
         self.assertIsNotNone(last_call.tool_schemas)

@@ -37,6 +37,7 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         "user",
         "status",
         "is_stream",
+        "has_tools",
         "total_tokens",
         "duration_ms",
         "created_at",
@@ -54,7 +55,7 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         "model",
         "is_stream",
         "formatted_prompt",
-        "formatted_raw_prompt",
+        "formatted_tools",
         "formatted_raw_output",
         "formatted_response_metadata",
         "stop_reason",
@@ -77,7 +78,7 @@ class LLMCallLogAdmin(admin.ModelAdmin):
             "fields": ("trace_id", "conversation_id"),
         }),
         ("Request", {
-            "fields": ("model", "is_stream", "formatted_prompt", "formatted_raw_prompt"),
+            "fields": ("model", "is_stream", "formatted_prompt", "formatted_tools"),
         }),
         ("Response", {
             "fields": ("formatted_raw_output", "formatted_response_metadata", "stop_reason", "provider_model_id"),
@@ -111,9 +112,13 @@ class LLMCallLogAdmin(admin.ModelAdmin):
     def formatted_prompt(self, obj):
         return _pretty_json_html(obj.prompt)
 
-    @admin.display(description="Raw Prompt (formatted)")
-    def formatted_raw_prompt(self, obj):
-        return _pretty_json_html(obj.raw_prompt)
+    @admin.display(description="Tools (formatted)")
+    def formatted_tools(self, obj):
+        return _pretty_json_html(obj.tools)
+
+    @admin.display(boolean=True, description="Tools?")
+    def has_tools(self, obj):
+        return bool(obj.tools)
 
     @admin.display(description="Raw Output (formatted)")
     def formatted_raw_output(self, obj):
