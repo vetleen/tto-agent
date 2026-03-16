@@ -7,7 +7,6 @@ import logging
 import tiktoken
 from django.conf import settings
 
-from documents.models import DataRoomDocument
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +14,6 @@ _ENCODING = tiktoken.get_encoding("cl100k_base")
 _MAX_INPUT_TOKENS = 10_000
 _HEAD_TOKENS = 5_000
 _TAIL_TOKENS = 2_000
-
-_SYSTEM_PROMPT = (
-    "Read this document and write a single paragraph (target ~100 tokens) "
-    "that will help an AI agent decide whether to read the full document. "
-    "This is not a summary — it is a relevance signal. Focus on what kind "
-    "of document this is, what subject matter and entities it concerns, "
-    "and what questions it could answer. Output ONLY the description."
-)
 
 _STRUCTURED_SYSTEM_PROMPT = (
     "Read this document and provide:\n"
@@ -123,48 +114,3 @@ def generate_description_from_text(
     return result["description"]
 
 
-def generate_document_description(document_id: int) -> str:
-    """Generate a one-paragraph description of a document using the cheap LLM.
-
-    Returns the description text. Raises on LLM failure.
-    """
-    from llm import get_llm_service
-    from llm.types import ChatRequest, Message, RunContext
-
-    doc = DataRoomDocument.objects.get(pk=document_id)
-    chunks = doc.chunks.order_by("chunk_index").values_list("text", flat=True)
-    full_text = "\n\n".join(chunks)
-
-    if not full_text.strip():
-        return ""
-
-    document_text = _prepare_document_text(full_text)
-
-    context = RunContext.create(
-        user_id=doc.uploaded_by_id,
-        conversation_id=doc.data_room_id,
-    )
-    request = ChatRequest(
-        messages=[
-            Message(role="system", content=_SYSTEM_PROMPT),
-            Message(role="user", content=document_text),
-        ],
-        model=settings.LLM_DEFAULT_CHEAP_MODEL,
-        stream=False,
-        tools=[],
-        context=context,
-    )
-
-    service = get_llm_service()
-    response = service.run("simple_chat", request)
-    description = response.message.content.strip()
-
-    doc.description = description
-    doc.save(update_fields=["description", "updated_at"])
-
-    logger.info(
-        "generate_document_description: document_id=%s len=%s",
-        document_id,
-        len(description),
-    )
-    return description

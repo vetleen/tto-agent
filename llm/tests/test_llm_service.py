@@ -11,7 +11,7 @@ from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProvid
 from llm.types.context import RunContext
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
-from llm.types.responses import ChatResponse
+from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
 
 
@@ -338,30 +338,23 @@ class _TestSchema(BaseModel):
 
 
 class RunStructuredTests(TestCase):
-    """Test LLMService.run_structured."""
+    """Test LLMService.run_structured delegates to structured_output pipeline."""
 
-    @patch("llm.core.model_factory.create_chat_model")
-    def test_run_structured_returns_parsed_and_usage(self, mock_create):
-        fake_raw_msg = MagicMock()
-        fake_raw_msg.usage_metadata = {
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "total_tokens": 150,
-        }
+    @patch("llm.service.logger.log_call")
+    def test_run_structured_returns_parsed_and_usage(self, _mock_log):
         fake_parsed = _TestSchema(description="A patent.", document_type="Patent")
-        fake_structured = MagicMock()
-        fake_structured.invoke.return_value = {
-            "raw": fake_raw_msg,
-            "parsed": fake_parsed,
-            "parsing_error": None,
-        }
-        fake_client = MagicMock()
-        fake_client.with_structured_output.return_value = fake_structured
-        fake_model = MagicMock()
-        fake_model._client = fake_client
-        mock_create.return_value = fake_model
+        expected_usage = Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
 
-        service = LLMService(resolve_model_fn=_stub_resolve)
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": False}
+        fake_pipeline.run.return_value = ChatResponse(
+            message=Message(role="assistant", content=fake_parsed.model_dump_json()),
+            model="gpt-4o-mini",
+            usage=expected_usage,
+            metadata={"structured_response": fake_parsed},
+        )
+        service = _make_service(fake_pipeline, pipeline_id="structured_output")
+
         request = ChatRequest(
             messages=[Message(role="user", content="Describe this")],
             stream=False,
@@ -375,11 +368,18 @@ class RunStructuredTests(TestCase):
         self.assertEqual(usage.prompt_tokens, 100)
         self.assertEqual(usage.completion_tokens, 50)
 
-    @patch("llm.core.model_factory.create_chat_model")
-    def test_run_structured_wraps_exceptions(self, mock_create):
-        mock_create.side_effect = RuntimeError("Provider down")
+        # Verify output_schema was injected into params
+        call_args = fake_pipeline.run.call_args[0][0]
+        self.assertIs(call_args.params["output_schema"], _TestSchema)
+        self.assertFalse(call_args.stream)
 
-        service = LLMService(resolve_model_fn=_stub_resolve)
+    @patch("llm.service.logger.log_error")
+    def test_run_structured_wraps_exceptions(self, _mock_log):
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": False}
+        fake_pipeline.run.side_effect = RuntimeError("Provider down")
+
+        service = _make_service(fake_pipeline, pipeline_id="structured_output")
         request = ChatRequest(
             messages=[Message(role="user", content="Describe")],
             stream=False,
@@ -388,26 +388,22 @@ class RunStructuredTests(TestCase):
         )
         with self.assertRaises(LLMProviderError) as ctx:
             service.run_structured(request, _TestSchema)
-        self.assertIn("Structured output failed", str(ctx.exception))
+        self.assertIn("run failed", str(ctx.exception))
 
-    @patch("llm.core.model_factory.create_chat_model")
-    def test_run_structured_no_usage(self, mock_create):
-        fake_raw_msg = MagicMock()
-        fake_raw_msg.usage_metadata = None
+    @patch("llm.service.logger.log_call")
+    def test_run_structured_no_usage(self, _mock_log):
         fake_parsed = _TestSchema(description="A doc.", document_type="Report")
-        fake_structured = MagicMock()
-        fake_structured.invoke.return_value = {
-            "raw": fake_raw_msg,
-            "parsed": fake_parsed,
-            "parsing_error": None,
-        }
-        fake_client = MagicMock()
-        fake_client.with_structured_output.return_value = fake_structured
-        fake_model = MagicMock()
-        fake_model._client = fake_client
-        mock_create.return_value = fake_model
 
-        service = LLMService(resolve_model_fn=_stub_resolve)
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": False}
+        fake_pipeline.run.return_value = ChatResponse(
+            message=Message(role="assistant", content=fake_parsed.model_dump_json()),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={"structured_response": fake_parsed},
+        )
+        service = _make_service(fake_pipeline, pipeline_id="structured_output")
+
         request = ChatRequest(
             messages=[Message(role="user", content="Describe")],
             stream=False,

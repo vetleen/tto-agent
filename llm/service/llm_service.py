@@ -167,71 +167,17 @@ class LLMService:
         request: ChatRequest,
         output_schema: type[BaseModel],
     ) -> tuple[BaseModel, Usage | None]:
-        """Run a structured output request using .with_structured_output().
+        """Run a structured output request via the structured_output pipeline.
 
-        Returns (parsed_result, usage). Uses ``include_raw=True`` so we can
-        extract usage metadata from the raw AIMessage for cost tracking.
+        Returns (parsed_result, usage). Delegates to ``self.run()`` so the call
+        is logged to ``LLMCallLog`` with timing and cost tracking.
         """
-        from llm.core.langchain_utils import to_langchain_messages
-        from llm.core.model_factory import create_chat_model
-        from llm.service.pricing import calculate_cost
-
-        self._ensure_context(request)
-        request.model = self._resolve_model(request.model)
-        run_id = request.context.run_id if request.context else "n/a"
-        logger.info(
-            "LLMService.run_structured start model=%s schema=%s run_id=%s",
-            request.model, output_schema.__name__, run_id,
-        )
-        t0 = time.monotonic()
-        try:
-            model = create_chat_model(request.model)
-            lc_messages = to_langchain_messages(request.messages)
-            structured_model = model._client.with_structured_output(
-                output_schema, include_raw=True
-            )
-            result = structured_model.invoke(lc_messages)
-
-            parsed = result["parsed"]
-            raw_msg = result["raw"]
-
-            # Extract usage from the raw AIMessage
-            usage = None
-            usage_meta = getattr(raw_msg, "usage_metadata", None)
-            if isinstance(usage_meta, dict) and usage_meta.get("output_tokens"):
-                input_tokens = usage_meta.get("input_tokens")
-                output_tokens = usage_meta.get("output_tokens")
-                details = usage_meta.get("input_token_details") or {}
-                cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
-                cost = calculate_cost(request.model, input_tokens, output_tokens, cached_tokens)
-                usage = Usage(
-                    prompt_tokens=input_tokens,
-                    completion_tokens=output_tokens,
-                    total_tokens=usage_meta.get("total_tokens"),
-                    cached_tokens=cached_tokens,
-                    cost_usd=float(cost) if cost is not None else None,
-                )
-
-            duration_ms = int((time.monotonic() - t0) * 1000)
-            logger.info(
-                "LLMService.run_structured complete model=%s schema=%s "
-                "duration_ms=%d run_id=%s",
-                request.model, output_schema.__name__, duration_ms, run_id,
-            )
-            return parsed, usage
-        except LLMError:
-            raise
-        except Exception as exc:
-            duration_ms = int((time.monotonic() - t0) * 1000)
-            logger.error(
-                "LLMService.run_structured failed model=%s schema=%s "
-                "duration_ms=%d error=%s run_id=%s",
-                request.model, output_schema.__name__, duration_ms,
-                type(exc).__name__, run_id,
-            )
-            raise LLMProviderError(
-                f"Structured output failed for model={request.model}"
-            ) from exc
+        params = dict(request.params or {})
+        params["output_schema"] = output_schema
+        req = request.model_copy(update={"params": params, "stream": False})
+        response = self.run("structured_output", req)
+        parsed = response.metadata["structured_response"]
+        return parsed, response.usage
 
     # -- async bridge -------------------------------------------------------
 

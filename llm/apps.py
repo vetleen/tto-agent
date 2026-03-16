@@ -15,6 +15,7 @@ class LlmConfig(AppConfig):
         # Providers no longer need to self-register (model factory handles creation).
         try:
             from .pipelines import simple_chat  # noqa: F401
+            from .pipelines import structured_output  # noqa: F401
             from .tools import builtins  # noqa: F401
         except Exception:
             logger.error(
