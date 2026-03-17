@@ -17,6 +17,7 @@ def build_system_prompt(
     active_canvas: Any = None,
     skill: Any = None,
     has_subagent_tool: bool = False,
+    subagent_runs: list[dict] | None = None,
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
 ) -> str:
@@ -265,9 +266,30 @@ You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agent
 - Write clear, specific task prompts — the sub-agent has no access to our conversation history
 
 ## Checking results
-- Sub-agents with `timeout: 0` or those that exceed their timeout can be checked later with `check_subagent_status`
-- Use `check_subagent_status` when the user asks or on the next turn
+- Sub-agent status and results appear automatically in this prompt — no polling needed.
+- When a completed result appears below, incorporate it into your response naturally.
 """
+
+    if subagent_runs:
+        prompt += "\n# Sub-agent Status\n"
+        for run in subagent_runs:
+            short_id = str(run["id"])[:8]
+            status = run["status"]
+            task_excerpt = run["prompt"][:120]
+            tier = run.get("model_tier", "mid")
+            prompt += f"\n## [{short_id}] {status.upper()} (tier: {tier})\nTask: {task_excerpt}\n"
+            if status == "completed" and not run.get("result_delivered"):
+                result_text = run.get("result", "")
+                if len(result_text) > 8000:
+                    result_text = result_text[:8000] + "\n... (truncated)"
+                prompt += f"\n**Result:**\n{result_text}\n"
+            elif status == "completed" and run.get("result_delivered"):
+                prompt += "Result already delivered to conversation.\n"
+            elif status in ("pending", "running"):
+                prompt += "Still in progress...\n"
+            elif status == "failed":
+                error = run.get("error", "Unknown error")
+                prompt += f"**Error:** {error}\n"
 
     if history_meta:
         total = history_meta.get("total_messages", 0)

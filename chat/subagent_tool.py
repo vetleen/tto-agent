@@ -27,12 +27,6 @@ class CreateSubagentInput(BaseModel):
     )
 
 
-class CheckSubagentStatusInput(BaseModel):
-    run_id: str = Field(
-        default="",
-        description="Optional sub-agent run ID. If omitted, returns all runs for this thread.",
-    )
-
 
 # --- Tools ---
 
@@ -105,7 +99,7 @@ class CreateSubagentTool(ContextAwareTool):
             return json.dumps({
                 "status": "started",
                 "run_id": str(run.id),
-                "message": f"Sub-agent has been started in the background (model: {model_tier}). Use check_subagent_status to check its progress.",
+                "message": f"Sub-agent has been started in the background (model: {model_tier}). Its status will appear in the conversation automatically.",
             })
 
         # Poll for result until timeout
@@ -132,73 +126,11 @@ class CreateSubagentTool(ContextAwareTool):
         return json.dumps({
             "status": "started",
             "run_id": str(run.id),
-            "message": f"Sub-agent is still running after {timeout}s. Use check_subagent_status to check its progress.",
+            "message": f"Sub-agent is still running after {timeout}s. Its status will appear in the conversation automatically.",
         })
 
-
-class CheckSubagentStatusTool(ContextAwareTool):
-    """Check the status of background sub-agent runs."""
-
-    name: str = "check_subagent_status"
-    description: str = (
-        "Check the status and results of background sub-agent runs. "
-        "Provide a specific run_id or omit to see all runs for this thread."
-    )
-    args_schema: type[BaseModel] = CheckSubagentStatusInput
-
-    def _run(self, run_id: str = "") -> str:
-        from chat.models import SubAgentRun
-
-        context = self.context
-        if not context or not context.user_id:
-            return json.dumps({"status": "error", "message": "No user context available."})
-        thread_id = context.conversation_id if context else None
-        if not thread_id:
-            return json.dumps({"status": "error", "message": "No thread context available."})
-
-        if run_id:
-            try:
-                run = SubAgentRun.objects.get(
-                    pk=run_id, thread_id=thread_id, user_id=context.user_id,
-                )
-            except SubAgentRun.DoesNotExist:
-                return json.dumps({"status": "error", "message": f"Sub-agent run {run_id} not found."})
-
-            result = {
-                "run_id": str(run.id),
-                "status": run.status,
-                "prompt": run.prompt[:200],
-                "model_tier": run.model_tier,
-            }
-            if run.status == SubAgentRun.Status.COMPLETED:
-                result["result"] = run.result
-            elif run.status == SubAgentRun.Status.FAILED:
-                result["error"] = run.error
-            return json.dumps(result)
-
-        # Return all runs for this thread belonging to the current user
-        runs = SubAgentRun.objects.filter(
-            thread_id=thread_id, user_id=context.user_id,
-        ).order_by("-created_at")[:20]
-        results = []
-        for run in runs:
-            entry = {
-                "run_id": str(run.id),
-                "status": run.status,
-                "prompt": run.prompt[:200],
-                "model_tier": run.model_tier,
-                "created_at": run.created_at.isoformat() if run.created_at else None,
-            }
-            if run.status == SubAgentRun.Status.COMPLETED:
-                entry["result"] = run.result
-            elif run.status == SubAgentRun.Status.FAILED:
-                entry["error"] = run.error
-            results.append(entry)
-
-        return json.dumps({"runs": results, "count": len(results)})
 
 
 # Register on import
 registry = get_tool_registry()
 registry.register_tool(CreateSubagentTool())
-registry.register_tool(CheckSubagentStatusTool())

@@ -235,6 +235,12 @@ class SubAgentRun(models.Model):
     error = models.TextField(blank=True)
     celery_task_id = models.CharField(max_length=255, blank=True)
 
+    # Delivery tracking
+    result_delivered = models.BooleanField(
+        default=False,
+        help_text="True after the completed result has been included in the system prompt.",
+    )
+
     # Metrics
     tokens_used = models.PositiveIntegerField(default=0)
     cost_usd = models.FloatField(default=0.0)

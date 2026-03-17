@@ -102,7 +102,7 @@ Live LLM API tests: set `TEST_APIS=True` and add API keys to `.env`.
   - `write_canvas` / `edit_canvas` — Create or edit canvas content
   - `web_fetch` — Fetch and extract web page text
   - `brave_search` — Web search via Brave Search API
-  - `create_subagent` / `check_subagent_status` — Delegate tasks to sub-agents
+  - `create_subagent` — Delegate tasks to sub-agents (status/results delivered via system prompt)
   - Skill tools: `create_skill`, `edit_skill`, `delete_skill`, `add_skill_template`, `edit_skill_template`, `delete_skill_template`, `view_template`, `load_template_to_canvas`, `save_canvas_to_skill_field`, `show_skill_field_in_canvas`, `list_all_tools`, `inspect_tool`
 
 ## LLM app

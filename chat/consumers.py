@@ -454,6 +454,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if self.active_skill_id:
                 skill_obj = await self._load_skill(self.active_skill_id)
             tasks = await self._get_thread_tasks(str(thread.id))
+            subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("create_subagent") else None
             system_prompt = build_system_prompt(
                 data_rooms=data_rooms,
                 history_meta=meta,
@@ -463,9 +464,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 active_canvas=canvases_info["active_canvas"] if canvases_info else None,
                 skill=skill_obj,
                 has_subagent_tool=self._has_tool("create_subagent"),
+                subagent_runs=subagent_runs if subagent_runs else None,
                 tasks=tasks,
                 has_task_tool=self._has_tool("update_tasks"),
             )
+
+            # Mark undelivered completed sub-agent results as delivered
+            if subagent_runs:
+                undelivered_ids = [
+                    r["id"] for r in subagent_runs
+                    if r["status"] == "completed" and not r["result_delivered"]
+                ]
+                if undelivered_ids:
+                    await self._mark_subagent_results_delivered(undelivered_ids)
 
             # Stream LLM response
             await self._stream_response(
@@ -947,6 +958,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
             .order_by("order", "created_at")
             .values("id", "title", "status")
         )
+
+    # -- Sub-agent helpers --
+
+    @database_sync_to_async
+    def _get_subagent_runs(self, thread_id):
+        from chat.models import SubAgentRun
+        return list(
+            SubAgentRun.objects.filter(thread_id=thread_id)
+            .order_by("-created_at")[:20]
+            .values("id", "status", "prompt", "model_tier", "result", "error", "result_delivered")
+        )
+
+    @database_sync_to_async
+    def _mark_subagent_results_delivered(self, run_ids):
+        from chat.models import SubAgentRun
+        if run_ids:
+            SubAgentRun.objects.filter(pk__in=run_ids).update(result_delivered=True)
 
     # -- Canvas helpers --
 

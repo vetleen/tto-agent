@@ -19,7 +19,7 @@ from chat.subagent_limits import (
 )
 from chat.subagent_prompts import build_subagent_system_prompt
 from chat.subagent_service import resolve_subagent_model, resolve_subagent_tools
-from chat.subagent_tool import CheckSubagentStatusTool, CreateSubagentTool
+from chat.subagent_tool import CreateSubagentTool
 from core.preferences import ResolvedPreferences
 from llm.types.context import RunContext
 
@@ -35,7 +35,7 @@ def _prefs(**overrides):
         allowed_models=["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano"],
         allowed_tools=[
             "search_documents", "read_document", "web_fetch", "brave_search",
-            "write_canvas", "edit_canvas", "create_subagent", "check_subagent_status",
+            "write_canvas", "edit_canvas", "create_subagent",
         ],
         allowed_skills=[],
         theme="light",
@@ -156,7 +156,6 @@ class ResolveSubagentToolsTests(TestCase):
         self.assertNotIn("write_canvas", tools)
         self.assertNotIn("edit_canvas", tools)
         self.assertNotIn("create_subagent", tools)
-        self.assertNotIn("check_subagent_status", tools)
 
     def test_keeps_doc_tools_with_data_rooms(self):
         prefs = _prefs()
@@ -616,73 +615,97 @@ class CreateSubagentToolLimitTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# CheckSubagentStatusTool tests
+# BuildSystemPromptSubagentStatusTests
 # ---------------------------------------------------------------------------
 
-class CheckSubagentStatusToolTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(email="check@test.com", password="pass")
-        self.thread = ChatThread.objects.create(created_by=self.user)
+class BuildSystemPromptSubagentStatusTests(TestCase):
+    """Tests for sub-agent status injection into the system prompt."""
 
-    def test_returns_status_for_specific_run(self):
-        run = SubAgentRun.objects.create(
-            thread=self.thread, user=self.user,
-            prompt="Analyze patents", status=SubAgentRun.Status.COMPLETED,
-            result="Found 5 patents.",
-        )
-        ctx = _ctx(self.user.pk, self.thread.id)
-        result = _invoke(CheckSubagentStatusTool, {"run_id": str(run.id)}, ctx)
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["result"], "Found 5 patents.")
+    def test_no_runs_no_status_section(self):
+        from chat.prompts import build_system_prompt
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=None)
+        self.assertNotIn("# Sub-agent Status", prompt)
 
-    def test_returns_error_for_failed_run(self):
-        run = SubAgentRun.objects.create(
-            thread=self.thread, user=self.user,
-            prompt="task", status=SubAgentRun.Status.FAILED,
-            error="API timeout",
-        )
-        ctx = _ctx(self.user.pk, self.thread.id)
-        result = _invoke(CheckSubagentStatusTool, {"run_id": str(run.id)}, ctx)
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("API timeout", result["error"])
+    def test_empty_runs_no_status_section(self):
+        from chat.prompts import build_system_prompt
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=[])
+        self.assertNotIn("# Sub-agent Status", prompt)
 
-    def test_returns_all_thread_runs(self):
-        for i in range(3):
-            SubAgentRun.objects.create(
-                thread=self.thread, user=self.user,
-                prompt=f"task {i}", status=SubAgentRun.Status.COMPLETED,
-                result=f"result {i}",
-            )
-        ctx = _ctx(self.user.pk, self.thread.id)
-        result = _invoke(CheckSubagentStatusTool, {}, ctx)
-        self.assertEqual(result["count"], 3)
+    def test_pending_run_shows_in_progress(self):
+        from chat.prompts import build_system_prompt
+        runs = [{
+            "id": uuid.uuid4(), "status": "pending",
+            "prompt": "Research patent claims", "model_tier": "mid",
+            "result": "", "error": "", "result_delivered": False,
+        }]
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
+        self.assertIn("# Sub-agent Status", prompt)
+        self.assertIn("PENDING", prompt)
+        self.assertIn("Still in progress", prompt)
 
-    def test_unknown_run_id_returns_error(self):
-        ctx = _ctx(self.user.pk, self.thread.id)
-        result = _invoke(CheckSubagentStatusTool, {"run_id": str(uuid.uuid4())}, ctx)
-        self.assertEqual(result["status"], "error")
-        self.assertIn("not found", result["message"])
+    def test_running_run_shows_in_progress(self):
+        from chat.prompts import build_system_prompt
+        runs = [{
+            "id": uuid.uuid4(), "status": "running",
+            "prompt": "Analyze documents", "model_tier": "fast",
+            "result": "", "error": "", "result_delivered": False,
+        }]
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
+        self.assertIn("RUNNING", prompt)
+        self.assertIn("Still in progress", prompt)
 
-    def test_cannot_see_other_users_runs(self):
-        """Runs from other users on the same thread should not be visible."""
-        other_user = User.objects.create_user(email="other_check@test.com", password="pass")
-        run = SubAgentRun.objects.create(
-            thread=self.thread, user=other_user,
-            prompt="other's task", status=SubAgentRun.Status.COMPLETED,
-            result="other's result",
-        )
+    def test_completed_undelivered_includes_result(self):
+        from chat.prompts import build_system_prompt
+        runs = [{
+            "id": uuid.uuid4(), "status": "completed",
+            "prompt": "Summarize findings", "model_tier": "top",
+            "result": "Found 3 key patents.", "error": "", "result_delivered": False,
+        }]
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
+        self.assertIn("COMPLETED", prompt)
+        self.assertIn("Found 3 key patents.", prompt)
+        self.assertNotIn("already delivered", prompt.lower())
 
-        # Query as self.user — should not see other_user's run
-        ctx = _ctx(self.user.pk, self.thread.id)
+    def test_completed_delivered_omits_result(self):
+        from chat.prompts import build_system_prompt
+        runs = [{
+            "id": uuid.uuid4(), "status": "completed",
+            "prompt": "Summarize findings", "model_tier": "top",
+            "result": "Found 3 key patents.", "error": "", "result_delivered": True,
+        }]
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
+        self.assertIn("COMPLETED", prompt)
+        self.assertIn("already delivered", prompt.lower())
+        self.assertNotIn("Found 3 key patents.", prompt)
 
-        # By specific run_id
-        result = _invoke(CheckSubagentStatusTool, {"run_id": str(run.id)}, ctx)
-        self.assertEqual(result["status"], "error")
-        self.assertIn("not found", result["message"])
+    def test_failed_shows_error(self):
+        from chat.prompts import build_system_prompt
+        runs = [{
+            "id": uuid.uuid4(), "status": "failed",
+            "prompt": "Bad task", "model_tier": "mid",
+            "result": "", "error": "LLM provider timeout", "result_delivered": False,
+        }]
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
+        self.assertIn("FAILED", prompt)
+        self.assertIn("LLM provider timeout", prompt)
 
-        # List all — should be empty
-        result = _invoke(CheckSubagentStatusTool, {}, ctx)
-        self.assertEqual(result["count"], 0)
+    def test_no_check_subagent_status_in_prompt(self):
+        from chat.prompts import build_system_prompt
+        prompt = build_system_prompt(has_subagent_tool=True)
+        self.assertNotIn("check_subagent_status", prompt)
+
+    def test_completed_result_truncated_at_8000_chars(self):
+        from chat.prompts import build_system_prompt
+        long_result = "x" * 10000
+        runs = [{
+            "id": uuid.uuid4(), "status": "completed",
+            "prompt": "Big task", "model_tier": "mid",
+            "result": long_result, "error": "", "result_delivered": False,
+        }]
+        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
+        self.assertIn("(truncated)", prompt)
+        # The full 10000-char result should not appear
+        self.assertNotIn(long_result, prompt)
 
 
 # ---------------------------------------------------------------------------
