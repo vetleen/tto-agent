@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +68,69 @@ def _strip_nul_bytes(docs: list[Any]) -> list[Any]:
     return docs
 
 
+def _format_size(size_bytes: int) -> str:
+    """Format a byte count as a human-readable size string."""
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.0f} KB"
+    return f"{size_bytes} B"
+
+
+@dataclass
+class EmailAttachment:
+    """An email attachment with optional extracted text content."""
+    filename: str
+    size_str: str
+    content: str | None  # Extracted text, or None if unsupported/failed
+
+
+def _extract_attachment_content(
+    data: bytes, filename: str, *, _depth: int = 0
+) -> str | None:
+    """Try to extract text content from an email attachment.
+
+    Returns the extracted text, or None if the file type is unsupported,
+    extraction fails, or depth limit is exceeded for nested emails.
+    """
+    from django.conf import settings
+
+    ext = Path(filename).suffix.lower().lstrip(".")
+    allowed = getattr(settings, "DOCUMENT_ALLOWED_EXTENSIONS", set())
+    if ext not in allowed:
+        return None
+
+    # Cap recursion for nested emails
+    if ext in ("msg", "eml") and _depth >= 1:
+        return None
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{ext}", delete=False
+        ) as tmp:
+            tmp.write(data)
+            tmp_path = Path(tmp.name)
+
+        if ext == "msg":
+            docs = _load_msg_as_markdown(tmp_path, _depth=_depth + 1)
+        elif ext == "eml":
+            docs = _load_eml_as_markdown(tmp_path, _depth=_depth + 1)
+        else:
+            docs = load_documents(tmp_path, ext)
+
+        text = "\n\n".join(d.page_content for d in docs if d.page_content)
+        return text if text.strip() else None
+    except Exception:
+        logger.debug(
+            "Failed to extract content from attachment %r", filename, exc_info=True
+        )
+        return None
+    finally:
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+
+
 def _load_docx_as_markdown(path: Path) -> list[Any]:
     """Extract DOCX content as Markdown using mammoth + markdownify.
 
@@ -104,7 +169,7 @@ def _format_email_as_markdown(
     date: str | None,
     cc: str | None,
     body_markdown: str,
-    attachments: list[str] | None = None,
+    attachments: list[EmailAttachment] | None = None,
 ) -> str:
     """Format email headers + body into structured Markdown."""
     subject = subject or "(No Subject)"
@@ -130,17 +195,31 @@ def _format_email_as_markdown(
     parts.append(body_markdown.strip())
 
     if attachments:
-        parts.append("")
-        parts.append("---")
-        parts.append("")
-        parts.append("**Attachments:**")
-        for att in attachments:
-            parts.append(f"- {att}")
+        extracted = [a for a in attachments if a.content]
+        unextracted = [a for a in attachments if not a.content]
+
+        # Extracted attachments as subsections
+        for att in extracted:
+            parts.append("")
+            parts.append("---")
+            parts.append("")
+            parts.append(f"## Attachment: {att.filename} ({att.size_str})")
+            parts.append("")
+            parts.append(att.content)
+
+        # Unsupported/failed attachments as bullet list
+        if unextracted:
+            parts.append("")
+            parts.append("---")
+            parts.append("")
+            parts.append("**Attachments:**")
+            for att in unextracted:
+                parts.append(f"- {att.filename} ({att.size_str})")
 
     return "\n".join(parts)
 
 
-def _load_msg_as_markdown(path: Path) -> list[Any]:
+def _load_msg_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
     """Extract .msg (Outlook) email as a Markdown LangChain Document."""
     import extract_msg
     from langchain_core.documents import Document
@@ -167,18 +246,15 @@ def _load_msg_as_markdown(path: Path) -> list[Any]:
         else:
             raise ValueError("Email has no body content (no HTML, no plain text)")
 
-        # List attachments
+        # Extract attachments
         attachments = []
         for att in msg.attachments:
             name = getattr(att, "longFilename", None) or getattr(att, "shortFilename", None) or "unnamed"
-            size = getattr(att, "dataLength", None) or (len(att.data) if getattr(att, "data", None) else 0)
-            if size >= 1024 * 1024:
-                size_str = f"{size / (1024 * 1024):.1f} MB"
-            elif size >= 1024:
-                size_str = f"{size / 1024:.0f} KB"
-            else:
-                size_str = f"{size} B"
-            attachments.append(f"{name} ({size_str})")
+            data = getattr(att, "data", None)
+            size = getattr(att, "dataLength", None) or (len(data) if data else 0)
+            size_str = _format_size(size)
+            extracted = _extract_attachment_content(data, name, _depth=_depth) if data else None
+            attachments.append(EmailAttachment(filename=name, size_str=size_str, content=extracted))
 
         content = _format_email_as_markdown(
             subject=subject, from_addr=from_addr, to_addr=to_addr,
@@ -189,7 +265,7 @@ def _load_msg_as_markdown(path: Path) -> list[Any]:
         msg.close()
 
 
-def _load_eml_as_markdown(path: Path) -> list[Any]:
+def _load_eml_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
     """Extract .eml (RFC 822) email as a Markdown LangChain Document."""
     import email
     import email.policy
@@ -217,19 +293,15 @@ def _load_eml_as_markdown(path: Path) -> list[Any]:
     else:
         body_md = body_content
 
-    # List attachments
+    # Extract attachments
     attachments = []
     for att in msg.iter_attachments():
         filename = att.get_filename() or "unnamed"
         data = att.get_payload(decode=True)
         size = len(data) if data else 0
-        if size >= 1024 * 1024:
-            size_str = f"{size / (1024 * 1024):.1f} MB"
-        elif size >= 1024:
-            size_str = f"{size / 1024:.0f} KB"
-        else:
-            size_str = f"{size} B"
-        attachments.append(f"{filename} ({size_str})")
+        size_str = _format_size(size)
+        extracted = _extract_attachment_content(data, filename, _depth=_depth) if data else None
+        attachments.append(EmailAttachment(filename=filename, size_str=size_str, content=extracted))
 
     content = _format_email_as_markdown(
         subject=subject, from_addr=from_addr, to_addr=to_addr,

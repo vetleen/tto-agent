@@ -8,8 +8,11 @@ from django.test import TestCase, override_settings
 
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 from documents.services.chunking import (
+    EmailAttachment,
     _count_tokens,
+    _extract_attachment_content,
     _format_email_as_markdown,
+    _format_size,
     _load_eml_as_markdown,
     _load_msg_as_markdown,
     _strip_nul_bytes,
@@ -1221,7 +1224,7 @@ class EmailLoaderTests(TestCase):
             date="2024-01-15 10:30:00",
             cc="cc@example.com",
             body_markdown="Hello, this is the body.",
-            attachments=["report.pdf (245 KB)"],
+            attachments=[EmailAttachment(filename="report.pdf", size_str="245 KB", content=None)],
         )
         self.assertIn("# Test Subject", result)
         self.assertIn("| **From** | sender@example.com |", result)
@@ -1493,6 +1496,244 @@ class EmailLoaderTests(TestCase):
             self.assertEqual(len(docs), 1)
         finally:
             path.unlink()
+
+    # ---- _format_size ----
+
+    def test_format_size(self):
+        """_format_size returns correct B/KB/MB strings."""
+        self.assertEqual(_format_size(500), "500 B")
+        self.assertEqual(_format_size(0), "0 B")
+        self.assertEqual(_format_size(1023), "1023 B")
+        self.assertEqual(_format_size(1024), "1 KB")
+        self.assertEqual(_format_size(2048), "2 KB")
+        self.assertEqual(_format_size(1048576), "1.0 MB")
+        self.assertEqual(_format_size(5242880), "5.0 MB")
+
+    # ---- _format_email_as_markdown with EmailAttachment ----
+
+    def test_format_email_with_extracted_attachment(self):
+        """Extracted attachment renders as ## Attachment: heading with content."""
+        result = _format_email_as_markdown(
+            subject="Test", from_addr="a@b.com", to_addr="c@d.com",
+            date=None, cc=None, body_markdown="body",
+            attachments=[EmailAttachment(filename="notes.txt", size_str="1 KB", content="Hello from notes")],
+        )
+        self.assertIn("## Attachment: notes.txt (1 KB)", result)
+        self.assertIn("Hello from notes", result)
+        self.assertNotIn("**Attachments:**", result)
+
+    def test_format_email_with_unsupported_attachment(self):
+        """Unsupported attachment (content=None) renders as bullet list."""
+        result = _format_email_as_markdown(
+            subject="Test", from_addr="a@b.com", to_addr="c@d.com",
+            date=None, cc=None, body_markdown="body",
+            attachments=[EmailAttachment(filename="photo.png", size_str="2 MB", content=None)],
+        )
+        self.assertIn("**Attachments:**", result)
+        self.assertIn("- photo.png (2 MB)", result)
+        self.assertNotIn("## Attachment:", result)
+
+    def test_format_email_mixed_attachments(self):
+        """Both extracted and unsupported attachments coexist correctly."""
+        result = _format_email_as_markdown(
+            subject="Test", from_addr="a@b.com", to_addr="c@d.com",
+            date=None, cc=None, body_markdown="body",
+            attachments=[
+                EmailAttachment(filename="doc.txt", size_str="1 KB", content="Text content"),
+                EmailAttachment(filename="image.png", size_str="500 KB", content=None),
+            ],
+        )
+        self.assertIn("## Attachment: doc.txt (1 KB)", result)
+        self.assertIn("Text content", result)
+        self.assertIn("**Attachments:**", result)
+        self.assertIn("- image.png (500 KB)", result)
+        # Extracted section should appear before the bullet list
+        extracted_pos = result.index("## Attachment: doc.txt")
+        bullet_pos = result.index("**Attachments:**")
+        self.assertLess(extracted_pos, bullet_pos)
+
+    # ---- _extract_attachment_content ----
+
+    @override_settings(DOCUMENT_ALLOWED_EXTENSIONS={"txt", "pdf", "msg", "eml"})
+    def test_extract_attachment_content_txt(self):
+        """Real text extraction works end-to-end for .txt files."""
+        result = _extract_attachment_content(b"Hello from attachment", "readme.txt")
+        self.assertIsNotNone(result)
+        self.assertIn("Hello from attachment", result)
+
+    @override_settings(DOCUMENT_ALLOWED_EXTENSIONS={"txt", "pdf"})
+    def test_extract_attachment_content_unsupported_ext(self):
+        """Returns None for unsupported extensions like .png."""
+        result = _extract_attachment_content(b"fake image data", "photo.png")
+        self.assertIsNone(result)
+
+    @override_settings(DOCUMENT_ALLOWED_EXTENSIONS={"txt", "pdf"})
+    def test_extract_attachment_content_corrupt_file(self):
+        """Returns None for corrupt file, no crash."""
+        result = _extract_attachment_content(b"not a real pdf", "broken.pdf")
+        self.assertIsNone(result)
+
+    @override_settings(DOCUMENT_ALLOWED_EXTENSIONS={"txt", "msg", "eml"})
+    def test_extract_attachment_content_depth_limit(self):
+        """Returns None when _depth >= 1 for email extensions."""
+        result = _extract_attachment_content(b"fake", "nested.eml", _depth=1)
+        self.assertIsNone(result)
+        result = _extract_attachment_content(b"fake", "nested.msg", _depth=1)
+        self.assertIsNone(result)
+        # Non-email types should still work at depth >= 1
+        result = _extract_attachment_content(b"some text", "file.txt", _depth=1)
+        self.assertIsNotNone(result)
+
+    # ---- _load_msg_as_markdown with attachment extraction ----
+
+    @patch("extract_msg.Message")
+    def test_load_msg_extracts_supported_attachment(self, mock_msg_cls):
+        """Mock-based: .txt attachment content appears under ## Attachment:."""
+        mock_att = MagicMock()
+        mock_att.longFilename = "notes.txt"
+        mock_att.shortFilename = None
+        mock_att.data = b"Extracted text content"
+        mock_att.dataLength = len(mock_att.data)
+
+        mock_msg = MagicMock()
+        mock_msg.subject = "With TXT"
+        mock_msg.sender = "a@b.com"
+        mock_msg.to = "c@d.com"
+        mock_msg.date = None
+        mock_msg.cc = None
+        mock_msg.htmlBody = None
+        mock_msg.body = "See attached."
+        mock_msg.attachments = [mock_att]
+        mock_msg_cls.return_value = mock_msg
+
+        docs = _load_msg_as_markdown(Path("fake.msg"))
+        content = docs[0].page_content
+        self.assertIn("## Attachment: notes.txt", content)
+        self.assertIn("Extracted text content", content)
+
+    # ---- _load_eml_as_markdown with attachment extraction ----
+
+    def test_load_eml_extracts_supported_attachment(self):
+        """Real .eml with .txt attachment — full integration."""
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.mime.base import MIMEBase
+        from email import encoders
+
+        msg = MIMEMultipart()
+        msg["Subject"] = "With TXT Attachment"
+        msg["From"] = "a@b.com"
+        msg["To"] = "c@d.com"
+        msg.attach(MIMEText("See attached.", "plain"))
+
+        att = MIMEBase("text", "plain")
+        att.set_payload(b"Hello from the text file")
+        encoders.encode_base64(att)
+        att.add_header("Content-Disposition", "attachment", filename="readme.txt")
+        msg.attach(att)
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(msg.as_bytes())
+            eml_path = Path(f.name)
+
+        try:
+            docs = _load_eml_as_markdown(eml_path)
+            content = docs[0].page_content
+            self.assertIn("## Attachment: readme.txt", content)
+            self.assertIn("Hello from the text file", content)
+        finally:
+            eml_path.unlink()
+
+    def test_load_eml_corrupt_attachment_falls_back(self):
+        """Garbage .pdf attachment → listed by name only."""
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.mime.base import MIMEBase
+        from email import encoders
+
+        msg = MIMEMultipart()
+        msg["Subject"] = "Corrupt PDF"
+        msg["From"] = "a@b.com"
+        msg["To"] = "c@d.com"
+        msg.attach(MIMEText("See attached.", "plain"))
+
+        att = MIMEBase("application", "pdf")
+        att.set_payload(b"this is not a real pdf")
+        encoders.encode_base64(att)
+        att.add_header("Content-Disposition", "attachment", filename="broken.pdf")
+        msg.attach(att)
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(msg.as_bytes())
+            eml_path = Path(f.name)
+
+        try:
+            docs = _load_eml_as_markdown(eml_path)
+            content = docs[0].page_content
+            self.assertIn("broken.pdf", content)
+            self.assertIn("**Attachments:**", content)
+            self.assertNotIn("## Attachment:", content)
+        finally:
+            eml_path.unlink()
+
+    def test_load_eml_nested_eml_depth_limit(self):
+        """Nested .eml body extracted at depth 0, but its own .eml attachment is not recursed."""
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.mime.base import MIMEBase
+        from email import encoders
+
+        # Inner-inner email (should NOT be extracted — depth 2)
+        inner_inner = MIMEText("You should not see this inner-inner body.")
+        inner_inner["Subject"] = "Inner Inner"
+        inner_inner["From"] = "z@z.com"
+        inner_inner["To"] = "z@z.com"
+
+        # Inner email with its own .eml attachment
+        inner = MIMEMultipart()
+        inner["Subject"] = "Inner Email"
+        inner["From"] = "y@y.com"
+        inner["To"] = "y@y.com"
+        inner.attach(MIMEText("Inner email body content.", "plain"))
+
+        # Use application/octet-stream (how most clients attach .eml files)
+        inner_att = MIMEBase("application", "octet-stream")
+        inner_att.set_payload(inner_inner.as_bytes())
+        encoders.encode_base64(inner_att)
+        inner_att.add_header("Content-Disposition", "attachment", filename="deep.eml")
+        inner.attach(inner_att)
+
+        # Outer email with inner .eml attachment
+        outer = MIMEMultipart()
+        outer["Subject"] = "Outer Email"
+        outer["From"] = "a@b.com"
+        outer["To"] = "c@d.com"
+        outer.attach(MIMEText("Outer body.", "plain"))
+
+        outer_att = MIMEBase("application", "octet-stream")
+        outer_att.set_payload(inner.as_bytes())
+        encoders.encode_base64(outer_att)
+        outer_att.add_header("Content-Disposition", "attachment", filename="inner.eml")
+        outer.attach(outer_att)
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(outer.as_bytes())
+            eml_path = Path(f.name)
+
+        try:
+            docs = _load_eml_as_markdown(eml_path)
+            content = docs[0].page_content
+            # Outer body
+            self.assertIn("Outer body.", content)
+            # Inner email extracted as attachment at depth 0→1
+            self.assertIn("## Attachment: inner.eml", content)
+            self.assertIn("Inner email body content.", content)
+            # Inner-inner should NOT be extracted (depth 1→2 blocked)
+            self.assertNotIn("You should not see this inner-inner body.", content)
+            # deep.eml should appear as bullet-list attachment within the inner email content
+            self.assertIn("deep.eml", content)
+        finally:
+            eml_path.unlink()
 
     # ---- process_document parser_type ----
 
