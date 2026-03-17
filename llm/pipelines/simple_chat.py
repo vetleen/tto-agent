@@ -67,7 +67,7 @@ class SimpleChatPipeline(BasePipeline):
     id = "simple_chat"
     capabilities = {"streaming": True, "tools": True}
 
-    def __init__(self, max_tool_iterations: int = 10) -> None:
+    def __init__(self, max_tool_iterations: int = 25) -> None:
         self.max_tool_iterations = max_tool_iterations
 
     def _get_max_iterations(self, request: ChatRequest) -> int:

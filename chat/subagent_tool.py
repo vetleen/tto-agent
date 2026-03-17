@@ -27,7 +27,7 @@ class CreateSubagentInput(BaseModel):
     )
     timeout: int = Field(
         default=0,
-        description="Seconds to wait for the result (0-270). 0=background, 30-60=quick tasks, 120=research.",
+        description="Seconds to wait for the result (0-540). 0=background, 30-60=quick tasks, 120=research.",
     )
 
 
@@ -75,8 +75,8 @@ class CreateSubagentTool(ContextAwareTool):
         if model_tier not in ("fast", "mid", "top"):
             model_tier = "mid"
 
-        # Clamp timeout to [0, 270]
-        timeout = max(0, min(timeout, 270))
+        # Clamp timeout to [0, 540]
+        timeout = max(0, min(timeout, 540))
 
         # Load user
         User = get_user_model()
