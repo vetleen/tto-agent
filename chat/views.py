@@ -149,9 +149,15 @@ def thread_archive(request, thread_id):
 
 
 @login_required
-@require_http_methods(["GET"])
+@require_http_methods(["GET", "POST"])
 async def canvas_export(request, thread_id, canvas_id=None):
-    """Export the canvas as a .docx file."""
+    """Export the canvas as a .docx file.
+
+    POST: client sends JSON ``{"content": "..."}`` with mermaid blocks already
+    rendered as ``<img>`` tags (avoids server-side Playwright dependency).
+
+    GET (legacy): server renders mermaid via Playwright subprocess (fallback).
+    """
     import asyncio
 
     from asgiref.sync import sync_to_async
@@ -167,9 +173,14 @@ async def canvas_export(request, thread_id, canvas_id=None):
 
     from chat.services import replace_email_with_html, replace_mermaid_with_images
 
-    # Run the slow mermaid rendering in a thread so the event loop stays
-    # free and WebSocket connections are not disrupted.
-    content = await asyncio.to_thread(replace_mermaid_with_images, canvas.content)
+    if request.method == "POST":
+        # Client already replaced mermaid blocks with <img> tags.
+        body = json.loads(request.body)
+        content = body.get("content", canvas.content)
+    else:
+        # Legacy GET: render mermaid server-side with Playwright.
+        content = await asyncio.to_thread(replace_mermaid_with_images, canvas.content)
+
     content = replace_email_with_html(content)
     html_content = md.markdown(content, extensions=["tables", "fenced_code"])
     full_html = f"<html><body>{html_content}</body></html>"

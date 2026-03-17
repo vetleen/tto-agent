@@ -421,6 +421,7 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/diff@7.0.0/dist/diff.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dom-to-image-more@3/dist/dom-to-image-more.min.js"></script>
 
 {# Markdown styling #}
 <style>
@@ -593,7 +594,8 @@
           el.innerHTML = '<div class="mermaid-wrapper">' + result.svg +
             '<button class="mermaid-download-btn" title="Download as PNG">PNG</button></div>';
           el.querySelector('.mermaid-download-btn').addEventListener('click', function() {
-            downloadMermaidAsPng(result.svg, 'diagram');
+            var svgEl = this.closest('.mermaid-wrapper').querySelector('svg');
+            downloadMermaidAsPng(svgEl, 'diagram');
           });
         }).catch(function(err) {
           el.innerHTML = '<pre style="color:rgb(239 68 68);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
@@ -604,50 +606,43 @@
     });
   }
 
-  function downloadMermaidAsPng(svgString, name) {
-    // Parse the SVG to get its intrinsic dimensions for the canvas
-    var parser = new DOMParser();
-    var svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
-    var svgEl = svgDoc.querySelector('svg');
-    // Prefer viewBox for accurate intrinsic size (Mermaid often sets width="100%")
-    var w, h;
-    var vb = svgEl.getAttribute('viewBox');
-    if (vb) {
-      var parts = vb.split(/[\s,]+/);
-      if (parts.length >= 4) { w = parseFloat(parts[2]); h = parseFloat(parts[3]); }
-    }
-    if (!w || !h) {
-      var wA = svgEl.getAttribute('width'), hA = svgEl.getAttribute('height');
-      if (wA && wA.indexOf('%') === -1) w = w || parseFloat(wA);
-      if (hA && hA.indexOf('%') === -1) h = h || parseFloat(hA);
-    }
-    w = w || 800; h = h || 600;
-    svgEl.setAttribute('width', w);
-    svgEl.setAttribute('height', h);
-    var fixedSvg = new XMLSerializer().serializeToString(svgEl);
-    // Use a data: URL instead of blob URL to avoid canvas tainting
-    var encoded = btoa(unescape(encodeURIComponent(fixedSvg)));
-    var dataUrl = 'data:image/svg+xml;base64,' + encoded;
-    var img = new Image();
-    img.onload = function() {
-      var canvas = document.createElement('canvas');
-      var scale = 2; // retina quality
-      canvas.width = w * scale;
-      canvas.height = h * scale;
-      var ctx = canvas.getContext('2d');
-      ctx.scale(scale, scale);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      canvas.toBlob(function(blob) {
+  function downloadMermaidAsPng(svgEl, name) {
+    // Use dom-to-image-more to capture the rendered SVG directly from the DOM.
+    // This correctly handles <foreignObject> labels that Mermaid v11 uses,
+    // which are silently dropped by the <img>→<canvas> pipeline.
+    domtoimage.toBlob(svgEl, { bgcolor: '#ffffff', scale: 2 })
+      .then(function(blob) {
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = (name || 'diagram') + '.png';
         a.click();
         URL.revokeObjectURL(a.href);
-      }, 'image/png');
-    };
-    img.src = dataUrl;
+      })
+      .catch(function(err) {
+        console.error('PNG export failed:', err);
+        alert('Failed to export diagram as PNG.');
+      });
+  }
+
+  // Render mermaid source to PNG blob (for docx export).
+  // Returns a Promise<string> with a data:image/png;base64,... URL, or null on failure.
+  function renderMermaidToPngDataUrl(mermaidSource) {
+    var tempId = 'mermaid-export-' + (++mermaidIdCounter);
+    return mermaid.render(tempId, mermaidSource).then(function(result) {
+      // Insert rendered SVG into an offscreen container so domtoimage can capture it
+      var container = document.createElement('div');
+      container.style.cssText = 'position:fixed;left:-9999px;top:0;';
+      container.innerHTML = result.svg;
+      document.body.appendChild(container);
+      var svgEl = container.querySelector('svg');
+      return domtoimage.toPng(svgEl, { bgcolor: '#ffffff', scale: 2 }).then(function(dataUrl) {
+        document.body.removeChild(container);
+        return dataUrl;
+      }).catch(function() {
+        document.body.removeChild(container);
+        return null;
+      });
+    }).catch(function() { return null; });
   }
 
   // -- Email block rendering --
@@ -1677,28 +1672,49 @@
     }
   }
   if (canvasExportLink) {
-    canvasExportLink.addEventListener("click", function() {
+    canvasExportLink.addEventListener("click", async function() {
       if (!canvasExportUrl) return;
       canvasExportLink.disabled = true;
       canvasExportLink.title = "Exporting...";
-      fetch(canvasExportUrl)
-        .then(function(resp) {
-          if (!resp.ok) throw new Error("Export failed");
-          var cd = resp.headers.get("Content-Disposition") || "";
-          var match = cd.match(/filename="?([^"]+)"?/);
-          var filename = match ? match[1] : "document.docx";
-          return resp.blob().then(function(blob) { return { blob: blob, filename: filename }; });
-        })
-        .then(function(data) {
-          var url = URL.createObjectURL(data.blob);
-          var a = document.createElement("a");
-          a.href = url; a.download = data.filename;
-          document.body.appendChild(a); a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        })
-        .catch(function(err) { alert("Export failed: " + err.message); })
-        .finally(function() { canvasExportLink.disabled = false; canvasExportLink.title = "Export as .docx"; });
+      try {
+        // Pre-render mermaid blocks client-side so the server doesn't need Playwright.
+        var content = canvasTextarea.value;
+        var mermaidBlockRe = /```mermaid\s*\n([\s\S]*?)```/g;
+        var matches = [];
+        var m;
+        while ((m = mermaidBlockRe.exec(content)) !== null) matches.push(m);
+        // Render in reverse order to preserve string offsets during replacement
+        for (var i = matches.length - 1; i >= 0; i--) {
+          var match = matches[i];
+          var dataUrl = await renderMermaidToPngDataUrl(match[1]);
+          if (dataUrl) {
+            content = content.substring(0, match.index) +
+              '<img src="' + dataUrl + '" alt="Diagram" />' +
+              content.substring(match.index + match[0].length);
+          }
+        }
+        var resp = await fetch(canvasExportUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": getCSRFToken() },
+          body: JSON.stringify({ content: content })
+        });
+        if (!resp.ok) throw new Error("Export failed");
+        var cd = resp.headers.get("Content-Disposition") || "";
+        var fnMatch = cd.match(/filename="?([^"]+)"?/);
+        var filename = fnMatch ? fnMatch[1] : "document.docx";
+        var blob = await resp.blob();
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        alert("Export failed: " + err.message);
+      } finally {
+        canvasExportLink.disabled = false;
+        canvasExportLink.title = "Export as .docx";
+      }
     });
   }
   function renderCanvasTabs() {

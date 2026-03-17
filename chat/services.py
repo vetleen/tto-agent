@@ -490,7 +490,6 @@ import asyncio, base64, json, sys
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 from html import escape
-from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 
 MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
@@ -511,17 +510,16 @@ try:
                 "</body></html>"
             )
             try:
-                data_url = "data:text/html;charset=utf-8," + quote(html)
-                page.goto(data_url, wait_until="networkidle")
+                page.set_content(html, wait_until="networkidle")
                 page.wait_for_selector(".mermaid svg", timeout=15000)
                 el = page.query_selector(".mermaid")
                 if el:
                     results[i] = base64.b64encode(el.screenshot(type="png")).decode()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Diagram {i} failed: {e}", file=sys.stderr)
         browser.close()
-except Exception:
-    pass
+except Exception as e:
+    print(f"Mermaid subprocess error: {e}", file=sys.stderr)
 print(json.dumps(results))
 '''
 
