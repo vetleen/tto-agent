@@ -366,7 +366,7 @@
 
 {# Data room attach modal #}
 <div id="attach-data-room-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto">
-  <div class="relative w-full max-w-md">
+  <div class="relative w-full max-w-2xl">
     <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
       <div class="flex items-center justify-between px-6 py-4 border-b border-default">
         <h3 class="text-lg font-semibold text-heading">Attach data room</h3>
@@ -375,7 +375,7 @@
         </button>
       </div>
       <div class="p-6">
-        <ul id="data-room-modal-list" class="space-y-2 max-h-64 overflow-y-auto">
+        <ul id="data-room-modal-list" class="space-y-2 max-h-[70vh] overflow-y-auto">
           {% for dr in data_rooms %}
           <li>
             <button type="button" class="data-room-select-btn flex items-center justify-between w-full px-3 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base focus:outline-none" data-room-id="{{ dr.pk }}" data-room-name="{{ dr.name }}">
@@ -398,7 +398,7 @@
 
 {# Skill selection modal #}
 <div id="skill-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto">
-  <div class="relative w-full max-w-md">
+  <div class="relative w-full max-w-2xl">
     <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
       <div class="flex items-center justify-between px-6 py-4 border-b border-default">
         <h3 class="text-lg font-semibold text-heading">Use skill</h3>
@@ -407,7 +407,7 @@
         </button>
       </div>
       <div class="p-6">
-        <ul id="skill-modal-list" class="space-y-2 max-h-64 overflow-y-auto">
+        <ul id="skill-modal-list" class="space-y-2 max-h-[70vh] overflow-y-auto">
           {# Populated by JS from AVAILABLE_SKILLS #}
         </ul>
         <p id="skill-modal-empty" class="text-sm text-body px-3 py-2 hidden">No skills available.</p>
