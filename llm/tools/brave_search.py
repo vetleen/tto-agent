@@ -32,6 +32,19 @@ class BraveSearchTool(ContextAwareTool):
 
     _MAX_RETRIES: int = 2
     _BACKOFF_BASE: float = 0.5
+    _RATE_LIMIT_BACKOFF_BASE: float = 2.0
+    _RATE_LIMIT_MAX_WAIT: float = 10.0
+
+    @staticmethod
+    def _parse_retry_after(response: requests.Response) -> float | None:
+        """Parse Retry-After header as float seconds. Returns None if absent/invalid."""
+        value = response.headers.get("Retry-After")
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
 
     def _get_api_key(self) -> str:
         from django.conf import settings
@@ -79,7 +92,17 @@ class BraveSearchTool(ContextAwareTool):
                 logger.warning("Brave Search timeout (attempt %d)", attempt + 1)
             except requests.exceptions.HTTPError as e:
                 last_exc = e
-                if response.status_code < 500:
+                if response.status_code == 429:
+                    retry_after = self._parse_retry_after(response)
+                    wait = min(
+                        retry_after if retry_after is not None else self._RATE_LIMIT_BACKOFF_BASE * (2 ** attempt),
+                        self._RATE_LIMIT_MAX_WAIT,
+                    )
+                    logger.warning("Brave Search rate limited (attempt %d), waiting %.1fs", attempt + 1, wait)
+                    if attempt < self._MAX_RETRIES:
+                        time.sleep(wait)
+                        continue
+                elif response.status_code < 500:
                     # Client error — don't retry
                     return json.dumps({
                         "error": f"Brave Search API error: {response.status_code}",
@@ -93,6 +116,13 @@ class BraveSearchTool(ContextAwareTool):
             if attempt < self._MAX_RETRIES:
                 time.sleep(self._BACKOFF_BASE * (2 ** attempt))
 
+        if isinstance(last_exc, requests.exceptions.HTTPError) and getattr(
+            getattr(last_exc, "response", None), "status_code", None
+        ) == 429:
+            return json.dumps({
+                "error": "Brave Search rate limited — try again shortly",
+                "results": [],
+            })
         return json.dumps({
             "error": f"Brave Search failed after retries: {last_exc}",
             "results": [],
