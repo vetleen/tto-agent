@@ -17,10 +17,6 @@ logger = logging.getLogger(__name__)
 
 class CreateSubagentInput(BaseModel):
     prompt: str = Field(description="The task description for the sub-agent.")
-    skill_slug: str = Field(
-        default="",
-        description="Optional skill slug to load for the sub-agent (must be available to the user).",
-    )
     model_tier: str = Field(
         default="mid",
         description='Model tier: "fast" for simple lookups, "mid" (default) for research, "top" for deep analysis.',
@@ -54,7 +50,6 @@ class CreateSubagentTool(ContextAwareTool):
     def _run(
         self,
         prompt: str,
-        skill_slug: str = "",
         model_tier: str = "mid",
         timeout: int = 0,
     ) -> str:
@@ -93,7 +88,6 @@ class CreateSubagentTool(ContextAwareTool):
             user,
             thread_id=thread_id,
             prompt=prompt,
-            skill_slug=skill_slug,
             model_tier=model_tier,
             timeout=timeout,
             data_room_ids=data_room_ids,
@@ -120,7 +114,14 @@ class CreateSubagentTool(ContextAwareTool):
             time.sleep(2)
             run.refresh_from_db()
             if run.status == SubAgentRun.Status.COMPLETED:
-                return run.result
+                if run.result:
+                    return run.result
+                return json.dumps({
+                    "status": "completed",
+                    "run_id": str(run.id),
+                    "message": "Sub-agent completed but returned no text content. "
+                    "Its findings may have been lost. Consider doing this research directly.",
+                })
             if run.status == SubAgentRun.Status.FAILED:
                 return json.dumps({
                     "status": "error",

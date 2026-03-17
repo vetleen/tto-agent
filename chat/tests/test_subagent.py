@@ -176,16 +176,8 @@ class ResolveSubagentToolsTests(TestCase):
         self.assertIn("web_fetch", tools)
         self.assertIn("brave_search", tools)
 
-    def test_adds_skill_tools(self):
-        prefs = _prefs(allowed_skills=[{
-            "id": "1", "slug": "test-skill", "name": "Test",
-            "description": "", "tool_names": ["custom_tool"],
-        }])
-        skill = MagicMock(slug="test-skill")
-        tools = resolve_subagent_tools(prefs, data_room_ids=[], skill=skill)
-        self.assertIn("custom_tool", tools)
-
-    def test_skill_tools_not_added_without_skill(self):
+    def test_skill_tools_not_added(self):
+        """Sub-agents never get skill-specific tools."""
         prefs = _prefs(allowed_skills=[{
             "id": "1", "slug": "test-skill", "name": "Test",
             "description": "", "tool_names": ["custom_tool"],
@@ -210,10 +202,14 @@ class BuildSubagentSystemPromptTests(TestCase):
         )
         self.assertIn("MIT TTO", prompt)
 
-    def test_includes_skill_instructions(self):
-        skill = MagicMock(name="Patent Review", instructions="Review all claims carefully.")
-        prompt = build_subagent_system_prompt("task", skill=skill)
-        self.assertIn("Review all claims carefully.", prompt)
+    def test_no_skill_injection(self):
+        """Sub-agent prompts never include skill instructions."""
+        prompt = build_subagent_system_prompt("task")
+        self.assertNotIn("Specific instructions", prompt)
+
+    def test_includes_return_findings_instruction(self):
+        prompt = build_subagent_system_prompt("task")
+        self.assertIn("Return your findings as text", prompt)
 
     def test_includes_data_rooms(self):
         rooms = [{"name": "Room A", "description": "Patent docs"}]
@@ -446,6 +442,34 @@ class CreateSubagentToolTimeoutTests(TestCase):
         self.assertEqual(result, "Analysis complete: 3 claims found.")
         run = SubAgentRun.objects.first()
         self.assertEqual(run.timeout, 60)
+
+    @patch("chat.tasks.run_subagent_task")
+    @patch("chat.subagent_tool.time")
+    def test_completed_with_empty_result_returns_warning(self, mock_time, mock_task):
+        """Run completes with empty result — tool returns a structured warning."""
+        mock_task.delay.return_value = MagicMock(id="celery-empty")
+        mock_time.monotonic.side_effect = [0, 2, 4]
+        mock_time.sleep = MagicMock()
+
+        def fake_refresh(run_obj):
+            SubAgentRun.objects.filter(pk=run_obj.pk).update(
+                status=SubAgentRun.Status.COMPLETED,
+                result="",
+            )
+            run_obj.__dict__.update(
+                SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
+            )
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        tool = CreateSubagentTool()
+        tool.set_context(ctx)
+
+        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
+            raw = tool.invoke({"prompt": "Research task", "timeout": 60})
+
+        result = json.loads(raw)
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("no text content", result["message"])
 
     @patch("chat.tasks.run_subagent_task")
     @patch("chat.subagent_tool.time")

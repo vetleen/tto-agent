@@ -8,15 +8,15 @@ from typing import Any
 def build_subagent_system_prompt(
     task: str,
     *,
-    skill: Any = None,
     data_rooms: list[dict[str, Any]] | None = None,
     organization_name: str | None = None,
     tasks: list[dict] | None = None,
 ) -> str:
     """Build a focused system prompt for a sub-agent.
 
-    Sub-agents get a minimal prompt: identity, task, optional skill/data rooms.
-    No canvas, no history, no conversation meta.
+    Sub-agents get a minimal prompt: identity, task, and optional data rooms.
+    No skill injection, no canvas, no history, no conversation meta.
+    The orchestrator writes task-specific instructions in the prompt itself.
     """
     org_line = f" at {organization_name}," if organization_name else ""
 
@@ -33,11 +33,8 @@ You have been given a specific task. Complete it thoroughly and return your find
 - Be thorough but concise in your response.
 - Structure your response clearly with headings if appropriate. You may use markdown.
 - If you cannot complete the task with the tools available, explain what's missing.
+- IMPORTANT: Return your findings as text in your final message.
 """
-
-    if skill:
-        prompt += f"\n# Specific instructions: {skill.name}\n"
-        prompt += skill.instructions + "\n"
 
     if data_rooms:
         prompt += "\n# Attached Data Rooms\n"

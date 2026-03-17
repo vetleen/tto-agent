@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
 
 from django.utils import timezone
 
@@ -26,7 +25,6 @@ def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
 def resolve_subagent_tools(
     prefs: ResolvedPreferences,
     data_room_ids: list[int],
-    skill: Any = None,
 ) -> list[str]:
     """Return the tool list for a sub-agent.
 
@@ -34,7 +32,6 @@ def resolve_subagent_tools(
     - Removes canvas tools (orchestrator-only)
     - Removes sub-agent tools (prevents recursion)
     - Removes document tools if no data rooms attached
-    - Adds skill tools if a skill is provided
     """
     excluded = {"write_canvas", "edit_canvas", "create_subagent", "check_subagent_status"}
     tools = [t for t in prefs.allowed_tools if t not in excluded]
@@ -42,15 +39,6 @@ def resolve_subagent_tools(
     if not data_room_ids:
         doc_tools = {"search_documents", "read_document"}
         tools = [t for t in tools if t not in doc_tools]
-
-    if skill and prefs.allowed_skills:
-        # Find the skill in allowed_skills to get its filtered tool_names
-        for s in prefs.allowed_skills:
-            if s["slug"] == skill.slug:
-                for t in s["tool_names"]:
-                    if t not in tools and t not in excluded:
-                        tools.append(t)
-                break
 
     return tools
 
@@ -76,18 +64,9 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         model = resolve_subagent_model(run.model_tier, prefs)
         run.model_used = model
 
-        # Load skill if specified
-        skill = None
-        if run.skill_slug:
-            from agent_skills.services import get_available_skills
-            for s in get_available_skills(user):
-                if s.slug == run.skill_slug:
-                    skill = s
-                    break
-
         # Resolve tools
         data_room_ids = run.data_room_ids or []
-        tool_list = resolve_subagent_tools(prefs, data_room_ids, skill=skill)
+        tool_list = resolve_subagent_tools(prefs, data_room_ids)
         run.tool_names = tool_list
         run.save(update_fields=["model_used", "tool_names"])
 
@@ -113,10 +92,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             .values("id", "title", "status")
         )
 
-        # Build system prompt
+        # Build system prompt — no skill injection; the orchestrator writes
+        # task-specific instructions directly in run.prompt.
         system_prompt = build_subagent_system_prompt(
             run.prompt,
-            skill=skill,
             data_rooms=data_rooms_info,
             organization_name=org_name,
             tasks=thread_tasks if thread_tasks else None,
