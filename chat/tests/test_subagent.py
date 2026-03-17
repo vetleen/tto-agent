@@ -772,6 +772,32 @@ class RunSubagentServiceTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
+    def test_warns_on_unresolved_tool_calls_with_empty_content(self, mock_prefs, mock_svc):
+        """If response has tool_calls but no content, a warning is logged."""
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = ""
+        mock_response.message.tool_calls = [{"id": "c1", "name": "brave_search"}]
+        mock_response.usage.total_tokens = 200
+        mock_response.usage.cost_usd = 0.002
+        mock_svc.return_value.run.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="research task",
+        )
+
+        from chat.subagent_service import run_subagent
+        with self.assertLogs("chat.subagent_service", level="WARNING") as cm:
+            run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+        self.assertEqual(run.result, "")
+        self.assertTrue(any("unresolved tool calls" in msg for msg in cm.output))
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
     def test_failure_sets_pending_for_retry(self, mock_prefs, mock_svc):
         """run_subagent should set PENDING on failure for Celery retry."""
         mock_prefs.return_value = _prefs()

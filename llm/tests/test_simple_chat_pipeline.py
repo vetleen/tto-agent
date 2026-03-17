@@ -239,10 +239,10 @@ class SimpleChatPipelineTests(TestCase):
             mock_create.return_value = fake_model
             response = pipeline.run(request)
 
-        # 3 tool rounds + 1 final (tool_schemas preserved for tools field logging)
+        # 3 tool rounds + 1 final (tool_schemas stripped to force text response)
         self.assertEqual(fake_model.generate.call_count, 4)
         last_call = fake_model.generate.call_args_list[3][0][0]
-        self.assertIsNotNone(last_call.tool_schemas)
+        self.assertIsNone(last_call.tool_schemas)
         self.assertEqual(response.message.content, "Done.")
 
     def test_run_unknown_tool_name_raises_value_error(self):

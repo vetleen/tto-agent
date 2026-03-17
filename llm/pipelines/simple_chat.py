@@ -227,8 +227,14 @@ class SimpleChatPipeline(BasePipeline):
 
             req = req.model_copy(update={"messages": new_messages})
 
-        # Max iterations reached: do one final generate.
-        return chat_model.generate(req)
+        # Max iterations reached: one final generate WITHOUT tools,
+        # forcing the model to synthesise a text response.
+        logger.warning(
+            "Tool loop exhausted %d iterations; stripping tools for final generate",
+            max_iterations if max_iterations is not None else self.max_tool_iterations,
+        )
+        final_req = req.model_copy(update={"tool_schemas": None})
+        return chat_model.generate(final_req)
 
     def _stream_with_tools(
         self,
@@ -354,8 +360,13 @@ class SimpleChatPipeline(BasePipeline):
 
             req = req.model_copy(update={"messages": new_messages})
 
-        # Max iterations reached: one final streaming call
-        for item in _do_stream_iteration(req, sequence):
+        # Max iterations reached: one final streaming call WITHOUT tools
+        logger.warning(
+            "Streaming tool loop exhausted %d iterations; stripping tools for final stream",
+            max_iterations,
+        )
+        final_req = req.model_copy(update={"tool_schemas": None})
+        for item in _do_stream_iteration(final_req, sequence):
             if isinstance(item, StreamEvent):
                 yield item
             else:

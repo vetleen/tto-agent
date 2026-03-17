@@ -147,6 +147,11 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
 
         # Store result
         run.result = response.message.content or ""
+        if not run.result and response.message.tool_calls:
+            logger.warning(
+                "Sub-agent run %s completed with unresolved tool calls and no content",
+                run_id,
+            )
         if response.usage:
             run.tokens_used = response.usage.total_tokens or 0
             run.cost_usd = response.usage.cost_usd or 0.0
