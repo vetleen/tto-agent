@@ -187,9 +187,10 @@ class SkillTemplateModelTests(TestCase):
 
     def test_cascade_delete(self):
         SkillTemplate.objects.create(skill=self.skill, name="Doomed", content="X")
-        self.assertEqual(SkillTemplate.objects.count(), 1)
+        self.assertEqual(self.skill.templates.count(), 1)
+        count_before = SkillTemplate.objects.count()
         self.skill.delete()
-        self.assertEqual(SkillTemplate.objects.count(), 0)
+        self.assertEqual(SkillTemplate.objects.count(), count_before - 1)
 
     def test_blank_content(self):
         tmpl = SkillTemplate.objects.create(
@@ -212,6 +213,11 @@ class SeedSystemSkillsTests(TestCase):
                 slug="written-assignment-writer", level="system"
             ).exists()
         )
+        self.assertTrue(
+            AgentSkill.objects.filter(
+                slug="rcn-qualification-grant", level="system"
+            ).exists()
+        )
 
     def test_seed_is_idempotent(self):
         from agent_skills.seed import seed_system_skills
@@ -220,7 +226,65 @@ class SeedSystemSkillsTests(TestCase):
         seed_system_skills()
 
         self.assertEqual(
-            AgentSkill.objects.filter(level="system").count(), 2
+            AgentSkill.objects.filter(level="system").count(), 3
+        )
+
+    def test_rcn_qualification_grant_fields(self):
+        from agent_skills.seed import seed_system_skills
+
+        seed_system_skills()
+
+        skill = AgentSkill.objects.get(
+            slug="rcn-qualification-grant", level="system"
+        )
+        self.assertEqual(skill.name, "RCN Qualification Grant Application Drafter")
+        self.assertIn("Kvalifiseringsprosjekt", skill.description)
+        self.assertIn("Forskningsrådet", skill.description)
+        self.assertIn("Phase 1", skill.instructions)
+        self.assertIn("Phase 4", skill.instructions)
+        self.assertIn("triggering effect", skill.instructions.lower())
+        self.assertEqual(
+            skill.tool_names, ["view_template", "load_template_to_canvas"]
+        )
+        # Verify both templates were created
+        self.assertTrue(skill.templates.filter(name="Disposition").exists())
+        self.assertTrue(skill.templates.filter(name="Project Description").exists())
+        self.assertEqual(skill.templates.count(), 2)
+        # Verify template content
+        disposition = skill.templates.get(name="Disposition")
+        self.assertIn("Gap Analysis", disposition.content)
+        self.assertIn("Triggering effect", disposition.content)
+        project_desc = skill.templates.get(name="Project Description")
+        self.assertIn("Utløsende effekt", project_desc.content)
+
+    def test_seed_creates_and_updates_templates(self):
+        from agent_skills.seed import seed_system_skills
+
+        seed_system_skills()
+
+        skill = AgentSkill.objects.get(
+            slug="rcn-qualification-grant", level="system"
+        )
+        self.assertEqual(skill.templates.count(), 2)
+
+        # Running seed again is idempotent — same count, no duplicates
+        seed_system_skills()
+        skill.refresh_from_db()
+        self.assertEqual(skill.templates.count(), 2)
+
+        # Skills without templates key should not have templates deleted
+        skill_creator = AgentSkill.objects.get(
+            slug="skill-creator", level="system"
+        )
+        # Manually add a template to skill-creator (simulating user addition)
+        SkillTemplate.objects.create(
+            skill=skill_creator, name="User Added", content="custom"
+        )
+        seed_system_skills()
+        # The user-added template should survive since skill-creator
+        # has no "templates" key in seed data
+        self.assertTrue(
+            skill_creator.templates.filter(name="User Added").exists()
         )
 
     def test_written_assignment_writer_fields(self):
