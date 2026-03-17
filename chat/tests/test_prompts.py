@@ -234,3 +234,24 @@ class BuildSystemPromptTests(TestCase):
         ]
         prompt = build_system_prompt(has_task_tool=False, tasks=tasks)
         self.assertIn("[x] Old task", prompt)
+
+    # ------------------------------------------------------------------ #
+    # Sub-agent prompt section                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_subagent_section_includes_limit(self):
+        prompt = build_system_prompt(has_subagent_tool=True)
+        self.assertIn("up to 4 sub-agents concurrently", prompt)
+
+    def test_parallel_subagents_disabled_includes_sequential_instruction(self):
+        prompt = build_system_prompt(
+            has_subagent_tool=True, parallel_subagents=False
+        )
+        self.assertIn("Sequential sub-agents only", prompt)
+        self.assertIn("one at a time", prompt)
+
+    def test_parallel_subagents_enabled_no_sequential_instruction(self):
+        prompt = build_system_prompt(
+            has_subagent_tool=True, parallel_subagents=True
+        )
+        self.assertNotIn("Sequential sub-agents only", prompt)

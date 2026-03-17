@@ -188,13 +188,17 @@ class LLMService:
     _STREAM_SENTINEL = None  # sentinel to signal end of stream
 
     async def astream(
-        self, pipeline_id: str, request: ChatRequest
+        self, pipeline_id: str, request: ChatRequest,
+        cancel_event: threading.Event | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Async wrapper around ``stream()`` with true token-level streaming.
 
         A background thread runs the sync ``stream()`` generator, pushing each
         event into an ``asyncio.Queue`` so the async caller receives tokens as
         they arrive rather than waiting for the full response.
+
+        If *cancel_event* is provided and set, the producer thread stops
+        enqueuing events and the async consumer exits gracefully.
 
         Concurrent streams are capped by ``LLM_MAX_CONCURRENT_STREAMS`` (default 20).
         """
@@ -207,6 +211,8 @@ class LLMService:
                 try:
                     for event in self.stream(pipeline_id, request):
                         loop.call_soon_threadsafe(q.put_nowait, event)
+                        if cancel_event and cancel_event.is_set():
+                            break
                 except BaseException as exc:
                     loop.call_soon_threadsafe(q.put_nowait, exc)
                 else:
@@ -216,7 +222,12 @@ class LLMService:
             thread.start()
 
             while True:
-                item = await q.get()
+                if cancel_event and cancel_event.is_set():
+                    break
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
                 if item is self._STREAM_SENTINEL:
                     break
                 if isinstance(item, BaseException):

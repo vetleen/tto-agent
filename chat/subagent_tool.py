@@ -76,6 +76,17 @@ class CreateSubagentTool(ContextAwareTool):
 
         data_room_ids = context.data_room_ids if context else []
 
+        # Enforce sequential subagent policy if parallel is disabled
+        from core.preferences import get_preferences
+        prefs = get_preferences(user)
+        if not prefs.parallel_subagents:
+            active = SubAgentRun.objects.filter(
+                thread_id=thread_id,
+                status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
+            ).exists()
+            if active:
+                return json.dumps({"status": "error", "message": "Sub-agents must run one at a time. Wait for the current one to complete."})
+
         # Atomically check limits and create the run record.
         # The service resolves model_used and tool_names when it executes.
         run, err_msg = create_subagent_run_if_allowed(

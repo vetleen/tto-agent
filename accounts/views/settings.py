@@ -169,6 +169,9 @@ def org_settings_page(request):
             "tools": {t: tool_toggles.get(t, True) is not False for t in (skill.tool_names or [])},
         })
 
+    org_subagent_prefs = org_prefs.get("subagents", {})
+    parallel_subagents = org_subagent_prefs.get("parallel", True)
+
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "system_models": system_models,
@@ -179,6 +182,7 @@ def org_settings_page(request):
         "tool_sections": tool_sections,
         "skills_data": skills_data,
         "skills_data_json": json.dumps(skills_data),
+        "parallel_subagents": parallel_subagents,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},
@@ -284,6 +288,32 @@ def org_tools_update(request):
     org.save(update_fields=["preferences"])
 
     return JsonResponse({"ok": True, "name": tool_name, "enabled": bool(enabled)})
+
+
+@login_required
+@require_POST
+def org_subagents_update(request):
+    """Update org's sub-agent settings (e.g. parallel toggle)."""
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    parallel = data.get("parallel", True)
+
+    org = membership.org
+    prefs = org.preferences or {}
+    subagents = prefs.get("subagents", {})
+    subagents["parallel"] = bool(parallel)
+    prefs["subagents"] = subagents
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True, "parallel": bool(parallel)})
 
 
 @login_required

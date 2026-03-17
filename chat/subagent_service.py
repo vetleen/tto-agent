@@ -109,6 +109,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             deadline_seconds=deadline_seconds,
         )
 
+        # Cooperative cancellation: check if the run has been marked FAILED
+        def _is_cancelled():
+            return SubAgentRun.objects.filter(pk=run_id, status=SubAgentRun.Status.FAILED).exists()
+
         request = ChatRequest(
             messages=[
                 Message(role="system", content=system_prompt),
@@ -118,6 +122,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             stream=False,
             tools=tool_list if tool_list else None,
             context=context,
+            params={"_cancel_check": _is_cancelled},
         )
 
         # Execute

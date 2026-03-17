@@ -20,6 +20,7 @@ def build_system_prompt(
     subagent_runs: list[dict] | None = None,
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
+    parallel_subagents: bool = True,
 ) -> str:
     """Build the system prompt for a chat session.
 
@@ -268,6 +269,13 @@ You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agent
 ## Checking results
 - Sub-agent status and results appear automatically in this prompt — no polling needed.
 - When a completed result appears below, incorporate it into your response naturally.
+- You can run up to 4 sub-agents concurrently. Plan accordingly — if a task needs more, wait for earlier sub-agents to finish.
+"""
+
+        if not parallel_subagents:
+            prompt += """
+## IMPORTANT: Sequential sub-agents only
+Your organization requires sub-agents to run one at a time. Do NOT create multiple sub-agents in a single response. Wait for each sub-agent to complete before starting the next one.
 """
 
     if subagent_runs:

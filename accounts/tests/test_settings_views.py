@@ -526,3 +526,78 @@ class PreferencesSkillCascadeTests(TestCase):
         skill_entry = next(s for s in prefs.allowed_skills if s["slug"] == "test-skill")
         self.assertIn("create_skill", skill_entry["tool_names"])
         self.assertIn("edit_skill", skill_entry["tool_names"])
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgSubagentsUpdateViewTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="subadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="submember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="SubOrg", slug="suborg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_subagents_update")
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"parallel": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/accounts/login/", response.url)
+
+    def test_requires_admin(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"parallel": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_set_parallel_false(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"parallel": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["parallel"])
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.preferences["subagents"]["parallel"])
+
+    def test_set_parallel_true(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"parallel": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["parallel"])
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.preferences["subagents"]["parallel"])
+
+    def test_invalid_json_returns_400(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            "not valid json{{{",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)

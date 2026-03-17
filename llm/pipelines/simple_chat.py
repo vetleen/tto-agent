@@ -211,8 +211,16 @@ class SimpleChatPipeline(BasePipeline):
     ) -> ChatResponse:
         tool_by_name = {t.name: t for t in tools}
         req = request
+        cancel_check = (request.params or {}).get("_cancel_check")
 
         for _ in range(max_iterations if max_iterations is not None else self.max_tool_iterations):
+            if cancel_check and cancel_check():
+                # Return whatever we have so far
+                return ChatResponse(
+                    message=Message(role="assistant", content="[Cancelled]"),
+                    metadata={"stop_reason": "cancelled"},
+                )
+
             response = chat_model.generate(req)
             msg = response.message
             if not msg.tool_calls:
@@ -254,6 +262,7 @@ class SimpleChatPipeline(BasePipeline):
         tool_by_name = {t.name: t for t in tools}
         req = request
         sequence = 1
+        cancel_event = (request.params or {}).get("_cancel_event")
 
         # Aggregate usage across all iterations
         agg_input_tokens = 0
@@ -276,10 +285,14 @@ class SimpleChatPipeline(BasePipeline):
                         run_id=run_id,
                     )
                     sequence += 1
+                if cancel_event and cancel_event.is_set():
+                    break
             # Yield a sentinel to pass end_data back
             yield (end_data, sequence)
 
         for _ in range(max_iterations):
+            if cancel_event and cancel_event.is_set():
+                return
             # Stream from the model, forwarding all events except message_end
             end_data = {}
             for item in _do_stream_iteration(req, sequence):
@@ -337,6 +350,9 @@ class SimpleChatPipeline(BasePipeline):
                     run_id=run_id,
                 )
                 sequence += 1
+
+            if cancel_event and cancel_event.is_set():
+                return
 
             # Execute tools (in parallel when multiple)
             results = self._execute_tool_calls(parsed_tool_calls, tool_by_name)

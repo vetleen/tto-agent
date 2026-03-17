@@ -279,3 +279,65 @@ class SectionAwareToolFilteringTest(TestCase):
 
         self.assertIn("search_documents", prefs.allowed_tools)
         self.assertNotIn("normalize_document", prefs.allowed_tools)
+
+
+class ParallelSubagentsTest(TestCase):
+    """parallel_subagents is resolved from org subagent preferences."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_parallel_subagents_default_true(self, mock_registry, mock_allowed):
+        """When org has no subagents prefs, parallel_subagents defaults to True."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="parallel-default@example.com")
+        org = Organization.objects.create(name="TestOrg", slug="testorg", preferences={})
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertTrue(prefs.parallel_subagents)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_parallel_subagents_from_org_prefs(self, mock_registry, mock_allowed):
+        """When org sets parallel to False, parallel_subagents should be False."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="parallel-false@example.com")
+        org = Organization.objects.create(name="TestOrg", slug="testorg", preferences={
+            "subagents": {"parallel": False},
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertFalse(prefs.parallel_subagents)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_parallel_subagents_true_from_org_prefs(self, mock_registry, mock_allowed):
+        """When org explicitly sets parallel to True, parallel_subagents should be True."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="parallel-true@example.com")
+        org = Organization.objects.create(name="TestOrg", slug="testorg", preferences={
+            "subagents": {"parallel": True},
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertTrue(prefs.parallel_subagents)

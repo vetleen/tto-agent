@@ -17,6 +17,7 @@ class ResolvedPreferences:
     allowed_tools: list[str] = field(default_factory=list)
     allowed_skills: list[dict] = field(default_factory=list)
     theme: str = "light"
+    parallel_subagents: bool = True
 
 
 def get_preferences(user) -> ResolvedPreferences:
@@ -112,6 +113,10 @@ def get_preferences(user) -> ResolvedPreferences:
 
     allowed_tools = base_allowed
 
+    # Resolve subagent settings
+    org_subagent_prefs = org_prefs.get("subagents", {}) if org_prefs else {}
+    parallel_subagents = org_subagent_prefs.get("parallel", True)
+
     return ResolvedPreferences(
         top_model=top_model,
         mid_model=mid_model,
@@ -120,6 +125,7 @@ def get_preferences(user) -> ResolvedPreferences:
         allowed_tools=allowed_tools,
         allowed_skills=allowed_skills,
         theme=user_theme,
+        parallel_subagents=parallel_subagents,
     )
 
 

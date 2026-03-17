@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -22,6 +24,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.resolved_prefs = None
         self.data_room_ids: list[int] = []
         self.active_skill_id: str | None = None
+        self._cancel_event: threading.Event | None = None
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
@@ -97,6 +100,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_canvas_get_checkpoints(data)
         elif msg_type == "chat.canvas_switch":
             await self._handle_canvas_switch(data)
+        elif msg_type == "chat.stop":
+            await self._handle_stop(data)
         elif msg_type == "pong":
             pass  # heartbeat acknowledgment
 
@@ -365,6 +370,48 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 event["accepted_content"] = result["accepted_content"]
             await self.send(text_data=json.dumps(event))
 
+    async def _send_heartbeats(self, interval=30):
+        """Send periodic heartbeat events to keep the connection alive during long operations."""
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self.send(text_data=json.dumps({"event_type": "heartbeat"}))
+        except asyncio.CancelledError:
+            pass
+
+    async def _handle_stop(self, data):
+        """Handle a stop request from the client."""
+        # Signal the streaming loop to stop
+        if self._cancel_event:
+            self._cancel_event.set()
+
+        # Cancel any active subagents for this thread
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        if thread_id:
+            await self._cancel_active_subagents(thread_id)
+
+        await self.send(text_data=json.dumps({"event_type": "stream.cancelled"}))
+
+    @database_sync_to_async
+    def _cancel_active_subagents(self, thread_id):
+        """Cancel all active subagent runs for a thread."""
+        from django.utils import timezone
+
+        from chat.models import SubAgentRun
+
+        active_runs = SubAgentRun.objects.filter(
+            thread_id=thread_id,
+            status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
+        )
+        for run in active_runs:
+            if run.celery_task_id:
+                from celery.result import AsyncResult
+                AsyncResult(run.celery_task_id).revoke(terminate=True)
+            run.status = SubAgentRun.Status.FAILED
+            run.error = "Cancelled by user."
+            run.completed_at = timezone.now()
+            run.save(update_fields=["status", "error", "completed_at"])
+
     async def _handle_chat_message(self, data):
         content = (data.get("content") or "").strip()
         if not content:
@@ -455,6 +502,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 skill_obj = await self._load_skill(self.active_skill_id)
             tasks = await self._get_thread_tasks(str(thread.id))
             subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("create_subagent") else None
+            parallel_subagents = prefs.parallel_subagents if prefs else True
             system_prompt = build_system_prompt(
                 data_rooms=data_rooms,
                 history_meta=meta,
@@ -467,6 +515,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 subagent_runs=subagent_runs if subagent_runs else None,
                 tasks=tasks,
                 has_task_tool=self._has_tool("update_tasks"),
+                parallel_subagents=parallel_subagents,
             )
 
             # Mark undelivered completed sub-agent results as delivered
@@ -573,13 +622,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if t not in tools:
                     tools.append(t)
 
+        self._cancel_event = threading.Event()
+
         request = ChatRequest(
             messages=messages,
             model=model,
             stream=True,
             tools=tools,
             context=context,
-            params={"thinking": thinking},
+            params={"thinking": thinking, "_cancel_event": self._cancel_event},
         )
 
         service = get_llm_service()
@@ -587,9 +638,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         accumulated_thinking = ""
         pending_tool_calls = []
         pending_tool_results = []
+        heartbeat_task = asyncio.create_task(self._send_heartbeats())
 
         try:
-            async for event in service.astream("simple_chat", request):
+            async for event in service.astream("simple_chat", request, cancel_event=self._cancel_event):
                 event_data = event.model_dump()
                 await self.send(text_data=json.dumps(event_data))
 
@@ -685,6 +737,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "event_type": "error",
                 "data": {"message": "Failed to get AI response."},
             }))
+        finally:
+            heartbeat_task.cancel()
+            self._cancel_event = None
 
     # -- Summarization helpers --
 

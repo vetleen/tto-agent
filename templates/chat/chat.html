@@ -264,6 +264,14 @@
         >
           Send
         </button>
+        <button
+          type="button"
+          id="stop-button"
+          class="bg-danger text-white hover:bg-red-700 focus:ring-4 focus:ring-red-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none hidden self-end"
+          style="height: 2.5rem;"
+        >
+          Stop
+        </button>
       </form>
     </div>
   </div>
@@ -507,7 +515,7 @@
 (function () {
   const THREAD_ID = "{{ thread.id|default:'' }}";
   const USER_INITIAL = "{{ user.email|first|upper }}";
-  const STREAM_TIMEOUT_MS = 300000;
+  const STREAM_TIMEOUT_MS = 660000;
   const CHAT_HOME = "{% url 'chat_home' %}";
 
   // -- Model selector state --
@@ -717,6 +725,7 @@
   const form = document.getElementById("chat-form");
   const input = document.getElementById("message-input");
   const button = document.getElementById("send-button");
+  const stopButton = document.getElementById("stop-button");
   const messagesContainer = document.getElementById("chat-messages");
   const scrollContainer = document.getElementById("messages-scroll-container");
   const threadList = document.getElementById("thread-list");
@@ -1268,6 +1277,10 @@
 
   function handleEvent(data) {
     const et = data.event_type;
+    // Reset streaming timeout on any event from the server
+    if (currentStreamingElement) startStreamingTimeout();
+    if (et === "heartbeat") return;
+    if (et === "stream.cancelled") { finishStreaming("[Stopped]"); enableInput(); return; }
     if (et === "tasks.updated" || et === "tasks.loaded") { renderTaskPlan(data.tasks || []); return; }
     if (et === "canvases.loaded") {
       canvasStates = {};
@@ -1482,7 +1495,7 @@
     if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
-  function enableInput() { locked = false; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
+  function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("[Timed out]"); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   function createAssistantBubble() {
@@ -1524,6 +1537,7 @@
     var sendAttachmentIds = pendingAttachmentIds.slice();
     clearImagePills();
     input.value = ""; autoResize(input); input.disabled = true; button.disabled = true; locked = true;
+    button.classList.add("hidden"); stopButton.classList.remove("hidden");
     currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); accumulatedContent = "";
     // Force scroll to absolute bottom so user sees their message + Wilfred's spinner
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -1534,6 +1548,15 @@
       ws.send(JSON.stringify(payload));
     }
     setTimeout(function() { locked = false; }, 500);
+  });
+
+  // -- Stop button --
+  stopButton.addEventListener("click", function() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "chat.stop", thread_id: activeThreadId || "" }));
+    }
+    finishStreaming("[Stopped]");
+    enableInput();
   });
 
   // -- Thread actions --

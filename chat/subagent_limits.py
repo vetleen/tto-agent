@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 
 
-SUBAGENT_MAX_PER_USER = int(os.environ.get("SUBAGENT_MAX_PER_USER", "5"))
+SUBAGENT_MAX_PER_USER = int(os.environ.get("SUBAGENT_MAX_PER_USER", "4"))
 SUBAGENT_MAX_SYSTEM = int(os.environ.get("SUBAGENT_MAX_SYSTEM", "20"))
 
 STALE_PENDING_MINUTES = 10
