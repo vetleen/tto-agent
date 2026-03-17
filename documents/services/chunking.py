@@ -74,7 +74,7 @@ def _load_docx_as_markdown(path: Path) -> list[Any]:
     can then split on.  Images are replaced with a simple placeholder.
     """
     import mammoth
-    from langchain.schema import Document
+    from langchain_core.documents import Document
     from markdownify import markdownify as md
 
     image_counter = 0
