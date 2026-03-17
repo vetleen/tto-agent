@@ -255,14 +255,18 @@ You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agent
 - When a single tool call (search, read, web fetch) would suffice
 
 ## How to use
-- Set `blocking: true` when you need the result before continuing your response
-- Set `blocking: false` (default) for tasks that can run in the background — tell the user you've started the work
+- Set `timeout` to control how long to wait for the result:
+  - `timeout: 0` (default) — fire-and-forget background task; tell the user you've started the work
+  - `timeout: 30-60` — quick tasks like simple lookups or summaries; the result is returned inline
+  - `timeout: 120` — research tasks that need more time; the result is returned inline if it finishes in time
+  - Maximum timeout is 270 seconds
 - Choose `model_tier` based on task complexity: "fast" for simple lookups, "mid" (default) for research, "top" for deep analysis
 - Provide a specific skill_slug if the task aligns with an available skill
 - Write clear, specific task prompts — the sub-agent has no access to our conversation history
 
 ## Checking results
-- Use `check_subagent_status` to check on background sub-agents when the user asks or on the next turn
+- Sub-agents with `timeout: 0` or those that exceed their timeout can be checked later with `check_subagent_status`
+- Use `check_subagent_status` when the user asks or on the next turn
 """
 
     if history_meta:

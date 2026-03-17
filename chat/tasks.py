@@ -44,4 +44,4 @@ def run_subagent_task(self, run_id: str) -> None:
     """Execute a sub-agent run asynchronously via Celery."""
     from chat.subagent_service import run_subagent
 
-    run_subagent(uuid.UUID(run_id))
+    run_subagent(uuid.UUID(run_id), deadline_seconds=270)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from pydantic import BaseModel, Field
 
@@ -24,9 +25,9 @@ class CreateSubagentInput(BaseModel):
         default="mid",
         description='Model tier: "fast" for simple lookups, "mid" (default) for research, "top" for deep analysis.',
     )
-    blocking: bool = Field(
-        default=False,
-        description="If true, wait for the sub-agent to finish and return its result inline. If false, start it in the background.",
+    timeout: int = Field(
+        default=0,
+        description="Seconds to wait for the result (0-270). 0=background, 30-60=quick tasks, 120=research.",
     )
 
 
@@ -46,7 +47,7 @@ class CreateSubagentTool(ContextAwareTool):
     description: str = (
         "Delegate a task to an independent sub-agent that runs with its own context and tools. "
         "Use for tasks requiring extensive research, parallel analysis, or focused work. "
-        "Set blocking=true to wait for the result, or blocking=false to run in background."
+        "Set timeout=0 for background, 30-60 for quick tasks, 120 for research."
     )
     args_schema: type[BaseModel] = CreateSubagentInput
 
@@ -55,13 +56,12 @@ class CreateSubagentTool(ContextAwareTool):
         prompt: str,
         skill_slug: str = "",
         model_tier: str = "mid",
-        blocking: bool = False,
+        timeout: int = 0,
     ) -> str:
         from django.contrib.auth import get_user_model
 
         from chat.models import SubAgentRun
         from chat.subagent_limits import create_subagent_run_if_allowed
-        from chat.subagent_service import run_subagent
 
         context = self.context
         if not context or not context.user_id:
@@ -74,6 +74,9 @@ class CreateSubagentTool(ContextAwareTool):
         # Validate model_tier
         if model_tier not in ("fast", "mid", "top"):
             model_tier = "mid"
+
+        # Clamp timeout to [0, 270]
+        timeout = max(0, min(timeout, 270))
 
         # Load user
         User = get_user_model()
@@ -92,41 +95,44 @@ class CreateSubagentTool(ContextAwareTool):
             prompt=prompt,
             skill_slug=skill_slug,
             model_tier=model_tier,
-            blocking=blocking,
+            timeout=timeout,
             data_room_ids=data_room_ids,
         )
         if run is None:
             return json.dumps({"status": "error", "message": err_msg})
 
-        if blocking:
-            # Execute synchronously with a deadline so the LLM service
-            # will abort if the sub-agent takes too long.
-            BLOCKING_TIMEOUT = 270  # seconds, matches Celery soft_time_limit
-            try:
-                run_subagent(run.id, deadline_seconds=BLOCKING_TIMEOUT, blocking=True)
-            except Exception:
-                pass  # run_subagent already set FAILED for blocking calls
+        # Always dispatch to Celery
+        from chat.tasks import run_subagent_task
+        task = run_subagent_task.delay(str(run.id))
+        run.celery_task_id = task.id
+        run.save(update_fields=["celery_task_id"])
 
-            run.refresh_from_db()
-            if run.status == SubAgentRun.Status.COMPLETED:
-                return run.result
-            else:
-                return json.dumps({
-                    "status": "error",
-                    "message": f"Sub-agent failed: {run.error}",
-                })
-        else:
-            # Dispatch to Celery
-            from chat.tasks import run_subagent_task
-            task = run_subagent_task.delay(str(run.id))
-            run.celery_task_id = task.id
-            run.save(update_fields=["celery_task_id"])
-
+        if timeout == 0:
             return json.dumps({
                 "status": "started",
                 "run_id": str(run.id),
                 "message": f"Sub-agent has been started in the background (model: {model_tier}). Use check_subagent_status to check its progress.",
             })
+
+        # Poll for result until timeout
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            run.refresh_from_db()
+            if run.status == SubAgentRun.Status.COMPLETED:
+                return run.result
+            if run.status == SubAgentRun.Status.FAILED:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Sub-agent failed: {run.error}",
+                })
+
+        # Timeout exceeded — still running
+        return json.dumps({
+            "status": "started",
+            "run_id": str(run.id),
+            "message": f"Sub-agent is still running after {timeout}s. Use check_subagent_status to check its progress.",
+        })
 
 
 class CheckSubagentStatusTool(ContextAwareTool):

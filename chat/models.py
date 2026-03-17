@@ -221,7 +221,10 @@ class SubAgentRun(models.Model):
     skill_slug = models.CharField(max_length=64, blank=True)
     model_tier = models.CharField(max_length=10, default="mid")
     model_used = models.CharField(max_length=128, blank=True)
-    blocking = models.BooleanField(default=False)
+    timeout = models.PositiveIntegerField(
+        default=0,
+        help_text="Seconds the tool waited for the result (0=fire-and-forget)",
+    )
 
     # Context (copied at creation time)
     data_room_ids = models.JSONField(default=list)

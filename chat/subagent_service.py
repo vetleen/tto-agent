@@ -55,8 +55,8 @@ def resolve_subagent_tools(
     return tools
 
 
-def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None, blocking: bool = False) -> None:
-    """Execute a sub-agent run. Called by both blocking tool and Celery task."""
+def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> None:
+    """Execute a sub-agent run. Called by the Celery task."""
     from chat.models import SubAgentRun
     from chat.subagent_prompts import build_subagent_system_prompt
     from core.preferences import get_preferences
@@ -158,17 +158,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None, bloc
 
     except Exception as exc:
         logger.exception("Sub-agent run %s failed", run_id)
-        if blocking:
-            # Blocking calls don't retry — mark FAILED permanently.
-            run.status = SubAgentRun.Status.FAILED
-            run.error = str(exc)
-            run.completed_at = timezone.now()
-            run.save(update_fields=["status", "error", "completed_at"])
-        else:
-            # Set back to PENDING so Celery retries don't show a premature
-            # "failed" status to the user.  The Celery on_failure handler
-            # will set FAILED permanently once all retries are exhausted.
-            run.status = SubAgentRun.Status.PENDING
-            run.error = str(exc)
-            run.save(update_fields=["status", "error"])
+        # Set back to PENDING so Celery retries don't show a premature
+        # "failed" status to the user.  The Celery on_failure handler
+        # will set FAILED permanently once all retries are exhausted.
+        run.status = SubAgentRun.Status.PENDING
+        run.error = str(exc)
+        run.save(update_fields=["status", "error"])
         raise
