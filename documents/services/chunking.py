@@ -97,6 +97,148 @@ def _load_docx_as_markdown(path: Path) -> list[Any]:
     return [Document(page_content=content.strip())]
 
 
+def _format_email_as_markdown(
+    subject: str | None,
+    from_addr: str | None,
+    to_addr: str | None,
+    date: str | None,
+    cc: str | None,
+    body_markdown: str,
+    attachments: list[str] | None = None,
+) -> str:
+    """Format email headers + body into structured Markdown."""
+    subject = subject or "(No Subject)"
+    parts = [f"# {subject}", ""]
+
+    # Header table
+    headers = [
+        ("**From**", from_addr or ""),
+        ("**To**", to_addr or ""),
+        ("**Date**", date or ""),
+    ]
+    if cc:
+        headers.append(("**CC**", cc))
+
+    parts.append("| Header | Value |")
+    parts.append("|--------|-------|")
+    for label, value in headers:
+        parts.append(f"| {label} | {value} |")
+
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+    parts.append(body_markdown.strip())
+
+    if attachments:
+        parts.append("")
+        parts.append("---")
+        parts.append("")
+        parts.append("**Attachments:**")
+        for att in attachments:
+            parts.append(f"- {att}")
+
+    return "\n".join(parts)
+
+
+def _load_msg_as_markdown(path: Path) -> list[Any]:
+    """Extract .msg (Outlook) email as a Markdown LangChain Document."""
+    import extract_msg
+    from langchain_core.documents import Document
+    from markdownify import markdownify as md
+
+    msg = extract_msg.Message(str(path))
+    try:
+        subject = msg.subject
+        from_addr = msg.sender
+        to_addr = msg.to
+        date = str(msg.date) if msg.date else None
+        cc = msg.cc
+
+        # Prefer HTML body, fall back to plain text
+        html_body = msg.htmlBody
+        plain_body = msg.body
+
+        if html_body:
+            if isinstance(html_body, bytes):
+                html_body = html_body.decode("utf-8", errors="replace")
+            body_md = md(html_body, heading_style="ATX")
+        elif plain_body:
+            body_md = plain_body
+        else:
+            raise ValueError("Email has no body content (no HTML, no plain text)")
+
+        # List attachments
+        attachments = []
+        for att in msg.attachments:
+            name = getattr(att, "longFilename", None) or getattr(att, "shortFilename", None) or "unnamed"
+            size = getattr(att, "dataLength", None) or (len(att.data) if getattr(att, "data", None) else 0)
+            if size >= 1024 * 1024:
+                size_str = f"{size / (1024 * 1024):.1f} MB"
+            elif size >= 1024:
+                size_str = f"{size / 1024:.0f} KB"
+            else:
+                size_str = f"{size} B"
+            attachments.append(f"{name} ({size_str})")
+
+        content = _format_email_as_markdown(
+            subject=subject, from_addr=from_addr, to_addr=to_addr,
+            date=date, cc=cc, body_markdown=body_md, attachments=attachments,
+        )
+        return [Document(page_content=content)]
+    finally:
+        msg.close()
+
+
+def _load_eml_as_markdown(path: Path) -> list[Any]:
+    """Extract .eml (RFC 822) email as a Markdown LangChain Document."""
+    import email
+    import email.policy
+
+    from langchain_core.documents import Document
+    from markdownify import markdownify as md
+
+    with open(path, "rb") as f:
+        msg = email.message_from_binary_file(f, policy=email.policy.default)
+
+    subject = msg["subject"]
+    from_addr = msg["from"]
+    to_addr = msg["to"]
+    date = msg["date"]
+    cc = msg["cc"]
+
+    # Get body: prefer HTML, fall back to plain
+    body_part = msg.get_body(preferencelist=("html", "plain"))
+    if body_part is None:
+        raise ValueError("Email has no body content (no HTML, no plain text)")
+
+    body_content = body_part.get_content()
+    if body_part.get_content_type() == "text/html":
+        body_md = md(body_content, heading_style="ATX")
+    else:
+        body_md = body_content
+
+    # List attachments
+    attachments = []
+    for att in msg.iter_attachments():
+        filename = att.get_filename() or "unnamed"
+        data = att.get_payload(decode=True)
+        size = len(data) if data else 0
+        if size >= 1024 * 1024:
+            size_str = f"{size / (1024 * 1024):.1f} MB"
+        elif size >= 1024:
+            size_str = f"{size / 1024:.0f} KB"
+        else:
+            size_str = f"{size} B"
+        attachments.append(f"{filename} ({size_str})")
+
+    content = _format_email_as_markdown(
+        subject=subject, from_addr=from_addr, to_addr=to_addr,
+        date=str(date) if date else None, cc=cc,
+        body_markdown=body_md, attachments=attachments,
+    )
+    return [Document(page_content=content)]
+
+
 def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     """
     Load a file into a list of LangChain Document objects.
@@ -115,6 +257,14 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
         return docs
     if ext == "docx":
         docs = _load_docx_as_markdown(path)
+        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        return docs
+    if ext == "msg":
+        docs = _load_msg_as_markdown(path)
+        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        return docs
+    if ext == "eml":
+        docs = _load_eml_as_markdown(path)
         logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
         return docs
     if ext in ("txt", "md", "html", "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log"):

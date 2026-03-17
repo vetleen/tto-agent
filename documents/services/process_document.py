@@ -51,7 +51,12 @@ def process_document(document_id: int) -> None:
             raise FileNotFoundError(f"Document file not found: {doc.original_file}")
 
         ext = (doc.original_filename or "").rsplit(".", 1)[-1].lower() or "txt"
-        doc.parser_type = "pypdf" if ext == "pdf" else "text"
+        if ext == "pdf":
+            doc.parser_type = "pypdf"
+        elif ext in ("msg", "eml"):
+            doc.parser_type = ext
+        else:
+            doc.parser_type = "text"
 
         # 1. Extract
         logger.info("process_document: document_id=%s stage=extracting", document_id)

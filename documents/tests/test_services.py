@@ -9,6 +9,9 @@ from django.test import TestCase, override_settings
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 from documents.services.chunking import (
     _count_tokens,
+    _format_email_as_markdown,
+    _load_eml_as_markdown,
+    _load_msg_as_markdown,
     _strip_nul_bytes,
     clean_extracted_text,
     load_documents,
@@ -1202,3 +1205,355 @@ class GenerateDescriptionAndTagsTests(TestCase):
         result = generate_description_from_text("Some text", user_id=1)
         self.assertIsInstance(result, str)
         self.assertEqual(result, "A license agreement.")
+
+
+class EmailLoaderTests(TestCase):
+    """Tests for .msg and .eml email loading functions."""
+
+    # ---- _format_email_as_markdown ----
+
+    def test_format_email_as_markdown(self):
+        """Shared helper produces structured Markdown with heading, table, body."""
+        result = _format_email_as_markdown(
+            subject="Test Subject",
+            from_addr="sender@example.com",
+            to_addr="recipient@example.com",
+            date="2024-01-15 10:30:00",
+            cc="cc@example.com",
+            body_markdown="Hello, this is the body.",
+            attachments=["report.pdf (245 KB)"],
+        )
+        self.assertIn("# Test Subject", result)
+        self.assertIn("| **From** | sender@example.com |", result)
+        self.assertIn("| **To** | recipient@example.com |", result)
+        self.assertIn("| **Date** | 2024-01-15 10:30:00 |", result)
+        self.assertIn("| **CC** | cc@example.com |", result)
+        self.assertIn("Hello, this is the body.", result)
+        self.assertIn("**Attachments:**", result)
+        self.assertIn("- report.pdf (245 KB)", result)
+
+    def test_format_email_no_subject(self):
+        """None subject defaults to '(No Subject)'."""
+        result = _format_email_as_markdown(
+            subject=None, from_addr="a@b.com", to_addr="c@d.com",
+            date=None, cc=None, body_markdown="body",
+        )
+        self.assertIn("# (No Subject)", result)
+
+    def test_format_email_no_attachments(self):
+        """No attachments section when list is empty/None."""
+        result = _format_email_as_markdown(
+            subject="Hi", from_addr="a@b.com", to_addr="c@d.com",
+            date=None, cc=None, body_markdown="body",
+        )
+        self.assertNotIn("**Attachments:**", result)
+
+    # ---- _load_msg_as_markdown ----
+
+    @patch("extract_msg.Message")
+    def test_load_msg_basic(self, mock_msg_cls):
+        """Mock extract_msg.Message, verify structured Markdown output."""
+        mock_msg = MagicMock()
+        mock_msg.subject = "Meeting Notes"
+        mock_msg.sender = "alice@example.com"
+        mock_msg.to = "bob@example.com"
+        mock_msg.date = "2024-06-01 09:00:00"
+        mock_msg.cc = None
+        mock_msg.htmlBody = None
+        mock_msg.body = "Please review the attached."
+        mock_msg.attachments = []
+        mock_msg_cls.return_value = mock_msg
+
+        docs = _load_msg_as_markdown(Path("fake.msg"))
+        self.assertEqual(len(docs), 1)
+        content = docs[0].page_content
+        self.assertIn("# Meeting Notes", content)
+        self.assertIn("alice@example.com", content)
+        self.assertIn("Please review the attached.", content)
+
+    @patch("extract_msg.Message")
+    def test_load_msg_prefers_html_body(self, mock_msg_cls):
+        """When htmlBody present, markdownify is used instead of plain body."""
+        mock_msg = MagicMock()
+        mock_msg.subject = "HTML Email"
+        mock_msg.sender = "a@b.com"
+        mock_msg.to = "c@d.com"
+        mock_msg.date = None
+        mock_msg.cc = None
+        mock_msg.htmlBody = "<h1>Important</h1><p>Details here.</p>"
+        mock_msg.body = "Fallback plain text"
+        mock_msg.attachments = []
+        mock_msg_cls.return_value = mock_msg
+
+        docs = _load_msg_as_markdown(Path("fake.msg"))
+        content = docs[0].page_content
+        # markdownify should have converted <p>Details here.</p>
+        self.assertIn("Details here.", content)
+        # Should NOT contain the raw fallback plain text as the body
+        self.assertNotIn("Fallback plain text", content)
+
+    @patch("extract_msg.Message")
+    def test_load_msg_falls_back_to_plain(self, mock_msg_cls):
+        """When htmlBody is None, plain body is used."""
+        mock_msg = MagicMock()
+        mock_msg.subject = "Plain Email"
+        mock_msg.sender = "a@b.com"
+        mock_msg.to = "c@d.com"
+        mock_msg.date = None
+        mock_msg.cc = None
+        mock_msg.htmlBody = None
+        mock_msg.body = "This is plain text body."
+        mock_msg.attachments = []
+        mock_msg_cls.return_value = mock_msg
+
+        docs = _load_msg_as_markdown(Path("fake.msg"))
+        self.assertIn("This is plain text body.", docs[0].page_content)
+
+    @patch("extract_msg.Message")
+    def test_load_msg_no_subject(self, mock_msg_cls):
+        """Subject defaults to '(No Subject)' when None."""
+        mock_msg = MagicMock()
+        mock_msg.subject = None
+        mock_msg.sender = "a@b.com"
+        mock_msg.to = "c@d.com"
+        mock_msg.date = None
+        mock_msg.cc = None
+        mock_msg.htmlBody = None
+        mock_msg.body = "body"
+        mock_msg.attachments = []
+        mock_msg_cls.return_value = mock_msg
+
+        docs = _load_msg_as_markdown(Path("fake.msg"))
+        self.assertIn("# (No Subject)", docs[0].page_content)
+
+    @patch("extract_msg.Message")
+    def test_load_msg_no_body_raises(self, mock_msg_cls):
+        """ValueError when both body and htmlBody are None."""
+        mock_msg = MagicMock()
+        mock_msg.subject = "Empty"
+        mock_msg.sender = "a@b.com"
+        mock_msg.to = "c@d.com"
+        mock_msg.date = None
+        mock_msg.cc = None
+        mock_msg.htmlBody = None
+        mock_msg.body = None
+        mock_msg.attachments = []
+        mock_msg_cls.return_value = mock_msg
+
+        with self.assertRaises(ValueError):
+            _load_msg_as_markdown(Path("fake.msg"))
+
+    @patch("extract_msg.Message")
+    def test_load_msg_html_body_bytes(self, mock_msg_cls):
+        """htmlBody as bytes is decoded to UTF-8."""
+        mock_msg = MagicMock()
+        mock_msg.subject = "Bytes HTML"
+        mock_msg.sender = "a@b.com"
+        mock_msg.to = "c@d.com"
+        mock_msg.date = None
+        mock_msg.cc = None
+        mock_msg.htmlBody = b"<p>Hello from bytes</p>"
+        mock_msg.body = None
+        mock_msg.attachments = []
+        mock_msg_cls.return_value = mock_msg
+
+        docs = _load_msg_as_markdown(Path("fake.msg"))
+        self.assertIn("Hello from bytes", docs[0].page_content)
+
+    # ---- _load_eml_as_markdown ----
+
+    def test_load_eml_basic(self):
+        """Construct real .eml via stdlib email.mime, verify output."""
+        from email.mime.text import MIMEText
+
+        msg = MIMEText("This is the email body.")
+        msg["Subject"] = "Test EML"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 15 Jan 2024 10:30:00 +0000"
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(msg.as_bytes())
+            eml_path = Path(f.name)
+
+        try:
+            docs = _load_eml_as_markdown(eml_path)
+            self.assertEqual(len(docs), 1)
+            content = docs[0].page_content
+            self.assertIn("# Test EML", content)
+            self.assertIn("sender@example.com", content)
+            self.assertIn("This is the email body.", content)
+        finally:
+            eml_path.unlink()
+
+    def test_load_eml_html_body(self):
+        """Multipart .eml with HTML alternative uses markdownify."""
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "HTML EML"
+        msg["From"] = "a@b.com"
+        msg["To"] = "c@d.com"
+        msg.attach(MIMEText("Plain fallback", "plain"))
+        msg.attach(MIMEText("<p>Rich <strong>HTML</strong> content</p>", "html"))
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(msg.as_bytes())
+            eml_path = Path(f.name)
+
+        try:
+            docs = _load_eml_as_markdown(eml_path)
+            content = docs[0].page_content
+            self.assertIn("Rich", content)
+            self.assertIn("HTML", content)
+        finally:
+            eml_path.unlink()
+
+    def test_load_eml_with_attachments(self):
+        """Attachment filenames appear in output."""
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.mime.base import MIMEBase
+        from email import encoders
+
+        msg = MIMEMultipart()
+        msg["Subject"] = "With Attachment"
+        msg["From"] = "a@b.com"
+        msg["To"] = "c@d.com"
+        msg.attach(MIMEText("See attached.", "plain"))
+
+        att = MIMEBase("application", "octet-stream")
+        att.set_payload(b"x" * 2048)
+        encoders.encode_base64(att)
+        att.add_header("Content-Disposition", "attachment", filename="data.bin")
+        msg.attach(att)
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(msg.as_bytes())
+            eml_path = Path(f.name)
+
+        try:
+            docs = _load_eml_as_markdown(eml_path)
+            content = docs[0].page_content
+            self.assertIn("data.bin", content)
+            self.assertIn("**Attachments:**", content)
+        finally:
+            eml_path.unlink()
+
+    def test_load_eml_no_subject(self):
+        """Defaults to '(No Subject)' when subject is missing."""
+        from email.mime.text import MIMEText
+
+        msg = MIMEText("body")
+        msg["From"] = "a@b.com"
+        msg["To"] = "c@d.com"
+        # No Subject header
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(msg.as_bytes())
+            eml_path = Path(f.name)
+
+        try:
+            docs = _load_eml_as_markdown(eml_path)
+            self.assertIn("# (No Subject)", docs[0].page_content)
+        finally:
+            eml_path.unlink()
+
+    # ---- load_documents routing ----
+
+    @patch("documents.services.chunking._load_msg_as_markdown")
+    def test_load_documents_routes_msg(self, mock_loader):
+        """Router dispatches .msg to _load_msg_as_markdown."""
+        mock_loader.return_value = [Mock(page_content="msg content")]
+
+        with tempfile.NamedTemporaryFile(suffix=".msg", delete=False) as f:
+            f.write(b"fake")
+            path = Path(f.name)
+
+        try:
+            docs = load_documents(path, "msg")
+            mock_loader.assert_called_once_with(path)
+            self.assertEqual(len(docs), 1)
+        finally:
+            path.unlink()
+
+    @patch("documents.services.chunking._load_eml_as_markdown")
+    def test_load_documents_routes_eml(self, mock_loader):
+        """Router dispatches .eml to _load_eml_as_markdown."""
+        mock_loader.return_value = [Mock(page_content="eml content")]
+
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False) as f:
+            f.write(b"fake")
+            path = Path(f.name)
+
+        try:
+            docs = load_documents(path, "eml")
+            mock_loader.assert_called_once_with(path)
+            self.assertEqual(len(docs), 1)
+        finally:
+            path.unlink()
+
+    # ---- process_document parser_type ----
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="structure_aware")
+    def test_process_document_msg_parser_type(self):
+        """process_document sets parser_type='msg' for .msg files."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        user = User.objects.create_user(email="msg@example.com", password="testpass")
+        data_room = DataRoom.objects.create(name="MsgProject", slug="msg-project", created_by=user)
+
+        sample_chunks = [
+            {"text": "Chunk 0", "token_count": 10, "chunk_index": 0, "heading": "Subject"},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=data_room,
+                    uploaded_by=user,
+                    original_filename="email.msg",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("email.msg", ContentFile(b"fake msg"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.parser_type, "msg")
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="structure_aware")
+    def test_process_document_eml_parser_type(self):
+        """process_document sets parser_type='eml' for .eml files."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        user = User.objects.create_user(email="eml@example.com", password="testpass")
+        data_room = DataRoom.objects.create(name="EmlProject", slug="eml-project", created_by=user)
+
+        sample_chunks = [
+            {"text": "Chunk 0", "token_count": 10, "chunk_index": 0, "heading": "Subject"},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=data_room,
+                    uploaded_by=user,
+                    original_filename="email.eml",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("email.eml", ContentFile(b"fake eml"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.parser_type, "eml")
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)

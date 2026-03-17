@@ -272,6 +272,7 @@ DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BY
 DOCUMENT_ALLOWED_EXTENSIONS = {
     "pdf", "txt", "md", "html", "docx",
     "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log",
+    "msg", "eml",
 }
 DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
     "application/pdf",
@@ -287,6 +288,9 @@ DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
     "application/x-tex",
     "application/x-yaml",
     "text/yaml",
+    "application/vnd.ms-outlook",
+    "message/rfc822",
+    "application/octet-stream",
 ])
 TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
 MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
