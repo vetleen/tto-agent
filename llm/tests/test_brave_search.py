@@ -1,17 +1,22 @@
 """Tests for BraveSearchTool."""
 
 import json
-from unittest.mock import MagicMock, call, patch
+import time
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 
-from llm.tools.brave_search import BraveSearchTool
+from llm.tools.brave_search import BraveSearchTool, _TokenBucketRateLimiter
 
 
 class BraveSearchToolTests(TestCase):
 
     def setUp(self):
         self.tool = BraveSearchTool()
+        # Patch the module-level rate limiter so tests don't block.
+        patcher = patch("llm.tools.brave_search._brave_rate_limiter")
+        self.mock_limiter = patcher.start()
+        self.addCleanup(patcher.stop)
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")
@@ -59,8 +64,8 @@ class BraveSearchToolTests(TestCase):
         result = json.loads(self.tool.invoke({"query": "test"}))
 
         self.assertIn("error", result)
-        # 1 initial + 2 retries = 3 calls
-        self.assertEqual(mock_get.call_count, 3)
+        # 1 initial + 3 retries = 4 calls
+        self.assertEqual(mock_get.call_count, 4)
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")
@@ -115,8 +120,8 @@ class BraveSearchToolTests(TestCase):
 
         self.assertEqual(result["count"], 1)
         self.assertEqual(mock_get.call_count, 2)
-        # Rate-limit backoff: 2.0 * (2 ** 0) = 2.0
-        mock_sleep.assert_called_once_with(2.0)
+        # Rate-limit backoff schedule[0] = 5.0
+        mock_sleep.assert_called_once_with(5.0)
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")
@@ -134,7 +139,8 @@ class BraveSearchToolTests(TestCase):
         result = json.loads(self.tool.invoke({"query": "test"}))
 
         self.assertIn("rate limited", result["error"])
-        self.assertEqual(mock_get.call_count, 3)
+        # 1 initial + 3 retries = 4 calls
+        self.assertEqual(mock_get.call_count, 4)
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")
@@ -163,12 +169,12 @@ class BraveSearchToolTests(TestCase):
     @patch("llm.tools.brave_search.requests.get")
     @patch("llm.tools.brave_search.time.sleep")
     def test_rate_limit_retry_after_capped(self, mock_sleep, mock_get):
-        """Retry-After: 60 → capped at _RATE_LIMIT_MAX_WAIT (10s)."""
+        """Retry-After: 120 → capped at schedule max (60s)."""
         import requests as req_lib
 
         mock_429 = MagicMock()
         mock_429.status_code = 429
-        mock_429.headers = {"Retry-After": "60"}
+        mock_429.headers = {"Retry-After": "120"}
         mock_429.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=mock_429)
 
         mock_ok = MagicMock()
@@ -180,7 +186,7 @@ class BraveSearchToolTests(TestCase):
 
         self.tool.invoke({"query": "test"})
 
-        mock_sleep.assert_called_once_with(10.0)
+        mock_sleep.assert_called_once_with(60.0)
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")
@@ -209,3 +215,63 @@ class BraveSearchToolTests(TestCase):
         mock_response = MagicMock()
         mock_response.headers = {}
         self.assertIsNone(BraveSearchTool._parse_retry_after(mock_response))
+
+    @override_settings(BRAVE_SEARCH_API_KEY="test-key")
+    @patch("llm.tools.brave_search.requests.get")
+    def test_rate_limiter_acquire_called(self, mock_get):
+        """acquire() is called before each request attempt."""
+        import requests as req_lib
+
+        mock_timeout = req_lib.exceptions.Timeout("timeout")
+        mock_ok = MagicMock()
+        mock_ok.status_code = 200
+        mock_ok.json.return_value = {"web": {"results": []}}
+        mock_ok.raise_for_status = MagicMock()
+
+        # First call times out, second succeeds
+        mock_get.side_effect = [mock_timeout, mock_ok]
+
+        with patch("llm.tools.brave_search.time.sleep"):
+            self.tool.invoke({"query": "test"})
+
+        # acquire() should have been called once per attempt
+        self.assertEqual(self.mock_limiter.acquire.call_count, 2)
+
+    def test_backoff_schedule_values(self):
+        """Regression guard: backoff schedule matches expected values."""
+        self.assertEqual(
+            self.tool._RATE_LIMIT_BACKOFF_SCHEDULE,
+            [5.0, 15.0, 30.0, 60.0],
+        )
+
+
+class TokenBucketRateLimiterTests(TestCase):
+    """Unit tests for _TokenBucketRateLimiter."""
+
+    def test_first_acquire_immediate(self):
+        """First acquire should return immediately (burst=1 gives one token)."""
+        limiter = _TokenBucketRateLimiter(requests_per_second=1.0, burst=1)
+        start = time.monotonic()
+        limiter.acquire()
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 0.1)
+
+    def test_second_acquire_waits(self):
+        """Second acquire must wait ~1/rps seconds."""
+        limiter = _TokenBucketRateLimiter(requests_per_second=10.0, burst=1)
+        limiter.acquire()  # consume the burst token
+        start = time.monotonic()
+        limiter.acquire()
+        elapsed = time.monotonic() - start
+        # Should wait ~0.1s (1/10 rps)
+        self.assertGreaterEqual(elapsed, 0.05)
+        self.assertLess(elapsed, 0.5)
+
+    def test_burst_allows_multiple_immediate(self):
+        """With burst=3, three acquires should be immediate."""
+        limiter = _TokenBucketRateLimiter(requests_per_second=1.0, burst=3)
+        start = time.monotonic()
+        for _ in range(3):
+            limiter.acquire()
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 0.1)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 import time
 
 import requests
@@ -12,6 +14,38 @@ from pydantic import BaseModel, Field
 from llm.tools.interfaces import ContextAwareTool
 
 logger = logging.getLogger(__name__)
+
+
+class _TokenBucketRateLimiter:
+    """Process-wide token bucket that gates outgoing requests."""
+
+    def __init__(self, requests_per_second: float, burst: int = 1):
+        self._rps = requests_per_second
+        self._max_tokens = burst
+        self._tokens = float(burst)
+        self._last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(
+                    self._max_tokens,
+                    self._tokens + (now - self._last_refill) * self._rps,
+                )
+                self._last_refill = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait = (1.0 - self._tokens) / self._rps
+            time.sleep(wait)
+
+
+_BRAVE_SEARCH_RPM = int(os.environ.get("BRAVE_SEARCH_RPM", "45"))
+_brave_rate_limiter = _TokenBucketRateLimiter(
+    requests_per_second=_BRAVE_SEARCH_RPM / 60.0, burst=1
+)
 
 
 class BraveSearchInput(BaseModel):
@@ -30,10 +64,9 @@ class BraveSearchTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = BraveSearchInput
 
-    _MAX_RETRIES: int = 2
+    _MAX_RETRIES: int = 3
     _BACKOFF_BASE: float = 0.5
-    _RATE_LIMIT_BACKOFF_BASE: float = 2.0
-    _RATE_LIMIT_MAX_WAIT: float = 10.0
+    _RATE_LIMIT_BACKOFF_SCHEDULE: list[float] = [5.0, 15.0, 30.0, 60.0]
 
     @staticmethod
     def _parse_retry_after(response: requests.Response) -> float | None:
@@ -64,6 +97,7 @@ class BraveSearchTool(ContextAwareTool):
         last_exc = None
         for attempt in range(1 + self._MAX_RETRIES):
             try:
+                _brave_rate_limiter.acquire()
                 response = requests.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     headers={
@@ -94,9 +128,12 @@ class BraveSearchTool(ContextAwareTool):
                 last_exc = e
                 if response.status_code == 429:
                     retry_after = self._parse_retry_after(response)
+                    schedule_wait = self._RATE_LIMIT_BACKOFF_SCHEDULE[
+                        min(attempt, len(self._RATE_LIMIT_BACKOFF_SCHEDULE) - 1)
+                    ]
                     wait = min(
-                        retry_after if retry_after is not None else self._RATE_LIMIT_BACKOFF_BASE * (2 ** attempt),
-                        self._RATE_LIMIT_MAX_WAIT,
+                        retry_after if retry_after is not None else schedule_wait,
+                        self._RATE_LIMIT_BACKOFF_SCHEDULE[-1],
                     )
                     logger.warning("Brave Search rate limited (attempt %d), waiting %.1fs", attempt + 1, wait)
                     if attempt < self._MAX_RETRIES:
