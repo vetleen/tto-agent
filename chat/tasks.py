@@ -37,11 +37,11 @@ class _SubagentTask(Task):
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 3},
-    time_limit=300,
-    soft_time_limit=270,
+    time_limit=600,
+    soft_time_limit=540,
 )
 def run_subagent_task(self, run_id: str) -> None:
     """Execute a sub-agent run asynchronously via Celery."""
     from chat.subagent_service import run_subagent
 
-    run_subagent(uuid.UUID(run_id), deadline_seconds=270)
+    run_subagent(uuid.UUID(run_id), deadline_seconds=540)

@@ -522,17 +522,17 @@ class CreateSubagentToolTimeoutTests(TestCase):
 
     @patch("chat.tasks.run_subagent_task")
     def test_timeout_clamped_to_max(self, mock_task):
-        """timeout=500 is clamped to 270 and stored on the run."""
+        """timeout=999 is clamped to 540 and stored on the run."""
         mock_task.delay.return_value = MagicMock(id="celery-clamp")
 
         ctx = _ctx(self.user.pk, self.thread.id)
-        # timeout=0 after clamping would skip polling, but 500 clamps to 270.
+        # timeout=0 after clamping would skip polling, but 999 clamps to 540.
         # We use timeout=0 path indirectly — just verify the stored value.
-        # Actually, 500 clamps to 270 which is >0, so it would poll.
+        # Actually, 999 clamps to 540 which is >0, so it would poll.
         # Easier: just invoke with timeout=0 style to skip polling, and check the DB.
         # Let's mock time to immediately exceed deadline.
         with patch("chat.subagent_tool.time") as mock_time:
-            mock_time.monotonic.side_effect = [0, 271]
+            mock_time.monotonic.side_effect = [0, 541]
             mock_time.sleep = MagicMock()
 
             def fake_refresh(run_obj):
@@ -541,10 +541,10 @@ class CreateSubagentToolTimeoutTests(TestCase):
                 )
 
             with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-                _invoke(CreateSubagentTool, {"prompt": "task", "timeout": 500}, ctx)
+                _invoke(CreateSubagentTool, {"prompt": "task", "timeout": 999}, ctx)
 
         run = SubAgentRun.objects.first()
-        self.assertEqual(run.timeout, 270)
+        self.assertEqual(run.timeout, 540)
 
     @patch("chat.tasks.run_subagent_task")
     def test_timeout_negative_clamped_to_zero(self, mock_task):
