@@ -37,6 +37,8 @@
              class="rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
     </div>
     <button type="submit" class="rounded-base bg-brand text-white text-sm px-4 py-2 hover:bg-brand-dark focus:outline-none focus:ring-2 focus:ring-brand-medium">Go</button>
+    <a href="?start={{ today|date:'Y-m-d' }}&end={{ today|date:'Y-m-d' }}" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">Today</a>
+    <a href="?start={{ current_year }}-01-01&end={{ current_year }}-12-31" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">{{ current_year }}</a>
   </form>
 
   <!-- Totals summary -->

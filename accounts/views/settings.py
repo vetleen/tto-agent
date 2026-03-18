@@ -41,10 +41,20 @@ def settings_page(request):
     user_models = (user_settings.preferences or {}).get("models", {})
     tier_defaults = get_tier_defaults(request.user)
 
+    from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, _get_org_preferences
+
+    org_prefs = _get_org_preferences(request.user)
+    org_max_context = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS) if org_prefs else DEFAULT_MAX_CONTEXT_TOKENS
+    if not isinstance(org_max_context, int):
+        org_max_context = DEFAULT_MAX_CONTEXT_TOKENS
+    user_max_context = (user_settings.preferences or {}).get("max_context_tokens")
+
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
         "user_models": user_models,
         "allowed_models": prefs.allowed_models,
+        "org_max_context_tokens": org_max_context,
+        "user_max_context_tokens": user_max_context,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"]},
@@ -176,6 +186,12 @@ def org_settings_page(request):
     org_subagent_prefs = org_prefs.get("subagents", {})
     parallel_subagents = org_subagent_prefs.get("parallel", True)
 
+    from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS
+
+    org_max_context_tokens = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
+    if not isinstance(org_max_context_tokens, int):
+        org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
+
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "system_models": system_models,
@@ -187,6 +203,7 @@ def org_settings_page(request):
         "skills_data": skills_data,
         "skills_data_json": json.dumps(skills_data),
         "parallel_subagents": parallel_subagents,
+        "org_max_context_tokens": org_max_context_tokens,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},
@@ -318,6 +335,90 @@ def org_subagents_update(request):
     org.save(update_fields=["preferences"])
 
     return JsonResponse({"ok": True, "parallel": bool(parallel)})
+
+
+@login_required
+@require_POST
+def org_max_context_update(request):
+    """Set org's max context tokens limit."""
+    from core.preferences import MIN_CONTEXT_TOKENS
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    value = data.get("max_context_tokens")
+    if value is None:
+        # Clear (reset to default)
+        org = membership.org
+        prefs = org.preferences or {}
+        prefs.pop("max_context_tokens", None)
+        org.preferences = prefs
+        org.save(update_fields=["preferences"])
+        return JsonResponse({"ok": True, "max_context_tokens": None})
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        return JsonResponse({"error": "max_context_tokens must be an integer"}, status=400)
+
+    if value < MIN_CONTEXT_TOKENS:
+        return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
+
+    org = membership.org
+    prefs = org.preferences or {}
+    prefs["max_context_tokens"] = value
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True, "max_context_tokens": value})
+
+
+@login_required
+@require_POST
+def preferences_max_context_update(request):
+    """Update user's max context tokens preference."""
+    from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS, _get_org_preferences
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    value = data.get("max_context_tokens")
+    if value is None:
+        # Clear user override
+        settings, _ = UserSettings.objects.get_or_create(user=request.user)
+        prefs_dict = settings.preferences or {}
+        prefs_dict.pop("max_context_tokens", None)
+        settings.preferences = prefs_dict
+        settings.save()
+        return JsonResponse({"ok": True, "max_context_tokens": None})
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        return JsonResponse({"error": "max_context_tokens must be an integer"}, status=400)
+
+    if value < MIN_CONTEXT_TOKENS:
+        return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
+
+    # Check against org limit
+    org_prefs = _get_org_preferences(request.user)
+    org_limit = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS) if org_prefs else DEFAULT_MAX_CONTEXT_TOKENS
+    if not isinstance(org_limit, int):
+        org_limit = DEFAULT_MAX_CONTEXT_TOKENS
+    if value > org_limit:
+        return JsonResponse({"error": f"Cannot exceed organization limit of {org_limit:,} tokens"}, status=400)
+
+    settings, _ = UserSettings.objects.get_or_create(user=request.user)
+    prefs_dict = settings.preferences or {}
+    prefs_dict["max_context_tokens"] = value
+    settings.preferences = prefs_dict
+    settings.save()
+
+    return JsonResponse({"ok": True, "max_context_tokens": value})
 
 
 @login_required
@@ -456,4 +557,6 @@ def usage_page(request):
         "next_month": next_month,
         "totals": totals,
         "model_breakdown": model_breakdown,
+        "today": today,
+        "current_year": today.year,
     })
