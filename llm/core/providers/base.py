@@ -378,11 +378,14 @@ class BaseLangChainChatModel(ChatModel):
             )
             return
 
-        end_data = self._extract_stream_usage(last_chunk, "".join(output_text_parts))
+        # Use accumulated (not last_chunk) for usage and metadata extraction.
+        # LangChain may append a trailing empty chunk with chunk_position="last"
+        # that lacks usage_metadata; the accumulated message retains it.
+        usage_source = accumulated if accumulated is not None else last_chunk
+        end_data = self._extract_stream_usage(usage_source, "".join(output_text_parts))
         end_data["model"] = self.name
-        # Include response metadata from last chunk
-        if last_chunk:
-            resp_meta = self._extract_response_metadata(last_chunk)
+        if usage_source:
+            resp_meta = self._extract_response_metadata(usage_source)
             end_data.update(resp_meta)
 
         # Include accumulated content and tool_calls for pipeline consumption
