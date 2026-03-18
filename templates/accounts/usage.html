@@ -1,0 +1,94 @@
+{% extends "_base.html" %}
+
+{% block content %}
+<main class="mx-auto max-w-2xl px-6 py-16">
+  <h1 class="text-2xl font-semibold text-heading">Usage</h1>
+
+  {% if not custom_range %}
+  <!-- Month navigation -->
+  <div class="mt-6 flex items-center justify-between">
+    <a href="?start={{ prev_month|date:'Y-m-d' }}" class="text-fg-brand hover:underline text-sm">&larr; {{ prev_month|date:'F Y' }}</a>
+    <span class="text-heading font-medium">{{ display_month|date:'F Y' }}</span>
+    {% if next_month %}
+    <a href="?start={{ next_month|date:'Y-m-d' }}" class="text-fg-brand hover:underline text-sm">{{ next_month|date:'F Y' }} &rarr;</a>
+    {% else %}
+    <span class="text-body text-sm opacity-50">{{ display_month|date:'F Y' }} &rarr;</span>
+    {% endif %}
+  </div>
+  {% else %}
+  <!-- Custom range display -->
+  <div class="mt-6 flex items-center justify-between">
+    <span class="text-heading font-medium">{{ start_date|date:'M j, Y' }} &ndash; {{ end_date|date:'M j, Y' }}</span>
+    <a href="{% url 'accounts:usage' %}" class="text-fg-brand hover:underline text-sm">Reset to current month</a>
+  </div>
+  {% endif %}
+
+  <!-- Date range picker -->
+  <form method="get" action="{% url 'accounts:usage' %}" class="mt-4 flex flex-wrap items-end gap-3">
+    <div>
+      <label for="range-start" class="block text-xs text-body mb-1">Start</label>
+      <input type="date" id="range-start" name="start" value="{{ start_date|date:'Y-m-d' }}"
+             class="rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+    </div>
+    <div>
+      <label for="range-end" class="block text-xs text-body mb-1">End</label>
+      <input type="date" id="range-end" name="end" value="{{ end_date|date:'Y-m-d' }}"
+             class="rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+    </div>
+    <button type="submit" class="rounded-base bg-brand text-white text-sm px-4 py-2 hover:bg-brand-dark focus:outline-none focus:ring-2 focus:ring-brand-medium">Go</button>
+  </form>
+
+  <!-- Totals summary -->
+  <section class="mt-8 rounded-base border border-default bg-neutral-primary-soft p-6">
+    <p class="text-3xl font-semibold text-heading">${{ totals.total_cost|floatformat:4 }}</p>
+    <p class="text-sm text-body mt-1">Total cost</p>
+    <div class="mt-4 grid grid-cols-3 gap-4 text-sm">
+      <div>
+        <p class="text-heading font-medium">{{ totals.total_calls }}</p>
+        <p class="text-body">Calls</p>
+      </div>
+      <div>
+        <p class="text-heading font-medium">{{ totals.total_input_tokens|default:"0" }}</p>
+        <p class="text-body">Input tokens</p>
+      </div>
+      <div>
+        <p class="text-heading font-medium">{{ totals.total_output_tokens|default:"0" }}</p>
+        <p class="text-body">Output tokens</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Model breakdown -->
+  <section class="mt-8">
+    <h2 class="text-lg font-medium text-heading">By model</h2>
+    {% if model_breakdown %}
+    <div class="mt-3 overflow-x-auto rounded-base border border-default">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-neutral-secondary-soft text-body uppercase text-xs">
+          <tr>
+            <th class="px-4 py-3">Model</th>
+            <th class="px-4 py-3 text-right">Calls</th>
+            <th class="px-4 py-3 text-right">Input tokens</th>
+            <th class="px-4 py-3 text-right">Output tokens</th>
+            <th class="px-4 py-3 text-right">Cost</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-default">
+          {% for row in model_breakdown %}
+          <tr>
+            <td class="px-4 py-3 text-heading font-medium">{{ row.model }}</td>
+            <td class="px-4 py-3 text-right text-body">{{ row.calls }}</td>
+            <td class="px-4 py-3 text-right text-body">{{ row.input_tokens|default:"0" }}</td>
+            <td class="px-4 py-3 text-right text-body">{{ row.output_tokens|default:"0" }}</td>
+            <td class="px-4 py-3 text-right text-heading">${{ row.cost|floatformat:4 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="mt-3 text-sm text-body">No usage data for this period.</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock content %}

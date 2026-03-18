@@ -66,6 +66,9 @@
                 <li>
                   <a href="{% url 'accounts:settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">User settings</a>
                 </li>
+                <li>
+                  <a href="{% url 'accounts:usage' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Usage</a>
+                </li>
                 {% if user_is_org_admin %}
                 <li>
                   <a href="{% url 'accounts:org_settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Organization settings</a>

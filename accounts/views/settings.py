@@ -1,8 +1,12 @@
 import json
+from datetime import date, timedelta
+from decimal import Decimal
 
 from django.contrib.auth.decorators import login_required
+from django.db.models import Count, Sum
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import render
+from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from accounts.models import Membership, Organization, UserSettings
@@ -357,3 +361,99 @@ def org_skills_update(request):
     org.save(update_fields=["preferences"])
 
     return JsonResponse({"ok": True, "slug": slug, "enabled": bool(enabled)})
+
+
+# ---- Usage Page ----
+
+
+def _parse_date(value):
+    """Parse a YYYY-MM-DD string, return a date or None."""
+    try:
+        return date.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
+
+@login_required
+@require_GET
+def usage_page(request):
+    from llm.models import LLMCallLog
+
+    today = timezone.now().date()
+    raw_start = request.GET.get("start")
+    raw_end = request.GET.get("end")
+
+    parsed_start = _parse_date(raw_start)
+    parsed_end = _parse_date(raw_end)
+
+    # Determine mode: custom range vs month
+    if parsed_start and parsed_end:
+        custom_range = True
+        start_date = parsed_start
+        end_date = parsed_end
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+        # Inclusive: query up to end_date + 1 day
+        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
+        query_end = timezone.make_aware(timezone.datetime.combine(end_date + timedelta(days=1), timezone.datetime.min.time()))
+        display_month = None
+        prev_month = None
+        next_month = None
+    else:
+        custom_range = False
+        if parsed_start:
+            # Month mode with a specific month
+            start_date = parsed_start.replace(day=1)
+        else:
+            start_date = today.replace(day=1)
+        # End of month = first of next month
+        if start_date.month == 12:
+            next_month_first = start_date.replace(year=start_date.year + 1, month=1, day=1)
+        else:
+            next_month_first = start_date.replace(month=start_date.month + 1, day=1)
+        end_date = next_month_first - timedelta(days=1)
+        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
+        query_end = timezone.make_aware(timezone.datetime.combine(next_month_first, timezone.datetime.min.time()))
+        display_month = start_date
+        prev_month = (start_date - timedelta(days=1)).replace(day=1)
+        # Only show next if not in the future
+        next_month = next_month_first if next_month_first <= today.replace(day=1) else None
+
+    # Query data
+    qs = LLMCallLog.objects.filter(
+        user=request.user,
+        created_at__gte=query_start,
+        created_at__lt=query_end,
+    )
+
+    totals = qs.aggregate(
+        total_cost=Sum("cost_usd"),
+        total_calls=Count("id"),
+        total_input_tokens=Sum("input_tokens"),
+        total_output_tokens=Sum("output_tokens"),
+    )
+    totals["total_cost"] = totals["total_cost"] or Decimal("0")
+    totals["total_input_tokens"] = totals["total_input_tokens"] or 0
+    totals["total_output_tokens"] = totals["total_output_tokens"] or 0
+
+    model_breakdown = (
+        qs.values("model")
+        .annotate(
+            cost=Sum("cost_usd"),
+            calls=Count("id"),
+            input_tokens=Sum("input_tokens"),
+            output_tokens=Sum("output_tokens"),
+        )
+        .order_by("-cost")
+    )
+
+    return render(request, "accounts/usage.html", {
+        "start_date": start_date,
+        "end_date": end_date,
+        "custom_range": custom_range,
+        "display_month": display_month,
+        "prev_month": prev_month,
+        "next_month": next_month,
+        "totals": totals,
+        "model_breakdown": model_breakdown,
+    })

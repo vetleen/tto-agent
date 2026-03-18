@@ -26,6 +26,7 @@ from .views.settings import (
     preferences_models_update,
     settings_page,
     theme_update,
+    usage_page,
 )
 
 app_name = "accounts"
@@ -44,6 +45,7 @@ urlpatterns = [
     path("settings/", settings_page, name="settings"),
     path("settings/theme/", theme_update, name="theme_update"),
     path("settings/models/", preferences_models_update, name="preferences_models_update"),
+    path("usage/", usage_page, name="usage"),
     path("org/settings/", org_settings_page, name="org_settings"),
     path("org/settings/allowed-models/", org_allowed_models_update, name="org_allowed_models_update"),
     path("org/settings/models/", org_models_update, name="org_models_update"),
