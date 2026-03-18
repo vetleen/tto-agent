@@ -201,7 +201,7 @@ class SkillTemplateModelTests(TestCase):
 
 class SeedSystemSkillsTests(TestCase):
     def test_seed_creates_all_system_skills(self):
-        from agent_skills.seed import seed_system_skills
+        from agent_skills.seed_skills import seed_system_skills
 
         seed_system_skills()
 
@@ -220,7 +220,7 @@ class SeedSystemSkillsTests(TestCase):
         )
 
     def test_seed_is_idempotent(self):
-        from agent_skills.seed import seed_system_skills
+        from agent_skills.seed_skills import seed_system_skills
 
         seed_system_skills()
         seed_system_skills()
@@ -230,7 +230,7 @@ class SeedSystemSkillsTests(TestCase):
         )
 
     def test_rcn_qualification_grant_fields(self):
-        from agent_skills.seed import seed_system_skills
+        from agent_skills.seed_skills import seed_system_skills
 
         seed_system_skills()
 
@@ -258,7 +258,7 @@ class SeedSystemSkillsTests(TestCase):
         self.assertIn("Utløsende effekt", project_desc.content)
 
     def test_seed_creates_and_updates_templates(self):
-        from agent_skills.seed import seed_system_skills
+        from agent_skills.seed_skills import seed_system_skills
 
         seed_system_skills()
 
@@ -288,7 +288,7 @@ class SeedSystemSkillsTests(TestCase):
         )
 
     def test_written_assignment_writer_fields(self):
-        from agent_skills.seed import seed_system_skills
+        from agent_skills.seed_skills import seed_system_skills
 
         seed_system_skills()
 

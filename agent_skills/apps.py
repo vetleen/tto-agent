@@ -16,6 +16,6 @@ class AgentSkillsConfig(AppConfig):
 
 def _seed_system_skills(sender, **kwargs):
     """Ensure system-level skills exist after every migrate."""
-    from agent_skills.seed import seed_system_skills
+    from agent_skills.seed_skills import seed_system_skills
 
     seed_system_skills()
