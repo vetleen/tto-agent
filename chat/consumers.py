@@ -474,8 +474,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             else:
                 model = prefs.top_model if prefs else None
 
+            max_context_tokens = prefs.max_context_tokens if prefs else None
+
             # Load conversation history (token-aware, model-aware budget)
-            history_result = await self._load_history(thread, model=model)
+            history_result = await self._load_history(thread, model=model, max_context_tokens=max_context_tokens)
             history = history_result["messages"]
             meta = history_result["meta"]
 
@@ -540,7 +542,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             # Trigger summarization if history exceeds budget
             if meta.get("needs_summary"):
-                await self._trigger_summarization(thread, model=model)
+                await self._trigger_summarization(thread, model=model, max_context_tokens=max_context_tokens)
 
         except Exception:
             logger.exception("Error handling chat message")
@@ -743,13 +745,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     # -- Summarization helpers --
 
-    async def _trigger_summarization(self, thread, model=None):
+    async def _trigger_summarization(self, thread, model=None, max_context_tokens=None):
         """Summarise messages outside the token window and save to thread."""
         try:
             from chat.services import generate_summary
 
             thread_data = await self._get_thread_summary_data(thread)
-            messages_to_summarise = await self._get_messages_to_summarise(thread, model=model)
+            messages_to_summarise = await self._get_messages_to_summarise(thread, model=model, max_context_tokens=max_context_tokens)
 
             if not messages_to_summarise:
                 return
@@ -782,7 +784,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def _get_messages_to_summarise(self, thread, model=None):
+    def _get_messages_to_summarise(self, thread, model=None, max_context_tokens=None):
         """Return unsummarised messages that fall outside the token budget window.
 
         The overlap window is always preserved as raw context and is never summarised.
@@ -790,7 +792,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.models import ChatMessage, ChatThread
         from llm.model_info import get_history_budget
 
-        max_history_tokens = get_history_budget(model) if model else MAX_HISTORY_TOKENS
+        max_history_tokens = get_history_budget(model, max_context_tokens=max_context_tokens) if model else MAX_HISTORY_TOKENS
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
         t = ChatThread.objects.get(pk=thread.pk)
@@ -1508,7 +1510,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ChatThread.objects.filter(pk=thread.pk).update(title=title)
 
     @database_sync_to_async
-    def _load_history(self, thread, model=None):
+    def _load_history(self, thread, model=None, max_context_tokens=None):
         """Load token-aware conversation history with a recency overlap window.
 
         The most recent *overlap_tokens* worth of messages are always included as
@@ -1527,7 +1529,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.models import ChatMessage, ChatThread
         from llm.model_info import get_history_budget
 
-        max_history_tokens = get_history_budget(model) if model else MAX_HISTORY_TOKENS
+        max_history_tokens = get_history_budget(model, max_context_tokens=max_context_tokens) if model else MAX_HISTORY_TOKENS
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
         t = ChatThread.objects.get(pk=thread.pk)

@@ -49,3 +49,15 @@ class GetHistoryBudgetTests(TestCase):
 
     def test_unknown_model(self):
         self.assertEqual(get_history_budget("unknown"), 96_000)
+
+    def test_max_context_caps_budget(self):
+        # gpt-5.4 has 1M context; with max_context=100k: 100k * 0.75 = 75k
+        self.assertEqual(get_history_budget("gpt-5.4", max_context_tokens=100_000), 75_000)
+
+    def test_max_context_none_no_effect(self):
+        # None behaves like before
+        self.assertEqual(get_history_budget("gpt-5.4", max_context_tokens=None), 150_000)
+
+    def test_max_context_larger_than_model_no_effect(self):
+        # max_context=500k on 200k model still gives 150k (200k * 0.75 = 150k)
+        self.assertEqual(get_history_budget("claude-sonnet-4-6", max_context_tokens=500_000), 150_000)

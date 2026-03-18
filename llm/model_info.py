@@ -26,9 +26,12 @@ def get_context_window(model: str | None) -> int:
     return _CONTEXT_WINDOWS.get(_normalize_model_name(model), _DEFAULT_CONTEXT_WINDOW)
 
 
-def get_history_budget(model: str | None) -> int:
-    """75% of context window, capped at 150k."""
-    return min(int(get_context_window(model) * 0.75), 150_000)
+def get_history_budget(model: str | None, max_context_tokens: int | None = None) -> int:
+    """75% of context window, capped at 150k, further capped by max_context_tokens."""
+    context = get_context_window(model)
+    if max_context_tokens is not None:
+        context = min(context, max_context_tokens)
+    return min(int(context * 0.75), 150_000)
 
 
 __all__ = ["get_context_window", "get_history_budget"]

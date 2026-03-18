@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 from accounts.models import Membership, Organization, UserSettings
 from unittest.mock import MagicMock
 
-from core.preferences import ResolvedPreferences, get_preferences
+from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS, ResolvedPreferences, get_preferences
 
 
 def _create_user(email="test@example.com", password="testpass123"):
@@ -341,3 +341,110 @@ class ParallelSubagentsTest(TestCase):
 
         prefs = get_preferences(user)
         self.assertTrue(prefs.parallel_subagents)
+
+
+class MaxContextTokensTest(TestCase):
+    """max_context_tokens is resolved from org and user preferences."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_default_200k_when_no_prefs(self, mock_registry, mock_allowed):
+        """When no org or user setting, max_context_tokens defaults to 200k."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="ctx-default@example.com")
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.max_context_tokens, DEFAULT_MAX_CONTEXT_TOKENS)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_sets_limit(self, mock_registry, mock_allowed):
+        """Org sets max_context_tokens to 100k."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="ctx-org@example.com")
+        org = Organization.objects.create(name="CtxOrg", slug="ctxorg", preferences={
+            "max_context_tokens": 100_000,
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.max_context_tokens, 100_000)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_user_lowers_below_org(self, mock_registry, mock_allowed):
+        """User sets 150k when org allows 200k — resolves to 150k."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="ctx-lower@example.com")
+        org = Organization.objects.create(name="CtxOrg2", slug="ctxorg2", preferences={
+            "max_context_tokens": 200_000,
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {"max_context_tokens": 150_000}
+        settings.save()
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.max_context_tokens, 150_000)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_user_cannot_exceed_org(self, mock_registry, mock_allowed):
+        """User sets 200k when org limits to 100k — resolves to 100k."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="ctx-exceed@example.com")
+        org = Organization.objects.create(name="CtxOrg3", slug="ctxorg3", preferences={
+            "max_context_tokens": 100_000,
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {"max_context_tokens": 200_000}
+        settings.save()
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.max_context_tokens, 100_000)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_min_floor_enforced(self, mock_registry, mock_allowed):
+        """Values below MIN_CONTEXT_TOKENS resolve to the floor."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="ctx-floor@example.com")
+        org = Organization.objects.create(name="CtxOrg4", slug="ctxorg4", preferences={
+            "max_context_tokens": 5_000,
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.max_context_tokens, MIN_CONTEXT_TOKENS)

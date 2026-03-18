@@ -7,6 +7,9 @@ from typing import Optional
 
 from django.conf import settings as django_settings
 
+DEFAULT_MAX_CONTEXT_TOKENS = 200_000
+MIN_CONTEXT_TOKENS = 10_000
+
 
 @dataclass
 class ResolvedPreferences:
@@ -18,6 +21,7 @@ class ResolvedPreferences:
     allowed_skills: list[dict] = field(default_factory=list)
     theme: str = "light"
     parallel_subagents: bool = True
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
 
 
 def get_preferences(user) -> ResolvedPreferences:
@@ -117,6 +121,16 @@ def get_preferences(user) -> ResolvedPreferences:
     org_subagent_prefs = org_prefs.get("subagents", {}) if org_prefs else {}
     parallel_subagents = org_subagent_prefs.get("parallel", True)
 
+    # Resolve max context tokens: org sets limit, user can lower it
+    org_max_ctx = org_prefs.get("max_context_tokens") if org_prefs else None
+    org_max_ctx = org_max_ctx if isinstance(org_max_ctx, int) else DEFAULT_MAX_CONTEXT_TOKENS
+    user_max_ctx = user_prefs.get("max_context_tokens") if user_prefs else None
+    if isinstance(user_max_ctx, int):
+        max_context_tokens = min(user_max_ctx, org_max_ctx)
+    else:
+        max_context_tokens = org_max_ctx
+    max_context_tokens = max(max_context_tokens, MIN_CONTEXT_TOKENS)
+
     return ResolvedPreferences(
         top_model=top_model,
         mid_model=mid_model,
@@ -126,6 +140,7 @@ def get_preferences(user) -> ResolvedPreferences:
         allowed_skills=allowed_skills,
         theme=user_theme,
         parallel_subagents=parallel_subagents,
+        max_context_tokens=max_context_tokens,
     )
 
 

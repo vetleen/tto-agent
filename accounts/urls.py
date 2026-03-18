@@ -18,11 +18,13 @@ from .views.auth import (
 )
 from .views.settings import (
     org_allowed_models_update,
+    org_max_context_update,
     org_models_update,
     org_settings_page,
     org_skills_update,
     org_subagents_update,
     org_tools_update,
+    preferences_max_context_update,
     preferences_models_update,
     settings_page,
     theme_update,
@@ -45,6 +47,7 @@ urlpatterns = [
     path("settings/", settings_page, name="settings"),
     path("settings/theme/", theme_update, name="theme_update"),
     path("settings/models/", preferences_models_update, name="preferences_models_update"),
+    path("settings/max-context/", preferences_max_context_update, name="preferences_max_context_update"),
     path("usage/", usage_page, name="usage"),
     path("org/settings/", org_settings_page, name="org_settings"),
     path("org/settings/allowed-models/", org_allowed_models_update, name="org_allowed_models_update"),
@@ -52,6 +55,7 @@ urlpatterns = [
     path("org/settings/tools/", org_tools_update, name="org_tools_update"),
     path("org/settings/skills/", org_skills_update, name="org_skills_update"),
     path("org/settings/subagents/", org_subagents_update, name="org_subagents_update"),
+    path("org/settings/max-context/", org_max_context_update, name="org_max_context_update"),
     path("delete/", delete_account, name="account_delete"),
     path(
         "password_change/",

@@ -601,3 +601,153 @@ class OrgSubagentsUpdateViewTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgMaxContextUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="ctxadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="ctxmember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="CtxOrg", slug="ctxorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_max_context_update")
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": 100_000}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/accounts/login/", response.url)
+
+    def test_requires_admin(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": 100_000}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_sets_max_context(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": 100_000}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["max_context_tokens"], 100_000)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["max_context_tokens"], 100_000)
+
+    def test_below_minimum_returns_400(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": 5_000}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_non_integer_returns_400(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": "not a number"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_clear_value(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        # First set a value
+        self.org.preferences = {"max_context_tokens": 100_000}
+        self.org.save(update_fields=["preferences"])
+        # Then clear it
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": None}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertNotIn("max_context_tokens", self.org.preferences)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PreferencesMaxContextUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="ctxuser@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(
+            name="CtxOrg2", slug="ctxorg2",
+            preferences={"max_context_tokens": 200_000},
+        )
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:preferences_max_context_update")
+
+    def test_user_sets_max_context(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": 150_000}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["max_context_tokens"], 150_000)
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertEqual(settings.preferences["max_context_tokens"], 150_000)
+
+    def test_user_exceeds_org_limit_returns_400(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": 300_000}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_user_clears_value(self):
+        self.client.login(email=self.user.email, password=self.password)
+        # Set a value first
+        settings, _ = UserSettings.objects.get_or_create(user=self.user)
+        settings.preferences = {"max_context_tokens": 100_000}
+        settings.save()
+        # Clear it
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": None}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        settings.refresh_from_db()
+        self.assertNotIn("max_context_tokens", settings.preferences)
+
+    def test_below_minimum_returns_400(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"max_context_tokens": 5_000}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
