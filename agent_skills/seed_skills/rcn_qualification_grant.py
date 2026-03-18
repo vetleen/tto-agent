@@ -217,56 +217,70 @@ and state the project number.]
 
 
 ### Research Results
-[Describe the technical solution: mechanism, architecture, or principle. \
-State current TRL and target TRL at project end. Highlight what is novel in a techbnical sense \
-compared to existing solutions. Reference IP status. Summarise prototype data, \
-publications, or prior project results that demonstrate feasibility.]
+[Describe the research results that are to be commercialized (what is discovered, \
+new and different? ). State which approved research organisation is behind the \
+research and who conducted it.Make sure to describe what research projects (include \
+project numbers and project types - RCN, others) have led to the results. \
+Summarise prototype data, publications, or prior project results that demonstrate feasibility.\
+Describe why these research results support the feasibility and potential of the innovation.\
+State current TRL and target TRL at project end. 
 
 ### Level of Innovation
-[Describe the problem, to solve from the user or customer perspective. Describe how \
-that problem is solved today ("State-of-the-art"). Describe how the new invention \
-can solve the problem, hiughlighting it's advantages.]
+[Describe the needs or problems that potentially can be solved from the user or \
+customer perspective. Describe how that problem is solved today ("State-of-the-art"). \
+Describe the new solution, the intended use, and the mechanism \
+by which the product produces an effect. Describe how the new invention \
+can solve the problem, highlighting its advantages.]
 ---
 
 ## 2. Impacts and Outcomes (~1–2 pages)
 
 ### Market Insight and Areas of Application
-[Define market segments. Quantify TAM / SAM / SOM with sources. Describe \
-target customers.]
-[Quantify the benefit vs. status quo. Use concrete numbers: cost savings, \
-time reduction, performance improvement.]
-[Compare against alternatives. Use a positioning table if helpful. Explain \
-sustainable differentiation.]
+[Define market segments and areas of application. Quantify the market size with sources. Describe \
+target customers and partners. Note any industry-specific requirements or regulations. \
+Describe customer pain points, and quantify the benefit vs. status quo. Use concrete numbers: cost savings, \
+time reduction, performance improvement. Compare the new solution against alternatives. Use a \
+positioning table if helpful. All-in-all this section should show the reader why the innovation is \
+commercially interesting.]
+
 ### Strategy for Realisation
-[Describe the commercialisation path: licensing, spin-off, partnership, or \
-direct sales. Include timeline and key milestones.]
-[Reference specific meetings, LOIs, pilot agreements, or letters of support. \
+[Describe the commercialisation path: usually licensing or spin-off. Draft a plan for how the project will realise \
+its value creation potential. What are the possible strategies and corresponding challenges and risks? What \
+conditions must be in place to support the possible strategies for realising the product/process/service - for \
+example, the various types of rights, regulatory issues, important stakeholders/partners, key resources, etc. \
+Reference specific meetings, LOIs, pilot agreements, or letters of support. \
 Name partners where possible. Demonstrate that market demand is validated \
-beyond desk research.]
+beyond desk research. All-in-all this section should show the reader a believable \
+plan for how the project will realise its value creation potential. ]
 
 ### Benefit to Society and Sustainability
 
-[Describe contribution to sustainability / green transition if relevant. \
-Quantify environmental benefits. Reference UN SDGs or national green \
-transition priorities. Keep this section short and to the point. It's just \
-check on the reviewers list, not something that actually sells.]
+[Describe potential positive and negative societal and environmental impacts \
+of the intended product/process/service. Quantify environmental benefits where \
+possible. Reference UN SDGs or national green transition priorities if relevant. \
+Keep this section short and to the point. It's just a check on the reviewers \
+list, not something that actually sells.]
 ---
 
 ## 3. Implementation (~1–2 pages)
 
 ### Project Plan
-[List SMART project objectives for the project. Explain why public funding is necessary. \
- What specific barriers does the grant remove? What happens if funding is not received?]  
-| WP | Title | Period (months) | Key Activities | Deliverable or Milestone | Go/No-Go |
-|----|-------|--------|---------------|-------------|----------|
-| WP1 | [Title] | M1–M6 | [Activities] | [Deliverable or Milestone] | [Criterion] |
-| WP2 | [Title] | M4–M12 | [Activities] | [Deliverable or Milestone] | [Criterion] |
-| WP3 | [Title] | M10–M18 | [Activities] | [Deliverable or Milestone] | — |
+[What result is viewed as a successful outcome of the project?\n List SMART project objectives for the \
+project. Explain why public funding is necessary. \
+What specific barriers does the grant remove? What happens if funding is not received? \
+conclude this paragraph with  what trigger effect will this project create?]
+| WP | Title | Period (months) | Key Activities | Deliverable or Milestone | Go/No-Go | Stakeholder Involvement |
+|----|-------|--------|---------------|-------------|----------|------------------------|
+| WP1 | [Title] | M1–M6 | [Activities] | [Deliverable or Milestone] | [Criterion] | [How critical stakeholders are involved] |
+| WP2 | [Title] | M4–M12 | [Activities] | [Deliverable or Milestone] | [Criterion] | [How critical stakeholders are involved] |
+| WP3 | [Title] | M10–M18 | [Activities] | [Deliverable or Milestone] | — | |
 
 [Comment briefly what the money will be spent on (Personell, Travel, Marketing, Consultants? IP \
 Filings. Don't allocate anything to equipment, and don't mention patent upkeep!)]
 ### Management, Team and Expertise
-[Describe key personnel, their roles, and relevant expertise.]
+[Describe key personnel, their roles, and relevant expertise. Comment on \
+other contributors that are important for the implementation. Comment on \
+key members' commitment to the project.]
 """,
     },
 }
