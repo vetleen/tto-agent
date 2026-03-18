@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "django.contrib.sessions",
     "django.contrib.messages",
+    "django.contrib.humanize",
     "django.contrib.staticfiles",
     "channels",
     "compressor",

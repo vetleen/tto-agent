@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% load humanize %}
 
 {% block content %}
 <main class="mx-auto max-w-2xl px-6 py-16">
@@ -40,7 +41,7 @@
 
   <!-- Totals summary -->
   <section class="mt-8 rounded-base border border-default bg-neutral-primary-soft p-6">
-    <p class="text-3xl font-semibold text-heading">${{ totals.total_cost|floatformat:4 }}</p>
+    <p class="text-3xl font-semibold text-heading">${{ totals.total_cost|floatformat:2 }}</p>
     <p class="text-sm text-body mt-1">Total cost</p>
     <div class="mt-4 grid grid-cols-3 gap-4 text-sm">
       <div>
@@ -48,11 +49,11 @@
         <p class="text-body">Calls</p>
       </div>
       <div>
-        <p class="text-heading font-medium">{{ totals.total_input_tokens|default:"0" }}</p>
+        <p class="text-heading font-medium">{{ totals.total_input_tokens|default:"0"|intcomma }}</p>
         <p class="text-body">Input tokens</p>
       </div>
       <div>
-        <p class="text-heading font-medium">{{ totals.total_output_tokens|default:"0" }}</p>
+        <p class="text-heading font-medium">{{ totals.total_output_tokens|default:"0"|intcomma }}</p>
         <p class="text-body">Output tokens</p>
       </div>
     </div>
@@ -78,9 +79,9 @@
           <tr>
             <td class="px-4 py-3 text-heading font-medium">{{ row.model }}</td>
             <td class="px-4 py-3 text-right text-body">{{ row.calls }}</td>
-            <td class="px-4 py-3 text-right text-body">{{ row.input_tokens|default:"0" }}</td>
-            <td class="px-4 py-3 text-right text-body">{{ row.output_tokens|default:"0" }}</td>
-            <td class="px-4 py-3 text-right text-heading">${{ row.cost|floatformat:4 }}</td>
+            <td class="px-4 py-3 text-right text-body">{{ row.input_tokens|default:"0"|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-body">{{ row.output_tokens|default:"0"|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-heading">${{ row.cost|floatformat:2 }}</td>
           </tr>
           {% endfor %}
         </tbody>
