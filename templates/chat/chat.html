@@ -613,6 +613,9 @@
       var id = 'mermaid-' + (++mermaidIdCounter);
       try {
         mermaid.render(id, source).then(function(result) {
+          // Clean up the temp element mermaid inserts into the body
+          var tmp = document.getElementById('d' + id);
+          if (tmp) tmp.remove();
           el.innerHTML = '<div class="mermaid-wrapper">' + result.svg +
             '<button class="mermaid-download-btn" title="Download as PNG">PNG</button></div>';
           el.querySelector('.mermaid-download-btn').addEventListener('click', function() {
@@ -620,9 +623,13 @@
             downloadMermaidAsPng(svgEl, 'diagram');
           });
         }).catch(function(err) {
+          var tmp = document.getElementById('d' + id);
+          if (tmp) tmp.remove();
           el.innerHTML = '<pre style="color:rgb(239 68 68);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
         });
       } catch (err) {
+        var tmp = document.getElementById('d' + id);
+        if (tmp) tmp.remove();
         el.innerHTML = '<pre style="color:rgb(239 68 68);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
       }
     });
@@ -651,6 +658,9 @@
   function renderMermaidToPngDataUrl(mermaidSource) {
     var tempId = 'mermaid-export-' + (++mermaidIdCounter);
     return mermaid.render(tempId, mermaidSource).then(function(result) {
+      // Clean up the temp element mermaid inserts into the body
+      var tmp = document.getElementById('d' + tempId);
+      if (tmp) tmp.remove();
       // Insert rendered SVG into an offscreen container so domtoimage can capture it
       var container = document.createElement('div');
       container.style.cssText = 'position:fixed;left:-9999px;top:0;';
@@ -664,7 +674,11 @@
         document.body.removeChild(container);
         return null;
       });
-    }).catch(function() { return null; });
+    }).catch(function() {
+      var tmp = document.getElementById('d' + tempId);
+      if (tmp) tmp.remove();
+      return null;
+    });
   }
 
   // -- Email block rendering --

@@ -189,7 +189,7 @@ graph TD
     B -->|No| D[End]
 ```
 
-Use mermaid diagrams when the user asks for flowcharts, process diagrams, org charts, timelines, sequence diagrams, pie charts, or any visual representation of relationships or processes.
+Supported diagram types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `erDiagram`, `gantt`, `pie`, `quadrantChart`, `gitgraph`, `timeline`, `mindmap`, `sankey-beta`, `xychart-beta`, `block-beta`. Do NOT use unsupported types such as `radarChart`, `radar`, or `spider` — Mermaid does not support radar/spider charts. If you need to visualise scores across dimensions (e.g., readiness levels), use a table or a `xychart-beta` bar chart instead.
 
 ## Emails
 You can format draft emails using fenced code blocks with the `email` language tag. These render as styled email cards with an "Open in Mail" button. Example:
