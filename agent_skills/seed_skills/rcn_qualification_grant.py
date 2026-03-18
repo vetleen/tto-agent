@@ -1,14 +1,14 @@
 """RCN Qualification Grant Application Drafter seed skill definition."""
 
 RCN_QUALIFICATION_GRANT = {
-    "slug": "rcn-qualification-grant",
+    "slug": "rcn-qualification-grant-drafter",
     "name": "RCN Qualification Grant Application Drafter",
     "description": """\
 Draft Research Council of Norway (Forskningsrådet) "Kvalifiseringsprosjekt" \
 (Qualification Project) grant applications. Combines gap analysis of existing \
 source materials with structured drafting of the 5-page project description.
 
-Use when the user mentions "Kvalifiseringsprosjekt", "qualification project", \
+Use when the user wants to write or review "Kvalifiseringsprosjekt", "qualification project", \
 "RCN grant", "Forskningsrådet", "Forskningsradet", "commercialisation grant", \
 "TRL", "technology transfer grant", or "innovation project funding" in the \
 context of a Norwegian research-council application.
@@ -23,46 +23,58 @@ Guide TTO professionals through drafting a Research Council of Norway \
 phases: information gathering, gap analysis, interactive gap filling, and \
 project description drafting.
 
+The project description follows the RCN template with three main sections, \
+each corresponding to an evaluation criterion:
+1. **Research and Innovation** (criterion 1) — ~1 page
+2. **Impacts and Outcomes** (criterion 2) — ~1–2 pages
+3. **Implementation** (criterion 3) — ~1–2 pages
+
 ## Phase 1 — Information gathering
 
 Search the attached data room for evidence covering the full checklist below. \
-For every item, note what you found and where (document + page/section).
+The checklist is organised to match the three sections of the RCN project \
+description template. For every item, note what you found and where \
+(document + page/section).
 
 ### Checklist
 
-**A. Technology & IP (items 1-10)**
+**A. Research and Innovation (Section 1, items 1–8)**
 1. Problem statement — what unmet need does the technology address?
-2. Technical solution description (mechanism, architecture, principle)
+2. Technical solution — mechanism, architecture, principle, intended use
 3. Current TRL level and evidence supporting the assessment
 4. Target TRL at project end
-5. Key technical risks and mitigation strategies
-6. IP status (patents filed/granted, freedom-to-operate, licensing)
-7. Competing / alternative solutions and differentiation
-8. Regulatory or standards requirements
-9. Prototype, proof-of-concept, or pilot data
-10. Publications or prior project results
+5. Prior research projects and key results (project numbers, types, approved \
+research organisation)
+6. Prototype, proof-of-concept, or pilot data
+7. Publications and prior project outputs
+8. How the innovation differs from existing solutions (state of the art)
 
-**B. Market & Commercialisation (items 11-20)**
-11. Target market segment(s) and size (TAM / SAM / SOM)
-12. Customer pain points — evidence of demand (interviews, LOIs, surveys)
-13. Value proposition — quantified benefit vs. status quo
-14. Business model outline (licensing, spin-off, sale, partnership)
-15. Revenue or savings projections (order of magnitude)
-16. Go-to-market timeline and key milestones
-17. Identified industry partner(s) and their role
-18. Market dialogue evidence (meetings, pilot agreements, letters of support)
-19. Competitor landscape and positioning
-20. Green transition or sustainability impact
+**B. Impacts and Outcomes (Section 2, items 9–20)**
+9. Target market, market size and customer segments
+10. Customer pain points — evidence of demand (interviews, LOIs, surveys)
+11. Value proposition — quantified benefit vs. status quo
+12. Competitive landscape and positioning
+13. Industry-specific requirements or regulations
+14. Industry partner(s) and their role
+15. Market dialogue evidence (meetings, pilot agreements, letters of support)
+16. Business model and commercialisation path (licensing, spin-off, sale, \
+partnership)
+17. Strategy for realisation — post-project plan, conditions, key \
+stakeholders/partners, key resources
+18. IP status and rights (patents, freedom-to-operate, licensing)
+19. Revenue or savings projections (order of magnitude)
+20. Societal, environmental, and sustainability impact (positive and negative)
 
-**C. Project Plan & Team (items 21-28)**
+**C. Implementation (Section 3, items 21–29)**
 21. Project objectives (SMART)
-22. Work packages with deliverables and go/no-go decision points
-23. Project timeline (Gantt-level)
-24. Budget breakdown by cost category and partner
-25. Team competence and roles
-26. Need for external expertise or sub-contractors
-27. Collaboration agreements or consortium setup
-28. Triggering effect — why public funding is necessary
+22. Key tasks, critical questions, and uncertainties
+23. Work packages with deliverables and go/no-go milestones
+24. Project timeline (Gantt-level)
+25. Budget breakdown by cost category and partner
+26. Key technical risks and mitigation strategies
+27. Team members, roles, and relevant experience
+28. External expertise, sub-contractors, and collaboration setup
+29. Triggering effect — why public funding is necessary
 
 Present a brief summary of findings to the user before moving to Phase 2.
 
@@ -80,8 +92,8 @@ Present the completed disposition to the user.
 ## Phase 3 — Interactive gap filling
 
 Walk the user through every ⚠️ and ❌ item, starting with the most critical \
-gaps (items that RCN evaluators weight heavily: triggering effect, market \
-dialogue, commercialisation plan, go/no-go milestones).
+gaps (items that RCN evaluators weight heavily:triggering effect, market dialogue, \
+strategy for realisation (i.e. the commercialization plan), go/no-go milestones, research results, societal impact).
 
 For each gap:
 1. Explain why this item matters for the application score.
@@ -95,15 +107,18 @@ Continue until the user is satisfied or explicitly moves to drafting.
 
 Load the "Project Description" template to the canvas using \
 `load_template_to_canvas`. Draft the full 5-page project description following \
-the template structure.
+the three-section RCN template structure.
 
 ### RCN-specific writing principles
 
-- **Frame everything as commercialisation, not research.** RCN \
+- **Frame research results toward commercialisation.** RCN \
 Kvalifiseringsprosjekt funds the path from research result to market, not \
-more research. Every sentence should point toward commercial value.
+more research. Every sentence should point toward commercial value. 
+
 - **Quantify benefits.** Replace vague claims ("significant market potential") \
-with numbers ("NOK 2.4B addressable market by 2028, targeting 5% share").
+with numbers ("NOK 2.4B addressable market by 2028, targeting 5% share"). But \
+DO NOT make anything up. If you need a piece of data you don't have, use [TBD] \
+as a placeholder.
 - **Show market dialogue.** Reference specific conversations, meetings, or \
 agreements with industry partners. Evaluators look for evidence that the \
 market has been consulted, not just desk research.
@@ -114,13 +129,15 @@ market has been consulted, not just desk research.
 contributing to sustainability. If there is a green angle, make it explicit.
 - **Demonstrate triggering effect.** Explain clearly why the project cannot \
 happen without public funding — what specific barriers does the grant remove?
+- **Describe the trigger effect.** Explain what successful project outcomes \
+will trigger — the next phase, follow-on investment, market entry.
 - **Include go/no-go milestones.** Show that the project has built-in \
 decision points to cut losses early if results are negative.
 - **Align budget with activities.** Every cost should trace to a work package. \
 Flag any mismatch.
 
-Draft section by section, pausing after each major section to let the user \
-review and provide feedback before continuing.""",
+Draft section by section, pausing after each major section (1, 2, 3) to let \
+the user review and provide feedback before continuing.""",
     "tool_names": ["view_template", "load_template_to_canvas"],
     "templates": {
         "Disposition": """\
@@ -133,48 +150,49 @@ review and provide feedback before continuing.""",
 
 ---
 
-## A. Technology & IP
+## A. Research and Innovation (Section 1)
 
 | # | Item | Status | Source | Summary |
 |---|------|--------|--------|---------|
 | 1 | Problem statement | | | |
-| 2 | Technical solution description | | | |
+| 2 | Technical solution (mechanism, architecture, intended use) | | | |
 | 3 | Current TRL level + evidence | | | |
 | 4 | Target TRL at project end | | | |
-| 5 | Key technical risks + mitigation | | | |
-| 6 | IP status | | | |
-| 7 | Competing solutions + differentiation | | | |
-| 8 | Regulatory / standards requirements | | | |
-| 9 | Prototype / PoC / pilot data | | | |
-| 10 | Publications / prior project results | | | |
+| 5 | Prior research projects + key results | | | |
+| 6 | Prototype / PoC / pilot data | | | |
+| 7 | Publications + prior project outputs | | | |
+| 8 | How innovation differs from existing solutions (state of the art) | | | |
 
-## B. Market & Commercialisation
+## B. Impacts and Outcomes (Section 2)
 
 | # | Item | Status | Source | Summary |
 |---|------|--------|--------|---------|
-| 11 | Target market segment(s) + size | | | |
-| 12 | Customer pain points / demand evidence | | | |
-| 13 | Value proposition (quantified) | | | |
-| 14 | Business model outline | | | |
-| 15 | Revenue / savings projections | | | |
-| 16 | Go-to-market timeline + milestones | | | |
-| 17 | Industry partner(s) + role | | | |
-| 18 | Market dialogue evidence | | | |
-| 19 | Competitor landscape + positioning | | | |
-| 20 | Green transition / sustainability | | | |
+| 9 | Target market, market size + customer segments | | | |
+| 10 | Customer pain points / demand evidence | | | |
+| 11 | Value proposition (quantified) | | | |
+| 12 | Competitive landscape + positioning | | | |
+| 13 | Industry requirements / regulations | | | |
+| 14 | Industry partner(s) + role | | | |
+| 15 | Market dialogue evidence | | | |
+| 16 | Business model + commercialisation path | | | |
+| 17 | Strategy for realisation (post-project) | | | |
+| 18 | IP status + rights | | | |
+| 19 | Revenue / savings projections | | | |
+| 20 | Societal, environmental + sustainability impact | | | |
 
-## C. Project Plan & Team
+## C. Implementation (Section 3)
 
 | # | Item | Status | Source | Summary |
 |---|------|--------|--------|---------|
 | 21 | Project objectives (SMART) | | | |
-| 22 | Work packages + go/no-go points | | | |
-| 23 | Project timeline | | | |
-| 24 | Budget breakdown | | | |
-| 25 | Team competence + roles | | | |
-| 26 | External expertise needs | | | |
-| 27 | Collaboration agreements | | | |
-| 28 | Triggering effect | | | |
+| 22 | Key tasks, questions + uncertainties | | | |
+| 23 | Work packages + go/no-go milestones | | | |
+| 24 | Project timeline | | | |
+| 25 | Budget breakdown | | | |
+| 26 | Key technical risks + mitigation | | | |
+| 27 | Team members, roles + experience | | | |
+| 28 | External expertise + collaboration setup | | | |
+| 29 | Triggering effect | | | |
 
 ---
 
@@ -182,108 +200,73 @@ review and provide feedback before continuing.""",
         "Project Description": """\
 # [Project Title]
 
-**Qualification Project — Research Council of Norway (Forskningsrådet)**
-
-*Target length: ~5 pages (12,000 characters excl. references)*
-
----
-
-## 1. Background and Need (~0.5 page)
+[Short descriptive title.]
 
 [Describe the unmet need or market failure the technology addresses. \
 Quantify the problem. Reference relevant trends, policy drivers, or \
 industry pain points.]
 
-## 2. Technology and Innovation (~1 page)
+[If the project has applied for a Commercialisation Project in the past but \
+not received funding, explain what has changed since the previous application \
+and state the project number.]
 
+---
+
+## 1. Research and Innovation (~1 page)
+
+
+
+### Research Results
 [Describe the technical solution: mechanism, architecture, or principle. \
-State current TRL and target TRL at project end. Highlight what is novel \
-compared to existing solutions. Reference IP status.]
+State current TRL and target TRL at project end. Highlight what is novel in a techbnical sense \
+compared to existing solutions. Reference IP status. Summarise prototype data, \
+publications, or prior project results that demonstrate feasibility.]
 
-### 2.1 Current Status and Prior Results
+### Level of Innovation
+[Describe the problem, to solve from the user or customer perspective. Describe how \
+that problem is solved today ("State-of-the-art"). Describe how the new invention \
+can solve the problem, hiughlighting it's advantages.]
+---
 
-[Summarise prototype data, publications, or prior project results that \
-demonstrate feasibility.]
+## 2. Impacts and Outcomes (~1–2 pages)
 
-### 2.2 Technical Risks and Mitigation
-
-[Identify key technical risks. For each, describe the mitigation strategy \
-and how go/no-go milestones address the risk.]
-
-## 3. Market and Commercialisation (~1.5 pages)
-
-### 3.1 Target Market
-
+### Market Insight and Areas of Application
 [Define market segments. Quantify TAM / SAM / SOM with sources. Describe \
 target customers.]
-
-### 3.2 Value Proposition
-
 [Quantify the benefit vs. status quo. Use concrete numbers: cost savings, \
 time reduction, performance improvement.]
-
-### 3.3 Business Model and Go-to-Market
-
+[Compare against alternatives. Use a positioning table if helpful. Explain \
+sustainable differentiation.]
+### Strategy for Realisation
 [Describe the commercialisation path: licensing, spin-off, partnership, or \
 direct sales. Include timeline and key milestones.]
-
-### 3.4 Market Dialogue and Industry Engagement
-
 [Reference specific meetings, LOIs, pilot agreements, or letters of support. \
 Name partners where possible. Demonstrate that market demand is validated \
 beyond desk research.]
 
-### 3.5 Competitive Landscape
-
-[Compare against alternatives. Use a positioning table if helpful. Explain \
-sustainable differentiation.]
-
-## 4. Green Transition and Societal Impact (~0.5 page)
+### Benefit to Society and Sustainability
 
 [Describe contribution to sustainability / green transition if relevant. \
 Quantify environmental benefits. Reference UN SDGs or national green \
-transition priorities.]
-
-## 5. Project Plan (~1 page)
-
-### 5.1 Objectives
-
-[List SMART project objectives.]
-
-### 5.2 Work Packages and Milestones
-
-| WP | Title | Months | Deliverable | Go/No-Go |
-|----|-------|--------|-------------|----------|
-| WP1 | [Title] | M1-M6 | [Deliverable] | [Decision criterion] |
-| WP2 | [Title] | M4-M12 | [Deliverable] | [Decision criterion] |
-| WP3 | [Title] | M10-M18 | [Deliverable] | — |
-
-### 5.3 Budget Overview
-
-| Cost Category | Amount (kNOK) | Notes |
-|---------------|--------------|-------|
-| Personnel | | |
-| Equipment | | |
-| External services | | |
-| Other operating costs | | |
-| **Total** | | |
-
-## 6. Project Team and Triggering Effect (~0.5 page)
-
-### 6.1 Team Competence
-
-[Describe key personnel, their roles, and relevant expertise.]
-
-### 6.2 Triggering Effect (Utløsende effekt)
-
-[Explain why public funding is necessary. What specific barriers does the \
-grant remove? What happens if funding is not received?]
-
+transition priorities. Keep this section short and to the point. It's just \
+check on the reviewers list, not something that actually sells.]
 ---
 
-## References
+## 3. Implementation (~1–2 pages)
 
-[Numbered reference list]
+### Project Plan
+[List SMART project objectives for the project. Explain why public funding is necessary. \
+ What specific barriers does the grant remove? What happens if funding is not received?]  
+| WP | Title | Period (months) | Key Activities | Deliverable or Milestone | Go/No-Go |
+|----|-------|--------|---------------|-------------|----------|
+| WP1 | [Title] | M1–M6 | [Activities] | [Deliverable or Milestone] | [Criterion] |
+| WP2 | [Title] | M4–M12 | [Activities] | [Deliverable or Milestone] | [Criterion] |
+| WP3 | [Title] | M10–M18 | [Activities] | [Deliverable or Milestone] | — |
+
+[Comment briefly what the money will be spent on (Personell, Travel, Marketing, Consultants? IP \
+Filings. Don't allocate anything to equipment, and don't mention patent upkeep!)]
+### Management, Team and Expertise
+[Describe key personnel, their roles, and relevant expertise.]
 """,
     },
 }
