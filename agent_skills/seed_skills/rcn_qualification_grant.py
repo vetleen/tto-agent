@@ -135,6 +135,12 @@ will trigger — the next phase, follow-on investment, market entry.
 decision points to cut losses early if results are negative.
 - **Align budget with activities.** Every cost should trace to a work package. \
 Flag any mismatch.
+- **Reference sources for substantive claims.** Every factual claim — market \
+sizes, statistics, research findings, regulatory requirements, competitive \
+comparisons — should cite its source inline (e.g., "(Kilde: Report Name, \
+2025)" or "(Source: Author, Year)"). When in doubt, add a reference; the \
+user can always remove unnecessary ones later. Unreferenced claims weaken \
+credibility with evaluators.
 
 Draft section by section, pausing after each major section (1, 2, 3) to let \
 the user review and provide feedback before continuing.""",
@@ -221,27 +227,31 @@ and state the project number.]
 new and different? ). State which approved research organisation is behind the \
 research and who conducted it.Make sure to describe what research projects (include \
 project numbers and project types - RCN, others) have led to the results. \
-Summarise prototype data, publications, or prior project results that demonstrate feasibility.\
+Summarise prototype data, publications, or prior project results that demonstrate feasibility. \
+Reference publications and project outputs by name/number.\
 Describe why these research results support the feasibility and potential of the innovation.\
-State current TRL and target TRL at project end. 
+State current TRL and target TRL at project end.
 
 ### Level of Innovation
 [Describe the needs or problems that potentially can be solved from the user or \
 customer perspective. Describe how that problem is solved today ("State-of-the-art"). \
 Describe the new solution, the intended use, and the mechanism \
 by which the product produces an effect. Describe how the new invention \
-can solve the problem, highlighting its advantages.]
+can solve the problem, highlighting its advantages. Cite sources for any \
+state-of-the-art claims or comparative data.]
 ---
 
 ## 2. Impacts and Outcomes (~1–2 pages)
 
 ### Market Insight and Areas of Application
-[Define market segments and areas of application. Quantify the market size with sources. Describe \
-target customers and partners. Note any industry-specific requirements or regulations. \
+[Define market segments and areas of application. Quantify the market size \
+and cite the source for every figure (e.g., "(Source: Grand View Research, 2025)"). Describe \
+target customers and partners. Note any industry-specific requirements or regulations, with \
+references to the relevant standards or directives. \
 Describe customer pain points, and quantify the benefit vs. status quo. Use concrete numbers: cost savings, \
-time reduction, performance improvement. Compare the new solution against alternatives. Use a \
-positioning table if helpful. All-in-all this section should show the reader why the innovation is \
-commercially interesting.]
+time reduction, performance improvement — each with a source where available. Compare the new solution \
+against alternatives. Use a positioning table if helpful. All-in-all this section should show the reader \
+why the innovation is commercially interesting.]
 
 ### Strategy for Realisation
 [Describe the commercialisation path: usually licensing or spin-off. Draft a plan for how the project will realise \
@@ -257,7 +267,8 @@ plan for how the project will realise its value creation potential. ]
 
 [Describe potential positive and negative societal and environmental impacts \
 of the intended product/process/service. Quantify environmental benefits where \
-possible. Reference UN SDGs or national green transition priorities if relevant. \
+possible, citing sources for any statistics. Reference UN SDGs or national \
+green transition priorities if relevant. \
 Keep this section short and to the point. It's just a check on the reviewers \
 list, not something that actually sells.]
 ---
