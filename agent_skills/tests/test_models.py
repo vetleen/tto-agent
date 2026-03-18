@@ -220,13 +220,14 @@ class SeedSystemSkillsTests(TestCase):
         )
 
     def test_seed_is_idempotent(self):
-        from agent_skills.seed_skills import seed_system_skills
+        from agent_skills.seed_skills import SYSTEM_SKILLS, seed_system_skills
 
         seed_system_skills()
         seed_system_skills()
 
         self.assertEqual(
-            AgentSkill.objects.filter(level="system").count(), 3
+            AgentSkill.objects.filter(level="system").count(),
+            len(SYSTEM_SKILLS),
         )
 
     def test_rcn_qualification_grant_fields(self):

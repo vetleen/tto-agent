@@ -1,10 +1,12 @@
 """System skill definitions seeded on every migrate."""
 
+from agent_skills.seed_skills.irl_project_assessor import IRL_PROJECT_ASSESSOR
 from agent_skills.seed_skills.rcn_qualification_grant import RCN_QUALIFICATION_GRANT
 from agent_skills.seed_skills.skill_creator import SKILL_CREATOR
+from agent_skills.seed_skills.web_deep_researcher import WEB_DEEP_RESEARCHER
 from agent_skills.seed_skills.written_assignment_writer import WRITTEN_ASSIGNMENT_WRITER
 
-SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, RCN_QUALIFICATION_GRANT]
+SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, RCN_QUALIFICATION_GRANT, WEB_DEEP_RESEARCHER, IRL_PROJECT_ASSESSOR]
 
 
 def seed_system_skills():
