@@ -501,11 +501,14 @@
   .dark .email-header-value { color: rgb(243 244 246); }
   .email-subject { font-weight: 600; color: rgb(17 24 39); font-size: 1rem; }
   .dark .email-subject { color: rgb(243 244 246); }
-  .email-body { padding: 0.75rem 1rem; white-space: pre-wrap; word-break: break-word; font-size: 0.875rem; color: rgb(55 65 81); line-height: 1.6; }
+  .email-body { padding: 0.75rem 1rem; word-break: break-word; font-size: 0.875rem; color: rgb(55 65 81); line-height: 1.6; }
   .dark .email-body { color: rgb(209 213 219); }
-  .email-action-btn { position: absolute; top: 0.5rem; right: 0.5rem; opacity: 0; background: rgb(37 99 235); color: white; border: none; border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-size: 0.75rem; cursor: pointer; transition: opacity 0.15s; z-index: 10; display: flex; align-items: center; gap: 0.25rem; }
-  .email-card:hover .email-action-btn { opacity: 1; }
-  .email-action-btn:hover { background: rgb(29 78 216); }
+  .email-action-btn { position: absolute; top: 0.5rem; right: 0.5rem; background: rgb(37 99 235); color: white !important; border: none; border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-size: 0.75rem; cursor: pointer; z-index: 10; display: flex; align-items: center; gap: 0.25rem; text-decoration: none !important; font-weight: 500; }
+  .email-action-btn:hover { background: rgb(29 78 216); color: white !important; }
+  .email-body p { margin: 0 0 0.5em 0; }
+  .email-body p:last-child { margin-bottom: 0; }
+  .email-body strong { font-weight: 600; }
+  .email-body em { font-style: italic; }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
 
@@ -701,13 +704,24 @@
     return { to: headers.to || '', cc: headers.cc || '', bcc: headers.bcc || '', subject: headers.subject || '', body: lines.slice(bodyStart).join('\n').trim() };
   }
 
+  function stripMarkdown(text) {
+    return text
+      .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold**
+      .replace(/__(.+?)__/g, '$1')        // __bold__
+      .replace(/\*(.+?)\*/g, '$1')        // *italic*
+      .replace(/_(.+?)_/g, '$1')          // _italic_
+      .replace(/~~(.+?)~~/g, '$1')        // ~~strikethrough~~
+      .replace(/`(.+?)`/g, '$1')          // `code`
+      .replace(/\[(.+?)\]\(.+?\)/g, '$1'); // [link](url)
+  }
+
   function buildMailtoUrl(parsed) {
     var url = 'mailto:' + encodeURIComponent(parsed.to);
     var params = [];
     if (parsed.cc) params.push('cc=' + encodeURIComponent(parsed.cc));
     if (parsed.bcc) params.push('bcc=' + encodeURIComponent(parsed.bcc));
-    if (parsed.subject) params.push('subject=' + encodeURIComponent(parsed.subject));
-    if (parsed.body) params.push('body=' + encodeURIComponent(parsed.body));
+    if (parsed.subject) params.push('subject=' + encodeURIComponent(stripMarkdown(parsed.subject)));
+    if (parsed.body) params.push('body=' + encodeURIComponent(stripMarkdown(parsed.body)));
     if (params.length) url += '?' + params.join('&');
     return url;
   }
@@ -728,7 +742,9 @@
       if (parsed.subject) headerHtml += '<div class="email-subject">' + escapeHtml(parsed.subject) + '</div>';
       var html = '<div class="email-card">';
       if (headerHtml) html += '<div class="email-header">' + headerHtml + '</div>';
-      html += '<div class="email-body">' + escapeHtml(parsed.body) + '</div>';
+      var bodyHtml = escapeHtml(parsed.body);
+      try { bodyHtml = marked.parse(parsed.body); } catch(e) {}
+      html += '<div class="email-body">' + bodyHtml + '</div>';
       html += '<a class="email-action-btn" title="Open in default mail app"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg> Open in Mail</a>';
       html += '</div>';
       el.innerHTML = html;

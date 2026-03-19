@@ -205,6 +205,7 @@ The provisional patent application has been filed...
 ```
 
 Use email blocks when drafting emails, reply templates, or any correspondence the user might want to send.
+Do not use markdown formatting (e.g. **bold**, *italic*) in email subjects or bodies — it will not render and will appear as raw asterisks in the recipient's mail client.
 """
 
     if has_task_tool:
