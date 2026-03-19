@@ -488,8 +488,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     self.data_room_ids, content,
                 )
 
-            # Build system prompt
-            from chat.prompts import build_system_prompt
+            # Build system prompt (split into static/semi-static/dynamic for caching)
+            from chat.prompts import (
+                build_dynamic_context,
+                build_semi_static_prompt,
+                build_static_system_prompt,
+            )
             data_rooms = None
             if self.data_room_ids:
                 data_rooms = await self._get_data_room_info(self.data_room_ids)
@@ -505,19 +509,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
             tasks = await self._get_thread_tasks(str(thread.id))
             subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("create_subagent") else None
             parallel_subagents = prefs.parallel_subagents if prefs else True
-            system_prompt = build_system_prompt(
-                data_rooms=data_rooms,
-                history_meta=meta,
-                doc_context=doc_context,
+            static_system = build_static_system_prompt(
                 organization_name=org_name,
-                canvases=canvases_info["canvases"] if canvases_info else None,
-                active_canvas=canvases_info["active_canvas"] if canvases_info else None,
-                skill=skill_obj,
                 has_subagent_tool=self._has_tool("create_subagent"),
-                subagent_runs=subagent_runs if subagent_runs else None,
-                tasks=tasks,
                 has_task_tool=self._has_tool("update_tasks"),
                 parallel_subagents=parallel_subagents,
+            )
+            semi_static_system = build_semi_static_prompt(
+                data_rooms=data_rooms,
+                canvases=canvases_info["canvases"] if canvases_info else None,
+                skill=skill_obj,
+            )
+            dynamic_context = build_dynamic_context(
+                doc_context=doc_context,
+                active_canvas=canvases_info["active_canvas"] if canvases_info else None,
+                tasks=tasks,
+                subagent_runs=subagent_runs if subagent_runs else None,
+                history_meta=meta,
+                data_rooms=data_rooms,
             )
 
             # Mark undelivered completed sub-agent results as delivered
@@ -531,7 +540,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             # Stream LLM response
             await self._stream_response(
-                thread, system_prompt, history,
+                thread, static_system, history,
+                semi_static_system=semi_static_system,
+                dynamic_context=dynamic_context,
                 requested_model=requested_model, thinking=thinking,
                 resolved_model=model,
             )
@@ -553,12 +564,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _stream_response(
         self, thread, system_prompt, history,
+        semi_static_system="",
+        dynamic_context="",
         requested_model=None, thinking=False, resolved_model=None,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
         from llm.types import ChatRequest, Message, RunContext
 
+        # System message contains ONLY the static prompt (never changes).
+        # Semi-static content (date, skill, data rooms, canvas metadata) is
+        # injected into the last user message alongside dynamic context, so
+        # the system message + conversation history prefix always caches.
         messages = [Message(role="system", content=system_prompt)]
         for msg in history:
             tool_calls = None
@@ -580,6 +597,34 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Enrich user messages that have image attachments with multimodal content blocks
         await self._enrich_with_attachments(messages, history, resolved_model)
+
+        # Inject semi-static + dynamic context into the last user message.
+        # This keeps the system message (static) + conversation history prefix
+        # fully cacheable. Semi-static content (date, skill, data rooms, canvas
+        # metadata) changes rarely; dynamic content changes every turn.
+        injected_context = ""
+        if semi_static_system and dynamic_context:
+            injected_context = semi_static_system + "\n\n" + dynamic_context
+        elif semi_static_system:
+            injected_context = semi_static_system
+        elif dynamic_context:
+            injected_context = dynamic_context
+
+        if injected_context:
+            for i in range(len(messages) - 1, 0, -1):
+                if messages[i].role == "user":
+                    original = messages[i].content
+                    if isinstance(original, str):
+                        messages[i] = messages[i].model_copy(
+                            update={"content": injected_context + "\n\n" + original}
+                        )
+                    elif isinstance(original, list):
+                        # Multimodal content (images): prepend a text block
+                        context_block = {"type": "text", "text": injected_context}
+                        messages[i] = messages[i].model_copy(
+                            update={"content": [context_block] + list(original)}
+                        )
+                    break
 
         context = RunContext.create(
             user_id=self.user.pk,

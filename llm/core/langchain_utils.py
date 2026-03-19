@@ -39,12 +39,15 @@ def _apply_anthropic_cache_control(lc_messages: list, system_content: str | None
     """Add cache_control breakpoints for Anthropic prompt caching.
 
     Places cache_control at two points:
-    1. System message -- always cached (stable across turns)
+    1. System message -- always cached (static-only, never changes)
     2. Second-to-last message -- caches the entire conversation prefix
 
-    This means each new turn only pays full price for the latest user message;
-    everything before hits the cache. Requires 1024+ tokens to activate --
-    short conversations simply won't cache (no harm).
+    Semi-static and dynamic content are injected into the last user message
+    (not the system message), so the system + history prefix is always stable
+    and cacheable.
+
+    Requires 1024+ tokens to activate -- short conversations simply won't
+    cache (no harm).
     """
     result = []
     for i, msg in enumerate(lc_messages):

@@ -173,7 +173,9 @@ class ChatEndToEndTests(TransactionTestCase):
         self.assertEqual(roles[0], "system")
         self.assertIn("helpful assistant", req.messages[0].content.lower())
         self.assertEqual(req.messages[-1].role, "user")
-        self.assertEqual(req.messages[-1].content, "Hi")
+        # User message has semi-static/dynamic context prepended for caching;
+        # the original user text should still be present at the end.
+        self.assertIn("Hi", req.messages[-1].content)
         self.assertEqual(req.model, "test-model")
 
     @patch.dict(

@@ -1270,7 +1270,7 @@ class MultiCanvasPromptTests(TestCase):
 
         prompt = build_system_prompt(canvases=canvases, active_canvas=FakeCanvas())
         self.assertIn("The actual content", prompt)
-        self.assertIn('Active canvas: "Only"', prompt)
+        self.assertIn('Active Canvas Content: "Only"', prompt)
 
     def test_no_canvases_prompt(self):
         from chat.prompts import build_system_prompt

@@ -152,3 +152,15 @@ class AnthropicCacheControlTests(TestCase):
         self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral"})
         # User message should NOT have cache_control
         self.assertNotIn("cache_control", result[1].additional_kwargs)
+
+    def test_static_system_always_single_block(self):
+        """System message is always a single cached block (static-only content)."""
+        messages = [
+            Message(role="system", content="Static instructions only"),
+            Message(role="user", content="Hello"),
+        ]
+        result = to_langchain_messages(messages, provider="anthropic")
+        self.assertIsInstance(result[0].content, list)
+        self.assertEqual(len(result[0].content), 1)
+        self.assertEqual(result[0].content[0]["text"], "Static instructions only")
+        self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral"})
