@@ -1436,6 +1436,7 @@
     if (et === "data_room.detached") { removeDataRoomPill(data.data_room_id); return; }
     if (et === "error") {
       const msg = (data.data && data.data.message) || "An error occurred";
+      const errorCode = (data.data && data.data.error_code) || null;
       if (currentStreamingElement) { finishStreaming("[Error: " + escapeHtml(msg) + "]"); } else { appendError(msg); }
       enableInput(); return;
     }

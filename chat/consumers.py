@@ -787,11 +787,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "event_type": "error",
                 "data": {"message": "This request is not allowed by the current policy."},
             }))
-        except LLMProviderError:
+        except LLMProviderError as exc:
             logger.exception("LLM provider error during streaming response")
+            error_data = {"message": str(exc) or "The AI service encountered an error. Please try again."}
+            if hasattr(exc, "error_code"):
+                error_data["error_code"] = exc.error_code
             await self.send(text_data=json.dumps({
                 "event_type": "error",
-                "data": {"message": "The AI service encountered an error. Please try again."},
+                "data": error_data,
             }))
         except Exception:
             logger.exception("Unexpected error streaming LLM response")

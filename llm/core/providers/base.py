@@ -10,9 +10,19 @@ import logging
 import time
 from typing import Iterator
 
+from dataclasses import dataclass
+
 from llm.core.interfaces import ChatModel
 from llm.core.langchain_utils import to_langchain_messages, parse_tool_calls_from_ai_message
-from llm.service.errors import LLMProviderError, LLMRateLimitError
+from llm.service.errors import (
+    LLMAuthError,
+    LLMConnectionError,
+    LLMOverloadedError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMRequestTooLargeError,
+    LLMTimeoutError,
+)
 from llm.service.pricing import calculate_cost
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
@@ -26,6 +36,91 @@ _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_INITIAL_WAIT = 30  # seconds
 _RATE_LIMIT_BACKOFF_FACTOR = 2
 _RATE_LIMIT_MAX_WAIT = 120  # seconds
+
+# Token-related keywords that indicate a request-too-large error on 400
+_TOKEN_KEYWORDS = ("token", "too long", "too large", "context length", "max_tokens")
+
+
+@dataclass(frozen=True)
+class ClassifiedError:
+    """Result of classifying an API error."""
+
+    error_code: str
+    user_message: str
+    log_level: str  # "warning" or "error"
+
+
+# Mapping from error_code to the appropriate exception subclass
+_ERROR_CODE_TO_EXCEPTION: dict[str, type[LLMProviderError]] = {
+    "rate_limited": LLMRateLimitError,
+    "overloaded": LLMOverloadedError,
+    "auth_error": LLMAuthError,
+    "request_too_large": LLMRequestTooLargeError,
+    "timeout": LLMTimeoutError,
+    "connection_error": LLMConnectionError,
+    "server_error": LLMProviderError,
+    "unknown": LLMProviderError,
+}
+
+
+def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
+    """Inspect an exception and return a classified error with user-facing message."""
+    status = getattr(exc, "status_code", None)
+    msg_lower = str(exc).lower()
+
+    if status == 429:
+        return ClassifiedError(
+            error_code="rate_limited",
+            user_message=f"{provider_label} is rate limiting requests. Please wait a moment and try again.",
+            log_level="warning",
+        )
+    if status in (503, 529):
+        return ClassifiedError(
+            error_code="overloaded",
+            user_message=(
+                f"{provider_label} is currently overloaded. This is a temporary issue on their end "
+                "— try again in a few minutes or switch to a different model."
+            ),
+            log_level="warning",
+        )
+    if status in (401, 403):
+        return ClassifiedError(
+            error_code="auth_error",
+            user_message=f"Authentication failed with {provider_label}. Please contact support.",
+            log_level="error",
+        )
+    if status == 400 and any(kw in msg_lower for kw in _TOKEN_KEYWORDS):
+        return ClassifiedError(
+            error_code="request_too_large",
+            user_message=(
+                "The request was too large for the model to process. "
+                "Try removing some attachments or shortening the conversation."
+            ),
+            log_level="warning",
+        )
+    if status == 500:
+        return ClassifiedError(
+            error_code="server_error",
+            user_message=f"{provider_label} experienced an internal error. Please try again.",
+            log_level="error",
+        )
+    if status == 408 or isinstance(exc, TimeoutError):
+        return ClassifiedError(
+            error_code="timeout",
+            user_message=f"The request to {provider_label} timed out. Please try again.",
+            log_level="warning",
+        )
+    if isinstance(exc, (ConnectionError, OSError)):
+        return ClassifiedError(
+            error_code="connection_error",
+            user_message=f"Unable to reach {provider_label}. Please check your connection and try again.",
+            log_level="warning",
+        )
+    return ClassifiedError(
+        error_code="unknown",
+        user_message=f"{provider_label} encountered an unexpected error. Please try again.",
+        log_level="error",
+    )
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -200,12 +295,17 @@ class BaseLangChainChatModel(ChatModel):
                 break
             except Exception as exc:
                 if not _is_rate_limit_error(exc):
-                    logger.exception(
-                        "LLM generate failed model=%s provider=%s run_id=%s",
-                        self.name, self._provider_label, run_id,
+                    classified = classify_api_error(exc, self._provider_label)
+                    log_fn = getattr(logger, classified.log_level, logger.error)
+                    log_fn(
+                        "LLM generate failed model=%s provider=%s error_code=%s run_id=%s",
+                        self.name, self._provider_label, classified.error_code, run_id,
+                        exc_info=True,
                     )
-                    raise LLMProviderError(
-                        f"{self._provider_label} generate failed for model={self.name}"
+                    exc_cls = _ERROR_CODE_TO_EXCEPTION.get(classified.error_code, LLMProviderError)
+                    raise exc_cls(
+                        classified.user_message,
+                        error_code=classified.error_code,
                     ) from exc
                 last_exc = exc
                 if attempt < _RATE_LIMIT_MAX_RETRIES:
@@ -329,13 +429,18 @@ class BaseLangChainChatModel(ChatModel):
                 if _is_rate_limit_error(exc) and attempt < _RATE_LIMIT_MAX_RETRIES:
                     # Only retry if no tokens have been streamed yet
                     if output_text_parts:
+                        mid_classified = classify_api_error(exc, self._provider_label)
                         logger.error(
                             "LLM stream rate limited mid-stream model=%s provider=%s run_id=%s",
                             self.name, self._provider_label, run_id,
                         )
                         yield StreamEvent(
                             event_type="error",
-                            data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
+                            data={
+                                "message": mid_classified.user_message,
+                                "error_code": mid_classified.error_code,
+                                "details": str(exc),
+                            },
                             sequence=sequence,
                             run_id=run_id,
                         )
@@ -357,13 +462,20 @@ class BaseLangChainChatModel(ChatModel):
                     accumulated = None
                     output_text_parts = []
                 else:
-                    logger.exception(
-                        "LLM stream error model=%s provider=%s run_id=%s",
-                        self.name, self._provider_label, run_id,
+                    classified = classify_api_error(exc, self._provider_label)
+                    log_fn = getattr(logger, classified.log_level, logger.error)
+                    log_fn(
+                        "LLM stream error model=%s provider=%s error_code=%s run_id=%s",
+                        self.name, self._provider_label, classified.error_code, run_id,
+                        exc_info=True,
                     )
                     yield StreamEvent(
                         event_type="error",
-                        data={"message": f"{self._provider_label} streaming failure", "details": str(exc)},
+                        data={
+                            "message": classified.user_message,
+                            "error_code": classified.error_code,
+                            "details": str(exc),
+                        },
                         sequence=sequence,
                         run_id=run_id,
                     )
@@ -372,7 +484,10 @@ class BaseLangChainChatModel(ChatModel):
         if not stream_succeeded:
             yield StreamEvent(
                 event_type="error",
-                data={"message": f"{self._provider_label} rate limited (retries exhausted)"},
+                data={
+                    "message": f"{self._provider_label} is rate limiting requests. Please wait a moment and try again.",
+                    "error_code": "rate_limited",
+                },
                 sequence=sequence,
                 run_id=run_id,
             )

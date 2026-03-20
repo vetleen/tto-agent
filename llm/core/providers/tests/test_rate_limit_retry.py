@@ -11,7 +11,7 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from llm.core.providers.base import BaseLangChainChatModel
-from llm.service.errors import LLMProviderError, LLMRateLimitError
+from llm.service.errors import LLMAuthError, LLMOverloadedError, LLMProviderError, LLMRateLimitError
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
 
@@ -84,10 +84,24 @@ class TestGenerateErrorHandling(TestCase):
     def test_generate_non_rate_limit_error_raises_provider_error(self, mock_sleep):
         model = _make_model()
         model._client.invoke = MagicMock(side_effect=_auth_error())
-        with self.assertRaises(LLMProviderError) as ctx:
+        with self.assertRaises(LLMAuthError) as ctx:
             model.generate(_make_request())
         self.assertNotIsInstance(ctx.exception, LLMRateLimitError)
+        self.assertEqual(ctx.exception.error_code, "auth_error")
         # No retries for non-429 errors
+        self.assertEqual(model._client.invoke.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_generate_overloaded_raises_LLMOverloadedError(self, mock_sleep):
+        """529 error raises LLMOverloadedError with correct error_code."""
+        model = _make_model()
+        exc = Exception("overloaded")
+        exc.status_code = 529
+        model._client.invoke = MagicMock(side_effect=exc)
+        with self.assertRaises(LLMOverloadedError) as ctx:
+            model.generate(_make_request())
+        self.assertEqual(ctx.exception.error_code, "overloaded")
+        self.assertIn("overloaded", str(ctx.exception))
         self.assertEqual(model._client.invoke.call_count, 1)
         mock_sleep.assert_not_called()
 
@@ -172,6 +186,23 @@ class TestStreamErrorHandling(TestCase):
         events = list(model.stream(_make_request()))
         event_types = [e.event_type for e in events]
         self.assertIn("error", event_types)
+        error_event = [e for e in events if e.event_type == "error"][0]
+        self.assertEqual(error_event.data["error_code"], "auth_error")
+        self.assertEqual(model._client.stream.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_stream_overloaded_yields_correct_error_code(self, mock_sleep):
+        """529 error yields an error event with error_code='overloaded'."""
+        model = _make_model()
+        exc = Exception("overloaded")
+        exc.status_code = 529
+        model._client.stream = MagicMock(side_effect=exc)
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        error_event = [e for e in events if e.event_type == "error"][0]
+        self.assertEqual(error_event.data["error_code"], "overloaded")
+        self.assertIn("overloaded", error_event.data["message"])
         self.assertEqual(model._client.stream.call_count, 1)
         mock_sleep.assert_not_called()
 
