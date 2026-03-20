@@ -598,6 +598,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Enrich user messages that have image attachments with multimodal content blocks
         await self._enrich_with_attachments(messages, history, resolved_model)
 
+        # Deduplicate tool results from prior turns to reduce token waste
+        from chat.dedup import deduplicate_tool_results
+        messages = deduplicate_tool_results(messages, dynamic_context=dynamic_context)
+
         # Inject semi-static + dynamic context into the last user message.
         # This keeps the system message (static) + conversation history prefix
         # fully cacheable. Semi-static content (date, skill, data rooms, canvas

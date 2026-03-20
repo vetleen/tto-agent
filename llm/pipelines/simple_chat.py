@@ -233,6 +233,9 @@ class SimpleChatPipeline(BasePipeline):
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
 
+            from chat.dedup import deduplicate_tool_results
+            new_messages = deduplicate_tool_results(new_messages)
+
             req = req.model_copy(update={"messages": new_messages})
 
         # Max iterations reached: one final generate WITHOUT tools,
@@ -373,6 +376,9 @@ class SimpleChatPipeline(BasePipeline):
                 new_messages.append(
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
+
+            from chat.dedup import deduplicate_tool_results
+            new_messages = deduplicate_tool_results(new_messages)
 
             req = req.model_copy(update={"messages": new_messages})
 
