@@ -1464,7 +1464,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Replace plain-text content with multimodal content blocks for messages with attachments."""
         import base64
 
-        from chat.services import build_image_content_block
+        from chat.services import (
+            SUPPORTED_DOCX_TYPES,
+            SUPPORTED_IMAGE_TYPES,
+            SUPPORTED_PDF_TYPES,
+            SUPPORTED_TEXT_TYPES,
+            build_image_content_block,
+            build_pdf_content_block,
+            build_text_content_block,
+            extract_docx_text,
+        )
 
         # Collect all attachment IDs from history
         all_ids = []
@@ -1504,13 +1513,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     continue
                 try:
                     file_bytes = await self._read_attachment_file(att)
-                    b64 = base64.b64encode(file_bytes).decode("ascii")
-                    block = build_image_content_block(b64, att.content_type, provider)
+                    ct = att.content_type
+
+                    if ct in SUPPORTED_IMAGE_TYPES:
+                        b64 = base64.b64encode(file_bytes).decode("ascii")
+                        block = build_image_content_block(b64, ct, provider)
+                    elif ct in SUPPORTED_PDF_TYPES:
+                        b64 = base64.b64encode(file_bytes).decode("ascii")
+                        block = build_pdf_content_block(b64, att.original_filename, provider)
+                    elif ct in SUPPORTED_DOCX_TYPES:
+                        extracted = extract_docx_text(file_bytes)
+                        block = build_text_content_block(extracted, att.original_filename)
+                    elif ct in SUPPORTED_TEXT_TYPES:
+                        decoded = file_bytes.decode("utf-8", errors="replace")
+                        block = build_text_content_block(decoded, att.original_filename)
+                    else:
+                        continue
+
                     content_blocks.append(block)
                 except Exception:
                     logger.exception("Failed to read attachment %s", att_id)
 
-            if len(content_blocks) > 1:  # has at least text + one image
+            if len(content_blocks) > 1:  # has at least text + one attachment
                 message_obj.content = content_blocks
 
     @database_sync_to_async
@@ -1779,29 +1803,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
             return
 
-        if args:
-            emoji = args.strip()
+        hint = args.strip()[:100] if args else None
+        try:
+            emoji = await self._auto_pick_emoji(thread, hint=hint)
             await self._update_thread_emoji(thread_id, emoji)
             await self._send_command_result(
                 "/tag", "ok", f"Tagged thread with {emoji}",
                 extra={"emoji": emoji, "thread_id": str(thread_id)},
             )
-        else:
-            # Auto-pick emoji via LLM
-            try:
-                emoji = await self._auto_pick_emoji(thread)
-                await self._update_thread_emoji(thread_id, emoji)
-                await self._send_command_result(
-                    "/tag", "ok", f"Tagged thread with {emoji}",
-                    extra={"emoji": emoji, "thread_id": str(thread_id)},
-                )
-            except Exception:
-                logger.exception("Failed to auto-pick emoji")
-                await self._send_command_result(
-                    "/tag", "error", "Failed to auto-pick emoji.",
-                )
+        except Exception:
+            logger.exception("Failed to auto-pick emoji")
+            await self._send_command_result(
+                "/tag", "error", "Failed to pick emoji.",
+            )
 
-    async def _auto_pick_emoji(self, thread):
+    async def _auto_pick_emoji(self, thread, *, hint=None):
         """Pick an emoji for a thread using a cheap LLM call."""
         from llm import get_llm_service
         from llm.types import ChatRequest, Message, RunContext
@@ -1820,8 +1836,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         prompt = (
             "Pick a single emoji that best represents this conversation. "
-            f"Reply with ONLY the emoji, nothing else.\n\n{context_text}"
+            "Reply with ONLY the emoji, nothing else.\n\n"
         )
+        if hint:
+            prompt += f"The user asked that you tag it with: {hint}\n\n"
+        prompt += context_text
         context = RunContext.create(
             user_id=self.user.pk,
             conversation_id=str(thread.id),
