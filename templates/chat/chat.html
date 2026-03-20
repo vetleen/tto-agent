@@ -118,15 +118,12 @@
         >
           <span id="thinking-toggle-knob" class="pointer-events-none inline-block h-3.5 w-3.5 translate-x-0 rounded-full bg-white shadow ring-0 transition-transform duration-200"></span>
         </button>
-        <div id="thinking-slider" class="hidden items-center gap-2 text-xs text-body/60">
-          <span>Low</span>
-          <div class="relative flex items-center justify-between" style="width: 4.5rem;">
-            <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-border-default"></div>
-            <button type="button" data-level="low" class="thinking-stop relative z-10 w-3.5 h-3.5 rounded-full bg-neutral-primary-soft border-2 border-default-medium transition-all duration-150 cursor-pointer"></button>
-            <button type="button" data-level="medium" class="thinking-stop relative z-10 w-3.5 h-3.5 rounded-full bg-neutral-primary-soft border-2 border-default-medium transition-all duration-150 cursor-pointer"></button>
-            <button type="button" data-level="high" class="thinking-stop relative z-10 w-3.5 h-3.5 rounded-full bg-neutral-primary-soft border-2 border-default-medium transition-all duration-150 cursor-pointer"></button>
-          </div>
-          <span>High</span>
+        <div id="thinking-slider" class="hidden items-center gap-1.5 text-xs text-body/60">
+          <label for="thinking-low" class="select-none cursor-pointer">Low</label>
+          <input id="thinking-low" type="radio" name="thinking-level" value="low" class="thinking-stop cursor-pointer">
+          <input id="thinking-medium" type="radio" name="thinking-level" value="medium" class="thinking-stop cursor-pointer">
+          <input id="thinking-high" type="radio" name="thinking-level" value="high" class="thinking-stop cursor-pointer">
+          <label for="thinking-high" class="select-none cursor-pointer">High</label>
         </div>
       </div>
     </div>
@@ -1175,13 +1172,7 @@
 
   function setActiveThinkingStop(level) {
     thinkingStops.forEach(function(stop) {
-      if (stop.dataset.level === level) {
-        stop.classList.remove('w-3.5', 'h-3.5', 'bg-neutral-primary-soft', 'border-default-medium');
-        stop.classList.add('w-4', 'h-4', 'bg-brand', 'border-brand');
-      } else {
-        stop.classList.remove('w-4', 'h-4', 'bg-brand', 'border-brand');
-        stop.classList.add('w-3.5', 'h-3.5', 'bg-neutral-primary-soft', 'border-default-medium');
-      }
+      stop.checked = (stop.value === level);
     });
   }
 
@@ -1242,9 +1233,8 @@
   }
 
   thinkingStops.forEach(function(stop) {
-    stop.addEventListener('click', function() {
-      thinkingLevel = stop.dataset.level;
-      setActiveThinkingStop(thinkingLevel);
+    stop.addEventListener('change', function() {
+      thinkingLevel = stop.value;
       sessionStorage.setItem('chat_thinking_level', thinkingLevel);
     });
   });
