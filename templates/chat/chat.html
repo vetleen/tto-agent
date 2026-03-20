@@ -31,12 +31,12 @@
     </ul>
     <ul id="thread-list" class="space-y-2 font-medium pb-4">
       {% for t in threads %}
-      <li class="relative group" data-thread-li="{{ t.id }}">
+      <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
         <a href="{% url 'chat_home' %}?thread={{ t.id }}"
            class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium{% endif %}"
            data-thread-id="{{ t.id }}"
            title="{{ t.title|default:t }}">
-          <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+          {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
           <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
         </a>
         <button type="button"
@@ -57,12 +57,12 @@
       </button>
       <ul id="archived-thread-list" class="hidden space-y-2 font-medium mt-2">
         {% for t in archived_threads %}
-        <li class="relative group" data-thread-li="{{ t.id }}">
+        <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
           <a href="{% url 'chat_home' %}?thread={{ t.id }}"
              class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"
              data-thread-id="{{ t.id }}"
              title="{{ t.title|default:t }}">
-            <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+            {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
             <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
           </a>
           <button type="button"
@@ -78,6 +78,7 @@
   </div>
   {# Shared thread action dropdown menu #}
   <div id="thread-menu" class="hidden absolute z-50 w-32 bg-neutral-primary border border-default rounded-base shadow-lg py-1" style="top:0;left:0;">
+    <button type="button" data-action="star" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Star</button>
     <button type="button" data-action="archive" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Archive</button>
     <button type="button" data-action="delete" class="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-neutral-tertiary">Delete</button>
   </div>
@@ -960,9 +961,9 @@
       btn.className = 'skill-select-btn flex items-center justify-between w-full px-3 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base focus:outline-none';
       btn.setAttribute('data-skill-id', s.id);
       btn.setAttribute('data-skill-name', s.name);
-      btn.innerHTML = '<span class="flex flex-col items-start gap-0.5"><span class="flex items-center gap-2"><svg class="w-4 h-4 shrink-0 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' + escapeHtml(s.name) + '</span>' +
-        (s.description ? '<span class="text-xs text-body pl-6">' + escapeHtml(s.description) + '</span>' : '') +
-        '</span><svg class="w-4 h-4 text-success skill-attached-check ' + (activeSkillId === s.id ? '' : 'hidden') + '" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+      if (s.description) btn.title = s.description;
+      btn.innerHTML = '<span class="flex items-center gap-2"><svg class="w-4 h-4 shrink-0 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' + escapeHtml(s.name) + '</span>' +
+        '<svg class="w-4 h-4 text-success skill-attached-check ' + (activeSkillId === s.id ? '' : 'hidden') + '" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
       btn.addEventListener('click', function() {
         if (activeSkillId === s.id) {
           // Detach
@@ -1609,6 +1610,10 @@
     menuIsArchived = btn.getAttribute("data-archived") === "true";
     const archiveBtn = threadMenu.querySelector('[data-action="archive"]');
     archiveBtn.textContent = menuIsArchived ? "Restore" : "Archive";
+    const li = btn.closest("[data-thread-li]");
+    const currentEmoji = li ? li.getAttribute("data-emoji") : "";
+    const starBtn = threadMenu.querySelector('[data-action="star"]');
+    starBtn.textContent = currentEmoji ? "Unstar" : "Star";
     const rect = btn.getBoundingClientRect();
     const sidebar = btn.closest("aside");
     const sidebarRect = sidebar.getBoundingClientRect();
@@ -1628,6 +1633,15 @@
     if (!actionBtn || !menuThreadId) return;
     const action = actionBtn.getAttribute("data-action");
     threadMenu.classList.add("hidden");
+    if (action === "star") {
+      var li = document.querySelector('[data-thread-li="' + menuThreadId + '"]');
+      var currentEmoji = li ? li.getAttribute("data-emoji") : "";
+      var newEmoji = currentEmoji ? "" : "\u2B50";
+      fetch("/chat/threads/" + menuThreadId + "/emoji/", { method: "POST", headers: {"X-CSRFToken": getCSRFToken(), "Content-Type": "application/json"}, body: JSON.stringify({emoji: newEmoji}) }).then(function(res) { return res.json(); }).then(function(data) {
+        if (!data.ok) return;
+        updateThreadEmoji(menuThreadId, data.emoji);
+      });
+    }
     if (action === "delete") {
       if (!confirm("Delete this chat? This cannot be undone.")) return;
       fetch(`/chat/threads/${menuThreadId}/delete/`, { method: "POST", headers: {"X-CSRFToken": getCSRFToken()} }).then(function(res) {
@@ -1678,6 +1692,22 @@
     const hasThreads = threadList.querySelector("[data-thread-li]"); const emptyEl = threadList.querySelector('[data-empty="true"]');
     if (!hasThreads && !emptyEl) { const li = document.createElement("li"); li.className = "px-2 py-1.5 text-sm text-body"; li.setAttribute("data-empty", "true"); li.textContent = "No conversations yet."; threadList.appendChild(li); }
     else if (hasThreads && emptyEl) emptyEl.remove();
+  }
+  var chatIconSvg = '<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
+  function updateThreadEmoji(threadId, emoji) {
+    var li = document.querySelector('[data-thread-li="' + threadId + '"]');
+    if (!li) return;
+    li.setAttribute("data-emoji", emoji || "");
+    var link = li.querySelector("a[data-thread-id]");
+    if (!link) return;
+    var iconEl = link.querySelector("[data-thread-emoji]");
+    var svgEl = link.querySelector("svg");
+    if (emoji) {
+      if (iconEl) { iconEl.textContent = emoji; }
+      else if (svgEl) { var span = document.createElement("span"); span.className = "shrink-0 text-sm"; span.setAttribute("data-thread-emoji", ""); span.textContent = emoji; svgEl.replaceWith(span); }
+    } else {
+      if (iconEl) { var temp = document.createElement("div"); temp.innerHTML = chatIconSvg; iconEl.replaceWith(temp.firstChild); }
+    }
   }
 
   connect();

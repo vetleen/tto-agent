@@ -149,6 +149,19 @@ def thread_archive(request, thread_id):
 
 
 @login_required
+@require_POST
+def thread_emoji(request, thread_id):
+    thread = get_object_or_404(
+        ChatThread, id=thread_id, created_by=request.user
+    )
+    body = json.loads(request.body)
+    emoji = body.get("emoji", "")[:8]
+    thread.emoji = emoji
+    thread.save(update_fields=["emoji"])
+    return JsonResponse({"ok": True, "emoji": thread.emoji})
+
+
+@login_required
 @require_http_methods(["GET", "POST"])
 async def canvas_export(request, thread_id, canvas_id=None):
     """Export the canvas as a .docx file.

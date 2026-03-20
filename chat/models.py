@@ -38,6 +38,7 @@ class ChatThread(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     is_archived = models.BooleanField(default=False)
+    emoji = models.CharField(max_length=8, blank=True, default="")
 
     # Rolling summary of older messages
     summary = models.TextField(blank=True, default="")
