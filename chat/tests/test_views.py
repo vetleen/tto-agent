@@ -52,7 +52,7 @@ class ChatHomeModelChoicesTests(TestCase):
         response = self.client.get(reverse("chat_home"))
         self.assertContains(response, 'id="model-selector-btn"')
         self.assertContains(response, 'id="model-selector-dropdown"')
-        self.assertContains(response, 'id="thinking-level-select"')
+        self.assertContains(response, 'name="thinking-level"')
 
 
 @override_settings(

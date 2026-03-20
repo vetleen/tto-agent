@@ -66,7 +66,8 @@ class UsagePageTests(TestCase):
         _create_log(self.user, cost="0.0050", input_tokens=100, output_tokens=50)
         _create_log(self.user, cost="0.0030", input_tokens=200, output_tokens=80)
         response = self.client.get(self.url)
-        self.assertContains(response, "$0.0080")
+        # Template uses floatformat:2, so 0.0080 renders as $0.01
+        self.assertContains(response, "$0.01")
         self.assertContains(response, "2")  # call count
 
     def test_model_breakdown(self):
