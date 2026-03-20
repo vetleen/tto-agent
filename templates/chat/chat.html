@@ -1414,6 +1414,9 @@
       if (data.command === "/tag" && data.status === "ok" && data.emoji) {
         updateThreadEmoji(data.thread_id || activeThreadId, data.emoji);
       }
+      if (data.command === "/untag" && data.status === "ok") {
+        updateThreadEmoji(data.thread_id || activeThreadId, "");
+      }
       if (data.status === "ok") { appendSystemMessage(data.message); }
       else { appendError(data.message); }
       enableInput();
@@ -1749,6 +1752,7 @@
     {name: "/compact", desc: "Compact context"},
     {name: "/cost", desc: "Show thread cost"},
     {name: "/tag", desc: "Tag with emoji"},
+    {name: "/untag", desc: "Remove emoji tag"},
   ];
   var slashMenu = null;
   var slashSelectedIdx = -1;

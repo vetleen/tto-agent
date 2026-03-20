@@ -1806,6 +1806,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "/new": self._cmd_clear,
             "/cost": self._cmd_cost,
             "/tag": self._cmd_tag,
+            "/untag": self._cmd_untag,
             "/compact": self._cmd_compact,
         }
 
@@ -1880,6 +1881,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._send_command_result(
                 "/tag", "error", "Failed to pick emoji.",
             )
+
+    async def _cmd_untag(self, args, data):
+        """Handle /untag — remove the thread emoji."""
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            await self._send_command_result(
+                "/untag", "error", "No active thread to untag.",
+            )
+            return
+
+        thread = await self._get_thread_by_id(thread_id)
+        if not thread:
+            await self._send_command_result(
+                "/untag", "error", "Thread not found.",
+            )
+            return
+
+        await self._update_thread_emoji(thread_id, "")
+        await self._send_command_result(
+            "/untag", "ok", "Removed thread tag.",
+            extra={"emoji": "", "thread_id": str(thread_id)},
+        )
 
     async def _auto_pick_emoji(self, thread, *, hint=None):
         """Pick an emoji for a thread using a cheap LLM call."""
