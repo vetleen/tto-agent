@@ -31,6 +31,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4401)
             return
 
+        # Check if user is suspended in their org
+        is_suspended = await self._check_suspension()
+        if is_suspended:
+            await self.accept()
+            await self.send(text_data=json.dumps({
+                "event_type": "guardrail.suspended",
+                "data": {"message": "Your account has been suspended. Please contact an administrator."},
+            }))
+            await self.close(code=4403)
+            return
+
         # Resolve user/org/system preferences
         self.resolved_prefs = await self._resolve_preferences()
 
@@ -40,6 +51,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _resolve_preferences(self):
         from core.preferences import get_preferences
         return get_preferences(self.user)
+
+    @database_sync_to_async
+    def _check_suspension(self) -> bool:
+        from accounts.models import Membership
+        return Membership.objects.filter(
+            user=self.user, is_suspended=True,
+        ).exists()
+
+    @database_sync_to_async
+    def _get_org_id(self) -> int | None:
+        from accounts.models import Membership
+        membership = Membership.objects.filter(user=self.user).first()
+        return membership.org_id if membership else None
 
     def _has_tool(self, tool_name: str) -> bool:
         """Check if a tool is available given current prefs."""
@@ -477,6 +501,39 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if attachment_ids:
                 await self._link_attachments(attachment_ids, thread, user_message)
 
+            # Check if user is suspended mid-session
+            if await self._check_suspension():
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.suspended",
+                    "data": {"message": "Your account has been suspended. Please contact an administrator."},
+                }))
+                return
+
+            # --- Guardrail check ---
+            from guardrails.service import check_user_message
+
+            org_id = await self._get_org_id()
+            guardrail_verdict = await check_user_message(
+                text=content,
+                user=self.user,
+                thread_id=str(thread.id),
+                org_id=org_id,
+            )
+
+            if guardrail_verdict.action == "block":
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.blocked",
+                    "data": {"message": guardrail_verdict.message},
+                }))
+                return
+
+            if guardrail_verdict.action == "suspend":
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.suspended",
+                    "data": {"message": guardrail_verdict.message},
+                }))
+                return
+
             # Resolve model early for dynamic history budget
             prefs = self.resolved_prefs
             if requested_model and prefs and requested_model in prefs.allowed_models:
@@ -547,6 +604,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 ]
                 if undelivered_ids:
                     await self._mark_subagent_results_delivered(undelivered_ids)
+
+            # Send guardrail warning if the message was flagged but allowed
+            if guardrail_verdict.action == "warn":
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.warning",
+                    "data": {"message": guardrail_verdict.message},
+                }))
 
             # Stream LLM response
             await self._stream_response(

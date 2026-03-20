@@ -9,7 +9,8 @@ class MembershipInline(admin.TabularInline):
     model = Membership
     extra = 1
     autocomplete_fields = ("org",)
-    fields = ("org", "role")
+    fields = ("org", "role", "is_suspended", "suspended_at", "suspended_reason")
+    readonly_fields = ("suspended_at",)
 
 
 @admin.register(User)
@@ -68,8 +69,9 @@ class ScopeAdmin(admin.ModelAdmin):
 
 @admin.register(Membership)
 class MembershipAdmin(admin.ModelAdmin):
-    list_display = ("user", "org", "role")
-    list_filter = ("role", "org")
+    list_display = ("user", "org", "role", "is_suspended", "suspended_at")
+    list_filter = ("role", "org", "is_suspended")
     search_fields = ("user__email", "org__name")
     raw_id_fields = ("user", "org")
     filter_horizontal = ("scopes",)
+    readonly_fields = ("suspended_at",)

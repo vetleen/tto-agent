@@ -112,6 +112,8 @@ class DataRoomDocumentChunk(models.Model):
     source_offset_start = models.PositiveIntegerField(null=True, blank=True)
     source_offset_end = models.PositiveIntegerField(null=True, blank=True)
     search_vector = SearchVectorField(null=True)
+    is_quarantined = models.BooleanField(default=False, db_index=True)
+    quarantine_reason = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

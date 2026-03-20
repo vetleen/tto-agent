@@ -151,6 +151,13 @@ def process_document(document_id: int) -> None:
             document_id, doc.data_room_id, len(chunks_data), duration_seconds,
         )
 
+        # Scan chunks for adversarial content (fire-and-forget, after READY)
+        try:
+            from guardrails.tasks import scan_document_chunks
+            scan_document_chunks.delay(document_id)
+        except Exception:
+            logger.exception("process_document: document_id=%s guardrail scan dispatch failed (non-critical)", document_id)
+
         # Generate description + tags (fire-and-forget, after READY)
         if getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", ""):
             try:

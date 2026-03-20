@@ -90,6 +90,7 @@ def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
     """Return chunks for a document in order (from DB)."""
     chunks = DataRoomDocumentChunk.objects.filter(
         document_id=document_id,
+        is_quarantined=False,
     ).order_by("chunk_index")
     return [
         {
@@ -106,10 +107,11 @@ def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
 
 
 def get_chunks_by_data_room(data_room_id: int) -> list[dict[str, Any]]:
-    """Return chunks for a data room, grouped by document (order preserved). Excludes failed documents."""
+    """Return chunks for a data room, grouped by document (order preserved). Excludes failed/quarantined."""
     chunks = (
         DataRoomDocumentChunk.objects.filter(
             document__data_room_id=data_room_id,
+            is_quarantined=False,
         )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
@@ -145,6 +147,7 @@ def fulltext_search_chunks(
         DataRoomDocumentChunk.objects.filter(
             document__data_room_id__in=data_room_ids,
             search_vector__isnull=False,
+            is_quarantined=False,
         )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
@@ -335,9 +338,12 @@ def get_chunk_with_context(
     except DataRoomDocumentChunk.DoesNotExist:
         return {"error": f"Chunk {chunk_id} not found"}
 
-    # Fetch all chunks for the same document, ordered by chunk_index
+    # Fetch all non-quarantined chunks for the same document, ordered by chunk_index
     all_chunks = list(
-        DataRoomDocumentChunk.objects.filter(document_id=center.document_id)
+        DataRoomDocumentChunk.objects.filter(
+            document_id=center.document_id,
+            is_quarantined=False,
+        )
         .order_by("chunk_index")
         .values("id", "chunk_index", "text", "token_count")
     )
@@ -482,9 +488,12 @@ def get_merged_context_windows(
     merged_windows: list[dict[str, Any]] = []
 
     for doc_id, hits in doc_hits.items():
-        # Fetch all chunks for this document, ordered
+        # Fetch all non-quarantined chunks for this document, ordered
         all_chunks = list(
-            DataRoomDocumentChunk.objects.filter(document_id=doc_id)
+            DataRoomDocumentChunk.objects.filter(
+                document_id=doc_id,
+                is_quarantined=False,
+            )
             .order_by("chunk_index")
             .values("id", "chunk_index", "text", "token_count")
         )

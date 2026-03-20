@@ -1621,6 +1621,30 @@
       }
       scrollToBottom(); return;
     }
+    if (et === "guardrail.warning") {
+      const msg = (data.data && data.data.message) || "Content warning: please be mindful of acceptable use.";
+      const div = document.createElement("div");
+      div.className = "flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 my-2";
+      div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>' + escapeHtml(msg) + '</span>';
+      messagesContainer.appendChild(div);
+      scrollToBottom(); return;
+    }
+    if (et === "guardrail.blocked") {
+      const msg = (data.data && data.data.message) || "Your message was blocked by the content safety system.";
+      const div = document.createElement("div");
+      div.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
+      div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';
+      messagesContainer.appendChild(div);
+      enableInput(); scrollToBottom(); return;
+    }
+    if (et === "guardrail.suspended") {
+      const msg = (data.data && data.data.message) || "Your account has been suspended.";
+      const div = document.createElement("div");
+      div.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
+      div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';
+      messagesContainer.appendChild(div);
+      input.disabled = true; button.disabled = true; scrollToBottom(); return;
+    }
     if (et === "message_end") {
       if (isThinking) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {

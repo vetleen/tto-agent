@@ -142,6 +142,11 @@ class Membership(models.Model):
         blank=True,
     )
 
+    # Suspension (per-org; admins manage their own members)
+    is_suspended = models.BooleanField(default=False)
+    suspended_at = models.DateTimeField(null=True, blank=True)
+    suspended_reason = models.TextField(blank=True, default="")
+
     class Meta:
         unique_together = [("user", "org")]
         ordering = ("org", "user")
