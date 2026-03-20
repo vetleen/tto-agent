@@ -139,7 +139,32 @@
     <div class="max-w-3xl mx-auto w-full px-4 {% if messages %}py-6{% endif %}">
       <div id="chat-messages" class="space-y-6">
         {% for m in messages %}
-          {% if m.role == "user" %}
+          {% if m.is_redacted and m.role == "tool" %}
+            {# Skip redacted tool messages entirely #}
+          {% elif m.is_redacted and m.role == "user" %}
+            <div class="flex justify-end opacity-60" data-role="user">
+              <div class="flex items-start gap-2.5 flex-row-reverse">
+                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">{{ user.email|first|upper }}</span>
+                <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
+                  <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
+                    <span class="text-sm font-semibold text-heading">You</span>
+                    <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
+                  </div>
+                  <div class="text-sm py-2.5 text-body/50 italic">This message was removed by the content safety system.</div>
+                </div>
+              </div>
+            </div>
+          {% elif m.is_redacted and m.role == "assistant" %}
+            <div class="flex items-start gap-2.5 opacity-60" data-role="assistant">
+              <div class="flex flex-col w-full">
+                <div class="flex items-center space-x-2">
+                  <span class="text-sm font-semibold text-heading">Wilfred</span>
+                  <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
+                </div>
+                <div class="text-sm text-body/50 italic mt-2">This message was removed by the content safety system.</div>
+              </div>
+            </div>
+          {% elif m.role == "user" %}
             <div class="flex justify-end" data-role="user">
               <div class="flex items-start gap-2.5 flex-row-reverse">
                 <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">{{ user.email|first|upper }}</span>
@@ -1632,23 +1657,34 @@
       messagesContainer.appendChild(div);
       scrollToBottom(); return;
     }
-    if (et === "guardrail.blocked") {
-      finishStreaming("[Blocked]");
-      const msg = (data.data && data.data.message) || "Your message was blocked by the content safety system.";
-      const div = document.createElement("div");
-      div.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
-      div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';
-      messagesContainer.appendChild(div);
-      enableInput(); scrollToBottom(); return;
-    }
-    if (et === "guardrail.suspended") {
-      finishStreaming("[Suspended]");
-      const msg = (data.data && data.data.message) || "Your account has been suspended. Please contact your system administrator.";
-      const div = document.createElement("div");
-      div.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
-      div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';
-      messagesContainer.appendChild(div);
-      input.disabled = true; button.disabled = true; scrollToBottom(); return;
+    if (et === "guardrail.blocked" || et === "guardrail.suspended") {
+      finishStreaming(null);
+      var redactNotice = '<span class="text-body/50 italic">This message was removed by the content safety system.</span>';
+      // Redact the last assistant bubble
+      var lastAssistant = messagesContainer.querySelector("[data-role='assistant']:last-of-type");
+      if (lastAssistant) {
+        var contentEl = lastAssistant.querySelector(".markdown-content") || lastAssistant.querySelector(".message-content");
+        if (contentEl) contentEl.innerHTML = redactNotice;
+        var copyBtn = lastAssistant.querySelector(".copy-msg-btn"); if (copyBtn) copyBtn.remove();
+        lastAssistant.classList.add("opacity-60");
+      }
+      // Redact the last user bubble if backend says so
+      if (data.data && data.data.redact) {
+        var lastUser = messagesContainer.querySelector("[data-role='user']:last-of-type");
+        if (lastUser) {
+          var userContent = lastUser.querySelector(".whitespace-pre-wrap");
+          if (userContent) userContent.innerHTML = redactNotice;
+          var userCopy = lastUser.querySelector(".copy-msg-btn"); if (userCopy) userCopy.remove();
+          lastUser.classList.add("opacity-60");
+        }
+      }
+      var msg = (data.data && data.data.message) || (et === "guardrail.suspended" ? "Your account has been suspended. Please contact your system administrator." : "Your message was blocked by the content safety system.");
+      var bannerDiv = document.createElement("div");
+      bannerDiv.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
+      bannerDiv.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';
+      messagesContainer.appendChild(bannerDiv);
+      if (et === "guardrail.suspended") { input.disabled = true; button.disabled = true; } else { enableInput(); }
+      scrollToBottom(); return;
     }
     if (et === "message_end") {
       if (isThinking) collapseThinking(); hideWaitingIndicator();

@@ -6,8 +6,8 @@ from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatT
 class ChatMessageInline(admin.TabularInline):
     model = ChatMessage
     extra = 0
-    readonly_fields = ("id", "role", "content", "tool_call_id", "created_at")
-    fields = ("role", "content", "tool_call_id", "created_at")
+    readonly_fields = ("id", "role", "content", "tool_call_id", "is_redacted", "created_at")
+    fields = ("role", "content", "tool_call_id", "is_redacted", "created_at")
 
 
 class ChatThreadDataRoomInline(admin.TabularInline):
@@ -47,8 +47,8 @@ class ChatCanvasAdmin(admin.ModelAdmin):
 
 @admin.register(ChatMessage)
 class ChatMessageAdmin(admin.ModelAdmin):
-    list_display = ("id", "thread", "role", "short_content", "created_at")
-    list_filter = ("role", "created_at")
+    list_display = ("id", "thread", "role", "short_content", "is_redacted", "created_at")
+    list_filter = ("role", "is_redacted", "created_at")
     readonly_fields = ("id", "created_at")
 
     @admin.display(description="Content")

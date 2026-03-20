@@ -529,9 +529,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
 
             if heuristic_verdict.action == "block":
+                await self._redact_messages(thread, redact_assistant=False)
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.blocked",
-                    "data": {"message": heuristic_verdict.message},
+                    "data": {"message": heuristic_verdict.message, "redact": True},
                 }))
                 return
 
@@ -545,7 +546,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self._guardrail_task = asyncio.create_task(
                 self._run_guardrail_pipeline(
                     content, heuristic_verdict.heuristic_result,
-                    str(thread.id), org_id, self._cancel_event,
+                    thread, org_id, self._cancel_event,
                 )
             )
 
@@ -634,8 +635,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if self._guardrail_task and not self._guardrail_task.done():
                 await self._guardrail_task
 
-            # If the guardrail pipeline intercepted mid-stream, skip post-stream work
+            # If the guardrail pipeline intercepted, redact messages and skip post-stream work
             if self._guardrail_intercepted:
+                await self._redact_messages(thread)
                 return
 
             # Send guardrail warning after stream if the pipeline flagged but allowed
@@ -906,7 +908,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self._cancel_event = None
 
     async def _run_guardrail_pipeline(
-        self, text, heuristic_result, thread_id, org_id, cancel_event,
+        self, text, heuristic_result, thread, org_id, cancel_event,
     ):
         """Run classifier+reviewer pipeline concurrently with the LLM stream.
 
@@ -920,7 +922,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 text=text,
                 user=self.user,
                 heuristic_result=heuristic_result,
-                thread_id=thread_id,
+                thread_id=str(thread.id),
                 org_id=org_id,
             )
         except asyncio.CancelledError:
@@ -938,24 +940,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if verdict.action == "block":
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.blocked",
-                    "data": {"message": verdict.message},
+                    "data": {"message": verdict.message, "redact": True},
                 }))
             elif verdict.action == "suspend":
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.suspended",
-                    "data": {"message": verdict.message},
+                    "data": {"message": verdict.message, "redact": True},
                 }))
         elif verdict.action in STREAM_INTERCEPT_ACTIONS:
-            # Stream already finished — send the event anyway
+            # Stream already finished — redact persisted messages and notify frontend
+            self._guardrail_intercepted = True
+            await self._redact_messages(thread)
+
             if verdict.action == "block":
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.blocked",
-                    "data": {"message": verdict.message},
+                    "data": {"message": verdict.message, "redact": True},
                 }))
             elif verdict.action == "suspend":
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.suspended",
-                    "data": {"message": verdict.message},
+                    "data": {"message": verdict.message, "redact": True},
                 }))
         elif verdict.action == "warn":
             # Store for post-stream delivery
@@ -1599,6 +1604,45 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     @database_sync_to_async
+    def _redact_messages(self, thread, *, redact_user=True, redact_assistant=True):
+        """Overwrite content and mark messages as redacted after a guardrail block.
+
+        Finds the most recent user message and (optionally) all assistant/tool
+        messages created at or after it, then wipes their content.
+        """
+        from chat.models import ChatMessage
+
+        REDACTED_TEXT = "[This message was removed by the content safety system.]"
+
+        last_user = (
+            ChatMessage.objects.filter(thread=thread, role="user")
+            .order_by("-created_at")
+            .first()
+        )
+        if not last_user:
+            return
+
+        if redact_user:
+            ChatMessage.objects.filter(pk=last_user.pk).update(
+                content=REDACTED_TEXT,
+                is_redacted=True,
+                metadata={},
+                token_count=0,
+            )
+
+        if redact_assistant:
+            ChatMessage.objects.filter(
+                thread=thread,
+                role__in=["assistant", "tool"],
+                created_at__gte=last_user.created_at,
+            ).update(
+                content=REDACTED_TEXT,
+                is_redacted=True,
+                metadata={},
+                token_count=0,
+            )
+
+    @database_sync_to_async
     def _link_attachments(self, attachment_ids, thread, message):
         from chat.models import ChatAttachment
 
@@ -1789,11 +1833,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
         t = ChatThread.objects.get(pk=thread.pk)
-        total_messages = ChatMessage.objects.filter(thread=thread).count()
+        total_messages = ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).count()
 
         # Load ALL messages newest-first (needed to build the overlap window).
         all_msgs = list(
-            ChatMessage.objects.filter(thread=thread).order_by("-created_at")
+            ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).order_by("-created_at")
         )
 
         if not all_msgs:
@@ -1827,7 +1871,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         add_qs = ChatMessage.objects.filter(
             thread=thread,
             created_at__lt=oldest_overlap.created_at,
-        ).order_by("-created_at")
+        ).exclude(is_redacted=True).order_by("-created_at")
         if t.summary_up_to_message_id:
             cutoff_msg = ChatMessage.objects.filter(
                 id=t.summary_up_to_message_id,

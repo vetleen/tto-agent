@@ -95,6 +95,7 @@ class ChatMessage(models.Model):
     tool_call_id = models.CharField(max_length=255, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     token_count = models.PositiveIntegerField(default=0)
+    is_redacted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
