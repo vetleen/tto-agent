@@ -8,6 +8,12 @@ from llm.types.requests import ChatRequest
 
 logger = logging.getLogger(__name__)
 
+_ANTHROPIC_THINKING = {
+    "low": {"budget": 4_096, "max_tokens": 16_384},
+    "medium": {"budget": 10_000, "max_tokens": 16_384},
+    "high": {"budget": 32_000, "max_tokens": 40_000},
+}
+
 
 class AnthropicChatModel(BaseLangChainChatModel):
     """ChatModel backed by LangChain's ChatAnthropic."""
@@ -27,14 +33,15 @@ class AnthropicChatModel(BaseLangChainChatModel):
 
     def _get_streaming_client(self, request: ChatRequest):
         client = self._client
-        if request.params.get("thinking"):
-            budget = request.params.get("thinking_budget", 10_000)
+        level = request.params.get("thinking_level", "off")
+        if level != "off" and level in _ANTHROPIC_THINKING:
+            cfg = _ANTHROPIC_THINKING[level]
             try:
                 client = create_variant_client(
                     self._api_model,
                     provider="anthropic",
-                    thinking={"type": "enabled", "budget_tokens": budget},
-                    max_tokens=16_384,
+                    thinking={"type": "enabled", "budget_tokens": cfg["budget"]},
+                    max_tokens=cfg["max_tokens"],
                 )
             except Exception:
                 logger.warning(

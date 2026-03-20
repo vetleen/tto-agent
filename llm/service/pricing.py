@@ -9,21 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional, Tuple
 
-# (input_per_1M, cached_input_per_1M, output_per_1M)
-_PRICING: dict[str, Tuple[Decimal, Decimal, Decimal]] = {
-    # OpenAI
-    "gpt-5.4": (Decimal("1.75"), Decimal("0.175"), Decimal("14.00")),
-    "gpt-5-mini": (Decimal("0.25"), Decimal("0.025"), Decimal("2.00")),
-    "gpt-5-nano": (Decimal("0.05"), Decimal("0.005"), Decimal("0.40")),
-    # Anthropic
-    "claude-opus-4-6": (Decimal("5.00"), Decimal("0.50"), Decimal("25.00")),
-    "claude-sonnet-4-6": (Decimal("3.00"), Decimal("0.30"), Decimal("15.00")),
-    "claude-haiku-4-5-20251001": (Decimal("1.00"), Decimal("0.10"), Decimal("5.00")),
-    # Google
-    "gemini-2.5-pro": (Decimal("1.25"), Decimal("0.125"), Decimal("10.00")),
-    "gemini-2.5-flash": (Decimal("0.30"), Decimal("0.03"), Decimal("2.50")),
-    "gemini-2.5-flash-lite": (Decimal("0.10"), Decimal("0.01"), Decimal("0.40")),
-}
+from llm.model_registry import get_model_info
 
 _ONE_MILLION = Decimal("1000000")
 
@@ -38,7 +24,10 @@ def _normalize_model_name(model: str) -> str:
 
 def get_model_pricing(model: str) -> Optional[Tuple[Decimal, Decimal, Decimal]]:
     """Return ``(input, cached_input, output)`` per-1M-token prices, or *None*."""
-    return _PRICING.get(_normalize_model_name(model))
+    info = get_model_info(model)
+    if info and info.input_price is not None:
+        return (info.input_price, info.cached_input_price or Decimal("0"), info.output_price or Decimal("0"))
+    return None
 
 
 def calculate_cost(

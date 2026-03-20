@@ -4,11 +4,12 @@ import logging
 
 from llm.core.model_factory import create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
+from llm.model_registry import get_model_info
 from llm.types.requests import ChatRequest
 
 logger = logging.getLogger(__name__)
 
-_REASONING_PREFIXES = ("o1", "o3", "o4")
+_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5.4", "gpt-5.2-pro")
 
 # Models that require OpenAI's Responses API
 _RESPONSES_API_PREFIXES = ("gpt-5.4", "gpt-5.2-pro")
@@ -30,19 +31,23 @@ class OpenAIChatModel(BaseLangChainChatModel):
             api_model = model_name[len(self._API_MODEL_PREFIX):]
         self._api_model = api_model
 
-    # -- Reasoning support for o-series models --
+    # -- Reasoning support --
 
-    def _is_reasoning_model(self) -> bool:
+    def _supports_reasoning(self) -> bool:
+        info = get_model_info(self.name)
+        if info is not None:
+            return info.supports_thinking
         return any(self._api_model.lower().startswith(p) for p in _REASONING_PREFIXES)
 
     def _get_streaming_client(self, request: ChatRequest):
         client = self._client
-        if request.params.get("thinking") and self._is_reasoning_model():
+        level = request.params.get("thinking_level", "off")
+        if level != "off" and self._supports_reasoning():
             try:
                 client = create_variant_client(
                     self._api_model,
                     provider="openai",
-                    model_kwargs={"reasoning_effort": "medium"},
+                    model_kwargs={"reasoning_effort": level},
                 )
             except Exception:
                 logger.warning(

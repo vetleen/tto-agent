@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from llm.model_registry import get_model_info
+
 
 def get_display_name(model_id: str) -> str:
     """Auto-generate a human-friendly display name from a model ID.
@@ -62,15 +64,22 @@ def get_display_name(model_id: str) -> str:
 
 def supports_thinking(model_id: str) -> bool:
     """Return True if the model supports extended thinking / reasoning."""
+    info = get_model_info(model_id)
+    if info is not None:
+        return info.supports_thinking
+
+    # Fallback heuristics for models not in the registry
     lower = model_id.lower()
 
     # All Anthropic models support extended thinking
     if lower.startswith("anthropic/"):
         return True
 
-    # OpenAI reasoning models: o1, o3, o4 series
+    # OpenAI reasoning models: o1, o3, o4 series and GPT-5.4+
     name = lower.split("/", 1)[-1] if "/" in lower else lower
     if re.match(r"^o[134]\b", name):
+        return True
+    if name.startswith("gpt-5.4") or name.startswith("gpt-5.2-pro"):
         return True
 
     # Models with "thinking" in their name
@@ -82,6 +91,11 @@ def supports_thinking(model_id: str) -> bool:
 
 def supports_vision(model_id: str) -> bool:
     """Return True if the model supports vision (image) inputs."""
+    info = get_model_info(model_id)
+    if info is not None:
+        return info.supports_vision
+
+    # Fallback heuristics for models not in the registry
     lower = model_id.lower()
 
     # Strip provider prefix for name matching

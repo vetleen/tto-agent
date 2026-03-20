@@ -78,10 +78,10 @@ class CalculateCostTests(SimpleTestCase):
         cost = calculate_cost("gpt-5-mini", None, None)
         self.assertEqual(cost, Decimal("0"))
 
-    def test_all_pricing_entries_have_three_values(self):
-        """Sanity check: every entry in the pricing table is a 3-tuple of Decimals."""
-        from llm.service.pricing import _PRICING
-        for model, prices in _PRICING.items():
-            self.assertEqual(len(prices), 3, f"{model} pricing should be a 3-tuple")
-            for p in prices:
-                self.assertIsInstance(p, Decimal, f"{model} prices should be Decimal")
+    def test_all_registry_entries_have_pricing(self):
+        """Sanity check: every model in the registry has valid pricing."""
+        from llm.model_registry import _MODELS
+        for model_id, info in _MODELS.items():
+            self.assertIsNotNone(info.input_price, f"{model_id} missing input_price")
+            self.assertIsInstance(info.input_price, Decimal, f"{model_id} input_price should be Decimal")
+            self.assertIsInstance(info.output_price, Decimal, f"{model_id} output_price should be Decimal")

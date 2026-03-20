@@ -427,7 +427,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Per-message model and thinking overrides
         requested_model = data.get("model") or None
-        thinking = bool(data.get("thinking", False))
+        thinking_level = data.get("thinking_level", "off")
+        if thinking_level not in ("off", "low", "medium", "high"):
+            thinking_level = "off"
 
         # Allow payload to specify data_room_ids (e.g. for new threads)
         payload_room_ids = data.get("data_room_ids")
@@ -547,7 +549,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 thread, static_system, history,
                 semi_static_system=semi_static_system,
                 dynamic_context=dynamic_context,
-                requested_model=requested_model, thinking=thinking,
+                requested_model=requested_model, thinking_level=thinking_level,
                 resolved_model=model,
             )
 
@@ -577,7 +579,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self, thread, system_prompt, history,
         semi_static_system="",
         dynamic_context="",
-        requested_model=None, thinking=False, resolved_model=None,
+        requested_model=None, thinking_level="off", resolved_model=None,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
@@ -692,7 +694,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             stream=True,
             tools=tools,
             context=context,
-            params={"thinking": thinking, "_cancel_event": self._cancel_event},
+            params={"thinking_level": thinking_level, "_cancel_event": self._cancel_event},
         )
 
         service = get_llm_service()

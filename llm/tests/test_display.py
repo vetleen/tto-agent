@@ -84,11 +84,17 @@ class SupportsThinkingTests(TestCase):
     def test_openai_reasoning_o1(self):
         self.assertTrue(supports_thinking("openai/o1"))
 
+    def test_openai_gpt54_thinking(self):
+        self.assertTrue(supports_thinking("openai/gpt-5.4"))
+
     def test_openai_gpt_no_thinking(self):
-        self.assertFalse(supports_thinking("openai/gpt-5"))
         self.assertFalse(supports_thinking("openai/gpt-5-mini"))
 
-    def test_gemini_no_thinking(self):
+    def test_gemini_3_thinking(self):
+        self.assertTrue(supports_thinking("gemini/gemini-3-flash"))
+        self.assertTrue(supports_thinking("gemini/gemini-3-pro"))
+
+    def test_gemini_2_no_thinking(self):
         self.assertFalse(supports_thinking("gemini/gemini-2.5-flash"))
 
     def test_thinking_in_name(self):
