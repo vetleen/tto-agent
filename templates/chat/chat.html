@@ -151,10 +151,14 @@
                   <div class="text-sm py-2.5 text-body whitespace-pre-wrap">{{ m.content }}</div>
                   {% if m.attachment_names %}
                   <div class="flex flex-wrap gap-1 mt-1">
-                    {% for fname in m.attachment_names %}
+                    {% for att_tuple in m.attachment_names %}
                     <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full">
+                      {% if att_tuple.1|slice:":6" == "image/" %}
                       <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                      {{ fname }}
+                      {% else %}
+                      <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                      {% endif %}
+                      {{ att_tuple.0 }}
                     </span>
                     {% endfor %}
                   </div>
@@ -215,7 +219,7 @@
       </div>
       {# Hidden file input for image attachments #}
       <input type="file" id="image-upload-input" class="hidden"
-             accept="image/jpeg,image/png,image/gif,image/webp" multiple />
+             accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.pdf,text/plain,.txt,text/markdown,.md,text/csv,.csv,text/html,.html,application/json,.json,text/xml,.xml,application/xml,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" multiple />
       {# Attached image pills #}
       <div id="attached-images" class="flex flex-wrap gap-2 mb-2 empty:mb-0"></div>
       {# Attached skill pill #}
@@ -533,9 +537,10 @@
   let activeSkillId = {% if thread_skill %}"{{ thread_skill.id|escapejs }}"{% else %}null{% endif %};
   let activeSkillName = {% if thread_skill %}"{{ thread_skill.name|escapejs }}"{% else %}null{% endif %};
 
-  // -- Image attachment state --
+  // -- Attachment state --
   let pendingAttachmentIds = [];
   let pendingAttachmentNames = [];
+  let pendingAttachmentTypes = [];
 
   // -- Mermaid init --
   var mermaidIdCounter = 0;
@@ -1008,31 +1013,42 @@
   if (closeSkillModalBtn) { closeSkillModalBtn.addEventListener('click', function() { skillModal.classList.add('hidden'); }); }
   skillModal.addEventListener('click', function(e) { if (e.target === skillModal) skillModal.classList.add('hidden'); });
 
-  // -- Image attachments --
+  // -- File attachments --
   var imageUploadInput = document.getElementById('image-upload-input');
   var attachImagesBtn = document.getElementById('attach-images-btn');
   var attachedImagesContainer = document.getElementById('attached-images');
   var SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  var SUPPORTED_PDF_TYPES = ['application/pdf'];
+  var SUPPORTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'application/json', 'text/xml', 'application/xml'];
+  var SUPPORTED_DOCX_TYPES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+  var ALL_SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES.concat(SUPPORTED_PDF_TYPES, SUPPORTED_TEXT_TYPES, SUPPORTED_DOCX_TYPES);
   var MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+  var MAX_PDF_SIZE = 30 * 1024 * 1024;
+
+  function getMaxSizeForType(contentType) {
+    return SUPPORTED_PDF_TYPES.indexOf(contentType) !== -1 ? MAX_PDF_SIZE : MAX_ATTACHMENT_SIZE;
+  }
+
+  function getAttachmentIcon(contentType) {
+    if (contentType && contentType.indexOf('image/') === 0) {
+      return '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>';
+    }
+    return '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>';
+  }
 
   if (attachImagesBtn) {
     attachImagesBtn.addEventListener('click', function() {
-      // Check if selected model supports vision
-      var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
-      if (current && !current.supports_vision) {
-        showToast('The selected model does not support image inputs. Please select a vision-capable model.');
-      }
       imageUploadInput.click();
       var dd = document.getElementById('attach-dropdown');
       if (dd) dd.classList.add('hidden');
     });
   }
 
-  function addImagePill(id, filename) {
+  function addAttachmentPill(id, filename, contentType) {
     var pill = document.createElement('span');
     pill.className = 'image-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full';
     pill.setAttribute('data-attachment-id', id);
-    pill.innerHTML = '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>' +
+    pill.innerHTML = getAttachmentIcon(contentType) +
       escapeHtml(filename) +
       '<button type="button" class="remove-image-btn hover:text-fg-danger" aria-label="Remove ' + escapeHtml(filename) + '"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>';
     attachedImagesContainer.appendChild(pill);
@@ -1040,7 +1056,7 @@
 
   function removeImagePill(id) {
     var idx = pendingAttachmentIds.indexOf(id);
-    if (idx !== -1) { pendingAttachmentIds.splice(idx, 1); pendingAttachmentNames.splice(idx, 1); }
+    if (idx !== -1) { pendingAttachmentIds.splice(idx, 1); pendingAttachmentNames.splice(idx, 1); pendingAttachmentTypes.splice(idx, 1); }
     var pill = attachedImagesContainer.querySelector('[data-attachment-id="' + id + '"]');
     if (pill) pill.remove();
   }
@@ -1048,6 +1064,7 @@
   function clearImagePills() {
     pendingAttachmentIds = [];
     pendingAttachmentNames = [];
+    pendingAttachmentTypes = [];
     attachedImagesContainer.innerHTML = '';
   }
 
@@ -1065,14 +1082,31 @@
       if (!files.length) return;
 
       // Client-side validation
+      var hasImages = false;
       for (var i = 0; i < files.length; i++) {
-        if (SUPPORTED_IMAGE_TYPES.indexOf(files[i].type) === -1) {
-          showToast('Unsupported file type: ' + files[i].name);
+        var ft = files[i].type;
+        // Browsers sometimes report .docx as application/octet-stream
+        if (ALL_SUPPORTED_TYPES.indexOf(ft) === -1) {
+          if (files[i].name && files[i].name.toLowerCase().endsWith('.docx')) {
+            ft = SUPPORTED_DOCX_TYPES[0];
+          } else {
+            showToast('Unsupported file type: ' + files[i].name);
+            return;
+          }
+        }
+        if (SUPPORTED_IMAGE_TYPES.indexOf(ft) !== -1) hasImages = true;
+        var maxSize = getMaxSizeForType(ft);
+        var maxLabel = maxSize === MAX_PDF_SIZE ? '30 MB' : '10 MB';
+        if (files[i].size > maxSize) {
+          showToast('File too large (max ' + maxLabel + '): ' + files[i].name);
           return;
         }
-        if (files[i].size > MAX_ATTACHMENT_SIZE) {
-          showToast('File too large (max 10 MB): ' + files[i].name);
-          return;
+      }
+      // Vision check — only warn for image files
+      if (hasImages) {
+        var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
+        if (current && !current.supports_vision) {
+          showToast('The selected model does not support image inputs. Please select a vision-capable model.');
         }
       }
 
@@ -1090,7 +1124,8 @@
           (data.attachments || []).forEach(function(att) {
             pendingAttachmentIds.push(att.id);
             pendingAttachmentNames.push(att.filename);
-            addImagePill(att.id, att.filename);
+            pendingAttachmentTypes.push(att.content_type);
+            addAttachmentPill(att.id, att.filename, att.content_type);
           });
         }).catch(function(err) {
           showToast('Upload failed: ' + err.message);
@@ -1381,6 +1416,7 @@
       }
       if (data.status === "ok") { appendSystemMessage(data.message); }
       else { appendError(data.message); }
+      enableInput();
       return;
     }
     if (et === "stream.cancelled") { finishStreaming("[Stopped]"); enableInput(); return; }
@@ -1602,7 +1638,7 @@
     if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
-  function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
+  function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = "Send"; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("[Timed out]"); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   function createAssistantBubble() {
@@ -1632,6 +1668,8 @@
     if (text.startsWith("/")) {
       input.value = ""; autoResize(input);
       if (ws && ws.readyState === WebSocket.OPEN) {
+        input.disabled = true; button.disabled = true; locked = true;
+        button.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
         ws.send(JSON.stringify({
           type: "chat.message", content: text,
           thread_id: activeThreadId || "",
@@ -1649,8 +1687,9 @@
     var attBadges = "";
     if (pendingAttachmentNames.length > 0) {
       attBadges = '<div class="flex flex-wrap gap-1 mt-1">';
-      pendingAttachmentNames.forEach(function(fname) {
-        attBadges += '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full"><svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>' + escapeHtml(fname) + '</span>';
+      pendingAttachmentNames.forEach(function(fname, idx) {
+        var ct = pendingAttachmentTypes[idx] || '';
+        attBadges += '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full">' + getAttachmentIcon(ct) + escapeHtml(fname) + '</span>';
       });
       attBadges += '</div>';
     }
