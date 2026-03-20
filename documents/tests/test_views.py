@@ -774,6 +774,50 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["description"], "AI-generated description")
 
+    # ------------------------------------------------------------------ #
+    # View document button visibility                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_view_document_button_shown_for_ready_doc(self):
+        self.client.force_login(self.user)
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="ready.txt", status=DataRoomDocument.Status.READY,
+        )
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertContains(response, "View document")
+        self.assertContains(response, "data-chunks-url")
+
+    def test_view_document_button_hidden_for_processing_doc(self):
+        self.client.force_login(self.user)
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="pending.txt", status=DataRoomDocument.Status.PROCESSING,
+        )
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertNotContains(response, "view-document-btn")
+
+    def test_view_document_button_in_archived_section(self):
+        self.client.force_login(self.user)
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="archived-ready.txt",
+            status=DataRoomDocument.Status.READY,
+            is_archived=True,
+        )
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertContains(response, "View document")
+        self.assertContains(
+            response,
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id}),
+        )
+
     def test_generate_description_blocks_other_user(self):
         self.client.force_login(self.other)
         response = self.client.post(

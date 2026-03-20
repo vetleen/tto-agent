@@ -86,6 +86,14 @@
             <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
           </button>
           <div id="dropdown-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+            {% if doc.status == "ready" %}
+            <button type="button"
+                    class="view-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+                    data-chunks-url="{% url 'document_chunks' data_room_id=data_room.uuid document_id=doc.id %}"
+                    data-doc-name="{{ doc.original_filename|escapejs }}">
+              View document
+            </button>
+            {% endif %}
             <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                     data-rename-modal="rename-document-modal"
                     data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
@@ -147,6 +155,14 @@
               <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
             </button>
             <div id="dropdown-archived-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+              {% if doc.status == "ready" %}
+              <button type="button"
+                      class="view-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+                      data-chunks-url="{% url 'document_chunks' data_room_id=data_room.uuid document_id=doc.id %}"
+                      data-doc-name="{{ doc.original_filename|escapejs }}">
+                View document
+              </button>
+              {% endif %}
               <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                       data-rename-modal="rename-document-modal"
                       data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
@@ -203,7 +219,45 @@
       </div>
     </div>
   </div>
+  <!-- Hidden trigger for view document modal -->
+  <button type="button" id="view-document-modal-trigger" class="hidden" data-modal-target="view-document-modal" data-modal-show="view-document-modal" aria-label="Open view document modal"></button>
+  <!-- View document modal -->
+  <div id="view-document-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+    <div class="relative w-full max-w-5xl max-h-full">
+      <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+        <div class="flex items-center px-6 py-4 border-b border-default">
+          <h3 id="view-document-title" class="text-lg font-semibold text-heading truncate flex-1"></h3>
+          <button type="button" id="view-document-preview-btn" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand ms-2" title="Toggle markdown preview">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></svg>
+          </button>
+          <button type="button" data-modal-hide="view-document-modal" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand ms-2" aria-label="Close">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="px-6 py-4 overflow-y-auto" style="max-height: 70vh;">
+          <!-- Loading spinner -->
+          <div id="view-document-loading" class="flex items-center justify-center py-12">
+            <svg class="animate-spin h-8 w-8 text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+          </div>
+          <!-- Error message -->
+          <div id="view-document-error" class="hidden text-center py-12">
+            <p class="text-body text-sm mb-3">Failed to load document content.</p>
+            <button type="button" id="view-document-retry" class="text-sm text-brand hover:text-brand-strong font-medium">Retry</button>
+          </div>
+          <!-- Plain text view -->
+          <pre id="view-document-text" class="hidden text-sm text-heading" style="white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;"></pre>
+          <!-- Markdown preview -->
+          <div id="view-document-preview" class="hidden markdown-content text-sm text-heading"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% include "_markdown_styles.html" %}
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
   <script src="{% static 'js/rename-modal.js' %}"></script>
+  <script src="{% static 'js/view-document-modal.js' %}"></script>
   <script src="{% static 'js/document-list.js' %}"></script>
   <script src="{% static 'js/data-room-description.js' %}"></script>
 </div>
