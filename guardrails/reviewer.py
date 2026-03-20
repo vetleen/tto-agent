@@ -76,7 +76,7 @@ async def review_flagged_message(
                 action="block",
                 severity="medium",
                 reasoning="No top model configured; defaulting to block.",
-                user_message="Your message could not be processed. Please try rephrasing.",
+                user_message="Your message has been flagged for review. Please contact your system administrator.",
             )
 
         # Fetch recent guardrail history for this user

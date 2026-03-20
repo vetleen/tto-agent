@@ -1633,6 +1633,7 @@
       scrollToBottom(); return;
     }
     if (et === "guardrail.blocked") {
+      finishStreaming("[Blocked]");
       const msg = (data.data && data.data.message) || "Your message was blocked by the content safety system.";
       const div = document.createElement("div");
       div.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
@@ -1641,7 +1642,8 @@
       enableInput(); scrollToBottom(); return;
     }
     if (et === "guardrail.suspended") {
-      const msg = (data.data && data.data.message) || "Your account has been suspended.";
+      finishStreaming("[Suspended]");
+      const msg = (data.data && data.data.message) || "Your account has been suspended. Please contact your system administrator.";
       const div = document.createElement("div");
       div.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
       div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';

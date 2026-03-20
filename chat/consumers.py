@@ -25,6 +25,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.data_room_ids: list[int] = []
         self.active_skill_id: str | None = None
         self._cancel_event: threading.Event | None = None
+        self._stream_finished = asyncio.Event()
+        self._guardrail_task: asyncio.Task | None = None
+        self._guardrail_intercepted: bool = False
+        self._guardrail_warn_verdict: object | None = None  # stored for post-stream delivery
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
@@ -37,7 +41,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.accept()
             await self.send(text_data=json.dumps({
                 "event_type": "guardrail.suspended",
-                "data": {"message": "Your account has been suspended. Please contact an administrator."},
+                "data": {"message": "Your account has been suspended. Please contact your system administrator."},
             }))
             await self.close(code=4403)
             return
@@ -413,6 +417,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if self._cancel_event:
             self._cancel_event.set()
 
+        # Cancel the guardrail pipeline task if still running
+        if self._guardrail_task and not self._guardrail_task.done():
+            self._guardrail_task.cancel()
+
         # Cancel any active subagents for this thread
         thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
         if thread_id:
@@ -505,34 +513,41 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if await self._check_suspension():
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.suspended",
-                    "data": {"message": "Your account has been suspended. Please contact an administrator."},
+                    "data": {"message": "Your account has been suspended. Please contact your system administrator."},
                 }))
                 return
 
-            # --- Guardrail check ---
-            from guardrails.service import check_user_message
+            # --- Guardrail check: Layer 0 (heuristic, instant) ---
+            from guardrails.service import check_heuristics, run_classifier_pipeline
 
             org_id = await self._get_org_id()
-            guardrail_verdict = await check_user_message(
+            heuristic_verdict = await check_heuristics(
                 text=content,
                 user=self.user,
                 thread_id=str(thread.id),
                 org_id=org_id,
             )
 
-            if guardrail_verdict.action == "block":
+            if heuristic_verdict.action == "block":
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.blocked",
-                    "data": {"message": guardrail_verdict.message},
+                    "data": {"message": heuristic_verdict.message},
                 }))
                 return
 
-            if guardrail_verdict.action == "suspend":
-                await self.send(text_data=json.dumps({
-                    "event_type": "guardrail.suspended",
-                    "data": {"message": guardrail_verdict.message},
-                }))
-                return
+            # Prepare cancel_event before launching parallel tasks
+            self._cancel_event = threading.Event()
+            self._stream_finished.clear()
+            self._guardrail_intercepted = False
+            self._guardrail_warn_verdict = None
+
+            # Launch classifier+reviewer pipeline in parallel with the LLM stream
+            self._guardrail_task = asyncio.create_task(
+                self._run_guardrail_pipeline(
+                    content, heuristic_verdict.heuristic_result,
+                    str(thread.id), org_id, self._cancel_event,
+                )
+            )
 
             # Resolve model early for dynamic history budget
             prefs = self.resolved_prefs
@@ -605,21 +620,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if undelivered_ids:
                     await self._mark_subagent_results_delivered(undelivered_ids)
 
-            # Send guardrail warning if the message was flagged but allowed
-            if guardrail_verdict.action == "warn":
-                await self.send(text_data=json.dumps({
-                    "event_type": "guardrail.warning",
-                    "data": {"message": guardrail_verdict.message},
-                }))
-
-            # Stream LLM response
+            # Stream LLM response (cancel_event already created above)
             await self._stream_response(
                 thread, static_system, history,
                 semi_static_system=semi_static_system,
                 dynamic_context=dynamic_context,
                 requested_model=requested_model, thinking_level=thinking_level,
                 resolved_model=model,
+                cancel_event=self._cancel_event,
             )
+
+            # Wait for guardrail pipeline to finish
+            if self._guardrail_task and not self._guardrail_task.done():
+                await self._guardrail_task
+
+            # If the guardrail pipeline intercepted mid-stream, skip post-stream work
+            if self._guardrail_intercepted:
+                return
+
+            # Send guardrail warning after stream if the pipeline flagged but allowed
+            if self._guardrail_warn_verdict:
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.warning",
+                    "data": {"message": self._guardrail_warn_verdict.message},
+                }))
 
             # Send updated thread cost
             thread_cost = await self._get_thread_cost(str(thread.id))
@@ -648,6 +672,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         semi_static_system="",
         dynamic_context="",
         requested_model=None, thinking_level="off", resolved_model=None,
+        cancel_event=None,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
@@ -754,7 +779,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if t not in tools:
                     tools.append(t)
 
-        self._cancel_event = threading.Event()
+        if cancel_event is not None:
+            self._cancel_event = cancel_event
+        elif self._cancel_event is None:
+            self._cancel_event = threading.Event()
 
         request = ChatRequest(
             messages=messages,
@@ -874,7 +902,64 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }))
         finally:
             heartbeat_task.cancel()
+            self._stream_finished.set()
             self._cancel_event = None
+
+    async def _run_guardrail_pipeline(
+        self, text, heuristic_result, thread_id, org_id, cancel_event,
+    ):
+        """Run classifier+reviewer pipeline concurrently with the LLM stream.
+
+        If the verdict is block/suspend and the stream is still running,
+        cancel the stream and send the guardrail event to the client.
+        """
+        from guardrails.service import STREAM_INTERCEPT_ACTIONS, run_classifier_pipeline
+
+        try:
+            verdict = await run_classifier_pipeline(
+                text=text,
+                user=self.user,
+                heuristic_result=heuristic_result,
+                thread_id=thread_id,
+                org_id=org_id,
+            )
+        except asyncio.CancelledError:
+            logger.debug("guardrail: pipeline cancelled (user stopped)")
+            return
+        except Exception:
+            logger.exception("guardrail: pipeline error, failing open")
+            return
+
+        if verdict.action in STREAM_INTERCEPT_ACTIONS and not self._stream_finished.is_set():
+            # Stream still running — intercept it
+            self._guardrail_intercepted = True
+            cancel_event.set()
+
+            if verdict.action == "block":
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.blocked",
+                    "data": {"message": verdict.message},
+                }))
+            elif verdict.action == "suspend":
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.suspended",
+                    "data": {"message": verdict.message},
+                }))
+        elif verdict.action in STREAM_INTERCEPT_ACTIONS:
+            # Stream already finished — send the event anyway
+            if verdict.action == "block":
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.blocked",
+                    "data": {"message": verdict.message},
+                }))
+            elif verdict.action == "suspend":
+                await self.send(text_data=json.dumps({
+                    "event_type": "guardrail.suspended",
+                    "data": {"message": verdict.message},
+                }))
+        elif verdict.action == "warn":
+            # Store for post-stream delivery
+            self._guardrail_warn_verdict = verdict
 
     # -- Summarization helpers --
 

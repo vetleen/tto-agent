@@ -1,11 +1,15 @@
 """Guardrail orchestrator: ties heuristic, classifier, and reviewer layers together.
 
 Entry point for the chat consumer to check user messages before streaming.
+
+Public API:
+- check_heuristics() — instant Layer 0 scan, used as a blocking gate
+- run_classifier_pipeline() — Layers 1+2 (classifier + reviewer), run in parallel with LLM stream
+- check_user_message() — sequential wrapper calling both (backward compat / tests)
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
 
@@ -15,8 +19,8 @@ from guardrails.schemas import ClassifierResult, HeuristicResult, ReviewerDecisi
 
 logger = logging.getLogger(__name__)
 
-# Timeout for the cheap model classifier (seconds)
-_CLASSIFIER_TIMEOUT = 5.0
+# Actions that warrant cancelling an in-progress LLM stream.
+STREAM_INTERCEPT_ACTIONS = frozenset({"block", "suspend"})
 
 
 @dataclass
@@ -31,30 +35,24 @@ class GuardrailVerdict:
     events: list = field(default_factory=list)  # list of created GuardrailEvent records
 
 
-async def check_user_message(
+async def check_heuristics(
     text: str,
-    user,  # accounts.models.User
+    user,
     thread_id: str | None = None,
     org_id: int | None = None,
 ) -> GuardrailVerdict:
-    """Run the full guardrail pipeline on a user message.
+    """Layer 0: instant heuristic scan.
 
-    Layer 0: Heuristic scan (sync, ~0ms)
-    Layer 1: Cheap model classifier (async)
-    Layer 2: Top model reviewer (only on escalation from Layer 1)
-
-    Returns a GuardrailVerdict with the final action and any created events.
+    Returns a GuardrailVerdict with action="block" (high-confidence match) or
+    action="allow" (clean or merely suspicious — escalate to classifier).
     """
     from guardrails.heuristics import heuristic_scan
 
     verdict = GuardrailVerdict()
-
-    # --- Layer 0: Heuristic pre-filter ---
     heuristic_result = heuristic_scan(text)
     verdict.heuristic_result = heuristic_result
 
     if heuristic_result.should_block:
-        # High-confidence heuristic match → block immediately
         event = await _create_event_async(
             user=user,
             org_id=org_id,
@@ -77,7 +75,6 @@ async def check_user_message(
         return verdict
 
     if heuristic_result.is_suspicious:
-        # Log but don't block — escalate to classifier
         event = await _create_event_async(
             user=user,
             org_id=org_id,
@@ -92,31 +89,41 @@ async def check_user_message(
         )
         verdict.events.append(event)
 
+    return verdict
+
+
+async def run_classifier_pipeline(
+    text: str,
+    user,
+    heuristic_result: HeuristicResult,
+    thread_id: str | None = None,
+    org_id: int | None = None,
+) -> GuardrailVerdict:
+    """Layers 1+2: classifier + reviewer pipeline.
+
+    No timeout — runs to completion and always creates GuardrailEvent records.
+    Designed to run concurrently with the LLM stream.
+    """
+    verdict = GuardrailVerdict()
+    verdict.heuristic_result = heuristic_result
+
     # --- Layer 1: Cheap model classifier ---
     try:
         from guardrails.classifier import classify_message
 
-        classifier_result = await asyncio.wait_for(
-            classify_message(
-                text=text,
-                user_id=user.pk,
-                org_id=org_id,
-                conversation_id=thread_id,
-            ),
-            timeout=_CLASSIFIER_TIMEOUT,
+        classifier_result = await classify_message(
+            text=text,
+            user_id=user.pk,
+            org_id=org_id,
+            conversation_id=thread_id,
         )
         verdict.classifier_result = classifier_result
-    except asyncio.TimeoutError:
-        logger.warning("guardrail: classifier timed out for user_id=%s, defaulting to allow", user.pk)
-        return verdict
     except Exception:
         logger.exception("guardrail: classifier error for user_id=%s, defaulting to allow", user.pk)
         return verdict
 
     if not classifier_result.is_suspicious:
-        # Classifier says it's clean
         if heuristic_result.is_suspicious:
-            # Log dismissed heuristic match for tuning
             await _create_event_async(
                 user=user,
                 org_id=org_id,
@@ -163,7 +170,7 @@ async def check_user_message(
     except Exception:
         logger.exception("guardrail: reviewer error for user_id=%s, defaulting to block", user.pk)
         verdict.action = "block"
-        verdict.message = "Your message could not be verified. Please try rephrasing."
+        verdict.message = "Your message has been flagged for review. Please contact your system administrator."
         return verdict
 
     # Apply reviewer decision
@@ -196,6 +203,31 @@ async def check_user_message(
     )
 
     return verdict
+
+
+async def check_user_message(
+    text: str,
+    user,
+    thread_id: str | None = None,
+    org_id: int | None = None,
+) -> GuardrailVerdict:
+    """Run the full guardrail pipeline sequentially (backward compat).
+
+    Layer 0: Heuristic scan (sync, ~0ms)
+    Layer 1+2: Classifier + reviewer
+
+    Returns a GuardrailVerdict with the final action and any created events.
+    """
+    heuristic_verdict = await check_heuristics(text, user, thread_id, org_id)
+    if heuristic_verdict.action == "block":
+        return heuristic_verdict
+
+    pipeline_verdict = await run_classifier_pipeline(
+        text, user, heuristic_verdict.heuristic_result, thread_id, org_id,
+    )
+    # Merge heuristic events into pipeline verdict
+    pipeline_verdict.events = heuristic_verdict.events + pipeline_verdict.events
+    return pipeline_verdict
 
 
 def _map_action(action: str) -> str:
