@@ -1,4 +1,4 @@
-"""Tests for chat image attachment upload, linking, and multimodal block construction."""
+"""Tests for chat attachment upload, linking, and multimodal block construction."""
 
 import io
 import uuid
@@ -9,9 +9,45 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from chat.models import ChatAttachment, ChatMessage, ChatThread
-from chat.services import build_image_content_block
+from chat.services import (
+    build_image_content_block,
+    build_pdf_content_block,
+    build_text_content_block,
+    extract_docx_text,
+)
 
 User = get_user_model()
+
+
+def _tiny_docx():
+    """Return a minimal valid .docx byte string with 'Hello World' content."""
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '</Types>'
+        ))
+        zf.writestr("_rels/.rels", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="word/document.xml"/>'
+            '</Relationships>'
+        ))
+        zf.writestr("word/document.xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:body><w:p><w:r><w:t>Hello World</w:t></w:r></w:p></w:body>'
+            '</w:document>'
+        ))
+    return buf.getvalue()
 
 
 def _tiny_png():
@@ -68,14 +104,76 @@ class UploadAttachmentTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.json()["attachments"]), 2)
 
-    def test_upload_wrong_type_rejected(self):
+    def test_upload_valid_pdf(self):
         f = SimpleUploadedFile("test.pdf", b"%PDF-1.4 test", content_type="application/pdf")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["attachments"][0]["content_type"], "application/pdf")
+
+    def test_upload_valid_text_file(self):
+        f = SimpleUploadedFile("readme.txt", b"Hello world", content_type="text/plain")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["attachments"][0]["content_type"], "text/plain")
+
+    def test_upload_valid_csv(self):
+        f = SimpleUploadedFile("data.csv", b"a,b,c\n1,2,3", content_type="text/csv")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["attachments"][0]["content_type"], "text/csv")
+
+    def test_upload_valid_json(self):
+        f = SimpleUploadedFile("data.json", b'{"key": "val"}', content_type="application/json")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["attachments"][0]["content_type"], "application/json")
+
+    def test_upload_valid_docx(self):
+        f = SimpleUploadedFile(
+            "test.docx", _tiny_docx(),
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json()["attachments"][0]["content_type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    def test_upload_docx_octet_stream_fallback(self):
+        """Browsers may report .docx as application/octet-stream — accept by extension."""
+        f = SimpleUploadedFile("report.docx", _tiny_docx(), content_type="application/octet-stream")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json()["attachments"][0]["content_type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    def test_upload_exe_rejected(self):
+        f = SimpleUploadedFile("malware.exe", b"\x00" * 100, content_type="application/x-msdownload")
         resp = self.client.post(self.url, {"files": f})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("Unsupported file type", resp.json()["error"])
 
-    def test_upload_oversized_rejected(self):
-        # 11 MB file
+    def test_upload_pdf_oversized(self):
+        # >30 MB PDF
+        big = b"\x00" * (31 * 1024 * 1024)
+        f = SimpleUploadedFile("huge.pdf", big, content_type="application/pdf")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("too large", resp.json()["error"])
+
+    def test_upload_text_oversized(self):
+        # >10 MB text
+        big = b"x" * (11 * 1024 * 1024)
+        f = SimpleUploadedFile("big.txt", big, content_type="text/plain")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("too large", resp.json()["error"])
+
+    def test_upload_image_oversized_rejected(self):
+        # 11 MB image
         big = b"\x00" * (11 * 1024 * 1024)
         f = SimpleUploadedFile("big.png", big, content_type="image/png")
         resp = self.client.post(self.url, {"files": f})
@@ -206,3 +304,62 @@ class ChatHomeVisionContextTests(TestCase):
         for c in choices:
             self.assertIn("supports_vision", c)
             self.assertIsInstance(c["supports_vision"], bool)
+
+
+class BuildPdfContentBlockTests(TestCase):
+    def test_anthropic_format(self):
+        block = build_pdf_content_block("abc123", "report.pdf", "anthropic")
+        self.assertEqual(block["type"], "document")
+        self.assertEqual(block["source"]["type"], "base64")
+        self.assertEqual(block["source"]["media_type"], "application/pdf")
+        self.assertEqual(block["source"]["data"], "abc123")
+
+    def test_openai_format(self):
+        block = build_pdf_content_block("abc123", "report.pdf", "openai")
+        self.assertEqual(block["type"], "file")
+        self.assertEqual(block["file"]["filename"], "report.pdf")
+        self.assertIn("data:application/pdf;base64,abc123", block["file"]["file_data"])
+
+    def test_gemini_format(self):
+        block = build_pdf_content_block("abc123", "report.pdf", "gemini")
+        self.assertEqual(block["type"], "image_url")
+        self.assertIn("data:application/pdf;base64,abc123", block["image_url"]["url"])
+
+
+class BuildTextContentBlockTests(TestCase):
+    def test_wraps_text_with_filename(self):
+        block = build_text_content_block("col1,col2\n1,2", "data.csv")
+        self.assertEqual(block["type"], "text")
+        self.assertIn("[Attached file: data.csv]", block["text"])
+        self.assertIn("col1,col2", block["text"])
+
+
+class ExtractDocxTextTests(TestCase):
+    def test_extract_from_minimal_docx(self):
+        text = extract_docx_text(_tiny_docx())
+        self.assertIn("Hello World", text)
+
+
+class LoggerTruncationTests(TestCase):
+    def test_truncate_document_block(self):
+        from llm.service.logger import _truncate_base64_in_content
+
+        long_data = "x" * 1000
+        blocks = [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": long_data}}]
+        result = _truncate_base64_in_content(blocks)
+        self.assertIn("1000 chars", result[0]["source"]["data"])
+
+    def test_truncate_file_block(self):
+        from llm.service.logger import _truncate_base64_in_content
+
+        long_data = "data:application/pdf;base64," + "x" * 1000
+        blocks = [{"type": "file", "file": {"filename": "test.pdf", "file_data": long_data}}]
+        result = _truncate_base64_in_content(blocks)
+        self.assertIn("chars", result[0]["file"]["file_data"])
+
+    def test_short_document_block_untouched(self):
+        from llm.service.logger import _truncate_base64_in_content
+
+        blocks = [{"type": "document", "source": {"type": "base64", "data": "short"}}]
+        result = _truncate_base64_in_content(blocks)
+        self.assertEqual(result[0]["source"]["data"], "short")

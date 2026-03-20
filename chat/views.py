@@ -38,10 +38,10 @@ def chat_home(request):
                 from collections import defaultdict
                 att_qs = ChatAttachment.objects.filter(
                     message_id__in=msg_ids
-                ).values_list("message_id", "original_filename")
+                ).values_list("message_id", "original_filename", "content_type")
                 att_map = defaultdict(list)
-                for mid, fname in att_qs:
-                    att_map[mid].append(fname)
+                for mid, fname, ctype in att_qs:
+                    att_map[mid].append((fname, ctype))
                 for m in chat_messages:
                     m.attachment_names = att_map.get(m.pk, [])
 
@@ -383,8 +383,8 @@ def skills_for_user(request):
 @login_required
 @require_POST
 def upload_attachments(request, thread_id):
-    """Upload image attachments for a chat message."""
-    from chat.services import MAX_ATTACHMENT_SIZE, SUPPORTED_IMAGE_TYPES
+    """Upload file attachments for a chat message."""
+    from chat.services import SUPPORTED_ATTACHMENT_TYPES, SUPPORTED_DOCX_TYPES, max_size_for_content_type
 
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
 
@@ -394,14 +394,21 @@ def upload_attachments(request, thread_id):
 
     results = []
     for f in files:
-        if f.content_type not in SUPPORTED_IMAGE_TYPES:
+        ct = f.content_type
+        # Browsers sometimes report .docx as application/octet-stream
+        if ct not in SUPPORTED_ATTACHMENT_TYPES:
+            if f.name and f.name.lower().endswith(".docx"):
+                ct = next(iter(SUPPORTED_DOCX_TYPES))
+                f.content_type = ct
+            else:
+                return JsonResponse(
+                    {"error": f"Unsupported file type: {ct}"},
+                    status=400,
+                )
+        max_size = max_size_for_content_type(ct)
+        if f.size > max_size:
             return JsonResponse(
-                {"error": f"Unsupported file type: {f.content_type}"},
-                status=400,
-            )
-        if f.size > MAX_ATTACHMENT_SIZE:
-            return JsonResponse(
-                {"error": f"File too large: {f.name} ({f.size} bytes, max {MAX_ATTACHMENT_SIZE})"},
+                {"error": f"File too large: {f.name} ({f.size} bytes, max {max_size})"},
                 status=400,
             )
 

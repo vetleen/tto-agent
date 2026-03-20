@@ -134,7 +134,7 @@ class ChatAttachment(models.Model):
     )
     file = models.FileField(upload_to="chat_attachments/%Y/%m/")
     original_filename = models.CharField(max_length=255)
-    content_type = models.CharField(max_length=50)
+    content_type = models.CharField(max_length=100)
     size_bytes = models.PositiveIntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 

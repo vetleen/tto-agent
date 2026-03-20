@@ -43,6 +43,22 @@ def _truncate_base64_in_content(content):
                 truncated.append({**block, "image_url": {"url": f"[data URI, {len(url)} chars]"}})
             else:
                 truncated.append(block)
+        elif isinstance(block, dict) and block.get("type") == "document":
+            # Anthropic PDF block — truncate source.data
+            src = block.get("source", {})
+            data = src.get("data", "")
+            if data and len(data) > 200:
+                truncated.append({**block, "source": {**src, "data": f"[{len(data)} chars]"}})
+            else:
+                truncated.append(block)
+        elif isinstance(block, dict) and block.get("type") == "file":
+            # OpenAI PDF block — truncate file.file_data
+            f = block.get("file", {})
+            fd = f.get("file_data", "")
+            if fd and len(fd) > 200:
+                truncated.append({**block, "file": {**f, "file_data": f"[{len(fd)} chars]"}})
+            else:
+                truncated.append(block)
         else:
             truncated.append(block)
     return truncated

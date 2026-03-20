@@ -98,7 +98,27 @@ CANVAS_MAX_IMAGES = 25
 SUMMARY_TARGET_TOKENS = 2_000
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+SUPPORTED_PDF_TYPES = {"application/pdf"}
+SUPPORTED_TEXT_TYPES = {
+    "text/plain", "text/markdown", "text/csv", "text/html",
+    "application/json", "text/xml", "application/xml",
+}
+SUPPORTED_DOCX_TYPES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+SUPPORTED_ATTACHMENT_TYPES = (
+    SUPPORTED_IMAGE_TYPES | SUPPORTED_PDF_TYPES | SUPPORTED_TEXT_TYPES | SUPPORTED_DOCX_TYPES
+)
+
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_PDF_ATTACHMENT_SIZE = 30 * 1024 * 1024  # 30 MB
+
+
+def max_size_for_content_type(content_type: str) -> int:
+    """Return the maximum upload size in bytes for a given content type."""
+    if content_type in SUPPORTED_PDF_TYPES:
+        return MAX_PDF_ATTACHMENT_SIZE
+    return MAX_ATTACHMENT_SIZE
 
 
 def build_image_content_block(b64_data: str, media_type: str, provider: str) -> dict:
@@ -118,6 +138,52 @@ def build_image_content_block(b64_data: str, media_type: str, provider: str) -> 
             "type": "image_url",
             "image_url": {"url": f"data:{media_type};base64,{b64_data}"},
         }
+
+
+def build_pdf_content_block(b64_data: str, filename: str, provider: str) -> dict:
+    """Build a provider-specific content block for a PDF attachment."""
+    if provider == "anthropic":
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": b64_data,
+            },
+        }
+    elif provider == "openai":
+        return {
+            "type": "file",
+            "file": {
+                "filename": filename,
+                "file_data": f"data:application/pdf;base64,{b64_data}",
+            },
+        }
+    else:
+        # Gemini / fallback — data URI style
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:application/pdf;base64,{b64_data}"},
+        }
+
+
+def build_text_content_block(text: str, filename: str) -> dict:
+    """Wrap plain text from an attached file into a content block."""
+    return {
+        "type": "text",
+        "text": f"[Attached file: {filename}]\n\n{text}",
+    }
+
+
+def extract_docx_text(file_bytes: bytes) -> str:
+    """Extract text from a .docx file as markdown using mammoth + markdownify."""
+    import io
+
+    import mammoth
+    from markdownify import markdownify as md
+
+    result = mammoth.convert_to_html(io.BytesIO(file_bytes))
+    return md(result.value, heading_style="ATX").strip()
 
 
 async def generate_summary(
