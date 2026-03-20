@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from urllib.parse import urlparse
@@ -34,6 +35,8 @@ class WebFetchTool(ContextAwareTool):
     args_schema: type[BaseModel] = WebFetchInput
 
     def _run(self, url: str, max_chars: int = 20_000) -> str:
+        from django.core.cache import cache
+
         url = url.strip()
         if not url:
             return json.dumps({"error": "Empty URL"})
@@ -44,6 +47,19 @@ class WebFetchTool(ContextAwareTool):
             return json.dumps({"error": f"Invalid URL scheme: {parsed.scheme!r}. Only http/https allowed."})
 
         max_chars = max(1, min(max_chars, _ABSOLUTE_MAX_CHARS))
+
+        cache_key = "web_fetch:" + hashlib.sha256(url.encode()).hexdigest()
+        cached = cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Web fetch cache hit for url=%s", url)
+            # Re-truncate cached content to requested max_chars
+            data = json.loads(cached)
+            content = data.get("content", "")
+            if len(content) > max_chars:
+                data["content"] = content[:max_chars]
+                data["truncated"] = True
+                data["char_count"] = max_chars
+            return json.dumps(data)
 
         try:
             response = requests.get(
@@ -88,7 +104,17 @@ class WebFetchTool(ContextAwareTool):
         # Extract text
         text = soup.get_text(separator="\n", strip=True)
 
-        # Truncate
+        # Cache full content before truncating for caller
+        full_result = json.dumps({
+            "url": url,
+            "title": title,
+            "content": text,
+            "truncated": False,
+            "char_count": len(text),
+        })
+        cache.set(cache_key, full_result, timeout=3600)
+
+        # Truncate for this request
         truncated = len(text) > max_chars
         if truncated:
             text = text[:max_chars]

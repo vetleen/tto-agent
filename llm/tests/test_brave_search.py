@@ -9,6 +9,7 @@ from django.test import TestCase, override_settings
 from llm.tools.brave_search import BraveSearchTool, _TokenBucketRateLimiter
 
 
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}})
 class BraveSearchToolTests(TestCase):
 
     def setUp(self):
@@ -243,6 +244,66 @@ class BraveSearchToolTests(TestCase):
             self.tool._RATE_LIMIT_BACKOFF_SCHEDULE,
             [5.0, 15.0, 30.0, 60.0],
         )
+
+
+class BraveSearchCacheTests(TestCase):
+    """Tests for BraveSearchTool caching."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.tool = BraveSearchTool()
+        patcher = patch("llm.tools.brave_search._brave_rate_limiter")
+        self.mock_limiter = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @override_settings(
+        BRAVE_SEARCH_API_KEY="test-key",
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
+    @patch("llm.tools.brave_search.requests.get")
+    def test_cache_miss_calls_api_and_caches(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"web": {"results": [{"title": "R", "url": "https://r.co", "description": "d"}]}}
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = json.loads(self.tool.invoke({"query": "test"}))
+
+        self.assertEqual(result["count"], 1)
+        mock_get.assert_called_once()
+
+        # Second call should use cache
+        mock_get.reset_mock()
+        result2 = json.loads(self.tool.invoke({"query": "test"}))
+        self.assertEqual(result2["count"], 1)
+        mock_get.assert_not_called()
+
+    @override_settings(
+        BRAVE_SEARCH_API_KEY="test-key",
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
+    @patch("llm.tools.brave_search.requests.get")
+    @patch("llm.tools.brave_search.time.sleep")
+    def test_error_response_not_cached(self, mock_sleep, mock_get):
+        import requests as req_lib
+        mock_get.side_effect = req_lib.exceptions.Timeout("timeout")
+
+        result = json.loads(self.tool.invoke({"query": "fail query"}))
+        self.assertIn("error", result)
+
+        # Reset and make a successful call — should hit API, not cache
+        mock_get.side_effect = None
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"web": {"results": []}}
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result2 = json.loads(self.tool.invoke({"query": "fail query"}))
+        self.assertNotIn("error", result2)
+        mock_get.assert_called()
 
 
 class TokenBucketRateLimiterTests(TestCase):

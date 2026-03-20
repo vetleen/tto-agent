@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -87,11 +88,20 @@ class BraveSearchTool(ContextAwareTool):
         return key
 
     def _run(self, query: str, count: int = 5) -> str:
+        from django.core.cache import cache
+
         query = query.strip()
         if not query:
             return json.dumps({"error": "Empty search query", "results": []})
 
         count = max(1, min(count, 10))
+
+        cache_key = "brave_search:" + hashlib.sha256(f"{query}:{count}".encode()).hexdigest()
+        cached = cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Brave Search cache hit for query=%r count=%d", query, count)
+            return cached
+
         api_key = self._get_api_key()
 
         last_exc = None
@@ -119,7 +129,9 @@ class BraveSearchTool(ContextAwareTool):
                         "description": item.get("description", ""),
                     })
 
-                return json.dumps({"results": results, "count": len(results)})
+                result = json.dumps({"results": results, "count": len(results)})
+                cache.set(cache_key, result, timeout=900)
+                return result
 
             except requests.exceptions.Timeout as e:
                 last_exc = e
