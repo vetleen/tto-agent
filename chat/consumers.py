@@ -422,6 +422,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({"error": "Empty message"}))
             return
 
+        if content.startswith("/"):
+            await self._handle_slash_command(content, data)
+            return
+
         thread_id = data.get("thread_id")
         attachment_ids = data.get("attachment_ids") or []
 
@@ -1700,3 +1704,220 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "needs_summary": needs_summary,
             },
         }
+
+    # -- Slash command handling --
+
+    async def _handle_slash_command(self, content, data):
+        """Dispatch slash commands typed by the user."""
+        parts = content.split(None, 1)
+        command = parts[0].lower()
+        args = parts[1].strip() if len(parts) > 1 else ""
+
+        handlers = {
+            "/clear": self._cmd_clear,
+            "/new": self._cmd_clear,
+            "/cost": self._cmd_cost,
+            "/tag": self._cmd_tag,
+            "/compact": self._cmd_compact,
+        }
+
+        handler = handlers.get(command)
+        if handler:
+            await handler(args, data)
+        else:
+            available = ", ".join(sorted(handlers.keys()))
+            await self._send_command_result(
+                command, "error",
+                f"Unknown command {command}. Available commands: {available}",
+            )
+
+    async def _send_command_result(self, command, status, message, extra=None):
+        """Send a command.result event to the client."""
+        payload = {
+            "event_type": "command.result",
+            "command": command,
+            "status": status,
+            "message": message,
+        }
+        if extra:
+            payload.update(extra)
+        await self.send(text_data=json.dumps(payload))
+
+    async def _cmd_clear(self, args, data):
+        """Handle /clear and /new — navigate to new chat."""
+        await self._send_command_result(
+            "/clear", "ok", "Starting new chat...",
+            extra={"action": "navigate"},
+        )
+
+    async def _cmd_cost(self, args, data):
+        """Handle /cost — show total LLM cost for the thread."""
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            await self._send_command_result("/cost", "ok", "Thread cost: $0.00")
+            return
+        cost = await self._get_thread_cost(thread_id)
+        if cost < 0.01:
+            formatted = f"${cost:.4f}"
+        else:
+            formatted = f"${cost:.2f}"
+        await self._send_command_result("/cost", "ok", f"Thread cost: {formatted}")
+
+    async def _cmd_tag(self, args, data):
+        """Handle /tag — set or auto-pick a thread emoji."""
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            await self._send_command_result(
+                "/tag", "error", "No active thread to tag.",
+            )
+            return
+
+        thread = await self._get_thread_by_id(thread_id)
+        if not thread:
+            await self._send_command_result(
+                "/tag", "error", "Thread not found.",
+            )
+            return
+
+        if args:
+            emoji = args.strip()
+            await self._update_thread_emoji(thread_id, emoji)
+            await self._send_command_result(
+                "/tag", "ok", f"Tagged thread with {emoji}",
+                extra={"emoji": emoji, "thread_id": str(thread_id)},
+            )
+        else:
+            # Auto-pick emoji via LLM
+            try:
+                emoji = await self._auto_pick_emoji(thread)
+                await self._update_thread_emoji(thread_id, emoji)
+                await self._send_command_result(
+                    "/tag", "ok", f"Tagged thread with {emoji}",
+                    extra={"emoji": emoji, "thread_id": str(thread_id)},
+                )
+            except Exception:
+                logger.exception("Failed to auto-pick emoji")
+                await self._send_command_result(
+                    "/tag", "error", "Failed to auto-pick emoji.",
+                )
+
+    async def _auto_pick_emoji(self, thread):
+        """Pick an emoji for a thread using a cheap LLM call."""
+        from llm import get_llm_service
+        from llm.types import ChatRequest, Message, RunContext
+
+        # Get recent messages for context
+        from chat.models import ChatMessage
+
+        recent = await database_sync_to_async(
+            lambda: list(
+                ChatMessage.objects.filter(thread=thread)
+                .order_by("-created_at")[:5]
+                .values_list("content", flat=True)
+            )
+        )()
+        context_text = "\n".join(reversed(recent))[:500]
+
+        prompt = (
+            "Pick a single emoji that best represents this conversation. "
+            f"Reply with ONLY the emoji, nothing else.\n\n{context_text}"
+        )
+        context = RunContext.create(
+            user_id=self.user.pk,
+            conversation_id=str(thread.id),
+        )
+        prefs = self.resolved_prefs
+        cheap_model = prefs.cheap_model if prefs else None
+
+        request = ChatRequest(
+            messages=[Message(role="user", content=prompt)],
+            model=cheap_model or None,
+            stream=False,
+            tools=[],
+            context=context,
+        )
+        service = get_llm_service()
+        response = await service.arun("simple_chat", request)
+        emoji = response.message.content.strip()[:10]
+        return emoji
+
+    async def _cmd_compact(self, args, data):
+        """Handle /compact — force summarization of all unsummarised messages."""
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            await self._send_command_result(
+                "/compact", "error", "No active thread to compact.",
+            )
+            return
+
+        thread = await self._get_thread_by_id(thread_id)
+        if not thread:
+            await self._send_command_result(
+                "/compact", "error", "Thread not found.",
+            )
+            return
+
+        try:
+            from chat.services import generate_summary
+            from core.tokens import count_tokens
+
+            thread_data = await self._get_thread_summary_data(thread)
+            messages = await self._get_all_unsummarised_messages(thread)
+
+            if not messages:
+                await self._send_command_result(
+                    "/compact", "ok", "Nothing to compact — all messages already summarised.",
+                )
+                return
+
+            summary_text = await generate_summary(
+                messages,
+                existing_summary=thread_data["summary"],
+                user_id=self.user.pk,
+                conversation_id=str(thread.id),
+            )
+
+            last_msg = messages[-1]
+            new_count = thread_data["summary_message_count"] + len(messages)
+            await self._save_summary(thread, summary_text, last_msg.id, new_count)
+
+            token_count = count_tokens(summary_text)
+            await self._send_command_result(
+                "/compact", "ok",
+                f"Compacted {len(messages)} messages into {token_count}-token summary.",
+            )
+        except Exception:
+            logger.exception("Failed to compact thread")
+            await self._send_command_result(
+                "/compact", "error", "Failed to compact conversation.",
+            )
+
+    @database_sync_to_async
+    def _get_thread_by_id(self, thread_id):
+        """Get a ChatThread owned by the current user."""
+        from chat.models import ChatThread
+
+        return ChatThread.objects.filter(
+            pk=thread_id, created_by=self.user,
+        ).first()
+
+    @database_sync_to_async
+    def _update_thread_emoji(self, thread_id, emoji):
+        from chat.models import ChatThread
+
+        ChatThread.objects.filter(pk=thread_id).update(emoji=emoji)
+
+    @database_sync_to_async
+    def _get_all_unsummarised_messages(self, thread):
+        """Return ALL unsummarised messages (for /compact)."""
+        from chat.models import ChatMessage, ChatThread
+
+        t = ChatThread.objects.get(pk=thread.pk)
+        qs = ChatMessage.objects.filter(thread=thread).order_by("created_at")
+        if t.summary_up_to_message_id:
+            cutoff_msg = ChatMessage.objects.filter(
+                id=t.summary_up_to_message_id,
+            ).first()
+            if cutoff_msg:
+                qs = qs.filter(created_at__gt=cutoff_msg.created_at)
+        return list(qs)

@@ -356,3 +356,140 @@ class ConsumerMessageTests(TransactionTestCase):
         self.assertEqual(msg.content, "Test message")
 
         await communicator.disconnect()
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class SlashCommandTests(TransactionTestCase):
+    """Test slash command handling in the consumer."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="slash@example.com", password="pass123"
+        )
+
+    async def _connect(self):
+        app = make_application()
+        communicator = WebsocketCommunicator(app, "/ws/chat/")
+        communicator.scope["user"] = self.user
+        connected, _ = await communicator.connect()
+        assert connected
+        return communicator
+
+    async def _create_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user, title="Test Thread"
+        )
+        return str(thread.id)
+
+    async def test_unknown_command_returns_error(self):
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/foo",
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["status"], "error")
+        self.assertIn("/foo", resp["message"])
+        self.assertIn("/clear", resp["message"])
+        await communicator.disconnect()
+
+    async def test_clear_command(self):
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/clear",
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["status"], "ok")
+        self.assertEqual(resp["action"], "navigate")
+        await communicator.disconnect()
+
+    async def test_cost_no_thread(self):
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/cost",
+            "thread_id": "",
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["status"], "ok")
+        self.assertIn("$0.00", resp["message"])
+        await communicator.disconnect()
+
+    async def test_cost_with_thread(self):
+        thread_id = await self._create_thread()
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/cost",
+            "thread_id": thread_id,
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["status"], "ok")
+        self.assertIn("$", resp["message"])
+        await communicator.disconnect()
+
+    async def test_tag_with_emoji(self):
+        thread_id = await self._create_thread()
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/tag 🚀",
+            "thread_id": thread_id,
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["status"], "ok")
+        self.assertEqual(resp["emoji"], "🚀")
+        self.assertEqual(resp["thread_id"], thread_id)
+        # Verify DB
+        thread = await database_sync_to_async(
+            ChatThread.objects.get
+        )(pk=thread_id)
+        self.assertEqual(thread.emoji, "🚀")
+        await communicator.disconnect()
+
+    async def test_tag_no_thread(self):
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/tag",
+            "thread_id": "",
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["status"], "error")
+        self.assertIn("No active thread", resp["message"])
+        await communicator.disconnect()
+
+    async def test_compact_no_thread(self):
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/compact",
+            "thread_id": "",
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["status"], "error")
+        self.assertIn("No active thread", resp["message"])
+        await communicator.disconnect()
+
+    async def test_slash_command_not_saved_as_message(self):
+        thread_id = await self._create_thread()
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "/cost",
+            "thread_id": thread_id,
+        })
+        await communicator.receive_json_from(timeout=5)
+        msg_count = await database_sync_to_async(ChatMessage.objects.count)()
+        self.assertEqual(msg_count, 0)
+        await communicator.disconnect()

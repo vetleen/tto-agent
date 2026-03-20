@@ -1374,6 +1374,15 @@
     // Reset streaming timeout on any event from the server
     if (currentStreamingElement) startStreamingTimeout();
     if (et === "heartbeat") return;
+    if (et === "command.result") {
+      if (data.action === "navigate") { window.location.href = CHAT_HOME; return; }
+      if (data.command === "/tag" && data.status === "ok" && data.emoji) {
+        updateThreadEmoji(data.thread_id || activeThreadId, data.emoji);
+      }
+      if (data.status === "ok") { appendSystemMessage(data.message); }
+      else { appendError(data.message); }
+      return;
+    }
     if (et === "stream.cancelled") { finishStreaming("[Stopped]"); enableInput(); return; }
     if (et === "tasks.updated" || et === "tasks.loaded") { renderTaskPlan(data.tasks || []); return; }
     if (et === "canvases.loaded") {
@@ -1608,9 +1617,31 @@
 
   function appendError(msg) { const div = document.createElement("div"); div.className = "text-sm text-danger py-2"; div.textContent = msg; messagesContainer.appendChild(div); scrollToBottom(); }
 
+  function appendSystemMessage(msg) {
+    const div = document.createElement("div");
+    div.className = "flex justify-center my-2";
+    div.innerHTML = '<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-body bg-neutral-tertiary rounded-full"><svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' + escapeHtml(msg) + '</span>';
+    messagesContainer.appendChild(div);
+    scrollToBottom();
+  }
+
   form.addEventListener("submit", function(e) {
     e.preventDefault(); if (locked) return;
     const text = (input.value || "").trim(); if (!text) return;
+    // Slash commands — send without user/assistant bubbles
+    if (text.startsWith("/")) {
+      input.value = ""; autoResize(input);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "chat.message", content: text,
+          thread_id: activeThreadId || "",
+          data_room_ids: attachedDataRoomIds,
+          skill_id: activeSkillId || "",
+          model: selectedModel, thinking_level: thinkingLevel
+        }));
+      }
+      return;
+    }
     const now = new Date();
     const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
     const userDiv = document.createElement("div"); userDiv.className = "flex justify-end"; userDiv.setAttribute("data-role", "user");
@@ -1647,6 +1678,86 @@
     }
     setTimeout(function() { locked = false; }, 500);
   });
+
+  // -- Slash command autocomplete --
+  var SLASH_COMMANDS = [
+    {name: "/clear", desc: "Start a new chat"},
+    {name: "/new", desc: "Start a new chat"},
+    {name: "/compact", desc: "Compact context"},
+    {name: "/cost", desc: "Show thread cost"},
+    {name: "/tag", desc: "Tag with emoji"},
+  ];
+  var slashMenu = null;
+  var slashSelectedIdx = -1;
+
+  function showSlashMenu(matches) {
+    hideSlashMenu();
+    if (!matches.length) return;
+    slashMenu = document.createElement("div");
+    slashMenu.className = "absolute bottom-full left-0 mb-1 w-56 bg-neutral-secondary border border-default rounded-lg shadow-lg z-50 py-1 overflow-hidden";
+    matches.forEach(function(cmd, idx) {
+      var item = document.createElement("div");
+      item.className = "flex items-center justify-between px-3 py-1.5 text-sm cursor-pointer hover:bg-neutral-tertiary" + (idx === slashSelectedIdx ? " bg-neutral-tertiary" : "");
+      item.innerHTML = '<span class="font-medium text-heading">' + escapeHtml(cmd.name) + '</span><span class="text-xs text-body">' + escapeHtml(cmd.desc) + '</span>';
+      item.addEventListener("mousedown", function(e) {
+        e.preventDefault();
+        input.value = cmd.name + " ";
+        autoResize(input);
+        hideSlashMenu();
+        input.focus();
+      });
+      slashMenu.appendChild(item);
+    });
+    var wrapper = input.closest(".relative") || input.parentElement;
+    wrapper.style.position = "relative";
+    wrapper.appendChild(slashMenu);
+  }
+
+  function hideSlashMenu() {
+    if (slashMenu && slashMenu.parentNode) slashMenu.parentNode.removeChild(slashMenu);
+    slashMenu = null;
+    slashSelectedIdx = -1;
+  }
+
+  input.addEventListener("input", function() {
+    var val = input.value;
+    if (val.startsWith("/") && !val.includes("\n")) {
+      var typed = val.toLowerCase();
+      var matches = SLASH_COMMANDS.filter(function(c) { return c.name.startsWith(typed); });
+      // Deduplicate — don't show exact match if fully typed
+      if (matches.length === 1 && matches[0].name === typed.trim()) { hideSlashMenu(); return; }
+      slashSelectedIdx = matches.length > 0 ? 0 : -1;
+      showSlashMenu(matches);
+    } else {
+      hideSlashMenu();
+    }
+  });
+
+  input.addEventListener("keydown", function(e) {
+    if (!slashMenu) return;
+    var items = slashMenu.querySelectorAll("[class*='cursor-pointer']");
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashSelectedIdx = Math.min(slashSelectedIdx + 1, items.length - 1);
+      items.forEach(function(el, i) { el.classList.toggle("bg-neutral-tertiary", i === slashSelectedIdx); });
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashSelectedIdx = Math.max(slashSelectedIdx - 1, 0);
+      items.forEach(function(el, i) { el.classList.toggle("bg-neutral-tertiary", i === slashSelectedIdx); });
+    } else if ((e.key === "Enter" || e.key === "Tab") && slashSelectedIdx >= 0) {
+      e.preventDefault();
+      var matches = SLASH_COMMANDS.filter(function(c) { return c.name.startsWith(input.value.toLowerCase()); });
+      if (matches[slashSelectedIdx]) {
+        input.value = matches[slashSelectedIdx].name + " ";
+        autoResize(input);
+      }
+      hideSlashMenu();
+    } else if (e.key === "Escape") {
+      hideSlashMenu();
+    }
+  });
+
+  input.addEventListener("blur", function() { setTimeout(hideSlashMenu, 150); });
 
   // -- Stop button --
   stopButton.addEventListener("click", function() {
