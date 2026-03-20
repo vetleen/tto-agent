@@ -75,6 +75,18 @@ def chat_home(request):
                 t["id"] = str(t["id"])
             thread_tasks_json = json.dumps(thread_tasks)
 
+    # Compute thread cost
+    thread_cost_usd = 0.0
+    if thread:
+        from django.db.models import Sum
+
+        from llm.models import LLMCallLog
+
+        result = LLMCallLog.objects.filter(
+            conversation_id=str(thread.id),
+        ).aggregate(total=Sum("cost_usd"))
+        thread_cost_usd = float(result["total"]) if result["total"] is not None else 0.0
+
     # If thread selected, get its attached data rooms
     thread_data_rooms = []
     thread_skill = None
@@ -123,6 +135,7 @@ def chat_home(request):
             "default_model": prefs.top_model,
             "default_model_display": get_display_name(prefs.top_model),
             "thread_tasks_json": thread_tasks_json,
+            "thread_cost_usd": thread_cost_usd,
         },
     )
 

@@ -202,11 +202,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             skill_data = await self._load_thread_skill(thread_id)
             self.active_skill_id = skill_data["skill_id"] if skill_data else None
 
+            # Load thread cost
+            thread_cost = await self._get_thread_cost(thread_id)
+
             await self.send(text_data=json.dumps({
                 "event_type": "thread.loaded",
                 "thread_id": thread_id,
                 "data_rooms": thread_data["data_rooms"],
                 "skill": skill_data,
+                "thread_cost_usd": thread_cost,
             }))
             # Send canvas state if any exist
             canvases_data = await self._load_all_canvases(thread_id)
@@ -546,6 +550,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 requested_model=requested_model, thinking=thinking,
                 resolved_model=model,
             )
+
+            # Send updated thread cost
+            thread_cost = await self._get_thread_cost(str(thread.id))
+            await self.send(text_data=json.dumps({
+                "event_type": "thread.cost_updated",
+                "thread_cost_usd": thread_cost,
+            }))
 
             # Auto-generate title for new threads
             if created:
@@ -1053,6 +1064,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "data_room_ids": [r["pk"] for r in rooms],
             "data_rooms": [{"id": r["pk"], "name": r["name"]} for r in rooms],
         }
+
+    # -- Cost helpers --
+
+    @database_sync_to_async
+    def _get_thread_cost(self, thread_id):
+        from django.db.models import Sum
+
+        from llm.models import LLMCallLog
+
+        result = LLMCallLog.objects.filter(
+            conversation_id=str(thread_id),
+        ).aggregate(total=Sum("cost_usd"))
+        total = result["total"]
+        return float(total) if total is not None else 0.0
 
     # -- Task helpers --
 
