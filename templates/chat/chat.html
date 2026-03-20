@@ -20,7 +20,7 @@
   <div class="h-full px-3 py-4 overflow-y-auto bg-neutral-primary-soft border-e border-default">
     <ul class="space-y-2 font-medium">
       <li>
-        <a href="{% url 'chat_home' %}" class="flex items-center px-2 py-1.5 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group">
+        <a href="{% url 'chat_home' %}" class="flex items-center px-2 py-1.5 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group">
           <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15"/></svg>
           <span class="ms-3">New chat</span>
         </a>
@@ -33,7 +33,7 @@
       {% for t in threads %}
       <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
         <a href="{% url 'chat_home' %}?thread={{ t.id }}"
-           class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium{% endif %}"
+           class="flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium{% endif %}"
            data-thread-id="{{ t.id }}"
            title="{{ t.title|default:t }}">
           {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
@@ -59,7 +59,7 @@
         {% for t in archived_threads %}
         <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
           <a href="{% url 'chat_home' %}?thread={{ t.id }}"
-             class="flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"
+             class="flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"
              data-thread-id="{{ t.id }}"
              title="{{ t.title|default:t }}">
             {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
@@ -84,6 +84,14 @@
   </div>
 </aside>
 
+{# Sidebar resize handle (desktop only) #}
+<div id="sidebar-resize-handle"
+     class="hidden sm:flex fixed top-16 bottom-0 z-40 w-1.5 cursor-col-resize bg-transparent hover:bg-blue-400/30 active:bg-blue-500/40 transition-colors items-center justify-center group"
+     style="left: 256px;"
+     title="Drag to resize sidebar">
+  <div class="w-0.5 h-8 rounded-full bg-neutral-quaternary group-hover:bg-blue-400 group-active:bg-blue-500 transition-colors"></div>
+</div>
+
 {# Full-height content area: chat pane + canvas panel side by side #}
 <div id="content-area" class="flex sm:ml-64" style="height: calc(100vh - 4rem);">
 
@@ -100,14 +108,13 @@
       <div id="model-options" class="max-h-60 overflow-y-auto">
         {# Populated by JS from model_choices_json #}
       </div>
-      <div id="thinking-toggle-section" class="border-t border-default px-3 py-2 hidden">
-        <label class="inline-flex items-center cursor-pointer gap-2">
-          <input type="checkbox" id="thinking-toggle" class="sr-only peer">
-          <div class="relative w-9 h-5 bg-neutral-quaternary peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand"></div>
-          <span class="text-sm text-body">Extended thinking</span>
-        </label>
-      </div>
     </div>
+    <select id="thinking-level-select" class="hidden text-xs px-1.5 py-0.5 rounded-base border border-default bg-neutral-primary-soft text-body focus:ring-1 focus:ring-brand focus:border-brand">
+      <option value="off">No thinking</option>
+      <option value="low">Think a little</option>
+      <option value="medium">Think more</option>
+      <option value="high">Think hard</option>
+    </select>
     </div>{# end model-selector left group #}
     <span id="thread-cost-label" class="text-xs text-body/60 tabular-nums hidden" title="Total thread cost"></span>
     <button id="canvas-toggle-btn" type="button" class="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle canvas">
@@ -528,17 +535,17 @@
   const DEFAULT_MODEL = "{{ default_model|escapejs }}";
   const DEFAULT_MODEL_DISPLAY = "{{ default_model_display|escapejs }}";
   let selectedModel = DEFAULT_MODEL;
-  let thinkingEnabled = false;
+  let thinkingLevel = "off";
 
   // Restore from sessionStorage if available
   (function restoreModelState() {
     const stored = sessionStorage.getItem("chat_selected_model");
-    const storedThinking = sessionStorage.getItem("chat_thinking_enabled");
+    const storedLevel = sessionStorage.getItem("chat_thinking_level");
     if (stored && MODEL_CHOICES.some(function(m) { return m.id === stored; })) {
       selectedModel = stored;
     }
-    if (storedThinking === "true") {
-      thinkingEnabled = true;
+    if (storedLevel && ["off", "low", "medium", "high"].indexOf(storedLevel) !== -1) {
+      thinkingLevel = storedLevel;
     }
   })();
 
@@ -815,7 +822,7 @@
     if (threadList.querySelector('[data-thread-id="' + threadId + '"]')) return;
     var li = document.createElement("li"); li.className = "relative group"; li.setAttribute("data-thread-li", threadId);
     var a = document.createElement("a"); a.href = CHAT_HOME + "?thread=" + threadId;
-    a.className = "flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-secondary-soft text-heading font-medium";
+    a.className = "flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-secondary-soft text-heading font-medium";
     a.setAttribute("data-thread-id", threadId); a.title = title || "New chat";
     a.innerHTML = '<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><span class="ms-3 truncate">' + escapeHtml(title || "New chat") + "</span>";
     li.appendChild(a);
@@ -824,7 +831,7 @@
     menuBtn.setAttribute("data-thread-id", threadId); menuBtn.setAttribute("data-archived", "false");
     menuBtn.innerHTML = '<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>';
     li.appendChild(menuBtn);
-    threadList.querySelectorAll("a").forEach(function(el) { el.className = "flex items-center px-2 py-1.5 pe-8 text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"; });
+    threadList.querySelectorAll("a").forEach(function(el) { el.className = "flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"; });
     threadList.insertBefore(li, threadList.firstChild);
   }
 
@@ -1125,8 +1132,7 @@
   var modelSelectorLabel = document.getElementById('model-selector-label');
   var modelSelectorDropdown = document.getElementById('model-selector-dropdown');
   var modelOptionsContainer = document.getElementById('model-options');
-  var thinkingToggleSection = document.getElementById('thinking-toggle-section');
-  var thinkingToggle = document.getElementById('thinking-toggle');
+  var thinkingLevelSelect = document.getElementById('thinking-level-select');
 
   function renderModelOptions() {
     modelOptionsContainer.innerHTML = '';
@@ -1152,12 +1158,12 @@
   function updateThinkingVisibility() {
     var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
     if (current && current.supports_thinking) {
-      thinkingToggleSection.classList.remove('hidden');
+      thinkingLevelSelect.classList.remove('hidden');
     } else {
-      thinkingToggleSection.classList.add('hidden');
-      thinkingEnabled = false;
-      thinkingToggle.checked = false;
-      sessionStorage.setItem('chat_thinking_enabled', 'false');
+      thinkingLevelSelect.classList.add('hidden');
+      thinkingLevel = "off";
+      thinkingLevelSelect.value = "off";
+      sessionStorage.setItem('chat_thinking_level', 'off');
     }
   }
 
@@ -1168,7 +1174,7 @@
       modelSelectorLabel.textContent = current.display_name;
     }
     renderModelOptions();
-    thinkingToggle.checked = thinkingEnabled;
+    thinkingLevelSelect.value = thinkingLevel;
     updateThinkingVisibility();
   })();
 
@@ -1184,10 +1190,10 @@
     });
   }
 
-  if (thinkingToggle) {
-    thinkingToggle.addEventListener('change', function() {
-      thinkingEnabled = thinkingToggle.checked;
-      sessionStorage.setItem('chat_thinking_enabled', thinkingEnabled ? 'true' : 'false');
+  if (thinkingLevelSelect) {
+    thinkingLevelSelect.addEventListener('change', function() {
+      thinkingLevel = thinkingLevelSelect.value;
+      sessionStorage.setItem('chat_thinking_level', thinkingLevel);
     });
   }
 
@@ -1593,7 +1599,7 @@
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
     if (ws && ws.readyState === WebSocket.OPEN) {
       canvasAutoSaveBeforeChat();
-      var payload = { type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_id: activeSkillId || "", model: selectedModel, thinking: thinkingEnabled };
+      var payload = { type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_id: activeSkillId || "", model: selectedModel, thinking_level: thinkingLevel };
       if (sendAttachmentIds.length > 0) payload.attachment_ids = sendAttachmentIds;
       ws.send(JSON.stringify(payload));
     }
@@ -1762,8 +1768,39 @@
   var canvasToggleBtnMobile = document.getElementById("canvas-toggle-btn-mobile");
   var chatPane = document.getElementById("chat-pane");
   var canvasResizeHandle = document.getElementById("canvas-resize-handle");
+  var sidebarResizeHandle = document.getElementById("sidebar-resize-handle");
+  var SIDEBAR_MIN = 180;
+  var SIDEBAR_MAX = 400;
+  var SIDEBAR_STORAGE_KEY = "chat_sidebar_width";
+  var isDraggingSidebar = false;
 
   function isMobileView() { return window.innerWidth < 640; }
+
+  function applySidebarWidth(px) {
+    var sidebar = document.getElementById("chat-sidebar");
+    var ca = document.getElementById("content-area");
+    if (sidebar) sidebar.style.width = px + "px";
+    if (sidebarResizeHandle) sidebarResizeHandle.style.left = px + "px";
+    if (ca) ca.style.marginLeft = px + "px";
+  }
+
+  function clearSidebarWidth() {
+    var sidebar = document.getElementById("chat-sidebar");
+    var ca = document.getElementById("content-area");
+    if (sidebar) sidebar.style.width = "";
+    if (sidebarResizeHandle) sidebarResizeHandle.style.left = "";
+    if (ca) ca.style.marginLeft = "";
+  }
+
+  function restoreSidebarWidth() {
+    if (isMobileView()) return;
+    var saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (saved) {
+      var w = parseInt(saved, 10);
+      if (w >= SIDEBAR_MIN && w <= SIDEBAR_MAX) applySidebarWidth(w);
+    }
+  }
+  restoreSidebarWidth();
 
   var canvasIsOpen = false;
   var canvasPreviewMode = false;
@@ -2238,6 +2275,10 @@
   }
 
   window.addEventListener("resize", function() {
+    // Sidebar width: clear overrides on mobile, restore on desktop
+    if (isMobileView()) { clearSidebarWidth(); }
+    else { restoreSidebarWidth(); }
+
     if (!canvasIsOpen) return;
     if (isMobileView()) {
       chatPane.classList.add("hidden");
@@ -2291,6 +2332,35 @@
       document.body.style.userSelect = "";
     });
   })();
+
+  // -- Sidebar resize drag (desktop only) --
+  if (sidebarResizeHandle) {
+    sidebarResizeHandle.addEventListener("mousedown", function(e) {
+      if (isMobileView()) return;
+      e.preventDefault();
+      isDraggingSidebar = true;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    });
+
+    document.addEventListener("mousemove", function(e) {
+      if (!isDraggingSidebar) return;
+      var newWidth = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, e.clientX));
+      applySidebarWidth(newWidth);
+    });
+
+    document.addEventListener("mouseup", function() {
+      if (!isDraggingSidebar) return;
+      isDraggingSidebar = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      var sidebar = document.getElementById("chat-sidebar");
+      var w = parseInt(sidebar.style.width, 10);
+      if (w >= SIDEBAR_MIN && w <= SIDEBAR_MAX) {
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, w);
+      }
+    });
+  }
 
   // -- Save version button --
   if (canvasSaveVersionBtn) {
