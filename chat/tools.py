@@ -13,6 +13,23 @@ from llm.tools import ContextAwareTool, get_tool_registry
 logger = logging.getLogger(__name__)
 
 
+def _filter_accessible_rooms(data_room_ids: list[int], user_id: int | None) -> list[int]:
+    """Filter data room IDs to only those the user owns. Raises if none remain."""
+    if not user_id:
+        return data_room_ids
+    from documents.models import DataRoom
+
+    accessible = set(
+        DataRoom.objects.filter(
+            pk__in=data_room_ids, created_by_id=user_id,
+        ).values_list("pk", flat=True)
+    )
+    data_room_ids = [rid for rid in data_room_ids if rid in accessible]
+    if not data_room_ids:
+        raise ValueError("Data rooms not found or access denied")
+    return data_room_ids
+
+
 # --- Input schemas ---
 
 class SearchDocumentsInput(BaseModel):
@@ -53,7 +70,7 @@ class SearchDocumentsTool(ContextAwareTool):
     def _run(self, query: str, k: int = 5) -> str:
         from django.db.models import Count
 
-        from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
+        from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
         from documents.services.retrieval import similarity_search_chunks
 
         query = query.strip()
@@ -70,16 +87,7 @@ class SearchDocumentsTool(ContextAwareTool):
             return json.dumps({"error": "No data rooms attached", "results": [], "count": 0})
 
         # Verify the user has access to all data rooms
-        user_id = context.user_id if context else None
-        if user_id:
-            accessible = set(
-                DataRoom.objects.filter(
-                    pk__in=data_room_ids, created_by_id=user_id,
-                ).values_list("pk", flat=True)
-            )
-            data_room_ids = [rid for rid in data_room_ids if rid in accessible]
-            if not data_room_ids:
-                raise ValueError("Data rooms not found or access denied")
+        data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
 
         try:
             docs = similarity_search_chunks(data_room_ids=data_room_ids, query=query, k=k)
@@ -127,19 +135,23 @@ class SearchDocumentsTool(ContextAwareTool):
             .values_list("document_id", "total")
         )
 
-        # Chunk headings for the first chunk in each window
-        first_chunk_indices = []
-        for w in windows:
-            if w["chunks_included"]:
-                first_chunk_indices.append((w["document_id"], w["chunks_included"][0]))
+        # Chunk headings for the first chunk in each window (single batched query)
+        first_chunk_indices = [
+            (w["document_id"], w["chunks_included"][0])
+            for w in windows if w["chunks_included"]
+        ]
         heading_map = {}
         if first_chunk_indices:
+            from django.db.models import Q
+
+            q_filter = Q()
             for doc_id, ci in first_chunk_indices:
-                chunk_obj = DataRoomDocumentChunk.objects.filter(
-                    document_id=doc_id, chunk_index=ci,
-                ).values_list("heading", flat=True).first()
-                if chunk_obj:
-                    heading_map[(doc_id, ci)] = chunk_obj
+                q_filter |= Q(document_id=doc_id, chunk_index=ci)
+            for doc_id, ci, heading in DataRoomDocumentChunk.objects.filter(q_filter).values_list(
+                "document_id", "chunk_index", "heading",
+            ):
+                if heading:
+                    heading_map[(doc_id, ci)] = heading
 
         # --- Build formatted output ---
         lines = [
@@ -234,7 +246,7 @@ class ReadDocumentTool(ContextAwareTool):
         chunk_start: int | None = None,
         chunk_end: int | None = None,
     ) -> str:
-        from documents.models import DataRoom, DataRoomDocument
+        from documents.models import DataRoomDocument
 
         if not doc_indices or not isinstance(doc_indices, list):
             raise ValueError("read_document requires a non-empty 'doc_indices' list")
@@ -249,16 +261,7 @@ class ReadDocumentTool(ContextAwareTool):
             data_room_ids = [data_room_id]
 
         # Verify the user has access
-        user_id = context.user_id if context else None
-        if user_id:
-            accessible = set(
-                DataRoom.objects.filter(
-                    pk__in=data_room_ids, created_by_id=user_id,
-                ).values_list("pk", flat=True)
-            )
-            data_room_ids = [rid for rid in data_room_ids if rid in accessible]
-            if not data_room_ids:
-                raise ValueError("Data rooms not found or access denied")
+        data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
 
         use_chunk_range = chunk_start is not None and chunk_end is not None
 
