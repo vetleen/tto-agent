@@ -44,6 +44,21 @@ def _relative_upload_date(value):
     return "1 year ago" if years == 1 else f"{years} years ago"
 
 
+def _parse_json_body(request):
+    """Parse JSON request body. Returns (data, None) on success or (None, error response)."""
+    try:
+        return json.loads(request.body), None
+    except (json.JSONDecodeError, ValueError):
+        return None, JsonResponse({"error": "Invalid JSON"}, status=400)
+
+
+def _annotate_relative_dates(docs):
+    """Add relative_upload_display to each document in a list."""
+    for doc in docs:
+        doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
+    return docs
+
+
 def _user_can_access_data_room(user, data_room: DataRoom) -> bool:
     if data_room.created_by_id == user.id:
         return True
@@ -141,16 +156,12 @@ def data_room_documents(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return redirect("data_room_list")
-    documents = list(
+    documents = _annotate_relative_dates(list(
         data_room.documents.filter(is_archived=False).order_by("-uploaded_at")
-    )
-    for doc in documents:
-        doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
-    archived_documents = list(
+    ))
+    archived_documents = _annotate_relative_dates(list(
         data_room.documents.filter(is_archived=True).order_by("-uploaded_at")
-    )
-    for doc in archived_documents:
-        doc.relative_upload_display = _relative_upload_date(doc.uploaded_at)
+    ))
     return render(
         request,
         "documents/data_room_documents.html",
@@ -341,10 +352,9 @@ def document_bulk_delete(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
-    try:
-        body = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    body, err = _parse_json_body(request)
+    if err:
+        return err
     doc_ids = body.get("document_ids")
     if not isinstance(doc_ids, list) or not doc_ids:
         return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
@@ -358,10 +368,9 @@ def document_bulk_archive(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
-    try:
-        body = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    body, err = _parse_json_body(request)
+    if err:
+        return err
     doc_ids = body.get("document_ids")
     if not isinstance(doc_ids, list) or not doc_ids:
         return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
@@ -409,10 +418,9 @@ def data_room_update_description(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
-    try:
-        body = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    body, err = _parse_json_body(request)
+    if err:
+        return err
     description = (body.get("description") or "").strip()[:1000]
     data_room.description = description
     data_room.save(update_fields=["description", "updated_at"])
