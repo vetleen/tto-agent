@@ -9,4 +9,4 @@ def create_user_settings(sender, instance, created, **kwargs):
     if created:
         from accounts.models import UserSettings
 
-        UserSettings.objects.create(user=instance)
+        UserSettings.objects.get_or_create(user=instance)

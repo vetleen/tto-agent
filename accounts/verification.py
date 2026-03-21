@@ -26,7 +26,8 @@ def _generate_token() -> str:
 
 
 def create_token(user: User) -> EmailVerificationToken:
-    """Create a new verification token for the user. Old tokens are not deleted."""
+    """Create a new verification token for the user. Old tokens are deleted first."""
+    EmailVerificationToken.objects.filter(user=user).delete()
     return EmailVerificationToken.objects.create(
         user=user,
         token=_generate_token(),
