@@ -12,6 +12,14 @@ from django.views.decorators.http import require_GET, require_POST
 from accounts.models import Membership, Organization, UserSettings
 
 
+def _parse_json_body(request):
+    """Parse JSON request body. Returns (data, None) on success or (None, error response)."""
+    try:
+        return json.loads(request.body), None
+    except (json.JSONDecodeError, ValueError):
+        return None, JsonResponse({"error": "Invalid JSON"}, status=400)
+
+
 @login_required
 @require_POST
 def theme_update(request):
@@ -69,10 +77,9 @@ def preferences_models_update(request):
     """Update user's preferred model for a tier."""
     from core.preferences import get_preferences
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     tier = data.get("tier", "").strip()
     model = data.get("model", "").strip() or None
@@ -222,10 +229,9 @@ def org_allowed_models_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     models = data.get("allowed_models", [])
     if not isinstance(models, list):
@@ -254,10 +260,9 @@ def org_models_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     tier = data.get("tier", "").strip()
     model = data.get("model", "").strip() or None
@@ -289,10 +294,9 @@ def org_tools_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     tool_name = data.get("name", "").strip()
     enabled = data.get("enabled", True)
@@ -319,10 +323,9 @@ def org_subagents_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     parallel = data.get("parallel", True)
 
@@ -347,10 +350,9 @@ def org_max_context_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     value = data.get("max_context_tokens")
     if value is None:
@@ -383,10 +385,9 @@ def preferences_max_context_update(request):
     """Update user's max context tokens preference."""
     from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS, _get_org_preferences
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     value = data.get("max_context_tokens")
     if value is None:
@@ -429,10 +430,9 @@ def org_skills_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     slug = data.get("slug", "").strip()
     if not slug:
