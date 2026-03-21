@@ -149,6 +149,32 @@ class DocumentViewsTests(TestCase):
         self.assertIn("broker unavailable", doc.processing_error)
         self.assertContains(response, "processing could not be started")
 
+    def test_document_upload_marks_failed_when_sync_fallback_fails(self):
+        """When Celery is unavailable (ImportError) and process_document also
+        raises, the document should be marked FAILED gracefully instead of
+        causing a 500 error."""
+        self.client.force_login(self.user)
+        f = BytesIO(b"hello")
+        f.name = "sync-fail.txt"
+
+        with patch.dict(sys.modules, {"documents.tasks": None}):
+            with patch(
+                "documents.services.process_document.process_document",
+                side_effect=RuntimeError("extraction crashed"),
+            ):
+                with self.assertLogs("documents.views", level="ERROR"):
+                    response = self.client.post(
+                        reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+                        {"file": f},
+                        follow=True,
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="sync-fail.txt")
+        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+        self.assertIn("extraction crashed", doc.processing_error)
+        self.assertContains(response, "processing could not be started")
+
     @override_settings(DOCUMENT_ALLOWED_MIME_TYPES=set())
     def test_document_upload_allows_mime_when_allowlist_not_configured(self):
         self.client.force_login(self.user)

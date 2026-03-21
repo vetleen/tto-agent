@@ -245,13 +245,14 @@ def document_upload(request, data_room_id):
 
     for doc in created_docs:
         try:
-            from documents.tasks import process_document_task
+            try:
+                from documents.tasks import process_document_task
 
-            process_document_task.delay(doc.id)
-        except ImportError:
-            from documents.services.process_document import process_document
+                process_document_task.delay(doc.id)
+            except ImportError:
+                from documents.services.process_document import process_document
 
-            process_document(doc.id)
+                process_document(doc.id)
         except Exception as exc:
             logger.exception("document_upload: failed to enqueue processing for document_id=%s", doc.id)
             doc.status = DataRoomDocument.Status.FAILED
