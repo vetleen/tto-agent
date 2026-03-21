@@ -166,6 +166,54 @@ class DataRoomDocumentTagTests(TestCase):
         self.assertEqual(self.doc.tags.count(), 2)
 
 
+class DataRoomDocumentDocIndexTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="idx@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="Idx", slug="idx", created_by=self.user)
+
+    def test_auto_assigns_sequential_doc_index(self):
+        doc1 = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user, original_filename="a.txt",
+        )
+        doc2 = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user, original_filename="b.txt",
+        )
+        doc3 = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user, original_filename="c.txt",
+        )
+        self.assertEqual(doc1.doc_index, 1)
+        self.assertEqual(doc2.doc_index, 2)
+        self.assertEqual(doc3.doc_index, 3)
+
+    def test_doc_index_scoped_to_data_room(self):
+        other_room = DataRoom.objects.create(name="Other", slug="other", created_by=self.user)
+        doc1 = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user, original_filename="a.txt",
+        )
+        doc2 = DataRoomDocument.objects.create(
+            data_room=other_room, uploaded_by=self.user, original_filename="b.txt",
+        )
+        self.assertEqual(doc1.doc_index, 1)
+        self.assertEqual(doc2.doc_index, 1)
+
+    def test_preserves_explicit_doc_index(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="a.txt", doc_index=42,
+        )
+        self.assertEqual(doc.doc_index, 42)
+
+    def test_continues_from_highest_existing_index(self):
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="a.txt", doc_index=10,
+        )
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user, original_filename="b.txt",
+        )
+        self.assertEqual(doc.doc_index, 11)
+
+
 class DataRoomDocumentStatusTests(TestCase):
     def test_all_four_statuses_exist(self):
         self.assertEqual(DataRoomDocument.Status.UPLOADED, "uploaded")

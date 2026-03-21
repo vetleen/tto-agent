@@ -85,13 +85,19 @@ class DataRoomDocument(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.doc_index:
+            from django.db import transaction
             from django.db.models import Max
 
-            max_idx = DataRoomDocument.objects.filter(
-                data_room=self.data_room
-            ).aggregate(Max("doc_index"))["doc_index__max"] or 0
-            self.doc_index = max_idx + 1
-        super().save(*args, **kwargs)
+            with transaction.atomic():
+                # Lock the data room row to serialize concurrent doc_index assignment
+                DataRoom.objects.filter(pk=self.data_room_id).select_for_update().first()
+                max_idx = DataRoomDocument.objects.filter(
+                    data_room=self.data_room
+                ).aggregate(Max("doc_index"))["doc_index__max"] or 0
+                self.doc_index = max_idx + 1
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return self.original_filename or f"Document {self.pk}"
