@@ -195,6 +195,47 @@ class CancelActiveSubagentsOtherThreadTests(TestCase):
         self.assertEqual(run_b.error, "")
 
 
+class CancelActiveSubagentsCeleryFailureTests(TestCase):
+    """Runs are still marked FAILED even when Celery revocation raises."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="cancel_celery_fail@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("celery.result.AsyncResult")
+    def test_runs_marked_failed_despite_revoke_error(self, mock_async_result):
+        mock_async_result.return_value.revoke.side_effect = ConnectionError("broker down")
+
+        run1 = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task 1", status=SubAgentRun.Status.RUNNING,
+            celery_task_id="celery-fail-1",
+        )
+        run2 = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task 2", status=SubAgentRun.Status.PENDING,
+            celery_task_id="celery-fail-2",
+        )
+
+        from chat.consumers import ChatConsumer
+
+        cancel_sync = ChatConsumer._cancel_active_subagents.__wrapped__
+        consumer = ChatConsumer()
+        cancel_sync(consumer, self.thread.id)
+
+        run1.refresh_from_db()
+        run2.refresh_from_db()
+
+        # Both runs should be FAILED even though revoke raised
+        self.assertEqual(run1.status, SubAgentRun.Status.FAILED)
+        self.assertEqual(run1.error, "Cancelled by user.")
+        self.assertIsNotNone(run1.completed_at)
+
+        self.assertEqual(run2.status, SubAgentRun.Status.FAILED)
+        self.assertEqual(run2.error, "Cancelled by user.")
+        self.assertIsNotNone(run2.completed_at)
+
+
 # ---------------------------------------------------------------------------
 # Sequential enforcement tests
 # ---------------------------------------------------------------------------

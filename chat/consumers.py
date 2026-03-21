@@ -435,18 +435,31 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         from chat.models import SubAgentRun
 
-        active_runs = SubAgentRun.objects.filter(
+        active_qs = SubAgentRun.objects.filter(
             thread_id=thread_id,
             status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
         )
-        for run in active_runs:
-            if run.celery_task_id:
+
+        # Best-effort Celery task revocation — failures must not prevent
+        # the database status update for remaining runs.
+        for run in active_qs.exclude(celery_task_id=""):
+            try:
                 from celery.result import AsyncResult
+
                 AsyncResult(run.celery_task_id).revoke(terminate=True)
-            run.status = SubAgentRun.Status.FAILED
-            run.error = "Cancelled by user."
-            run.completed_at = timezone.now()
-            run.save(update_fields=["status", "error", "completed_at"])
+            except Exception:
+                logger.warning(
+                    "Failed to revoke Celery task %s for SubAgentRun %s",
+                    run.celery_task_id,
+                    run.id,
+                )
+
+        # Single bulk UPDATE instead of per-row save
+        active_qs.update(
+            status=SubAgentRun.Status.FAILED,
+            error="Cancelled by user.",
+            completed_at=timezone.now(),
+        )
 
     async def _handle_chat_message(self, data):
         content = (data.get("content") or "").strip()
