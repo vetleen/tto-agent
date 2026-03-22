@@ -169,16 +169,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({"error": "Data room not found or access denied"}))
             return
 
-        if data_room_id not in self.data_room_ids:
-            self.data_room_ids.append(data_room_id)
+        validated_id = room["id"]
+        if validated_id not in self.data_room_ids:
+            self.data_room_ids.append(validated_id)
 
         # Persist M2M if thread exists
         if thread_id:
-            await self._persist_data_room_link(thread_id, data_room_id)
+            await self._persist_data_room_link(thread_id, validated_id)
 
         await self.send(text_data=json.dumps({
             "event_type": "data_room.attached",
-            "data_room_id": data_room_id,
+            "data_room_id": validated_id,
             "data_room_name": room["name"],
         }))
 
@@ -509,8 +510,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if payload_room_ids and isinstance(payload_room_ids, list):
             validated = []
             for rid in payload_room_ids:
-                if await self._validate_data_room(rid):
-                    validated.append(rid)
+                room = await self._validate_data_room(rid)
+                if room:
+                    validated.append(room["id"])
             self.data_room_ids = validated
 
         # Allow payload to specify skill_id
