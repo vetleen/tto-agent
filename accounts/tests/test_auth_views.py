@@ -53,14 +53,41 @@ class AuthViewsTests(TestCase):
         response = self.client.get(reverse("accounts:account_delete"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Delete account")
+        self.assertContains(response, 'name="password"')
 
-        response = self.client.post(reverse("accounts:account_delete"), follow=True)
+        response = self.client.post(
+            reverse("accounts:account_delete"),
+            {"password": self.password},
+            follow=True,
+        )
         self.assertEqual(response.status_code, 200)
         self.assertFalse(get_user_model().objects.filter(pk=self.user.pk).exists())
 
+    def test_delete_account_wrong_password_rejected(self) -> None:
+        self.client.login(email=self.user.email, password=self.password)
+
+        response = self.client.post(
+            reverse("accounts:account_delete"),
+            {"password": "wrong-password"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Incorrect password")
+        # User must still exist
+        self.assertTrue(get_user_model().objects.filter(pk=self.user.pk).exists())
+
+    def test_delete_account_no_password_rejected(self) -> None:
+        self.client.login(email=self.user.email, password=self.password)
+
+        response = self.client.post(reverse("accounts:account_delete"))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(get_user_model().objects.filter(pk=self.user.pk).exists())
+
     def test_delete_account_clears_session(self) -> None:
         self.client.login(email=self.user.email, password=self.password)
-        self.client.post(reverse("accounts:account_delete"))
+        self.client.post(
+            reverse("accounts:account_delete"),
+            {"password": self.password},
+        )
         # Session should be cleared — subsequent requests must not be authenticated
         response = self.client.get(reverse("accounts:account_delete"))
         self.assertRedirects(response, reverse("accounts:login"))

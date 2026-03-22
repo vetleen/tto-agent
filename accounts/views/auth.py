@@ -119,9 +119,13 @@ def delete_account(request):
     if not request.user.is_authenticated:
         return redirect("accounts:login")
 
+    error = None
     if request.method == "POST":
-        request.user.delete()
-        logout(request)
-        return redirect("index")
+        password = request.POST.get("password", "")
+        if request.user.check_password(password):
+            request.user.delete()
+            logout(request)
+            return redirect("index")
+        error = "Incorrect password. Please try again."
 
-    return render(request, "registration/delete_account.html")
+    return render(request, "registration/delete_account.html", {"error": error})
