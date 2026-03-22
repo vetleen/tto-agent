@@ -358,42 +358,9 @@ def get_chunk_with_context(
     if center_pos is None:
         return {"error": f"Chunk {chunk_id} not found in document chunks"}
 
-    # Start with center chunk
-    included_indices = [center_pos]
-    total_tokens = all_chunks[center_pos]["token_count"]
-
-    # Expand symmetrically
-    left = center_pos - 1
-    right = center_pos + 1
-
-    while total_tokens < target_tokens:
-        added = False
-        # Try left
-        if left >= 0:
-            candidate_tokens = all_chunks[left]["token_count"]
-            if total_tokens + candidate_tokens <= target_tokens:
-                included_indices.insert(0, left)
-                total_tokens += candidate_tokens
-                left -= 1
-                added = True
-            else:
-                left = -1  # Stop trying left
-        # Try right
-        if right < len(all_chunks):
-            candidate_tokens = all_chunks[right]["token_count"]
-            if total_tokens + candidate_tokens <= target_tokens:
-                included_indices.append(right)
-                total_tokens += candidate_tokens
-                right += 1
-                added = True
-            else:
-                right = len(all_chunks)  # Stop trying right
-
-        if not added:
-            break
-
-    included_indices.sort()
-    context_chunks = [all_chunks[i] for i in included_indices]
+    # Expand symmetrically around center chunk
+    start_pos, end_pos, total_tokens = _expand_window(center_pos, all_chunks, target_tokens)
+    context_chunks = all_chunks[start_pos:end_pos + 1]
     context_text = "\n\n".join(c["text"] for c in context_chunks)
 
     return {
