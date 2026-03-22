@@ -11,7 +11,7 @@ from django.test import TestCase, TransactionTestCase
 
 from accounts.models import Membership, Organization
 from chat.consumers import ChatConsumer
-from chat.models import ChatAttachment, ChatMessage, ChatThread, ChatThreadDataRoom
+from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom
 from chat.routing import websocket_urlpatterns
 from channels.routing import URLRouter
 from documents.models import DataRoom
@@ -548,6 +548,72 @@ class ValidateDataRoomTests(TransactionTestCase):
     async def test_nonexistent_room_returns_none(self):
         consumer = self._make_consumer(self.owner)
         result = await consumer._validate_data_room(999999)
+        self.assertIsNone(result)
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class CanvasOwnershipTests(TransactionTestCase):
+    """Test that canvas operations enforce thread ownership."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(email="canvas-owner@example.com", password="pass")
+        self.attacker = User.objects.create_user(email="canvas-attacker@example.com", password="pass")
+
+    def _make_consumer(self, user):
+        consumer = ChatConsumer()
+        consumer.scope = {"user": user}
+        consumer.user = user
+        return consumer
+
+    async def test_resolve_canvas_denies_other_users_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Secret Doc", content="Confidential",
+        )
+        consumer = self._make_consumer(self.attacker)
+        result = await database_sync_to_async(consumer._resolve_canvas_id)(
+            str(thread.id), canvas.pk,
+        )
+        self.assertIsNone(result)
+
+    async def test_resolve_canvas_allows_own_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="My Doc", content="OK",
+        )
+        consumer = self._make_consumer(self.owner)
+        result = await database_sync_to_async(consumer._resolve_canvas_id)(
+            str(thread.id), canvas.pk,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.pk, canvas.pk)
+
+    async def test_load_all_canvases_denies_other_users_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Secret", content="No",
+        )
+        consumer = self._make_consumer(self.attacker)
+        result = await consumer._load_all_canvases(str(thread.id))
+        self.assertIsNone(result)
+
+    async def test_get_canvases_for_prompt_denies_other_users_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Secret", content="No",
+        )
+        consumer = self._make_consumer(self.attacker)
+        result = await consumer._get_canvases_for_prompt(str(thread.id))
         self.assertIsNone(result)
 
 
