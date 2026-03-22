@@ -177,3 +177,12 @@ class ThreadEmojiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.thread.refresh_from_db()
         self.assertEqual(len(self.thread.emoji), 8)
+
+    def test_emoji_invalid_json_returns_400(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            self._url(),
+            data=b"not json at all",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)

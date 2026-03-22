@@ -187,7 +187,10 @@ def thread_emoji(request, thread_id):
     thread = get_object_or_404(
         ChatThread, id=thread_id, created_by=request.user
     )
-    body = json.loads(request.body)
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
     emoji = body.get("emoji", "")[:8]
     thread.emoji = emoji
     thread.save(update_fields=["emoji"])
@@ -221,7 +224,10 @@ async def canvas_export(request, thread_id, canvas_id=None):
 
     if request.method == "POST":
         # Client already replaced mermaid blocks with <img> tags.
-        body = json.loads(request.body)
+        try:
+            body = json.loads(request.body)
+        except (json.JSONDecodeError, ValueError):
+            return HttpResponseBadRequest("Invalid JSON")
         content = body.get("content", canvas.content)
     else:
         # Legacy GET: render mermaid server-side with Playwright.
@@ -312,7 +318,10 @@ def canvas_save_to_data_room(request, thread_id, canvas_id=None):
     else:
         canvas = get_object_or_404(ChatCanvas, pk=thread.active_canvas_id, thread=thread)
 
-    body = json.loads(request.body)
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
     data_room_id = body.get("data_room_id")
     if not data_room_id:
         return JsonResponse({"error": "data_room_id required"}, status=400)
