@@ -11,7 +11,7 @@ from django.test import TestCase, TransactionTestCase
 
 from accounts.models import Membership, Organization
 from chat.consumers import ChatConsumer
-from chat.models import ChatMessage, ChatThread
+from chat.models import ChatMessage, ChatThread, ChatThreadDataRoom
 from chat.routing import websocket_urlpatterns
 from channels.routing import URLRouter
 from documents.models import DataRoom
@@ -549,3 +549,66 @@ class ValidateDataRoomTests(TransactionTestCase):
         consumer = self._make_consumer(self.owner)
         result = await consumer._validate_data_room(999999)
         self.assertIsNone(result)
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class PayloadDataRoomValidationTests(TransactionTestCase):
+    """Test that data_room_ids in message payload are validated before persisting."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="payload@example.com", password="pass")
+        self.other = User.objects.create_user(email="victim@example.com", password="pass")
+
+    async def _connect(self):
+        app = make_application()
+        communicator = WebsocketCommunicator(app, "/ws/chat/")
+        communicator.scope["user"] = self.user
+        connected, _ = await communicator.connect()
+        assert connected
+        return communicator
+
+    @patch("llm.get_llm_service")
+    async def test_inaccessible_data_room_ids_filtered_from_payload(self, mock_get_service):
+        """data_room_ids in payload must be validated — inaccessible rooms must not be linked."""
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        # Create rooms: one owned by user, one by other user (inaccessible)
+        own_room = await database_sync_to_async(DataRoom.objects.create)(
+            name="My Room", slug="payload-own", created_by=self.user,
+        )
+        other_room = await database_sync_to_async(DataRoom.objects.create)(
+            name="Secret Room", slug="payload-secret", created_by=self.other,
+        )
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+            "data_room_ids": [own_room.pk, other_room.pk],
+        })
+
+        # Consume thread.created
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "thread.created")
+        thread_id = resp["thread_id"]
+
+        # Verify only the accessible room was linked
+        linked_room_ids = await database_sync_to_async(
+            lambda: set(
+                ChatThreadDataRoom.objects.filter(thread_id=thread_id)
+                .values_list("data_room_id", flat=True)
+            )
+        )()
+        self.assertIn(own_room.pk, linked_room_ids)
+        self.assertNotIn(other_room.pk, linked_room_ids)
+
+        await communicator.disconnect()

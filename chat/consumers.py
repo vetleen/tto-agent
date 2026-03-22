@@ -481,7 +481,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Allow payload to specify data_room_ids (e.g. for new threads)
         payload_room_ids = data.get("data_room_ids")
         if payload_room_ids and isinstance(payload_room_ids, list):
-            self.data_room_ids = payload_room_ids
+            validated = []
+            for rid in payload_room_ids:
+                if await self._validate_data_room(rid):
+                    validated.append(rid)
+            self.data_room_ids = validated
 
         # Allow payload to specify skill_id
         payload_skill_id = data.get("skill_id")
