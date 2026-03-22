@@ -104,3 +104,41 @@ class ChatMessageModelTests(TestCase):
         )
         self.assertIn("user", str(msg))
         self.assertIn("Hello", str(msg))
+
+    def test_token_count_auto_computed_on_create(self):
+        msg = ChatMessage.objects.create(
+            thread=self.thread, role="user", content="Hello world"
+        )
+        self.assertGreater(msg.token_count, 0)
+
+    def test_redacted_message_preserves_zero_token_count(self):
+        """A redacted message with token_count=0 must not recompute on save."""
+        msg = ChatMessage.objects.create(
+            thread=self.thread, role="user", content="Original sensitive message"
+        )
+        original_tokens = msg.token_count
+        self.assertGreater(original_tokens, 0)
+
+        # Simulate redaction (uses .update() like the consumer)
+        ChatMessage.objects.filter(pk=msg.pk).update(
+            content="[This message was removed by the content safety system.]",
+            is_redacted=True,
+            token_count=0,
+        )
+
+        # Reload and re-save — token_count must stay 0
+        msg.refresh_from_db()
+        self.assertEqual(msg.token_count, 0)
+        self.assertTrue(msg.is_redacted)
+
+        msg.save()
+        self.assertEqual(msg.token_count, 0)
+
+    def test_explicit_token_count_not_overwritten(self):
+        """If token_count is explicitly set, save() should not recompute."""
+        msg = ChatMessage(
+            thread=self.thread, role="assistant", content="A response",
+            token_count=42,
+        )
+        msg.save()
+        self.assertEqual(msg.token_count, 42)

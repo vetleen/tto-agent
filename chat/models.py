@@ -105,7 +105,7 @@ class ChatMessage(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        if not self.token_count and self.content:
+        if not self.token_count and self.content and not self.is_redacted:
             from core.tokens import count_tokens
 
             self.token_count = count_tokens(self.content)
