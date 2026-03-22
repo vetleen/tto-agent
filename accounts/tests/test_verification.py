@@ -140,5 +140,20 @@ class ResendRateLimitTests(TestCase):
         allowed, wait = can_resend_verification(user)
         self.assertTrue(allowed)
         self.assertIsNone(wait)
+        # can_resend_verification is read-only — counter is NOT reset by the check
         user.refresh_from_db()
-        self.assertEqual(user.verification_resend_count, 0)
+        self.assertEqual(user.verification_resend_count, 5)
+
+    def test_can_resend_does_not_write_to_db(self) -> None:
+        """can_resend_verification must be read-only — no DB side effects."""
+        user = User.objects.create_user(email="readonly@example.com", password="pass")
+        user.email_verified = False
+        user.last_verification_email_sent_at = timezone.now() - timedelta(hours=25)
+        user.verification_resend_window_start = timezone.now() - timedelta(hours=25)
+        user.verification_resend_count = 3
+        user.save()
+        can_resend_verification(user)
+        user.refresh_from_db()
+        # DB values must not have changed
+        self.assertEqual(user.verification_resend_count, 3)
+        self.assertIsNotNone(user.verification_resend_window_start)

@@ -73,14 +73,17 @@ def send_verification_email(
     user.last_verification_email_sent_at = now
     if user.verification_resend_window_start is None:
         user.verification_resend_window_start = now
+    # Reset the rate-limit window if 24 hours have passed
+    if is_resend and _is_window_expired(user):
+        user.verification_resend_count = 0
+        user.verification_resend_window_start = now
     if is_resend:
         user.verification_resend_count += 1
     update_fields = [
         "last_verification_email_sent_at",
         "verification_resend_window_start",
+        "verification_resend_count",
     ]
-    if is_resend:
-        update_fields.append("verification_resend_count")
     user.save(update_fields=update_fields)
     return token_obj
 
@@ -111,24 +114,26 @@ def verify_token(token: str) -> tuple[User | None, str | None]:
     return user, None
 
 
+def _is_window_expired(user: User) -> bool:
+    """Check if the 24-hour resend window has expired (read-only)."""
+    window_start = user.verification_resend_window_start
+    if window_start is None:
+        return False
+    return (timezone.now() - window_start).total_seconds() >= VERIFICATION_WINDOW_HOURS * 3600
+
+
 def can_resend_verification(user: User) -> tuple[bool, int | None]:
     """
     Check if a verification email can be sent. Returns (allowed, wait_seconds).
     If allowed is True, wait_seconds is None. If allowed is False, wait_seconds
-    is how long to wait (can be 0 if e.g. window reset).
+    is how long to wait. This is a read-only check — no database writes.
     """
     now = timezone.now()
-    window_start = user.verification_resend_window_start
     last_sent = user.last_verification_email_sent_at
 
-    # Reset window after 24 hours
-    if window_start is not None:
-        if (now - window_start).total_seconds() >= VERIFICATION_WINDOW_HOURS * 3600:
-            user.verification_resend_count = 0
-            user.verification_resend_window_start = now
-            user.save(update_fields=["verification_resend_count", "verification_resend_window_start"])
-            # After reset, first resend is allowed immediately (1 min was the initial wait from signup)
-            return True, None
+    # Window expired — allow immediately (reset happens in send_verification_email)
+    if _is_window_expired(user):
+        return True, None
 
     if last_sent is None:
         return True, None
