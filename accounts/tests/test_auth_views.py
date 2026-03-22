@@ -58,6 +58,13 @@ class AuthViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(get_user_model().objects.filter(pk=self.user.pk).exists())
 
+    def test_delete_account_clears_session(self) -> None:
+        self.client.login(email=self.user.email, password=self.password)
+        self.client.post(reverse("accounts:account_delete"))
+        # Session should be cleared — subsequent requests must not be authenticated
+        response = self.client.get(reverse("accounts:account_delete"))
+        self.assertRedirects(response, reverse("accounts:login"))
+
     def test_password_change_flow(self) -> None:
         self.client.login(email=self.user.email, password=self.password)
 

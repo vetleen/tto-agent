@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.contrib.auth import get_user_model, login
+from django.contrib.auth import get_user_model, login, logout
 from django.contrib.auth.views import LoginView as BaseLoginView
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_http_methods
@@ -121,6 +121,7 @@ def delete_account(request):
 
     if request.method == "POST":
         request.user.delete()
+        logout(request)
         return redirect("index")
 
     return render(request, "registration/delete_account.html")
