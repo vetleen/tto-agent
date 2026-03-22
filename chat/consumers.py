@@ -1064,14 +1064,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_thread_summary_data(self, thread):
-        from chat.models import ChatThread
-
-        t = ChatThread.objects.get(pk=thread.pk)
+        thread.refresh_from_db(fields=[
+            "summary", "summary_token_count",
+            "summary_up_to_message_id", "summary_message_count",
+        ])
         return {
-            "summary": t.summary,
-            "summary_token_count": t.summary_token_count,
-            "summary_up_to_message_id": t.summary_up_to_message_id,
-            "summary_message_count": t.summary_message_count,
+            "summary": thread.summary,
+            "summary_token_count": thread.summary_token_count,
+            "summary_up_to_message_id": thread.summary_up_to_message_id,
+            "summary_message_count": thread.summary_message_count,
         }
 
     @database_sync_to_async
@@ -1080,19 +1081,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         The overlap window is always preserved as raw context and is never summarised.
         """
-        from chat.models import ChatMessage, ChatThread
+        from chat.models import ChatMessage
         from llm.model_info import get_history_budget
 
         max_history_tokens = get_history_budget(model, max_context_tokens=max_context_tokens) if model else MAX_HISTORY_TOKENS
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
-        t = ChatThread.objects.get(pk=thread.pk)
+        thread.refresh_from_db(fields=["summary_up_to_message_id", "summary_token_count"])
 
         # All unsummarised messages, newest first (exclude redacted)
         qs = ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).order_by("-created_at")
-        if t.summary_up_to_message_id:
+        if thread.summary_up_to_message_id:
             cutoff_msg = ChatMessage.objects.filter(
-                id=t.summary_up_to_message_id,
+                id=thread.summary_up_to_message_id,
             ).first()
             if cutoff_msg:
                 qs = qs.filter(created_at__gt=cutoff_msg.created_at)
@@ -1112,7 +1113,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         non_overlap = all_msgs[overlap_count:]
 
         # Of those, keep what fits in the remaining budget
-        remaining_budget = max(0, max_history_tokens - t.summary_token_count - overlap_used)
+        remaining_budget = max(0, max_history_tokens - thread.summary_token_count - overlap_used)
         keep_count = 0
         used = 0
         for msg in non_overlap:
