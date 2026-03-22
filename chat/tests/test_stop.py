@@ -76,6 +76,7 @@ class CancelActiveSubagentsPendingTests(TestCase):
         # Call the sync inner function directly
         from chat.consumers import ChatConsumer
         consumer = ChatConsumer()
+        consumer.user = self.user
         # Access the wrapped sync function via __wrapped__
         cancel_sync = ChatConsumer._cancel_active_subagents.__wrapped__
         cancel_sync(consumer, self.thread.id)
@@ -114,6 +115,7 @@ class CancelActiveSubagentsRunningTests(TestCase):
         from chat.consumers import ChatConsumer
         cancel_sync = ChatConsumer._cancel_active_subagents.__wrapped__
         consumer = ChatConsumer()
+        consumer.user = self.user
         cancel_sync(consumer, self.thread.id)
 
         run.refresh_from_db()
@@ -147,6 +149,7 @@ class CancelActiveSubagentsIgnoresTerminalTests(TestCase):
         from chat.consumers import ChatConsumer
         cancel_sync = ChatConsumer._cancel_active_subagents.__wrapped__
         consumer = ChatConsumer()
+        consumer.user = self.user
         cancel_sync(consumer, self.thread.id)
 
         completed_run.refresh_from_db()
@@ -182,6 +185,7 @@ class CancelActiveSubagentsOtherThreadTests(TestCase):
         from chat.consumers import ChatConsumer
         cancel_sync = ChatConsumer._cancel_active_subagents.__wrapped__
         consumer = ChatConsumer()
+        consumer.user = self.user
         cancel_sync(consumer, self.thread_a.id)
 
         run_a.refresh_from_db()
@@ -221,6 +225,7 @@ class CancelActiveSubagentsCeleryFailureTests(TestCase):
 
         cancel_sync = ChatConsumer._cancel_active_subagents.__wrapped__
         consumer = ChatConsumer()
+        consumer.user = self.user
         cancel_sync(consumer, self.thread.id)
 
         run1.refresh_from_db()

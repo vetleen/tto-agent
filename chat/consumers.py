@@ -436,10 +436,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _cancel_active_subagents(self, thread_id):
-        """Cancel all active subagent runs for a thread."""
+        """Cancel all active subagent runs for a thread owned by the current user."""
         from django.utils import timezone
 
-        from chat.models import SubAgentRun
+        from chat.models import ChatThread, SubAgentRun
+
+        # Verify thread ownership — thread_id may come from client payload
+        if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
+            return
 
         active_qs = SubAgentRun.objects.filter(
             thread_id=thread_id,
