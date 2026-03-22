@@ -718,6 +718,49 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
 
         await communicator.disconnect()
 
+    @patch("llm.get_llm_service")
+    async def test_inaccessible_skill_id_not_attached_from_payload(self, mock_get_service):
+        """skill_id in payload must be validated — inaccessible skills must not be attached."""
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        from agent_skills.models import AgentSkill
+
+        # Create an org-level skill that belongs to a different org
+        other_org = await database_sync_to_async(Organization.objects.create)(
+            name="OtherOrg", slug="otherorg-skill-test",
+        )
+        skill = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Secret Skill", slug="secret-skill",
+            level="org", organization=other_org,
+            instructions="Secret instructions",
+        )
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+            "skill_id": str(skill.pk),
+        })
+
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "thread.created")
+        thread_id = resp["thread_id"]
+
+        # Verify the skill was NOT attached to the thread
+        thread_skill = await database_sync_to_async(
+            lambda: ChatThread.objects.get(pk=thread_id).skill_id
+        )()
+        self.assertIsNone(thread_skill)
+
+        await communicator.disconnect()
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},

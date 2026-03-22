@@ -524,7 +524,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Allow payload to specify skill_id
         payload_skill_id = data.get("skill_id")
         if payload_skill_id:
-            self.active_skill_id = str(payload_skill_id)
+            validated_skill = await self._validate_skill(payload_skill_id)
+            if validated_skill:
+                self.active_skill_id = str(validated_skill["id"])
         elif payload_skill_id == "":
             self.active_skill_id = None
 
