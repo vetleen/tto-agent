@@ -255,6 +255,37 @@ class OrgDefaultRemovedFromAllowedTest(TestCase):
         self.assertEqual(prefs.top_model, "openai/gpt-5")
 
 
+class OrgAllowedModelsNoOverlapTest(TestCase):
+    """When org's allowed_models has no overlap with system, must not fall back to system default."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5-mini",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_no_overlap_returns_empty_model(self, mock_registry, mock_allowed):
+        """Org sets allowed_models with models not in system list — tier should be empty, not system default."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="no-overlap@example.com")
+        org = Organization.objects.create(name="NoOverlap", slug="no-overlap", preferences={
+            "allowed_models": ["nonexistent/model-a", "nonexistent/model-b"],
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        # effective_allowed is empty since none of org's models are in system list
+        self.assertEqual(prefs.allowed_models, [])
+        # Must NOT fall back to system default — that bypasses org restrictions
+        self.assertEqual(prefs.top_model, "")
+        self.assertEqual(prefs.mid_model, "")
+        self.assertEqual(prefs.cheap_model, "")
+
+
 class SectionAwareToolFilteringTest(TestCase):
     """Processing tools (document_processing section) are excluded from chat allowed_tools."""
 

@@ -163,6 +163,7 @@ def _resolve_tier(
     2. Org's default if set AND in effective allowed list
     3. System env var default if in effective allowed list
     4. First model in effective allowed list
+    5. Empty string (no valid model available)
     """
     if user_choice and user_choice in effective_allowed:
         return user_choice
@@ -176,7 +177,10 @@ def _resolve_tier(
     if effective_allowed:
         return effective_allowed[0]
 
-    return system_default or ""
+    # No valid model in the effective allowed list. Do NOT fall back to the
+    # system default here — that would bypass org-level restrictions when the
+    # org's allowed_models list has no overlap with the system list.
+    return ""
 
 
 def get_tier_defaults(user) -> dict[str, str]:
