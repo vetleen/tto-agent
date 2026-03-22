@@ -299,9 +299,9 @@ def canvas_save_to_data_room(request, thread_id, canvas_id=None):
 
     data_room = get_object_or_404(DataRoom, pk=data_room_id)
 
-    from documents.views import _user_can_access_data_room
+    from documents.views import _user_can_modify_data_room
 
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return JsonResponse({"error": "Access denied"}, status=403)
 
     title = canvas.title or "Untitled document"

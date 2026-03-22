@@ -7,7 +7,9 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from chat.models import ChatThread
+from accounts.models import Membership, Organization
+from chat.models import ChatCanvas, ChatThread
+from documents.models import DataRoom, DataRoomDocument
 from llm.models import LLMCallLog
 
 User = get_user_model()
@@ -99,3 +101,56 @@ class ThreadCostTests(TestCase):
         response = self.client.get(reverse("chat_home") + f"?thread={thread.id}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["thread_cost_usd"], 0.0)
+
+
+class CanvasSaveToDataRoomTests(TestCase):
+    """Test that canvas_save_to_data_room requires write (owner) access."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(email="owner@example.com", password="pass")
+        self.owner.email_verified = True
+        self.owner.save(update_fields=["email_verified"])
+        self.colleague = User.objects.create_user(email="colleague@example.com", password="pass")
+        self.colleague.email_verified = True
+        self.colleague.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="TestOrg", slug="testorg-canvas")
+        Membership.objects.create(user=self.owner, org=self.org)
+        Membership.objects.create(user=self.colleague, org=self.org)
+        self.data_room = DataRoom.objects.create(
+            name="Shared", slug="shared-canvas", created_by=self.owner, is_shared=True,
+        )
+
+    def test_owner_can_save_canvas_to_own_room(self):
+        self.client.force_login(self.owner)
+        thread = ChatThread.objects.create(created_by=self.owner)
+        canvas = ChatCanvas.objects.create(
+            thread=thread, title="Doc", content="# Hello",
+        )
+        thread.active_canvas_id = canvas.pk
+        thread.save(update_fields=["active_canvas_id"])
+        url = reverse("canvas_save_to_data_room", kwargs={"thread_id": thread.id})
+        response = self.client.post(
+            url,
+            json.dumps({"data_room_id": self.data_room.pk}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(DataRoomDocument.objects.filter(data_room=self.data_room).exists())
+
+    def test_shared_member_cannot_save_canvas_to_shared_room(self):
+        """Non-owner org members should not be able to write to shared rooms."""
+        self.client.force_login(self.colleague)
+        thread = ChatThread.objects.create(created_by=self.colleague)
+        canvas = ChatCanvas.objects.create(
+            thread=thread, title="Doc", content="# Hello",
+        )
+        thread.active_canvas_id = canvas.pk
+        thread.save(update_fields=["active_canvas_id"])
+        url = reverse("canvas_save_to_data_room", kwargs={"thread_id": thread.id})
+        response = self.client.post(
+            url,
+            json.dumps({"data_room_id": self.data_room.pk}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(DataRoomDocument.objects.filter(data_room=self.data_room).exists())

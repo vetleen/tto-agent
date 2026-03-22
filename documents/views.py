@@ -335,7 +335,7 @@ def document_chunks(request, data_room_id, document_id):
         return JsonResponse({"error": "Forbidden"}, status=403)
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     chunks = []
-    for c in doc.chunks.order_by("chunk_index"):
+    for c in doc.chunks.filter(is_quarantined=False).order_by("chunk_index"):
         chunks.append({
             "id": c.id,
             "chunk_index": c.chunk_index,

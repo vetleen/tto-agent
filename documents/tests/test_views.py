@@ -490,6 +490,27 @@ class DocumentViewsTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_document_chunks_api_excludes_quarantined(self):
+        self.client.force_login(self.user)
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="guarded.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=0, text="Safe chunk", token_count=2,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=1, text="Quarantined chunk",
+            token_count=3, is_quarantined=True,
+        )
+        response = self.client.get(
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["chunks"]), 1)
+        self.assertEqual(data["chunks"][0]["text"], "Safe chunk")
+
     # ------------------------------------------------------------------ #
     # document_upload — multi-file                                         #
     # ------------------------------------------------------------------ #
