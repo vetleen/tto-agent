@@ -63,6 +63,23 @@ INTERNAL_IPS = [
 _csrf_origins = os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "")
 CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_origins.split(",") if o.strip()]
 
+# --- Production security settings ---
+# Heroku terminates SSL at the load balancer and forwards X-Forwarded-Proto.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+if not DEBUG:
+    # Cookie security: mark cookies Secure so browsers never send them over HTTP
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+    # HSTS: tell browsers to always use HTTPS (start with 1 hour, increase after verifying)
+    SECURE_HSTS_SECONDS = 3600
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = False
+
+    # Redirect HTTP to HTTPS (Heroku router handles this, but defense-in-depth)
+    SECURE_SSL_REDIRECT = True
+
 # Email backend (set before INSTALLED_APPS so we can conditionally add anymail)
 EMAIL_BACKEND = os.getenv(
     "DJANGO_EMAIL_BACKEND",
