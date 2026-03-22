@@ -288,6 +288,12 @@ class ReadDocumentTool(ContextAwareTool):
                     doc_index=idx,
                     is_archived=False,
                 ).first()
+                if doc is None:
+                    documents.append({
+                        "doc_index": idx,
+                        "error": f"No document with index {idx} found.",
+                    })
+                    continue
 
             chunks_qs = doc.chunks.order_by("chunk_index")
             total_chunk_count = chunks_qs.count()
