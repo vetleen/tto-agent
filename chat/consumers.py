@@ -1418,13 +1418,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _save_canvas(self, thread_id, title, content, canvas_id=None):
-        from chat.models import ChatCanvas
+        from chat.models import ChatCanvas, ChatThread
         canvas = self._resolve_canvas_id(thread_id, canvas_id)
         if canvas:
             canvas.title = title
             canvas.content = content
             canvas.save(update_fields=["title", "content", "updated_at"])
         else:
+            # Verify thread ownership before creating a canvas
+            if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
+                return
             from chat.services import set_active_canvas
             canvas = ChatCanvas.objects.create(
                 thread_id=thread_id, title=title, content=content,
@@ -1433,8 +1436,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_or_create_canvas(self, thread_id):
-        from chat.models import ChatCanvas
+        from chat.models import ChatCanvas, ChatThread
         from chat.services import set_active_canvas
+        # Verify thread ownership
+        if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
+            return None
         canvas = (
             ChatCanvas.objects.filter(thread_id=thread_id)
             .select_related("accepted_checkpoint")
@@ -1540,7 +1546,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.services import set_active_canvas
         try:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                pk=canvas_id, thread_id=thread_id,
+                pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
             )
         except ChatCanvas.DoesNotExist:
             return None

@@ -616,6 +616,45 @@ class CanvasOwnershipTests(TransactionTestCase):
         result = await consumer._get_canvases_for_prompt(str(thread.id))
         self.assertIsNone(result)
 
+    async def test_switch_canvas_denies_other_users_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Secret", content="No",
+        )
+        consumer = self._make_consumer(self.attacker)
+        result = await consumer._switch_canvas(str(thread.id), canvas.pk)
+        self.assertIsNone(result)
+
+    async def test_get_or_create_canvas_denies_other_users_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        consumer = self._make_consumer(self.attacker)
+        result = await consumer._get_or_create_canvas(str(thread.id))
+        self.assertIsNone(result)
+        # Ensure no canvas was created
+        count = await database_sync_to_async(
+            ChatCanvas.objects.filter(thread=thread).count
+        )()
+        self.assertEqual(count, 0)
+
+    async def test_save_canvas_denies_other_users_thread(self):
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        consumer = self._make_consumer(self.attacker)
+        # _save_canvas is already wrapped with @database_sync_to_async
+        await consumer._save_canvas(
+            str(thread.id), "Injected", "Malicious content",
+        )
+        # Ensure no canvas was created
+        count = await database_sync_to_async(
+            ChatCanvas.objects.filter(thread=thread).count
+        )()
+        self.assertEqual(count, 0)
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
