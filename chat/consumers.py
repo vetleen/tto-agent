@@ -1024,9 +1024,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             last_msg = messages_to_summarise[-1]
             new_count = thread_data["summary_message_count"] + len(messages_to_summarise)
-            await self._save_summary(
+            saved = await self._save_summary(
                 thread, summary_text, last_msg.id, new_count,
+                expected_cutoff_id=thread_data["summary_up_to_message_id"],
             )
+            if not saved:
+                logger.info(
+                    "Summarization skipped for thread %s — concurrent update detected",
+                    thread.id,
+                )
         except Exception:
             logger.exception("Failed to generate conversation summary")
 
@@ -1094,16 +1100,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return to_summarise
 
     @database_sync_to_async
-    def _save_summary(self, thread, text, last_msg_id, count):
+    def _save_summary(self, thread, text, last_msg_id, count, expected_cutoff_id=None):
         from chat.models import ChatThread
         from core.tokens import count_tokens
 
-        ChatThread.objects.filter(pk=thread.pk).update(
+        # Optimistic lock: only update if summary_up_to_message_id hasn't
+        # changed since we read it, preventing concurrent summarizations
+        # from overwriting each other.
+        qs = ChatThread.objects.filter(pk=thread.pk)
+        if expected_cutoff_id is not None:
+            qs = qs.filter(summary_up_to_message_id=expected_cutoff_id)
+        else:
+            qs = qs.filter(summary_up_to_message_id__isnull=True)
+        rows = qs.update(
             summary=text,
             summary_token_count=count_tokens(text),
             summary_up_to_message_id=last_msg_id,
             summary_message_count=count,
         )
+        return rows > 0
 
     # -- Document context helpers --
 
@@ -1900,19 +1915,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
         - ``meta``: dict with total_messages, included_messages, has_summary,
           needs_summary
         """
-        from chat.models import ChatMessage, ChatThread
+        from chat.models import ChatMessage
         from llm.model_info import get_history_budget
 
         max_history_tokens = get_history_budget(model, max_context_tokens=max_context_tokens) if model else MAX_HISTORY_TOKENS
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
-        t = ChatThread.objects.get(pk=thread.pk)
-        total_messages = ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).count()
+        # Refresh summary fields which may have been updated by a background task
+        thread.refresh_from_db(fields=["summary", "summary_token_count", "summary_up_to_message_id"])
 
         # Load ALL messages newest-first (needed to build the overlap window).
         all_msgs = list(
             ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).order_by("-created_at")
         )
+        total_messages = len(all_msgs)
 
         if not all_msgs:
             return {
@@ -1940,15 +1956,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # 2. Fill remaining budget with unsummarised messages between the
         #    summary cutoff and the start of the overlap window.
         remaining_budget = max(
-            0, max_history_tokens - t.summary_token_count - overlap_tokens_used
+            0, max_history_tokens - thread.summary_token_count - overlap_tokens_used
         )
         add_qs = ChatMessage.objects.filter(
             thread=thread,
             created_at__lt=oldest_overlap.created_at,
         ).exclude(is_redacted=True).order_by("-created_at")
-        if t.summary_up_to_message_id:
+        if thread.summary_up_to_message_id:
             cutoff_msg = ChatMessage.objects.filter(
-                id=t.summary_up_to_message_id,
+                id=thread.summary_up_to_message_id,
             ).first()
             if cutoff_msg:
                 add_qs = add_qs.filter(created_at__gt=cutoff_msg.created_at)
@@ -1969,10 +1985,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 4. Build message list
         messages: list[dict] = []
-        if t.summary:
+        if thread.summary:
             messages.append({
                 "role": "system",
-                "content": f"Summary of earlier conversation:\n{t.summary}",
+                "content": f"Summary of earlier conversation:\n{thread.summary}",
             })
         for m in included:
             msg_dict = {
@@ -1991,7 +2007,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "meta": {
                 "total_messages": total_messages,
                 "included_messages": len(included),
-                "has_summary": bool(t.summary),
+                "has_summary": bool(thread.summary),
                 "needs_summary": needs_summary,
             },
         }
