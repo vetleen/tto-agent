@@ -1594,16 +1594,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _load_skill(self, skill_id):
-        from agent_skills.models import AgentSkill
+        from agent_skills.services import get_skill_for_user
 
-        try:
-            return (
-                AgentSkill.objects
-                .prefetch_related("templates")
-                .get(pk=skill_id, is_active=True)
-            )
-        except AgentSkill.DoesNotExist:
+        skill = get_skill_for_user(self.user, skill_id)
+        if skill is None:
             return None
+        # Prefetch templates for prompt building
+        from django.db.models import prefetch_related_objects
+
+        prefetch_related_objects([skill], "templates")
+        return skill
 
     @database_sync_to_async
     def _get_skill_tool_names(self, skill_id):
