@@ -324,7 +324,7 @@ class ReadDocumentTool(ContextAwareTool):
                     })
                     continue
 
-            chunks_qs = doc.chunks.order_by("chunk_index")
+            chunks_qs = doc.chunks.filter(is_quarantined=False).order_by("chunk_index")
             total_chunk_count = chunks_qs.count()
 
             if use_chunk_range:

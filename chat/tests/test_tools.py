@@ -375,3 +375,27 @@ class ReadDocumentToolTests(TestCase):
         ctx = self._ctx(user_id=other_user.pk)
         with self.assertRaises(Exception):
             self._invoke({"doc_indices": [1]}, ctx)
+
+    def test_quarantined_chunks_excluded(self):
+        """Quarantined chunks must not be returned by read_document."""
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="guarded.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=0, text="Safe content", token_count=2,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=1, text="Dangerous injected content",
+            token_count=3, is_quarantined=True,
+        )
+        DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=2, text="More safe content", token_count=2,
+        )
+
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        d = result["documents"][0]
+        self.assertIn("Safe content", d["content"])
+        self.assertIn("More safe content", d["content"])
+        self.assertNotIn("Dangerous injected content", d["content"])
+        self.assertEqual(d["total_chunks"], 2)
