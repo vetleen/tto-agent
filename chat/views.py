@@ -13,6 +13,30 @@ from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentTag
 logger = logging.getLogger(__name__)
 
 
+def _get_accessible_data_rooms(user):
+    """Return data rooms the user owns plus shared rooms from their org."""
+    from accounts.models import Membership
+    from django.db.models import Q
+
+    q = Q(created_by=user, is_archived=False)
+
+    membership = Membership.objects.filter(user=user).first()
+    if membership:
+        owner_ids = list(
+            Membership.objects.filter(org_id=membership.org_id)
+            .exclude(user=user)
+            .values_list("user_id", flat=True)
+        )
+        if owner_ids:
+            q |= Q(created_by_id__in=owner_ids, is_shared=True, is_archived=False)
+
+    return list(
+        DataRoom.objects.filter(q)
+        .order_by("-updated_at")
+        .values("pk", "uuid", "name")
+    )
+
+
 @login_required
 @require_http_methods(["GET"])
 def chat_home(request):
@@ -54,12 +78,8 @@ def chat_home(request):
         .order_by("-updated_at")
     )
 
-    # User's data rooms for the attach modal
-    data_rooms = list(
-        DataRoom.objects.filter(created_by=request.user, is_archived=False)
-        .order_by("-updated_at")
-        .values("pk", "uuid", "name")
-    )
+    # User's data rooms (owned + shared) for the attach modal
+    data_rooms = _get_accessible_data_rooms(request.user)
 
     # If thread selected, get its tasks
     thread_tasks_json = "[]"
@@ -435,12 +455,7 @@ def upload_attachments(request, thread_id):
 @require_http_methods(["GET"])
 def data_rooms_for_user(request):
     """JSON API returning the user's data rooms for the attach dropdown."""
-    rooms = list(
-        DataRoom.objects.filter(created_by=request.user, is_archived=False)
-        .order_by("-updated_at")
-        .values("pk", "uuid", "name")
-    )
-    # Convert UUIDs to strings for JSON serialization
+    rooms = _get_accessible_data_rooms(request.user)
     for r in rooms:
         r["uuid"] = str(r["uuid"])
     return JsonResponse({"data_rooms": rooms})

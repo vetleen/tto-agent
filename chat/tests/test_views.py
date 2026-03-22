@@ -154,3 +154,47 @@ class CanvasSaveToDataRoomTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
         self.assertFalse(DataRoomDocument.objects.filter(data_room=self.data_room).exists())
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    LLM_ALLOWED_MODELS=["openai/gpt-5-mini"],
+    LLM_DEFAULT_MODEL="openai/gpt-5-mini",
+)
+class SharedDataRoomVisibilityTests(TestCase):
+    """Shared data rooms must appear in the chat attach dropdown."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(email="owner@dr.com", password="pass")
+        self.member = User.objects.create_user(email="member@dr.com", password="pass")
+        self.member.email_verified = True
+        self.member.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Org", slug="org-vis")
+        Membership.objects.create(user=self.owner, org=self.org)
+        Membership.objects.create(user=self.member, org=self.org)
+        self.shared_room = DataRoom.objects.create(
+            name="Shared Room", slug="shared-vis", created_by=self.owner, is_shared=True,
+        )
+        self.private_room = DataRoom.objects.create(
+            name="Private Room", slug="private-vis", created_by=self.owner, is_shared=False,
+        )
+        self.own_room = DataRoom.objects.create(
+            name="My Room", slug="my-vis", created_by=self.member,
+        )
+
+    def test_data_rooms_for_user_includes_shared(self):
+        self.client.force_login(self.member)
+        response = self.client.get(reverse("chat_data_rooms_api"))
+        rooms = response.json()["data_rooms"]
+        room_names = {r["name"] for r in rooms}
+        self.assertIn("My Room", room_names)
+        self.assertIn("Shared Room", room_names)
+        self.assertNotIn("Private Room", room_names)
+
+    def test_chat_home_context_includes_shared(self):
+        self.client.force_login(self.member)
+        response = self.client.get(reverse("chat_home"))
+        room_names = {r["name"] for r in response.context["data_rooms"]}
+        self.assertIn("My Room", room_names)
+        self.assertIn("Shared Room", room_names)
+        self.assertNotIn("Private Room", room_names)
