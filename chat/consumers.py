@@ -29,14 +29,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._guardrail_task: asyncio.Task | None = None
         self._guardrail_intercepted: bool = False
         self._guardrail_warn_verdict: object | None = None  # stored for post-stream delivery
+        self._org_id: int | None = None
+        self._org_name: str | None = None
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
             await self.close(code=4401)
             return
 
-        # Check if user is suspended in their org
-        is_suspended = await self._check_suspension()
+        # Load membership once: check suspension and cache org info
+        is_suspended = await self._load_membership()
         if is_suspended:
             await self.accept()
             await self.send(text_data=json.dumps({
@@ -57,17 +59,31 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return get_preferences(self.user)
 
     @database_sync_to_async
+    def _load_membership(self) -> bool:
+        """Load membership once, cache org info, and return whether user is suspended."""
+        from accounts.models import Membership
+        membership = (
+            Membership.objects
+            .filter(user=self.user)
+            .select_related("org")
+            .first()
+        )
+        if membership:
+            self._org_id = membership.org_id
+            self._org_name = membership.org.name if membership.org else None
+            return membership.is_suspended
+        return False
+
+    @database_sync_to_async
     def _check_suspension(self) -> bool:
+        """Lightweight re-check for mid-session suspension."""
         from accounts.models import Membership
         return Membership.objects.filter(
             user=self.user, is_suspended=True,
         ).exists()
 
-    @database_sync_to_async
-    def _get_org_id(self) -> int | None:
-        from accounts.models import Membership
-        membership = Membership.objects.filter(user=self.user).first()
-        return membership.org_id if membership else None
+    async def _get_org_id(self) -> int | None:
+        return self._org_id
 
     def _has_tool(self, tool_name: str) -> bool:
         """Check if a tool is available given current prefs."""
@@ -76,16 +92,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from llm.tools.registry import get_tool_registry
         return tool_name in get_tool_registry().list_tools()
 
-    @database_sync_to_async
-    def _get_organization_name(self) -> str | None:
-        from accounts.models import Membership
-        membership = (
-            Membership.objects
-            .filter(user=self.user)
-            .select_related("org")
-            .first()
-        )
-        return membership.org.name if membership else None
+    async def _get_organization_name(self) -> str | None:
+        return self._org_name
 
 
     async def receive(self, text_data=None, bytes_data=None):
@@ -815,6 +823,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         accumulated_thinking = ""
         pending_tool_calls = []
         pending_tool_results = []
+        stream_error = False
         heartbeat_task = asyncio.create_task(self._send_heartbeats())
 
         try:
@@ -865,6 +874,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 }))
                         except (json.JSONDecodeError, AttributeError):
                             pass
+                elif event.event_type == "error":
+                    stream_error = True
                 elif event.event_type == "message_start" and pending_tool_calls:
                     # Tool loop completed, new LLM turn starting — persist intermediate messages
                     await self._persist_tool_loop_messages(
@@ -875,20 +886,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     accumulated_content = ""
                     accumulated_thinking = ""
 
-            # Persist any remaining tool loop messages (if stream ends after tools)
-            if pending_tool_calls:
-                await self._persist_tool_loop_messages(
-                    thread, pending_tool_calls, pending_tool_results,
-                )
+            # Don't persist partial content from error-interrupted streams
+            if not stream_error:
+                # Persist any remaining tool loop messages (if stream ends after tools)
+                if pending_tool_calls:
+                    await self._persist_tool_loop_messages(
+                        thread, pending_tool_calls, pending_tool_results,
+                    )
 
-            # Persist final assistant message (with thinking in metadata if present)
-            if accumulated_content.strip():
-                metadata = {}
-                if accumulated_thinking:
-                    metadata["thinking"] = accumulated_thinking
-                await self._create_message(
-                    thread, "assistant", accumulated_content, metadata=metadata,
-                )
+                # Persist final assistant message (with thinking in metadata if present)
+                if accumulated_content.strip():
+                    metadata = {}
+                    if accumulated_thinking:
+                        metadata["thinking"] = accumulated_thinking
+                    await self._create_message(
+                        thread, "assistant", accumulated_content, metadata=metadata,
+                    )
 
         except LLMConfigurationError:
             logger.exception("LLM misconfigured for streaming response")
