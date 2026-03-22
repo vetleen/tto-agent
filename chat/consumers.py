@@ -1181,12 +1181,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _validate_data_room(self, data_room_id):
         from documents.models import DataRoom
+        from documents.views import _user_can_access_data_room
 
         try:
             room = DataRoom.objects.get(pk=data_room_id)
         except DataRoom.DoesNotExist:
             return None
-        if room.created_by_id != self.user.pk:
+        if not _user_can_access_data_room(self.user, room):
             return None
         return {"id": room.pk, "name": room.name}
 

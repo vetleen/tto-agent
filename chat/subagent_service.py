@@ -79,10 +79,14 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         data_rooms_info = None
         if data_room_ids:
             from documents.models import DataRoom
-            data_rooms_info = list(
-                DataRoom.objects.filter(pk__in=data_room_ids, created_by=user)
-                .values("id", "name", "description")
-            )
+            from documents.views import _user_can_access_data_room
+
+            candidate_rooms = DataRoom.objects.filter(pk__in=data_room_ids)
+            data_rooms_info = [
+                {"id": r.pk, "name": r.name, "description": r.description or ""}
+                for r in candidate_rooms
+                if _user_can_access_data_room(user, r)
+            ]
 
         # Load thread tasks for sub-agent context
         from chat.models import ThreadTask
