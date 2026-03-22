@@ -305,7 +305,7 @@ def build_dynamic_context(
             shown = len(docs)
             remaining = total - shown
             if remaining > 0:
-                section += f"\nThe data room contains {'is' if remaining == 1 else 'are'} {remaining} other document{'s' if remaining != 1 else ''} not shown here.\n"
+                section += f"\nThere {'is' if remaining == 1 else 'are'} {remaining} other document{'s' if remaining != 1 else ''} in the data room not shown here.\n"
 
         parts.append(section)
 
