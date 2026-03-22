@@ -199,6 +199,21 @@ class SharedDataRoomVisibilityTests(TestCase):
         self.assertIn("Shared Room", room_names)
         self.assertNotIn("Private Room", room_names)
 
+    def test_multi_org_shared_rooms_all_visible(self):
+        """Users in multiple orgs should see shared rooms from ALL orgs."""
+        org2 = Organization.objects.create(name="Org2", slug="org2-vis")
+        user2 = User.objects.create_user(email="org2owner@dr.com", password="pass")
+        Membership.objects.create(user=user2, org=org2)
+        Membership.objects.create(user=self.member, org=org2)
+        room2 = DataRoom.objects.create(
+            name="Org2 Shared", slug="org2-shared", created_by=user2, is_shared=True,
+        )
+        self.client.force_login(self.member)
+        response = self.client.get(reverse("chat_data_rooms_api"))
+        room_names = {r["name"] for r in response.json()["data_rooms"]}
+        self.assertIn("Shared Room", room_names)  # from org1
+        self.assertIn("Org2 Shared", room_names)  # from org2
+
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
