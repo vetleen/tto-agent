@@ -63,11 +63,13 @@ def _user_can_access_data_room(user, data_room: DataRoom) -> bool:
     if data_room.created_by_id == user.id:
         return True
     if data_room.is_shared:
-        # Shared data rooms are visible to all members of owner's Organization
+        # Shared data rooms are visible to members of any org the owner belongs to
         from accounts.models import Membership
-        owner_org = Membership.objects.filter(user=data_room.created_by).values_list("org_id", flat=True).first()
-        if owner_org is not None:
-            if Membership.objects.filter(org_id=owner_org, user=user).exists():
+        owner_org_ids = set(
+            Membership.objects.filter(user=data_room.created_by).values_list("org_id", flat=True)
+        )
+        if owner_org_ids:
+            if Membership.objects.filter(org_id__in=owner_org_ids, user=user).exists():
                 return True
     return False
 
