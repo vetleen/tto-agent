@@ -520,6 +520,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "thread_id": str(thread.id),
                 }))
 
+            # Link attachments to the saved message and filter to valid IDs
+            if attachment_ids:
+                attachment_ids = await self._link_attachments(attachment_ids, thread)
+
             # Persist user message
             user_metadata = {}
             if attachment_ids:
@@ -528,9 +532,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 thread, "user", content, metadata=user_metadata or None,
             )
 
-            # Link attachments to the saved message
+            # Associate linked attachments with the persisted message
             if attachment_ids:
-                await self._link_attachments(attachment_ids, thread, user_message)
+                await self._set_attachment_message(attachment_ids, thread, user_message)
 
             # Check if user is suspended mid-session
             if await self._check_suspension():
@@ -1680,7 +1684,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
 
     @database_sync_to_async
-    def _link_attachments(self, attachment_ids, thread, message):
+    def _link_attachments(self, attachment_ids, thread):
+        """Return only attachment IDs that belong to this user's thread."""
+        from chat.models import ChatAttachment
+
+        return [
+            str(uid) for uid in
+            ChatAttachment.objects.filter(
+                id__in=attachment_ids,
+                thread=thread,
+                uploaded_by=self.user,
+            ).values_list("id", flat=True)
+        ]
+
+    @database_sync_to_async
+    def _set_attachment_message(self, attachment_ids, thread, message):
         from chat.models import ChatAttachment
 
         ChatAttachment.objects.filter(
@@ -1771,7 +1789,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _load_attachments(self, attachment_ids):
         from chat.models import ChatAttachment
 
-        atts = ChatAttachment.objects.filter(id__in=attachment_ids)
+        atts = ChatAttachment.objects.filter(
+            id__in=attachment_ids,
+            uploaded_by=self.user,
+        )
         return {str(a.id): a for a in atts}
 
     @database_sync_to_async

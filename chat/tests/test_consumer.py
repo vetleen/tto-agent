@@ -11,7 +11,7 @@ from django.test import TestCase, TransactionTestCase
 
 from accounts.models import Membership, Organization
 from chat.consumers import ChatConsumer
-from chat.models import ChatMessage, ChatThread, ChatThreadDataRoom
+from chat.models import ChatAttachment, ChatMessage, ChatThread, ChatThreadDataRoom
 from chat.routing import websocket_urlpatterns
 from channels.routing import URLRouter
 from documents.models import DataRoom
@@ -612,3 +612,54 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
         self.assertNotIn(other_room.pk, linked_room_ids)
 
         await communicator.disconnect()
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+    DEFAULT_FILE_STORAGE="django.core.files.storage.InMemoryStorage",
+)
+class LoadAttachmentsAccessTests(TransactionTestCase):
+    """Test that _load_attachments only returns the user's own attachments."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="att-owner@example.com", password="pass")
+        self.other = User.objects.create_user(email="att-other@example.com", password="pass")
+
+    def _make_consumer(self, user):
+        consumer = ChatConsumer()
+        consumer.scope = {"user": user}
+        consumer.user = user
+        return consumer
+
+    async def test_load_attachments_excludes_other_users(self):
+        """_load_attachments must not return attachments uploaded by other users."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        own_thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+        other_thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.other,
+        )
+
+        own_att = await database_sync_to_async(ChatAttachment.objects.create)(
+            thread=own_thread,
+            uploaded_by=self.user,
+            file=SimpleUploadedFile("mine.txt", b"my data", content_type="text/plain"),
+            original_filename="mine.txt",
+            content_type="text/plain",
+            size_bytes=7,
+        )
+        other_att = await database_sync_to_async(ChatAttachment.objects.create)(
+            thread=other_thread,
+            uploaded_by=self.other,
+            file=SimpleUploadedFile("secret.txt", b"secret", content_type="text/plain"),
+            original_filename="secret.txt",
+            content_type="text/plain",
+            size_bytes=6,
+        )
+
+        consumer = self._make_consumer(self.user)
+        result = await consumer._load_attachments([str(own_att.id), str(other_att.id)])
+        self.assertIn(str(own_att.id), result)
+        self.assertNotIn(str(other_att.id), result)
