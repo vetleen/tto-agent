@@ -738,6 +738,21 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(data["statuses"][str(d1.id)], "ready")
         self.assertEqual(data["statuses"][str(d2.id)], "failed")
 
+    def test_document_status_excludes_archived(self):
+        self.client.force_login(self.user)
+        active = self._make_doc()
+        archived = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="old.txt", status=DataRoomDocument.Status.READY,
+            is_archived=True,
+        )
+        response = self.client.get(
+            reverse("document_status", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        data = response.json()
+        self.assertIn(str(active.id), data["statuses"])
+        self.assertNotIn(str(archived.id), data["statuses"])
+
     def test_document_status_blocks_other_user(self):
         self.client.force_login(self.other)
         response = self.client.get(

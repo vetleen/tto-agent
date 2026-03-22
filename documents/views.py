@@ -397,7 +397,7 @@ def document_status(request, data_room_id):
         return JsonResponse({"error": "Forbidden"}, status=403)
     statuses = {
         str(pk): status
-        for pk, status in data_room.documents.values_list("id", "status")
+        for pk, status in data_room.documents.filter(is_archived=False).values_list("id", "status")
     }
     return JsonResponse({"statuses": statuses})
 
