@@ -72,6 +72,11 @@ def _user_can_access_data_room(user, data_room: DataRoom) -> bool:
     return False
 
 
+def _user_can_modify_data_room(user, data_room: DataRoom) -> bool:
+    """Write access: only the data room owner can modify, rename, delete, or upload."""
+    return data_room.created_by_id == user.id
+
+
 @login_required
 @require_http_methods(["GET", "POST"])
 def data_room_list(request):
@@ -110,7 +115,7 @@ def data_room_list(request):
 @require_POST
 def data_room_delete(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     data_room.delete()
     messages.success(request, "Data room deleted.")
@@ -121,7 +126,7 @@ def data_room_delete(request, data_room_id):
 @require_http_methods(["GET", "POST"])
 def data_room_rename(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     if request.method != "POST":
         return redirect("data_room_list")
@@ -141,7 +146,7 @@ def data_room_rename(request, data_room_id):
 @require_POST
 def data_room_archive(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     data_room.is_archived = not data_room.is_archived
     data_room.save(update_fields=["is_archived", "updated_at"])
@@ -210,7 +215,7 @@ def _allowed_mime(mime_type: str) -> bool:
 @require_POST
 def document_upload(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     files = request.FILES.getlist("file")
     if not files:
@@ -283,7 +288,7 @@ def document_upload(request, data_room_id):
 @require_POST
 def document_delete(request, data_room_id, document_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     doc.delete()
@@ -295,7 +300,7 @@ def document_delete(request, data_room_id, document_id):
 @require_http_methods(["POST"])
 def document_rename(request, data_room_id, document_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     name = (request.POST.get("name") or "").strip()
@@ -312,7 +317,7 @@ def document_rename(request, data_room_id, document_id):
 @require_POST
 def document_archive(request, data_room_id, document_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     doc.is_archived = not doc.is_archived
@@ -350,7 +355,7 @@ def document_chunks(request, data_room_id, document_id):
 @require_POST
 def document_bulk_delete(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     body, err = _parse_json_body(request)
     if err:
@@ -366,7 +371,7 @@ def document_bulk_delete(request, data_room_id):
 @require_POST
 def document_bulk_archive(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     body, err = _parse_json_body(request)
     if err:
@@ -401,7 +406,7 @@ def document_status(request, data_room_id):
 @require_POST
 def data_room_generate_description(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     try:
         from documents.services.data_room_description import generate_data_room_description
@@ -416,7 +421,7 @@ def data_room_generate_description(request, data_room_id):
 @require_POST
 def data_room_update_description(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
-    if not _user_can_access_data_room(request.user, data_room):
+    if not _user_can_modify_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     body, err = _parse_json_body(request)
     if err:

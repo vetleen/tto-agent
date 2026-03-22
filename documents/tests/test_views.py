@@ -881,3 +881,88 @@ class DocumentViewsTests(TestCase):
             reverse("data_room_generate_description", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 403)
+
+
+class SharedDataRoomAuthorizationTests(TestCase):
+    """Shared data rooms: org members can read but NOT modify."""
+
+    def setUp(self):
+        from accounts.models import Membership, Organization
+
+        self.owner = User.objects.create_user(email="owner@example.com", password="testpass")
+        self.member = User.objects.create_user(email="member@example.com", password="testpass")
+        self.org = Organization.objects.create(name="Test Org", slug="test-org")
+        Membership.objects.create(user=self.owner, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member, org=self.org, role=Membership.Role.MEMBER)
+
+        self.shared_room = DataRoom.objects.create(
+            name="Shared", slug="shared", created_by=self.owner, is_shared=True,
+        )
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.shared_room, uploaded_by=self.owner,
+            original_filename="secret.txt", status=DataRoomDocument.Status.READY,
+        )
+
+    def test_member_can_view_shared_data_room(self):
+        self.client.force_login(self.member)
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.shared_room.uuid}),
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_member_cannot_delete_shared_data_room(self):
+        self.client.force_login(self.member)
+        response = self.client.post(
+            reverse("data_room_delete", kwargs={"data_room_id": self.shared_room.uuid}),
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(DataRoom.objects.filter(pk=self.shared_room.pk).exists())
+
+    def test_member_cannot_rename_shared_data_room(self):
+        self.client.force_login(self.member)
+        self.client.post(
+            reverse("data_room_rename", kwargs={"data_room_id": self.shared_room.uuid}),
+            {"name": "Hacked"},
+        )
+        self.shared_room.refresh_from_db()
+        self.assertEqual(self.shared_room.name, "Shared")
+
+    def test_member_cannot_upload_to_shared_data_room(self):
+        self.client.force_login(self.member)
+        f = BytesIO(b"malicious content")
+        f.name = "evil.txt"
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.shared_room.uuid}),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            DataRoomDocument.objects.filter(data_room=self.shared_room).count(), 1,
+        )
+
+    def test_member_cannot_delete_document_from_shared_data_room(self):
+        self.client.force_login(self.member)
+        self.client.post(
+            reverse("document_delete", kwargs={
+                "data_room_id": self.shared_room.uuid,
+                "document_id": self.doc.id,
+            }),
+        )
+        self.assertTrue(DataRoomDocument.objects.filter(pk=self.doc.pk).exists())
+
+    def test_member_cannot_bulk_delete_from_shared_data_room(self):
+        self.client.force_login(self.member)
+        response = self.client.post(
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.shared_room.uuid}),
+            json.dumps({"document_ids": [self.doc.id]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(DataRoomDocument.objects.filter(pk=self.doc.pk).exists())
+
+    def test_owner_can_still_delete_shared_data_room(self):
+        self.client.force_login(self.owner)
+        self.client.post(
+            reverse("data_room_delete", kwargs={"data_room_id": self.shared_room.uuid}),
+        )
+        self.assertFalse(DataRoom.objects.filter(pk=self.shared_room.pk).exists())
