@@ -181,3 +181,28 @@ class LoadHistoryTests(TransactionTestCase):
         non_system = [m for m in result["messages"] if m["role"] != "system"]
         self.assertEqual(len(non_system), 1)
         self.assertEqual(non_system[0]["content"], big_content)
+
+    async def test_summarisation_excludes_redacted_messages(self):
+        """Redacted (guardrail-blocked) messages must not leak into summaries."""
+        big_content = "word " * 5000
+        await self._make_msg(big_content)  # older, will be outside overlap
+
+        @database_sync_to_async
+        def _make_redacted():
+            return ChatMessage.objects.create(
+                thread=self.thread,
+                role="user",
+                content="[This message was removed by the content safety system.]",
+                is_redacted=True,
+                token_count=0,
+            )
+
+        await _make_redacted()
+        await self._make_msg(big_content)  # newest, in overlap
+
+        to_summarise = await self.consumer._get_messages_to_summarise(self.thread)
+        for msg in to_summarise:
+            self.assertFalse(
+                msg.is_redacted,
+                "Redacted messages must not appear in summarisation candidates",
+            )

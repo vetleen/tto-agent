@@ -1031,8 +1031,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         t = ChatThread.objects.get(pk=thread.pk)
 
-        # All unsummarised messages, newest first
-        qs = ChatMessage.objects.filter(thread=thread).order_by("-created_at")
+        # All unsummarised messages, newest first (exclude redacted)
+        qs = ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).order_by("-created_at")
         if t.summary_up_to_message_id:
             cutoff_msg = ChatMessage.objects.filter(
                 id=t.summary_up_to_message_id,
@@ -1194,9 +1194,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _get_data_room_info(self, data_room_ids):
         from documents.models import DataRoom
+        from documents.views import _user_can_access_data_room
 
-        rooms = DataRoom.objects.filter(pk__in=data_room_ids).values("pk", "name", "description")
-        return [{"id": r["pk"], "name": r["name"], "description": r["description"] or ""} for r in rooms]
+        rooms = DataRoom.objects.filter(pk__in=data_room_ids)
+        return [
+            {"id": r.pk, "name": r.name, "description": r.description or ""}
+            for r in rooms
+            if _user_can_access_data_room(self.user, r)
+        ]
 
     @database_sync_to_async
     def _persist_data_room_link(self, thread_id, data_room_id):
