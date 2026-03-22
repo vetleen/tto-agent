@@ -52,7 +52,7 @@ def settings_page(request):
     from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, _get_org_preferences
 
     org_prefs = _get_org_preferences(request.user)
-    org_max_context = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS) if org_prefs else DEFAULT_MAX_CONTEXT_TOKENS
+    org_max_context = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
     if not isinstance(org_max_context, int):
         org_max_context = DEFAULT_MAX_CONTEXT_TOKENS
     user_max_context = (user_settings.preferences or {}).get("max_context_tokens")
@@ -407,7 +407,7 @@ def preferences_max_context_update(request):
 
     # Check against org limit
     org_prefs = _get_org_preferences(request.user)
-    org_limit = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS) if org_prefs else DEFAULT_MAX_CONTEXT_TOKENS
+    org_limit = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
     if not isinstance(org_limit, int):
         org_limit = DEFAULT_MAX_CONTEXT_TOKENS
     if value > org_limit:

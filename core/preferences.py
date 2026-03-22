@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from django.conf import settings as django_settings
 
@@ -24,6 +23,15 @@ class ResolvedPreferences:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
 
 
+def _get_system_model_defaults() -> dict[str, str]:
+    """Return system-level default model for each tier from Django settings."""
+    return {
+        "primary": getattr(django_settings, "LLM_DEFAULT_MODEL", "") or "",
+        "mid": getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or "",
+        "cheap": getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or "",
+    }
+
+
 def get_preferences(user) -> ResolvedPreferences:
     """Resolve cascading preferences for a user: System -> Org -> User.
 
@@ -35,9 +43,7 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # --- System level ---
     system_allowed = get_allowed_models()
-    system_primary = getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
-    system_mid = getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or ""
-    system_cheap = getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or ""
+    sys_models = _get_system_model_defaults()
 
     registry = get_tool_registry()
     all_tools_dict = registry.list_tools()
@@ -45,9 +51,9 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # --- Organization level ---
     org_prefs = _get_org_preferences(user)
-    org_allowed = org_prefs.get("allowed_models") if org_prefs else None
-    org_models = org_prefs.get("models", {}) if org_prefs else {}
-    org_tools = org_prefs.get("tools", {}) if org_prefs else {}
+    org_allowed = org_prefs.get("allowed_models")
+    org_models = org_prefs.get("models", {})
+    org_tools = org_prefs.get("tools", {})
 
     # Effective allowed models: org restricts to a subset of system
     if org_allowed and isinstance(org_allowed, list):
@@ -57,28 +63,28 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # --- User level ---
     user_prefs = _get_user_preferences(user)
-    user_models = user_prefs.get("models", {}) if user_prefs else {}
-    user_theme = user_prefs.get("theme", "light") if user_prefs else "light"
+    user_models = user_prefs.get("models", {})
+    user_theme = user_prefs.get("theme", "light")
 
     # Resolve each model tier with cascade
     top_model = _resolve_tier(
         user_choice=user_models.get("primary"),
         org_default=org_models.get("primary"),
-        system_default=system_primary,
+        system_default=sys_models["primary"],
         effective_allowed=effective_allowed,
         system_allowed=system_allowed,
     )
     mid_model = _resolve_tier(
         user_choice=user_models.get("mid"),
         org_default=org_models.get("mid"),
-        system_default=system_mid,
+        system_default=sys_models["mid"],
         effective_allowed=effective_allowed,
         system_allowed=system_allowed,
     )
     cheap_model = _resolve_tier(
         user_choice=user_models.get("cheap"),
         org_default=org_models.get("cheap"),
-        system_default=system_cheap,
+        system_default=sys_models["cheap"],
         effective_allowed=effective_allowed,
         system_allowed=system_allowed,
     )
@@ -92,7 +98,7 @@ def get_preferences(user) -> ResolvedPreferences:
     # and by the org-level tool toggles.
     from agent_skills.services import get_available_skills
 
-    org_skills_prefs = org_prefs.get("skills", {}) if org_prefs else {}
+    org_skills_prefs = org_prefs.get("skills", {})
     user_skills = get_available_skills(user)
     allowed_skills = []
 
@@ -118,13 +124,13 @@ def get_preferences(user) -> ResolvedPreferences:
     allowed_tools = base_allowed
 
     # Resolve subagent settings
-    org_subagent_prefs = org_prefs.get("subagents", {}) if org_prefs else {}
+    org_subagent_prefs = org_prefs.get("subagents", {})
     parallel_subagents = org_subagent_prefs.get("parallel", True)
 
     # Resolve max context tokens: org sets limit, user can lower it
-    org_max_ctx = org_prefs.get("max_context_tokens") if org_prefs else None
+    org_max_ctx = org_prefs.get("max_context_tokens")
     org_max_ctx = org_max_ctx if isinstance(org_max_ctx, int) else DEFAULT_MAX_CONTEXT_TOKENS
-    user_max_ctx = user_prefs.get("max_context_tokens") if user_prefs else None
+    user_max_ctx = user_prefs.get("max_context_tokens")
     if isinstance(user_max_ctx, int):
         max_context_tokens = min(user_max_ctx, org_max_ctx)
     else:
@@ -182,13 +188,11 @@ def get_tier_defaults(user) -> dict[str, str]:
     from llm.service.policies import get_allowed_models
 
     system_allowed = get_allowed_models()
-    system_primary = getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
-    system_mid = getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or ""
-    system_cheap = getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or ""
+    sys_models = _get_system_model_defaults()
 
     org_prefs = _get_org_preferences(user)
-    org_allowed = org_prefs.get("allowed_models") if org_prefs else None
-    org_models = org_prefs.get("models", {}) if org_prefs else {}
+    org_allowed = org_prefs.get("allowed_models")
+    org_models = org_prefs.get("models", {})
 
     if org_allowed and isinstance(org_allowed, list):
         effective_allowed = [m for m in org_allowed if m in system_allowed]
@@ -196,9 +200,9 @@ def get_tier_defaults(user) -> dict[str, str]:
         effective_allowed = list(system_allowed)
 
     return {
-        "primary": _resolve_tier(None, org_models.get("primary"), system_primary, effective_allowed, system_allowed),
-        "mid": _resolve_tier(None, org_models.get("mid"), system_mid, effective_allowed, system_allowed),
-        "cheap": _resolve_tier(None, org_models.get("cheap"), system_cheap, effective_allowed, system_allowed),
+        "primary": _resolve_tier(None, org_models.get("primary"), sys_models["primary"], effective_allowed, system_allowed),
+        "mid": _resolve_tier(None, org_models.get("mid"), sys_models["mid"], effective_allowed, system_allowed),
+        "cheap": _resolve_tier(None, org_models.get("cheap"), sys_models["cheap"], effective_allowed, system_allowed),
     }
 
 
@@ -207,19 +211,17 @@ def get_system_defaults() -> dict[str, str]:
     from llm.service.policies import get_allowed_models
 
     system_allowed = get_allowed_models()
-    system_primary = getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
-    system_mid = getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or ""
-    system_cheap = getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or ""
+    sys_models = _get_system_model_defaults()
 
     return {
-        "primary": _resolve_tier(None, None, system_primary, system_allowed, system_allowed),
-        "mid": _resolve_tier(None, None, system_mid, system_allowed, system_allowed),
-        "cheap": _resolve_tier(None, None, system_cheap, system_allowed, system_allowed),
+        "primary": _resolve_tier(None, None, sys_models["primary"], system_allowed, system_allowed),
+        "mid": _resolve_tier(None, None, sys_models["mid"], system_allowed, system_allowed),
+        "cheap": _resolve_tier(None, None, sys_models["cheap"], system_allowed, system_allowed),
     }
 
 
-def _get_org_preferences(user) -> Optional[dict]:
-    """Get the organization preferences for a user, or None if no org."""
+def _get_org_preferences(user) -> dict:
+    """Get the organization preferences for a user, or empty dict if no org."""
     from accounts.models import Membership
 
     membership = (
@@ -229,15 +231,15 @@ def _get_org_preferences(user) -> Optional[dict]:
     )
     if membership and membership.org:
         return membership.org.preferences or {}
-    return None
+    return {}
 
 
-def _get_user_preferences(user) -> Optional[dict]:
-    """Get the user preferences dict from UserSettings."""
+def _get_user_preferences(user) -> dict:
+    """Get the user preferences dict from UserSettings, or empty dict if missing."""
     from accounts.models import UserSettings
 
     try:
         us = UserSettings.objects.get(user=user)
         return us.preferences or {}
     except UserSettings.DoesNotExist:
-        return None
+        return {}
