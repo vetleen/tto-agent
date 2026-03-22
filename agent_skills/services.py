@@ -20,25 +20,25 @@ def get_available_skills(user) -> list[AgentSkill]:
     Higher-priority levels shadow lower ones by slug:
     system < org < user.
     """
+    from django.db.models import Q
+
     from accounts.models import Membership
 
-    # 1. System skills
-    skills_by_slug: dict[str, AgentSkill] = {}
-    for skill in AgentSkill.objects.filter(level="system", is_active=True):
-        skills_by_slug[skill.slug] = skill
-
-    # 2. Org skills (shadow system)
     membership = Membership.objects.filter(user=user).select_related("org").first()
-    if membership:
-        for skill in AgentSkill.objects.filter(
-            level="org", organization=membership.org, is_active=True
-        ):
-            skills_by_slug[skill.slug] = skill
 
-    # 3. User skills (shadow org/system)
-    for skill in AgentSkill.objects.filter(
-        level="user", created_by=user, is_active=True
-    ):
+    # Build a single query for all accessible skills
+    q = Q(level="system")
+    if membership:
+        q |= Q(level="org", organization=membership.org)
+    q |= Q(level="user", created_by=user)
+
+    # Iterate in priority order (system < org < user) so higher levels
+    # shadow lower ones when we overwrite by slug.
+    _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
+    all_skills = AgentSkill.objects.filter(q, is_active=True)
+
+    skills_by_slug: dict[str, AgentSkill] = {}
+    for skill in sorted(all_skills, key=lambda s: _LEVEL_ORDER.get(s.level, 0)):
         skills_by_slug[skill.slug] = skill
 
     return sorted(skills_by_slug.values(), key=lambda s: s.name)
