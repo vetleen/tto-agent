@@ -1459,12 +1459,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             try:
                 return ChatCanvas.objects.select_related("accepted_checkpoint").get(
                     pk=thread.active_canvas_id,
+                    thread=thread,
                 )
             except ChatCanvas.DoesNotExist:
                 pass
         # Fall back to first canvas
         return (
-            ChatCanvas.objects.filter(thread_id=thread_id)
+            ChatCanvas.objects.filter(thread=thread)
             .select_related("accepted_checkpoint")
             .order_by("created_at")
             .first()

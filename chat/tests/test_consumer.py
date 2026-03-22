@@ -594,6 +594,29 @@ class CanvasOwnershipTests(TransactionTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.pk, canvas.pk)
 
+    async def test_resolve_canvas_rejects_cross_thread_active_canvas(self):
+        """active_canvas pointing to another thread's canvas must not be returned."""
+        thread_a = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        thread_b = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas_b = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread_b, title="Thread B Canvas", content="Private",
+        )
+        # Simulate a stale/corrupt active_canvas FK pointing to another thread's canvas
+        await database_sync_to_async(
+            lambda: ChatThread.objects.filter(pk=thread_a.pk).update(active_canvas=canvas_b)
+        )()
+        consumer = self._make_consumer(self.owner)
+        result = await database_sync_to_async(consumer._resolve_canvas_id)(
+            str(thread_a.id),
+        )
+        # Must NOT return canvas_b (belongs to thread_b)
+        if result is not None:
+            self.assertNotEqual(result.pk, canvas_b.pk)
+
     async def test_load_all_canvases_denies_other_users_thread(self):
         thread = await database_sync_to_async(ChatThread.objects.create)(
             created_by=self.owner,
