@@ -105,8 +105,9 @@ def data_room_list(request):
             if data_room:
                 return redirect("data_room_documents", data_room_id=data_room.uuid)
         return redirect("data_room_list")
-    data_rooms = DataRoom.objects.filter(created_by=request.user, is_archived=False).order_by("-updated_at")
-    archived_data_rooms = DataRoom.objects.filter(created_by=request.user, is_archived=True).order_by("-updated_at")
+    all_rooms = DataRoom.objects.filter(created_by=request.user).order_by("-updated_at")
+    data_rooms = [r for r in all_rooms if not r.is_archived]
+    archived_data_rooms = [r for r in all_rooms if r.is_archived]
     return render(request, "documents/data_room_list.html", {
         "data_rooms": data_rooms,
         "archived_data_rooms": archived_data_rooms,
@@ -163,12 +164,9 @@ def data_room_documents(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return redirect("data_room_list")
-    documents = _annotate_relative_dates(list(
-        data_room.documents.filter(is_archived=False).order_by("-uploaded_at")
-    ))
-    archived_documents = _annotate_relative_dates(list(
-        data_room.documents.filter(is_archived=True).order_by("-uploaded_at")
-    ))
+    all_docs = list(data_room.documents.order_by("-uploaded_at"))
+    documents = _annotate_relative_dates([d for d in all_docs if not d.is_archived])
+    archived_documents = _annotate_relative_dates([d for d in all_docs if d.is_archived])
     return render(
         request,
         "documents/data_room_documents.html",

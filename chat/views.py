@@ -71,14 +71,9 @@ def chat_home(request):
                 for m in chat_messages:
                     m.attachment_names = att_map.get(m.pk, [])
 
-    threads = list(
-        ChatThread.objects.filter(created_by=request.user, is_archived=False)
-        .order_by("-updated_at")
-    )
-    archived_threads = list(
-        ChatThread.objects.filter(created_by=request.user, is_archived=True)
-        .order_by("-updated_at")
-    )
+    all_threads = ChatThread.objects.filter(created_by=request.user).order_by("-updated_at")
+    threads = [t for t in all_threads if not t.is_archived]
+    archived_threads = [t for t in all_threads if t.is_archived]
 
     # User's data rooms (owned + shared) for the attach modal
     data_rooms = _get_accessible_data_rooms(request.user)
