@@ -127,7 +127,9 @@ class DocumentViewsTests(TestCase):
         tag = DataRoomDocumentTag.objects.get(document=doc, key="source")
         self.assertEqual(tag.value, "user_uploaded")
 
-    def test_document_upload_marks_failed_when_task_enqueue_fails(self):
+    def test_document_upload_falls_back_to_sync_when_delay_fails(self):
+        """When task.delay() raises (e.g. broker unavailable), the view should
+        fall back to synchronous processing instead of marking the doc FAILED."""
         self.client.force_login(self.user)
         fake_task = Mock()
         fake_task.delay.side_effect = RuntimeError("broker unavailable")
@@ -136,7 +138,9 @@ class DocumentViewsTests(TestCase):
         f.name = "enqueue-fail.txt"
 
         with patch.dict(sys.modules, {"documents.tasks": fake_module}):
-            with self.assertLogs("documents.views", level="ERROR"):
+            with patch(
+                "documents.services.process_document.process_document",
+            ) as mock_sync:
                 response = self.client.post(
                     reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
                     {"file": f},
@@ -145,8 +149,35 @@ class DocumentViewsTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="enqueue-fail.txt")
+        mock_sync.assert_called_once_with(doc.id)
+        self.assertNotEqual(doc.status, DataRoomDocument.Status.FAILED)
+
+    def test_document_upload_marks_failed_when_both_async_and_sync_fail(self):
+        """When task.delay() raises AND the sync fallback also fails,
+        the document should be marked FAILED gracefully."""
+        self.client.force_login(self.user)
+        fake_task = Mock()
+        fake_task.delay.side_effect = RuntimeError("broker unavailable")
+        fake_module = types.SimpleNamespace(process_document_task=fake_task)
+        f = BytesIO(b"hello")
+        f.name = "enqueue-fail.txt"
+
+        with patch.dict(sys.modules, {"documents.tasks": fake_module}):
+            with patch(
+                "documents.services.process_document.process_document",
+                side_effect=RuntimeError("sync also failed"),
+            ):
+                with self.assertLogs("documents.views", level="ERROR"):
+                    response = self.client.post(
+                        reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+                        {"file": f},
+                        follow=True,
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="enqueue-fail.txt")
         self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
-        self.assertIn("broker unavailable", doc.processing_error)
+        self.assertIn("sync also failed", doc.processing_error)
         self.assertContains(response, "processing could not be started")
 
     def test_document_upload_marks_failed_when_sync_fallback_fails(self):
