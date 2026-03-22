@@ -260,7 +260,7 @@ def document_upload(request, data_room_id):
                 from documents.tasks import process_document_task
 
                 process_document_task.delay(doc.id)
-            except ImportError:
+            except Exception:
                 from documents.services.process_document import process_document
 
                 process_document(doc.id)

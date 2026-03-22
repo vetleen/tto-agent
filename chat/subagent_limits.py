@@ -85,19 +85,18 @@ def create_subagent_run_if_allowed(user, **run_kwargs):
     active_statuses = [SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING]
 
     with transaction.atomic():
-        # Lock the user's active runs to prevent concurrent creates
-        # from both passing the check.  select_for_update is a no-op
-        # on SQLite (used in tests) but provides real locking on Postgres.
+        # Lock ALL active runs (not just the user's) to prevent concurrent
+        # requests from both passing the system-wide limit check.
+        # select_for_update is a no-op on SQLite (used in tests) but
+        # provides real locking on Postgres.
         locked_qs = SubAgentRun.objects.select_for_update().filter(
-            user=user, status__in=active_statuses,
+            status__in=active_statuses,
         )
-        user_count = locked_qs.count()
+        user_count = locked_qs.filter(user=user).count()
         if user_count >= SUBAGENT_MAX_PER_USER:
             return (None, "You have too many sub-agents running. Please wait for some to finish.")
 
-        system_count = SubAgentRun.objects.filter(
-            status__in=active_statuses,
-        ).count()
+        system_count = locked_qs.count()
         if system_count >= SUBAGENT_MAX_SYSTEM:
             return (None, "The system is busy. Please try again shortly.")
 
