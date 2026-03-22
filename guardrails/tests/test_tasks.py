@@ -89,3 +89,28 @@ class ScanDocumentChunksTest(TestCase):
             document=self.document, is_quarantined=True,
         ).count()
         self.assertEqual(quarantined, 0)
+
+    @override_settings(LLM_DEFAULT_CHEAP_MODEL="test/model")
+    @patch("guardrails.tasks._classify_chunk_batch")
+    def test_classifier_evaluates_every_chunk(self, mock_classify):
+        """Every chunk must be individually targeted by the classifier, not just every Nth."""
+        from guardrails.tasks import scan_document_chunks
+
+        # Create 7 clean chunks (no heuristic matches, so all go to classifier)
+        for i in range(7):
+            self._create_chunk(i, f"Normal patent text chunk {i}.")
+
+        scan_document_chunks(self.document.pk)
+
+        # Each chunk should be classified as the target in its own call
+        self.assertEqual(mock_classify.call_count, 7)
+
+        # Verify each chunk was individually targeted
+        targeted_chunk_indices = []
+        for call in mock_classify.call_args_list:
+            args, kwargs = call
+            context_chunks = args[1]
+            target_idx = kwargs.get("target_index", args[2] if len(args) > 2 else 0)
+            targeted_chunk_indices.append(context_chunks[target_idx]["chunk_index"])
+
+        self.assertEqual(sorted(targeted_chunk_indices), list(range(7)))
