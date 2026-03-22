@@ -1318,7 +1318,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Load all canvases for a thread, returning tabs list + active canvas detail."""
         from chat.models import ChatCanvas, ChatThread
         try:
-            thread = ChatThread.objects.get(pk=thread_id)
+            thread = ChatThread.objects.get(pk=thread_id, created_by=self.user)
         except ChatThread.DoesNotExist:
             return None
         canvases = list(
@@ -1361,16 +1361,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _get_canvases_for_prompt(self, thread_id):
         """Load canvases info for the system prompt."""
         from chat.models import ChatCanvas, ChatThread
+        try:
+            thread = ChatThread.objects.get(pk=thread_id, created_by=self.user)
+        except ChatThread.DoesNotExist:
+            return None
         canvases = list(
-            ChatCanvas.objects.filter(thread_id=thread_id)
+            ChatCanvas.objects.filter(thread=thread)
             .select_related("accepted_checkpoint")
             .order_by("created_at")
         )
         if not canvases:
-            return None
-        try:
-            thread = ChatThread.objects.get(pk=thread_id)
-        except ChatThread.DoesNotExist:
             return None
         active_id = thread.active_canvas_id
         active_canvas = None
@@ -1393,12 +1393,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if canvas_id:
             try:
                 return ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                    pk=canvas_id, thread_id=thread_id,
+                    pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
                 )
             except ChatCanvas.DoesNotExist:
                 return None
         try:
-            thread = ChatThread.objects.get(pk=thread_id)
+            thread = ChatThread.objects.get(pk=thread_id, created_by=self.user)
         except ChatThread.DoesNotExist:
             return None
         if thread.active_canvas_id:
