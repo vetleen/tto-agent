@@ -605,13 +605,13 @@ def semantic_chunk(text: str) -> list[dict[str, Any]]:
 
     docs = chunker.create_documents([text])
     chunks = []
-    for i, doc in enumerate(docs):
+    for doc in docs:
         chunk_text = doc.page_content.strip()
         if chunk_text:
             chunks.append({
                 "text": chunk_text,
                 "token_count": _count_tokens(chunk_text),
-                "chunk_index": i,
+                "chunk_index": len(chunks),
             })
 
     return chunks
