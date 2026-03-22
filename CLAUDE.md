@@ -6,15 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Wilfred (tto-agent) is an AI-powered assistant for technology transfer offices (TTO). Django 6 app with Tailwind CSS v4/Flowbite UI, WebSocket chat, document processing, and multi-provider LLM integration.
 
+## Bahs Command Style
+Never chain commands with && or ; operators. Run them as seaparate bash calls instead. 
+
+### Wrong
+- cd /project/ && pip install -r requirements.txt
+
+### Right
+- cd /project/
+- pip install -r requirements.txt
+
 ## Commands
 
-### Development
-```bash
-python manage.py runserver 8000          # Django dev server
-celery -A config worker -l info          # Celery worker (required for document processing)
-daphne -b 127.0.0.1 -p 8000 config.asgi:application  # ASGI with WebSocket support
-npm run build                            # Build Tailwind CSS
-```
 
 ### Tests
 
