@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from chat.services import MERMAID_BLOCK_RE, replace_mermaid_with_images
+from chat.services import MERMAID_BLOCK_RE, _render_mermaid_pngs, replace_mermaid_with_images
 
 
 class MermaidRegexTests(TestCase):
@@ -120,3 +120,15 @@ class ReplaceMermaidWithImagesTests(TestCase):
         self.assertEqual(len(sources), 2)
         self.assertIn("graph TD", sources[0])
         self.assertIn("sequenceDiagram", sources[1])
+
+
+class RenderMermaidTempfileTests(TestCase):
+    """Test _render_mermaid_pngs tempfile error handling."""
+
+    @patch("tempfile.NamedTemporaryFile")
+    def test_tempfile_creation_failure_does_not_crash(self, mock_tmpfile):
+        """If tempfile creation fails, function must not crash with NameError."""
+        mock_tmpfile.side_effect = OSError("disk full")
+        # Must return empty results without raising NameError
+        results = _render_mermaid_pngs(["graph TD\n    A --> B"])
+        self.assertEqual(results, [None])

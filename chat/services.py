@@ -511,6 +511,7 @@ def _render_mermaid_pngs(sources: list[str]) -> list[bytes | None]:
     import tempfile
 
     results: list[bytes | None] = [None] * len(sources)
+    tmp_input = None
 
     # Write sources to a temp file for the subprocess to read.
     try:
@@ -543,11 +544,12 @@ def _render_mermaid_pngs(sources: list[str]) -> list[bytes | None]:
     except Exception:
         logger.exception("Failed to run mermaid rendering subprocess")
     finally:
-        import os
-        try:
-            os.unlink(tmp_input)
-        except Exception:
-            pass
+        if tmp_input:
+            import os
+            try:
+                os.unlink(tmp_input)
+            except Exception:
+                pass
     return results
 
 
