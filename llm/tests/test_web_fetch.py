@@ -1,14 +1,21 @@
 """Tests for WebFetchTool."""
 
 import json
+import socket
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 
-from llm.tools.web_fetch import WebFetchTool
+from llm.tools.web_fetch import WebFetchTool, _check_url_ssrf, _is_private_ip
+
+
+def _no_ssrf_check(url):
+    """Stub that disables SSRF checks for unit tests that mock requests.get."""
+    return None
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}})
+@patch("llm.tools.web_fetch._check_url_ssrf", _no_ssrf_check)
 class WebFetchToolTests(TestCase):
 
     def setUp(self):
@@ -29,6 +36,7 @@ class WebFetchToolTests(TestCase):
         </body>
         </html>
         """
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -54,6 +62,7 @@ class WebFetchToolTests(TestCase):
             <p>Clean content</p>
         </body></html>
         """
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -69,6 +78,7 @@ class WebFetchToolTests(TestCase):
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "text/html"}
         mock_response.text = "<html><body><p>" + "x" * 1000 + "</p></body></html>"
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -109,6 +119,7 @@ class WebFetchToolTests(TestCase):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "application/pdf"}
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -122,6 +133,7 @@ class WebFetchToolTests(TestCase):
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "text/html"}
         mock_response.text = "<html><body><p>content</p></body></html>"
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -131,6 +143,7 @@ class WebFetchToolTests(TestCase):
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+@patch("llm.tools.web_fetch._check_url_ssrf", _no_ssrf_check)
 class WebFetchCacheTests(TestCase):
     """Tests for WebFetchTool caching."""
 
@@ -145,6 +158,7 @@ class WebFetchCacheTests(TestCase):
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "text/html"}
         mock_response.text = "<html><body><p>Cached content</p></body></html>"
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -164,6 +178,7 @@ class WebFetchCacheTests(TestCase):
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "text/html"}
         mock_response.text = "<html><body><p>" + "x" * 500 + "</p></body></html>"
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -191,9 +206,87 @@ class WebFetchCacheTests(TestCase):
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "text/html"}
         mock_response.text = "<html><body><p>OK</p></body></html>"
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
         result2 = json.loads(self.tool.invoke({"url": "https://example.com/err"}))
         self.assertNotIn("error", result2)
         mock_get.assert_called()
+
+
+class SSRFProtectionTests(TestCase):
+    """Tests for SSRF protection in WebFetchTool."""
+
+    def test_private_ips_detected(self):
+        self.assertTrue(_is_private_ip("127.0.0.1"))
+        self.assertTrue(_is_private_ip("10.0.0.1"))
+        self.assertTrue(_is_private_ip("172.16.0.1"))
+        self.assertTrue(_is_private_ip("192.168.1.1"))
+        self.assertTrue(_is_private_ip("169.254.169.254"))
+        self.assertTrue(_is_private_ip("::1"))
+
+    def test_public_ips_allowed(self):
+        self.assertFalse(_is_private_ip("8.8.8.8"))
+        self.assertFalse(_is_private_ip("93.184.216.34"))
+
+    @patch("llm.tools.web_fetch.socket.getaddrinfo")
+    def test_check_url_blocks_private(self, mock_dns):
+        mock_dns.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80)),
+        ]
+        result = _check_url_ssrf("http://evil.com")
+        self.assertIsNotNone(result)
+        self.assertIn("private", result.lower())
+
+    @patch("llm.tools.web_fetch.socket.getaddrinfo")
+    def test_check_url_allows_public(self, mock_dns):
+        mock_dns.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 80)),
+        ]
+        result = _check_url_ssrf("http://example.com")
+        self.assertIsNone(result)
+
+    @patch("llm.tools.web_fetch.socket.getaddrinfo")
+    def test_blocks_aws_metadata(self, mock_dns):
+        mock_dns.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.169.254", 80)),
+        ]
+        result = _check_url_ssrf("http://169.254.169.254/latest/meta-data/")
+        self.assertIsNotNone(result)
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}})
+class WebFetchSSRFIntegrationTests(TestCase):
+    """Test that SSRF protection is enforced in the tool invocation."""
+
+    def setUp(self):
+        self.tool = WebFetchTool()
+
+    @patch("llm.tools.web_fetch.socket.getaddrinfo")
+    def test_tool_blocks_localhost(self, mock_dns):
+        mock_dns.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80)),
+        ]
+        result = json.loads(self.tool.invoke({"url": "http://localhost/admin"}))
+        self.assertIn("error", result)
+        self.assertIn("private", result["error"].lower())
+
+    @patch("llm.tools.web_fetch.socket.getaddrinfo")
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_tool_allows_public_url(self, mock_get, mock_dns):
+        mock_dns.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 80)),
+        ]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.is_redirect = False
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = "<html><body><p>OK</p></body></html>"
+        mock_response.is_redirect = False
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = json.loads(self.tool.invoke({"url": "https://example.com"}))
+        self.assertNotIn("error", result)
+        self.assertIn("OK", result["content"])

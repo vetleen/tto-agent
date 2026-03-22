@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
+import socket
 from urllib.parse import urlparse
 
 import requests
@@ -16,6 +18,38 @@ from llm.tools.interfaces import ContextAwareTool
 logger = logging.getLogger(__name__)
 
 _ABSOLUTE_MAX_CHARS = 50_000
+
+
+def _is_private_ip(ip_str: str) -> bool:
+    """Check if an IP address is private, loopback, link-local, or reserved."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True  # Treat unparseable IPs as blocked
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+    )
+
+
+def _check_url_ssrf(url: str) -> str | None:
+    """Return an error message if the URL targets a private/internal host, else None."""
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return "No hostname in URL"
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return f"DNS resolution failed for {hostname}"
+    for family, _, _, _, sockaddr in addr_infos:
+        ip_str = sockaddr[0]
+        if _is_private_ip(ip_str):
+            return "URL resolves to a private or reserved IP address"
+    return None
 
 
 class WebFetchInput(BaseModel):
@@ -46,6 +80,11 @@ class WebFetchTool(ContextAwareTool):
         if parsed.scheme not in ("http", "https"):
             return json.dumps({"error": f"Invalid URL scheme: {parsed.scheme!r}. Only http/https allowed."})
 
+        # SSRF protection: block requests to private/internal IPs
+        ssrf_error = _check_url_ssrf(url)
+        if ssrf_error:
+            return json.dumps({"error": ssrf_error, "url": url})
+
         max_chars = max(1, min(max_chars, _ABSOLUTE_MAX_CHARS))
 
         cache_key = "web_fetch:" + hashlib.sha256(url.encode()).hexdigest()
@@ -69,7 +108,29 @@ class WebFetchTool(ContextAwareTool):
                     "User-Agent": "Mozilla/5.0 (compatible; WilfredBot/1.0)",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 },
+                allow_redirects=False,
             )
+
+            # Follow redirects manually with SSRF check on each hop
+            redirect_count = 0
+            while response.is_redirect and redirect_count < 5:
+                redirect_url = response.headers.get("Location", "")
+                if not redirect_url:
+                    break
+                ssrf_error = _check_url_ssrf(redirect_url)
+                if ssrf_error:
+                    return json.dumps({"error": ssrf_error, "url": redirect_url})
+                response = requests.get(
+                    redirect_url,
+                    timeout=15,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; WilfredBot/1.0)",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    },
+                    allow_redirects=False,
+                )
+                redirect_count += 1
+
             response.raise_for_status()
         except requests.exceptions.Timeout:
             return json.dumps({"error": "Request timed out", "url": url})
@@ -77,8 +138,8 @@ class WebFetchTool(ContextAwareTool):
             return json.dumps({"error": "Connection failed", "url": url})
         except requests.exceptions.HTTPError:
             return json.dumps({"error": f"HTTP {response.status_code}", "url": url})
-        except requests.exceptions.RequestException as e:
-            return json.dumps({"error": f"Request failed: {e}", "url": url})
+        except requests.exceptions.RequestException:
+            return json.dumps({"error": "Request failed", "url": url})
 
         # Check content type
         content_type = response.headers.get("Content-Type", "")

@@ -172,8 +172,9 @@ class BraveSearchTool(ContextAwareTool):
                 "error": "Brave Search rate limited — try again shortly",
                 "results": [],
             })
+        logger.error("Brave Search failed after retries: %s", last_exc)
         return json.dumps({
-            "error": f"Brave Search failed after retries: {last_exc}",
+            "error": "Brave Search failed after retries",
             "results": [],
         })
 
