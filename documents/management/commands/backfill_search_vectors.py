@@ -45,19 +45,28 @@ class Command(BaseCommand):
 
         total_updated = 0
         for doc_id in doc_ids:
-            updated = (
-                DataRoomDocumentChunk.objects.filter(
-                    document_id=doc_id,
-                    search_vector__isnull=True,
-                )[:batch_size]
-                .update(
+            doc_updated = 0
+            while True:
+                chunk_ids = list(
+                    DataRoomDocumentChunk.objects.filter(
+                        document_id=doc_id,
+                        search_vector__isnull=True,
+                    ).values_list("pk", flat=True)[:batch_size]
+                )
+                if not chunk_ids:
+                    break
+                updated = DataRoomDocumentChunk.objects.filter(
+                    pk__in=chunk_ids,
+                ).update(
                     search_vector=(
                         SearchVector("heading", weight="A", config="english")
                         + SearchVector("text", weight="B", config="english")
                     )
                 )
-            )
-            total_updated += updated
-            self.stdout.write(f"  document {doc_id}: {updated} chunk(s) updated")
+                doc_updated += updated
+                if len(chunk_ids) < batch_size:
+                    break
+            total_updated += doc_updated
+            self.stdout.write(f"  document {doc_id}: {doc_updated} chunk(s) updated")
 
         self.stdout.write(self.style.SUCCESS(f"Done. {total_updated} chunk(s) backfilled across {len(doc_ids)} document(s)."))
