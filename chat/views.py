@@ -289,9 +289,14 @@ def canvas_import(request, thread_id, canvas_id=None):
             canvas.content = content
             canvas.save(update_fields=["content", "updated_at"])
         except ChatCanvas.DoesNotExist:
-            canvas = ChatCanvas.objects.create(
-                thread=thread, title=title, content=content,
-            )
+            try:
+                canvas = ChatCanvas.objects.create(
+                    thread=thread, title=title, content=content,
+                )
+            except IntegrityError:
+                canvas = ChatCanvas.objects.get(thread=thread, title=title)
+                canvas.content = content
+                canvas.save(update_fields=["content", "updated_at"])
 
     from chat.services import create_canvas_checkpoint
     cp = create_canvas_checkpoint(canvas, source="import", description="Imported from .docx")
