@@ -14,16 +14,37 @@ logger = logging.getLogger(__name__)
 
 
 def _filter_accessible_rooms(data_room_ids: list[int], user_id: int | None) -> list[int]:
-    """Filter data room IDs to only those the user owns. Raises if none remain."""
+    """Filter data room IDs to those the user can access (owned or shared). Raises if none remain."""
     if not user_id:
         return data_room_ids
+    from accounts.models import Membership
     from documents.models import DataRoom
 
+    # Rooms the user owns are always accessible
     accessible = set(
         DataRoom.objects.filter(
             pk__in=data_room_ids, created_by_id=user_id,
         ).values_list("pk", flat=True)
     )
+
+    # Check shared rooms the user can access via organization membership
+    remaining = [rid for rid in data_room_ids if rid not in accessible]
+    if remaining:
+        user_org_ids = set(
+            Membership.objects.filter(user_id=user_id).values_list("org_id", flat=True)
+        )
+        if user_org_ids:
+            shared_rooms = DataRoom.objects.filter(
+                pk__in=remaining,
+                is_shared=True,
+            ).values_list("pk", "created_by_id")
+            for room_pk, owner_id in shared_rooms:
+                owner_org_ids = set(
+                    Membership.objects.filter(user_id=owner_id).values_list("org_id", flat=True)
+                )
+                if user_org_ids & owner_org_ids:
+                    accessible.add(room_pk)
+
     data_room_ids = [rid for rid in data_room_ids if rid in accessible]
     if not data_room_ids:
         raise ValueError("Data rooms not found or access denied")

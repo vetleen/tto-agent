@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
+from accounts.models import Membership, Organization
 from chat.tools import ReadDocumentTool, SearchDocumentsTool
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from llm.types.context import RunContext
@@ -179,6 +180,36 @@ class SearchDocumentsToolTests(TestCase):
         result = self._invoke({"query": "test"}, ctx)
         self.assertIsInstance(result, str)
 
+    @patch("documents.services.retrieval.similarity_search_chunks")
+    def test_allows_access_to_shared_data_room_via_org(self, mock_search):
+        """Users in the same org as the owner should access shared data rooms."""
+        mock_search.return_value = []
+        org = Organization.objects.create(name="Acme", slug="acme-tools-search")
+        other_user = User.objects.create_user(email="colleague-s@test.com", password="pass")
+        Membership.objects.create(user=self.user, org=org)
+        Membership.objects.create(user=other_user, org=org)
+        self.data_room.is_shared = True
+        self.data_room.save(update_fields=["is_shared"])
+
+        ctx = self._ctx(user_id=other_user.pk)
+        result = self._invoke({"query": "test"}, ctx)
+        self.assertIsInstance(result, str)
+        mock_search.assert_called_once()
+
+    def test_denies_shared_room_if_not_in_same_org(self):
+        """Shared room should be denied if user is not in the owner's org."""
+        org1 = Organization.objects.create(name="Org1", slug="org1-tools-search")
+        org2 = Organization.objects.create(name="Org2", slug="org2-tools-search")
+        other_user = User.objects.create_user(email="outsider-s@test.com", password="pass")
+        Membership.objects.create(user=self.user, org=org1)
+        Membership.objects.create(user=other_user, org=org2)
+        self.data_room.is_shared = True
+        self.data_room.save(update_fields=["is_shared"])
+
+        ctx = self._ctx(user_id=other_user.pk)
+        with self.assertRaises(Exception):
+            self._invoke({"query": "test"}, ctx)
+
 
 class ReadDocumentToolTests(TestCase):
     def setUp(self):
@@ -310,3 +341,37 @@ class ReadDocumentToolTests(TestCase):
         self.assertIn("A", d["content"])
         self.assertIn("B", d["content"])
         self.assertNotIn("chunk_range", d)
+
+    def test_allows_access_to_shared_data_room_via_org(self):
+        """Users in the same org as the owner should access shared data rooms."""
+        org = Organization.objects.create(name="Acme", slug="acme-tools-read")
+        other_user = User.objects.create_user(email="colleague-r@test.com", password="pass")
+        Membership.objects.create(user=self.user, org=org)
+        Membership.objects.create(user=other_user, org=org)
+        self.data_room.is_shared = True
+        self.data_room.save(update_fields=["is_shared"])
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="shared.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="Shared content", token_count=2)
+
+        ctx = self._ctx(user_id=other_user.pk)
+        result = self._invoke({"doc_indices": [doc.doc_index]}, ctx)
+        self.assertEqual(len(result["documents"]), 1)
+        self.assertIn("Shared content", result["documents"][0]["content"])
+
+    def test_denies_shared_room_if_not_in_same_org(self):
+        """Shared room should be denied if user is not in the owner's org."""
+        org1 = Organization.objects.create(name="Org1", slug="org1-tools-read")
+        org2 = Organization.objects.create(name="Org2", slug="org2-tools-read")
+        other_user = User.objects.create_user(email="outsider-r@test.com", password="pass")
+        Membership.objects.create(user=self.user, org=org1)
+        Membership.objects.create(user=other_user, org=org2)
+        self.data_room.is_shared = True
+        self.data_room.save(update_fields=["is_shared"])
+
+        ctx = self._ctx(user_id=other_user.pk)
+        with self.assertRaises(Exception):
+            self._invoke({"doc_indices": [1]}, ctx)
