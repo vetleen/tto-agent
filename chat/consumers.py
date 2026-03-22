@@ -53,6 +53,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         await self.accept()
 
+    async def disconnect(self, close_code):
+        """Clean up background tasks when WebSocket disconnects."""
+        # Signal any active LLM stream to stop
+        if self._cancel_event:
+            self._cancel_event.set()
+
+        # Cancel the guardrail pipeline if still running
+        if self._guardrail_task and not self._guardrail_task.done():
+            self._guardrail_task.cancel()
+            try:
+                await self._guardrail_task
+            except asyncio.CancelledError:
+                pass
+
     @database_sync_to_async
     def _resolve_preferences(self):
         from core.preferences import get_preferences
