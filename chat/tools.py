@@ -325,15 +325,17 @@ class ReadDocumentTool(ContextAwareTool):
                     continue
 
             chunks_qs = doc.chunks.filter(is_quarantined=False).order_by("chunk_index")
-            total_chunk_count = chunks_qs.count()
 
             if use_chunk_range:
+                total_chunk_count = chunks_qs.count()
                 chunks_qs = chunks_qs.filter(
                     chunk_index__gte=chunk_start,
                     chunk_index__lte=chunk_end,
                 )
 
             chunk_list = list(chunks_qs.values_list("chunk_index", "heading", "text"))
+            if not use_chunk_range:
+                total_chunk_count = len(chunk_list)
             content_parts = []
             headings = []
             for ci, heading, text in chunk_list:

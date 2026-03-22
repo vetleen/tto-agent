@@ -1219,10 +1219,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _persist_data_room_links(self, thread_id, data_room_ids):
         from chat.models import ChatThreadDataRoom
 
-        for room_id in data_room_ids:
-            ChatThreadDataRoom.objects.get_or_create(
-                thread_id=thread_id, data_room_id=room_id,
-            )
+        ChatThreadDataRoom.objects.bulk_create(
+            [
+                ChatThreadDataRoom(thread_id=thread_id, data_room_id=room_id)
+                for room_id in data_room_ids
+            ],
+            ignore_conflicts=True,
+        )
 
     @database_sync_to_async
     def _remove_data_room_link(self, thread_id, data_room_id):
