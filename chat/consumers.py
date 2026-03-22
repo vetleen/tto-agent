@@ -190,6 +190,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not data_room_id:
             return
 
+        # Coerce to int to match validated PKs stored by _handle_attach_data_room
+        try:
+            data_room_id = int(data_room_id)
+        except (TypeError, ValueError):
+            return
+
         if data_room_id in self.data_room_ids:
             self.data_room_ids.remove(data_room_id)
 
