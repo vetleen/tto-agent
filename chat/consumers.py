@@ -226,12 +226,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if thread_data is not None:
             self.data_room_ids = thread_data["data_room_ids"]
 
-            # Load skill
-            skill_data = await self._load_thread_skill(thread_id)
+            # Fetch skill, cost, canvases, and tasks in parallel
+            skill_data, thread_cost, canvases_data, task_list = await asyncio.gather(
+                self._load_thread_skill(thread_id),
+                self._get_thread_cost(thread_id),
+                self._load_all_canvases(thread_id),
+                self._get_thread_tasks(thread_id),
+            )
             self.active_skill_id = skill_data["skill_id"] if skill_data else None
-
-            # Load thread cost
-            thread_cost = await self._get_thread_cost(thread_id)
 
             await self.send(text_data=json.dumps({
                 "event_type": "thread.loaded",
@@ -240,16 +242,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "skill": skill_data,
                 "thread_cost_usd": thread_cost,
             }))
-            # Send canvas state if any exist
-            canvases_data = await self._load_all_canvases(thread_id)
             if canvases_data:
                 await self.send(text_data=json.dumps({
                     "event_type": "canvases.loaded",
                     "canvases": canvases_data["tabs"],
                     "active_canvas": canvases_data["active"],
                 }))
-            # Send task plan state if tasks exist
-            task_list = await self._get_thread_tasks(thread_id)
             if task_list:
                 await self.send(text_data=json.dumps({
                     "event_type": "tasks.loaded",
