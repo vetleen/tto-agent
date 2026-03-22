@@ -181,7 +181,7 @@ class VectorStoreTests(TestCase):
         similarity_search(data_room_ids=[1], query="hello", k=500, document_id=9)
 
         self.assertEqual(store.similarity_search.call_args.kwargs["k"], 50)
-        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"data_room_id": 1, "document_id": 9})
+        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"data_room_id": {"$in": [1]}, "document_id": 9})
 
 
 class RRFScoreTests(TestCase):

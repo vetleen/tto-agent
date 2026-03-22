@@ -181,10 +181,6 @@ class EditCanvasTool(ContextAwareTool):
                 description="Edited %d section(s)" % applied,
             )
 
-        # Reload with select_related to get accepted_checkpoint
-        from chat.models import ChatCanvas
-
-        canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(pk=canvas.pk)
         accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
 
         result = {

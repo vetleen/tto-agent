@@ -136,12 +136,7 @@ def similarity_search(
     if not store:
         return []
 
-    all_results = []
-    for room_id in data_room_ids:
-        filt = {"data_room_id": room_id}
-        if document_id is not None:
-            filt["document_id"] = document_id
-        results = store.similarity_search(query, k=k, filter=filt)
-        all_results.extend(results)
-
-    return all_results
+    filt: dict[str, Any] = {"data_room_id": {"$in": data_room_ids}}
+    if document_id is not None:
+        filt["document_id"] = document_id
+    return store.similarity_search(query, k=k, filter=filt)
