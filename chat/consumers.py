@@ -940,6 +940,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }))
         finally:
             heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
             self._stream_finished.set()
             self._cancel_event = None
 
