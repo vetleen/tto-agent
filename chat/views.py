@@ -258,7 +258,20 @@ def canvas_import(request, thread_id, canvas_id=None):
     if not uploaded:
         return HttpResponseBadRequest("No file uploaded.")
 
-    from chat.services import import_docx_to_canvas, set_active_canvas
+    from chat.services import MAX_ATTACHMENT_SIZE, SUPPORTED_DOCX_TYPES, import_docx_to_canvas, set_active_canvas
+
+    # Validate file type
+    ct = uploaded.content_type or ""
+    is_docx = ct in SUPPORTED_DOCX_TYPES or (uploaded.name and uploaded.name.lower().endswith(".docx"))
+    if not is_docx:
+        return JsonResponse({"error": "Only .docx files are supported for import."}, status=400)
+
+    # Validate file size
+    if uploaded.size > MAX_ATTACHMENT_SIZE:
+        return JsonResponse(
+            {"error": f"File too large ({uploaded.size} bytes, max {MAX_ATTACHMENT_SIZE})."},
+            status=400,
+        )
 
     title, content, truncated = import_docx_to_canvas(uploaded, request.user)
 

@@ -198,3 +198,41 @@ class SharedDataRoomVisibilityTests(TestCase):
         self.assertIn("My Room", room_names)
         self.assertIn("Shared Room", room_names)
         self.assertNotIn("Private Room", room_names)
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    LLM_ALLOWED_MODELS=["openai/gpt-5-mini"],
+    LLM_DEFAULT_MODEL="openai/gpt-5-mini",
+)
+class CanvasImportValidationTests(TestCase):
+    """canvas_import must validate file type and size."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="imp@example.com", password="pass")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.client.force_login(self.user)
+
+    def test_rejects_non_docx_file(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        f = SimpleUploadedFile("evil.txt", b"hello", content_type="text/plain")
+        url = reverse("canvas_import", kwargs={"thread_id": self.thread.id})
+        response = self.client.post(url, {"file": f})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("docx", response.json()["error"].lower())
+
+    def test_rejects_oversized_file(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        large = b"x" * (10 * 1024 * 1024 + 1)
+        f = SimpleUploadedFile(
+            "big.docx", large,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        url = reverse("canvas_import", kwargs={"thread_id": self.thread.id})
+        response = self.client.post(url, {"file": f})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("too large", response.json()["error"].lower())
