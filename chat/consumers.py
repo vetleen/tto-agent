@@ -1226,8 +1226,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _persist_data_room_link(self, thread_id, data_room_id):
-        from chat.models import ChatThreadDataRoom
+        from chat.models import ChatThread, ChatThreadDataRoom
 
+        if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
+            return
         ChatThreadDataRoom.objects.get_or_create(
             thread_id=thread_id, data_room_id=data_room_id,
         )
@@ -1246,8 +1248,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _remove_data_room_link(self, thread_id, data_room_id):
-        from chat.models import ChatThreadDataRoom
+        from chat.models import ChatThread, ChatThreadDataRoom
 
+        if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
+            return
         ChatThreadDataRoom.objects.filter(
             thread_id=thread_id, data_room_id=data_room_id,
         ).delete()
