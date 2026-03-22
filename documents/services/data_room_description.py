@@ -64,7 +64,6 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
 
     context = RunContext.create(
         user_id=user_id,
-        conversation_id=data_room_id,
     )
     request = ChatRequest(
         messages=[

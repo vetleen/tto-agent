@@ -224,6 +224,17 @@ def log_stream(
         reasoning_tokens = end_data.get("reasoning_tokens")
         cost_raw = end_data.get("cost_usd")
         cost = Decimal(str(cost_raw)) if cost_raw is not None else None
+        if cost is None and (input_tokens or output_tokens):
+            from llm.service.pricing import calculate_cost
+
+            computed = calculate_cost(
+                request.model or "",
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+            )
+            if computed is not None:
+                cost = computed
 
         # Response metadata from message_end
         resp_metadata = end_data.get("response_metadata")
