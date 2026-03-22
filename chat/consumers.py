@@ -1259,18 +1259,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _load_thread_data_rooms(self, thread_id):
         from chat.models import ChatThread
+        from documents.views import _user_can_access_data_room
 
         try:
             thread = ChatThread.objects.get(pk=thread_id, created_by=self.user)
         except ChatThread.DoesNotExist:
             return None
 
-        rooms = list(
-            thread.data_rooms.values("pk", "name")
-        )
+        rooms = [
+            r for r in thread.data_rooms.all()
+            if _user_can_access_data_room(self.user, r)
+        ]
         return {
-            "data_room_ids": [r["pk"] for r in rooms],
-            "data_rooms": [{"id": r["pk"], "name": r["name"]} for r in rooms],
+            "data_room_ids": [r.pk for r in rooms],
+            "data_rooms": [{"id": r.pk, "name": r.name} for r in rooms],
         }
 
     # -- Cost helpers --
