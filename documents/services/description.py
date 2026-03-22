@@ -70,7 +70,6 @@ def generate_description_and_tags_from_text(
 
     context = RunContext.create(
         user_id=user_id,
-        conversation_id=data_room_id,
     )
     request = ChatRequest(
         messages=[

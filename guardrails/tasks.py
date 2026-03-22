@@ -76,7 +76,15 @@ def scan_document_chunks(document_id: int) -> None:
             )
         elif result.is_suspicious:
             remaining_chunks.append(chunk)
-            # Log but continue to classifier
+            _log_chunk_event(
+                document=doc,
+                chunk_text=chunk["text"],
+                check_type="heuristic",
+                tags=result.tags,
+                confidence=result.confidence,
+                severity="low",
+                action_taken="escalated",
+            )
         else:
             remaining_chunks.append(chunk)
 
@@ -135,7 +143,6 @@ def _classify_chunk_batch(doc, chunks: list[dict]) -> None:
 
     context = RunContext.create(
         user_id=doc.uploaded_by_id,
-        conversation_id=doc.data_room_id,
     )
     request = ChatRequest(
         messages=[
