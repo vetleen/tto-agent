@@ -104,6 +104,21 @@ class WebFetchTool(ContextAwareTool):
         # Extract text
         text = soup.get_text(separator="\n", strip=True)
 
+        # Scan for prompt injection (log only, never blocks)
+        try:
+            if text.strip():
+                from guardrails.web_content import scan_web_content
+
+                scan_web_content(
+                    text,
+                    user_id=self.context.user_id if self.context else None,
+                    thread_id=self.context.conversation_id if self.context else None,
+                    org_id=None,
+                    source_label="web_fetch",
+                )
+        except Exception:
+            logger.debug("web_fetch: web content scan failed (non-fatal)")
+
         # Cache full content before truncating for caller
         full_result = json.dumps({
             "url": url,

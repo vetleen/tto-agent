@@ -117,6 +117,43 @@ class WebFetchToolTests(TestCase):
         self.assertIn("Non-text", result["error"])
 
     @patch("llm.tools.web_fetch.requests.get")
+    @patch("guardrails.web_content.scan_web_content")
+    def test_scan_web_content_called_with_text(self, mock_scan, mock_get):
+        """scan_web_content should be called with the extracted page text."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = "<html><body><p>Some page content</p></body></html>"
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        from llm.types.context import RunContext
+        ctx = RunContext.create(user_id=99, conversation_id="thread-xyz")
+        self.tool.set_context(ctx)
+        self.tool.invoke({"url": "https://example.com/scan"})
+
+        mock_scan.assert_called_once()
+        call_kwargs = mock_scan.call_args
+        self.assertIn("Some page content", call_kwargs[0][0])
+        self.assertEqual(call_kwargs[1]["user_id"], "99")
+        self.assertEqual(call_kwargs[1]["thread_id"], "thread-xyz")
+        self.assertEqual(call_kwargs[1]["source_label"], "web_fetch")
+
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("guardrails.web_content.scan_web_content", side_effect=RuntimeError("scan boom"))
+    def test_scan_web_content_error_does_not_break_tool(self, mock_scan, mock_get):
+        """If scan_web_content raises, the tool should still return valid results."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = "<html><body><p>Content here</p></body></html>"
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = json.loads(self.tool.invoke({"url": "https://example.com/err"}))
+        self.assertIn("Content here", result["content"])
+
+    @patch("llm.tools.web_fetch.requests.get")
     def test_max_chars_capped_at_absolute_max(self, mock_get):
         mock_response = MagicMock()
         mock_response.status_code = 200

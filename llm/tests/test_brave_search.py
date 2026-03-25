@@ -245,6 +245,57 @@ class BraveSearchToolTests(TestCase):
             [5.0, 15.0, 30.0, 60.0],
         )
 
+    @override_settings(BRAVE_SEARCH_API_KEY="test-key")
+    @patch("llm.tools.brave_search.requests.get")
+    @patch("guardrails.web_content.scan_web_content")
+    def test_scan_web_content_called_with_results(self, mock_scan, mock_get):
+        """scan_web_content should be called with the combined result text."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "web": {
+                "results": [
+                    {"title": "Title 1", "url": "https://example.com/1", "description": "Desc 1"},
+                    {"title": "Title 2", "url": "https://example.com/2", "description": "Desc 2"},
+                ]
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        from llm.types.context import RunContext
+        ctx = RunContext.create(user_id=42, conversation_id="thread-abc")
+        self.tool.set_context(ctx)
+        self.tool.invoke({"query": "test query"})
+
+        mock_scan.assert_called_once()
+        call_kwargs = mock_scan.call_args
+        self.assertIn("Title 1", call_kwargs[0][0])
+        self.assertIn("Desc 2", call_kwargs[0][0])
+        self.assertEqual(call_kwargs[1]["user_id"], "42")
+        self.assertEqual(call_kwargs[1]["thread_id"], "thread-abc")
+        self.assertEqual(call_kwargs[1]["source_label"], "brave_search")
+
+    @override_settings(BRAVE_SEARCH_API_KEY="test-key")
+    @patch("llm.tools.brave_search.requests.get")
+    @patch("guardrails.web_content.scan_web_content", side_effect=RuntimeError("scan boom"))
+    def test_scan_web_content_error_does_not_break_tool(self, mock_scan, mock_get):
+        """If scan_web_content raises, the tool should still return valid results."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "web": {
+                "results": [
+                    {"title": "OK", "url": "https://example.com", "description": "Fine"},
+                ]
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = json.loads(self.tool.invoke({"query": "test"}))
+        self.assertEqual(result["count"], 1)
+
 
 class BraveSearchCacheTests(TestCase):
     """Tests for BraveSearchTool caching."""

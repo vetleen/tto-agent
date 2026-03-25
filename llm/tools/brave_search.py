@@ -129,6 +129,25 @@ class BraveSearchTool(ContextAwareTool):
                         "description": item.get("description", ""),
                     })
 
+                # Scan for prompt injection (log only, never blocks)
+                try:
+                    combined = "\n".join(
+                        f"{r.get('title', '')} {r.get('description', '')}"
+                        for r in results
+                    )
+                    if combined.strip():
+                        from guardrails.web_content import scan_web_content
+
+                        scan_web_content(
+                            combined,
+                            user_id=self.context.user_id if self.context else None,
+                            thread_id=self.context.conversation_id if self.context else None,
+                            org_id=None,
+                            source_label="brave_search",
+                        )
+                except Exception:
+                    logger.debug("brave_search: web content scan failed (non-fatal)")
+
                 result = json.dumps({"results": results, "count": len(results)})
                 cache.set(cache_key, result, timeout=900)
                 return result
