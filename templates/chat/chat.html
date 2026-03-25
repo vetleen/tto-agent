@@ -2661,7 +2661,7 @@
       canvasHistoryList.innerHTML = '<div class="px-3 py-2 text-xs text-body">No versions yet.</div>';
       return;
     }
-    var sourceLabels = { original: "Created", ai_edit: "AI edit", user_save: "Saved", "import": "Imported", restore: "Restored" };
+    var sourceLabels = { original: "Created", ai_edit: "AI edit", user_save: "Saved", "import": "Imported", restore: "Restored", redacted: "Redacted" };
     var html = "";
     checkpoints.forEach(function(cp) {
       var label = sourceLabels[cp.source] || cp.source;
@@ -2671,7 +2671,9 @@
       html += '<div class="min-w-0 flex-1"><div class="text-xs font-medium text-heading">' + escapeHtml(label) + '</div>';
       if (cp.description) html += '<div class="text-xs text-body truncate">' + escapeHtml(cp.description) + '</div>';
       html += '<div class="text-xs text-body/60">' + escapeHtml(timeStr) + '</div></div>';
-      html += '<button type="button" class="checkpoint-restore-btn text-xs text-fg-brand hover:underline ml-2 shrink-0" data-checkpoint-id="' + cp.id + '">Restore</button>';
+      if (cp.source !== "redacted") {
+        html += '<button type="button" class="checkpoint-restore-btn text-xs text-fg-brand hover:underline ml-2 shrink-0" data-checkpoint-id="' + cp.id + '">Restore</button>';
+      }
       html += '</div>';
     });
     canvasHistoryList.innerHTML = html;

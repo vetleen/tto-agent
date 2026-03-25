@@ -187,6 +187,7 @@ class CanvasCheckpoint(models.Model):
         USER_SAVE = "user_save", "User Save"
         IMPORT = "import", "Import"
         RESTORE = "restore", "Restore"
+        REDACTED = "redacted", "Redacted"
 
     canvas = models.ForeignKey(
         ChatCanvas, on_delete=models.CASCADE, related_name="checkpoints"
