@@ -448,3 +448,127 @@ class MaxContextTokensTest(TestCase):
 
         prefs = get_preferences(user)
         self.assertEqual(prefs.max_context_tokens, MIN_CONTEXT_TOKENS)
+
+
+class TranscriptionModelCascadeTest(TestCase):
+    """Transcription model preferences cascade: System -> Org -> User."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_system_default(self, mock_registry, mock_allowed):
+        """Transcription model resolves to system default when no org/user prefs."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tx-default@example.com")
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")
+        self.assertEqual(
+            prefs.allowed_transcription_models,
+            ["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+        )
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_restricts_allowed(self, mock_registry, mock_allowed):
+        """Org restricts allowed transcription models to a subset."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tx-org-restrict@example.com")
+        org = Organization.objects.create(name="TxOrg1", slug="txorg1", preferences={
+            "allowed_transcription_models": ["openai/gpt-4o-transcribe"],
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.allowed_transcription_models, ["openai/gpt-4o-transcribe"])
+        # Default not in allowed => falls back to first allowed
+        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-transcribe")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_empty_list_disables(self, mock_registry, mock_allowed):
+        """Org with explicitly empty allowed_transcription_models disables transcription."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tx-org-disabled@example.com")
+        org = Organization.objects.create(name="TxOrg2", slug="txorg2", preferences={
+            "allowed_transcription_models": [],
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.allowed_transcription_models, [])
+        self.assertEqual(prefs.transcription_model, "")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_user_picks_allowed(self, mock_registry, mock_allowed):
+        """User picks an allowed transcription model."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tx-user-picks@example.com")
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {
+            "transcription_models": {"default": "openai/gpt-4o-transcribe"},
+        }
+        settings.save()
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-transcribe")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_user_picks_disallowed_falls_back(self, mock_registry, mock_allowed):
+        """User picks a disallowed model, falls back to system default."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tx-user-disallowed@example.com")
+        org = Organization.objects.create(name="TxOrg3", slug="txorg3", preferences={
+            "allowed_transcription_models": ["openai/gpt-4o-mini-transcribe"],
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {
+            "transcription_models": {"default": "openai/gpt-4o-transcribe"},
+        }
+        settings.save()
+
+        prefs = get_preferences(user)
+        # User's choice not in org allowed, so falls back
+        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")

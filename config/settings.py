@@ -275,6 +275,8 @@ DOCUMENT_ALLOWED_EXTENSIONS = {
     "pdf", "txt", "md", "html", "docx",
     "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log",
     "msg", "eml",
+    # Audio formats (transcription)
+    "mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "flac", "ogg",
 }
 DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
     "application/pdf",
@@ -293,6 +295,15 @@ DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
     "application/vnd.ms-outlook",
     "message/rfc822",
     "application/octet-stream",
+    # Audio formats (transcription)
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/webm",
+    "audio/flac",
+    "audio/ogg",
 ])
 TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
 MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
@@ -313,6 +324,11 @@ LLM_DEFAULT_MID_MODEL = os.environ.get("LLM_DEFAULT_MID_MODEL", "")
 LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+
+# Transcription settings
+TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
+TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe").split(",") if m.strip()]
+AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
 
 # Celery (use Redis as broker)
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))

@@ -57,6 +57,32 @@
     </div>
   </section>
 
+  <!-- Transcription Model -->
+  {% if allowed_transcription_models %}
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Transcription Model</h2>
+    <p class="mt-1 text-sm text-body">Choose your preferred model for audio transcription.</p>
+
+    <div class="mt-4">
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="transcription-model">
+          Transcription model
+        </label>
+        <p class="text-xs text-body mt-0.5">Used when you upload audio files to data rooms.</p>
+        <select
+          id="transcription-model"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">Default ({{ resolved_transcription_model }})</option>
+          {% for model in allowed_transcription_models %}
+          <option value="{{ model }}" {% if user_transcription_model == model %}selected{% endif %}>{{ model }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   <!-- Context Window -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">Context Window</h2>
@@ -121,6 +147,24 @@
       });
     });
   });
+
+  // Transcription model preference
+  var transcriptionSelect = document.getElementById('transcription-model');
+  if (transcriptionSelect) {
+    transcriptionSelect.addEventListener('change', function() {
+      fetch('{% url "accounts:preferences_transcription_model_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          transcriptionSelect.value = '';
+        }
+      });
+    });
+  }
 
   // Context window preference
   var userCtxInput = document.getElementById('user-max-context-tokens');

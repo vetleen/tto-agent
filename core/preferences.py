@@ -22,6 +22,8 @@ class ResolvedPreferences:
     theme: str = "light"
     parallel_subagents: bool = True
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    transcription_model: str = ""
+    allowed_transcription_models: list[str] = field(default_factory=list)
 
 
 def get_preferences(user) -> ResolvedPreferences:
@@ -83,6 +85,33 @@ def get_preferences(user) -> ResolvedPreferences:
         system_allowed=system_allowed,
     )
 
+    # --- Transcription model cascade ---
+    system_transcription_allowed = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
+    system_transcription_default = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL", "") or ""
+
+    org_transcription_allowed = org_prefs.get("allowed_transcription_models") if org_prefs else None
+    org_transcription_models = org_prefs.get("transcription_models", {}) if org_prefs else {}
+    user_transcription_models = user_prefs.get("transcription_models", {}) if user_prefs else {}
+
+    # Org restricts to subset of system; explicitly empty list = disabled
+    if org_transcription_allowed is not None and isinstance(org_transcription_allowed, list):
+        effective_transcription_allowed = [m for m in org_transcription_allowed if m in system_transcription_allowed]
+    else:
+        # None/missing = inherit all system models
+        effective_transcription_allowed = list(system_transcription_allowed)
+
+    if effective_transcription_allowed:
+        transcription_model = _resolve_tier(
+            user_choice=user_transcription_models.get("default"),
+            org_default=org_transcription_models.get("default"),
+            system_default=system_transcription_default,
+            effective_allowed=effective_transcription_allowed,
+            system_allowed=system_transcription_allowed,
+        )
+    else:
+        # Empty allowed list = transcription disabled
+        transcription_model = ""
+
     # Resolve tools: base chat-section tools filtered by org toggles
     base_allowed = [t for t in chat_tools if org_tools.get(t, True) is not False]
 
@@ -141,6 +170,8 @@ def get_preferences(user) -> ResolvedPreferences:
         theme=user_theme,
         parallel_subagents=parallel_subagents,
         max_context_tokens=max_context_tokens,
+        transcription_model=transcription_model,
+        allowed_transcription_models=effective_transcription_allowed,
     )
 
 

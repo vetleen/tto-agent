@@ -751,3 +751,202 @@ class PreferencesMaxContextUpdateTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+)
+class OrgAllowedTranscriptionModelsUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="txadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="txmember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="TxOrg", slug="txorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_allowed_transcription_models_update")
+
+    def test_admin_sets_allowed_transcription_models(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"allowed_transcription_models": ["openai/gpt-4o-transcribe"]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["allowed_transcription_models"], ["openai/gpt-4o-transcribe"])
+
+    def test_reject_model_not_in_system(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"allowed_transcription_models": ["not-a-model"]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_requires_admin(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"allowed_transcription_models": []}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"allowed_transcription_models": []}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_empty_list_disables_transcription(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"allowed_transcription_models": []}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["allowed_transcription_models"], [])
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+)
+class OrgTranscriptionModelUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="txdefault-admin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="TxDefOrg", slug="txdeforg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        self.url = reverse("accounts:org_transcription_model_update")
+
+    def test_admin_sets_default(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": "openai/gpt-4o-transcribe"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["transcription_models"]["default"], "openai/gpt-4o-transcribe")
+
+    def test_admin_clears_default(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": ""}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertIsNone(self.org.preferences["transcription_models"]["default"])
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": "openai/gpt-4o-transcribe"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+)
+class PreferencesTranscriptionModelUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="txuser@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.url = reverse("accounts:preferences_transcription_model_update")
+
+    @patch("core.preferences.get_preferences")
+    def test_user_sets_transcription_model(self, mock_prefs):
+        from core.preferences import ResolvedPreferences
+        mock_prefs.return_value = ResolvedPreferences(
+            top_model="openai/gpt-5",
+            mid_model="",
+            cheap_model="",
+            allowed_models=[],
+            allowed_tools=[],
+            theme="light",
+            allowed_transcription_models=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": "openai/gpt-4o-transcribe"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertEqual(settings.preferences["transcription_models"]["default"], "openai/gpt-4o-transcribe")
+
+    @patch("core.preferences.get_preferences")
+    def test_reject_model_not_allowed(self, mock_prefs):
+        from core.preferences import ResolvedPreferences
+        mock_prefs.return_value = ResolvedPreferences(
+            top_model="openai/gpt-5",
+            mid_model="",
+            cheap_model="",
+            allowed_models=[],
+            allowed_tools=[],
+            theme="light",
+            allowed_transcription_models=["openai/gpt-4o-mini-transcribe"],
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": "openai/gpt-4o-transcribe"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_clear_model(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": ""}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertIsNone(settings.preferences["transcription_models"]["default"])
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": "openai/gpt-4o-transcribe"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)

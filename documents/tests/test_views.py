@@ -824,3 +824,54 @@ class DocumentViewsTests(TestCase):
             reverse("data_room_generate_description", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------ #
+    # Audio file upload validation                                         #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(AUDIO_UPLOAD_MAX_SIZE_BYTES=50)
+    def test_upload_audio_file_too_large(self):
+        """Audio files exceeding AUDIO_UPLOAD_MAX_SIZE_BYTES are rejected."""
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("big.mp3", b"\x00" * 100, content_type="audio/mpeg")
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "audio file is too large")
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 0)
+
+    @patch("core.preferences.get_preferences")
+    def test_upload_audio_transcription_disabled(self, mock_prefs):
+        """Audio upload rejected when org has no transcription models."""
+        mock_prefs.return_value = MagicMock(allowed_transcription_models=[])
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("test.mp3", b"\x00" * 100, content_type="audio/mpeg")
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "not enabled")
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 0)
+
+    @patch("core.preferences.get_preferences")
+    def test_upload_audio_file_accepted(self, mock_prefs):
+        """Audio file accepted when transcription is enabled."""
+        mock_prefs.return_value = MagicMock(
+            allowed_transcription_models=["openai/gpt-4o-mini-transcribe"]
+        )
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("test.mp3", b"\x00" * 100, content_type="audio/mpeg")
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 1)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
+        self.assertEqual(doc.original_filename, "test.mp3")

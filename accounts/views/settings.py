@@ -49,12 +49,22 @@ def settings_page(request):
         org_max_context = DEFAULT_MAX_CONTEXT_TOKENS
     user_max_context = (user_settings.preferences or {}).get("max_context_tokens")
 
+    user_transcription_model = (user_settings.preferences or {}).get("transcription_models", {}).get("default")
+    from llm.transcription_registry import get_all_transcription_models
+    transcription_model_display = {
+        mid: info.display_name for mid, info in get_all_transcription_models().items()
+    }
+
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
         "user_models": user_models,
         "allowed_models": prefs.allowed_models,
         "org_max_context_tokens": org_max_context,
         "user_max_context_tokens": user_max_context,
+        "allowed_transcription_models": prefs.allowed_transcription_models,
+        "user_transcription_model": user_transcription_model or "",
+        "resolved_transcription_model": prefs.transcription_model,
+        "transcription_model_display": transcription_model_display,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"]},
@@ -95,6 +105,35 @@ def preferences_models_update(request):
     settings.save()
 
     return JsonResponse({"ok": True, "tier": tier, "model": model})
+
+
+@login_required
+@require_POST
+def preferences_transcription_model_update(request):
+    """Update user's preferred transcription model."""
+    from core.preferences import get_preferences
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    model = data.get("model", "").strip() or None
+
+    if model:
+        prefs = get_preferences(request.user)
+        if model not in prefs.allowed_transcription_models:
+            return JsonResponse({"error": "Model not allowed"}, status=400)
+
+    settings, _ = UserSettings.objects.get_or_create(user=request.user)
+    prefs_dict = settings.preferences or {}
+    transcription_models = prefs_dict.get("transcription_models", {})
+    transcription_models["default"] = model
+    prefs_dict["transcription_models"] = transcription_models
+    settings.preferences = prefs_dict
+    settings.save()
+
+    return JsonResponse({"ok": True, "model": model})
 
 
 # ---- Organization Settings Page ----
@@ -192,6 +231,16 @@ def org_settings_page(request):
     if not isinstance(org_max_context_tokens, int):
         org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
 
+    from django.conf import settings as django_settings
+    from llm.transcription_registry import get_all_transcription_models
+
+    system_transcription_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
+    org_allowed_transcription = org_prefs.get("allowed_transcription_models")
+    org_transcription_models = org_prefs.get("transcription_models", {})
+    transcription_model_display = {
+        mid: info.display_name for mid, info in get_all_transcription_models().items()
+    }
+
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "system_models": system_models,
@@ -204,6 +253,10 @@ def org_settings_page(request):
         "skills_data_json": json.dumps(skills_data),
         "parallel_subagents": parallel_subagents,
         "org_max_context_tokens": org_max_context_tokens,
+        "system_transcription_models": system_transcription_models,
+        "org_allowed_transcription": org_allowed_transcription,
+        "org_transcription_default": org_transcription_models.get("default", ""),
+        "transcription_model_display": transcription_model_display,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},
@@ -244,6 +297,74 @@ def org_allowed_models_update(request):
     org.save(update_fields=["preferences"])
 
     return JsonResponse({"ok": True, "allowed_models": models})
+
+
+@login_required
+@require_POST
+def org_allowed_transcription_models_update(request):
+    """Set org's allowed transcription models list."""
+    from django.conf import settings as django_settings
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    models = data.get("allowed_transcription_models")
+    if not isinstance(models, list):
+        return JsonResponse({"error": "allowed_transcription_models must be a list"}, status=400)
+
+    system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
+    invalid = [m for m in models if m not in system_models]
+    if invalid:
+        return JsonResponse({"error": f"Models not in system allowlist: {invalid}"}, status=400)
+
+    org = membership.org
+    prefs = org.preferences or {}
+    prefs["allowed_transcription_models"] = models
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True, "allowed_transcription_models": models})
+
+
+@login_required
+@require_POST
+def org_transcription_model_update(request):
+    """Set org's default transcription model."""
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    model = data.get("model", "").strip() or None
+
+    org = membership.org
+    prefs = org.preferences or {}
+
+    if model:
+        org_allowed = prefs.get("allowed_transcription_models")
+        from django.conf import settings as django_settings
+        system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
+        effective = [m for m in org_allowed if m in system_models] if isinstance(org_allowed, list) else system_models
+        if model not in effective:
+            return JsonResponse({"error": "Model not in allowed list"}, status=400)
+
+    transcription_models = prefs.get("transcription_models", {})
+    transcription_models["default"] = model
+    prefs["transcription_models"] = transcription_models
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True, "model": model})
 
 
 @login_required

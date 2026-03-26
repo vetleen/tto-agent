@@ -67,6 +67,8 @@ class DataRoomDocument(models.Model):
     chunking_strategy = models.CharField(max_length=64, blank=True)
     embedding_model = models.CharField(max_length=128, blank=True)
     description = models.TextField(blank=True, default="")
+    transcript = models.TextField(blank=True, default="")
+    transcription_model = models.CharField(max_length=128, blank=True)
     is_archived = models.BooleanField(default=False)
     doc_index = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
