@@ -457,6 +457,35 @@ class ProcessDocumentServiceTests(TestCase):
                 self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
                 self.assertIn("No text could be extracted", doc.processing_error)
 
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_fails_when_zero_chunks(self):
+        """Document with extractable text but 0 chunks should be marked FAILED."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="weird.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("weird.txt", ContentFile(b"has text"), save=True)
+
+                with patch(
+                    "documents.services.process_document.load_documents",
+                    return_value=[Mock(page_content="some real content")],
+                ), patch(
+                    "documents.services.process_document.structure_aware_chunk",
+                    return_value=[],
+                ):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+                self.assertIn("0 chunks", doc.processing_error)
+
     def test_process_document_skips_nonexistent_document(self):
         """Calling with a non-existent ID logs a warning and returns without raising."""
         from documents.services.process_document import process_document
@@ -818,6 +847,21 @@ class CleanExtractedTextTests(TestCase):
         text = "The sample included 42 participants across 3 sites."
         result = clean_extracted_text(text)
         self.assertEqual(result, text)
+
+    def test_literal_newline_escapes_normalised(self):
+        """Literal \\n sequences (from JSON exports / LLM copy-paste) are converted to real newlines."""
+        text = "# Heading\\n\\nParagraph one.\\n\\n## Sub\\n\\nParagraph two."
+        result = clean_extracted_text(text)
+        self.assertIn("\n", result)
+        self.assertNotIn("\\n", result)
+        self.assertIn("# Heading", result)
+        self.assertIn("Paragraph one.", result)
+
+    def test_literal_newline_escapes_skipped_when_real_newlines_dominate(self):
+        """When the text already has more real newlines than literal \\n, leave them alone."""
+        text = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nMentions \\n once"
+        result = clean_extracted_text(text)
+        self.assertIn("\\n", result)
 
     def test_empty_input(self):
         self.assertEqual(clean_extracted_text(""), "")

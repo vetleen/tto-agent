@@ -32,9 +32,10 @@ _RE_EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
 
 
 def clean_extracted_text(text: str) -> str:
-    """Apply general-purpose cleaning to PDF-extracted text.
+    """Apply general-purpose cleaning to extracted text.
 
     Order matters:
+    0. Normalise literal escape sequences (\\n, \\r\\n) to real newlines
     1. Rejoin hyphenated line breaks (before line-level removals)
     2. Remove DOI-only lines
     3. Remove all-caps journal/publication header lines
@@ -42,6 +43,16 @@ def clean_extracted_text(text: str) -> str:
     5. Collapse excess inline whitespace
     6. Collapse 3+ consecutive newlines to \\n\\n
     """
+    # Step 0: Normalise literal escape sequences commonly found in
+    # JSON exports, LLM outputs, or copy-paste artefacts.  Only apply
+    # when the text is mostly a single blob (few real newlines) that
+    # contains many literal \n sequences — avoids false-positive
+    # replacement in files that legitimately reference escape codes.
+    actual_newlines = text.count("\n")
+    literal_newlines = text.count("\\n")
+    if literal_newlines > actual_newlines and literal_newlines >= 4:
+        text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
     text = _RE_HYPHENATED_BREAK.sub(r"\1\2", text)
     text = _RE_DOI_LINE.sub("", text)
     text = _RE_JOURNAL_HEADER.sub("", text)

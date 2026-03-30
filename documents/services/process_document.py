@@ -104,6 +104,12 @@ def process_document(document_id: int) -> None:
             doc.chunking_strategy = "semantic"
         logger.info("process_document: document_id=%s stage=chunked count=%s strategy=%s", document_id, len(chunks_data), doc.chunking_strategy)
 
+        if not chunks_data:
+            raise ValueError(
+                "Document text was extracted but produced 0 chunks. "
+                "The file may have unusual formatting that the parser cannot split."
+            )
+
         # Remove existing chunks (idempotent re-run)
         doc.chunks.all().delete()
 
