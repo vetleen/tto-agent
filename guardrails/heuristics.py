@@ -63,12 +63,19 @@ _DELIMITER_INJECTION_PATTERNS: list[tuple[re.Pattern, float]] = [
     (re.compile(r"```system", re.IGNORECASE), 0.7),
 ]
 
+# Chinese gambling / lottery spam — extremely common in web-based prompt injection.
+_WEB_SPAM_PATTERNS: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"[\u4e00-\u9fff]{0,4}(赛车|彩票|彩神|娱乐平台|博彩|赌场|棋牌|时时彩|幸运飞艇)"), 0.85),
+    (re.compile(r"(主管|代理|招商).{0,4}(注册|充值|返水|优惠|开户)"), 0.8),
+]
+
 # Tag mapping for each pattern set
 _PATTERN_SETS: list[tuple[str, list[tuple[re.Pattern, float]]]] = [
     ("prompt_injection", _PROMPT_INJECTION_PATTERNS),
     ("jailbreak", _JAILBREAK_PATTERNS),
     ("data_extraction", _DATA_EXTRACTION_PATTERNS),
     ("delimiter_injection", _DELIMITER_INJECTION_PATTERNS),
+    ("web_spam", _WEB_SPAM_PATTERNS),
 ]
 
 # Zero-width and excessive unicode detection

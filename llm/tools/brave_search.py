@@ -121,12 +121,14 @@ class BraveSearchTool(ContextAwareTool):
                 data = response.json()
                 web_results = data.get("web", {}).get("results", [])
 
+                from llm.tools._text_cleaning import normalize_text
+
                 results = []
                 for item in web_results:
                     results.append({
-                        "title": item.get("title", ""),
+                        "title": normalize_text(item.get("title", "")),
                         "url": item.get("url", ""),
-                        "description": item.get("description", ""),
+                        "description": normalize_text(item.get("description", "")),
                     })
 
                 # Scan for prompt injection (log only, never blocks)

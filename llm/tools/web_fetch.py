@@ -5,17 +5,81 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from urllib.parse import urlparse
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 from pydantic import BaseModel, Field
 
+from llm.tools._text_cleaning import normalize_text
 from llm.tools.interfaces import ContextAwareTool
 
 logger = logging.getLogger(__name__)
 
 _ABSOLUTE_MAX_CHARS = 50_000
+
+# Tags to decompose beyond the standard script/style/nav set.
+_EXTRA_STRIP_TAGS = ["aside", "form", "svg", "canvas", "object", "embed"]
+
+# Inline style substrings that indicate a visually hidden element.
+_HIDDEN_STYLE_MARKERS = [
+    "display:none",
+    "display: none",
+    "visibility:hidden",
+    "visibility: hidden",
+    "font-size:0",
+    "font-size: 0",
+    "opacity:0",
+    "opacity: 0",
+    "clip:rect(0",
+]
+
+_HIDDEN_OVERFLOW_RE = re.compile(r"height\s*:\s*0.*overflow\s*:\s*hidden", re.IGNORECASE)
+
+
+def _strip_hidden_elements(soup: BeautifulSoup) -> None:
+    """Remove HTML elements that are invisible to humans.
+
+    Attackers hide prompt-injection payloads in elements styled with
+    display:none, visibility:hidden, zero font-size, aria-hidden, etc.
+    These are invisible in a browser but survive ``get_text()`` extraction.
+    """
+    # Decompose extra non-content tags
+    for tag in soup.find_all(_EXTRA_STRIP_TAGS):
+        tag.decompose()
+
+    # Remove elements hidden via style, attributes, or input type
+    for tag in list(soup.find_all(True)):
+        # Hidden HTML attribute
+        if tag.has_attr("hidden"):
+            tag.decompose()
+            continue
+
+        # aria-hidden="true"
+        if tag.get("aria-hidden", "").lower() == "true":
+            tag.decompose()
+            continue
+
+        # <input type="hidden">
+        if tag.name == "input" and tag.get("type", "").lower() == "hidden":
+            tag.decompose()
+            continue
+
+        # Inline style hiding
+        style = tag.get("style", "")
+        if style:
+            style_lower = style.lower().replace(" ", "")
+            if any(m.replace(" ", "") in style_lower for m in _HIDDEN_STYLE_MARKERS):
+                tag.decompose()
+                continue
+            if _HIDDEN_OVERFLOW_RE.search(style):
+                tag.decompose()
+                continue
+
+    # Remove HTML comments
+    for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
+        comment.extract()
 
 
 class WebFetchInput(BaseModel):
@@ -101,8 +165,16 @@ class WebFetchTool(ContextAwareTool):
         for tag in soup.find_all(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
             tag.decompose()
 
-        # Extract text
-        text = soup.get_text(separator="\n", strip=True)
+        # Strip hidden/invisible elements (prompt-injection defense)
+        _strip_hidden_elements(soup)
+
+        # Prefer main content area if available
+        main = soup.find("main") or soup.find("article") or soup.find(attrs={"role": "main"})
+        source = main if main else soup
+
+        # Extract and normalize text
+        text = source.get_text(separator="\n", strip=True)
+        text = normalize_text(text)
 
         # Scan for prompt injection (log only, never blocks)
         try:

@@ -387,3 +387,39 @@ class TokenBucketRateLimiterTests(TestCase):
             limiter.acquire()
         elapsed = time.monotonic() - start
         self.assertLess(elapsed, 0.1)
+
+
+@override_settings(BRAVE_SEARCH_API_KEY="test-key")
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}})
+class BraveSearchNormalizationTests(TestCase):
+    """Tests for text normalization on search results."""
+
+    def setUp(self):
+        self.tool = BraveSearchTool()
+        patcher = patch("llm.tools.brave_search._brave_rate_limiter")
+        self.mock_limiter = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @patch("llm.tools.brave_search.requests.get")
+    def test_descriptions_have_zero_width_chars_stripped(self, mock_get):
+        """Zero-width characters in titles/descriptions should be removed."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "web": {
+                "results": [
+                    {
+                        "title": "Re\u200bsult",
+                        "url": "https://example.com",
+                        "description": "De\u200csc\u200dription",
+                    },
+                ]
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = json.loads(self.tool.invoke({"query": "test"}))
+
+        self.assertEqual(result["results"][0]["title"], "Result")
+        self.assertEqual(result["results"][0]["description"], "Description")
