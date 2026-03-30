@@ -51,18 +51,41 @@ def process_document(document_id: int) -> None:
             raise FileNotFoundError(f"Document file not found: {doc.original_file}")
 
         ext = (doc.original_filename or "").rsplit(".", 1)[-1].lower() or "txt"
-        if ext == "pdf":
-            doc.parser_type = "pypdf"
-        elif ext in ("msg", "eml"):
-            doc.parser_type = ext
-        else:
-            doc.parser_type = "text"
 
-        # 1. Extract
-        logger.info("process_document: document_id=%s stage=extracting", document_id)
-        docs = load_documents(file_path, ext)
-        combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
-        cleaned = clean_extracted_text(combined)
+        from llm.transcription_registry import AUDIO_EXTENSIONS
+
+        if ext in AUDIO_EXTENSIONS:
+            # --- Audio transcription branch ---
+            doc.parser_type = "audio"
+            from core.preferences import get_preferences
+            prefs = get_preferences(doc.uploaded_by)
+            if not prefs.allowed_transcription_models:
+                raise ValueError("Audio transcription is not enabled for your organization.")
+            transcription_model_id = prefs.transcription_model
+            if not transcription_model_id:
+                raise ValueError("No transcription model available.")
+
+            logger.info("process_document: document_id=%s stage=transcribing model=%s", document_id, transcription_model_id)
+            from documents.services.transcription import transcribe_audio
+            transcript_text = transcribe_audio(file_path, transcription_model_id, user=doc.uploaded_by)
+            doc.transcript = transcript_text
+            doc.transcription_model = transcription_model_id
+            doc.save(update_fields=["parser_type", "transcript", "transcription_model", "updated_at"])
+            cleaned = clean_extracted_text(transcript_text)
+        else:
+            # --- Text extraction branch ---
+            if ext == "pdf":
+                doc.parser_type = "pypdf"
+            elif ext in ("msg", "eml"):
+                doc.parser_type = ext
+            else:
+                doc.parser_type = "text"
+
+            # 1. Extract
+            logger.info("process_document: document_id=%s stage=extracting", document_id)
+            docs = load_documents(file_path, ext)
+            combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
+            cleaned = clean_extracted_text(combined)
 
         if not cleaned or not cleaned.strip():
             raise ValueError(
@@ -80,6 +103,12 @@ def process_document(document_id: int) -> None:
             chunks_data = semantic_chunk(cleaned)
             doc.chunking_strategy = "semantic"
         logger.info("process_document: document_id=%s stage=chunked count=%s strategy=%s", document_id, len(chunks_data), doc.chunking_strategy)
+
+        if not chunks_data:
+            raise ValueError(
+                "Document text was extracted but produced 0 chunks. "
+                "The file may have unusual formatting that the parser cannot split."
+            )
 
         # Remove existing chunks (idempotent re-run)
         doc.chunks.all().delete()

@@ -299,4 +299,82 @@ def log_error(
         logger.exception("Failed to write LLM error log")
 
 
-__all__ = ["log_call", "log_stream", "log_error"]
+def log_transcription(
+    model: str,
+    context: "RunContext | None",
+    audio_duration_seconds: float,
+    transcript_len: int,
+    cost_usd: "Decimal | None",
+    duration_ms: int,
+    file_size: int,
+    segments: int = 1,
+) -> None:
+    """Write a SUCCESS log entry for a transcription call. Never raises."""
+    try:
+        from llm.models import LLMCallLog
+
+        if TYPE_CHECKING:
+            from llm.types.context import RunContext
+
+        LLMCallLog.objects.create(
+            user=_resolve_user(context.user_id if context else None),
+            run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
+            model=model,
+            is_stream=False,
+            prompt=[{
+                "role": "user",
+                "content": (
+                    f"[audio transcription: {file_size:,} bytes, "
+                    f"{audio_duration_seconds:.1f}s, {segments} segment(s)]"
+                ),
+            }],
+            raw_output=f"[transcript: {transcript_len:,} chars]",
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+            status=LLMCallLog.Status.SUCCESS,
+            response_metadata={
+                "audio_duration_seconds": audio_duration_seconds,
+                "file_size": file_size,
+                "segments": segments,
+                "transcript_len": transcript_len,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to write LLM call log (transcription)")
+
+
+def log_transcription_error(
+    model: str,
+    context: "RunContext | None",
+    exc: BaseException,
+    duration_ms: int,
+    file_size: int = 0,
+) -> None:
+    """Write an ERROR log entry for a transcription call. Never raises."""
+    try:
+        from llm.models import LLMCallLog
+
+        LLMCallLog.objects.create(
+            user=_resolve_user(context.user_id if context else None),
+            run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
+            model=model,
+            is_stream=False,
+            prompt=[{
+                "role": "user",
+                "content": f"[audio transcription: {file_size:,} bytes]",
+            }],
+            raw_output="",
+            duration_ms=duration_ms,
+            status=LLMCallLog.Status.ERROR,
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:2000],
+        )
+    except Exception:
+        logger.exception("Failed to write LLM error log (transcription)")
+
+
+__all__ = ["log_call", "log_stream", "log_error", "log_transcription", "log_transcription_error"]

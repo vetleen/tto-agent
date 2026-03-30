@@ -59,4 +59,21 @@ def calculate_cost(
     return cost
 
 
-__all__ = ["get_model_pricing", "calculate_cost"]
+def calculate_transcription_cost(
+    model: str,
+    audio_duration_seconds: float,
+) -> Optional[Decimal]:
+    """Compute the USD cost of a transcription call from audio duration.
+
+    Transcription is billed per minute, not per token.
+    """
+    from llm.transcription_registry import get_transcription_model_info
+
+    info = get_transcription_model_info(model)
+    if info is None or info.price_per_minute is None:
+        return None
+    minutes = Decimal(str(audio_duration_seconds)) / Decimal("60")
+    return info.price_per_minute * minutes
+
+
+__all__ = ["get_model_pricing", "calculate_cost", "calculate_transcription_cost"]

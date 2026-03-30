@@ -157,3 +157,32 @@ class HeuristicScanTest(TestCase):
         self.assertTrue(result.is_suspicious)
         self.assertIn("prompt_injection", result.tags)
         self.assertIn("jailbreak", result.tags)
+
+    # --- Web spam (multilingual) ---
+
+    def test_chinese_gambling_spam_lottery(self):
+        result = heuristic_scan("北京赛车怎么投注 天天中彩票")
+        self.assertTrue(result.is_suspicious)
+        self.assertIn("web_spam", result.tags)
+
+    def test_chinese_gambling_spam_casino(self):
+        result = heuristic_scan("网上博彩平台 棋牌游戏")
+        self.assertTrue(result.is_suspicious)
+        self.assertIn("web_spam", result.tags)
+
+    def test_chinese_gambling_recruitment(self):
+        result = heuristic_scan("娱乐平台主管代理招商注册送88")
+        self.assertTrue(result.is_suspicious)
+        self.assertIn("web_spam", result.tags)
+
+    def test_chinese_gambling_spam_tag_is_web_spam(self):
+        """Web spam should use the 'web_spam' tag, not 'prompt_injection'."""
+        result = heuristic_scan("幸运飞艇开奖结果")
+        self.assertTrue(result.is_suspicious)
+        self.assertIn("web_spam", result.tags)
+        self.assertNotIn("prompt_injection", result.tags)
+
+    def test_legitimate_chinese_text_no_false_positive(self):
+        """Legitimate Chinese text about ship design should not trigger."""
+        result = heuristic_scan("这篇论文讨论了船舶设计的数据模型和互操作性")
+        self.assertFalse(result.is_suspicious)

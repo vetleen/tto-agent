@@ -457,6 +457,35 @@ class ProcessDocumentServiceTests(TestCase):
                 self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
                 self.assertIn("No text could be extracted", doc.processing_error)
 
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_fails_when_zero_chunks(self):
+        """Document with extractable text but 0 chunks should be marked FAILED."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="weird.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("weird.txt", ContentFile(b"has text"), save=True)
+
+                with patch(
+                    "documents.services.process_document.load_documents",
+                    return_value=[Mock(page_content="some real content")],
+                ), patch(
+                    "documents.services.process_document.structure_aware_chunk",
+                    return_value=[],
+                ):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+                self.assertIn("0 chunks", doc.processing_error)
+
     def test_process_document_skips_nonexistent_document(self):
         """Calling with a non-existent ID logs a warning and returns without raising."""
         from documents.services.process_document import process_document
@@ -818,6 +847,21 @@ class CleanExtractedTextTests(TestCase):
         text = "The sample included 42 participants across 3 sites."
         result = clean_extracted_text(text)
         self.assertEqual(result, text)
+
+    def test_literal_newline_escapes_normalised(self):
+        """Literal \\n sequences (from JSON exports / LLM copy-paste) are converted to real newlines."""
+        text = "# Heading\\n\\nParagraph one.\\n\\n## Sub\\n\\nParagraph two."
+        result = clean_extracted_text(text)
+        self.assertIn("\n", result)
+        self.assertNotIn("\\n", result)
+        self.assertIn("# Heading", result)
+        self.assertIn("Paragraph one.", result)
+
+    def test_literal_newline_escapes_skipped_when_real_newlines_dominate(self):
+        """When the text already has more real newlines than literal \\n, leave them alone."""
+        text = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nMentions \\n once"
+        result = clean_extracted_text(text)
+        self.assertIn("\\n", result)
 
     def test_empty_input(self):
         self.assertEqual(clean_extracted_text(""), "")
@@ -1798,3 +1842,78 @@ class EmailLoaderTests(TestCase):
                 doc.refresh_from_db()
                 self.assertEqual(doc.parser_type, "eml")
                 self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+
+class ProcessDocumentAudioTests(TestCase):
+    """Tests for audio file processing through the document pipeline."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="audio@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="AudioProject", slug="audio-project", created_by=self.user)
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="structure_aware")
+    def test_process_document_audio_file(self):
+        """Audio file goes through transcribe -> chunk -> READY."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [
+            {"text": "Transcript chunk", "heading": None, "token_count": 15,
+             "chunk_index": 0,
+             "source_page_start": None, "source_page_end": None,
+             "source_offset_start": 0, "source_offset_end": 16},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="meeting.mp3",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("meeting.mp3", ContentFile(b"\x00" * 100), save=True)
+
+                mock_prefs = MagicMock()
+                mock_prefs.allowed_transcription_models = ["openai/gpt-4o-mini-transcribe"]
+                mock_prefs.transcription_model = "openai/gpt-4o-mini-transcribe"
+
+                with patch("core.preferences.get_preferences", return_value=mock_prefs), \
+                     patch("documents.services.transcription.transcribe_audio", return_value="This is a transcript.") as mock_transcribe, \
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks) as mock_chunk:
+                    process_document(doc.id)
+
+                mock_transcribe.assert_called_once()
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                self.assertEqual(doc.parser_type, "audio")
+                self.assertEqual(doc.transcript, "This is a transcript.")
+                self.assertEqual(doc.transcription_model, "openai/gpt-4o-mini-transcribe")
+                self.assertEqual(doc.chunks.count(), 1)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_audio_transcription_disabled(self):
+        """When org disallows transcription, audio doc should fail."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="disabled.wav",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("disabled.wav", ContentFile(b"\x00" * 100), save=True)
+
+                mock_prefs = MagicMock()
+                mock_prefs.allowed_transcription_models = []
+                mock_prefs.transcription_model = ""
+
+                with patch("core.preferences.get_preferences", return_value=mock_prefs):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+                self.assertIn("not enabled", doc.processing_error)

@@ -548,10 +548,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "thread_id": str(thread.id),
                 }))
 
-            # Link attachments to the saved message and filter to valid IDs
-            if attachment_ids:
-                attachment_ids = await self._link_attachments(attachment_ids, thread)
-
             # Persist user message
             user_metadata = {}
             if attachment_ids:
@@ -560,9 +556,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 thread, "user", content, metadata=user_metadata or None,
             )
 
-            # Associate linked attachments with the persisted message
+            # Link attachments to the saved message
             if attachment_ids:
-                await self._set_attachment_message(attachment_ids, thread, user_message)
+                await self._link_attachments(attachment_ids, thread, user_message)
 
             # Check if user is suspended mid-session
             if await self._check_suspension():
@@ -596,6 +592,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self._stream_finished.clear()
             self._guardrail_intercepted = False
             self._guardrail_warn_verdict = None
+            self._modified_canvas_ids = set()
 
             # Launch classifier+reviewer pipeline in parallel with the LLM stream
             self._guardrail_task = asyncio.create_task(
@@ -693,6 +690,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # If the guardrail pipeline intercepted, redact messages and skip post-stream work
             if self._guardrail_intercepted:
                 await self._redact_messages(thread)
+                redacted_ids = await self._redact_canvases(thread)
+                for cid in redacted_ids:
+                    canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
+                    if canvas_data:
+                        await self.send(text_data=json.dumps(canvas_data))
                 return
 
             # Send guardrail warning after stream if the pipeline flagged but allowed
@@ -892,6 +894,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     canvas_event["accepted_content"] = result["accepted_content"]
                                 if "canvas_id" in result:
                                     canvas_event["canvas_id"] = result["canvas_id"]
+                                    self._modified_canvas_ids.add(result["canvas_id"])
                                 await self.send(text_data=json.dumps(canvas_event))
                         except (json.JSONDecodeError, AttributeError):
                             pass
@@ -1015,6 +1018,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Stream already finished — redact persisted messages and notify frontend
             self._guardrail_intercepted = True
             await self._redact_messages(thread)
+            redacted_ids = await self._redact_canvases(thread)
+            for cid in redacted_ids:
+                canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
+                if canvas_data:
+                    await self.send(text_data=json.dumps(canvas_data))
 
             if verdict.action == "block":
                 await self.send(text_data=json.dumps({
@@ -1569,6 +1577,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             checkpoint = CanvasCheckpoint.objects.get(pk=checkpoint_id, canvas=canvas)
         except CanvasCheckpoint.DoesNotExist:
             return None
+        if checkpoint.source == "redacted":
+            return None
         canvas.title = checkpoint.title
         canvas.content = checkpoint.content
         canvas.save(update_fields=["title", "content", "updated_at"])
@@ -1745,21 +1755,92 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
 
     @database_sync_to_async
-    def _link_attachments(self, attachment_ids, thread):
-        """Return only attachment IDs that belong to this user's thread."""
-        from chat.models import ChatAttachment
+    def _redact_canvases(self, thread):
+        """Redact canvases modified during a guardrail-blocked turn."""
+        from chat.models import CanvasCheckpoint, ChatCanvas, ChatMessage
 
-        return [
-            str(uid) for uid in
-            ChatAttachment.objects.filter(
-                id__in=attachment_ids,
-                thread=thread,
-                uploaded_by=self.user,
-            ).values_list("id", flat=True)
-        ]
+        REDACTED_TEXT = "[This message was removed by the content safety system.]"
+
+        last_user = (
+            ChatMessage.objects.filter(thread=thread, role="user")
+            .order_by("-created_at")
+            .first()
+        )
+        if not last_user:
+            return []
+
+        cutoff = last_user.created_at
+
+        # Find canvases via checkpoints created during this turn
+        turn_cps = CanvasCheckpoint.objects.filter(
+            canvas__thread=thread,
+            source__in=["ai_edit", "original"],
+            created_at__gte=cutoff,
+        )
+        affected_ids = set(str(cp.canvas_id) for cp in turn_cps)
+        affected_ids |= getattr(self, "_modified_canvas_ids", set())
+
+        if not affected_ids:
+            return []
+
+        redacted = []
+        for canvas_id in affected_ids:
+            try:
+                canvas = ChatCanvas.objects.get(pk=canvas_id, thread=thread)
+            except ChatCanvas.DoesNotExist:
+                continue
+
+            # Mark turn checkpoints as redacted
+            CanvasCheckpoint.objects.filter(
+                canvas=canvas,
+                source__in=["ai_edit", "original"],
+                created_at__gte=cutoff,
+            ).update(
+                content=REDACTED_TEXT,
+                source="redacted",
+                description="Redacted by content safety system",
+            )
+
+            # Roll back to last pre-turn checkpoint, or redact content
+            pre_turn_cp = (
+                CanvasCheckpoint.objects.filter(canvas=canvas, created_at__lt=cutoff)
+                .exclude(source="redacted")
+                .order_by("-order")
+                .first()
+            )
+            if pre_turn_cp:
+                canvas.content = pre_turn_cp.content
+                canvas.title = pre_turn_cp.title
+                canvas.accepted_checkpoint = pre_turn_cp
+            else:
+                canvas.content = REDACTED_TEXT
+                canvas.accepted_checkpoint = None
+
+            canvas.save(update_fields=["content", "title", "accepted_checkpoint", "updated_at"])
+            redacted.append(str(canvas.pk))
+
+        return redacted
 
     @database_sync_to_async
-    def _set_attachment_message(self, attachment_ids, thread, message):
+    def _get_canvas_for_redaction_event(self, thread, canvas_id):
+        """Build a canvas.updated event payload for a redacted canvas."""
+        from chat.models import ChatCanvas
+
+        try:
+            c = ChatCanvas.objects.get(pk=canvas_id, thread=thread)
+        except ChatCanvas.DoesNotExist:
+            return None
+        accepted = c.accepted_checkpoint
+        return {
+            "event_type": "canvas.updated",
+            "canvas_id": str(c.pk),
+            "title": c.title,
+            "content": c.content,
+            "accepted_content": accepted.content if accepted else c.content,
+        }
+
+    @database_sync_to_async
+    def _link_attachments(self, attachment_ids, thread, message):
         from chat.models import ChatAttachment
 
         ChatAttachment.objects.filter(

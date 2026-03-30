@@ -53,6 +53,48 @@
     </div>
   </section>
 
+  <!-- Transcription Models -->
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Transcription Models</h2>
+    <p class="mt-1 text-sm text-body">Control which transcription models are available for audio file processing. Unchecking all disables audio uploads.</p>
+
+    <div id="allowed-transcription-models-list" class="mt-4 space-y-2">
+      {% for model in system_transcription_models %}
+      <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
+        <input
+          type="checkbox"
+          class="allowed-transcription-model-checkbox rounded border-default text-brand focus:ring-brand-medium"
+          value="{{ model }}"
+          {% if org_allowed_transcription == None or model in org_allowed_transcription %}checked{% endif %}
+        >
+        <span class="text-sm text-body">{% if model in transcription_model_display %}{{ transcription_model_display|dictsort:"0" }}{% endif %}{{ model }}</span>
+      </label>
+      {% empty %}
+      <p class="text-sm text-body italic">No transcription models configured.</p>
+      {% endfor %}
+    </div>
+
+    {% if system_transcription_models %}
+    <div class="mt-4">
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="org-transcription-model">
+          Default transcription model
+        </label>
+        <p class="text-xs text-body mt-0.5">The model used for audio transcription when members haven't set a preference.</p>
+        <select
+          id="org-transcription-model"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">System default</option>
+          {% for model in system_transcription_models %}
+          <option value="{{ model }}" {% if org_transcription_default == model %}selected{% endif %}>{{ model }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
   <!-- Tools -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">Tools</h2>
@@ -247,6 +289,39 @@
       });
     });
   });
+
+  // Save allowed transcription models on each checkbox change
+  document.querySelectorAll('.allowed-transcription-model-checkbox').forEach(function(cb) {
+    cb.addEventListener('change', function() {
+      var checked = [];
+      document.querySelectorAll('.allowed-transcription-model-checkbox:checked').forEach(function(c) {
+        checked.push(c.value);
+      });
+      fetch('{% url "accounts:org_allowed_transcription_models_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowed_transcription_models: checked }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  });
+
+  // Org transcription model default
+  var orgTranscriptionSelect = document.getElementById('org-transcription-model');
+  if (orgTranscriptionSelect) {
+    orgTranscriptionSelect.addEventListener('change', function() {
+      fetch('{% url "accounts:org_transcription_model_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  }
 
   // Tool toggles (Tools section)
   document.querySelectorAll('.tool-toggle').forEach(function(cb) {

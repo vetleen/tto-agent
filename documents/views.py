@@ -222,14 +222,23 @@ def document_upload(request, data_room_id):
         messages.error(request, "No file selected. Please choose a file to upload.")
         return redirect("data_room_documents", data_room_id=data_room.uuid)
 
+    from llm.transcription_registry import AUDIO_EXTENSIONS
+
     max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 10_000_000)
+    audio_max_size = getattr(settings, "AUDIO_UPLOAD_MAX_SIZE_BYTES", 25_000_000)
     errors = []
     created_docs = []
 
     for file_obj in files:
         safe_filename = _safe_original_filename(file_obj.name, max_length=75)
+        file_ext = (safe_filename.rsplit(".", 1)[-1].lower()) if "." in safe_filename else ""
+        is_audio = file_ext in AUDIO_EXTENSIONS
+
         if file_obj.size <= 0:
             errors.append(f"{safe_filename}: file is empty.")
+            continue
+        if is_audio and file_obj.size > audio_max_size:
+            errors.append(f"{safe_filename}: audio file is too large (max {audio_max_size / 1_000_000:.0f} MB).")
             continue
         if file_obj.size > max_size:
             errors.append(f"{safe_filename}: file is too large (max {max_size / 1_000_000:.0f} MB).")
@@ -241,6 +250,12 @@ def document_upload(request, data_room_id):
         if mime and not _allowed_mime(mime):
             errors.append(f"{safe_filename}: unsupported file type.")
             continue
+        if is_audio:
+            from core.preferences import get_preferences
+            prefs = get_preferences(request.user)
+            if not prefs.allowed_transcription_models:
+                errors.append(f"{safe_filename}: audio transcription is not enabled for your organization.")
+                continue
         stored_filename = _safe_original_filename(file_obj.name, max_length=180)
         file_obj.name = stored_filename
         doc = DataRoomDocument.objects.create(
