@@ -398,3 +398,17 @@ class WebFetchCleaningTests(TestCase):
         )
         self.assertNotIn("clipped", result["content"])
         self.assertIn("Visible", result["content"])
+
+    def test_template_tag_stripped(self):
+        result = self._fetch(
+            '<html><body><template><p>Template hidden</p></template><p>Visible</p></body></html>'
+        )
+        self.assertNotIn("Template hidden", result["content"])
+        self.assertIn("Visible", result["content"])
+
+    def test_dialog_tag_stripped(self):
+        result = self._fetch(
+            '<html><body><dialog><p>Dialog popup</p></dialog><p>Visible</p></body></html>'
+        )
+        self.assertNotIn("Dialog popup", result["content"])
+        self.assertIn("Visible", result["content"])

@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 _ABSOLUTE_MAX_CHARS = 50_000
 
 # Tags to decompose beyond the standard script/style/nav set.
-_EXTRA_STRIP_TAGS = ["aside", "form", "svg", "canvas", "object", "embed"]
+_EXTRA_STRIP_TAGS = [
+    "aside", "form", "svg", "canvas", "object", "embed",
+    "meta", "template", "dialog",
+]
 
 # Inline style substrings that indicate a visually hidden element.
 _HIDDEN_STYLE_MARKERS = [
