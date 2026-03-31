@@ -172,6 +172,14 @@ See `.env.example` for the full list with comments. Key production variables:
 - `SECURE_HSTS_SECONDS=3600` — HTTP Strict Transport Security
 - `SECURE_SSL_REDIRECT=True` — HTTP → HTTPS redirect
 
+## First Deploy Gotchas
+
+**CSRF_TRUSTED_ORIGINS:** Set `DJANGO_CSRF_TRUSTED_ORIGINS` to your app URL (e.g., `https://myapp.herokuapp.com`) before the first deploy. Without it every form submission will 403.
+
+**Secret key rotation:** The dev `SECRET_KEY` in `.env` must not be reused in production. Generate a fresh `DJANGO_SECRET_KEY` for Heroku config vars. Rotate any API keys that have appeared in the repo history.
+
+**HSTS max-age:** Currently set to 1 hour (`SECURE_HSTS_SECONDS=3600`). Bump to a longer duration (e.g., 31536000 / 1 year) once HTTPS is confirmed stable.
+
 ## Common Issues
 
 **WebSocket connections dropping:** Usually Redis. Check `heroku redis:info` for memory/connection limits. Heroku Redis hobby tier has a 20-connection limit.
