@@ -35,6 +35,8 @@ def rate_limited(request, exception=None):
 
 
 def index(request):
+    if request.user.is_authenticated:
+        return redirect(settings.LOGIN_REDIRECT_URL)
     return render(request, "index.html", {"landing_page": True})
 
 
