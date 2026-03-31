@@ -436,7 +436,11 @@ TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION
 AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
 
 # Celery (use Redis as broker)
-CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
+_celery_broker_url = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
+if _celery_broker_url.startswith("rediss://"):
+    CELERY_BROKER_URL = _celery_broker_url + "?ssl_cert_reqs=CERT_NONE"
+else:
+    CELERY_BROKER_URL = _celery_broker_url
 
 # Channels / Redis
 _redis_url = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -454,12 +458,13 @@ CHANNEL_LAYERS = {
 
 # Cache (Redis DB 1; DB 0 is Celery/channels)
 _cache_redis_base = _redis_url.rsplit("/", 1)[0] if "/" in _redis_url.split("://", 1)[-1] else _redis_url
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": f"{_cache_redis_base}/1",
-    }
+_cache_config: dict = {
+    "BACKEND": "django.core.cache.backends.redis.RedisCache",
+    "LOCATION": f"{_cache_redis_base}/1",
 }
+if _redis_url.startswith("rediss://"):
+    _cache_config["OPTIONS"] = {"ssl_cert_reqs": ssl.CERT_NONE}
+CACHES = {"default": _cache_config}
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
