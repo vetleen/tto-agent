@@ -30,6 +30,15 @@ class OrganizationModelTests(TestCase):
         names = [o.name for o in Organization.objects.all()]
         self.assertEqual(names, ["Alpha", "Zebra"])
 
+    def test_organization_description_defaults_blank(self) -> None:
+        org = Organization.objects.create(name="Acme", slug="acme2")
+        self.assertEqual(org.description, "")
+
+    def test_organization_description_saved(self) -> None:
+        org = Organization.objects.create(name="Acme", slug="acme3", description="A biotech TTO.")
+        org.refresh_from_db()
+        self.assertEqual(org.description, "A biotech TTO.")
+
 
 class ScopeModelTests(TestCase):
     def test_create_scope(self) -> None:
@@ -110,3 +119,25 @@ class MembershipModelTests(TestCase):
         self.assertEqual(Membership.Role.ADMIN, "admin")
         self.assertEqual(Membership.Role.MEMBER, "member")
         self.assertEqual(Membership.Role.VIEWER, "viewer")
+
+
+class UserProfileFieldTests(TestCase):
+    def test_profile_fields_default_blank(self) -> None:
+        user = User.objects.create_user(email="u@example.com", password="pw")
+        self.assertEqual(user.first_name, "")
+        self.assertEqual(user.last_name, "")
+        self.assertEqual(user.title, "")
+        self.assertEqual(user.description, "")
+
+    def test_profile_fields_saved(self) -> None:
+        user = User.objects.create_user(email="u2@example.com", password="pw")
+        user.first_name = "Alice"
+        user.last_name = "Smith"
+        user.title = "Patent Attorney"
+        user.description = "Specializes in biotech IP."
+        user.save()
+        user.refresh_from_db()
+        self.assertEqual(user.first_name, "Alice")
+        self.assertEqual(user.last_name, "Smith")
+        self.assertEqual(user.title, "Patent Attorney")
+        self.assertEqual(user.description, "Specializes in biotech IP.")

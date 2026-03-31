@@ -41,6 +41,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     date_joined = models.DateTimeField(auto_now_add=True)
 
+    # Profile
+    first_name = models.CharField(max_length=150, blank=True, default="")
+    last_name = models.CharField(max_length=150, blank=True, default="")
+    title = models.CharField(max_length=150, blank=True, default="")
+    description = models.TextField(blank=True, default="", max_length=600)
+
     # Email verification
     email_verified = models.BooleanField(default=False)
     last_verification_email_sent_at = models.DateTimeField(null=True, blank=True)
@@ -94,6 +100,7 @@ class UserSettings(models.Model):
 class Organization(models.Model):
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=100, unique=True)
+    description = models.TextField(blank=True, default="", max_length=600)
     preferences = models.JSONField(default=dict, blank=True)
 
     class Meta:

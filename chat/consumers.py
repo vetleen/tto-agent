@@ -85,7 +85,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if membership:
             self._org_id = membership.org_id
             self._org_name = membership.org.name if membership.org else None
+            self._org_description = membership.org.description if membership.org else None
+            self._user_context = {
+                "first_name": self.user.first_name,
+                "last_name": self.user.last_name,
+                "title": self.user.title,
+                "description": self.user.description,
+            }
             return membership.is_suspended
+        self._org_description = None
+        self._user_context = None
         return False
 
     @database_sync_to_async
@@ -679,6 +688,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 data_rooms=data_rooms,
                 canvases=canvases_info["canvases"] if canvases_info else None,
                 skill=skill_obj,
+                organization_description=self._org_description or None,
+                user_context=self._user_context,
             )
             dynamic_context = build_dynamic_context(
                 doc_context=doc_context,

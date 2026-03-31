@@ -4,6 +4,25 @@
 <main class="mx-auto max-w-2xl px-6 py-16">
   <h1 class="text-2xl font-semibold text-heading">{{ org.name }} &mdash; Settings</h1>
 
+  <!-- Organization Description -->
+  <section class="mt-8">
+    <h2 class="text-lg font-medium text-heading">Organization Description</h2>
+    <p class="mt-1 text-sm text-body">Describe your organization to help Wilfred provide more relevant and contextualized responses. Max 600 characters.</p>
+    <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
+      <textarea
+        id="org-description"
+        maxlength="600"
+        rows="3"
+        placeholder="e.g. A university technology transfer office specializing in biotech and pharma IP licensing."
+        class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y"
+      >{{ org.description }}</textarea>
+      <div class="flex items-center justify-between mt-1.5">
+        <p id="org-desc-error" class="text-xs text-red-600 dark:text-red-400 hidden"></p>
+        <p class="text-xs text-body ml-auto"><span id="org-desc-count">{{ org.description|length }}</span> / 600</p>
+      </div>
+    </div>
+  </section>
+
   <!-- Monthly Budgets -->
   <section class="mt-8">
     <h2 class="text-lg font-medium text-heading">Monthly Budgets</h2>
@@ -289,6 +308,36 @@
   var orgModels = JSON.parse('{{ org_models_json|escapejs }}');
   var orgTools = JSON.parse('{{ org_tools_json|escapejs }}');
   var skillsData = JSON.parse('{{ skills_data_json|escapejs }}');
+
+  // --- Organization Description section ---
+  var descTextarea = document.getElementById('org-description');
+  var descCount = document.getElementById('org-desc-count');
+  var descError = document.getElementById('org-desc-error');
+  if (descTextarea) {
+    descTextarea.addEventListener('input', function() {
+      descCount.textContent = this.value.length;
+    });
+    var descTimer = null;
+    descTextarea.addEventListener('blur', function() { clearTimeout(descTimer); saveOrgDescription(); });
+    descTextarea.addEventListener('input', function() {
+      clearTimeout(descTimer);
+      descTimer = setTimeout(saveOrgDescription, 1500);
+    });
+    function saveOrgDescription() {
+      descError.classList.add('hidden');
+      fetch('{% url "accounts:org_description_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: descTextarea.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          descError.textContent = data.error;
+          descError.classList.remove('hidden');
+        }
+      });
+    }
+  }
 
   // --- Monthly Budgets section ---
   var budgetPerUserInput = document.getElementById('monthly-budget-per-user');

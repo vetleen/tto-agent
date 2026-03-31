@@ -1,0 +1,123 @@
+{% extends "_base.html" %}
+
+{% block content %}
+<main class="mx-auto max-w-2xl px-6 py-16">
+  <h1 class="text-2xl font-semibold text-heading">Profile</h1>
+
+  <!-- Name -->
+  <section class="mt-8">
+    <h2 class="text-lg font-medium text-heading">Name &amp; Title</h2>
+    <p class="mt-1 text-sm text-body">Help Wilfred address you properly.</p>
+
+    <div class="mt-4 space-y-4">
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="profile-first-name">First name</label>
+        <input
+          type="text"
+          id="profile-first-name"
+          maxlength="150"
+          value="{{ user.first_name }}"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+      </div>
+
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="profile-last-name">Last name</label>
+        <input
+          type="text"
+          id="profile-last-name"
+          maxlength="150"
+          value="{{ user.last_name }}"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+      </div>
+
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="profile-title">Title</label>
+        <p class="text-xs text-body mt-0.5">Your role or job title, e.g. "Patent Attorney" or "Licensing Manager".</p>
+        <input
+          type="text"
+          id="profile-title"
+          maxlength="150"
+          value="{{ user.title }}"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+      </div>
+    </div>
+  </section>
+
+  <!-- Description -->
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Description</h2>
+    <p class="mt-1 text-sm text-body">Tell Wilfred about your background and what you work on so it can tailor its responses. Max 600 characters.</p>
+
+    <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
+      <textarea
+        id="profile-description"
+        maxlength="600"
+        rows="3"
+        placeholder="e.g. I focus on licensing biotech innovations from the chemistry department, with particular expertise in CRISPR-related IP."
+        class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y"
+      >{{ user.description }}</textarea>
+      <div class="flex items-center justify-between mt-1.5">
+        <p id="profile-desc-error" class="text-xs text-red-600 dark:text-red-400 hidden"></p>
+        <p class="text-xs text-body ml-auto"><span id="profile-desc-count">{{ user.description|length }}</span> / 600</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function() {
+  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var saveTimer = null;
+  var descError = document.getElementById('profile-desc-error');
+  var descCount = document.getElementById('profile-desc-count');
+  var descTextarea = document.getElementById('profile-description');
+
+  // Character counter for description
+  if (descTextarea) {
+    descTextarea.addEventListener('input', function() {
+      descCount.textContent = this.value.length;
+    });
+  }
+
+  function saveProfile() {
+    descError.classList.add('hidden');
+    var body = {
+      first_name: document.getElementById('profile-first-name').value,
+      last_name: document.getElementById('profile-last-name').value,
+      title: document.getElementById('profile-title').value,
+      description: descTextarea.value,
+    };
+    fetch('{% url "accounts:profile_update" %}', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      credentials: 'same-origin',
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data.error) {
+        descError.textContent = data.error;
+        descError.classList.remove('hidden');
+      }
+    });
+  }
+
+  // Save on blur for all fields
+  ['profile-first-name', 'profile-last-name', 'profile-title', 'profile-description'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
+    }
+  });
+
+  // Debounced save on input for description
+  if (descTextarea) {
+    descTextarea.addEventListener('input', function() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveProfile, 1500);
+    });
+  }
+})();
+</script>
+{% endblock content %}

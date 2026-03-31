@@ -9,7 +9,7 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
-from accounts.models import Membership, Organization, UserSettings
+from accounts.models import Membership, Organization, User, UserSettings
 
 
 def _parse_json_body(request):
@@ -714,3 +714,120 @@ def usage_page(request):
         "today": today,
         "current_year": today.year,
     })
+
+
+# ---- User Profile ----
+
+MAX_DESCRIPTION_LENGTH = 600
+MAX_NAME_LENGTH = 150
+
+
+@login_required
+@require_GET
+def profile_page(request):
+    return render(request, "accounts/profile.html")
+
+
+@login_required
+@require_POST
+def profile_update(request):
+    import logging
+
+    from guardrails.classifier import classify_description_sync
+
+    logger = logging.getLogger(__name__)
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    update_fields = []
+    user = request.user
+
+    for field in ("first_name", "last_name", "title"):
+        if field in data:
+            val = str(data[field]).strip()[:MAX_NAME_LENGTH]
+            setattr(user, field, val)
+            update_fields.append(field)
+
+    if "description" in data:
+        desc = str(data["description"]).strip()
+        if len(desc) > MAX_DESCRIPTION_LENGTH:
+            return JsonResponse(
+                {"error": f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."},
+                status=400,
+            )
+        if desc:
+            try:
+                result = classify_description_sync(desc, user.pk)
+                if result.is_suspicious:
+                    logger.warning("Profile description blocked for user %s: %s", user.pk, result.reasoning)
+                    return JsonResponse(
+                        {"error": "Description could not be saved. Please revise and try again."},
+                        status=400,
+                    )
+            except Exception:
+                logger.exception("Description classifier failed for user %s", user.pk)
+                return JsonResponse(
+                    {"error": "Unable to verify description right now. Please try again later."},
+                    status=503,
+                )
+        user.description = desc
+        update_fields.append("description")
+
+    if update_fields:
+        user.save(update_fields=update_fields)
+
+    return JsonResponse({"ok": True})
+
+
+# ---- Organization Description ----
+
+
+@login_required
+@require_POST
+def org_description_update(request):
+    import logging
+
+    from guardrails.classifier import classify_description_sync
+
+    logger = logging.getLogger(__name__)
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    desc = str(data.get("description", "")).strip()
+    if len(desc) > MAX_DESCRIPTION_LENGTH:
+        return JsonResponse(
+            {"error": f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."},
+            status=400,
+        )
+
+    if desc:
+        try:
+            result = classify_description_sync(desc, request.user.pk, membership.org_id)
+            if result.is_suspicious:
+                logger.warning(
+                    "Org description blocked for org %s by user %s: %s",
+                    membership.org_id, request.user.pk, result.reasoning,
+                )
+                return JsonResponse(
+                    {"error": "Description could not be saved. Please revise and try again."},
+                    status=400,
+                )
+        except Exception:
+            logger.exception("Description classifier failed for org %s", membership.org_id)
+            return JsonResponse(
+                {"error": "Unable to verify description right now. Please try again later."},
+                status=503,
+            )
+
+    org = membership.org
+    org.description = desc
+    org.save(update_fields=["description"])
+    return JsonResponse({"ok": True})
