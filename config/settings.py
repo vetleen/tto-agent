@@ -10,13 +10,16 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import logging
 import os
 import ssl
 from pathlib import Path
 
 import dj_database_url
+import sentry_sdk
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
+from sentry_sdk.integrations.logging import LoggingIntegration
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -35,6 +38,55 @@ load_dotenv(BASE_DIR / ".env")
 
 # SECURITY: DEBUG defaults to False. Set DJANGO_DEBUG=True only for local development.
 DEBUG = _get_env_bool(os.environ.get("DJANGO_DEBUG"), False)
+
+# ---------------------------------------------------------------------------
+# Sentry — error tracking & performance monitoring
+# ---------------------------------------------------------------------------
+_sentry_dsn = os.environ.get("SENTRY_DSN", "")
+if _sentry_dsn:
+    from core.middleware import get_request_id
+
+    def _sentry_before_send(event, hint):
+        """Tag every Sentry error event with the current request_id."""
+        request_id = get_request_id()
+        if request_id and request_id != "-":
+            event.setdefault("tags", {})["request_id"] = request_id
+        return event
+
+    def _sentry_before_send_transaction(event, hint):
+        """Tag every Sentry transaction with the current request_id."""
+        request_id = get_request_id()
+        if request_id and request_id != "-":
+            event.setdefault("tags", {})["request_id"] = request_id
+        return event
+
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        # Performance: 100 % sample rate for alpha (~2 users).
+        # Lower via SENTRY_TRACES_SAMPLE_RATE when traffic grows.
+        traces_sample_rate=float(
+            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0")
+        ),
+        # Profiling: 100 % of sampled transactions (alpha).
+        profiles_sample_rate=float(
+            os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "1.0")
+        ),
+        send_default_pii=True,
+        environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+        release=os.environ.get(
+            "SENTRY_RELEASE", os.environ.get("SOURCE_VERSION", "")
+        ),
+        enable_db_query_source=True,
+        db_query_source_threshold_ms=100,
+        before_send=_sentry_before_send,
+        before_send_transaction=_sentry_before_send_transaction,
+        integrations=[
+            LoggingIntegration(
+                level=logging.INFO,            # breadcrumbs: INFO+
+                event_level=logging.WARNING,   # events: WARNING+
+            ),
+        ],
+    )
 
 # SECURITY: SECRET_KEY must be set in production (no fallback when DEBUG is False).
 _secret_key = os.environ.get("DJANGO_SECRET_KEY", "").strip()
@@ -415,7 +467,7 @@ LOGGING = {
         },
         "django.request": {
             "handlers": ["console"],
-            "level": "ERROR",
+            "level": "WARNING",
             "propagate": False,
         },
         "accounts": {

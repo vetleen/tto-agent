@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 from celery import Celery
-from celery.signals import setup_logging, task_postrun
+from celery.signals import setup_logging, task_postrun, task_prerun
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 app = Celery("config")
@@ -22,6 +22,17 @@ def configure_celery_logging(**kwargs):
 
 
 from django.db import close_old_connections
+
+
+@task_prerun.connect
+def set_sentry_celery_tags(task_id, task, **kwargs):
+    """Tag Sentry events with Celery task metadata for correlation."""
+    try:
+        import sentry_sdk as _sentry_sdk
+        _sentry_sdk.set_tag("celery_task_id", task_id)
+        _sentry_sdk.set_tag("celery_task_name", task.name)
+    except ImportError:
+        pass
 
 
 @task_postrun.connect

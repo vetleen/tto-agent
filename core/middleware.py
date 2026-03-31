@@ -26,6 +26,11 @@ class RequestIDMiddleware:
         request_id = request.META.get("HTTP_X_REQUEST_ID") or str(uuid.uuid4())
         _thread_locals.request_id = request_id
         request.request_id = request_id
+        try:
+            import sentry_sdk as _sentry_sdk
+            _sentry_sdk.set_tag("request_id", request_id)
+        except ImportError:
+            pass
         response = self.get_response(request)
         response["X-Request-ID"] = request_id
         _thread_locals.request_id = "-"
