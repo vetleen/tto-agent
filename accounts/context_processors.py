@@ -14,4 +14,8 @@ def theme(request):
             user=request.user,
             role=Membership.Role.ADMIN,
         ).exists()
+        # Budget status for navbar progress bar
+        from core.spend import get_budget_status
+
+        context["budget_status"] = get_budget_status(request.user)
     return context

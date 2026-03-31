@@ -96,6 +96,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             user=self.user, is_suspended=True,
         ).exists()
 
+    @database_sync_to_async
+    def _check_budget_exceeded(self) -> dict | None:
+        """Check if user or org monthly budget is exceeded. Returns info dict or None."""
+        from core.spend import get_budget_status
+
+        status = get_budget_status(self.user)
+        if status and status["exceeded"]:
+            return status
+        return None
+
     async def _get_org_id(self) -> int | None:
         return self._org_id
 
@@ -565,6 +575,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.suspended",
                     "data": {"message": "Your account has been suspended. Please contact your system administrator."},
+                }))
+                return
+
+            # Check if monthly budget is exceeded
+            budget_exceeded = await self._check_budget_exceeded()
+            if budget_exceeded:
+                reason = budget_exceeded["exceeded_reason"]
+                reset_date = budget_exceeded["reset_date"]
+                if reason == "org":
+                    msg = f"Your organization's monthly budget has been reached. Usage resets on {reset_date}."
+                else:
+                    msg = f"Your monthly usage budget has been reached. Usage resets on {reset_date}."
+                await self.send(text_data=json.dumps({
+                    "event_type": "budget.exceeded",
+                    "data": {"message": msg, "reset_date": reset_date},
                 }))
                 return
 

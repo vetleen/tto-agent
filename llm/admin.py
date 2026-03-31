@@ -36,6 +36,7 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         "user_prompt_preview",
         "model",
         "user",
+        "cost_usd",
         "status",
         "is_stream",
         "has_tools",
@@ -43,7 +44,14 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         "duration_ms",
         "created_at",
     ]
-    list_filter = ["status", "model", "is_stream"]
+    list_filter = [
+        "status",
+        "model",
+        "is_stream",
+        ("user", admin.RelatedOnlyFieldListFilter),
+        ("created_at", admin.DateFieldListFilter),
+    ]
+    date_hierarchy = "created_at"
     search_fields = ["run_id", "trace_id", "conversation_id", "user__email", "error_type"]
     readonly_fields = [
         "id",
@@ -146,6 +154,21 @@ class LLMCallLogAdmin(admin.ModelAdmin):
     @admin.display(description="Response Metadata (formatted)")
     def formatted_response_metadata(self, obj):
         return _pretty_json_html(obj.response_metadata)
+
+    def changelist_view(self, request, extra_context=None):
+        response = super().changelist_view(request, extra_context=extra_context)
+        if hasattr(response, "context_data"):
+            try:
+                from django.db.models import Count, Sum
+
+                qs = response.context_data["cl"].queryset
+                response.context_data["summary"] = qs.aggregate(
+                    total_cost=Sum("cost_usd"),
+                    total_calls=Count("id"),
+                )
+            except (KeyError, AttributeError):
+                pass
+        return response
 
     def has_add_permission(self, request):
         return False

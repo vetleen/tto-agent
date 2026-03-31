@@ -250,6 +250,8 @@ def org_settings_page(request):
 
     return render(request, "accounts/org_settings.html", {
         "org": org,
+        "monthly_budget_per_user": org_prefs.get("monthly_budget_per_user", 0),
+        "monthly_budget_org": org_prefs.get("monthly_budget_org", 0),
         "system_models": system_models,
         "org_allowed": org_allowed,
         "org_models": org_models,
@@ -498,6 +500,37 @@ def org_max_context_update(request):
     org.save(update_fields=["preferences"])
 
     return JsonResponse({"ok": True, "max_context_tokens": value})
+
+
+@login_required
+@require_POST
+def org_budget_update(request):
+    """Update org's monthly budget settings."""
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    org = membership.org
+    prefs = org.preferences or {}
+
+    for key in ("monthly_budget_per_user", "monthly_budget_org"):
+        if key in data:
+            try:
+                val = float(data[key])
+            except (TypeError, ValueError):
+                return JsonResponse({"error": f"Invalid value for {key}"}, status=400)
+            if val < 0:
+                return JsonResponse({"error": "Budget cannot be negative"}, status=400)
+            prefs[key] = val
+
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True})
 
 
 @login_required

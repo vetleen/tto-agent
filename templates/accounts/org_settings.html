@@ -4,6 +4,44 @@
 <main class="mx-auto max-w-2xl px-6 py-16">
   <h1 class="text-2xl font-semibold text-heading">{{ org.name }} &mdash; Settings</h1>
 
+  <!-- Monthly Budgets -->
+  <section class="mt-8">
+    <h2 class="text-lg font-medium text-heading">Monthly Budgets</h2>
+    <p class="mt-1 text-sm text-body">Set spending limits for this organization. Use 0 for unlimited.</p>
+
+    <div class="mt-4 space-y-4">
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="monthly-budget-per-user">
+          Monthly budget per user (USD)
+        </label>
+        <p class="text-xs text-body mt-0.5">Maximum amount each member can spend per calendar month. 0 = unlimited.</p>
+        <input
+          type="number"
+          id="monthly-budget-per-user"
+          min="0"
+          step="1"
+          value="{{ monthly_budget_per_user }}"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+      </div>
+
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="monthly-budget-org">
+          Monthly organization budget (USD)
+        </label>
+        <p class="text-xs text-body mt-0.5">Maximum total spend across all members per calendar month. 0 = unlimited.</p>
+        <input
+          type="number"
+          id="monthly-budget-org"
+          min="0"
+          step="1"
+          value="{{ monthly_budget_org }}"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+      </div>
+    </div>
+  </section>
+
   <!-- Allowed Models -->
   <section class="mt-8">
     <h2 class="text-lg font-medium text-heading">Allowed Models</h2>
@@ -251,6 +289,39 @@
   var orgModels = JSON.parse('{{ org_models_json|escapejs }}');
   var orgTools = JSON.parse('{{ org_tools_json|escapejs }}');
   var skillsData = JSON.parse('{{ skills_data_json|escapejs }}');
+
+  // --- Monthly Budgets section ---
+  var budgetPerUserInput = document.getElementById('monthly-budget-per-user');
+  if (budgetPerUserInput) {
+    budgetPerUserInput.addEventListener('change', function() {
+      var val = parseFloat(this.value);
+      if (isNaN(val) || val < 0) { this.value = 0; val = 0; }
+      fetch('{% url "accounts:org_budget_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monthly_budget_per_user: val }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  }
+
+  var budgetOrgInput = document.getElementById('monthly-budget-org');
+  if (budgetOrgInput) {
+    budgetOrgInput.addEventListener('change', function() {
+      var val = parseFloat(this.value);
+      if (isNaN(val) || val < 0) { this.value = 0; val = 0; }
+      fetch('{% url "accounts:org_budget_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monthly_budget_org: val }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  }
 
   // Set initial org model select values
   document.querySelectorAll('.org-model-select').forEach(function(sel) {

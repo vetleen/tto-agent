@@ -1,0 +1,12 @@
+{% extends "admin/change_list.html" %}
+
+{% block result_list %}
+{% if summary %}
+<div style="background:#f0f4f8; padding:12px 16px; margin-bottom:16px; border-radius:6px; border:1px solid #d1d9e0;">
+  <strong>Filtered totals:</strong>
+  {{ summary.total_calls }} call{{ summary.total_calls|pluralize }},
+  cost: ${{ summary.total_cost|floatformat:4|default:"0.0000" }}
+</div>
+{% endif %}
+{{ block.super }}
+{% endblock %}

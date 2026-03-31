@@ -41,6 +41,17 @@
           <span class="ml-2 self-center text-3xl text-heading font-semibold whitespace-nowrap font-handrawn">Wilfred</span>
         </a>
         {% if user.is_authenticated %}
+          {% if budget_status %}
+          <div class="hidden md:flex items-center md:order-1 mx-4 flex-1 justify-center">
+            <a href="{% url 'accounts:usage' %}" class="flex items-center gap-2 group" title="${{ budget_status.effective_spend|floatformat:2 }} / ${{ budget_status.effective_budget|floatformat:2 }}">
+              <span class="text-xs text-body group-hover:text-heading whitespace-nowrap">Monthly usage</span>
+              <div class="w-24 bg-neutral-tertiary rounded-full h-2">
+                <div class="h-2 rounded-full {% if budget_status.percentage >= 90 %}bg-danger{% elif budget_status.percentage >= 75 %}bg-warning{% else %}bg-brand{% endif %}" style="width: {{ budget_status.percentage }}%"></div>
+              </div>
+              <span class="text-xs text-body group-hover:text-heading whitespace-nowrap">${{ budget_status.effective_budget|floatformat:0 }}</span>
+            </a>
+          </div>
+          {% endif %}
           <div class="flex items-center gap-4 md:order-2">
             <div class="hidden w-full items-center md:flex md:w-auto" id="navbar-user">
               <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:space-x-6 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">

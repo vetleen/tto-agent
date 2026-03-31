@@ -259,6 +259,12 @@
         </span>
         {% endif %}
       </div>
+      {% if budget_status and budget_status.exceeded %}
+      <div class="flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 mb-2" id="budget-exceeded-banner">
+        <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <span>Your monthly usage budget has been reached. Usage resets on {{ budget_status.reset_date }}.</span>
+      </div>
+      {% endif %}
       <form class="flex gap-2 items-end" id="chat-form">
         {# Connection status — left of input #}
         <div id="connection-status" class="flex items-center gap-1.5 shrink-0 self-center" title="Connection status">
@@ -1658,6 +1664,16 @@
       messagesContainer.appendChild(div);
       scrollToBottom(); return;
     }
+    if (et === "budget.exceeded") {
+      finishStreaming(null);
+      var budgetMsg = (data.data && data.data.message) || "Monthly budget exceeded.";
+      var budgetDiv = document.createElement("div");
+      budgetDiv.className = "flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 my-2";
+      budgetDiv.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>' + escapeHtml(budgetMsg) + '</span>';
+      messagesContainer.appendChild(budgetDiv);
+      input.disabled = true; button.disabled = true;
+      scrollToBottom(); return;
+    }
     if (et === "guardrail.blocked" || et === "guardrail.suspended") {
       finishStreaming(null);
       var redactNotice = '<span class="text-body/50 italic">This message was removed by the content safety system.</span>';
@@ -1995,6 +2011,7 @@
   }
 
   connect();
+  if (document.getElementById('budget-exceeded-banner')) { input.disabled = true; button.disabled = true; }
   setTimeout(scrollToBottom, 100);
   window.addEventListener("beforeunload", disconnect);
 

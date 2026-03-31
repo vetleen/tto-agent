@@ -15,6 +15,7 @@ from .views.auth import (
 from .views.settings import (
     org_allowed_models_update,
     org_allowed_transcription_models_update,
+    org_budget_update,
     org_max_context_update,
     org_models_update,
     org_settings_page,
@@ -50,6 +51,7 @@ urlpatterns = [
     path("org/settings/tools/", org_tools_update, name="org_tools_update"),
     path("org/settings/skills/", org_skills_update, name="org_skills_update"),
     path("org/settings/subagents/", org_subagents_update, name="org_subagents_update"),
+    path("org/settings/budget/", org_budget_update, name="org_budget_update"),
     path("org/settings/max-context/", org_max_context_update, name="org_max_context_update"),
     path("org/settings/allowed-transcription-models/", org_allowed_transcription_models_update, name="org_allowed_transcription_models_update"),
     path("org/settings/transcription-model/", org_transcription_model_update, name="org_transcription_model_update"),
