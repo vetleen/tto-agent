@@ -27,6 +27,7 @@ urlpatterns = [
     path("chat/", include("chat.urls")),
     path("data-rooms/", include("documents.urls")),
     path("admin/", admin.site.urls),
+    path("api/feedback/", include("feedback.urls")),
 ]
 
 handler403 = "core.views.error_403"

@@ -160,6 +160,7 @@ INSTALLED_APPS = [
     "chat.apps.ChatConfig",
     "agent_skills.apps.AgentSkillsConfig",
     "guardrails.apps.GuardrailsConfig",
+    "feedback.apps.FeedbackConfig",
 ]
 if DEBUG:
     INSTALLED_APPS.extend([
@@ -496,6 +497,11 @@ LOGGING = {
             "propagate": False,
         },
         "guardrails": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        "feedback": {
             "handlers": ["console"],
             "level": LOG_LEVEL,
             "propagate": False,

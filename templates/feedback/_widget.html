@@ -1,0 +1,89 @@
+{# Feedback widget — desktop side-tab + mobile FAB + modal #}
+
+{# Desktop side-tab trigger (md+) #}
+<button id="feedback-trigger-desktop"
+        type="button"
+        class="hidden md:flex fixed right-0 top-1/2 -translate-y-1/2 z-40
+               items-center justify-center
+               bg-brand text-white
+               px-1.5 py-3
+               rounded-l-base
+               shadow-lg
+               hover:bg-brand-strong
+               transition-colors
+               cursor-pointer"
+        style="writing-mode: vertical-rl; text-orientation: mixed;"
+        aria-label="Send feedback">
+  <span class="text-xs font-medium tracking-wide">Feedback</span>
+</button>
+
+{# Mobile FAB trigger (<md) #}
+<button id="feedback-trigger-mobile"
+        type="button"
+        class="md:hidden fixed bottom-6 right-6 z-40
+               w-12 h-12
+               bg-brand text-white
+               rounded-full shadow-lg
+               hover:bg-brand-strong
+               transition-colors
+               flex items-center justify-center
+               cursor-pointer"
+        aria-label="Send feedback">
+  <svg class="w-6 h-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
+  </svg>
+</button>
+
+{# Feedback modal #}
+<div id="feedback-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true"
+     class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+  <div class="relative w-full max-w-md max-h-full mx-auto">
+    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+      {# Header #}
+      <div class="flex items-center px-6 py-4 border-b border-default">
+        <h3 class="text-lg font-semibold text-heading flex-1">Send Feedback</h3>
+        <button type="button" id="feedback-modal-close"
+                class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand ms-2"
+                aria-label="Close">
+          <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      {# Body #}
+      <div class="p-6 space-y-4">
+        <textarea id="feedback-text" rows="4" maxlength="5000"
+                  placeholder="Tell us what you think, or report a bug..."
+                  class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body"></textarea>
+
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="feedback-include-meta" checked
+                 class="w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand">
+          <label for="feedback-include-meta" class="text-sm text-body select-none">Include page URL and browser info</label>
+        </div>
+
+        <div class="flex items-start gap-2">
+          <input type="checkbox" id="feedback-include-screenshot" checked
+                 class="w-4 h-4 mt-0.5 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand">
+          <div>
+            <label for="feedback-include-screenshot" class="text-sm text-body select-none">Include screenshot of current page</label>
+            <div id="feedback-screenshot-preview" class="mt-2 hidden">
+              <img id="feedback-screenshot-thumb" class="rounded border border-default max-w-full max-h-[120px] object-contain" alt="Screenshot preview" />
+            </div>
+          </div>
+        </div>
+      </div>
+      {# Footer #}
+      <div class="flex gap-3 px-6 py-4 border-t border-default">
+        <button type="button" id="feedback-submit-btn"
+                class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+          Send Feedback
+        </button>
+        <button type="button" id="feedback-cancel-btn"
+                class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
