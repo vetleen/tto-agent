@@ -17,6 +17,7 @@ from django.contrib.postgres.search import SearchVector
 
 from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from documents.services.chunking import clean_extracted_text, load_documents, semantic_chunk, structure_aware_chunk
+from documents.services.storage_utils import local_copy
 
 logger = logging.getLogger(__name__)
 
@@ -44,48 +45,46 @@ def process_document(document_id: int) -> None:
     logger.info("process_document: document_id=%s data_room_id=%s stage=processing", document_id, doc.data_room_id)
     started_at = time.perf_counter()
     try:
-        file_path = None
-        if doc.original_file:
-            file_path = Path(doc.original_file.path)
-        if not file_path or not file_path.exists():
+        if not doc.original_file:
             raise FileNotFoundError(f"Document file not found: {doc.original_file}")
 
         ext = (doc.original_filename or "").rsplit(".", 1)[-1].lower() or "txt"
 
-        from llm.transcription_registry import AUDIO_EXTENSIONS
+        with local_copy(doc.original_file) as file_path:
+            from llm.transcription_registry import AUDIO_EXTENSIONS
 
-        if ext in AUDIO_EXTENSIONS:
-            # --- Audio transcription branch ---
-            doc.parser_type = "audio"
-            from core.preferences import get_preferences
-            prefs = get_preferences(doc.uploaded_by)
-            if not prefs.allowed_transcription_models:
-                raise ValueError("Audio transcription is not enabled for your organization.")
-            transcription_model_id = prefs.transcription_model
-            if not transcription_model_id:
-                raise ValueError("No transcription model available.")
+            if ext in AUDIO_EXTENSIONS:
+                # --- Audio transcription branch ---
+                doc.parser_type = "audio"
+                from core.preferences import get_preferences
+                prefs = get_preferences(doc.uploaded_by)
+                if not prefs.allowed_transcription_models:
+                    raise ValueError("Audio transcription is not enabled for your organization.")
+                transcription_model_id = prefs.transcription_model
+                if not transcription_model_id:
+                    raise ValueError("No transcription model available.")
 
-            logger.info("process_document: document_id=%s stage=transcribing model=%s", document_id, transcription_model_id)
-            from documents.services.transcription import transcribe_audio
-            transcript_text = transcribe_audio(file_path, transcription_model_id, user=doc.uploaded_by)
-            doc.transcript = transcript_text
-            doc.transcription_model = transcription_model_id
-            doc.save(update_fields=["parser_type", "transcript", "transcription_model", "updated_at"])
-            cleaned = clean_extracted_text(transcript_text)
-        else:
-            # --- Text extraction branch ---
-            if ext == "pdf":
-                doc.parser_type = "pypdf"
-            elif ext in ("msg", "eml"):
-                doc.parser_type = ext
+                logger.info("process_document: document_id=%s stage=transcribing model=%s", document_id, transcription_model_id)
+                from documents.services.transcription import transcribe_audio
+                transcript_text = transcribe_audio(file_path, transcription_model_id, user=doc.uploaded_by)
+                doc.transcript = transcript_text
+                doc.transcription_model = transcription_model_id
+                doc.save(update_fields=["parser_type", "transcript", "transcription_model", "updated_at"])
+                cleaned = clean_extracted_text(transcript_text)
             else:
-                doc.parser_type = "text"
+                # --- Text extraction branch ---
+                if ext == "pdf":
+                    doc.parser_type = "pypdf"
+                elif ext in ("msg", "eml"):
+                    doc.parser_type = ext
+                else:
+                    doc.parser_type = "text"
 
-            # 1. Extract
-            logger.info("process_document: document_id=%s stage=extracting", document_id)
-            docs = load_documents(file_path, ext)
-            combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
-            cleaned = clean_extracted_text(combined)
+                # 1. Extract
+                logger.info("process_document: document_id=%s stage=extracting", document_id)
+                docs = load_documents(file_path, ext)
+                combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
+                cleaned = clean_extracted_text(combined)
 
         if not cleaned or not cleaned.strip():
             raise ValueError(

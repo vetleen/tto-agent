@@ -48,20 +48,24 @@ class Command(BaseCommand):
 
         from documents.services.chunking import clean_extracted_text, load_documents
         from documents.services.description import generate_description_and_tags_from_text
+        from documents.services.storage_utils import local_copy
 
         success = 0
         for doc in docs:
             try:
-                file_path = Path(doc.original_file.path) if doc.original_file else None
-                if not file_path or not file_path.exists():
-                    # Fall back to chunk text
+                text = ""
+                if doc.original_file:
+                    try:
+                        with local_copy(doc.original_file) as file_path:
+                            ext = (doc.original_filename or "").rsplit(".", 1)[-1].lower() or "txt"
+                            raw_docs = load_documents(file_path, ext)
+                            combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in raw_docs)
+                            text = clean_extracted_text(combined)
+                    except Exception:
+                        text = ""
+                if not text:
                     chunks = doc.chunks.order_by("chunk_index")
                     text = "\n\n".join(c.text for c in chunks)
-                else:
-                    ext = (doc.original_filename or "").rsplit(".", 1)[-1].lower() or "txt"
-                    raw_docs = load_documents(file_path, ext)
-                    combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in raw_docs)
-                    text = clean_extracted_text(combined)
 
                 if not text.strip():
                     self.stdout.write(f"  doc {doc.id}: skipped (no text)")

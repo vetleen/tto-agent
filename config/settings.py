@@ -346,6 +346,34 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
 
+# ---------------------------------------------------------------------------
+# S3 media storage (via django-storages)
+# ---------------------------------------------------------------------------
+# When AWS_STORAGE_BUCKET_NAME is set, media uploads go to S3.
+# Local dev: leave it unset and files use MEDIA_ROOT on disk.
+_aws_bucket = os.environ.get("AWS_STORAGE_BUCKET_NAME", "")
+if _aws_bucket:
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+            "OPTIONS": {
+                "bucket_name": _aws_bucket,
+                "region_name": os.environ.get("AWS_S3_REGION_NAME", "us-east-1"),
+                "location": os.environ.get("AWS_LOCATION", ""),
+                "file_overwrite": False,
+                "default_acl": None,
+                "querystring_auth": True,
+                "querystring_expire": int(
+                    os.environ.get("AWS_QUERYSTRING_EXPIRE", "3600")
+                ),
+                "custom_domain": None,
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
 # Document upload and chunking (MVP)
 DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000"))  # 50 MB
 DOCUMENT_ALLOWED_EXTENSIONS = {

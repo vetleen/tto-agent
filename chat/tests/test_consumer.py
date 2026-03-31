@@ -787,7 +787,10 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
-    DEFAULT_FILE_STORAGE="django.core.files.storage.InMemoryStorage",
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
 )
 class LoadAttachmentsAccessTests(TransactionTestCase):
     """Test that _load_attachments only returns the user's own attachments."""

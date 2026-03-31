@@ -71,7 +71,10 @@ def _tiny_png():
     ALLOWED_HOSTS=["testserver"],
     LLM_ALLOWED_MODELS=["anthropic/claude-sonnet-4-5-20250929"],
     LLM_DEFAULT_MODEL="anthropic/claude-sonnet-4-5-20250929",
-    DEFAULT_FILE_STORAGE="django.core.files.storage.InMemoryStorage",
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
 )
 class UploadAttachmentTests(TestCase):
     def setUp(self):
@@ -205,7 +208,10 @@ class UploadAttachmentTests(TestCase):
     ALLOWED_HOSTS=["testserver"],
     LLM_ALLOWED_MODELS=["anthropic/claude-sonnet-4-5-20250929"],
     LLM_DEFAULT_MODEL="anthropic/claude-sonnet-4-5-20250929",
-    DEFAULT_FILE_STORAGE="django.core.files.storage.InMemoryStorage",
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
 )
 class AttachmentLinkingTests(TestCase):
     def setUp(self):
