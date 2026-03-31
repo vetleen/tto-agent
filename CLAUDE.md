@@ -81,7 +81,7 @@ Set `TEST_APIS=True` in `.env` for live LLM API tests.
 - **documents/** — Data Rooms, file upload, Celery-based processing pipeline (extract → chunk → embed).
 - **chat/** — WebSocket consumer for LLM chat with streaming. Users attach data rooms to threads.
 - **llm/** — Multi-provider LLM abstraction. Entry point: `get_llm_service()` in `llm/service/llm_service.py`.
-- **core/** — Shared utilities (tokens, preferences).
+- **core/** — Shared utilities (tokens, preferences), custom error pages (views + templates).
 
 ## Chat Tool Labels
 
@@ -90,6 +90,16 @@ When adding a new tool to the chat system, you **must** add corresponding displa
 - **`tool_end`** — a past-tense completion label shown when the tool finishes (e.g., "Searched the web")
 
 Look for the `tool_start` and `tool_end` event handler blocks and add `else if` branches for the new tool name.
+
+## Error Tracking & Performance Monitoring (Sentry)
+
+- **Sentry** is used for error tracking and performance monitoring. Initialized in `config/settings.py` when `SENTRY_DSN` env var is set; graceful no-op otherwise.
+- The SDK auto-instruments Django views, DB queries, template rendering, Celery tasks, and Redis operations.
+- `RequestIDMiddleware` (`core/middleware.py`) bridges Heroku's `X-Request-ID` to Sentry tags for log-to-error correlation.
+- Celery tasks are tagged with `celery_task_id` and `celery_task_name` via a `task_prerun` signal in `config/celery.py`.
+- **Logging integration:** `WARNING+` log messages are sent as Sentry events; `INFO+` are attached as breadcrumbs.
+- **Sample rates** (`SENTRY_TRACES_SAMPLE_RATE`, `SENTRY_PROFILES_SAMPLE_RATE`) default to `1.0` (100%) for alpha. Lower when traffic grows.
+- Custom error pages live in `templates/errors/` (404, 403, 500) extending `_base.html`, with a bare fallback at `templates/500.html`. Handlers are in `core/views.py`, wired in `config/urls.py`.
 
 ## Logging
 
