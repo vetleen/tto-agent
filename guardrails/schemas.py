@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class ClassifierResult(BaseModel):
-    """Layer 1 cheap model classifier output."""
+    """Layer 1 cheap model classifier output (single chunk)."""
 
     is_suspicious: bool = Field(description="Whether the input appears suspicious")
     concern_tags: list[str] = Field(
@@ -23,6 +23,33 @@ class ClassifierResult(BaseModel):
         description="Confidence score between 0.0 and 1.0",
     )
     reasoning: str = Field(description="Brief explanation of the classification")
+
+
+class ChunkClassification(BaseModel):
+    """Classification for a single chunk within a batch."""
+
+    chunk_index: int = Field(description="The chunk_index as shown in the input")
+    is_suspicious: bool = Field(description="Whether the chunk appears suspicious")
+    concern_tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Standardized concern tags: prompt_injection, jailbreak, "
+            "data_extraction, social_engineering, encoding_bypass, delimiter_injection"
+        ),
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="Confidence score between 0.0 and 1.0",
+    )
+    reasoning: str = Field(description="Brief explanation of the classification")
+
+
+class BatchClassifierResult(BaseModel):
+    """Layer 1 cheap model classifier output for a batch of chunks."""
+
+    results: list[ChunkClassification] = Field(
+        description="Classification result for each chunk in the batch",
+    )
 
 
 class ReviewerDecision(BaseModel):

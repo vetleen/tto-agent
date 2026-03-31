@@ -92,25 +92,21 @@ class ScanDocumentChunksTest(TestCase):
 
     @override_settings(LLM_DEFAULT_CHEAP_MODEL="test/model")
     @patch("guardrails.tasks._classify_chunk_batch")
-    def test_classifier_evaluates_every_chunk(self, mock_classify):
-        """Every chunk must be individually targeted by the classifier, not just every Nth."""
-        from guardrails.tasks import scan_document_chunks
+    def test_all_chunks_sent_to_classifier_in_batches(self, mock_classify):
+        """All non-blocked chunks should be batched for LLM classification."""
+        from guardrails.tasks import scan_document_chunks, _BATCH_SIZE
 
-        # Create 7 clean chunks (no heuristic matches, so all go to classifier)
-        for i in range(7):
+        for i in range(15):
             self._create_chunk(i, f"Normal patent text chunk {i}.")
 
         scan_document_chunks(self.document.pk)
 
-        # Each chunk should be classified as the target in its own call
-        self.assertEqual(mock_classify.call_count, 7)
+        # 15 chunks at batch size 10 → 2 calls
+        expected_calls = (15 + _BATCH_SIZE - 1) // _BATCH_SIZE
+        self.assertEqual(mock_classify.call_count, expected_calls)
 
-        # Verify each chunk was individually targeted
-        targeted_chunk_indices = []
-        for call in mock_classify.call_args_list:
-            args, kwargs = call
-            context_chunks = args[1]
-            target_idx = kwargs.get("target_index", args[2] if len(args) > 2 else 0)
-            targeted_chunk_indices.append(context_chunks[target_idx]["chunk_index"])
-
-        self.assertEqual(sorted(targeted_chunk_indices), list(range(7)))
+        # First batch should have _BATCH_SIZE chunks, second has the remainder
+        first_batch = mock_classify.call_args_list[0][0][1]
+        second_batch = mock_classify.call_args_list[1][0][1]
+        self.assertEqual(len(first_batch), _BATCH_SIZE)
+        self.assertEqual(len(second_batch), 15 - _BATCH_SIZE)
