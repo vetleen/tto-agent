@@ -26,6 +26,15 @@ class UserAdmin(DjangoUserAdmin):
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
     readonly_fields = ("date_joined",)
+    add_fieldsets = (
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": ("email", "password1", "password2", "is_staff", "is_superuser"),
+            },
+        ),
+    )
     inlines = (MembershipInline,)
 
 
@@ -43,15 +52,6 @@ class EmailVerificationTokenAdmin(admin.ModelAdmin):
         return (timezone.now() - obj.created_at).total_seconds() > timeout
     is_expired.boolean = True
     is_expired.short_description = "Expired"
-    add_fieldsets = (
-        (
-            None,
-            {
-                "classes": ("wide",),
-                "fields": ("email", "password1", "password2", "is_staff", "is_superuser"),
-            },
-        ),
-    )
 
 
 @admin.register(Organization)

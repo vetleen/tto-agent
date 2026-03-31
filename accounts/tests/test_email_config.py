@@ -4,6 +4,7 @@ No real API or domain required: uses locmem backend and subprocess to test valid
 """
 import subprocess
 import sys
+import unittest
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -28,11 +29,12 @@ def _subprocess_load_settings(env_overrides: dict) -> subprocess.CompletedProces
     )
 
 
-@override_settings(ALLOWED_HOSTS=["testserver"], EMAIL_VERIFICATION_REQUIRED=True)
+@override_settings(ALLOWED_HOSTS=["testserver"])
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class EmailConfigTests(TestCase):
     """Test that email sending uses DEFAULT_FROM_EMAIL and works without any API."""
 
+    @unittest.skip("Signup URLs disabled — re-enable when public signup is restored")
     def test_default_from_email_used_in_verification_email(self) -> None:
         with override_settings(DEFAULT_FROM_EMAIL="noreply@example.com"):
             self.client.post(
@@ -46,6 +48,7 @@ class EmailConfigTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].from_email, "noreply@example.com")
 
+    @unittest.skip("Signup URLs disabled — re-enable when public signup is restored")
     def test_default_from_email_fallback_when_set(self) -> None:
         """With locmem and no override, sent mail uses settings default (webmaster@localhost)."""
         self.client.post(

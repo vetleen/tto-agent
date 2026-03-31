@@ -1,8 +1,11 @@
 from django.conf import settings
 from django.contrib.auth import get_user_model, login, logout
 from django.contrib.auth.views import LoginView as BaseLoginView
+from django.contrib.auth.views import PasswordResetView as BasePasswordResetView
 from django.shortcuts import redirect, render
+from django.utils.decorators import method_decorator
 from django.views.decorators.http import require_http_methods
+from django_ratelimit.decorators import ratelimit
 
 from ..forms import SignUpForm
 from ..verification import (
@@ -14,18 +17,21 @@ from ..verification import (
 User = get_user_model()
 
 
+@method_decorator(ratelimit(key="ip", rate="5/m", method="POST", block=True), name="post")
 class LoginView(BaseLoginView):
     def dispatch(self, request, *args, **kwargs):
         if request.user.is_authenticated:
             return redirect(settings.LOGIN_REDIRECT_URL)
         return super().dispatch(request, *args, **kwargs)
 
-    def form_valid(self, form):
-        user = form.get_user()
-        if getattr(settings, "EMAIL_VERIFICATION_REQUIRED", True) and not user.email_verified:
-            self.request.session["verification_pending_email"] = user.email
-            return redirect("accounts:verify_required")
-        return super().form_valid(form)
+
+@method_decorator(ratelimit(key="ip", rate="3/h", method="POST", block=True), name="post")
+class PasswordResetView(BasePasswordResetView):
+    pass
+
+
+def rate_limited(request, exception=None):
+    return render(request, "registration/rate_limited.html", status=429)
 
 
 def index(request):

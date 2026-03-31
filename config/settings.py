@@ -128,6 +128,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "django_ratelimit.middleware.RatelimitMiddleware",
 ]
 if DEBUG:
     MIDDLEWARE.insert(0, "debug_toolbar.middleware.DebugToolbarMiddleware")
@@ -248,6 +249,12 @@ if USING_ANYMAIL:
     }
 
 PASSWORD_RESET_TIMEOUT = int(os.environ.get("DJANGO_PASSWORD_RESET_TIMEOUT", "3600"))
+
+# Rate limiting (django-ratelimit)
+RATELIMIT_VIEW = "accounts.views.auth.rate_limited"
+if not DEBUG:
+    # Heroku proxies requests — REMOTE_ADDR is the router, not the client.
+    RATELIMIT_IP_META_KEY = "HTTP_X_FORWARDED_FOR"
 
 # Email verification (24 hours in seconds)
 EMAIL_VERIFICATION_TIMEOUT = int(os.environ.get("EMAIL_VERIFICATION_TIMEOUT", "86400"))

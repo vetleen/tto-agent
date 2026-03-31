@@ -1,0 +1,13 @@
+{% extends "_base.html" %}
+
+{% block content %}
+  <main class="mx-auto max-w-md px-6 py-16 text-slate-900 dark:text-gray-100">
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900 dark:text-white">Too many attempts</h1>
+    <p class="mt-4 text-sm text-slate-600 dark:text-gray-400">
+      Please wait a few minutes before trying again.
+    </p>
+    <a class="mt-6 inline-flex items-center text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500" href="{% url 'accounts:login' %}">
+      Back to login
+    </a>
+  </main>
+{% endblock content %}

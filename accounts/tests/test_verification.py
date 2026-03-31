@@ -1,4 +1,10 @@
-"""Tests for email verification flow."""
+"""Tests for email verification flow.
+
+Note: Tests that exercise signup/verify URL endpoints are skipped while
+public signup is disabled.  The underlying verification logic is still
+tested via direct function calls in the tests that remain active.
+"""
+import unittest
 from datetime import timedelta
 
 from django.conf import settings
@@ -14,6 +20,7 @@ from accounts.verification import can_resend_verification, verify_token
 User = get_user_model()
 
 
+@unittest.skip("Signup URLs disabled — re-enable when public signup is restored")
 @override_settings(ALLOWED_HOSTS=["testserver"], EMAIL_VERIFICATION_REQUIRED=True)
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class EmailVerificationTests(TestCase):

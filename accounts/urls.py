@@ -9,12 +9,8 @@ from .forms import (
 )
 from .views.auth import (
     LoginView,
+    PasswordResetView,
     delete_account,
-    resend_verification,
-    signup,
-    verify_email,
-    verify_email_sent,
-    verify_required,
 )
 from .views.settings import (
     org_allowed_models_update,
@@ -42,11 +38,6 @@ urlpatterns = [
         LoginView.as_view(authentication_form=CustomAuthenticationForm),
         name="login",
     ),
-    path("signup/", signup, name="signup"),
-    path("verify-email/sent/", verify_email_sent, name="verify_email_sent"),
-    path("verify-email/<str:token>/", verify_email, name="verify_email"),
-    path("verify-email/resend/", resend_verification, name="resend_verification"),
-    path("verify-required/", verify_required, name="verify_required"),
     path("settings/", settings_page, name="settings"),
     path("settings/theme/", theme_update, name="theme_update"),
     path("settings/models/", preferences_models_update, name="preferences_models_update"),
@@ -73,7 +64,7 @@ urlpatterns = [
     ),
     path(
         "password_reset/",
-        auth_views.PasswordResetView.as_view(
+        PasswordResetView.as_view(
             form_class=CustomPasswordResetForm,
             success_url=reverse_lazy("accounts:password_reset_done"),
         ),
