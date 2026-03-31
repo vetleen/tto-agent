@@ -8,14 +8,14 @@ import time
 
 from pydantic import BaseModel, Field
 
-from llm.tools import ContextAwareTool, get_tool_registry
+from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 logger = logging.getLogger(__name__)
 
 
 # --- Input schemas ---
 
-class CreateSubagentInput(BaseModel):
+class CreateSubagentInput(ReasonBaseModel):
     prompt: str = Field(description="The task description for the sub-agent.")
     model_tier: str = Field(
         default="mid",
@@ -46,6 +46,7 @@ class CreateSubagentTool(ContextAwareTool):
         prompt: str,
         model_tier: str = "mid",
         timeout: int = 0,
+        **kwargs,
     ) -> str:
         from django.contrib.auth import get_user_model
 

@@ -8,7 +8,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from llm.tools import ContextAwareTool, get_tool_registry
+from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +61,12 @@ def _filter_accessible_rooms(data_room_ids: list[int], user_id: int | None) -> l
 
 # --- Input schemas ---
 
-class SearchDocumentsInput(BaseModel):
+class SearchDocumentsInput(ReasonBaseModel):
     query: str = Field(description="The search query to find relevant document passages.")
     k: int = Field(default=5, description="Number of results to return (1-10, default 5).")
 
 
-class ReadDocumentInput(BaseModel):
+class ReadDocumentInput(ReasonBaseModel):
     doc_indices: list[int] = Field(description="List of document index numbers to read (e.g. [1, 3]).")
     data_room_id: Optional[int] = Field(
         default=None,
@@ -96,7 +96,7 @@ class SearchDocumentsTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = SearchDocumentsInput
 
-    def _run(self, query: str, k: int = 5) -> str:
+    def _run(self, query: str, k: int = 5, **kwargs) -> str:
         from django.db.models import Count
 
         from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
@@ -274,6 +274,7 @@ class ReadDocumentTool(ContextAwareTool):
         data_room_id: int | None = None,
         chunk_start: int | None = None,
         chunk_end: int | None = None,
+        **kwargs,
     ) -> str:
         from documents.models import DataRoomDocument
 

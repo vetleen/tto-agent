@@ -6,10 +6,10 @@ import json
 
 from pydantic import BaseModel, Field
 
-from llm.tools import ContextAwareTool, get_tool_registry
+from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 
-class WriteCanvasInput(BaseModel):
+class WriteCanvasInput(ReasonBaseModel):
     title: str = Field(description="Title for the document.")
     content: str = Field(description="Full markdown content of the document.")
     canvas_name: str = Field(
@@ -28,7 +28,7 @@ class EditItem(BaseModel):
     reason: str = Field(default="", description="Brief reason for this edit.")
 
 
-class EditCanvasInput(BaseModel):
+class EditCanvasInput(ReasonBaseModel):
     edits: list[EditItem] = Field(
         description="List of targeted find-replace edits to apply sequentially."
     )
@@ -49,7 +49,7 @@ class WriteCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
-    def _run(self, title: str, content: str, canvas_name: str = "") -> str:
+    def _run(self, title: str, content: str, canvas_name: str = "", **kwargs) -> str:
         from django.db import IntegrityError
 
         from chat.models import ChatCanvas
@@ -129,7 +129,7 @@ class EditCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
-    def _run(self, edits: list[dict] | list[EditItem], canvas_name: str = "") -> str:
+    def _run(self, edits: list[dict] | list[EditItem], canvas_name: str = "", **kwargs) -> str:
         from chat.services import resolve_canvas
 
         thread_id = self.context.conversation_id if self.context else None

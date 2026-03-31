@@ -5,17 +5,17 @@ from __future__ import annotations
 import json
 from pydantic import BaseModel, Field
 
-from llm.tools import ContextAwareTool, get_tool_registry
+from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 
 # -- Input schemas --
 
 
-class CreateSkillInput(BaseModel):
+class CreateSkillInput(ReasonBaseModel):
     name: str = Field(description="Name for the new skill.")
 
 
-class SaveCanvasToSkillFieldInput(BaseModel):
+class SaveCanvasToSkillFieldInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to save to.")
     field_name: str = Field(
         description=(
@@ -29,7 +29,7 @@ class SaveCanvasToSkillFieldInput(BaseModel):
     )
 
 
-class ShowSkillFieldInCanvasInput(BaseModel):
+class ShowSkillFieldInCanvasInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to read from.")
     field_name: str = Field(
         description=(
@@ -48,7 +48,7 @@ class TextEdit(BaseModel):
     new_text: str = Field(description="Replacement text.")
 
 
-class EditSkillInput(BaseModel):
+class EditSkillInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to edit.")
     updates: dict = Field(
         default_factory=dict,
@@ -64,15 +64,15 @@ class EditSkillInput(BaseModel):
     )
 
 
-class DeleteSkillInput(BaseModel):
+class DeleteSkillInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to delete.")
 
 
-class ViewTemplateInput(BaseModel):
+class ViewTemplateInput(ReasonBaseModel):
     template_name: str = Field(description="Name of the template to view.")
 
 
-class LoadTemplateToCanvasInput(BaseModel):
+class LoadTemplateToCanvasInput(ReasonBaseModel):
     template_name: str = Field(description="Name of the template to load into the canvas.")
     canvas_name: str = Field(
         default="",
@@ -80,7 +80,7 @@ class LoadTemplateToCanvasInput(BaseModel):
     )
 
 
-class InspectToolInput(BaseModel):
+class InspectToolInput(ReasonBaseModel):
     tool_name: str = Field(description="Name of the tool to inspect.")
 
 
@@ -97,7 +97,7 @@ class CreateSkillTool(ContextAwareTool):
     args_schema: type[BaseModel] = CreateSkillInput
     section: str = "skills"
 
-    def _run(self, name: str) -> str:
+    def _run(self, name: str, **kwargs) -> str:
         from agent_skills.services import create_user_skill
 
         user_id = self.context.user_id if self.context else None
@@ -132,7 +132,7 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
     args_schema: type[BaseModel] = SaveCanvasToSkillFieldInput
     section: str = "skills"
 
-    def _run(self, skill_slug: str, field_name: str, canvas_name: str = "") -> str:
+    def _run(self, skill_slug: str, field_name: str, canvas_name: str = "", **kwargs) -> str:
         from agent_skills.models import SkillTemplate
         from agent_skills.services import get_editable_skill_for_user
         from chat.services import resolve_canvas
@@ -194,7 +194,7 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
     args_schema: type[BaseModel] = ShowSkillFieldInCanvasInput
     section: str = "skills"
 
-    def _run(self, skill_slug: str, field_name: str, canvas_name: str = "") -> str:
+    def _run(self, skill_slug: str, field_name: str, canvas_name: str = "", **kwargs) -> str:
         from django.db import IntegrityError
 
         from agent_skills.services import get_available_skills
@@ -300,6 +300,7 @@ class EditSkillTool(ContextAwareTool):
         updates: dict | None = None,
         text_edits: list[dict] | list[TextEdit] | None = None,
         delete_templates: list[str] | None = None,
+        **kwargs,
     ) -> str:
         from agent_skills.services import get_editable_skill_for_user
 
@@ -432,7 +433,7 @@ class DeleteSkillTool(ContextAwareTool):
     args_schema: type[BaseModel] = DeleteSkillInput
     section: str = "skills"
 
-    def _run(self, skill_slug: str) -> str:
+    def _run(self, skill_slug: str, **kwargs) -> str:
         from agent_skills.services import get_editable_skill_for_user
 
         user_id = self.context.user_id if self.context else None
@@ -469,7 +470,7 @@ class ViewTemplateTool(ContextAwareTool):
     args_schema: type[BaseModel] = ViewTemplateInput
     section: str = "skills"
 
-    def _run(self, template_name: str) -> str:
+    def _run(self, template_name: str, **kwargs) -> str:
         from agent_skills.models import SkillTemplate
         from chat.models import ChatThread
 
@@ -512,7 +513,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     args_schema: type[BaseModel] = LoadTemplateToCanvasInput
     section: str = "skills"
 
-    def _run(self, template_name: str, canvas_name: str = "") -> str:
+    def _run(self, template_name: str, canvas_name: str = "", **kwargs) -> str:
         from django.db import IntegrityError
 
         from agent_skills.models import SkillTemplate
@@ -592,10 +593,10 @@ class ListAllToolsTool(ContextAwareTool):
         "Use this to discover which tools exist and decide which ones "
         "a skill needs."
     )
-    args_schema: type[BaseModel] = BaseModel
+    args_schema: type[BaseModel] = ReasonBaseModel
     section: str = "skills"
 
-    def _run(self) -> str:
+    def _run(self, **kwargs) -> str:
         registry = get_tool_registry()
         all_tools = registry.list_tools()
         standard_tools = []
@@ -627,7 +628,7 @@ class InspectToolTool(ContextAwareTool):
     args_schema: type[BaseModel] = InspectToolInput
     section: str = "skills"
 
-    def _run(self, tool_name: str) -> str:
+    def _run(self, tool_name: str, **kwargs) -> str:
         registry = get_tool_registry()
         tool = registry.get_tool(tool_name)
         if not tool:

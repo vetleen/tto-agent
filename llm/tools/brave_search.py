@@ -12,7 +12,7 @@ import time
 import requests
 from pydantic import BaseModel, Field
 
-from llm.tools.interfaces import ContextAwareTool
+from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ _brave_rate_limiter = _TokenBucketRateLimiter(
 )
 
 
-class BraveSearchInput(BaseModel):
+class BraveSearchInput(ReasonBaseModel):
     query: str = Field(description="The search query.")
     count: int = Field(default=5, description="Number of results to return (1-10, default 5).")
 
@@ -87,7 +87,7 @@ class BraveSearchTool(ContextAwareTool):
             raise ValueError("BRAVE_SEARCH_API_KEY is not configured")
         return key
 
-    def _run(self, query: str, count: int = 5) -> str:
+    def _run(self, query: str, count: int = 5, **kwargs) -> str:
         from django.core.cache import cache
 
         query = query.strip()

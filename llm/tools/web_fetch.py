@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup, Comment
 from pydantic import BaseModel, Field
 
 from llm.tools._text_cleaning import normalize_text
-from llm.tools.interfaces import ContextAwareTool
+from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def _check_url_ssrf(url: str) -> str | None:
     return None
 
 
-class WebFetchInput(BaseModel):
+class WebFetchInput(ReasonBaseModel):
     url: str = Field(description="The URL of the web page to fetch.")
     max_chars: int = Field(default=20_000, description="Maximum characters to return (default 20000, max 50000).")
 
@@ -135,7 +135,7 @@ class WebFetchTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = WebFetchInput
 
-    def _run(self, url: str, max_chars: int = 20_000) -> str:
+    def _run(self, url: str, max_chars: int = 20_000, **kwargs) -> str:
         from django.core.cache import cache
 
         url = url.strip()

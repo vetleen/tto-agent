@@ -7,7 +7,7 @@ import uuid as uuid_mod
 
 from pydantic import BaseModel, Field
 
-from llm.tools import ContextAwareTool, get_tool_registry
+from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 
 class TaskItem(BaseModel):
@@ -19,7 +19,7 @@ class TaskItem(BaseModel):
     )
 
 
-class UpdateTasksInput(BaseModel):
+class UpdateTasksInput(ReasonBaseModel):
     tasks: list[TaskItem] = Field(
         description="The complete desired task list. Omitted tasks are deleted.",
     )
@@ -40,7 +40,7 @@ class UpdateTasksTool(ContextAwareTool):
     args_schema: type[BaseModel] = UpdateTasksInput
     section: str = "chat"
 
-    def _run(self, tasks: list[dict] | list[TaskItem]) -> str:
+    def _run(self, tasks: list[dict] | list[TaskItem], **kwargs) -> str:
         from chat.models import ThreadTask
 
         thread_id = self.context.conversation_id if self.context else None
