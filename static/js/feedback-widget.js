@@ -90,26 +90,23 @@
   }
 
   function onTriggerClick() {
-    if (screenshotCheckbox && screenshotCheckbox.checked) {
-      captureScreenshot()
-        .then(function () {
-          openModal();
-        })
-        .catch(function () {
-          screenshotDataUrl = null;
-          screenshotBlob = null;
-          openModal();
-        });
-    } else {
-      screenshotDataUrl = null;
-      screenshotBlob = null;
-      openModal();
-    }
+    screenshotDataUrl = null;
+    screenshotBlob = null;
+    captureScreenshot()
+      .then(function () {
+        openModal();
+      })
+      .catch(function (err) {
+        console.warn('Feedback: screenshot capture failed:', err);
+        screenshotDataUrl = null;
+        screenshotBlob = null;
+        openModal();
+      });
   }
 
   function captureScreenshot() {
     if (typeof html2canvas !== 'function') {
-      return Promise.reject(new Error('html2canvas not loaded'));
+      return Promise.reject(new Error('html2canvas-pro not loaded'));
     }
     var maxHeight = Math.min(
       document.documentElement.scrollHeight,
@@ -123,10 +120,17 @@
       windowWidth: document.documentElement.clientWidth,
       windowHeight: window.innerHeight,
     }).then(function (canvas) {
+      if (!canvas || canvas.width === 0 || canvas.height === 0) {
+        return Promise.reject(new Error('html2canvas returned empty canvas'));
+      }
       screenshotDataUrl = canvas.toDataURL('image/jpeg', 0.6);
-      return new Promise(function (resolve) {
+      return new Promise(function (resolve, reject) {
         canvas.toBlob(
           function (blob) {
+            if (!blob) {
+              reject(new Error('toBlob returned null'));
+              return;
+            }
             screenshotBlob = blob;
             resolve();
           },
@@ -142,11 +146,15 @@
     modal.setAttribute('aria-hidden', 'false');
     document.body.style.overflow = 'hidden';
 
-    if (screenshotDataUrl && screenshotCheckbox.checked) {
+    if (screenshotDataUrl) {
       screenshotThumb.src = screenshotDataUrl;
       screenshotPreview.classList.remove('hidden');
+      screenshotCheckbox.checked = true;
+      screenshotCheckbox.disabled = false;
     } else {
       screenshotPreview.classList.add('hidden');
+      screenshotCheckbox.checked = false;
+      screenshotCheckbox.disabled = true;
     }
 
     textArea.value = '';
