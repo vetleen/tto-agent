@@ -91,8 +91,8 @@ class SupportsThinkingTests(TestCase):
         self.assertFalse(supports_thinking("openai/gpt-5-mini"))
 
     def test_gemini_3_thinking(self):
-        self.assertTrue(supports_thinking("gemini/gemini-3-flash"))
-        self.assertTrue(supports_thinking("gemini/gemini-3-pro"))
+        self.assertTrue(supports_thinking("gemini/gemini-3.1-pro-preview"))
+        self.assertTrue(supports_thinking("gemini/gemini-3-flash-preview"))
 
     def test_gemini_2_no_thinking(self):
         self.assertFalse(supports_thinking("gemini/gemini-2.5-flash"))

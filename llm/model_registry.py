@@ -127,29 +127,38 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("0.01"),
         output_price=Decimal("0.40"),
     ),
-    "gemini/gemini-3-flash": ModelInfo(
+    "gemini/gemini-3.1-pro-preview": ModelInfo(
+        display_name="Gemini 3.1 Pro",
+        provider="google_genai",
+        api_model="gemini-3.1-pro-preview",
+        supports_thinking=True,
+        supports_vision=True,
+        context_window=1_000_000,
+        input_price=Decimal("2.00"),
+        cached_input_price=Decimal("0.20"),
+        output_price=Decimal("12.00"),
+    ),
+    "gemini/gemini-3-flash-preview": ModelInfo(
         display_name="Gemini 3 Flash",
         provider="google_genai",
-        api_model="gemini-3-flash",
+        api_model="gemini-3-flash-preview",
         supports_thinking=True,
         supports_vision=True,
         context_window=1_000_000,
-        # TODO: verify pricing when available
-        input_price=Decimal("0.30"),
-        cached_input_price=Decimal("0.03"),
-        output_price=Decimal("2.50"),
+        input_price=Decimal("0.50"),
+        cached_input_price=Decimal("0.05"),
+        output_price=Decimal("3.00"),
     ),
-    "gemini/gemini-3-pro": ModelInfo(
-        display_name="Gemini 3 Pro",
+    "gemini/gemini-3.1-flash-lite-preview": ModelInfo(
+        display_name="Gemini 3.1 Flash Lite",
         provider="google_genai",
-        api_model="gemini-3-pro",
+        api_model="gemini-3.1-flash-lite-preview",
         supports_thinking=True,
         supports_vision=True,
         context_window=1_000_000,
-        # TODO: verify pricing when available
-        input_price=Decimal("1.25"),
-        cached_input_price=Decimal("0.125"),
-        output_price=Decimal("10.00"),
+        input_price=Decimal("0.25"),
+        cached_input_price=Decimal("0.025"),
+        output_price=Decimal("1.50"),
     ),
 }
 

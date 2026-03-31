@@ -43,7 +43,11 @@ class GetModelInfoTests(TestCase):
         self.assertFalse(info.supports_thinking)
 
     def test_gemini_3_supports_thinking(self):
-        for model_id in ["gemini/gemini-3-flash", "gemini/gemini-3-pro"]:
+        for model_id in [
+            "gemini/gemini-3.1-pro-preview",
+            "gemini/gemini-3-flash-preview",
+            "gemini/gemini-3.1-flash-lite-preview",
+        ]:
             info = get_model_info(model_id)
             self.assertIsNotNone(info, f"{model_id} not found")
             self.assertTrue(info.supports_thinking, f"{model_id} should support thinking")
@@ -56,7 +60,7 @@ class GetModelInfoTests(TestCase):
         for model_id in [
             "openai/gpt-5.4", "openai/gpt-5-mini", "openai/gpt-5-nano",
             "anthropic/claude-opus-4-6",
-            "gemini/gemini-2.5-flash", "gemini/gemini-3-flash",
+            "gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview",
         ]:
             info = get_model_info(model_id)
             self.assertIsNotNone(info)
@@ -79,6 +83,6 @@ class GetModelInfoTests(TestCase):
         self.assertIsNotNone(info)
         self.assertEqual(info.provider, "openai")
 
-        info = get_model_info("gemini-3-flash")
+        info = get_model_info("gemini-3-flash-preview")
         self.assertIsNotNone(info)
         self.assertEqual(info.provider, "google_genai")

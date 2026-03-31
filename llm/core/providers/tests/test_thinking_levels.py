@@ -123,7 +123,7 @@ class OpenAIThinkingLevelTests(TestCase):
 
 class GeminiThinkingLevelTests(TestCase):
 
-    def _make_model(self, name="gemini/gemini-3-flash"):
+    def _make_model(self, name="gemini/gemini-3-flash-preview"):
         client = MagicMock()
         return GeminiChatModel(name, client)
 
@@ -136,7 +136,7 @@ class GeminiThinkingLevelTests(TestCase):
     @patch("llm.core.providers.gemini.create_variant_client")
     def test_thinking_enabled_creates_variant(self, mock_create):
         mock_create.return_value = MagicMock()
-        model = self._make_model("gemini/gemini-3-flash")
+        model = self._make_model("gemini/gemini-3-flash-preview")
         request = _make_request("medium")
         model._get_streaming_client(request)
         mock_create.assert_called_once()
@@ -153,7 +153,7 @@ class GeminiThinkingLevelTests(TestCase):
     @patch("llm.core.providers.gemini.create_variant_client")
     def test_high_uses_correct_budget(self, mock_create):
         mock_create.return_value = MagicMock()
-        model = self._make_model("gemini/gemini-3-pro")
+        model = self._make_model("gemini/gemini-3.1-pro-preview")
         request = _make_request("high")
         model._get_streaming_client(request)
         call_kwargs = mock_create.call_args[1]
@@ -162,7 +162,7 @@ class GeminiThinkingLevelTests(TestCase):
     @patch("llm.core.providers.gemini.create_variant_client")
     def test_fallback_on_create_failure(self, mock_create):
         mock_create.side_effect = Exception("API error")
-        model = self._make_model("gemini/gemini-3-flash")
+        model = self._make_model("gemini/gemini-3-flash-preview")
         request = _make_request("medium")
         client = model._get_streaming_client(request)
         self.assertIs(client, model._client)
