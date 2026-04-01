@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 
 from llm.core.langchain_utils import to_langchain_messages
 from llm.core.model_factory import create_chat_model
@@ -35,7 +36,12 @@ class StructuredOutputPipeline(BasePipeline):
         structured_model = model._client.with_structured_output(
             output_schema, include_raw=True
         )
-        result = structured_model.invoke(lc_messages)
+        # LangChain's include_raw=True wrapper types the `parsed` field as
+        # Optional[schema]=None, causing a spurious Pydantic serializer
+        # warning when the field is populated. Suppress it.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
+            result = structured_model.invoke(lc_messages)
 
         parsed = result["parsed"]
         raw_msg = result["raw"]
