@@ -566,6 +566,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "event_type": "thread.created",
                     "thread_id": str(thread.id),
                 }))
+            else:
+                # Sync session state from the thread's persisted data to
+                # prevent stale values leaking from a previously loaded thread.
+                thread_dr, skill_data = await asyncio.gather(
+                    self._load_thread_data_rooms(str(thread.id)),
+                    self._load_thread_skill(str(thread.id)),
+                )
+                self.data_room_ids = thread_dr["data_room_ids"] if thread_dr else []
+                self.active_skill_id = skill_data["skill_id"] if skill_data else None
 
             # Persist user message
             user_metadata = {}
@@ -2272,6 +2281,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _auto_pick_emoji(self, thread, *, hint=None):
         """Pick an emoji for a thread using a cheap LLM call."""
+        import unicodedata
+
+        # If the hint is already a single emoji, use it directly
+        if hint:
+            stripped = hint.strip()
+            chars = [c for c in stripped if not unicodedata.category(c).startswith("M")]
+            if len(chars) == 1 and unicodedata.category(chars[0]).startswith("So"):
+                return stripped
+
         from llm import get_llm_service
         from llm.types import ChatRequest, Message, RunContext
 
