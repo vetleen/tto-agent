@@ -830,11 +830,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     original = messages[i].content
                     if isinstance(original, str):
                         messages[i] = messages[i].model_copy(
-                            update={"content": injected_context + "\n\n" + original}
+                            update={"content": "# Additional Context\n" + injected_context + "\n\n# User Message\n" + original}
                         )
                     elif isinstance(original, list):
                         # Multimodal content (images): prepend a text block
-                        context_block = {"type": "text", "text": injected_context}
+                        context_block = {"type": "text", "text": "# Additional Context\n" + injected_context + "\n\n# User Message"}
                         messages[i] = messages[i].model_copy(
                             update={"content": [context_block] + list(original)}
                         )

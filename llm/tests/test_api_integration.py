@@ -63,3 +63,62 @@ class ProviderLiveAPITests(TestCase):
         ):
             content = self._run_simple_chat("gemini-3.1-flash-image-preview")
         self.assertIn("OK", content.upper())
+
+
+@require_test_apis()
+class FullPromptGuardrailTests(TestCase):
+    """Ensure the full Wilfred system prompt with injected context doesn't
+    cause cheap models to hallucinate off the context instead of answering
+    the user's actual message."""
+
+    CHEAP_MODELS = ["gpt-5-nano", "gpt-5-mini"]
+
+    def test_simple_ping_not_derailed_by_injected_context(self):
+        """Send 'Ping' with the full system prompt + injected context.
+        The model should reply briefly, not generate an elaborate plan
+        from the context."""
+        from chat.prompts import (
+            build_dynamic_context,
+            build_semi_static_prompt,
+            build_static_system_prompt,
+        )
+
+        static_system = build_static_system_prompt(
+            organization_name="NTNU Technology Transfer AS",
+            has_subagent_tool=True,
+            has_task_tool=True,
+        )
+        semi_static = build_semi_static_prompt(
+            data_rooms=[{"id": 1, "name": "Due Diligence Room", "description": "Corporate documents for M&A review"}],
+        )
+        dynamic = build_dynamic_context(
+            data_rooms=[{"id": 1, "name": "Due Diligence Room"}],
+        )
+
+        injected_context = semi_static + "\n\n" + dynamic
+        user_content = "# Additional Context\n" + injected_context + "\n\n# User Message\nPing"
+
+        service = get_llm_service()
+
+        for model in self.CHEAP_MODELS:
+            with self.subTest(model=model), patch.dict(
+                "os.environ",
+                {"LLM_ALLOWED_MODELS": model, "DEFAULT_LLM_MODEL": model},
+                clear=False,
+            ):
+                request = ChatRequest(
+                    messages=[
+                        Message(role="system", content=static_system),
+                        Message(role="user", content=user_content),
+                    ],
+                    stream=False,
+                    model=model,
+                    context=RunContext.create(),
+                )
+                response = service.run("simple_chat", request)
+                content = response.message.content
+                self.assertLess(
+                    len(content), 5000,
+                    f"{model} produced a suspiciously long response ({len(content)} chars) "
+                    f"to 'Ping' — likely derailed by injected context.",
+                )
