@@ -5,15 +5,18 @@ then embeds and writes to vector store.
 """
 from __future__ import annotations
 
+import datetime
 import logging
 import time
-from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
 from django.contrib.postgres.search import SearchVector
+
+# If a document has been PROCESSING longer than this, treat it as stuck and allow reprocessing.
+STALE_PROCESSING_MINUTES = 15
 
 from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from documents.services.chunking import clean_extracted_text, load_documents, semantic_chunk, structure_aware_chunk
@@ -38,8 +41,14 @@ def process_document(document_id: int) -> None:
             logger.warning("process_document: document_id=%s not found or locked by another task", document_id)
             return
         if doc.status == DataRoomDocument.Status.PROCESSING:
-            logger.info("process_document: document_id=%s already processing, skipping", document_id)
-            return
+            stale_threshold = timezone.now() - datetime.timedelta(minutes=STALE_PROCESSING_MINUTES)
+            if doc.updated_at > stale_threshold:
+                logger.info("process_document: document_id=%s already processing, skipping", document_id)
+                return
+            logger.warning(
+                "process_document: document_id=%s stuck as PROCESSING since %s, reprocessing",
+                document_id, doc.updated_at,
+            )
         doc.status = DataRoomDocument.Status.PROCESSING
         doc.save(update_fields=["status", "updated_at"])
     logger.info("process_document: document_id=%s data_room_id=%s stage=processing", document_id, doc.data_room_id)
