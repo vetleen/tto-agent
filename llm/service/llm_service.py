@@ -176,7 +176,7 @@ class LLMService:
         params["output_schema"] = output_schema
         req = request.model_copy(update={"params": params, "stream": False})
         response = self.run("structured_output", req)
-        parsed = response.metadata["structured_response"]
+        parsed = output_schema.model_validate(response.metadata["structured_response"])
         return parsed, response.usage
 
     # -- async bridge -------------------------------------------------------

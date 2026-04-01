@@ -15,15 +15,15 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 # Number of suspicious chunks to classify per LLM call
-_BATCH_SIZE = 10
+_BATCH_SIZE = 25
 
 
 @shared_task(
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 3},
-    time_limit=300,
-    soft_time_limit=270,
+    time_limit=600,
+    soft_time_limit=570,
 )
 def scan_document_chunks(document_id: int) -> None:
     """Scan all chunks of a document for adversarial content.

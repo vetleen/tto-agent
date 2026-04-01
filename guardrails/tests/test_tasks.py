@@ -96,17 +96,18 @@ class ScanDocumentChunksTest(TestCase):
         """All non-blocked chunks should be batched for LLM classification."""
         from guardrails.tasks import scan_document_chunks, _BATCH_SIZE
 
-        for i in range(15):
+        total_chunks = _BATCH_SIZE + 5
+        for i in range(total_chunks):
             self._create_chunk(i, f"Normal patent text chunk {i}.")
 
         scan_document_chunks(self.document.pk)
 
-        # 15 chunks at batch size 10 → 2 calls
-        expected_calls = (15 + _BATCH_SIZE - 1) // _BATCH_SIZE
+        # Should split into 2 calls
+        expected_calls = (total_chunks + _BATCH_SIZE - 1) // _BATCH_SIZE
         self.assertEqual(mock_classify.call_count, expected_calls)
 
         # First batch should have _BATCH_SIZE chunks, second has the remainder
         first_batch = mock_classify.call_args_list[0][0][1]
         second_batch = mock_classify.call_args_list[1][0][1]
         self.assertEqual(len(first_batch), _BATCH_SIZE)
-        self.assertEqual(len(second_batch), 15 - _BATCH_SIZE)
+        self.assertEqual(len(second_batch), total_chunks - _BATCH_SIZE)

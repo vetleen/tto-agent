@@ -59,7 +59,7 @@ class StructuredOutputPipeline(BasePipeline):
 
         return ChatResponse(
             message=Message(role="assistant", content=parsed.model_dump_json()),
-            metadata={"structured_response": parsed},
+            metadata={"structured_response": parsed.model_dump()},
             usage=usage,
             model=request.model,
         )

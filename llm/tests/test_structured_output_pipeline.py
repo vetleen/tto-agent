@@ -53,7 +53,7 @@ class StructuredOutputPipelineTests(TestCase):
         pipeline = StructuredOutputPipeline()
         response = pipeline.run(self._make_request())
 
-        self.assertEqual(response.metadata["structured_response"], fake_parsed)
+        self.assertEqual(response.metadata["structured_response"], fake_parsed.model_dump())
         self.assertEqual(response.model, "gpt-4o-mini")
         self.assertIsNotNone(response.usage)
         self.assertEqual(response.usage.prompt_tokens, 100)
@@ -95,7 +95,7 @@ class StructuredOutputPipelineTests(TestCase):
         response = pipeline.run(self._make_request())
 
         self.assertIsNone(response.usage)
-        self.assertEqual(response.metadata["structured_response"].description, "A doc.")
+        self.assertEqual(response.metadata["structured_response"]["description"], "A doc.")
 
     def test_stream_raises_not_implemented(self):
         pipeline = StructuredOutputPipeline()
