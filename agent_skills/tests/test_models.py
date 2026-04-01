@@ -215,7 +215,7 @@ class SeedSystemSkillsTests(TestCase):
         )
         self.assertTrue(
             AgentSkill.objects.filter(
-                slug="rcn-qualification-grant", level="system"
+                slug="rcn-qualification-grant-drafter", level="system"
             ).exists()
         )
 
@@ -236,7 +236,7 @@ class SeedSystemSkillsTests(TestCase):
         seed_system_skills()
 
         skill = AgentSkill.objects.get(
-            slug="rcn-qualification-grant", level="system"
+            slug="rcn-qualification-grant-drafter", level="system"
         )
         self.assertEqual(skill.name, "RCN Qualification Grant Application Drafter")
         self.assertIn("Kvalifiseringsprosjekt", skill.description)
@@ -256,7 +256,7 @@ class SeedSystemSkillsTests(TestCase):
         self.assertIn("Gap Analysis", disposition.content)
         self.assertIn("Triggering effect", disposition.content)
         project_desc = skill.templates.get(name="Project Description")
-        self.assertIn("Utløsende effekt", project_desc.content)
+        self.assertIn("trigger effect", project_desc.content)
 
     def test_seed_creates_and_updates_templates(self):
         from agent_skills.seed_skills import seed_system_skills
@@ -264,7 +264,7 @@ class SeedSystemSkillsTests(TestCase):
         seed_system_skills()
 
         skill = AgentSkill.objects.get(
-            slug="rcn-qualification-grant", level="system"
+            slug="rcn-qualification-grant-drafter", level="system"
         )
         self.assertEqual(skill.templates.count(), 2)
 

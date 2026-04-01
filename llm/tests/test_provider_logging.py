@@ -169,7 +169,7 @@ class StreamLoggingTests(SimpleTestCase):
         model._client.stream.side_effect = ConnectionError("Network error")
         request = _make_request()
 
-        with self.assertLogs("llm.core.providers.base", level="ERROR") as cm:
+        with self.assertLogs("llm.core.providers.base", level="WARNING") as cm:
             events = list(model.stream(request))
 
         log_output = "\n".join(cm.output)
