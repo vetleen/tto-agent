@@ -265,7 +265,7 @@
         <span>Your monthly usage budget has been reached. Usage resets on {{ budget_status.reset_date }}.</span>
       </div>
       {% endif %}
-      <form class="flex gap-2 items-end" id="chat-form">
+      <form class="flex flex-wrap sm:flex-nowrap gap-2 items-end" id="chat-form">
         {# Connection status — left of input #}
         <div id="connection-status" class="flex items-center gap-1.5 shrink-0 self-center" title="Connection status">
           <div id="connection-spinner" class="hidden" role="status">
@@ -317,7 +317,7 @@
         <button
           type="submit"
           id="send-button"
-          class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed self-end"
+          class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed self-end ml-auto sm:ml-0"
           style="height: 2.5rem;"
         >
           Send
@@ -325,7 +325,7 @@
         <button
           type="button"
           id="stop-button"
-          class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none hidden self-end"
+          class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none hidden self-end ml-auto sm:ml-0"
           style="height: 2.5rem;"
         >
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
