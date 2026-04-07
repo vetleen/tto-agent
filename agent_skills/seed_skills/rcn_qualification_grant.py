@@ -31,7 +31,8 @@ each corresponding to an evaluation criterion:
 
 ## Phase 1 — Information gathering
 
-Search the attached data room for evidence covering the full checklist below. \
+Evaluate user included data (message, attached data room or uploaded documents) \
+for evidence covering the full checklist below. \
 The checklist is organised to match the three sections of the RCN project \
 description template. For every item, note what you found and where \
 (document + page/section).
@@ -75,8 +76,6 @@ stakeholders/partners, key resources
 27. Team members, roles, and relevant experience
 28. External expertise, sub-contractors, and collaboration setup
 29. Triggering effect — why public funding is necessary
-
-Present a brief summary of findings to the user before moving to Phase 2.
 
 ## Phase 2 — Gap analysis disposition
 
@@ -140,7 +139,8 @@ sizes, statistics, research findings, regulatory requirements, competitive \
 comparisons — should cite its source inline (e.g., "(Kilde: Report Name, \
 2025)" or "(Source: Author, Year)"). When in doubt, add a reference; the \
 user can always remove unnecessary ones later. Unreferenced claims weaken \
-credibility with evaluators.
+credibility with evaluators. Prefer original sources, so let's say a market \
+report cites a market size from a webpage, cite that webpage, as the market report did.
 
 Draft section by section, pausing after each major section (1, 2, 3) to let \
 the user review and provide feedback before continuing.""",
