@@ -44,7 +44,7 @@
           {% if budget_status %}
           <div class="hidden md:flex items-center md:order-1 mx-4 flex-1 justify-center">
             <a href="{% url 'accounts:usage' %}" class="flex items-center gap-2 group" title="${{ budget_status.effective_spend|floatformat:2 }} / ${{ budget_status.effective_budget|floatformat:2 }}">
-              <span class="text-xs text-body group-hover:text-heading whitespace-nowrap">My usage ({{ budget_status.month_name }})</span>
+              <span class="text-xs text-body group-hover:text-heading whitespace-nowrap">{{ budget_status.month_name }} usage</span>
               <div class="w-24 bg-neutral-tertiary rounded-full h-2">
                 <div class="h-2 rounded-full {% if budget_status.percentage >= 90 %}bg-danger{% elif budget_status.percentage >= 75 %}bg-warning{% else %}bg-brand{% endif %}" style="width: {{ budget_status.percentage }}%"></div>
               </div>
