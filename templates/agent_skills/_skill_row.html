@@ -32,6 +32,12 @@ opacity propagates to all descendants and cannot be undone on a child.
       <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
         {% if row.can_edit %}View &amp; edit{% else %}View{% endif %}
       </a>
+      <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=row.skill.id %}" class="p-0">
+        {% csrf_token %}
+        <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+          Edit in chat
+        </button>
+      </form>
       <button type="button" class="skill-toggle-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
         {% if row.is_enabled %}Disable{% else %}Enable{% endif %}
       </button>

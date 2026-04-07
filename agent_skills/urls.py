@@ -12,4 +12,9 @@ urlpatterns = [
     path("<uuid:skill_id>/promote/", views.skills_promote, name="agent_skills_promote"),
     path("<uuid:skill_id>/delete/", views.skills_delete, name="agent_skills_delete"),
     path("<uuid:skill_id>/toggle/", views.skills_toggle, name="agent_skills_toggle"),
+    path(
+        "<uuid:skill_id>/edit-in-chat/",
+        views.skills_edit_in_chat,
+        name="agent_skills_edit_in_chat",
+    ),
 ]

@@ -537,6 +537,7 @@
   const USER_INITIAL = "{{ user.email|first|upper }}";
   const STREAM_TIMEOUT_MS = 660000;
   const CHAT_HOME = "{% url 'chat_home' %}";
+  const PENDING_INITIAL_TURN = {{ pending_initial_turn|yesno:"true,false" }};
 
   // -- Model selector state --
   const MODEL_CHOICES = JSON.parse('{{ model_choices_json|escapejs }}');
@@ -2014,6 +2015,28 @@
   if (document.getElementById('budget-exceeded-banner')) { input.disabled = true; button.disabled = true; }
   setTimeout(scrollToBottom, 100);
   window.addEventListener("beforeunload", disconnect);
+
+  // If the server seeded an opening turn for this thread (e.g. from
+  // "Edit skill in chat"), show the assistant bubble + spinner immediately
+  // so the user has instant feedback while the seed turn is dispatched.
+  // The spinner is replaced by tokens as soon as message_start arrives.
+  if (PENDING_INITIAL_TURN) {
+    scrollContainer.classList.add('flex-1');
+    if (scrollContainer.firstElementChild) scrollContainer.firstElementChild.classList.add('py-6');
+    var inputArea0 = document.getElementById('chat-input-area');
+    if (inputArea0) inputArea0.classList.add('border-t', 'border-default');
+    var ph0 = messagesContainer.querySelector('[data-placeholder="true"]');
+    if (ph0) ph0.remove();
+    currentStreamingElement = createAssistantBubble();
+    messagesContainer.appendChild(currentStreamingElement);
+    accumulatedContent = "";
+    locked = true;
+    input.disabled = true;
+    button.disabled = true;
+    button.classList.add("hidden");
+    stopButton.classList.remove("hidden");
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+  }
 
   // -- Canvas --
   var canvasPanel = document.getElementById("canvas-panel");

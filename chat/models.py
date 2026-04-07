@@ -40,6 +40,12 @@ class ChatThread(models.Model):
     is_archived = models.BooleanField(default=False)
     emoji = models.CharField(max_length=8, blank=True, default="")
 
+    # Generic per-thread context bag for features like edit-in-chat.
+    # Known keys:
+    #   - source_skill_id (str UUID): the skill being edited (or its fork)
+    #   - pending_initial_turn (bool): trigger an assistant turn on next load
+    metadata = models.JSONField(default=dict, blank=True)
+
     # Rolling summary of older messages
     summary = models.TextField(blank=True, default="")
     summary_token_count = models.PositiveIntegerField(default=0)
@@ -96,6 +102,9 @@ class ChatMessage(models.Model):
     metadata = models.JSONField(default=dict, blank=True)
     token_count = models.PositiveIntegerField(default=0)
     is_redacted = models.BooleanField(default=False)
+    # Server-injected messages that should be sent to the LLM but not rendered
+    # in the chat UI (e.g. seed messages from "edit skill in chat").
+    is_hidden_from_user = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

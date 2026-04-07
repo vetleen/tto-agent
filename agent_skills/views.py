@@ -473,6 +473,79 @@ def skills_delete(request, skill_id):
 
 @login_required
 @require_POST
+def skills_edit_in_chat(request, skill_id):
+    """Open the target skill in a fresh chat thread with Skill Creator attached.
+
+    Creates a thread, pre-loads description + instructions into canvases,
+    persists a hidden seed message that primes Wilfred to greet the user
+    and reference the skill's current state, and redirects to the chat
+    page where the consumer auto-fires the first assistant turn.
+    """
+    from urllib.parse import urlencode
+
+    from django.urls import reverse
+
+    from agent_skills.tools import load_skill_field_into_canvas
+    from chat.models import ChatMessage, ChatThread
+
+    target = get_skill_for_user(request.user, str(skill_id))
+    if target is None:
+        messages.error(request, "Skill not found.")
+        return redirect("agent_skills_list")
+
+    skill_creator = AgentSkill.objects.filter(
+        slug="skill-creator", level="system", is_active=True,
+    ).first()
+    if skill_creator is None:
+        logger.error("Skill Creator system skill not found — cannot start edit-in-chat session")
+        messages.error(
+            request,
+            "Editing in chat is unavailable right now (Skill Creator skill is missing).",
+        )
+        return redirect("agent_skills_list")
+
+    thread = ChatThread.objects.create(
+        created_by=request.user,
+        skill=skill_creator,
+        title=f"Editing {target.name}",
+        metadata={
+            "source_skill_id": str(target.id),
+            "pending_initial_turn": True,
+        },
+    )
+
+    load_skill_field_into_canvas(thread.id, target, "description")
+    # Load instructions LAST so it ends up as the active canvas (set_active_canvas
+    # is called inside the helper and the latest call wins).
+    load_skill_field_into_canvas(thread.id, target, "instructions")
+
+    tier_label = _LEVEL_DISPLAY.get(target.level, target.level)
+    tools_label = ", ".join(target.tool_names) if target.tool_names else "none"
+    seed_content = (
+        f"The user opened this thread to edit the **{target.name}** skill "
+        f"({tier_label} tier, slug `{target.slug}`). I've pre-loaded its "
+        f"description and instructions into canvases titled "
+        f"\"{target.name} \u2014 description\" and \"{target.name} \u2014 instructions\" "
+        f"— both are ready for editing. "
+        f"Current name: \"{target.name}\". Current tools: {tools_label}. "
+        f"The user can edit any of these via chat or the canvases. "
+        f"Greet the user warmly and ask what they'd like to change about "
+        f"the {target.name} skill. Don't list everything — just open the "
+        f"conversation."
+    )
+    ChatMessage.objects.create(
+        thread=thread,
+        role="user",
+        content=seed_content,
+        is_hidden_from_user=True,
+    )
+
+    target_url = f"{reverse('chat_home')}?{urlencode({'thread': str(thread.id)})}"
+    return redirect(target_url)
+
+
+@login_required
+@require_POST
 def skills_toggle(request, skill_id):
     skill = get_skill_for_user(request.user, str(skill_id))
     if skill is None:

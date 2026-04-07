@@ -56,7 +56,10 @@ def chat_home(request):
             if thread.is_archived:
                 thread.is_archived = False
                 thread.save(update_fields=["is_archived"])
-            chat_messages = list(thread.messages.order_by("created_at")[:100])
+            chat_messages = list(
+                thread.messages.filter(is_hidden_from_user=False)
+                .order_by("created_at")[:100]
+            )
 
             # Annotate user messages with attachment filenames for rendering
             msg_ids = [m.pk for m in chat_messages if m.role == "user"]
@@ -136,6 +139,10 @@ def chat_home(request):
         for m in prefs.allowed_models
     ]
 
+    pending_initial_turn = bool(
+        thread and (thread.metadata or {}).get("pending_initial_turn")
+    )
+
     return render(
         request,
         "chat/chat.html",
@@ -153,6 +160,7 @@ def chat_home(request):
             "default_model_display": get_display_name(prefs.top_model),
             "thread_tasks_json": thread_tasks_json,
             "thread_cost_usd": thread_cost_usd,
+            "pending_initial_turn": pending_initial_turn,
         },
     )
 
