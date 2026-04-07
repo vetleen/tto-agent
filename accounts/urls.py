@@ -24,6 +24,7 @@ from .views.settings import (
     org_subagents_update,
     org_tools_update,
     org_transcription_model_update,
+    org_usage_page,
     preferences_max_context_update,
     preferences_models_update,
     preferences_transcription_model_update,
@@ -61,6 +62,7 @@ urlpatterns = [
     path("org/settings/allowed-transcription-models/", org_allowed_transcription_models_update, name="org_allowed_transcription_models_update"),
     path("org/settings/description/", org_description_update, name="org_description_update"),
     path("org/settings/transcription-model/", org_transcription_model_update, name="org_transcription_model_update"),
+    path("org/usage/", org_usage_page, name="org_usage"),
     path("delete/", delete_account, name="account_delete"),
     path(
         "password_change/",
