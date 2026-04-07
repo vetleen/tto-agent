@@ -3,7 +3,7 @@
 import json
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Membership, Organization, UserSettings
@@ -195,6 +195,46 @@ class SkillsSaveViewTests(TestCase):
         self._post("save", templates_json="[]")
         self.assertEqual(self.skill.templates.count(), 0)
 
+    def test_save_rejects_duplicate_template_names(self):
+        """Two templates with the same name should fail validation cleanly."""
+        templates_json = json.dumps([
+            {"id": None, "name": "Same", "content": "A"},
+            {"id": None, "name": "Same", "content": "B"},
+        ])
+        self.client.force_login(self.user)
+        # Pre-existing template that should NOT be touched on validation failure.
+        SkillTemplate.objects.create(skill=self.skill, name="Existing", content="x")
+
+        response = self._post("save", templates_json=templates_json)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse("agent_skills_detail", kwargs={"skill_id": self.skill.id}),
+        )
+
+        # The skill must be untouched: name unchanged, existing template intact.
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.name, "My Skill")
+        self.assertEqual(self.skill.templates.count(), 1)
+        self.assertEqual(self.skill.templates.first().name, "Existing")
+
+    def test_save_handles_remove_then_rename_collision(self):
+        """Removing B and renaming A→B in the same submission should work."""
+        a = SkillTemplate.objects.create(skill=self.skill, name="A", content="ca")
+        SkillTemplate.objects.create(skill=self.skill, name="B", content="cb")
+        templates_json = json.dumps([
+            {"id": str(a.id), "name": "B", "content": "ca"},
+        ])
+        self.client.force_login(self.user)
+        response = self._post("save", templates_json=templates_json)
+        self.assertEqual(response.status_code, 302)
+
+        templates = list(self.skill.templates.all())
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0].pk, a.pk)
+        self.assertEqual(templates[0].name, "B")
+        self.assertEqual(templates[0].content, "ca")
+
     def test_non_owner_save_forbidden(self):
         outsider = User.objects.create_user(email="o2@example.com", password="pw")
         outsider.email_verified = True
@@ -204,6 +244,176 @@ class SkillsSaveViewTests(TestCase):
         # get_skill_for_user returns None → redirect to list, not 403.
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response["Location"], reverse("agent_skills_list"))
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class SkillsCopyWorkflowTests(TransactionTestCase):
+    """End-to-end tests for the detail-page Copy buttons.
+
+    Uses ``TransactionTestCase`` so each ORM call commits in autocommit
+    mode — matching production. With a regular ``TestCase`` the outer
+    transaction would be poisoned by an ``IntegrityError`` raised inside
+    ``_apply_skill_form``, masking the real-world behaviour.
+    """
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="cw@example.com", password="pw")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="CW Org", slug="cw-org")
+        Membership.objects.create(
+            user=self.user, org=self.org, role=Membership.Role.ADMIN
+        )
+
+        # System skill with two templates and a tool — exactly the kind of
+        # rich source skill a user would copy from the detail page.
+        self.source = AgentSkill.objects.create(
+            slug="rich-source",
+            name="Rich Source",
+            description="A rich source skill.",
+            instructions="Do the rich thing.",
+            tool_names=["create_skill"],
+            level="system",
+        )
+        self.t1 = SkillTemplate.objects.create(
+            skill=self.source, name="Template A", content="Body A"
+        )
+        self.t2 = SkillTemplate.objects.create(
+            skill=self.source, name="Template B", content="Body B"
+        )
+
+    def _detail_payload(self, action: str, **overrides):
+        """Build the POST payload the detail page would submit.
+
+        Mirrors what ``skills_detail.html`` renders into the form: the
+        ``templates_json`` carries the *source* template UUIDs (because
+        the JS reads them straight from the server-rendered hidden input).
+        """
+        payload = {
+            "action": action,
+            "name": overrides.get("name", self.source.name),
+            "description": overrides.get("description", self.source.description),
+            "instructions": overrides.get("instructions", self.source.instructions),
+            "tool_names_json": overrides.get(
+                "tool_names_json", json.dumps(list(self.source.tool_names))
+            ),
+            "templates_json": overrides.get(
+                "templates_json",
+                json.dumps([
+                    {"id": str(self.t1.id), "name": self.t1.name, "content": self.t1.content},
+                    {"id": str(self.t2.id), "name": self.t2.name, "content": self.t2.content},
+                ]),
+            ),
+        }
+        return payload
+
+    def test_save_as_user_preserves_templates(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.source.id}),
+            self._detail_payload("save_as_user"),
+        )
+        self.assertEqual(response.status_code, 302)
+
+        copies = AgentSkill.objects.filter(level="user", created_by=self.user)
+        self.assertEqual(copies.count(), 1)
+        copy = copies.first()
+        self.assertEqual(copy.name, "Rich Source")
+        self.assertEqual(copy.instructions, "Do the rich thing.")
+        self.assertEqual(copy.description, "A rich source skill.")
+        self.assertEqual(copy.tool_names, ["create_skill"])
+        self.assertEqual(copy.parent, self.source)
+
+        templates = list(copy.templates.order_by("name"))
+        self.assertEqual(
+            len(templates), 2,
+            "Templates were lost when copying via the detail page form.",
+        )
+        self.assertEqual(templates[0].name, "Template A")
+        self.assertEqual(templates[0].content, "Body A")
+        self.assertEqual(templates[1].name, "Template B")
+        self.assertEqual(templates[1].content, "Body B")
+
+        # Source must be untouched.
+        self.assertEqual(self.source.templates.count(), 2)
+
+    def test_save_as_org_preserves_templates(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.source.id}),
+            self._detail_payload("save_as_org"),
+        )
+        self.assertEqual(response.status_code, 302)
+
+        org_copies = AgentSkill.objects.filter(level="org", organization=self.org)
+        self.assertEqual(org_copies.count(), 1)
+        copy = org_copies.first()
+        self.assertEqual(copy.name, "Rich Source")
+        self.assertEqual(copy.instructions, "Do the rich thing.")
+        self.assertEqual(copy.description, "A rich source skill.")
+        self.assertEqual(copy.tool_names, ["create_skill"])
+        self.assertEqual(copy.parent, self.source)
+
+        templates = list(copy.templates.order_by("name"))
+        self.assertEqual(
+            len(templates), 2,
+            "Templates were lost when promoting via the detail page form.",
+        )
+        self.assertEqual(templates[0].name, "Template A")
+        self.assertEqual(templates[0].content, "Body A")
+        self.assertEqual(templates[1].name, "Template B")
+        self.assertEqual(templates[1].content, "Body B")
+
+        # Source must be untouched.
+        self.assertEqual(self.source.templates.count(), 2)
+
+    def test_save_as_user_uses_edited_form_values(self):
+        """If the form data differs from the source, the copy reflects the form."""
+        self.client.force_login(self.user)
+        edited_templates = json.dumps([
+            {"id": str(self.t1.id), "name": "Template A", "content": "Edited A"},
+            {"id": None, "name": "Template C", "content": "Body C"},
+        ])
+        response = self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.source.id}),
+            self._detail_payload(
+                "save_as_user",
+                name="My Edited Copy",
+                instructions="Edited instructions.",
+                templates_json=edited_templates,
+            ),
+        )
+        self.assertEqual(response.status_code, 302)
+
+        copy = AgentSkill.objects.get(level="user", created_by=self.user)
+        self.assertEqual(copy.name, "My Edited Copy")
+        self.assertEqual(copy.instructions, "Edited instructions.")
+
+        templates = {t.name: t.content for t in copy.templates.all()}
+        self.assertEqual(templates, {"Template A": "Edited A", "Template C": "Body C"})
+
+    def test_standalone_copy_url_preserves_templates(self):
+        """The dropdown-menu Copy URL must also preserve templates."""
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("agent_skills_copy", kwargs={"skill_id": self.source.id})
+        )
+        self.assertEqual(response.status_code, 302)
+
+        copy = AgentSkill.objects.get(level="user", created_by=self.user)
+        self.assertEqual(copy.templates.count(), 2)
+
+    def test_standalone_promote_url_preserves_templates(self):
+        """The dropdown-menu Promote URL must also preserve templates."""
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("agent_skills_promote", kwargs={"skill_id": self.source.id})
+        )
+        self.assertEqual(response.status_code, 302)
+
+        copy = AgentSkill.objects.get(level="org", organization=self.org)
+        self.assertEqual(copy.templates.count(), 2)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

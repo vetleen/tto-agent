@@ -99,11 +99,11 @@
       </button>
       {% endif %}
       <button type="button" id="save-as-user-btn" class="bg-neutral-secondary-medium hover:bg-neutral-tertiary border border-default text-heading font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
-        {% if editable %}Save as a new copy{% else %}Copy this skill{% endif %}
+        Copy as personal skill
       </button>
       {% if is_org_admin and skill.level != "org" %}
       <button type="button" id="save-as-org-btn" class="bg-neutral-secondary-medium hover:bg-neutral-tertiary border border-default text-heading font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
-        Save as organization skill
+        Copy as organization skill
       </button>
       {% endif %}
       {% if editable %}

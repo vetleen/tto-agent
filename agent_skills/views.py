@@ -300,14 +300,43 @@ def _filter_skill_tools(tool_names: list[str]) -> list[str]:
     return out
 
 
+class SkillFormValidationError(Exception):
+    """Raised by ``_apply_skill_form`` when the submitted form is invalid.
+
+    The view catches this and surfaces ``args[0]`` to the user via the
+    Django messages framework.
+    """
+
+
 def _apply_skill_form(skill: AgentSkill, request) -> None:
-    """Update fields, tools, and templates from POST data on ``skill``."""
+    """Update fields, tools, and templates from POST data on ``skill``.
+
+    Raises ``SkillFormValidationError`` if the submission is structurally
+    invalid (e.g. two templates share the same name). Any other database
+    error propagates — silently swallowing them previously hid a bug where
+    every template on a freshly-copied skill was deleted.
+    """
     name = (request.POST.get("name") or skill.name).strip() or skill.name
     description = request.POST.get("description") or ""
     instructions = request.POST.get("instructions") or ""
     tool_names = _filter_skill_tools(
         _parse_tool_names_json(request.POST.get("tool_names_json", ""))
     )
+
+    # Reconcile templates: incoming list is the source of truth.
+    incoming = _parse_templates_json(request.POST.get("templates_json", ""))
+
+    # Validate within-submission name uniqueness BEFORE writing anything.
+    # The (skill, name) DB constraint would otherwise raise mid-loop and
+    # leave the skill in a half-updated state.
+    seen_names: set[str] = set()
+    for entry in incoming:
+        if entry["name"] in seen_names:
+            raise SkillFormValidationError(
+                f"Two templates share the name '{entry['name']}'. "
+                "Template names must be unique within a skill."
+            )
+        seen_names.add(entry["name"])
 
     skill.name = name[:255]
     skill.description = description[:1024]
@@ -317,33 +346,27 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
         "name", "description", "instructions", "tool_names", "updated_at",
     ])
 
-    # Reconcile templates: incoming list is the source of truth.
-    incoming = _parse_templates_json(request.POST.get("templates_json", ""))
-    keep_ids: set[str] = set()
+    # Delete templates the user removed BEFORE updating kept ones, so a
+    # rename like "remove B, rename A→B" doesn't trip the unique constraint.
+    keep_existing_ids: set[str] = set()
     for entry in incoming:
         tmpl_id = entry["id"]
-        if tmpl_id:
-            try:
-                tmpl = skill.templates.get(pk=tmpl_id)
-            except SkillTemplate.DoesNotExist:
-                tmpl = None
-            if tmpl is not None:
-                tmpl.name = entry["name"]
-                tmpl.content = entry["content"]
-                tmpl.save(update_fields=["name", "content", "updated_at"])
-                keep_ids.add(str(tmpl.pk))
-                continue
-        # Create new (no id, or stale id).
-        try:
-            new_tmpl = SkillTemplate.objects.create(
+        if tmpl_id and skill.templates.filter(pk=tmpl_id).exists():
+            keep_existing_ids.add(str(tmpl_id))
+    skill.templates.exclude(pk__in=keep_existing_ids).delete()
+
+    # Update kept templates and create new ones.
+    for entry in incoming:
+        tmpl_id = entry["id"]
+        if tmpl_id and str(tmpl_id) in keep_existing_ids:
+            tmpl = skill.templates.get(pk=tmpl_id)
+            tmpl.name = entry["name"]
+            tmpl.content = entry["content"]
+            tmpl.save(update_fields=["name", "content", "updated_at"])
+        else:
+            SkillTemplate.objects.create(
                 skill=skill, name=entry["name"], content=entry["content"],
             )
-            keep_ids.add(str(new_tmpl.pk))
-        except Exception:
-            logger.exception("Failed to create template for skill %s", skill.pk)
-
-    # Delete templates not in the incoming set.
-    skill.templates.exclude(pk__in=keep_ids).delete()
 
 
 @login_required
@@ -358,14 +381,26 @@ def skills_save(request, skill_id):
     if action == "save":
         if not can_edit_skill(request.user, skill):
             return HttpResponseForbidden("Cannot edit this skill.")
-        _apply_skill_form(skill, request)
+        try:
+            _apply_skill_form(skill, request)
+        except SkillFormValidationError as exc:
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
         messages.success(request, f"Saved '{skill.name}'.")
         return redirect("agent_skills_detail", skill_id=skill.id)
 
     if action == "save_as_user":
         # Make a user copy first, then write the form data into it.
-        copy = fork_skill(request.user, skill)
-        _apply_skill_form(copy, request)
+        # ``copy_templates=False`` because _apply_skill_form will recreate
+        # the templates from the submitted form data — letting fork_skill
+        # also copy them would trip the unique_template_per_skill constraint.
+        copy = fork_skill(request.user, skill, copy_templates=False)
+        try:
+            _apply_skill_form(copy, request)
+        except SkillFormValidationError as exc:
+            copy.delete()
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
         messages.success(request, f"Saved as new copy '{copy.name}'.")
         return redirect("agent_skills_detail", skill_id=copy.id)
 
@@ -374,10 +409,17 @@ def skills_save(request, skill_id):
         if not _is_org_admin(request.user, org):
             return HttpResponseForbidden("Org admin required.")
         try:
-            promoted = promote_skill_to_org(request.user, skill, org)
+            promoted = promote_skill_to_org(
+                request.user, skill, org, copy_templates=False
+            )
         except PermissionError:
             return HttpResponseForbidden("Org admin required.")
-        _apply_skill_form(promoted, request)
+        try:
+            _apply_skill_form(promoted, request)
+        except SkillFormValidationError as exc:
+            promoted.delete()
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
         messages.success(request, f"Saved as organization skill '{promoted.name}'.")
         return redirect("agent_skills_detail", skill_id=promoted.id)
 

@@ -217,7 +217,9 @@ def _next_user_skill_name(user, source_name: str) -> str:
     return f"{base} ({n})"
 
 
-def fork_skill(user, source_skill: AgentSkill) -> AgentSkill:
+def fork_skill(
+    user, source_skill: AgentSkill, *, copy_templates: bool = True
+) -> AgentSkill:
     """Fork a skill to a user-level copy, including templates.
 
     Parent semantics:
@@ -229,6 +231,11 @@ def fork_skill(user, source_skill: AgentSkill) -> AgentSkill:
     The new skill's name receives a ``(1)``/``(2)`` suffix so the user can
     distinguish many copies. The slug uses the existing ``-1``/``-2``
     deduplication.
+
+    ``copy_templates`` defaults to True for callers that want a complete
+    standalone copy. The detail-page form action passes ``False`` because
+    it then re-creates the templates from the submitted form data; copying
+    them here would clash with the ``unique_template_per_skill`` constraint.
     """
     new_name = _next_user_skill_name(user, source_skill.name)
 
@@ -253,12 +260,13 @@ def fork_skill(user, source_skill: AgentSkill) -> AgentSkill:
         parent=parent,
     )
 
-    for tmpl in source_skill.templates.all():
-        SkillTemplate.objects.create(
-            skill=new_skill,
-            name=tmpl.name,
-            content=tmpl.content,
-        )
+    if copy_templates:
+        for tmpl in source_skill.templates.all():
+            SkillTemplate.objects.create(
+                skill=new_skill,
+                name=tmpl.name,
+                content=tmpl.content,
+            )
 
     return new_skill
 
@@ -354,12 +362,19 @@ def create_org_skill(user, name: str, organization, slug: str | None = None) -> 
     )
 
 
-def promote_skill_to_org(user, source_skill: AgentSkill, organization) -> AgentSkill:
+def promote_skill_to_org(
+    user, source_skill: AgentSkill, organization, *, copy_templates: bool = True
+) -> AgentSkill:
     """Create an org-level copy of ``source_skill`` (or a no-op if already org).
 
-    The caller must be an admin of ``organization``. Templates are copied.
-    The new skill's ``parent`` points back to the source so the link is
-    preserved.
+    The caller must be an admin of ``organization``. Templates are copied
+    by default. The new skill's ``parent`` points back to the source so the
+    link is preserved.
+
+    ``copy_templates`` defaults to True for callers that want a complete
+    standalone copy. The detail-page form action passes ``False`` because
+    it then re-creates the templates from the submitted form data; copying
+    them here would clash with the ``unique_template_per_skill`` constraint.
     """
     from accounts.models import Membership
 
@@ -393,11 +408,12 @@ def promote_skill_to_org(user, source_skill: AgentSkill, organization) -> AgentS
         parent=source_skill,
     )
 
-    for tmpl in source_skill.templates.all():
-        SkillTemplate.objects.create(
-            skill=new_skill,
-            name=tmpl.name,
-            content=tmpl.content,
-        )
+    if copy_templates:
+        for tmpl in source_skill.templates.all():
+            SkillTemplate.objects.create(
+                skill=new_skill,
+                name=tmpl.name,
+                content=tmpl.content,
+            )
 
     return new_skill

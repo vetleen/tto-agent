@@ -59,7 +59,7 @@
       }
       var removeBtn = node.querySelector(".remove-tool-btn");
       if (!editable) {
-        removeBtn.classList.add("hidden");
+        removeBtn.remove();
       } else {
         removeBtn.addEventListener("click", function () {
           toolNames = toolNames.filter(function (n) {
@@ -145,21 +145,22 @@
       if (!editable) {
         nameInput.setAttribute("readonly", "");
         contentInput.setAttribute("readonly", "");
-        removeBtn.classList.add("hidden");
+        removeBtn.remove();
+      } else {
+        nameInput.addEventListener("input", function () {
+          templates[idx].name = nameInput.value;
+          syncTemplatesInput();
+        });
+        contentInput.addEventListener("input", function () {
+          templates[idx].content = contentInput.value;
+          syncTemplatesInput();
+        });
+        removeBtn.addEventListener("click", function () {
+          templates.splice(idx, 1);
+          syncTemplatesInput();
+          renderTemplates();
+        });
       }
-      nameInput.addEventListener("input", function () {
-        templates[idx].name = nameInput.value;
-        syncTemplatesInput();
-      });
-      contentInput.addEventListener("input", function () {
-        templates[idx].content = contentInput.value;
-        syncTemplatesInput();
-      });
-      removeBtn.addEventListener("click", function () {
-        templates.splice(idx, 1);
-        syncTemplatesInput();
-        renderTemplates();
-      });
       templateListEl.appendChild(node);
     });
   }

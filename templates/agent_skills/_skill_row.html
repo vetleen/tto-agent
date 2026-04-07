@@ -1,13 +1,18 @@
 {% load static %}
-<div class="skill-row flex items-start w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if not row.is_enabled %}opacity-50{% endif %}"
+{% comment %}
+Opacity is applied to individual content elements (not the row) so the
+dropdown menu stays fully opaque even when the skill is disabled. CSS
+opacity propagates to all descendants and cannot be undone on a child.
+{% endcomment %}
+<div class="skill-row flex items-start w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group"
      data-skill-id="{{ row.skill.id }}"
      data-skill-slug="{{ row.skill.slug }}"
      data-toggle-url="{% url 'agent_skills_toggle' skill_id=row.skill.id %}">
   <input type="checkbox"
-         class="skill-toggle mt-1 w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0"
+         class="skill-toggle mt-1 w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0 {% if not row.is_enabled %}opacity-50{% endif %}"
          {% if row.is_enabled %}checked{% endif %}
          aria-label="Enable {{ row.skill.name }}">
-  <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="flex-1 min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand rounded-base">
+  <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="flex-1 min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand rounded-base {% if not row.is_enabled %}opacity-50{% endif %}">
     <div class="flex items-center min-w-0">
       <span class="truncate font-medium text-heading" title="{{ row.skill.name }}">{{ row.skill.name|truncatechars:80 }}</span>
     </div>
@@ -18,7 +23,7 @@
     <p class="text-xs italic text-body mt-0.5 conflict-label">{{ row.conflict_label }}</p>
     {% endif %}
   </a>
-  <span class="shrink-0 ms-3 text-xs text-body text-right whitespace-nowrap mt-0.5">{{ row.relative_date }}</span>
+  <span class="shrink-0 ms-3 text-xs text-body text-right whitespace-nowrap mt-0.5 {% if not row.is_enabled %}opacity-50{% endif %}">{{ row.relative_date }}</span>
   <div class="relative shrink-0 ms-2">
     <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Skill options" data-dropdown-toggle="dropdown-skill-{{ row.skill.id }}">
       <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
@@ -33,14 +38,14 @@
       <form method="post" action="{% url 'agent_skills_copy' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
-          Copy this skill
+          Copy as personal skill
         </button>
       </form>
       {% if is_org_admin and row.skill.level != "org" %}
       <form method="post" action="{% url 'agent_skills_promote' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
-          Save as organization skill
+          Copy as organization skill
         </button>
       </form>
       {% endif %}
