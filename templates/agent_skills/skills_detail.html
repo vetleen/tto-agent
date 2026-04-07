@@ -2,6 +2,7 @@
 {% load static %}
 {% block body_class %}pt-16 bg-neutral-primary min-h-screen{% endblock %}
 {% block content %}
+{% include "_markdown_styles.html" %}
 <div class="max-w-4xl mx-auto px-4 py-10">
   {% if messages %}
   <ul class="mb-6 space-y-2">
@@ -40,21 +41,39 @@
 
     {# ----- Description ----- #}
     <section class="p-6 bg-neutral-primary-soft border border-default rounded-base">
-      <label for="skill-description" class="block mb-2 text-sm font-medium text-heading">Description</label>
+      <div class="flex items-center justify-between mb-2">
+        <label for="skill-description" class="text-sm font-medium text-heading">Description</label>
+        {% if editable %}
+        <button type="button" id="description-preview-btn" title="Toggle preview" class="inline-flex items-center gap-1 cursor-pointer px-2 py-1 rounded-base text-xs text-body hover:text-heading hover:bg-neutral-tertiary">
+          <span>Preview</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+        </button>
+        {% endif %}
+      </div>
       <textarea name="description" id="skill-description" rows="3" maxlength="1024"
                 placeholder="Short summary of what this skill does..."
                 {% if not editable %}readonly{% endif %}
                 class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body {% if not editable %}cursor-not-allowed{% endif %}">{{ skill.description }}</textarea>
+      <div id="description-preview" class="hidden w-full rounded-base border border-input px-3 py-2 text-sm text-body markdown-content overflow-y-auto" style="min-height: 5rem;"></div>
     </section>
 
     {# ----- Instructions ----- #}
     <section class="p-6 bg-neutral-primary-soft border border-default rounded-base">
-      <label for="skill-instructions" class="block mb-2 text-sm font-medium text-heading">Instructions</label>
+      <div class="flex items-center justify-between mb-2">
+        <label for="skill-instructions" class="text-sm font-medium text-heading">Instructions</label>
+        {% if editable %}
+        <button type="button" id="instructions-preview-btn" title="Toggle preview" class="inline-flex items-center gap-1 cursor-pointer px-2 py-1 rounded-base text-xs text-body hover:text-heading hover:bg-neutral-tertiary">
+          <span>Preview</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+        </button>
+        {% endif %}
+      </div>
       <p class="text-xs text-body mb-2">The system prompt the assistant follows when this skill is active. Markdown is supported.</p>
       <textarea name="instructions" id="skill-instructions" rows="14"
                 placeholder="You are a helpful assistant for..."
                 {% if not editable %}readonly{% endif %}
                 class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body font-mono {% if not editable %}cursor-not-allowed{% endif %}">{{ skill.instructions }}</textarea>
+      <div id="instructions-preview" class="hidden w-full rounded-base border border-input px-3 py-2 text-sm text-body markdown-content overflow-y-auto" style="min-height: 14rem;"></div>
     </section>
 
     {# ----- Tools ----- #}
@@ -90,7 +109,12 @@
         {# Populated by JS from templates-json #}
       </div>
     </section>
+  </form>
 
+  {# Action bar lives outside #skill-detail-form so the Edit-in-chat / Delete  #}
+  {# inner forms are real top-level forms (HTML5 ignores nested <form> tags).  #}
+  {# Save / Copy buttons still work — they call form.submit() via JS by ID.    #}
+  <div class="space-y-6">
     {# ----- Action bar ----- #}
     <div class="flex flex-wrap items-center gap-3 pt-2">
       {% if editable %}
@@ -98,6 +122,13 @@
         Save
       </button>
       {% endif %}
+      <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=skill.id %}" class="m-0">
+        {% csrf_token %}
+        <button type="submit" class="inline-flex items-center gap-1.5 bg-neutral-secondary-medium hover:bg-neutral-tertiary border border-default text-heading font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+          Edit in chat
+        </button>
+      </form>
       <button type="button" id="save-as-user-btn" class="bg-neutral-secondary-medium hover:bg-neutral-tertiary border border-default text-heading font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
         Copy as personal skill
       </button>
@@ -115,7 +146,7 @@
       </form>
       {% endif %}
     </div>
-  </form>
+  </div>
 
   {# ----- Tool picker modal ----- #}
   <div id="tool-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
@@ -159,11 +190,16 @@
     <div class="template-row p-3 border border-default rounded-base bg-neutral-secondary-soft" data-template-id="">
       <div class="flex items-center gap-2 mb-2">
         <input type="text" class="template-name bg-neutral-secondary-medium border border-default-medium text-heading text-sm font-medium rounded-base focus:ring-brand focus:border-brand block flex-1 px-3 py-2 shadow-xs" placeholder="Template name" maxlength="255">
+        <button type="button" class="template-preview-btn inline-flex items-center gap-1 cursor-pointer px-2 py-1 rounded-base text-xs text-body hover:text-heading hover:bg-neutral-tertiary" title="Toggle preview">
+          <span>Preview</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+        </button>
         <button type="button" class="remove-template-btn inline-flex items-center justify-center w-8 h-8 text-fg-danger hover:bg-danger-soft rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Remove template">
           <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
         </button>
       </div>
       <textarea class="template-content bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs font-mono" rows="6" placeholder="Template content (markdown supported)"></textarea>
+      <div class="template-content-preview hidden w-full rounded-base border border-input px-3 py-2 text-sm text-body markdown-content overflow-y-auto" style="min-height: 9rem;"></div>
     </div>
   </template>
 
@@ -181,5 +217,7 @@
        data-skill-level="{{ skill.level }}"
        data-colleague-count="{{ colleague_count }}"></div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
 <script src="{% static 'js/skills-detail.js' %}"></script>
 {% endblock %}

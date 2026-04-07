@@ -35,6 +35,58 @@
     templates = [];
   }
 
+  // ----- Markdown preview helpers -----
+  var EYE_ICON = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>';
+  var PEN_ICON = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>';
+
+  function renderMarkdown(text) {
+    if (!text) return "";
+    try {
+      var html = marked.parse(text);
+      return DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ["p","br","strong","em","u","s","del","code","pre","ul","ol","li",
+                       "h1","h2","h3","h4","h5","h6","blockquote","a","hr",
+                       "table","thead","tbody","tr","th","td","div","span","sup","section"],
+        ALLOWED_ATTR: ["href","title","target","class","id"]
+      });
+    } catch (e) {
+      return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br>");
+    }
+  }
+
+  // Wires a toggle button (or none, for read-only) to swap between a textarea
+  // and a rendered markdown preview div. If `btn` is null, the field is locked
+  // to preview mode (textarea hidden, no toggle).
+  function setupMarkdownToggle(btn, textarea, preview, startInPreview) {
+    if (!textarea || !preview) return;
+    var mode = !!startInPreview;
+    function apply() {
+      if (mode) {
+        preview.innerHTML = renderMarkdown(textarea.value);
+        preview.classList.remove("hidden");
+        textarea.classList.add("hidden");
+        if (btn) {
+          btn.innerHTML = "<span>Edit</span>" + PEN_ICON;
+          btn.title = "Toggle editing";
+        }
+      } else {
+        preview.classList.add("hidden");
+        textarea.classList.remove("hidden");
+        if (btn) {
+          btn.innerHTML = "<span>Preview</span>" + EYE_ICON;
+          btn.title = "Toggle preview";
+        }
+      }
+    }
+    if (btn) {
+      btn.addEventListener("click", function () {
+        mode = !mode;
+        apply();
+      });
+    }
+    apply();
+  }
+
   // ----- Tools UI -----
   function renderToolChips() {
     toolChipsEl.innerHTML = "";
@@ -139,6 +191,8 @@
       node.setAttribute("data-template-id", entry.id || "");
       var nameInput = node.querySelector(".template-name");
       var contentInput = node.querySelector(".template-content");
+      var contentPreview = node.querySelector(".template-content-preview");
+      var previewToggleBtn = node.querySelector(".template-preview-btn");
       var removeBtn = node.querySelector(".remove-template-btn");
       nameInput.value = entry.name || "";
       contentInput.value = entry.content || "";
@@ -146,6 +200,7 @@
         nameInput.setAttribute("readonly", "");
         contentInput.setAttribute("readonly", "");
         removeBtn.remove();
+        if (previewToggleBtn) previewToggleBtn.remove();
       } else {
         nameInput.addEventListener("input", function () {
           templates[idx].name = nameInput.value;
@@ -162,6 +217,12 @@
         });
       }
       templateListEl.appendChild(node);
+      setupMarkdownToggle(
+        editable ? previewToggleBtn : null,
+        contentInput,
+        contentPreview,
+        !editable
+      );
     });
   }
 
@@ -238,4 +299,19 @@
   // ----- Initial render -----
   renderToolChips();
   renderTemplates();
+
+  // Set up markdown toggles for the static instructions/description fields
+  // (Template rows are wired up inside renderTemplates so they re-attach on add/remove.)
+  setupMarkdownToggle(
+    document.getElementById("instructions-preview-btn"),
+    document.getElementById("skill-instructions"),
+    document.getElementById("instructions-preview"),
+    !editable
+  );
+  setupMarkdownToggle(
+    document.getElementById("description-preview-btn"),
+    document.getElementById("skill-description"),
+    document.getElementById("description-preview"),
+    !editable
+  );
 })();
