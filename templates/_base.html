@@ -56,6 +56,7 @@
             <div class="hidden w-full items-center md:flex md:w-auto" id="navbar-user">
               <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:space-x-6 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
                 <li><a href="{% url 'chat_home' %}" class="{% if request.path|slice:':6' == '/chat/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Chat</a></li>
+                <li><a href="{% url 'agent_skills_list' %}" class="{% if request.path|slice:':8' == '/skills/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Skills</a></li>
                 <li><a href="{% url 'data_room_list' %}" class="{% if request.path|slice:':12' == '/data-rooms/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Data Rooms</a></li>
               </ul>
             </div>

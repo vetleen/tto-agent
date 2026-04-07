@@ -25,6 +25,7 @@ urlpatterns = [
     path("", index, name="index"),
     path("accounts/", include(("accounts.urls", "accounts"), namespace="accounts")),
     path("chat/", include("chat.urls")),
+    path("skills/", include("agent_skills.urls")),
     path("data-rooms/", include("documents.urls")),
     path("admin/", admin.site.urls),
     path("api/feedback/", include("feedback.urls")),
