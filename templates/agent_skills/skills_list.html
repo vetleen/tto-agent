@@ -23,7 +23,7 @@
         <input type="hidden" name="name" value="Untitled skill">
         <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
           <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          New skill
+          New
         </button>
       </form>
     </div>
@@ -31,7 +31,7 @@
       {% for row in user_rows %}
         {% include "agent_skills/_skill_row.html" with row=row section="user" %}
       {% empty %}
-      <p class="px-4 py-6 text-body text-sm">You haven't created any skills yet. Use <strong>New skill</strong> above or <strong>Copy</strong> on a built-in or organization skill to get started.</p>
+      <p class="px-4 py-6 text-body text-sm">You haven't created any skills yet. Use <strong>New</strong> above or <strong>Copy</strong> on a built-in or organization skill to get started.</p>
       {% endfor %}
     </div>
   </section>
@@ -47,7 +47,7 @@
         <input type="hidden" name="name" value="Untitled organization skill">
         <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
           <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          New organization skill
+          New
         </button>
       </form>
       {% endif %}
@@ -56,7 +56,7 @@
       {% for row in org_rows %}
         {% include "agent_skills/_skill_row.html" with row=row section="org" %}
       {% empty %}
-      <p class="px-4 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New organization skill</strong> above to add one.{% endif %}</p>
+      <p class="px-4 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New</strong> above to add one.{% endif %}</p>
       {% endfor %}
     </div>
   </section>
