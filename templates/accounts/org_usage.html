@@ -19,9 +19,8 @@
   </div>
   {% else %}
   <!-- Custom range display -->
-  <div class="mt-6 flex items-center justify-between">
+  <div class="mt-6">
     <span class="text-heading font-medium">{{ start_date|date:'M j, Y' }} &ndash; {{ end_date|date:'M j, Y' }}</span>
-    <a href="{% url 'accounts:org_usage' %}" class="text-fg-brand hover:underline text-sm">Reset to current month</a>
   </div>
   {% endif %}
 
@@ -40,6 +39,7 @@
     <button type="submit" class="rounded-base bg-brand text-white text-sm px-4 py-2 hover:bg-brand-dark focus:outline-none focus:ring-2 focus:ring-brand-medium">Go</button>
     <a href="?start={{ today|date:'Y-m-d' }}&end={{ today|date:'Y-m-d' }}" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">Today</a>
     <a href="?start={{ current_year }}-01-01&end={{ current_year }}-12-31" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">{{ current_year }}</a>
+    <a href="{% url 'accounts:org_usage' %}" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">This month</a>
   </form>
 
   <!-- Totals summary -->
