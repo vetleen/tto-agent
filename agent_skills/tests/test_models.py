@@ -288,6 +288,16 @@ class SeedSystemSkillsTests(TestCase):
             skill_creator.templates.filter(name="User Added").exists()
         )
 
+    def test_seed_does_not_update_timestamp_when_unchanged(self):
+        from agent_skills.seed_skills import SYSTEM_SKILLS, seed_system_skills
+
+        seed_system_skills()
+        skill = AgentSkill.objects.get(slug=SYSTEM_SKILLS[0]["slug"], level="system")
+        ts_before = skill.updated_at
+        seed_system_skills()
+        skill.refresh_from_db()
+        self.assertEqual(skill.updated_at, ts_before)
+
     def test_written_assignment_writer_fields(self):
         from agent_skills.seed_skills import seed_system_skills
 

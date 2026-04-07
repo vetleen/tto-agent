@@ -14,24 +14,31 @@ def seed_system_skills():
     from agent_skills.models import AgentSkill, SkillTemplate
 
     for skill_data in SYSTEM_SKILLS:
-        skill, _ = AgentSkill.objects.update_or_create(
-            slug=skill_data["slug"],
-            level="system",
-            defaults={
-                "name": skill_data["name"],
-                "description": skill_data["description"],
-                "instructions": skill_data["instructions"],
-                "tool_names": skill_data["tool_names"],
-            },
-        )
+        fields = {
+            "name": skill_data["name"],
+            "description": skill_data["description"],
+            "instructions": skill_data["instructions"],
+            "tool_names": skill_data["tool_names"],
+        }
+        try:
+            skill = AgentSkill.objects.get(slug=skill_data["slug"], level="system")
+            if any(getattr(skill, k) != v for k, v in fields.items()):
+                for k, v in fields.items():
+                    setattr(skill, k, v)
+                skill.save()
+        except AgentSkill.DoesNotExist:
+            skill = AgentSkill.objects.create(slug=skill_data["slug"], level="system", **fields)
+
         # Seed templates from optional "templates" dict
         templates = skill_data.get("templates", {})
         for tmpl_name, tmpl_content in templates.items():
-            SkillTemplate.objects.update_or_create(
-                skill=skill,
-                name=tmpl_name,
-                defaults={"content": tmpl_content},
-            )
+            try:
+                tmpl = skill.templates.get(name=tmpl_name)
+                if tmpl.content != tmpl_content:
+                    tmpl.content = tmpl_content
+                    tmpl.save()
+            except SkillTemplate.DoesNotExist:
+                skill.templates.create(name=tmpl_name, content=tmpl_content)
         # Remove stale seeded templates no longer in seed data.
         # Only clean up when a "templates" key is explicitly present —
         # existing skills without it should not have templates deleted.
