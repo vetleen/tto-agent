@@ -31,7 +31,7 @@
       {% for row in user_rows %}
         {% include "agent_skills/_skill_row.html" with row=row section="user" %}
       {% empty %}
-      <p class="px-4 py-6 text-body text-sm">You haven't created any skills yet. Use <strong>New</strong> above or <strong>Copy</strong> on a built-in or organization skill to get started.</p>
+      <p class="px-4 py-6 text-body text-sm">No personal skills yet. Use <strong>New</strong> above to add one.</p>
       {% endfor %}
     </div>
   </section>
