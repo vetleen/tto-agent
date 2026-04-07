@@ -8,6 +8,113 @@ from pydantic import BaseModel, Field
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 
+def resolve_skill_for_thread_edit(user, thread_id, slug: str):
+    """Resolve which skill an in-thread edit tool should mutate.
+
+    The "edit skill in chat" flow stores ``source_skill_id`` on
+    ``ChatThread.metadata``. When present, edits target *that* skill (by id,
+    not slug, so the LLM doesn't have to track slug renames). If the user
+    cannot edit the source skill it is forked to a user-tier copy on first
+    write, and the fork's id is written back to ``thread.metadata`` so
+    subsequent edits in the same thread land on the fork directly.
+
+    When ``source_skill_id`` is not set we fall back to the legacy
+    slug-based lookup, preserving behavior for any other thread that has
+    Skill Creator attached without going through the edit-in-chat flow.
+
+    Returns ``(skill, error_message)``: exactly one of the two is non-None.
+    """
+    from agent_skills.models import AgentSkill
+    from agent_skills.services import (
+        can_edit_skill,
+        fork_skill,
+        get_editable_skill_for_user,
+    )
+    from chat.models import ChatThread
+
+    thread = ChatThread.objects.filter(pk=thread_id, created_by=user).first()
+    source_id = (thread.metadata or {}).get("source_skill_id") if thread else None
+    if not source_id:
+        skill = get_editable_skill_for_user(user, slug)
+        if not skill:
+            return None, f"Skill '{slug}' not found or not editable."
+        return skill, None
+
+    try:
+        source = AgentSkill.objects.get(pk=source_id)
+    except AgentSkill.DoesNotExist:
+        return None, "Source skill no longer exists."
+
+    if can_edit_skill(user, source):
+        return source, None
+
+    # Fork on first write, then rewrite metadata so future edits target the fork.
+    fork = fork_skill(user, source, copy_templates=True)
+    meta = thread.metadata or {}
+    meta["source_skill_id"] = str(fork.id)
+    thread.metadata = meta
+    thread.save(update_fields=["metadata"])
+    return fork, None
+
+
+def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_name: str = "") -> "ChatCanvas":
+    """Create or refresh a canvas holding a skill field's content for editing.
+
+    Shared by ``ShowSkillFieldInCanvasTool`` (in-chat tool call) and the
+    ``edit_skill_in_chat`` view (server-side pre-population). Returns the
+    saved ChatCanvas. Sets it as the thread's active canvas. Idempotent on
+    canvas title (uses the unique_canvas_title_per_thread constraint).
+    """
+    from django.db import IntegrityError
+
+    from agent_skills.models import SkillTemplate
+    from chat.models import ChatCanvas
+    from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint, set_active_canvas
+
+    if field_name in ("instructions", "description"):
+        content = getattr(skill, field_name) or ""
+    else:
+        try:
+            tmpl = skill.templates.get(name=field_name)
+            content = tmpl.content
+        except SkillTemplate.DoesNotExist as exc:
+            raise ValueError(
+                f"Template '{field_name}' not found on skill '{skill.slug}'."
+            ) from exc
+
+    title = canvas_name or f"{skill.name} \u2014 {field_name}"
+    content = content[:CANVAS_MAX_CHARS]
+
+    try:
+        canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+            thread_id=thread_id, title=title,
+        )
+        canvas.content = content
+        canvas.save(update_fields=["content", "updated_at"])
+        created = False
+    except ChatCanvas.DoesNotExist:
+        try:
+            canvas = ChatCanvas.objects.create(
+                thread_id=thread_id, title=title, content=content,
+            )
+            created = True
+        except IntegrityError:
+            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                thread_id=thread_id, title=title,
+            )
+            canvas.content = content
+            canvas.save(update_fields=["content", "updated_at"])
+            created = False
+
+    cp = create_canvas_checkpoint(canvas, source="import", description=f"Loaded {field_name}")
+    if created:
+        canvas.accepted_checkpoint = cp
+        canvas.save(update_fields=["accepted_checkpoint"])
+
+    set_active_canvas(thread_id, canvas)
+    return canvas
+
+
 # -- Input schemas --
 
 
@@ -134,7 +241,6 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
 
     def _run(self, skill_slug: str, field_name: str, canvas_name: str = "", **kwargs) -> str:
         from agent_skills.models import SkillTemplate
-        from agent_skills.services import get_editable_skill_for_user
         from chat.services import resolve_canvas
 
         user_id = self.context.user_id if self.context else None
@@ -150,12 +256,9 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
 
-        skill = get_editable_skill_for_user(user, skill_slug)
-        if not skill:
-            return json.dumps({
-                "status": "error",
-                "message": f"Skill '{skill_slug}' not found or not editable.",
-            })
+        skill, err = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
+        if err:
+            return json.dumps({"status": "error", "message": err})
 
         canvas, err = resolve_canvas(thread_id, canvas_name or None)
         if err:
@@ -195,11 +298,7 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
     section: str = "skills"
 
     def _run(self, skill_slug: str, field_name: str, canvas_name: str = "", **kwargs) -> str:
-        from django.db import IntegrityError
-
         from agent_skills.services import get_available_skills
-        from chat.models import ChatCanvas
-        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint, set_active_canvas
 
         user_id = self.context.user_id if self.context else None
         thread_id = self.context.conversation_id if self.context else None
@@ -227,57 +326,19 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
                 "message": f"Skill '{skill_slug}' not found.",
             })
 
-        if field_name in ("instructions", "description"):
-            content = getattr(skill, field_name) or ""
-        else:
-            from agent_skills.models import SkillTemplate
-
-            try:
-                tmpl = skill.templates.get(name=field_name)
-                content = tmpl.content
-            except SkillTemplate.DoesNotExist:
-                return json.dumps({
-                    "status": "error",
-                    "message": f"Template '{field_name}' not found on skill '{skill_slug}'.",
-                })
-
-        title = canvas_name or f"{skill.name} \u2014 {field_name}"
-        content = content[:CANVAS_MAX_CHARS]
-
         try:
-            canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                thread_id=thread_id, title=title,
+            canvas = load_skill_field_into_canvas(
+                thread_id, skill, field_name, canvas_name=canvas_name,
             )
-            canvas.content = content
-            canvas.save(update_fields=["content", "updated_at"])
-            created = False
-        except ChatCanvas.DoesNotExist:
-            try:
-                canvas = ChatCanvas.objects.create(
-                    thread_id=thread_id, title=title, content=content,
-                )
-                created = True
-            except IntegrityError:
-                canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                    thread_id=thread_id, title=title,
-                )
-                canvas.content = content
-                canvas.save(update_fields=["content", "updated_at"])
-                created = False
-
-        cp = create_canvas_checkpoint(canvas, source="import", description=f"Loaded {field_name}")
-        if created:
-            canvas.accepted_checkpoint = cp
-            canvas.save(update_fields=["accepted_checkpoint"])
-
-        set_active_canvas(thread_id, canvas)
+        except ValueError as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
 
         accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
 
         return json.dumps({
             "status": "ok",
-            "title": title,
-            "content": content,
+            "title": canvas.title,
+            "content": canvas.content,
             "accepted_content": accepted_content,
             "canvas_id": str(canvas.pk),
         })
@@ -302,11 +363,10 @@ class EditSkillTool(ContextAwareTool):
         delete_templates: list[str] | None = None,
         **kwargs,
     ) -> str:
-        from agent_skills.services import get_editable_skill_for_user
-
         user_id = self.context.user_id if self.context else None
-        if not user_id:
-            return json.dumps({"status": "error", "message": "No user context."})
+        thread_id = self.context.conversation_id if self.context else None
+        if not user_id or not thread_id:
+            return json.dumps({"status": "error", "message": "No context available."})
 
         from django.contrib.auth import get_user_model
 
@@ -316,12 +376,9 @@ class EditSkillTool(ContextAwareTool):
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
 
-        skill = get_editable_skill_for_user(user, skill_slug)
-        if not skill:
-            return json.dumps({
-                "status": "error",
-                "message": f"Skill '{skill_slug}' not found or not editable.",
-            })
+        skill, err = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
+        if err:
+            return json.dumps({"status": "error", "message": err})
 
         updates = updates or {}
         update_fields = ["updated_at"]

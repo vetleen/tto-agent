@@ -26,8 +26,10 @@ DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_aut
 ```
 
 - The full suite takes ~10 minutes. Only run tests relevant to your changes unless changes are cross-cutting.
-- Use a generous timeout (5–10 min) or run in background.
-- Tracebacks like "DB locked" or "Failed to write LLM call log" are **expected** from error-handling tests. Check the final summary line.
+- **`chat` is the slow app.** It alone accounts for most of the 10-minute total (heavy modules: `test_chat_end_to_end`, `test_consumer`, `test_subagent`). When verifying a cross-cutting change, prefer running only the *modules* that actually exercise the code path you touched, not the whole `chat` app. Reference points: `agent_skills` ≈ 2 min (120 tests), `core.tests.test_preferences` + `accounts.tests.test_settings_views` together ≈ 2.5 min (86 tests).
+- Use a generous timeout (5–10 min) or run in background. Use `TaskOutput` to await background runs rather than polling.
+- Run `python manage.py check` and `python manage.py makemigrations --dry-run` first — they're seconds and catch import/model errors before you spend minutes on tests.
+- Tracebacks like "DB locked", "Failed to write LLM call log", or `WARNING django.request: Forbidden:` lines are **expected** from error-handling and permission tests. Check the final summary line (`OK` / `FAILED`), not the noise above it.
 - When planning new features, always include good test coverage in the plan.
 - Set `TEST_APIS=True` in `.env` for live LLM API tests.
 

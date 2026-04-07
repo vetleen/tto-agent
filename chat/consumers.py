@@ -270,6 +270,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not thread_id:
             return
 
+        # If this thread was created with a pending initial assistant turn
+        # (e.g. via the "edit skill in chat" flow), fire it now. The flag is
+        # cleared synchronously before the LLM call so reconnects don't double-
+        # trigger.
+        pending_consumed = await self._consume_pending_initial_turn(thread_id)
+
         thread_data = await self._load_thread_data_rooms(thread_id)
         if thread_data is not None:
             self.data_room_ids = thread_data["data_room_ids"]
@@ -305,6 +311,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         "status": t["status"],
                     } for t in task_list],
                 }))
+
+            # Now that the client has the thread state, kick off the seed
+            # assistant turn if one was pending. We pass through the same
+            # chat-message handler so streaming/error semantics are identical.
+            if pending_consumed:
+                await self._handle_chat_message(
+                    {"thread_id": thread_id, "content": ""},
+                    seed_mode=True,
+                )
+
+    @database_sync_to_async
+    def _consume_pending_initial_turn(self, thread_id) -> bool:
+        """Atomically read+clear the pending_initial_turn flag on a thread.
+
+        Returns True iff the flag was set (and has been cleared).
+        """
+        from chat.models import ChatThread
+
+        try:
+            thread = ChatThread.objects.get(id=thread_id, created_by=self.user)
+        except ChatThread.DoesNotExist:
+            return False
+        meta = thread.metadata or {}
+        if not meta.get("pending_initial_turn"):
+            return False
+        meta.pop("pending_initial_turn", None)
+        thread.metadata = meta
+        thread.save(update_fields=["metadata"])
+        return True
 
     async def _handle_canvas_save(self, data):
         """Save user edits to the canvas."""
@@ -511,15 +546,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
             completed_at=timezone.now(),
         )
 
-    async def _handle_chat_message(self, data):
-        content = (data.get("content") or "").strip()
-        if not content:
-            await self.send(text_data=json.dumps({"error": "Empty message"}))
-            return
+    async def _handle_chat_message(self, data, *, seed_mode: bool = False):
+        """Handle a user-sent (or server-seeded) chat message.
 
-        if content.startswith("/"):
-            await self._handle_slash_command(content, data)
-            return
+        When ``seed_mode`` is True, the caller has already persisted the user
+        message and we skip the empty-content check, the slash-command path,
+        message persistence, and the user-content guardrail pipeline. This is
+        used by the "edit skill in chat" flow to auto-trigger Wilfred's first
+        assistant turn against a hidden seed message.
+        """
+        content = (data.get("content") or "").strip()
+        if not seed_mode:
+            if not content:
+                await self.send(text_data=json.dumps({"error": "Empty message"}))
+                return
+
+            if content.startswith("/"):
+                await self._handle_slash_command(content, data)
+                return
 
         thread_id = data.get("thread_id")
         attachment_ids = data.get("attachment_ids") or []
@@ -576,17 +620,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 self.data_room_ids = thread_dr["data_room_ids"] if thread_dr else []
                 self.active_skill_id = skill_data["skill_id"] if skill_data else None
 
-            # Persist user message
-            user_metadata = {}
-            if attachment_ids:
-                user_metadata["attachment_ids"] = attachment_ids
-            user_message = await self._create_message(
-                thread, "user", content, metadata=user_metadata or None,
-            )
+            # Persist user message (skipped in seed mode — caller pre-persisted it)
+            if not seed_mode:
+                user_metadata = {}
+                if attachment_ids:
+                    user_metadata["attachment_ids"] = attachment_ids
+                user_message = await self._create_message(
+                    thread, "user", content, metadata=user_metadata or None,
+                )
 
-            # Link attachments to the saved message
-            if attachment_ids:
-                await self._link_attachments(attachment_ids, thread, user_message)
+                # Link attachments to the saved message
+                if attachment_ids:
+                    await self._link_attachments(attachment_ids, thread, user_message)
 
             # Check if user is suspended mid-session
             if await self._check_suspension():
@@ -612,23 +657,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
 
             # --- Guardrail check: Layer 0 (heuristic, instant) ---
+            # Skipped in seed mode — the seed text is server-controlled.
             from guardrails.service import check_heuristics, run_classifier_pipeline
 
             org_id = await self._get_org_id()
-            heuristic_verdict = await check_heuristics(
-                text=content,
-                user=self.user,
-                thread_id=str(thread.id),
-                org_id=org_id,
-            )
+            if not seed_mode:
+                heuristic_verdict = await check_heuristics(
+                    text=content,
+                    user=self.user,
+                    thread_id=str(thread.id),
+                    org_id=org_id,
+                )
 
-            if heuristic_verdict.action == "block":
-                await self._redact_messages(thread, redact_assistant=False)
-                await self.send(text_data=json.dumps({
-                    "event_type": "guardrail.blocked",
-                    "data": {"message": heuristic_verdict.message, "redact": True},
-                }))
-                return
+                if heuristic_verdict.action == "block":
+                    await self._redact_messages(thread, redact_assistant=False)
+                    await self.send(text_data=json.dumps({
+                        "event_type": "guardrail.blocked",
+                        "data": {"message": heuristic_verdict.message, "redact": True},
+                    }))
+                    return
 
             # Prepare cancel_event before launching parallel tasks
             self._cancel_event = threading.Event()
@@ -638,12 +685,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self._modified_canvas_ids = set()
 
             # Launch classifier+reviewer pipeline in parallel with the LLM stream
-            self._guardrail_task = asyncio.create_task(
-                self._run_guardrail_pipeline(
-                    content, heuristic_verdict.heuristic_result,
-                    thread, org_id, self._cancel_event,
+            # (skipped in seed mode — server-controlled text)
+            if not seed_mode:
+                self._guardrail_task = asyncio.create_task(
+                    self._run_guardrail_pipeline(
+                        content, heuristic_verdict.heuristic_result,
+                        thread, org_id, self._cancel_event,
+                    )
                 )
-            )
 
             # Resolve model early for dynamic history budget
             prefs = self.resolved_prefs
@@ -756,8 +805,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "thread_cost_usd": thread_cost,
             }))
 
-            # Auto-generate title for new threads
-            if created:
+            # Auto-generate title for new threads (skipped in seed mode —
+            # the seeding view sets a meaningful title up front).
+            if created and not seed_mode:
                 await self._generate_thread_title(thread, content)
 
             # Trigger summarization if history exceeds budget

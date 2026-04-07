@@ -716,6 +716,94 @@ def usage_page(request):
     })
 
 
+@login_required
+@require_GET
+def org_usage_page(request):
+    from llm.models import LLMCallLog
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    org = membership.org
+    today = timezone.now().date()
+    raw_start = request.GET.get("start")
+    raw_end = request.GET.get("end")
+
+    parsed_start = _parse_date(raw_start)
+    parsed_end = _parse_date(raw_end)
+
+    if parsed_start and parsed_end:
+        custom_range = True
+        start_date = parsed_start
+        end_date = parsed_end
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
+        query_end = timezone.make_aware(timezone.datetime.combine(end_date + timedelta(days=1), timezone.datetime.min.time()))
+        display_month = None
+        prev_month = None
+        next_month = None
+    else:
+        custom_range = False
+        if parsed_start:
+            start_date = parsed_start.replace(day=1)
+        else:
+            start_date = today.replace(day=1)
+        if start_date.month == 12:
+            next_month_first = start_date.replace(year=start_date.year + 1, month=1, day=1)
+        else:
+            next_month_first = start_date.replace(month=start_date.month + 1, day=1)
+        end_date = next_month_first - timedelta(days=1)
+        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
+        query_end = timezone.make_aware(timezone.datetime.combine(next_month_first, timezone.datetime.min.time()))
+        display_month = start_date
+        prev_month = (start_date - timedelta(days=1)).replace(day=1)
+        next_month = next_month_first if next_month_first <= today.replace(day=1) else None
+
+    user_ids = list(Membership.objects.filter(org=org).values_list("user_id", flat=True))
+    qs = LLMCallLog.objects.filter(
+        user_id__in=user_ids,
+        created_at__gte=query_start,
+        created_at__lt=query_end,
+    )
+
+    totals = qs.aggregate(
+        total_cost=Sum("cost_usd"),
+        total_calls=Count("id"),
+        total_input_tokens=Sum("input_tokens"),
+        total_output_tokens=Sum("output_tokens"),
+    )
+    totals["total_cost"] = totals["total_cost"] or Decimal("0")
+    totals["total_input_tokens"] = totals["total_input_tokens"] or 0
+    totals["total_output_tokens"] = totals["total_output_tokens"] or 0
+
+    user_breakdown = (
+        qs.values("user_id", "user__email", "user__first_name", "user__last_name")
+        .annotate(
+            cost=Sum("cost_usd"),
+            calls=Count("id"),
+            input_tokens=Sum("input_tokens"),
+            output_tokens=Sum("output_tokens"),
+        )
+        .order_by("-cost")
+    )
+
+    return render(request, "accounts/org_usage.html", {
+        "org": org,
+        "start_date": start_date,
+        "end_date": end_date,
+        "custom_range": custom_range,
+        "display_month": display_month,
+        "prev_month": prev_month,
+        "next_month": next_month,
+        "totals": totals,
+        "user_breakdown": user_breakdown,
+        "today": today,
+        "current_year": today.year,
+    })
+
+
 # ---- User Profile ----
 
 MAX_DESCRIPTION_LENGTH = 600

@@ -1,0 +1,84 @@
+{% extends "_base.html" %}
+{% load static %}
+{% block body_class %}pt-16 bg-neutral-primary min-h-screen{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-10">
+  {% if messages %}
+  <ul class="mb-6 space-y-2">
+    {% for message in messages %}
+    <li class="text-sm {% if message.tags == 'error' %}text-fg-danger-strong bg-danger-soft border border-danger-subtle rounded-base px-3 py-2{% else %}text-body{% endif %}">{{ message }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <h1 class="text-2xl font-semibold text-heading mb-2">Skills</h1>
+  <p class="text-sm text-body mb-8">Manage which skills are available to the assistant. Toggle versions on and off, copy a skill to make your own variant, or edit your own skills directly.</p>
+
+  {# ---------- Your skills ---------- #}
+  <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-medium text-heading">Your skills</h2>
+      <form method="post" action="{% url 'agent_skills_create' %}" class="m-0">
+        {% csrf_token %}
+        <input type="hidden" name="name" value="Untitled skill">
+        <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          New skill
+        </button>
+      </form>
+    </div>
+    <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+      {% for row in user_rows %}
+        {% include "agent_skills/_skill_row.html" with row=row section="user" %}
+      {% empty %}
+      <p class="px-4 py-6 text-body text-sm">You haven't created any skills yet. Use <strong>New skill</strong> above or <strong>Copy</strong> on a built-in or organization skill to get started.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ---------- Organization skills ---------- #}
+  {% if user_org %}
+  <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-medium text-heading">{{ user_org.name }}'s skills</h2>
+      {% if is_org_admin %}
+      <form method="post" action="{% url 'agent_skills_create_org' %}" class="m-0">
+        {% csrf_token %}
+        <input type="hidden" name="name" value="Untitled organization skill">
+        <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          New organization skill
+        </button>
+      </form>
+      {% endif %}
+    </div>
+    <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+      {% for row in org_rows %}
+        {% include "agent_skills/_skill_row.html" with row=row section="org" %}
+      {% empty %}
+      <p class="px-4 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New organization skill</strong> above to add one.{% endif %}</p>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {# ---------- System skills ---------- #}
+  <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
+    <h2 class="text-lg font-medium text-heading mb-4">Built-in skills</h2>
+    <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+      {% for row in system_rows %}
+        {% include "agent_skills/_skill_row.html" with row=row section="system" %}
+      {% empty %}
+      <p class="px-4 py-6 text-body text-sm">No built-in skills available.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ---------- Toast container ---------- #}
+  <div id="skills-toast" class="fixed bottom-6 right-6 z-50 hidden max-w-sm bg-neutral-primary-medium border border-default-medium rounded-base shadow-lg px-4 py-3 text-sm text-heading"></div>
+
+  <div id="skills-list-config" class="hidden"
+       data-csrf="{{ csrf_token }}"></div>
+</div>
+<script src="{% static 'js/skills-list.js' %}"></script>
+{% endblock %}

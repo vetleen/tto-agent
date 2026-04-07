@@ -102,15 +102,9 @@ def get_budget_status(user) -> dict | None:
         if exceeded_reason is None:
             exceeded_reason = "org"
 
-    # For the progress bar, pick the tighter constraint (higher %)
-    if user_budget > 0 and org_budget > 0 and org_spend is not None:
-        user_pct = float(user_spend / user_budget * 100)
-        org_pct = float(org_spend / org_budget * 100)
-        if user_pct >= org_pct:
-            effective_spend, effective_budget = user_spend, user_budget
-        else:
-            effective_spend, effective_budget = org_spend, org_budget
-    elif user_budget > 0:
+    # For the progress bar, always show the user's own spend vs their personal budget.
+    # (Org-level spend tracking is handled separately.)
+    if user_budget > 0:
         effective_spend, effective_budget = user_spend, user_budget
     else:
         effective_spend, effective_budget = org_spend, org_budget
@@ -128,4 +122,5 @@ def get_budget_status(user) -> dict | None:
         "exceeded": exceeded,
         "exceeded_reason": exceeded_reason,
         "reset_date": f"{next_month_start.strftime('%B')} {next_month_start.day}, {next_month_start.year}",
+        "month_name": timezone.now().strftime("%B"),
     }
