@@ -31,6 +31,27 @@ DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_aut
 - When planning new features, always include good test coverage in the plan.
 - Set `TEST_APIS=True` in `.env` for live LLM API tests.
 
+## Heroku & Environments
+
+Three-app pipeline `wilfred` (EU region). Each app has its own Postgres (`essential-0`); staging and production also have their own `heroku-redis:mini`.
+
+| App | Stage | Purpose |
+|-----|-------|---------|
+| `wilfred-dev` | development | DB-only (no dynos). Hosts the shared dev Postgres that local `.env` points at. |
+| `wilfred-staging` | staging | Auto-deploys on push to GitHub `main`. Web + worker dynos. |
+| `wilfred-production` | production | Promoted from staging via `heroku pipelines:promote -a wilfred-staging` (same slug, no rebuild). Web + worker dynos. |
+
+**Workflow:** push to `main` on GitHub → staging auto-builds → verify on `wilfred-staging` → promote to production. Never `git push heroku main` directly to production — it bypasses staging.
+
+**Local dev shares the `wilfred-dev` Postgres** (its `DATABASE_URL` is in the local `.env`). Staging and production have isolated databases. Two consequences:
+
+1. Local migrations and any destructive shell commands hit the shared dev DB. Be mindful — there is no local-only DB unless you unset `DATABASE_URL`.
+2. Tests must unset `DATABASE_URL` and `PGVECTOR_CONNECTION` (see Tests below) — otherwise Django tries to `CREATE DATABASE` on the dev cluster where you lack permission.
+
+Local Redis is always local (`REDIS_URL` defaults to `redis://127.0.0.1:6379/0`); no Heroku Redis is shared with dev.
+
+For deploy details, config vars, rollback, and ops, see `RUNBOOK.md`.
+
 ## Architecture
 
 ### Django Apps
