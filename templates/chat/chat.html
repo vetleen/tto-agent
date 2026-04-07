@@ -310,7 +310,7 @@
               id="message-input"
               rows="1"
               class="rounded-none rounded-e-base block w-full px-3 py-2.5 bg-neutral-secondary-medium border border-default-medium text-heading text-sm focus:outline-none focus:ring-0 focus:border-default-medium placeholder:text-body resize-none overflow-hidden"
-              style="min-height: 2.5rem; max-height: 7.5rem;"
+              style="min-height: 2.5rem; max-height: 12.5rem;"
             ></textarea>
           </div>
         </div>
@@ -816,7 +816,7 @@
   }
   if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', renderServerMarkdown); } else { renderServerMarkdown(); }
 
-  function autoResize(ta) { ta.style.height = 'auto'; const h = Math.min(Math.max(ta.scrollHeight, 40), 120); ta.style.height = h + 'px'; }
+  function autoResize(ta) { ta.style.height = 'auto'; const h = Math.min(Math.max(ta.scrollHeight, 40), 200); ta.style.height = h + 'px'; }
   if (input) {
     input.addEventListener('input', function() { autoResize(input); });
     input.addEventListener('keydown', function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!input.disabled && !locked) form.dispatchEvent(new Event('submit')); } });
