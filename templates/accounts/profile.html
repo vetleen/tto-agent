@@ -49,7 +49,7 @@
   <!-- Description -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">Description</h2>
-    <p class="mt-1 text-sm text-body">Tell Wilfred about your background and what you work on so it can tailor its responses. Max 600 characters.</p>
+    <p class="mt-1 text-sm text-body">Tell Wilfred about your role and responsibilites, so he can tailor his responses. Max 600 characters.</p>
 
     <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
       <textarea
@@ -57,7 +57,7 @@
         maxlength="600"
         rows="3"
         placeholder="e.g. I focus on licensing biotech innovations from the chemistry department, with particular expertise in CRISPR-related IP."
-        class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y"
+        class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-none overflow-hidden"
       >{{ user.description }}</textarea>
       <div class="flex items-center justify-between mt-1.5">
         <p id="profile-desc-error" class="text-xs text-red-600 dark:text-red-400 hidden"></p>
@@ -75,11 +75,21 @@
   var descCount = document.getElementById('profile-desc-count');
   var descTextarea = document.getElementById('profile-description');
 
-  // Character counter for description
+  // Auto-resize description to fit content (min height comes from rows attribute)
+  function autosizeDescription() {
+    if (!descTextarea) return;
+    descTextarea.style.height = 'auto';
+    descTextarea.style.height = descTextarea.scrollHeight + 'px';
+  }
+
+  // Character counter + autosize for description
   if (descTextarea) {
     descTextarea.addEventListener('input', function() {
       descCount.textContent = this.value.length;
+      autosizeDescription();
     });
+    // Initial fit for pre-filled content
+    autosizeDescription();
   }
 
   function saveProfile() {
