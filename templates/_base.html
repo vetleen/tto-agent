@@ -58,6 +58,7 @@
                 <li><a href="{% url 'chat_home' %}" class="{% if request.path|slice:':6' == '/chat/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Chat</a></li>
                 <li><a href="{% url 'agent_skills_list' %}" class="{% if request.path|slice:':8' == '/skills/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Skills</a></li>
                 <li><a href="{% url 'data_room_list' %}" class="{% if request.path|slice:':12' == '/data-rooms/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Data Rooms</a></li>
+                <li><a href="{% url 'meeting_list' %}" class="{% if request.path|slice:':10' == '/meetings/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Meetings</a></li>
               </ul>
             </div>
             <button type="button" id="theme-toggle" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">

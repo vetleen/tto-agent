@@ -161,6 +161,7 @@ INSTALLED_APPS = [
     "agent_skills.apps.AgentSkillsConfig",
     "guardrails.apps.GuardrailsConfig",
     "feedback.apps.FeedbackConfig",
+    "meetings.apps.MeetingsConfig",
 ]
 if DEBUG:
     INSTALLED_APPS.extend([
@@ -435,6 +436,15 @@ TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "ope
 TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe").split(",") if m.strip()]
 AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
 
+# Meetings settings
+MEETING_CHUNK_TEMP_DIR = os.environ.get("MEETING_CHUNK_TEMP_DIR", str(MEDIA_ROOT / "_meeting_chunks"))
+MEETING_AUTO_STOP_DEFAULT_SECONDS = int(os.environ.get("MEETING_AUTO_STOP_DEFAULT_SECONDS", "3600"))
+MEETING_AUTO_STOP_MAX_SECONDS = int(os.environ.get("MEETING_AUTO_STOP_MAX_SECONDS", "14400"))
+MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES", "2000000"))  # 2 MB
+MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS = {"txt", "md"}
+MEETING_AUDIO_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_AUDIO_UPLOAD_MAX_BYTES", str(200 * 1024 * 1024)))  # 200 MB
+MEETING_CHUNK_MAX_BYTES = int(os.environ.get("MEETING_CHUNK_MAX_BYTES", str(20 * 1024 * 1024)))  # 20 MB per WS chunk
+
 # Celery (use Redis as broker)
 _celery_broker_url = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
 if _celery_broker_url.startswith("rediss://"):
@@ -535,6 +545,11 @@ LOGGING = {
             "propagate": False,
         },
         "feedback": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        "meetings": {
             "handlers": ["console"],
             "level": LOG_LEVEL,
             "propagate": False,

@@ -20,8 +20,9 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django_asgi_app = get_asgi_application()
 
 from chat.routing import websocket_urlpatterns as chat_ws  # noqa: E402
+from meetings.routing import websocket_urlpatterns as meetings_ws  # noqa: E402
 
-websocket_urlpatterns = chat_ws
+websocket_urlpatterns = chat_ws + meetings_ws
 
 application = ProtocolTypeRouter(
     {

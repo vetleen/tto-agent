@@ -1617,6 +1617,7 @@
         else if (toolName === "inspect_tool") displayText = "Inspecting tool...";
         else if (toolName === "create_subagent") displayText = "Running sub-agent...";
         else if (toolName === "update_tasks") displayText = "Updating task plan...";
+        else if (toolName === "save_meeting_minutes") displayText = "Saving meeting minutes...";
         const toolArgs = (data.data && data.data.arguments) || {}; const reasonText = (typeof toolArgs === "object" && toolArgs.reason) ? ' <span class="italic">(' + escapeHtml(toolArgs.reason) + ')</span>' : '';
         card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + reasonText + '</span>';
         container.appendChild(card);
@@ -1651,7 +1652,8 @@
           else if (toolName === "list_all_tools") doneLabel = "Listed tools";
           else if (toolName === "inspect_tool") doneLabel = "Inspected tool";
           else if (toolName === "create_subagent") doneLabel = "Sub-agent finished";
-          else if (toolName === "update_tasks") doneLabel = "Updated task plan"; }
+          else if (toolName === "update_tasks") doneLabel = "Updated task plan";
+          else if (toolName === "save_meeting_minutes") doneLabel = "Saved meeting minutes"; }
           card.innerHTML = '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="tool-card-text">' + escapeHtml(doneLabel) + '</span>';
         }
       }

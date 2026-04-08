@@ -1,0 +1,219 @@
+{% extends "_base.html" %}
+{% load static %}
+{% block content %}
+{% include "meetings/_meeting_header.html" %}
+
+<div class="max-w-4xl mx-auto px-4 py-8" data-meeting-uuid="{{ meeting.uuid }}" data-meeting-status="{{ meeting.status }}" data-auto-stop-default="{{ auto_stop_default_seconds }}" data-auto-stop-max="{{ auto_stop_max_seconds }}">
+  <div class="flex items-start justify-between gap-4 mb-6">
+    <h1 class="text-2xl font-semibold text-heading">{{ meeting.name }}</h1>
+    {% if meeting.status == 'live_transcribing' %}
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-warning"><span class="w-2 h-2 rounded-full bg-fg-warning animate-pulse"></span>Transcribing</span>
+    {% elif meeting.status == 'interrupted' %}
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-warning">Interrupted</span>
+    {% elif meeting.status == 'failed' %}
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-danger">Failed</span>
+    {% elif meeting.status == 'ready' %}
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-success">Ready</span>
+    {% else %}
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-body">Draft</span>
+    {% endif %}
+  </div>
+
+  {% if meeting.transcription_error %}
+    <div class="mb-6 px-4 py-3 text-sm text-fg-danger bg-neutral-primary-soft border border-default rounded-base">
+      <strong>Transcription error:</strong> {{ meeting.transcription_error }}
+    </div>
+  {% endif %}
+
+  {# ----- Action buttons row ----- #}
+  <div id="meeting-actions" class="flex flex-wrap gap-3 mb-8">
+    <button type="button" id="transcribe-btn"
+            class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+      {% if meeting.status == 'interrupted' %}Resume transcription{% else %}Start transcription{% endif %}
+    </button>
+
+    <form method="post" action="{% url 'meeting_upload_audio' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
+      {% csrf_token %}
+      <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
+        Upload audio
+        <input type="file" name="audio" class="hidden" accept="audio/*" onchange="this.form.submit()">
+      </label>
+    </form>
+
+    <form method="post" action="{% url 'meeting_upload_transcript' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
+      {% csrf_token %}
+      <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
+        Upload transcript
+        <input type="file" name="transcript" class="hidden" accept=".txt,.md,text/plain,text/markdown" onchange="this.form.submit()">
+      </label>
+    </form>
+
+    <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
+      {% csrf_token %}
+      <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
+              class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+              title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
+        Create meeting minutes with Wilfred
+      </button>
+    </form>
+  </div>
+
+  {# ----- Browser-compat banner (shown only if MediaRecorder is unsupported) ----- #}
+  <div id="transcribe-unsupported" class="hidden mb-6 px-4 py-3 text-sm text-body bg-neutral-primary-soft border border-default rounded-base">
+    Live transcription is not supported in your browser. You can still upload an audio file or a transcript.
+  </div>
+
+  {# ----- Live transcribe controls (visible when transcribing) ----- #}
+  <div id="transcribe-controls" class="hidden mb-8 px-4 py-4 border border-default rounded-base bg-neutral-primary-soft">
+    <div class="flex items-center justify-between gap-4 mb-4">
+      <div class="flex items-center gap-3">
+        <span class="inline-flex items-center gap-2 text-sm font-medium text-fg-warning">
+          <span class="w-2 h-2 rounded-full bg-fg-warning animate-pulse"></span>
+          Transcribing
+        </span>
+        <span id="elapsed-counter" class="text-sm font-mono text-body">00:00</span>
+      </div>
+      <button type="button" id="stop-btn" class="bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none">
+        Stop transcription
+      </button>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <label for="mic-select" class="block text-xs font-medium text-body mb-1">Microphone</label>
+        <select id="mic-select" class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2"></select>
+      </div>
+      <div>
+        <label for="auto-stop-input" class="block text-xs font-medium text-body mb-1">Auto-stop after (minutes)</label>
+        <input type="number" id="auto-stop-input" min="1" max="240" value="60"
+               class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2">
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <label class="block text-xs font-medium text-body mb-1">Input level</label>
+      <div class="w-full h-3 bg-neutral-secondary-medium rounded-base overflow-hidden">
+        <div id="mic-level-bar" class="h-full bg-brand transition-[width] duration-75" style="width:0%"></div>
+      </div>
+    </div>
+
+    <p class="mt-3 text-xs text-body">Audio is not stored — only the resulting text. You can share this with participants: <em>"This meeting is being transcribed by an AI assistant. Audio is not retained."</em></p>
+  </div>
+
+  {# ----- Editable metadata ----- #}
+  <section class="mb-8">
+    <h2 class="text-sm font-medium text-heading mb-3">Meeting details</h2>
+    <form id="meeting-metadata-form" method="post" action="{% url 'meeting_update_metadata' meeting_uuid=meeting.uuid %}" class="space-y-4">
+      {% csrf_token %}
+      <div>
+        <label for="meeting-agenda" class="block text-xs font-medium text-body mb-1">Agenda</label>
+        <textarea id="meeting-agenda" name="agenda" rows="3"
+                  class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.agenda }}</textarea>
+      </div>
+      <div>
+        <label for="meeting-participants" class="block text-xs font-medium text-body mb-1">Participants</label>
+        <textarea id="meeting-participants" name="participants" rows="2"
+                  class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.participants }}</textarea>
+      </div>
+      <div>
+        <label for="meeting-description" class="block text-xs font-medium text-body mb-1">Description</label>
+        <textarea id="meeting-description" name="description" rows="2"
+                  class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.description }}</textarea>
+      </div>
+      <button type="submit" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
+      <span id="meeting-metadata-saved" class="hidden ms-3 text-xs text-fg-success">Saved.</span>
+    </form>
+  </section>
+
+  {# ----- Linked data rooms ----- #}
+  <section class="mb-8">
+    <h2 class="text-sm font-medium text-heading mb-3">Linked data rooms</h2>
+    {% if linked_rooms %}
+      <ul class="bg-neutral-primary-soft border border-default rounded-base divide-y divide-default mb-3">
+        {% for dr in linked_rooms %}
+        <li class="flex items-center justify-between px-4 py-2.5">
+          <a href="{% url 'data_room_documents' data_room_id=dr.uuid %}" class="text-sm text-heading hover:text-brand">{{ dr.name }}</a>
+          <form method="post" action="{% url 'meeting_unlink_data_room' meeting_uuid=meeting.uuid data_room_uuid=dr.uuid %}">
+            {% csrf_token %}
+            <button type="submit" class="text-xs text-fg-danger hover:underline">Unlink</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-sm text-body mb-3">No data rooms linked yet.</p>
+    {% endif %}
+    {% if linkable_rooms %}
+      <form method="post" action="{% url 'meeting_link_data_room' meeting_uuid=meeting.uuid %}" class="flex items-center gap-2">
+        {% csrf_token %}
+        <select name="data_room_id" required class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block px-3 py-2 max-w-sm">
+          <option value="">Choose a data room…</option>
+          {% for dr in linkable_rooms %}
+            <option value="{{ dr.uuid }}">{{ dr.name }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 focus:outline-none">Link</button>
+      </form>
+    {% endif %}
+  </section>
+
+  {# ----- Attachments ----- #}
+  <section class="mb-8">
+    <h2 class="text-sm font-medium text-heading mb-3">Attachments</h2>
+    {% if attachments %}
+      <ul class="bg-neutral-primary-soft border border-default rounded-base divide-y divide-default mb-3">
+        {% for a in attachments %}
+        <li class="flex items-center justify-between px-4 py-2.5">
+          <a href="{{ a.file.url }}" class="text-sm text-heading hover:text-brand truncate" title="{{ a.original_filename }}">{{ a.original_filename }}</a>
+          <form method="post" action="{% url 'meeting_delete_attachment' meeting_uuid=meeting.uuid attachment_id=a.id %}">
+            {% csrf_token %}
+            <button type="submit" class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this attachment?');">Delete</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-sm text-body mb-3">No attachments yet.</p>
+    {% endif %}
+    <form method="post" action="{% url 'meeting_upload_attachment' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
+      {% csrf_token %}
+      <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 cursor-pointer">
+        Add attachment
+        <input type="file" name="file" class="hidden" onchange="this.form.submit()">
+      </label>
+    </form>
+  </section>
+
+  {# ----- Transcript display ----- #}
+  <section class="mb-8">
+    <h2 class="text-sm font-medium text-heading mb-3">Transcript</h2>
+    <div id="transcript-pane" class="bg-neutral-primary-soft border border-default rounded-base px-4 py-4 min-h-32 text-sm text-heading whitespace-pre-wrap">{% if meeting.transcript %}{{ meeting.transcript }}{% else %}<span class="text-body italic">No transcript yet. Click "Start transcription" or upload one.</span>{% endif %}</div>
+  </section>
+
+  {# ----- Wilfred-saved artifacts (minutes/summary/notes) ----- #}
+  {% if artifacts %}
+  <section class="mb-8">
+    <h2 class="text-sm font-medium text-heading mb-3">Saved by Wilfred</h2>
+    <ul class="space-y-4">
+      {% for art in artifacts %}
+      <li class="bg-neutral-primary-soft border border-default rounded-base px-4 py-4">
+        <div class="flex items-center justify-between mb-2">
+          <div>
+            <span class="text-sm font-medium text-heading">{{ art.title|default:art.get_kind_display }}</span>
+            <span class="ms-2 text-xs text-body">{{ art.get_kind_display }} · {{ art.created_at|date:"Y-m-d H:i" }}</span>
+          </div>
+          <form method="post" action="{% url 'meeting_delete_artifact' meeting_uuid=meeting.uuid artifact_id=art.id %}">
+            {% csrf_token %}
+            <button type="submit" class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this artifact?');">Delete</button>
+          </form>
+        </div>
+        <div class="text-sm text-heading whitespace-pre-wrap">{{ art.content_md }}</div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
+
+<script src="{% static 'meetings/transcribe.js' %}" defer></script>
+{% endblock %}

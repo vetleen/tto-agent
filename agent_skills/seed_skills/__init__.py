@@ -8,6 +8,15 @@ from agent_skills.seed_skills.written_assignment_writer import WRITTEN_ASSIGNMEN
 
 SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, RCN_QUALIFICATION_GRANT, WEB_DEEP_RESEARCHER, IRL_PROJECT_ASSESSOR]
 
+# Cross-app seed skill from the meetings app. Wrapped in try/except so
+# the agent_skills app remains importable even if `meetings` is removed
+# from INSTALLED_APPS in some stripped test config.
+try:
+    from meetings.seed_skills.meeting_summarizer import MEETING_SUMMARIZER
+    SYSTEM_SKILLS.append(MEETING_SUMMARIZER)
+except ImportError:  # pragma: no cover
+    pass
+
 
 def seed_system_skills():
     """Create or update system-level skills. Idempotent."""
