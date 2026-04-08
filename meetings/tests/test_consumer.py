@@ -7,6 +7,7 @@ preservation on disconnect / interruption.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -76,8 +77,8 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertFalse(connected)
         await comm.disconnect()
 
-    @patch("meetings.tasks.transcribe_meeting_chunk_task.delay")
-    async def test_chunk_meta_plus_binary_enqueues_task(self, mock_delay):
+    @patch("meetings.tasks.transcribe_meeting_chunk_task")
+    async def test_chunk_meta_plus_binary_enqueues_task(self, mock_task):
         comm = _make_communicator(self.meeting.uuid, self.user)
         await comm.connect()
         await comm.receive_from()  # consume "started"
@@ -96,15 +97,19 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertEqual(msg["type"], "segment.queued")
         self.assertEqual(msg["segment_index"], 0)
 
-        mock_delay.assert_called_once()
-        kwargs = mock_delay.call_args.kwargs
+        # The consumer dispatches the celery task via database_sync_to_async,
+        # which runs in a thread pool. segment.queued is sent BEFORE the
+        # dispatch, so we yield briefly to let the thread pool worker run.
+        await asyncio.sleep(0.3)
+
+        mock_task.delay.assert_called_once()
+        kwargs = mock_task.delay.call_args.kwargs
         self.assertEqual(kwargs["meeting_id"], self.meeting.id)
         self.assertEqual(kwargs["segment_index"], 0)
         self.assertEqual(kwargs["mime"], "audio/webm;codecs=opus")
-        await comm.disconnect()
 
-    @patch("meetings.tasks.transcribe_meeting_chunk_task.delay")
-    async def test_byte_length_mismatch_emits_error(self, mock_delay):
+    @patch("meetings.tasks.transcribe_meeting_chunk_task")
+    async def test_byte_length_mismatch_emits_error(self, mock_task):
         comm = _make_communicator(self.meeting.uuid, self.user)
         await comm.connect()
         await comm.receive_from()  # started
@@ -119,8 +124,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
 
         msg = json.loads(await comm.receive_from())
         self.assertEqual(msg["type"], "error")
-        mock_delay.assert_not_called()
-        await comm.disconnect()
+        mock_task.delay.assert_not_called()
 
     async def test_stop_finalizes_meeting_to_ready(self):
         comm = _make_communicator(self.meeting.uuid, self.user)

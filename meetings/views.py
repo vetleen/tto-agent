@@ -90,13 +90,16 @@ def meeting_list(request):
             while True:
                 slug = base_slug if n == 0 else f"{base_slug}-{n}"
                 try:
-                    meeting = Meeting.objects.create(
-                        name=name[:255],
-                        slug=slug,
-                        created_by=request.user,
-                        agenda=(request.POST.get("agenda") or "").strip(),
-                        participants=(request.POST.get("participants") or "").strip(),
-                    )
+                    # savepoint=True so a unique-slug collision rolls back to a
+                    # nested savepoint instead of poisoning the outer transaction.
+                    with transaction.atomic():
+                        meeting = Meeting.objects.create(
+                            name=name[:255],
+                            slug=slug,
+                            created_by=request.user,
+                            agenda=(request.POST.get("agenda") or "").strip(),
+                            participants=(request.POST.get("participants") or "").strip(),
+                        )
                     break
                 except IntegrityError:
                     n += 1
