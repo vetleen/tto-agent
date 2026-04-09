@@ -79,37 +79,8 @@ def _format_relative(value):
 
 
 @login_required
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET"])
 def meeting_list(request):
-    if request.method == "POST":
-        name = (request.POST.get("name") or "").strip()
-        if name:
-            base_slug = slugify(name) or "meeting"
-            n = 0
-            meeting = None
-            while True:
-                slug = base_slug if n == 0 else f"{base_slug}-{n}"
-                try:
-                    # savepoint=True so a unique-slug collision rolls back to a
-                    # nested savepoint instead of poisoning the outer transaction.
-                    with transaction.atomic():
-                        meeting = Meeting.objects.create(
-                            name=name[:255],
-                            slug=slug,
-                            created_by=request.user,
-                            agenda=(request.POST.get("agenda") or "").strip(),
-                            participants=(request.POST.get("participants") or "").strip(),
-                        )
-                    break
-                except IntegrityError:
-                    n += 1
-                    if n > 50:
-                        messages.error(request, "Could not create meeting right now. Please try again.")
-                        break
-            if meeting:
-                return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-        return redirect("meeting_list")
-
     all_meetings = Meeting.objects.filter(created_by=request.user).order_by("-updated_at")
     active = [m for m in all_meetings if not m.is_archived]
     archived = [m for m in all_meetings if m.is_archived]
@@ -125,6 +96,40 @@ def meeting_list(request):
 
 
 @login_required
+@require_POST
+def meeting_create(request):
+    """Create a meeting with a default name and redirect to its detail page.
+
+    The list page exposes two buttons (plain "Create meeting" and "Start
+    transcription"). Both call this endpoint; the latter sets ``transcribe=1``
+    so the detail page auto-starts live transcription on load.
+    """
+    default_name = f"{timezone.localtime(timezone.now()).strftime('%y%m%d')} - New meeting"
+    base_slug = slugify(default_name) or "meeting"
+    n = 0
+    meeting = None
+    while True:
+        slug = base_slug if n == 0 else f"{base_slug}-{n}"
+        try:
+            with transaction.atomic():
+                meeting = Meeting.objects.create(
+                    name=default_name[:255],
+                    slug=slug,
+                    created_by=request.user,
+                )
+            break
+        except IntegrityError:
+            n += 1
+            if n > 50:
+                messages.error(request, "Could not create meeting right now. Please try again.")
+                return redirect("meeting_list")
+    target = reverse("meeting_detail", kwargs={"meeting_uuid": meeting.uuid})
+    if (request.POST.get("transcribe") or "").strip() in ("1", "true", "yes"):
+        target = f"{target}?transcribe=1"
+    return redirect(target)
+
+
+@login_required
 @require_http_methods(["GET"])
 def meeting_detail(request, meeting_uuid):
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
@@ -134,16 +139,12 @@ def meeting_detail(request, meeting_uuid):
     segments = list(meeting.segments.all().order_by("segment_index"))
     artifacts = list(meeting.artifacts.all().order_by("-created_at"))
     attachments = list(meeting.attachments.all().order_by("-uploaded_at"))
-    linked_rooms = list(meeting.data_rooms.all().order_by("name"))
 
-    # Other data rooms the user can link to (their own).
     from documents.models import DataRoom
 
-    linked_room_ids = {dr.id for dr in linked_rooms}
-    linkable_rooms = [
-        dr for dr in DataRoom.objects.filter(created_by=request.user, is_archived=False).order_by("name")
-        if dr.id not in linked_room_ids
-    ]
+    user_data_rooms = list(
+        DataRoom.objects.filter(created_by=request.user, is_archived=False).order_by("name")
+    )
 
     return render(
         request,
@@ -153,8 +154,7 @@ def meeting_detail(request, meeting_uuid):
             "segments": segments,
             "artifacts": artifacts,
             "attachments": attachments,
-            "linked_rooms": linked_rooms,
-            "linkable_rooms": linkable_rooms,
+            "user_data_rooms": user_data_rooms,
             "auto_stop_default_seconds": getattr(settings, "MEETING_AUTO_STOP_DEFAULT_SECONDS", 3600),
             "auto_stop_max_seconds": getattr(settings, "MEETING_AUTO_STOP_MAX_SECONDS", 14400),
         },
@@ -204,14 +204,18 @@ def meeting_delete(request, meeting_uuid):
 @login_required
 @require_POST
 def meeting_update_metadata(request, meeting_uuid):
-    """Update editable metadata fields (agenda, participants, description) via fetch."""
+    """Update editable metadata fields (name, agenda, participants, description)."""
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
         return JsonResponse({"error": "Forbidden"}, status=403)
     fields = []
-    for field in ("agenda", "participants", "description"):
+    for field in ("name", "agenda", "participants", "description"):
         if field in request.POST:
             value = (request.POST.get(field) or "").strip()
+            if field == "name":
+                if not value:
+                    return JsonResponse({"error": "Name cannot be empty."}, status=400)
+                value = value[:255]
             setattr(meeting, field, value)
             fields.append(field)
     if not fields:
@@ -273,6 +277,114 @@ def meeting_unlink_data_room(request, meeting_uuid, data_room_uuid):
 # ---------------------------------------------------------------------------
 # Transcript & audio uploads
 # ---------------------------------------------------------------------------
+
+
+@login_required
+@require_POST
+def meeting_upload(request, meeting_uuid):
+    """Single upload endpoint that routes to audio or transcript handlers based on extension."""
+    from llm.transcription_registry import AUDIO_EXTENSIONS
+
+    meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
+    if not _user_can_modify_meeting(request.user, meeting):
+        return redirect("meeting_list")
+    file_obj = request.FILES.get("file")
+    if not file_obj:
+        messages.error(request, "Please choose a file to upload.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
+    safe_name = _safe_filename(file_obj.name, max_length=255)
+    ext = (safe_name.rsplit(".", 1)[-1].lower()) if "." in safe_name else ""
+    transcript_exts = getattr(settings, "MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS", {"txt", "md"})
+
+    if ext in AUDIO_EXTENSIONS:
+        # Re-route to the audio handler with the file under the expected key.
+        request.FILES["audio"] = file_obj
+        return meeting_upload_audio(request, meeting_uuid)
+    if ext in transcript_exts:
+        request.FILES["transcript"] = file_obj
+        return meeting_upload_transcript(request, meeting_uuid)
+    messages.error(
+        request,
+        f"Unsupported file type. Upload audio ({sorted(AUDIO_EXTENSIONS)}) "
+        f"or text transcript ({sorted(transcript_exts)}).",
+    )
+    return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
+
+@login_required
+@require_POST
+def meeting_save_to_data_room(request, meeting_uuid):
+    """Save the meeting transcript (or most recent artifact) to a data room as a Document."""
+    from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentTag
+
+    meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
+    if not _user_can_modify_meeting(request.user, meeting):
+        return redirect("meeting_list")
+
+    data_room_id = (request.POST.get("data_room_id") or "").strip()
+    if not data_room_id:
+        messages.error(request, "Pick a data room to save to.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+    try:
+        data_room = DataRoom.objects.get(uuid=data_room_id)
+    except (DataRoom.DoesNotExist, ValueError):
+        messages.error(request, "Data room not found.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+    if data_room.created_by_id != request.user.id:
+        messages.error(request, "You can only save to data rooms you own.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
+    # Prefer the most recent artifact (e.g. minutes generated by Wilfred). If
+    # none exists yet, fall back to saving the raw transcript so the button
+    # always does *something* useful.
+    latest_artifact = meeting.artifacts.order_by("-created_at").first()
+    if latest_artifact and (latest_artifact.content_md or "").strip():
+        body = latest_artifact.content_md
+        kind_label = latest_artifact.get_kind_display().lower()
+        filename = f"{meeting.slug}-{kind_label}.md"
+        mime = "text/markdown"
+    elif (meeting.transcript or "").strip():
+        body = meeting.transcript
+        filename = f"{meeting.slug}-transcript.md"
+        mime = "text/markdown"
+    else:
+        messages.error(request, "Nothing to save yet — record or upload a transcript first.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
+    from django.core.files.base import ContentFile
+
+    payload = body.encode("utf-8")
+    safe_filename = _safe_filename(filename, max_length=180)
+    file_obj = ContentFile(payload, name=safe_filename)
+    doc = DataRoomDocument.objects.create(
+        data_room=data_room,
+        uploaded_by=request.user,
+        original_file=file_obj,
+        original_filename=safe_filename,
+        mime_type=mime,
+        size_bytes=len(payload),
+        status=DataRoomDocument.Status.UPLOADED,
+    )
+    DataRoomDocumentTag.objects.create(document=doc, key="source", value="meeting_export")
+    DataRoomDocumentTag.objects.create(document=doc, key="meeting_uuid", value=str(meeting.uuid))
+    try:
+        from documents.tasks import process_document_task
+        process_document_task.delay(doc.id)
+    except Exception:
+        try:
+            from documents.services.process_document import process_document
+            process_document(doc.id)
+        except Exception as exc:
+            logger.exception("meeting_save_to_data_room: processing failed for doc %s", doc.id)
+            doc.status = DataRoomDocument.Status.FAILED
+            doc.processing_error = str(exc)[:2000]
+            doc.save(update_fields=["status", "processing_error", "updated_at"])
+            messages.error(request, "Could not start processing the saved document.")
+            return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
+    messages.success(request, f"Saved to data room: {data_room.name}.")
+    return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
 
 @login_required

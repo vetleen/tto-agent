@@ -34,20 +34,38 @@ class MeetingListViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Meetings")
 
-    def test_post_creates_meeting_and_redirects_to_detail(self):
+    def test_list_view_is_get_only(self):
         self.client.force_login(self.user)
-        response = self.client.post(reverse("meeting_list"), {"name": "Acme call"})
+        response = self.client.post(reverse("meeting_list"))
+        # POST is no longer allowed on the list view; creation moved to meeting_create.
+        self.assertEqual(response.status_code, 405)
+
+    def test_create_endpoint_creates_meeting_with_default_name(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("meeting_create"))
         self.assertEqual(response.status_code, 302)
-        meeting = Meeting.objects.get(created_by=self.user, name="Acme call")
+        meeting = Meeting.objects.filter(created_by=self.user).first()
+        self.assertIsNotNone(meeting)
+        # Default name format: "YYMMDD - New meeting"
+        self.assertRegex(meeting.name, r"^\d{6} - New meeting$")
         self.assertEqual(response["Location"], reverse("meeting_detail", args=[meeting.uuid]))
 
-    def test_post_with_existing_slug_retries(self):
-        Meeting.objects.create(name="Acme call", slug="acme-call", created_by=self.user)
+    def test_create_endpoint_with_transcribe_flag_appends_query(self):
         self.client.force_login(self.user)
-        response = self.client.post(reverse("meeting_list"), {"name": "Acme call"})
+        response = self.client.post(reverse("meeting_create"), {"transcribe": "1"})
         self.assertEqual(response.status_code, 302)
-        # Two meetings now exist with the same name but different slugs.
-        self.assertEqual(Meeting.objects.filter(created_by=self.user, name="Acme call").count(), 2)
+        meeting = Meeting.objects.filter(created_by=self.user).first()
+        self.assertIsNotNone(meeting)
+        self.assertEqual(
+            response["Location"],
+            f"{reverse('meeting_detail', args=[meeting.uuid])}?transcribe=1",
+        )
+
+    def test_create_endpoint_handles_slug_collision(self):
+        self.client.force_login(self.user)
+        self.client.post(reverse("meeting_create"))
+        self.client.post(reverse("meeting_create"))
+        self.assertEqual(Meeting.objects.filter(created_by=self.user).count(), 2)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -244,3 +262,117 @@ class MeetingMetadataUpdateTests(TestCase):
         self.meeting.refresh_from_db()
         self.assertEqual(self.meeting.agenda, "Q1 plan")
         self.assertEqual(self.meeting.participants, "A, B")
+
+    def test_update_metadata_can_rename(self):
+        response = self.client.post(
+            reverse("meeting_update_metadata", args=[self.meeting.uuid]),
+            {"name": "Renamed via metadata"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.name, "Renamed via metadata")
+
+    def test_update_metadata_rejects_blank_name(self):
+        response = self.client.post(
+            reverse("meeting_update_metadata", args=[self.meeting.uuid]),
+            {"name": "   "},
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class MeetingUnifiedUploadTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="unified@example.com", password="pw")
+        self.meeting = Meeting.objects.create(name="M", slug="m-unified", created_by=self.user)
+        self.client.force_login(self.user)
+
+    def test_upload_routes_text_to_transcript(self):
+        f = SimpleUploadedFile("notes.txt", b"hello world", content_type="text/plain")
+        response = self.client.post(
+            reverse("meeting_upload", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript, "hello world")
+        self.assertEqual(self.meeting.transcript_source, Meeting.TranscriptSource.TEXT_UPLOAD)
+
+    @patch("meetings.tasks.transcribe_uploaded_audio_task.delay")
+    def test_upload_routes_audio_to_audio_handler(self, mock_delay):
+        f = SimpleUploadedFile("clip.mp3", b"\x00" * 32, content_type="audio/mpeg")
+        response = self.client.post(
+            reverse("meeting_upload", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_delay.assert_called_once()
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript_source, Meeting.TranscriptSource.AUDIO_UPLOAD)
+
+    def test_upload_rejects_unsupported_extension(self):
+        f = SimpleUploadedFile("data.docx", b"binary", content_type="application/octet-stream")
+        response = self.client.post(
+            reverse("meeting_upload", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript, "")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class MeetingSaveToDataRoomTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="save@example.com", password="pw")
+        self.other = User.objects.create_user(email="save-other@example.com", password="pw")
+        self.meeting = Meeting.objects.create(
+            name="M", slug="m-save", created_by=self.user, transcript="full transcript text"
+        )
+        self.my_room = DataRoom.objects.create(name="Mine", slug="mine-save", created_by=self.user)
+        self.foreign_room = DataRoom.objects.create(name="Theirs", slug="theirs-save", created_by=self.other)
+        self.client.force_login(self.user)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_save_transcript_to_owned_data_room(self, mock_delay):
+        from documents.models import DataRoomDocument
+        response = self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.my_room).count(), 1)
+        mock_delay.assert_called_once()
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_save_uses_latest_artifact_when_present(self, mock_delay):
+        from documents.models import DataRoomDocument
+        MeetingArtifact.objects.create(
+            meeting=self.meeting,
+            kind=MeetingArtifact.Kind.MINUTES,
+            content_md="# Minutes\nWilfred wrote these.",
+            created_by=self.user,
+        )
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        doc = DataRoomDocument.objects.get(data_room=self.my_room)
+        self.assertIn("minutes", doc.original_filename)
+
+    def test_cannot_save_to_foreign_data_room(self):
+        from documents.models import DataRoomDocument
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.foreign_room.uuid)},
+        )
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.foreign_room).count(), 0)
+
+    def test_cannot_save_when_no_transcript_or_artifact(self):
+        empty = Meeting.objects.create(name="Empty", slug="m-empty-save", created_by=self.user)
+        from documents.models import DataRoomDocument
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[empty.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.my_room).count(), 0)

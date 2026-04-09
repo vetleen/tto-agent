@@ -5,27 +5,22 @@
   <h1 class="text-2xl font-semibold text-heading mb-2">Meetings</h1>
   <p class="text-sm text-body mb-8">Transcribe meetings, then have Wilfred turn them into minutes.</p>
 
-  <form method="post" action="{% url 'meeting_list' %}" class="max-w-xl mb-16">
-    {% csrf_token %}
-    <div class="mb-5">
-      <label for="meeting-name" class="block mb-2.5 text-sm font-medium text-heading">New meeting</label>
-      <input type="text" name="name" id="meeting-name" placeholder="e.g. Acme licensing call" required maxlength="255"
-             class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body">
-    </div>
-    <div class="mb-5">
-      <label for="meeting-agenda" class="block mb-2.5 text-sm font-medium text-body">Agenda <span class="text-body/60">(optional)</span></label>
-      <textarea name="agenda" id="meeting-agenda" rows="2" placeholder="What's on the agenda?"
-                class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body"></textarea>
-    </div>
-    <div class="mb-5">
-      <label for="meeting-participants" class="block mb-2.5 text-sm font-medium text-body">Participants <span class="text-body/60">(optional)</span></label>
-      <textarea name="participants" id="meeting-participants" rows="2" placeholder="Who's attending?"
-                class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body"></textarea>
-    </div>
-    <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
-      Create meeting
-    </button>
-  </form>
+  <div class="flex flex-wrap gap-3 mb-16">
+    <form method="post" action="{% url 'meeting_create' %}">
+      {% csrf_token %}
+      <input type="hidden" name="transcribe" value="1">
+      <button type="submit" class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+        Start transcription
+      </button>
+    </form>
+    <form method="post" action="{% url 'meeting_create' %}">
+      {% csrf_token %}
+      <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+        Create meeting
+      </button>
+    </form>
+  </div>
 
   <h2 class="text-sm font-medium text-heading mb-3">Your meetings</h2>
   <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">

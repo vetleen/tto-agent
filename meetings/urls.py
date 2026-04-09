@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns = [
     path("", views.meeting_list, name="meeting_list"),
+    path("create/", views.meeting_create, name="meeting_create"),
     path("<uuid:meeting_uuid>/", views.meeting_detail, name="meeting_detail"),
     path("<uuid:meeting_uuid>/rename/", views.meeting_rename, name="meeting_rename"),
     path("<uuid:meeting_uuid>/archive/", views.meeting_archive, name="meeting_archive"),
@@ -15,8 +16,10 @@ urlpatterns = [
         views.meeting_unlink_data_room,
         name="meeting_unlink_data_room",
     ),
+    path("<uuid:meeting_uuid>/upload/", views.meeting_upload, name="meeting_upload"),
     path("<uuid:meeting_uuid>/upload-transcript/", views.meeting_upload_transcript, name="meeting_upload_transcript"),
     path("<uuid:meeting_uuid>/upload-audio/", views.meeting_upload_audio, name="meeting_upload_audio"),
+    path("<uuid:meeting_uuid>/save-to-data-room/", views.meeting_save_to_data_room, name="meeting_save_to_data_room"),
     path("<uuid:meeting_uuid>/attachments/upload/", views.meeting_upload_attachment, name="meeting_upload_attachment"),
     path(
         "<uuid:meeting_uuid>/attachments/<uuid:attachment_id>/delete/",

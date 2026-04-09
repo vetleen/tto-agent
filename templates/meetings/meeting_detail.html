@@ -1,21 +1,23 @@
 {% extends "_base.html" %}
 {% load static %}
+{% block body_class %}pt-16 bg-neutral-primary min-h-screen{% endblock %}
 {% block content %}
 {% include "meetings/_meeting_header.html" %}
 
-<div class="max-w-4xl mx-auto px-4 py-8" data-meeting-uuid="{{ meeting.uuid }}" data-meeting-status="{{ meeting.status }}" data-auto-stop-default="{{ auto_stop_default_seconds }}" data-auto-stop-max="{{ auto_stop_max_seconds }}">
+<div class="max-w-4xl mx-auto px-4 py-8" data-meeting-uuid="{{ meeting.uuid }}" data-meeting-status="{{ meeting.status }}" data-auto-stop-default="{{ auto_stop_default_seconds }}" data-auto-stop-max="{{ auto_stop_max_seconds }}" data-auto-start-transcription="{% if request.GET.transcribe %}1{% else %}0{% endif %}">
   <div class="flex items-start justify-between gap-4 mb-6">
-    <h1 class="text-2xl font-semibold text-heading">{{ meeting.name }}</h1>
+    <input type="text" id="meeting-name-input" value="{{ meeting.name }}" maxlength="255"
+           class="flex-1 text-2xl font-semibold text-heading bg-transparent border-0 px-0 py-0 focus:outline-none focus:ring-0 focus:border-0 placeholder:text-body" />
     {% if meeting.status == 'live_transcribing' %}
-      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-warning"><span class="w-2 h-2 rounded-full bg-fg-warning animate-pulse"></span>Transcribing</span>
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-warning shrink-0 self-center"><span class="w-2 h-2 rounded-full bg-fg-warning animate-pulse"></span>Transcribing</span>
     {% elif meeting.status == 'interrupted' %}
-      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-warning">Interrupted</span>
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-warning shrink-0 self-center">Interrupted</span>
     {% elif meeting.status == 'failed' %}
-      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-danger">Failed</span>
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-danger shrink-0 self-center">Failed</span>
     {% elif meeting.status == 'ready' %}
-      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-success">Ready</span>
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-fg-success shrink-0 self-center">Ready</span>
     {% else %}
-      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-body">Draft</span>
+      <span class="inline-flex items-center gap-1.5 text-xs font-medium text-body shrink-0 self-center">Draft</span>
     {% endif %}
   </div>
 
@@ -28,33 +30,17 @@
   {# ----- Action buttons row ----- #}
   <div id="meeting-actions" class="flex flex-wrap gap-3 mb-8">
     <button type="button" id="transcribe-btn"
-            class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
-      {% if meeting.status == 'interrupted' %}Resume transcription{% else %}Start transcription{% endif %}
+            class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+      <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+      <span id="transcribe-btn-label">{% if meeting.status == 'interrupted' %}Resume transcription{% else %}Start transcription{% endif %}</span>
     </button>
 
-    <form method="post" action="{% url 'meeting_upload_audio' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
+    <form method="post" action="{% url 'meeting_upload' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
       {% csrf_token %}
       <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
-        Upload audio
-        <input type="file" name="audio" class="hidden" accept="audio/*" onchange="this.form.submit()">
+        Upload
+        <input type="file" name="file" class="hidden" accept=".txt,.md,text/plain,text/markdown,audio/*,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg" onchange="this.form.submit()">
       </label>
-    </form>
-
-    <form method="post" action="{% url 'meeting_upload_transcript' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
-      {% csrf_token %}
-      <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
-        Upload transcript
-        <input type="file" name="transcript" class="hidden" accept=".txt,.md,text/plain,text/markdown" onchange="this.form.submit()">
-      </label>
-    </form>
-
-    <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
-      {% csrf_token %}
-      <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
-              class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-              title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
-        Create meeting minutes with Wilfred
-      </button>
     </form>
   </div>
 
@@ -73,9 +59,6 @@
         </span>
         <span id="elapsed-counter" class="text-sm font-mono text-body">00:00</span>
       </div>
-      <button type="button" id="stop-btn" class="bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none">
-        Stop transcription
-      </button>
     </div>
 
     <div class="grid gap-4 md:grid-cols-2">
@@ -98,6 +81,13 @@
     </div>
 
     <p class="mt-3 text-xs text-body">Audio is not stored — only the resulting text. You can share this with participants: <em>"This meeting is being transcribed by an AI assistant. Audio is not retained."</em></p>
+
+    <div class="mt-4 flex justify-center">
+      <button type="button" id="stop-btn" class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+        Stop transcription
+      </button>
+    </div>
   </div>
 
   {# ----- Editable metadata ----- #}
@@ -120,41 +110,20 @@
         <textarea id="meeting-description" name="description" rows="2"
                   class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.description }}</textarea>
       </div>
-      <button type="submit" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
-      <span id="meeting-metadata-saved" class="hidden ms-3 text-xs text-fg-success">Saved.</span>
+      <div class="flex flex-wrap items-center gap-3">
+        <button type="submit" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
+        <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
+          {% csrf_token %}
+          <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
+                  class="inline-flex items-center gap-2 bg-wilfred text-wilfred-on hover:bg-wilfred-strong focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+            Create meeting minutes with Wilfred
+          </button>
+        </form>
+        <span id="meeting-metadata-saved" class="hidden text-xs text-fg-success">Saved.</span>
+      </div>
     </form>
-  </section>
-
-  {# ----- Linked data rooms ----- #}
-  <section class="mb-8">
-    <h2 class="text-sm font-medium text-heading mb-3">Linked data rooms</h2>
-    {% if linked_rooms %}
-      <ul class="bg-neutral-primary-soft border border-default rounded-base divide-y divide-default mb-3">
-        {% for dr in linked_rooms %}
-        <li class="flex items-center justify-between px-4 py-2.5">
-          <a href="{% url 'data_room_documents' data_room_id=dr.uuid %}" class="text-sm text-heading hover:text-brand">{{ dr.name }}</a>
-          <form method="post" action="{% url 'meeting_unlink_data_room' meeting_uuid=meeting.uuid data_room_uuid=dr.uuid %}">
-            {% csrf_token %}
-            <button type="submit" class="text-xs text-fg-danger hover:underline">Unlink</button>
-          </form>
-        </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="text-sm text-body mb-3">No data rooms linked yet.</p>
-    {% endif %}
-    {% if linkable_rooms %}
-      <form method="post" action="{% url 'meeting_link_data_room' meeting_uuid=meeting.uuid %}" class="flex items-center gap-2">
-        {% csrf_token %}
-        <select name="data_room_id" required class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block px-3 py-2 max-w-sm">
-          <option value="">Choose a data room…</option>
-          {% for dr in linkable_rooms %}
-            <option value="{{ dr.uuid }}">{{ dr.name }}</option>
-          {% endfor %}
-        </select>
-        <button type="submit" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 focus:outline-none">Link</button>
-      </form>
-    {% endif %}
   </section>
 
   {# ----- Attachments ----- #}
@@ -182,6 +151,40 @@
         <input type="file" name="file" class="hidden" onchange="this.form.submit()">
       </label>
     </form>
+  </section>
+
+  {# ----- Transcript actions: summarize in chat / save to data room ----- #}
+  <section class="mb-3">
+    <div class="flex flex-wrap items-center gap-3">
+      <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
+        {% csrf_token %}
+        <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
+                class="inline-flex items-center gap-2 bg-wilfred text-wilfred-on hover:bg-wilfred-strong focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z"/></svg>
+          Summarize in chat
+        </button>
+      </form>
+
+      {% if user_data_rooms %}
+      <form method="post" action="{% url 'meeting_save_to_data_room' meeting_uuid=meeting.uuid %}" class="inline-flex items-center gap-2">
+        {% csrf_token %}
+        <select name="data_room_id" required
+                class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block px-3 py-2 max-w-sm">
+          <option value="">Choose a data room…</option>
+          {% for dr in user_data_rooms %}
+            <option value="{{ dr.uuid }}">{{ dr.name }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
+                class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
+          Save to data room
+        </button>
+      </form>
+      {% endif %}
+    </div>
+    <p class="mt-2 text-xs text-body">Tip: we recommend saving a meeting summary (created with Wilfred) rather than the raw transcript.</p>
   </section>
 
   {# ----- Transcript display ----- #}

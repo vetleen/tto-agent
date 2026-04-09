@@ -25,8 +25,10 @@
   const initialStatus = root.dataset.meetingStatus;
   const autoStopDefault = parseInt(root.dataset.autoStopDefault || '3600', 10);
   const autoStopMax = parseInt(root.dataset.autoStopMax || '14400', 10);
+  const autoStartTranscription = root.dataset.autoStartTranscription === '1';
 
   const transcribeBtn = document.getElementById('transcribe-btn');
+  const transcribeBtnLabel = document.getElementById('transcribe-btn-label');
   const stopBtn = document.getElementById('stop-btn');
   const controlsEl = document.getElementById('transcribe-controls');
   const elapsedEl = document.getElementById('elapsed-counter');
@@ -38,6 +40,15 @@
 
   const metadataForm = document.getElementById('meeting-metadata-form');
   const metadataSavedEl = document.getElementById('meeting-metadata-saved');
+  const nameInput = document.getElementById('meeting-name-input');
+
+  function setTranscribeBtnLabel(text) {
+    if (transcribeBtnLabel) {
+      transcribeBtnLabel.textContent = text;
+    } else if (transcribeBtn) {
+      transcribeBtn.textContent = text;
+    }
+  }
 
   // ---------------- feature detection ----------------
   if (!('MediaRecorder' in window) || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -46,24 +57,62 @@
   }
 
   // ---------------- metadata save (fetch, no reload) ----------------
+  function postMetadata(fields, onSuccess) {
+    if (!metadataForm) return;
+    const data = new FormData();
+    const csrf = metadataForm.querySelector('input[name="csrfmiddlewaretoken"]');
+    if (csrf) data.append('csrfmiddlewaretoken', csrf.value);
+    Object.keys(fields).forEach(function (k) { data.append(k, fields[k]); });
+    fetch(metadataForm.action, {
+      method: 'POST',
+      body: data,
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    }).then(function (r) {
+      if (!r.ok) throw new Error('save failed');
+      if (typeof onSuccess === 'function') onSuccess();
+    }).catch(function () {
+      alert('Could not save meeting metadata.');
+    });
+  }
+
   if (metadataForm) {
     metadataForm.addEventListener('submit', function (ev) {
       ev.preventDefault();
-      const data = new FormData(metadataForm);
-      fetch(metadataForm.action, {
-        method: 'POST',
-        body: data,
-        credentials: 'same-origin',
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      }).then(function (r) {
-        if (!r.ok) throw new Error('save failed');
+      postMetadata({
+        agenda: metadataForm.querySelector('[name="agenda"]').value,
+        participants: metadataForm.querySelector('[name="participants"]').value,
+        description: metadataForm.querySelector('[name="description"]').value,
+      }, function () {
         if (metadataSavedEl) {
           metadataSavedEl.classList.remove('hidden');
           setTimeout(function () { metadataSavedEl.classList.add('hidden'); }, 2000);
         }
-      }).catch(function () {
-        alert('Could not save meeting metadata.');
       });
+    });
+  }
+
+  // Save the meeting name when the user blurs the title input or hits Enter.
+  if (nameInput) {
+    let lastSavedName = nameInput.value;
+    function saveName() {
+      const value = nameInput.value.trim();
+      if (!value) {
+        nameInput.value = lastSavedName;
+        return;
+      }
+      if (value === lastSavedName) return;
+      postMetadata({ name: value }, function () {
+        lastSavedName = value;
+        document.title = value + ' — Wilfred';
+      });
+    }
+    nameInput.addEventListener('blur', saveName);
+    nameInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        nameInput.blur();
+      }
     });
   }
 
@@ -358,7 +407,7 @@
     if (transcribing) return;
     transcribing = true;
     transcribeBtn.disabled = true;
-    transcribeBtn.textContent = 'Connecting…';
+    setTranscribeBtnLabel('Connecting…');
     try {
       preferredMime = pickMime();
       const deviceId = micSelect && micSelect.value ? { exact: micSelect.value } : undefined;
@@ -370,7 +419,7 @@
     } catch (err) {
       transcribing = false;
       transcribeBtn.disabled = false;
-      transcribeBtn.textContent = 'Start transcription';
+      setTranscribeBtnLabel('Start transcription');
       alert('Could not access microphone: ' + err.message);
       return;
     }
@@ -381,7 +430,7 @@
       transcribing = false;
       shutdownLocal();
       transcribeBtn.disabled = false;
-      transcribeBtn.textContent = 'Start transcription';
+      setTranscribeBtnLabel('Start transcription');
       alert('Could not open transcription connection.');
       return;
     }
@@ -439,4 +488,14 @@
   // Pre-populate the mic dropdown with whatever labels are available before
   // permission is granted (most browsers return generic labels).
   populateMics();
+
+  // If the meeting was opened with ?transcribe=1, auto-start transcription on
+  // load. Strip the query param so a refresh doesn't re-trigger it.
+  if (autoStartTranscription && transcribeBtn && !transcribeBtn.disabled) {
+    if (window.history && window.history.replaceState) {
+      const cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, document.title, cleanUrl);
+    }
+    startTranscription().catch(function (err) { console.error(err); });
+  }
 })();
