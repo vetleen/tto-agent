@@ -3,9 +3,9 @@
   <nav class="bg-neutral-secondary-soft border-y border-default">
     <div class="max-w-screen-xl px-4 py-2.5 mx-auto">
       <div class="flex items-center gap-4">
-        <a href="{% url 'data_room_list' %}" class="inline-flex items-center gap-1.5 text-sm font-medium text-body hover:text-heading truncate max-w-full" title="{{ data_room.name }}">
+        <a href="{% url 'data_room_list' %}" class="inline-flex items-center gap-1.5 text-sm font-medium text-body hover:text-heading">
           <svg class="w-4 h-4 shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12l4-4M5 12l4 4"/></svg>
-          <span class="truncate">{{ data_room.name|truncate_project_name:75 }}</span>
+          <span>Back to my data rooms</span>
         </a>
       </div>
     </div>
