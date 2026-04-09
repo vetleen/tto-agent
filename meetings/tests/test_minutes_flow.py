@@ -6,9 +6,8 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from agent_skills.models import AgentSkill
-from chat.models import ChatAttachment, ChatMessage, ChatThread, ChatThreadDataRoom
-from documents.models import DataRoom
-from meetings.models import Meeting, MeetingDataRoom
+from chat.models import ChatCanvas, ChatMessage, ChatThread
+from meetings.models import Meeting
 from meetings.services.minutes import create_minutes_thread
 
 User = get_user_model()
@@ -38,6 +37,7 @@ class CreateMinutesThreadTests(TestCase):
             transcription_model="openai/gpt-4o-mini-transcribe",
             agenda="Discuss licensing terms.",
             participants="Alice, Bob",
+            description="Quarterly check-in with Acme.",
         )
 
     def test_creates_thread_with_skill_and_metadata(self):
@@ -48,29 +48,29 @@ class CreateMinutesThreadTests(TestCase):
         self.assertEqual(thread.metadata.get("source_meeting_id"), str(self.meeting.uuid))
         self.assertTrue(thread.metadata.get("pending_initial_turn"))
 
-    def test_attaches_transcript_as_chat_attachment(self):
+    def test_preloads_transcript_into_active_canvas(self):
         thread, _ = create_minutes_thread(self.user, self.meeting)
-        attachments = list(ChatAttachment.objects.filter(thread=thread))
-        self.assertEqual(len(attachments), 1)
-        att = attachments[0]
-        self.assertIsNone(att.message_id)
-        self.assertIn("transcript-", att.original_filename)
-        self.assertEqual(att.size_bytes, len(self.meeting.transcript.encode("utf-8")))
+        canvases = list(ChatCanvas.objects.filter(thread=thread))
+        self.assertEqual(len(canvases), 1)
+        canvas = canvases[0]
+        self.assertEqual(canvas.content, self.meeting.transcript)
+        self.assertIn("Acme call", canvas.title)
+        self.assertIsNotNone(canvas.accepted_checkpoint_id)
+        thread.refresh_from_db()
+        self.assertEqual(thread.active_canvas_id, canvas.id)
 
     def test_creates_hidden_seed_message(self):
         thread, _ = create_minutes_thread(self.user, self.meeting)
         seeds = list(ChatMessage.objects.filter(thread=thread, is_hidden_from_user=True))
         self.assertEqual(len(seeds), 1)
         self.assertEqual(seeds[0].role, "user")
-        self.assertIn("Acme call", seeds[0].content)
-        self.assertIn("Discuss licensing terms", seeds[0].content)
-        self.assertIn("Alice, Bob", seeds[0].content)
-
-    def test_propagates_linked_data_rooms(self):
-        room = DataRoom.objects.create(name="R", slug="r-cmt", created_by=self.user)
-        MeetingDataRoom.objects.create(meeting=self.meeting, data_room=room)
-        thread, _ = create_minutes_thread(self.user, self.meeting)
-        self.assertTrue(ChatThreadDataRoom.objects.filter(thread=thread, data_room=room).exists())
+        content = seeds[0].content
+        self.assertIn("Acme call", content)
+        self.assertIn("Discuss licensing terms", content)
+        self.assertIn("Alice, Bob", content)
+        self.assertIn("Quarterly check-in with Acme.", content)
+        self.assertIn("Meeting Summarizer skill", content)
+        self.assertNotIn("playbook", content.lower())
 
     def test_refuses_meeting_without_transcript(self):
         m = Meeting.objects.create(name="Empty", slug="empty-m", created_by=self.user)

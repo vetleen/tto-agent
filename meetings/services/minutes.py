@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import logging
 
-from django.core.files.base import ContentFile
-
 logger = logging.getLogger(__name__)
 
 
@@ -21,38 +19,29 @@ def _format_duration_minutes(seconds) -> str:
     return f"~{minutes} minutes"
 
 
-def _build_seed_message(meeting, transcript_filename: str, model_label: str) -> str:
+def _build_seed_message(meeting, canvas_title: str, model_label: str) -> str:
     transcript = meeting.transcript or ""
     n_chars = len(transcript)
     parts: list[str] = []
     parts.append(
-        f"The user opened this thread to create meeting minutes for "
-        f"**{meeting.name}**. The transcript is attached to this thread as "
-        f"`{transcript_filename}` ({n_chars} characters, "
-        f"{_format_duration_minutes(meeting.duration_seconds)} of audio, "
-        f"transcribed via `{model_label}`)."
+        f"The user opened this thread to create meeting minutes (or a summary) "
+        f"for **{meeting.name}**. A transcript of the meeting "
+        f"({n_chars} characters, {_format_duration_minutes(meeting.duration_seconds)} "
+        f'of audio, transcribed via `{model_label}`) is preloaded in the canvas titled "{canvas_title}".'
     )
     if meeting.agenda and meeting.agenda.strip():
-        parts.append(f"The agenda was: {meeting.agenda.strip()}.")
+        parts.append(f"Agenda: {meeting.agenda.strip()}")
     if meeting.participants and meeting.participants.strip():
-        parts.append(f"Participants: {meeting.participants.strip()}.")
-    linked_rooms = list(meeting.data_rooms.all().values_list("name", flat=True))
-    if linked_rooms:
-        parts.append(
-            "Linked data rooms (search them with the standard document tools): "
-            + ", ".join(linked_rooms)
-            + "."
-        )
+        parts.append(f"Participants: {meeting.participants.strip()}")
+    if meeting.description and meeting.description.strip():
+        parts.append(f"Description: {meeting.description.strip()}")
     parts.append(
-        "Your job is to produce well-structured meeting minutes and save them "
-        f"with `save_meeting_minutes` (the meeting_id is `{meeting.uuid}`). "
-        "If anything important is missing — attendees, meeting purpose, the "
-        "boundary between decisions and action items — greet the user briefly "
-        "and ask one focused question before drafting. If the transcript is "
-        "rich enough to draft directly, do so: open a canvas titled "
-        f"\"Meeting minutes — {meeting.name}\", write the minutes there, then "
-        "call `save_meeting_minutes` with `kind=\"minutes\"`. Use the Meeting "
-        "Summarizer playbook."
+        "Your job is to produce well-structured meeting minutes (or a summary) "
+        f"and save them with `save_meeting_minutes` (the meeting_id is `{meeting.uuid}`). "
+        "If important context is missing — attendees, meeting purpose, the boundary "
+        "between decisions and action items — greet the user briefly and ask one "
+        "focused question before drafting. Use the attached Meeting Summarizer skill "
+        "to complete the task."
     )
     return " ".join(parts)
 
@@ -63,7 +52,12 @@ def create_minutes_thread(user, meeting):
     Returns ``(thread, error_message)``: exactly one is non-None.
     """
     from agent_skills.models import AgentSkill
-    from chat.models import ChatAttachment, ChatMessage, ChatThread, ChatThreadDataRoom
+    from chat.models import ChatCanvas, ChatMessage, ChatThread
+    from chat.services import (
+        CANVAS_MAX_CHARS,
+        create_canvas_checkpoint,
+        set_active_canvas,
+    )
 
     summarizer = (
         AgentSkill.objects
@@ -90,29 +84,28 @@ def create_minutes_thread(user, meeting):
         },
     )
 
-    # Auto-link any data rooms the meeting has — gives Wilfred RAG access via
-    # the standard document tools during the minutes session.
-    for dr in meeting.data_rooms.all():
-        ChatThreadDataRoom.objects.get_or_create(thread=thread, data_room=dr)
-
-    # Attach the transcript as a ChatAttachment (programmatic, message=None).
-    payload = (meeting.transcript or "").encode("utf-8")
-    transcript_filename = f"transcript-{meeting.slug}.txt"
-    ChatAttachment.objects.create(
+    # Preload the transcript into a canvas so Wilfred sees it as the active
+    # canvas (its content is injected into the per-turn prompt). Truncate to
+    # the canvas character cap if the transcript is unusually long.
+    canvas_title = f"Meeting transcript — {meeting.name}"[:255]
+    canvas_content = (meeting.transcript or "")[:CANVAS_MAX_CHARS]
+    canvas = ChatCanvas.objects.create(
         thread=thread,
-        message=None,
-        uploaded_by=user,
-        file=ContentFile(payload, name=transcript_filename),
-        original_filename=transcript_filename,
-        content_type="text/plain",
-        size_bytes=len(payload),
+        title=canvas_title,
+        content=canvas_content,
     )
+    checkpoint = create_canvas_checkpoint(
+        canvas, source="original", description="Meeting transcript",
+    )
+    canvas.accepted_checkpoint = checkpoint
+    canvas.save(update_fields=["accepted_checkpoint"])
+    set_active_canvas(thread.id, canvas)
 
     # Hidden seed user message that primes the LLM. The chat consumer's
     # `pending_initial_turn` flag triggers an auto-assistant turn on first
     # WS load.
     model_label = meeting.transcription_model or "uploaded text"
-    seed_content = _build_seed_message(meeting, transcript_filename, model_label)
+    seed_content = _build_seed_message(meeting, canvas_title, model_label)
     ChatMessage.objects.create(
         thread=thread,
         role="user",

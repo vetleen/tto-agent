@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 
+class ReadCanvasInput(ReasonBaseModel):
+    canvas_name: str = Field(
+        description="Title of the canvas to read."
+    )
+
+
 class WriteCanvasInput(ReasonBaseModel):
     title: str = Field(description="Title for the document.")
     content: str = Field(description="Full markdown content of the document.")
@@ -36,6 +42,40 @@ class EditCanvasInput(ReasonBaseModel):
         default="",
         description="Title of the canvas to edit. If omitted, edits the active canvas.",
     )
+
+
+class ReadCanvasTool(ContextAwareTool):
+    """Read the full content of a canvas in this thread by title."""
+
+    name: str = "read_canvas"
+    description: str = (
+        "Read the full content of a canvas in this thread by title. Use this "
+        "to retrieve the text of a canvas that is not currently active — for "
+        "example a transcript, source document, or earlier draft sitting in "
+        "another tab. The content is returned in the tool result and stays "
+        "available in the conversation context for follow-up turns. Only the "
+        "active canvas is included in your prompt automatically; use this "
+        "tool whenever you need to look at any other canvas."
+    )
+    args_schema: type[BaseModel] = ReadCanvasInput
+
+    def _run(self, canvas_name: str, **kwargs) -> str:
+        from chat.services import resolve_canvas
+
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        canvas, err = resolve_canvas(thread_id, canvas_name)
+        if err:
+            return json.dumps({"status": "error", "message": err})
+
+        return json.dumps({
+            "status": "ok",
+            "title": canvas.title,
+            "content": canvas.content,
+            "canvas_id": str(canvas.pk),
+        })
 
 
 class WriteCanvasTool(ContextAwareTool):
@@ -199,5 +239,6 @@ class EditCanvasTool(ContextAwareTool):
 
 # Register on import
 _registry = get_tool_registry()
+_registry.register_tool(ReadCanvasTool())
 _registry.register_tool(WriteCanvasTool())
 _registry.register_tool(EditCanvasTool())

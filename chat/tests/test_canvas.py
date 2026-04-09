@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from chat.canvas_tools import EditCanvasTool, WriteCanvasTool
+from chat.canvas_tools import EditCanvasTool, ReadCanvasTool, WriteCanvasTool
 from chat.models import CanvasCheckpoint, ChatCanvas, ChatThread
 from llm.types.context import RunContext
 
@@ -62,6 +62,59 @@ class WriteCanvasToolTests(TestCase):
     def test_no_context_returns_error(self):
         tool = WriteCanvasTool()
         result = json.loads(tool.invoke({"title": "T", "content": "C"}))
+        self.assertEqual(result["status"], "error")
+
+
+# ---------------------------------------------------------------------------
+# ReadCanvasTool tests
+# ---------------------------------------------------------------------------
+
+class ReadCanvasToolTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="read@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_returns_content_of_named_canvas(self):
+        ChatCanvas.objects.create(
+            thread=self.thread, title="Transcript", content="hello world",
+        )
+        result = _invoke(
+            ReadCanvasTool, {"canvas_name": "Transcript"},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["title"], "Transcript")
+        self.assertEqual(result["content"], "hello world")
+
+    def test_reads_inactive_canvas(self):
+        # Active canvas is "Notes"; we read the inactive "Transcript".
+        ChatCanvas.objects.create(
+            thread=self.thread, title="Transcript", content="raw transcript text",
+        )
+        notes = ChatCanvas.objects.create(
+            thread=self.thread, title="Notes", content="some notes",
+        )
+        self.thread.active_canvas = notes
+        self.thread.save(update_fields=["active_canvas"])
+
+        result = _invoke(
+            ReadCanvasTool, {"canvas_name": "Transcript"},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["content"], "raw transcript text")
+
+    def test_returns_error_for_unknown_canvas(self):
+        result = _invoke(
+            ReadCanvasTool, {"canvas_name": "Nope"},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Nope", result["message"])
+
+    def test_no_context_returns_error(self):
+        tool = ReadCanvasTool()
+        result = json.loads(tool.invoke({"canvas_name": "X"}))
         self.assertEqual(result["status"], "error")
 
 
