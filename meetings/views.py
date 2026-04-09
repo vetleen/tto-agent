@@ -616,18 +616,26 @@ def meeting_upload_audio(request, meeting_uuid):
         messages.error(request, f"Audio file is too large (max {max_bytes // (1024 * 1024)} MB).")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    # Pick a transcription model from user prefs, falling back to the project default.
+    # Pick the transcription model: meeting's saved choice wins, then user
+    # prefs default, then the project default. The meeting's choice is set
+    # by the model picker in the UI (POST to meeting_update_metadata).
     try:
         from core.preferences import get_preferences
         prefs = get_preferences(request.user)
         allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
+        prefs_default = getattr(prefs, "transcription_model", "") or ""
     except Exception:
         allowed_models = []
-    model_id = (
-        allowed_models[0]
-        if allowed_models
-        else getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
-    )
+        prefs_default = ""
+    meeting_model = (meeting.transcription_model or "").strip()
+    if meeting_model and meeting_model in allowed_models:
+        model_id = meeting_model
+    elif prefs_default and prefs_default in allowed_models:
+        model_id = prefs_default
+    elif allowed_models:
+        model_id = allowed_models[0]
+    else:
+        model_id = getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
 
     # Persist the audio to a temp location under MEETING_CHUNK_TEMP_DIR so the
     # task can read it. We delete the file after transcription succeeds OR fails.
