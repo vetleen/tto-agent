@@ -62,15 +62,45 @@ def calculate_cost(
 def calculate_transcription_cost(
     model: str,
     audio_duration_seconds: float,
+    *,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
 ) -> Optional[Decimal]:
-    """Compute the USD cost of a transcription call from audio duration.
+    """Compute the USD cost of a transcription call.
 
-    Transcription is billed per minute, not per token.
+    Prefers token-based billing when the caller supplies both ``input_tokens``
+    and ``output_tokens`` AND the model has per-token prices configured —
+    this is the accurate path for ``gpt-4o-transcribe`` /
+    ``gpt-4o-mini-transcribe``, which return a populated ``response.usage``
+    from the OpenAI API.
+
+    Falls back to ``audio_duration_seconds * price_per_minute`` when:
+      - the caller did not (or could not) pass tokens (e.g. whisper-1's
+        ``UsageDuration`` response, or a response missing ``usage`` entirely);
+      - the registered model has no per-token pricing.
+
+    Returns *None* for unknown models or when neither pricing path is
+    configured.
     """
     from llm.transcription_registry import get_transcription_model_info
 
     info = get_transcription_model_info(model)
-    if info is None or info.price_per_minute is None:
+    if info is None:
+        return None
+
+    # Token-based path: both tokens and both rates present.
+    if (
+        input_tokens is not None
+        and output_tokens is not None
+        and info.input_price_per_1m_tokens is not None
+        and info.output_price_per_1m_tokens is not None
+    ):
+        inp = Decimal(input_tokens) * info.input_price_per_1m_tokens / _ONE_MILLION
+        out = Decimal(output_tokens) * info.output_price_per_1m_tokens / _ONE_MILLION
+        return inp + out
+
+    # Duration fallback.
+    if info.price_per_minute is None:
         return None
     minutes = Decimal(str(audio_duration_seconds)) / Decimal("60")
     return info.price_per_minute * minutes

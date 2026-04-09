@@ -396,6 +396,150 @@ class OrchestratorTests(TestCase):
         self.assertEqual(m.transcription_chunks_total, 0)
         self.assertEqual(m.transcription_chunks_done, 0)
 
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_single_chunk_appends_to_existing_transcript(self, mock_split):
+        """Re-uploading a short (single-chunk) file to a meeting that already
+        has a transcript must append the new text, never replace it."""
+        self.meeting.transcript = "PRIOR TRANSCRIPT FROM FILE ONE — do not lose."
+        self.meeting.save(update_fields=["transcript"])
+
+        spec = _make_chunk_spec(0)
+        mock_split.return_value = [spec]
+        service = MagicMock()
+        service.transcribe.return_value = _FakeResult("fresh content from file two")
+
+        text = orchestrate_upload_transcription(
+            meeting_id=self.meeting.pk,
+            temp_path=Path("/fake.mp3"),
+            model_id="openai/gpt-4o-mini-transcribe",
+            user_id=self.user.pk,
+            service=service,
+        )
+
+        m = self._fresh()
+        # Existing content MUST still be present.
+        self.assertIn("PRIOR TRANSCRIPT FROM FILE ONE", m.transcript)
+        # New content MUST also be present.
+        self.assertIn("fresh content from file two", m.transcript)
+        # Order: existing first, new second.
+        self.assertLess(
+            m.transcript.index("PRIOR TRANSCRIPT"),
+            m.transcript.index("fresh content"),
+        )
+        # Return value matches the persisted transcript.
+        self.assertEqual(m.transcript, text)
+        self.assertEqual(m.status, Meeting.Status.READY)
+
+        # The single-chunk prompt should have carried the existing transcript
+        # tail as context for proper-noun continuity.
+        prompt_arg = service.transcribe.call_args.kwargs["prompt"]
+        self.assertIn("Previous transcript excerpt", prompt_arg)
+        self.assertIn("do not lose", prompt_arg)
+
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_multi_chunk_appends_to_existing_transcript(self, mock_split):
+        """Re-uploading a multi-chunk file must preserve the prior transcript
+        AND stitch all new chunks — not just the last chunk."""
+        self.meeting.transcript = (
+            "PRIOR TRANSCRIPT HEADER\n\n"
+            "This is file one's full content with meaningful text inside."
+        )
+        self.meeting.save(update_fields=["transcript"])
+
+        specs = [_make_chunk_spec(i) for i in range(3)]
+        mock_split.return_value = specs
+
+        # Build overlap phrases long enough for the fuzzy stitcher's confident
+        # match floor (same pattern as the existing happy-path test).
+        overlap_one_two = (
+            "the partnership structure between the two parties was reviewed "
+            "and then we discussed the budget allocation for next quarter"
+        )
+        overlap_two_three = (
+            "the marketing plan for the product launch event in Stockholm "
+            "and then the Q3 sales targets for the new territory"
+        )
+        chunk_texts = [
+            "FILE TWO CHUNK ZERO intro text and " + overlap_one_two,
+            overlap_one_two + " and then " + overlap_two_three,
+            overlap_two_three + " and FILE TWO CHUNK THREE closing remarks and thank you",
+        ]
+        service = MagicMock()
+        service.transcribe.side_effect = [_FakeResult(t) for t in chunk_texts]
+
+        orchestrate_upload_transcription(
+            meeting_id=self.meeting.pk,
+            temp_path=Path("/fake.mp3"),
+            model_id="openai/gpt-4o-mini-transcribe",
+            user_id=self.user.pk,
+            service=service,
+        )
+
+        m = self._fresh()
+        self.assertEqual(m.status, Meeting.Status.READY)
+
+        # The prior transcript MUST still be there in full.
+        self.assertIn("PRIOR TRANSCRIPT HEADER", m.transcript)
+        self.assertIn("meaningful text inside", m.transcript)
+
+        # EVERY chunk's distinctive content should be in the final transcript,
+        # not just the last one. This is the regression we're guarding.
+        self.assertIn("FILE TWO CHUNK ZERO intro text", m.transcript)
+        self.assertIn("FILE TWO CHUNK THREE closing remarks", m.transcript)
+
+        # Order: existing first, then the new stitched text.
+        self.assertLess(
+            m.transcript.index("PRIOR TRANSCRIPT HEADER"),
+            m.transcript.index("FILE TWO CHUNK ZERO"),
+        )
+        self.assertLess(
+            m.transcript.index("FILE TWO CHUNK ZERO"),
+            m.transcript.index("FILE TWO CHUNK THREE"),
+        )
+
+        # No duplication of the internal overlap phrases.
+        self.assertEqual(m.transcript.count(overlap_one_two), 1)
+        self.assertEqual(m.transcript.count(overlap_two_three), 1)
+
+        # First new chunk's prompt should pull context from the EXISTING
+        # transcript (not from nothing); later chunks pull from running tail.
+        first_prompt = service.transcribe.call_args_list[0].kwargs["prompt"]
+        self.assertIn("Previous transcript excerpt", first_prompt)
+        self.assertIn("meaningful text inside", first_prompt)
+
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_multi_chunk_append_failure_preserves_existing(self, mock_split):
+        """If a chunk fails mid-upload, the existing transcript must still be
+        present (alongside any partial new content)."""
+        self.meeting.transcript = "KEEP THIS PRIOR TRANSCRIPT SAFE"
+        self.meeting.save(update_fields=["transcript"])
+
+        specs = [_make_chunk_spec(i) for i in range(3)]
+        mock_split.return_value = specs
+
+        service = MagicMock()
+        service.transcribe.side_effect = [
+            _FakeResult("first new chunk content"),
+            RuntimeError("network went away"),
+        ]
+
+        with self.assertRaises(RuntimeError):
+            orchestrate_upload_transcription(
+                meeting_id=self.meeting.pk,
+                temp_path=Path("/fake.mp3"),
+                model_id="openai/gpt-4o-mini-transcribe",
+                user_id=self.user.pk,
+                service=service,
+            )
+
+        m = self._fresh()
+        self.assertEqual(m.status, Meeting.Status.FAILED)
+        # Prior content MUST still be present — a failed re-upload is not
+        # allowed to eat the previous transcript.
+        self.assertIn("KEEP THIS PRIOR TRANSCRIPT SAFE", m.transcript)
+        # Partial new content is also persisted.
+        self.assertIn("first new chunk content", m.transcript)
+
     @patch("meetings.services.audio_transcription.time.sleep", return_value=None)
     @patch("meetings.services.audio_transcription.split_audio_with_overlap")
     def test_transient_error_is_retried(self, mock_split, mock_sleep):

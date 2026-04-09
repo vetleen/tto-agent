@@ -314,19 +314,182 @@ class SplitAudioFileTests(TestCase):
 
 
 class TranscriptionCostTests(TestCase):
-    """Tests for transcription cost calculation."""
+    """Tests for transcription cost calculation (per-minute fallback path)."""
 
-    def test_calculate_transcription_cost(self):
+    def test_calculate_transcription_cost_per_minute_fallback(self):
+        """Without token counts, use the registry's price_per_minute estimate."""
         from llm.service.pricing import calculate_transcription_cost
 
-        # gpt-4o-mini-transcribe: $0.03/min
+        # gpt-4o-mini-transcribe: $0.003/min (OpenAI pricing-page estimate).
         cost = calculate_transcription_cost("openai/gpt-4o-mini-transcribe", 120.0)
         self.assertIsNotNone(cost)
-        # 2 minutes * $0.03 = $0.06
-        self.assertAlmostEqual(float(cost), 0.06, places=4)
+        # 2 minutes * $0.003 = $0.006
+        self.assertAlmostEqual(float(cost), 0.006, places=5)
 
     def test_calculate_transcription_cost_unknown_model(self):
         from llm.service.pricing import calculate_transcription_cost
 
         cost = calculate_transcription_cost("nonexistent/model", 60.0)
         self.assertIsNone(cost)
+
+    def test_calculate_transcription_cost_token_based(self):
+        """With token counts + configured rates, bill per token (the accurate path)."""
+        from llm.service.pricing import calculate_transcription_cost
+
+        # gpt-4o-mini-transcribe: $1.25 / 1M input, $5.00 / 1M output.
+        # 10,000 input tokens + 2,000 output tokens
+        # = 10_000/1_000_000 * 1.25 + 2_000/1_000_000 * 5.00
+        # = 0.0125 + 0.0100 = 0.0225
+        cost = calculate_transcription_cost(
+            "openai/gpt-4o-mini-transcribe",
+            audio_duration_seconds=60.0,  # should be IGNORED when tokens present
+            input_tokens=10_000,
+            output_tokens=2_000,
+        )
+        self.assertIsNotNone(cost)
+        self.assertAlmostEqual(float(cost), 0.0225, places=5)
+
+    def test_calculate_transcription_cost_token_based_gpt_4o(self):
+        """gpt-4o-transcribe has its own (higher) token rates."""
+        from llm.service.pricing import calculate_transcription_cost
+
+        # gpt-4o-transcribe: $2.50 / 1M input, $10.00 / 1M output.
+        # 10,000 input + 2,000 output = 0.025 + 0.020 = 0.045
+        cost = calculate_transcription_cost(
+            "openai/gpt-4o-transcribe",
+            audio_duration_seconds=60.0,
+            input_tokens=10_000,
+            output_tokens=2_000,
+        )
+        self.assertAlmostEqual(float(cost), 0.045, places=5)
+
+    def test_calculate_transcription_cost_partial_tokens_falls_back(self):
+        """If only input_tokens is supplied, fall back to per-minute billing."""
+        from llm.service.pricing import calculate_transcription_cost
+
+        cost = calculate_transcription_cost(
+            "openai/gpt-4o-mini-transcribe",
+            audio_duration_seconds=120.0,
+            input_tokens=10_000,
+            # output_tokens missing → fallback
+        )
+        # Should match the per-minute path exactly: 2 * 0.003 = 0.006
+        self.assertAlmostEqual(float(cost), 0.006, places=5)
+
+
+class TranscriptionUsageExtractionTests(TestCase):
+    """Tests for _extract_transcription_usage and the full single-file path.
+
+    These use the in-repo response-usage reader directly with hand-rolled
+    stand-ins so the test doesn't depend on pulling in real OpenAI SDK
+    BaseModel classes. The stand-ins mimic the SDK shape exactly.
+    """
+
+    def test_extract_usage_tokens_variant(self):
+        from llm.service.transcription_service import _extract_transcription_usage
+
+        class _InputDetails:
+            audio_tokens = 400
+            text_tokens = 50
+
+        class _Usage:
+            type = "tokens"
+            input_tokens = 450
+            output_tokens = 120
+            total_tokens = 570
+            input_token_details = _InputDetails()
+
+        class _Resp:
+            text = "ok"
+            usage = _Usage()
+
+        inp, out, tot, aud = _extract_transcription_usage(_Resp())
+        self.assertEqual(inp, 450)
+        self.assertEqual(out, 120)
+        self.assertEqual(tot, 570)
+        self.assertEqual(aud, 400)
+
+    def test_extract_usage_duration_variant_returns_none(self):
+        """UsageDuration responses (whisper-1) should yield all-None so the
+        caller falls back to per-minute billing."""
+        from llm.service.transcription_service import _extract_transcription_usage
+
+        class _Usage:
+            type = "duration"
+            seconds = 30.0
+
+        class _Resp:
+            text = "ok"
+            usage = _Usage()
+
+        self.assertEqual(
+            _extract_transcription_usage(_Resp()),
+            (None, None, None, None),
+        )
+
+    def test_extract_usage_missing(self):
+        from llm.service.transcription_service import _extract_transcription_usage
+
+        class _Resp:
+            text = "ok"
+            usage = None
+
+        self.assertEqual(
+            _extract_transcription_usage(_Resp()),
+            (None, None, None, None),
+        )
+
+    def test_extract_usage_magicmock_response_falls_back(self):
+        """A plain MagicMock (as in existing tests) auto-vivifies attributes
+        but they aren't real strings/ints — must fall back to all-None."""
+        from llm.service.transcription_service import _extract_transcription_usage
+
+        resp = MagicMock()
+        resp.text = "ok"
+        self.assertEqual(
+            _extract_transcription_usage(resp),
+            (None, None, None, None),
+        )
+
+    @patch("llm.service.transcription_service._get_audio_duration_seconds", return_value=60.0)
+    @patch("llm.service.transcription_service.log_transcription")
+    @patch("openai.OpenAI")
+    def test_transcribe_single_uses_token_billing_when_usage_present(
+        self, mock_openai_cls, mock_log, mock_duration,
+    ):
+        """End-to-end: a response carrying UsageTokens triggers token-based
+        cost and forwards token counts to log_transcription."""
+        class _InputDetails:
+            audio_tokens = 800
+            text_tokens = 200
+
+        class _Usage:
+            type = "tokens"
+            input_tokens = 1000
+            output_tokens = 250
+            total_tokens = 1250
+            input_token_details = _InputDetails()
+
+        class _Resp:
+            text = "billed by token"
+            usage = _Usage()
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.audio.transcriptions.create.return_value = _Resp()
+
+        service = TranscriptionService()
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"\x00" * 1000)
+            f.flush()
+            result = service.transcribe(Path(f.name), "openai/gpt-4o-mini-transcribe")
+
+        self.assertEqual(result.text, "billed by token")
+        # Token-based cost: 1000 * 1.25/1M + 250 * 5.00/1M = 0.00125 + 0.00125 = 0.0025
+        self.assertAlmostEqual(float(result.cost_usd), 0.0025, places=5)
+
+        log_kwargs = mock_log.call_args.kwargs
+        self.assertEqual(log_kwargs["input_tokens"], 1000)
+        self.assertEqual(log_kwargs["output_tokens"], 250)
+        self.assertEqual(log_kwargs["total_tokens"], 1250)
+        self.assertEqual(log_kwargs["audio_tokens"], 800)

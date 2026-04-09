@@ -32,9 +32,24 @@
     </div>
   {% endif %}
 
+  {# Audio-upload transcription progress banner. Label + progress bar are updated by the JS upload progress poll. #}
+  {% if meeting.status == "live_transcribing" and meeting.transcript_source == "audio_upload" %}
+  <div id="upload-transcribing-banner" class="mb-6 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base">
+    <div class="flex items-center gap-3">
+      <svg class="w-4 h-4 animate-spin text-fg-warning shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+      <span id="upload-transcribing-banner-label" class="text-sm text-heading">Transcribing…</span>
+    </div>
+    <div id="upload-transcribing-banner-progress-wrap" class="hidden mt-2">
+      <div class="h-1 bg-neutral-secondary-medium rounded">
+        <div id="upload-transcribing-banner-progress-bar" class="h-full bg-fg-warning rounded transition-[width]" style="width: 0%"></div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {# ----- Action buttons row ----- #}
   <div id="meeting-actions" class="flex flex-wrap items-center gap-3 mb-8">
-    <button type="button" id="transcribe-btn"
+    <button type="button" id="transcribe-btn" data-disable-while-busy
             class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
       <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
       <span id="transcribe-btn-label">{% if meeting.transcript %}Continue transcription{% else %}Start transcription{% endif %}</span>
@@ -44,8 +59,8 @@
 
     <form id="upload-form" method="post" action="{% url 'meeting_upload' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
       {% csrf_token %}
-      <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
-        Upload audio or transcript
+      <label data-disable-while-busy class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
+        {% if meeting.transcript %}Add to transcript from a file{% else %}Upload audio or transcript{% endif %}
         <input type="file" name="file" class="hidden" accept=".txt,.md,text/plain,text/markdown,audio/*,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg" onchange="this.form.submit()">
       </label>
     </form>
@@ -53,7 +68,7 @@
     {# ----- Transcription model picker (chat-style) ----- #}
     {% if transcription_model_choices %}
     <div id="transcription-model-picker" class="relative ml-auto">
-      <button type="button" id="transcription-model-btn"
+      <button type="button" id="transcription-model-btn" data-disable-while-busy
               class="inline-flex items-center gap-1.5 px-2.5 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors">
         <span id="transcription-model-label">{{ transcription_model_selected_display }}</span>
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
@@ -148,7 +163,7 @@
           <a href="{{ a.file.url }}" class="text-sm text-heading hover:text-brand truncate" title="{{ a.original_filename }}">{{ a.original_filename }}</a>
           <form method="post" action="{% url 'meeting_delete_attachment' meeting_uuid=meeting.uuid attachment_id=a.id %}">
             {% csrf_token %}
-            <button type="submit" class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this attachment?');">Delete</button>
+            <button type="submit" data-disable-while-busy class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this attachment?');">Delete</button>
           </form>
         </li>
         {% endfor %}
@@ -158,7 +173,7 @@
     {% endif %}
     <form method="post" action="{% url 'meeting_upload_attachment' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
       {% csrf_token %}
-      <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 cursor-pointer">
+      <label data-disable-while-busy class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 cursor-pointer">
         Add attachment
         <input type="file" name="file" class="hidden" onchange="this.form.submit()">
       </label>
@@ -170,7 +185,7 @@
     <div class="flex flex-wrap items-center gap-3">
       <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
         {% csrf_token %}
-        <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
+        <button type="submit" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
                 class="inline-flex items-center gap-2 text-white bg-gradient-to-r from-purple-500 via-purple-600 to-purple-700 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-purple-300 dark:focus:ring-purple-800 font-medium rounded-base text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
           <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
@@ -179,7 +194,7 @@
       </form>
 
       {% if user_data_rooms %}
-      <button type="button" {% if not meeting.transcript %}disabled{% endif %}
+      <button type="button" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
               data-modal-target="save-to-dataroom-modal" data-modal-show="save-to-dataroom-modal"
               class="inline-flex items-center gap-2 text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
               title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
@@ -295,7 +310,7 @@
           </div>
           <form method="post" action="{% url 'meeting_delete_artifact' meeting_uuid=meeting.uuid artifact_id=art.id %}">
             {% csrf_token %}
-            <button type="submit" class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this artifact?');">Delete</button>
+            <button type="submit" data-disable-while-busy class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this artifact?');">Delete</button>
           </form>
         </div>
         <div class="text-sm text-heading whitespace-pre-wrap">{{ art.content_md }}</div>

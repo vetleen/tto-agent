@@ -40,6 +40,10 @@
   const transcribingIndicatorLabel = document.getElementById('transcribing-indicator-label');
   const unsupportedBanner = document.getElementById('transcribe-unsupported');
   const uploadForm = document.getElementById('upload-form');
+  const uploadBanner = document.getElementById('upload-transcribing-banner');
+  const uploadBannerLabel = document.getElementById('upload-transcribing-banner-label');
+  const uploadBannerProgressWrap = document.getElementById('upload-transcribing-banner-progress-wrap');
+  const uploadBannerProgressBar = document.getElementById('upload-transcribing-banner-progress-bar');
 
   const metadataForm = document.getElementById('meeting-metadata-form');
   const metadataSavedEl = document.getElementById('meeting-metadata-saved');
@@ -342,6 +346,42 @@
     uploadForm.style.display = visible ? '' : 'none';
   }
 
+  // Toggle disabled + visually-disabled styling on every element marked with
+  // `data-disable-while-busy`. Used while transcription is in flight (both
+  // the live-recording WS path and the audio-upload poll path) so the user
+  // can't e.g. click "Summarize in chat" or "Save to data room" on a meeting
+  // whose transcript is still being built. Original disabled state is stashed
+  // so non-busy restores it correctly (e.g. Summarize button disabled when
+  // there's no transcript yet).
+  function setActionsBusy(busy) {
+    const elements = document.querySelectorAll('[data-disable-while-busy]');
+    elements.forEach(function (el) {
+      if (busy) {
+        if (el.dataset.busyOrigDisabled === undefined) {
+          el.dataset.busyOrigDisabled = ('disabled' in el && el.disabled) ? '1' : '0';
+        }
+        if ('disabled' in el) el.disabled = true;
+        el.setAttribute('aria-disabled', 'true');
+        el.classList.add('opacity-50', 'pointer-events-none');
+        el.querySelectorAll('input, button').forEach(function (inner) {
+          if (inner.dataset.busyOrigDisabled === undefined) {
+            inner.dataset.busyOrigDisabled = inner.disabled ? '1' : '0';
+          }
+          inner.disabled = true;
+        });
+      } else {
+        if ('disabled' in el) el.disabled = el.dataset.busyOrigDisabled === '1';
+        delete el.dataset.busyOrigDisabled;
+        el.removeAttribute('aria-disabled');
+        el.classList.remove('opacity-50', 'pointer-events-none');
+        el.querySelectorAll('input, button').forEach(function (inner) {
+          inner.disabled = inner.dataset.busyOrigDisabled === '1';
+          delete inner.dataset.busyOrigDisabled;
+        });
+      }
+    });
+  }
+
   function appendOrUpdateSegmentNode(idx, text, kind) {
     // Replace the "no transcript yet" placeholder if present.
     if (transcriptPane.querySelector('.italic')) {
@@ -525,6 +565,7 @@
     // so the class would lose the cascade and the button would stay visible.
     transcribeBtn.style.display = 'none';
     setUploadFormVisible(false);
+    setActionsBusy(true);
     updateIndicator();
     startLevelMeter(mediaStream);
     startElapsedTimer();
@@ -691,19 +732,36 @@
     const url = '/meetings/' + meetingUuid + '/transcription-progress/';
     let stopped = false;
 
+    // While upload transcription is in flight, disable every action button
+    // on the page so the user can't navigate the meeting into an inconsistent
+    // state (e.g. summarize in chat before the transcript is finalized).
+    setActionsBusy(true);
+
     function showLabel(text) {
       if (transcribingIndicator) transcribingIndicator.classList.remove('hidden');
       if (transcribingIndicatorLabel) transcribingIndicatorLabel.textContent = text;
+      if (uploadBannerLabel) uploadBannerLabel.textContent = text;
     }
 
     function setProgress(done, total) {
-      if (!progressWrap || !progressBar) return;
-      if (total > 0) {
-        progressWrap.classList.remove('hidden');
-        const pct = Math.min(100, Math.max(0, (done / total) * 100));
-        progressBar.style.width = pct.toFixed(1) + '%';
-      } else {
-        progressWrap.classList.add('hidden');
+      const pct = total > 0
+        ? Math.min(100, Math.max(0, (done / total) * 100)).toFixed(1) + '%'
+        : null;
+      if (progressWrap && progressBar) {
+        if (pct !== null) {
+          progressWrap.classList.remove('hidden');
+          progressBar.style.width = pct;
+        } else {
+          progressWrap.classList.add('hidden');
+        }
+      }
+      if (uploadBannerProgressWrap && uploadBannerProgressBar) {
+        if (pct !== null) {
+          uploadBannerProgressWrap.classList.remove('hidden');
+          uploadBannerProgressBar.style.width = pct;
+        } else {
+          uploadBannerProgressWrap.classList.add('hidden');
+        }
       }
     }
 

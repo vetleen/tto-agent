@@ -279,6 +279,22 @@ def stitch_transcripts(
 # ---------------------------------------------------------------------------
 
 
+def combine_existing_and_new_transcript(existing: str, new_text: str) -> str:
+    """Join an existing meeting transcript with freshly transcribed text.
+
+    Used by the orchestrator so that uploading a second audio (or text) file
+    *adds to* the transcript rather than replacing it — matching the mental
+    model of "Continue transcription" on the live button. Blank inputs are
+    handled so the empty-transcript case behaves exactly like the pre-append
+    code path (output equals ``new_text``).
+    """
+    prev = (existing or "").rstrip()
+    nxt = (new_text or "").lstrip()
+    if prev and nxt:
+        return prev + "\n\n" + nxt
+    return prev or nxt
+
+
 def orchestrate_upload_transcription(
     meeting_id: int,
     temp_path: Path,
@@ -301,7 +317,13 @@ def orchestrate_upload_transcription(
       5. On chunk failure: persist any partial transcript, set FAILED,
          reset progress fields, re-raise.
 
-    Returns the final stitched transcript text.
+    When the meeting already has a transcript (re-upload case), the newly
+    transcribed text is appended to the existing transcript — never
+    replacing it. The running tail used for prompt carryover includes the
+    prior transcript too, so the first new chunk benefits from the existing
+    transcript's proper nouns / jargon continuity.
+
+    Returns the combined transcript (existing + new) text.
     """
     from meetings.models import Meeting
 
@@ -315,6 +337,11 @@ def orchestrate_upload_transcription(
 
     meeting = Meeting.objects.get(pk=meeting_id)
     ctx = RunContext.create(user_id=user_id)
+
+    # Snapshot the existing transcript BEFORE any chunking work. If the user
+    # is re-uploading to an existing meeting, new text is appended to this
+    # snapshot rather than overwriting it.
+    existing_transcript = meeting.transcript or ""
 
     # Build the chunks before touching any meeting state — if pydub blows up
     # we don't want partially-set progress fields lying around.
@@ -335,13 +362,21 @@ def orchestrate_upload_transcription(
     if len(chunk_specs) == 1:
         spec = chunk_specs[0]
         try:
-            prompt = build_transcription_prompt(meeting, prior_tail=None)
+            # Seed the prompt with the tail of any existing transcript so the
+            # model has continuity for proper nouns across the append boundary.
+            prior_tail = (
+                existing_transcript[-DEFAULT_PRIOR_TAIL_CHARS:]
+                if existing_transcript
+                else None
+            )
+            prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
             result = _transcribe_with_transient_retry(
                 service, spec.path, model_id, ctx, prompt,
             )
             text = result.text or ""
-            _finalize_meeting_success(meeting_id, text, model_id)
-            return text
+            combined = combine_existing_and_new_transcript(existing_transcript, text)
+            _finalize_meeting_success(meeting_id, combined, model_id)
+            return combined
         finally:
             spec.path.unlink(missing_ok=True)
 
@@ -356,10 +391,22 @@ def orchestrate_upload_transcription(
         updated_at=timezone.now(),
     )
 
-    running_transcript = ""
+    running_new_transcript = ""  # only the *new* upload's stitched text
     try:
         for i, spec in enumerate(chunk_specs):
-            prior_tail = running_transcript[-DEFAULT_PRIOR_TAIL_CHARS:] if i > 0 else None
+            # Prior tail seeds prompt carryover across chunks. For the first
+            # chunk we pull from the existing transcript (if any); for later
+            # chunks we pull from the running new transcript. Either way we
+            # never stitch the new text into the old text — we just want the
+            # model to see prior context for jargon continuity.
+            if i == 0:
+                prior_tail = (
+                    existing_transcript[-DEFAULT_PRIOR_TAIL_CHARS:]
+                    if existing_transcript
+                    else None
+                )
+            else:
+                prior_tail = running_new_transcript[-DEFAULT_PRIOR_TAIL_CHARS:]
             prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
 
             try:
@@ -367,24 +414,29 @@ def orchestrate_upload_transcription(
                     service, spec.path, model_id, ctx, prompt,
                 )
             except Exception as exc:
-                # Per-chunk failure: persist partial, mark FAILED, re-raise.
+                # Per-chunk failure: persist combined partial, mark FAILED, re-raise.
+                partial_combined = combine_existing_and_new_transcript(
+                    existing_transcript, running_new_transcript,
+                )
                 _finalize_meeting_failure(
-                    meeting_id, running_transcript, i, n, exc,
+                    meeting_id, partial_combined, i, n, exc,
                 )
                 raise
 
             chunk_text = result.text or ""
             if i == 0:
-                running_transcript = chunk_text
+                running_new_transcript = chunk_text
             else:
-                running_transcript = stitch_transcripts(
-                    running_transcript,
+                running_new_transcript = stitch_transcripts(
+                    running_new_transcript,
                     chunk_text,
                     expected_overlap_chars=expected_overlap_chars,
                 )
 
             Meeting.objects.filter(pk=meeting_id).update(
-                transcript=running_transcript,
+                transcript=combine_existing_and_new_transcript(
+                    existing_transcript, running_new_transcript,
+                ),
                 transcription_chunks_done=i + 1,
                 transcript_updated_at=timezone.now(),
                 updated_at=timezone.now(),
@@ -395,8 +447,9 @@ def orchestrate_upload_transcription(
         for spec in chunk_specs:
             spec.path.unlink(missing_ok=True)
 
-    _finalize_meeting_success(meeting_id, running_transcript, model_id)
-    return running_transcript
+    combined = combine_existing_and_new_transcript(existing_transcript, running_new_transcript)
+    _finalize_meeting_success(meeting_id, combined, model_id)
+    return combined
 
 
 def _transcribe_with_transient_retry(service, file_path: Path, model_id: str, context: RunContext, prompt: str):

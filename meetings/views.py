@@ -572,7 +572,10 @@ def meeting_upload_transcript(request, meeting_uuid):
         messages.error(request, "Transcript must be UTF-8 encoded text.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    meeting.transcript = text
+    # Append to any existing transcript rather than replacing it, so re-uploads
+    # behave the same as "Continue transcription" on the live button.
+    from .services.audio_transcription import combine_existing_and_new_transcript
+    meeting.transcript = combine_existing_and_new_transcript(meeting.transcript or "", text)
     meeting.transcript_updated_at = timezone.now()
     meeting.transcript_source = Meeting.TranscriptSource.TEXT_UPLOAD
     meeting.transcription_model = ""
@@ -664,7 +667,9 @@ def meeting_upload_audio(request, meeting_uuid):
         messages.error(request, "Could not start audio transcription. Please try again.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    messages.success(request, "Audio uploaded — transcribing in the background.")
+    # No success toast — the meeting detail page renders an in-page progress
+    # banner (spinner + "Transcribing chunk X of Y…") whenever the meeting is
+    # in live_transcribing + audio_upload state, which is richer than a toast.
     return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
 

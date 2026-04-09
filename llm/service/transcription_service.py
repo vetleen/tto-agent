@@ -124,7 +124,17 @@ class TranscriptionService:
         duration_ms = int((time.perf_counter() - t0) * 1000)
         text = response.text if hasattr(response, "text") else str(response)
         audio_duration = _get_audio_duration_seconds(file_path)
-        cost = calculate_transcription_cost(model_id, audio_duration)
+
+        # Prefer token counts reported by the API over per-minute estimates.
+        # gpt-4o-transcribe / gpt-4o-mini-transcribe return a UsageTokens; the
+        # legacy whisper-1 path returns a UsageDuration (no token counts) and
+        # we fall through to the per-minute formula.
+        input_tokens, output_tokens, total_tokens, audio_tokens = _extract_transcription_usage(response)
+        cost = calculate_transcription_cost(
+            model_id, audio_duration,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
         log_transcription(
             model=model_id,
@@ -135,6 +145,10 @@ class TranscriptionService:
             duration_ms=duration_ms,
             file_size=file_size,
             segments=1,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            audio_tokens=audio_tokens,
         )
 
         return TranscriptionResult(
@@ -187,7 +201,13 @@ class TranscriptionService:
                 seg_duration_ms = int((time.perf_counter() - t0) * 1000)
                 text = response.text if hasattr(response, "text") else str(response)
                 audio_duration = _get_audio_duration_seconds(seg_path)
-                cost = calculate_transcription_cost(model_id, audio_duration)
+
+                input_tokens, output_tokens, total_tokens, audio_tokens = _extract_transcription_usage(response)
+                cost = calculate_transcription_cost(
+                    model_id, audio_duration,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
 
                 total_audio_duration += audio_duration
                 if cost is not None:
@@ -202,6 +222,10 @@ class TranscriptionService:
                     duration_ms=seg_duration_ms,
                     file_size=seg_size,
                     segments=len(segment_paths),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    audio_tokens=audio_tokens,
                 )
 
                 transcripts.append(text)
@@ -251,6 +275,51 @@ class TranscriptionService:
                 with open(file_path, "rb") as f:
                     return client.audio.transcriptions.create(file=f, **kwargs)
             raise
+
+
+# ---------------------------------------------------------------------------
+# Response helpers
+# ---------------------------------------------------------------------------
+
+def _extract_transcription_usage(
+    response,
+) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    """Pull ``(input_tokens, output_tokens, total_tokens, audio_tokens)`` from
+    a transcription response, or a 4-tuple of ``None`` when usage is absent.
+
+    The OpenAI SDK returns a ``response.usage`` discriminated union:
+      - ``UsageTokens`` (``type="tokens"``) — carries input/output/total token
+        counts and an optional ``input_token_details.audio_tokens`` breakdown.
+        Emitted by ``gpt-4o-transcribe`` and ``gpt-4o-mini-transcribe``.
+      - ``UsageDuration`` (``type="duration"``) — whisper-1 / legacy shape,
+        only carries audio seconds. Returned as all-``None`` here so the
+        caller falls back to per-minute billing.
+    Missing usage (e.g. a MagicMock in tests) also yields all-``None``.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None, None, None, None
+    # `type` distinguishes the two variants. Require a real str match so a
+    # MagicMock (which auto-vivifies attributes in tests) falls through.
+    utype = getattr(usage, "type", None)
+    if not isinstance(utype, str) or utype != "tokens":
+        return None, None, None, None
+
+    def _int_or_none(value) -> Optional[int]:
+        return value if isinstance(value, int) else None
+
+    details = getattr(usage, "input_token_details", None)
+    audio_tokens = (
+        _int_or_none(getattr(details, "audio_tokens", None))
+        if details is not None
+        else None
+    )
+    return (
+        _int_or_none(getattr(usage, "input_tokens", None)),
+        _int_or_none(getattr(usage, "output_tokens", None)),
+        _int_or_none(getattr(usage, "total_tokens", None)),
+        audio_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------

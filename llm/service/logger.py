@@ -308,8 +308,21 @@ def log_transcription(
     duration_ms: int,
     file_size: int,
     segments: int = 1,
+    input_tokens: "int | None" = None,
+    output_tokens: "int | None" = None,
+    total_tokens: "int | None" = None,
+    audio_tokens: "int | None" = None,
 ) -> None:
-    """Write a SUCCESS log entry for a transcription call. Never raises."""
+    """Write a SUCCESS log entry for a transcription call. Never raises.
+
+    When the OpenAI transcription API returns ``response.usage`` (which it
+    does for ``gpt-4o-transcribe`` / ``gpt-4o-mini-transcribe``), callers
+    should pass ``input_tokens`` / ``output_tokens`` / ``total_tokens`` so
+    transcription rows populate the same ``LLMCallLog`` columns chat rows do
+    and token-based analytics stays consistent across call types.
+    ``audio_tokens`` is stashed inside ``response_metadata`` as a nice-to-have
+    observability signal but is not a first-class column.
+    """
     try:
         from llm.models import LLMCallLog
 
@@ -331,6 +344,9 @@ def log_transcription(
                 ),
             }],
             raw_output=f"[transcript: {transcript_len:,} chars]",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
             cost_usd=cost_usd,
             duration_ms=duration_ms,
             status=LLMCallLog.Status.SUCCESS,
@@ -339,6 +355,7 @@ def log_transcription(
                 "file_size": file_size,
                 "segments": segments,
                 "transcript_len": transcript_len,
+                "audio_tokens": audio_tokens,
             },
         )
     except Exception:
