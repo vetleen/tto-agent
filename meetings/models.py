@@ -51,6 +51,7 @@ class Meeting(models.Model):
         db_index=True,
     )
     transcript = models.TextField(blank=True, default="")
+    transcript_updated_at = models.DateTimeField(null=True, blank=True)
     transcript_source = models.CharField(
         max_length=16,
         choices=TranscriptSource.choices,

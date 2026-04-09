@@ -10,6 +10,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -94,5 +95,6 @@ def recompute_meeting_transcript(meeting_id: int) -> str:
         )
         joined = "\n\n".join(s for s in segments if s)
         meeting.transcript = joined
-        meeting.save(update_fields=["transcript", "updated_at"])
+        meeting.transcript_updated_at = timezone.now()
+        meeting.save(update_fields=["transcript", "transcript_updated_at", "updated_at"])
         return joined

@@ -365,7 +365,10 @@ class MeetingSaveToDataRoomTests(TestCase):
         mock_delay.assert_called_once()
 
     @patch("documents.tasks.process_document_task.delay")
-    def test_save_uses_latest_artifact_when_present(self, mock_delay):
+    def test_save_always_saves_raw_transcript_even_when_artifact_present(self, mock_delay):
+        """The button explicitly saves the raw transcript. Wilfred-generated
+        artifacts (minutes/summary/notes) live on the meeting page only — they
+        do not pre-empt the transcript export."""
         from documents.models import DataRoomDocument
         MeetingArtifact.objects.create(
             meeting=self.meeting,
@@ -378,7 +381,73 @@ class MeetingSaveToDataRoomTests(TestCase):
             {"data_room_id": str(self.my_room.uuid)},
         )
         doc = DataRoomDocument.objects.get(data_room=self.my_room)
-        self.assertIn("minutes", doc.original_filename)
+        self.assertIn("transcript", doc.original_filename)
+        self.assertNotIn("minutes", doc.original_filename)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_resave_overwrites_existing_transcript_export(self, mock_delay):
+        """Resaving to a data room that already holds a transcript export for
+        this meeting should replace it — only one transcript export per
+        (meeting, data_room) pair."""
+        from documents.models import DataRoomDocument
+        # First save.
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        first = DataRoomDocument.objects.get(data_room=self.my_room)
+        first_pk = first.pk
+        # Edit the transcript so the new save has different content.
+        self.meeting.transcript = "updated transcript text"
+        self.meeting.save(update_fields=["transcript", "updated_at"])
+        # Second save: should delete the first and create a new one.
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        docs = list(DataRoomDocument.objects.filter(data_room=self.my_room))
+        self.assertEqual(len(docs), 1)
+        self.assertNotEqual(docs[0].pk, first_pk)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_resave_does_not_touch_other_meeting_documents(self, mock_delay):
+        """A non-transcript document tagged with the same meeting_uuid (e.g. a
+        future Wilfred summary saved to the data room) must survive a
+        transcript resave."""
+        from documents.models import DataRoomDocument, DataRoomDocumentTag
+        # Save a transcript first.
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        # Manually create a "summary" document tagged with the same meeting
+        # but NOT as meeting_export — simulating what a future Wilfred tool
+        # would produce.
+        from django.core.files.base import ContentFile
+        summary = DataRoomDocument.objects.create(
+            data_room=self.my_room,
+            uploaded_by=self.user,
+            original_file=ContentFile(b"summary body", name="summary.md"),
+            original_filename="summary.md",
+            mime_type="text/markdown",
+            size_bytes=12,
+            status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentTag.objects.create(document=summary, key="meeting_uuid", value=str(self.meeting.uuid))
+        DataRoomDocumentTag.objects.create(document=summary, key="source", value="wilfred_summary")
+        # Resave the transcript.
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        # Summary still exists, transcript still exactly one.
+        self.assertTrue(DataRoomDocument.objects.filter(pk=summary.pk).exists())
+        transcript_count = DataRoomDocument.objects.filter(
+            data_room=self.my_room,
+            tags__key="source",
+            tags__value="meeting_export",
+        ).distinct().count()
+        self.assertEqual(transcript_count, 1)
 
     def test_cannot_save_to_foreign_data_room(self):
         from documents.models import DataRoomDocument
@@ -388,7 +457,7 @@ class MeetingSaveToDataRoomTests(TestCase):
         )
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.foreign_room).count(), 0)
 
-    def test_cannot_save_when_no_transcript_or_artifact(self):
+    def test_cannot_save_when_no_transcript(self):
         empty = Meeting.objects.create(name="Empty", slug="m-empty-save", created_by=self.user)
         from documents.models import DataRoomDocument
         self.client.post(
@@ -396,3 +465,30 @@ class MeetingSaveToDataRoomTests(TestCase):
             {"data_room_id": str(self.my_room.uuid)},
         )
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.my_room).count(), 0)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_detail_view_lists_saved_transcript_and_marks_stale(self, mock_delay):
+        """After saving and then updating the transcript, the detail view
+        should mark the saved doc as not up to date and revert the button."""
+        from django.utils import timezone
+        # Save transcript (this also sets transcript_updated_at via the upload
+        # path; here we set it manually to a time *before* the save so the doc
+        # is fresh).
+        self.meeting.transcript_updated_at = timezone.now()
+        self.meeting.save(update_fields=["transcript_updated_at", "updated_at"])
+        self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        # Fresh save: detail page shows the chip and the relabeled button.
+        response = self.client.get(reverse("meeting_detail", args=[self.meeting.uuid]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.my_room.name)
+        self.assertContains(response, "Saved ✓ — Save again")
+        self.assertNotContains(response, "not up to date")
+        # Now bump transcript_updated_at to *after* the saved doc — staleness.
+        self.meeting.transcript_updated_at = timezone.now() + timezone.timedelta(seconds=5)
+        self.meeting.save(update_fields=["transcript_updated_at", "updated_at"])
+        response = self.client.get(reverse("meeting_detail", args=[self.meeting.uuid]))
+        self.assertContains(response, "not up to date")
+        self.assertContains(response, "Save raw transcript to data room")
