@@ -676,7 +676,7 @@ def meeting_upload_audio(request, meeting_uuid):
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
     # No success toast — the meeting detail page renders an in-page progress
-    # banner (spinner + "Transcribing chunk X of Y…") whenever the meeting is
+    # banner (spinner + "Transcribing — N% done…") whenever the meeting is
     # in live_transcribing + audio_upload state, which is richer than a toast.
     return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 

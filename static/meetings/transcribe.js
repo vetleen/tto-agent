@@ -743,22 +743,31 @@
       if (uploadBannerLabel) uploadBannerLabel.textContent = text;
     }
 
-    function setProgress(done, total) {
-      const pct = total > 0
-        ? Math.min(100, Math.max(0, (done / total) * 100)).toFixed(1) + '%'
-        : null;
+    // Compute the percentage to display. We start at half a tick (so 4 chunks
+    // begins at 12.5%, not 0%) — this gives the user immediate visual feedback
+    // that work has begun. Once at least one chunk has finished, we switch to
+    // the true done/total ratio so the percentages land on familiar fractions
+    // (25%, 50%, 75%, 100%) rather than being permanently offset.
+    function computePct(done, total) {
+      if (total <= 0) return null;
+      const ratio = done > 0 ? (done / total) : (0.5 / total);
+      return Math.min(100, Math.max(0, ratio * 100));
+    }
+
+    function setProgress(pct) {
+      const width = pct !== null ? pct.toFixed(1) + '%' : null;
       if (progressWrap && progressBar) {
-        if (pct !== null) {
+        if (width !== null) {
           progressWrap.classList.remove('hidden');
-          progressBar.style.width = pct;
+          progressBar.style.width = width;
         } else {
           progressWrap.classList.add('hidden');
         }
       }
       if (uploadBannerProgressWrap && uploadBannerProgressBar) {
-        if (pct !== null) {
+        if (width !== null) {
           uploadBannerProgressWrap.classList.remove('hidden');
-          uploadBannerProgressBar.style.width = pct;
+          uploadBannerProgressBar.style.width = width;
         } else {
           uploadBannerProgressWrap.classList.add('hidden');
         }
@@ -780,11 +789,12 @@
             return;
           }
           if (chunksTotal > 0) {
-            showLabel('Transcribing chunk ' + chunksDone + ' of ' + chunksTotal + '…');
-            setProgress(chunksDone, chunksTotal);
+            const pct = computePct(chunksDone, chunksTotal);
+            showLabel('Transcribing — ' + Math.round(pct) + '% done…');
+            setProgress(pct);
           } else {
             showLabel('Transcribing…');
-            setProgress(0, 0);
+            setProgress(null);
           }
           setTimeout(poll, 3000);
         })
@@ -797,7 +807,7 @@
     // Show indicator immediately so the user sees something while we wait
     // for the first poll response.
     showLabel('Transcribing…');
-    setProgress(0, 0);
+    setProgress(null);
     poll();
   })();
 })();
