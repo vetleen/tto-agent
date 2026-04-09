@@ -44,7 +44,7 @@
     <form id="upload-form" method="post" action="{% url 'meeting_upload' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
       {% csrf_token %}
       <label class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
-        Upload transcript or audiofile
+        Upload audio or transcript
         <input type="file" name="file" class="hidden" accept=".txt,.md,text/plain,text/markdown,audio/*,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg" onchange="this.form.submit()">
       </label>
     </form>
