@@ -91,8 +91,18 @@ def transcribe_meeting_chunk_task(
             },
         )
 
+        # Build a transcription prompt from meeting metadata + tail of the
+        # already-transcribed transcript so the model has continuity for
+        # proper nouns and jargon across chunks.
+        from .services.audio_transcription import (
+            LIVE_PROMPT_TAIL_CHARS,
+            build_transcription_prompt,
+        )
+        prior_tail = (meeting.transcript or "")[-LIVE_PROMPT_TAIL_CHARS:] or None
+        prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
+
         try:
-            text = transcribe_audio(Path(temp_path), model_id, user)
+            text = transcribe_audio(Path(temp_path), model_id, user, prompt=prompt)
         except Exception as exc:
             err = str(exc)[:1000]
             logger.exception(
@@ -140,10 +150,11 @@ def transcribe_meeting_chunk_task(
         cleanup_temp(temp_path)
 
 
+# NOTE: no Celery autoretry. The temp audio file is unlinked in the finally
+# block below, so a Celery retry would FileNotFoundError immediately. Per-chunk
+# transient retries (network flake / 429s) happen inside the orchestrator at
+# the right level — see meetings/services/audio_transcription.py.
 @shared_task(
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_kwargs={"max_retries": 2},
     time_limit=1800,
     soft_time_limit=1740,
 )
@@ -153,55 +164,49 @@ def transcribe_uploaded_audio_task(
     model_id: str,
     user_id: int,
 ) -> None:
-    """Single-shot transcription for the 'upload audio' path.
+    """Transcribe an uploaded meeting audio file.
 
-    Writes the result directly to ``Meeting.transcript`` and flips the meeting
-    status to READY (or FAILED). Deletes the temp audio file unconditionally.
+    Delegates to ``orchestrate_upload_transcription`` which handles overlap
+    splitting, sequential per-chunk transcription with prompt carryover,
+    fuzzy stitching, and progress field updates. The orchestrator also
+    finalizes the Meeting row (status=READY/FAILED, transcript, etc.). This
+    outer wrapper exists only to (a) catch any pre-orchestrator crash and
+    mark the meeting failed defensively, and (b) unlink the original
+    uploaded temp file in finally regardless of outcome.
     """
-    from django.contrib.auth import get_user_model
-
-    from documents.services.transcription import transcribe_audio
-
     from .models import Meeting
+    from .services.audio_transcription import orchestrate_upload_transcription
 
-    User = get_user_model()
     try:
         try:
-            meeting = Meeting.objects.get(pk=meeting_id)
-        except Meeting.DoesNotExist:
-            logger.warning("transcribe_uploaded_audio_task: meeting %s not found", meeting_id)
-            return
-
-        try:
-            user = User.objects.get(pk=user_id)
-        except User.DoesNotExist:
-            user = None
-
-        try:
-            text = transcribe_audio(Path(temp_path), model_id, user)
+            orchestrate_upload_transcription(
+                meeting_id=meeting_id,
+                temp_path=Path(temp_path),
+                model_id=model_id,
+                user_id=user_id,
+            )
         except Exception as exc:
+            # Defensive: if the orchestrator already finalized the meeting as
+            # FAILED with a per-chunk error message, this update is a no-op
+            # for the meaningful fields. If the failure happened BEFORE the
+            # orchestrator could set its own error (e.g. pydub blew up on
+            # load, or the meeting row went missing), this is the only place
+            # the meeting will be marked failed.
             err = str(exc)[:1000]
             logger.exception("transcribe_uploaded_audio_task: failed for meeting %s", meeting_id)
-            Meeting.objects.filter(pk=meeting_id).update(
+            Meeting.objects.filter(
+                pk=meeting_id,
+            ).exclude(
+                status=Meeting.Status.FAILED,
+            ).update(
                 status=Meeting.Status.FAILED,
                 transcription_error=err,
                 ended_at=timezone.now(),
+                transcription_chunks_total=0,
+                transcription_chunks_done=0,
             )
-            raise
-
-        ended = timezone.now()
-        duration = None
-        if meeting.started_at:
-            duration = max(0, int((ended - meeting.started_at).total_seconds()))
-
-        Meeting.objects.filter(pk=meeting_id).update(
-            transcript=text or "",
-            transcript_source=Meeting.TranscriptSource.AUDIO_UPLOAD,
-            transcription_model=model_id,
-            transcription_error="",
-            status=Meeting.Status.READY,
-            ended_at=ended,
-            duration_seconds=duration,
-        )
+            # Do NOT re-raise — there is no useful retry path (file is gone
+            # in finally) and Celery would just log a redundant traceback.
+            return
     finally:
         cleanup_temp(temp_path)

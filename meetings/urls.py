@@ -10,6 +10,11 @@ urlpatterns = [
     path("<uuid:meeting_uuid>/archive/", views.meeting_archive, name="meeting_archive"),
     path("<uuid:meeting_uuid>/delete/", views.meeting_delete, name="meeting_delete"),
     path("<uuid:meeting_uuid>/metadata/", views.meeting_update_metadata, name="meeting_update_metadata"),
+    path(
+        "<uuid:meeting_uuid>/transcription-progress/",
+        views.meeting_transcription_progress,
+        name="meeting_transcription_progress",
+    ),
     path("<uuid:meeting_uuid>/link-data-room/", views.meeting_link_data_room, name="meeting_link_data_room"),
     path(
         "<uuid:meeting_uuid>/unlink-data-room/<uuid:data_room_uuid>/",

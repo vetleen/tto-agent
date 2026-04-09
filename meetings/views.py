@@ -319,6 +319,47 @@ def meeting_update_metadata(request, meeting_uuid):
     return JsonResponse({"status": "ok"})
 
 
+@login_required
+@require_http_methods(["GET"])
+def meeting_transcription_progress(request, meeting_uuid):
+    """Polling endpoint used by the meeting detail page to track upload transcription progress.
+
+    Returns a small JSON snapshot of the meeting's status, chunk progress, and
+    last error. Deliberately uses ``.only(...)`` to avoid loading the (potentially
+    large) ``transcript`` column on every poll.
+    """
+    try:
+        meeting = Meeting.objects.only(
+            "uuid",
+            "status",
+            "created_by_id",
+            "transcript_source",
+            "transcription_chunks_total",
+            "transcription_chunks_done",
+            "transcription_error",
+            "transcript_updated_at",
+        ).get(uuid=meeting_uuid)
+    except Meeting.DoesNotExist:
+        return JsonResponse({"error": "Not found"}, status=404)
+    if not _user_can_access_meeting(request.user, meeting):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    payload = {
+        "status": meeting.status,
+        "transcript_source": meeting.transcript_source,
+        "chunks_total": meeting.transcription_chunks_total,
+        "chunks_done": meeting.transcription_chunks_done,
+        "transcription_error": (meeting.transcription_error or "")[:500],
+        "transcript_updated_at": (
+            meeting.transcript_updated_at.isoformat()
+            if meeting.transcript_updated_at
+            else None
+        ),
+    }
+    response = JsonResponse(payload)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Linking to data rooms
 # ---------------------------------------------------------------------------

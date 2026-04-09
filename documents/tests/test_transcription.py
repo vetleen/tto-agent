@@ -223,6 +223,83 @@ class TranscribeAudioWrapperTests(TestCase):
         self.assertEqual(log_kwargs["context"].user_id, str(user.pk))
 
 
+class TranscriptionPromptTests(TestCase):
+    """Tests for the optional ``prompt`` parameter on the transcription stack."""
+
+    @patch("llm.service.transcription_service.log_transcription")
+    @patch("openai.OpenAI")
+    def test_prompt_omitted_when_none(self, mock_openai_cls, mock_log):
+        """prompt=None (default) does NOT include 'prompt' in the API call kwargs."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.audio.transcriptions.create.return_value = _mock_response("hi")
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"\x00" * 1000)
+            f.flush()
+            transcribe_audio(Path(f.name), "openai/gpt-4o-mini-transcribe")
+
+        call_kwargs = mock_client.audio.transcriptions.create.call_args[1]
+        self.assertNotIn("prompt", call_kwargs)
+
+    @patch("llm.service.transcription_service.log_transcription")
+    @patch("openai.OpenAI")
+    def test_prompt_forwarded_when_set(self, mock_openai_cls, mock_log):
+        """A non-empty prompt is forwarded to the API call kwargs."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.audio.transcriptions.create.return_value = _mock_response("hi")
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"\x00" * 1000)
+            f.flush()
+            transcribe_audio(
+                Path(f.name),
+                "openai/gpt-4o-mini-transcribe",
+                prompt="OncoBio Therapeutics",
+            )
+
+        call_kwargs = mock_client.audio.transcriptions.create.call_args[1]
+        self.assertEqual(call_kwargs.get("prompt"), "OncoBio Therapeutics")
+
+    @patch("llm.service.transcription_service.log_transcription")
+    @patch("openai.OpenAI")
+    def test_prompt_bad_request_falls_back_without_prompt(self, mock_openai_cls, mock_log):
+        """If the API rejects the prompt, retry once with prompt stripped."""
+        from openai import BadRequestError
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        # First call: BadRequestError mentioning the prompt; second call: success.
+        bad_request = BadRequestError(
+            message="Invalid 'prompt': value too long",
+            response=MagicMock(),
+            body=None,
+        )
+        mock_client.audio.transcriptions.create.side_effect = [
+            bad_request,
+            _mock_response("recovered"),
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"\x00" * 1000)
+            f.flush()
+            text = transcribe_audio(
+                Path(f.name),
+                "openai/gpt-4o-mini-transcribe",
+                prompt="some very long prompt",
+            )
+
+        self.assertEqual(text, "recovered")
+        # Two API calls: one with prompt, one without.
+        self.assertEqual(mock_client.audio.transcriptions.create.call_count, 2)
+        first_kwargs = mock_client.audio.transcriptions.create.call_args_list[0][1]
+        second_kwargs = mock_client.audio.transcriptions.create.call_args_list[1][1]
+        self.assertEqual(first_kwargs.get("prompt"), "some very long prompt")
+        self.assertNotIn("prompt", second_kwargs)
+
+
 class SplitAudioFileTests(TestCase):
     """Tests for the _split_audio_file helper."""
 

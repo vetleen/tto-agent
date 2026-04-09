@@ -301,6 +301,59 @@ class MeetingMetadataUpdateTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class MeetingTranscriptionProgressTests(TestCase):
+    """Polling endpoint used by the meeting detail page during upload transcription."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="prog@example.com", password="pw")
+        self.other = User.objects.create_user(email="prog-other@example.com", password="pw")
+        self.meeting = Meeting.objects.create(
+            name="Progress meeting",
+            slug="m-progress",
+            created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+            transcript_source=Meeting.TranscriptSource.AUDIO_UPLOAD,
+            transcription_chunks_total=4,
+            transcription_chunks_done=2,
+        )
+
+    def test_returns_progress_snapshot_with_no_store(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("meeting_transcription_progress", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        data = response.json()
+        self.assertEqual(data["status"], "live_transcribing")
+        self.assertEqual(data["transcript_source"], "audio_upload")
+        self.assertEqual(data["chunks_total"], 4)
+        self.assertEqual(data["chunks_done"], 2)
+
+    def test_non_owner_forbidden(self):
+        self.client.force_login(self.other)
+        response = self.client.get(
+            reverse("meeting_transcription_progress", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_unknown_uuid_returns_404(self):
+        self.client.force_login(self.user)
+        import uuid as _uuid
+        response = self.client.get(
+            reverse("meeting_transcription_progress", args=[_uuid.uuid4()])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_requires_login(self):
+        response = self.client.get(
+            reverse("meeting_transcription_progress", args=[self.meeting.uuid])
+        )
+        # @login_required redirects unauthenticated users.
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingUnifiedUploadTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="unified@example.com", password="pw")

@@ -47,11 +47,16 @@ class TranscriptionService:
         file_path: Path,
         model_id: str,
         context: RunContext | None = None,
+        prompt: str | None = None,
     ) -> TranscriptionResult:
         """Transcribe an audio file, splitting if needed.
 
         Returns a TranscriptionResult with text, duration, cost, and segment count.
         Logs each API call to LLMCallLog.
+
+        ``prompt`` is forwarded to the OpenAI transcription API and biases the
+        model toward proper nouns / vocabulary in the prompt. Empty / None means
+        no prompt is sent.
         """
         if context is None:
             context = RunContext.create()
@@ -81,18 +86,19 @@ class TranscriptionService:
 
         run_id = context.run_id
         logger.info(
-            "TranscriptionService.transcribe: run_id=%s model=%s file_size=%d",
-            run_id, model_id, file_size,
+            "TranscriptionService.transcribe: run_id=%s model=%s file_size=%d prompt_len=%d",
+            run_id, model_id, file_size, len(prompt) if prompt else 0,
         )
 
         try:
             if needs_split:
                 result = self._transcribe_chunked(
-                    client, file_path, model_id, info, context, file_size, api_limit, max_duration,
+                    client, file_path, model_id, info, context, file_size,
+                    api_limit, max_duration, prompt=prompt,
                 )
             else:
                 result = self._transcribe_single(
-                    client, file_path, model_id, info, context, file_size,
+                    client, file_path, model_id, info, context, file_size, prompt=prompt,
                 )
         except (FileNotFoundError, ValueError):
             raise
@@ -111,20 +117,10 @@ class TranscriptionService:
 
         return result
 
-    def _transcribe_single(self, client, file_path, model_id, info, context, file_size):
+    def _transcribe_single(self, client, file_path, model_id, info, context, file_size, prompt: str | None = None):
         """Transcribe a single file directly."""
         t0 = time.perf_counter()
-
-        with open(file_path, "rb") as f:
-            response = client.audio.transcriptions.create(
-                model=info.api_model,
-                file=f,
-                # `verbose_json` is rejected by gpt-4o-transcribe / gpt-4o-mini-transcribe
-                # (only whisper-1 supports it). We use plain `json` and compute audio
-                # duration locally for cost tracking.
-                response_format="json",
-            )
-
+        response = self._call_create(client, file_path, info, prompt)
         duration_ms = int((time.perf_counter() - t0) * 1000)
         text = response.text if hasattr(response, "text") else str(response)
         audio_duration = _get_audio_duration_seconds(file_path)
@@ -149,8 +145,22 @@ class TranscriptionService:
             segments=1,
         )
 
-    def _transcribe_chunked(self, client, file_path, model_id, info, context, file_size, api_limit, max_duration):
-        """Split file into segments and transcribe each."""
+    def _transcribe_chunked(self, client, file_path, model_id, info, context, file_size, api_limit, max_duration, prompt: str | None = None):
+        """Split file into segments and transcribe each.
+
+        This is the legacy fallback path: it's only entered when a caller hands
+        the service a file that exceeds the API's per-request limits without
+        pre-splitting. The meetings upload orchestrator pre-splits with overlap
+        and stitches results, so it should never enter this branch. If it does
+        WITH a prompt set, log a warning — that signals the orchestrator's
+        chunking math was wrong.
+        """
+        if prompt:
+            logger.warning(
+                "TranscriptionService._transcribe_chunked: entered with prompt set "
+                "(file_size=%d, model=%s) — caller should pre-split for prompt-aware chunking",
+                file_size, model_id,
+            )
         segment_paths: list[Path] = []
         try:
             segment_paths = _split_audio_file(file_path, api_limit, max_duration)
@@ -172,14 +182,7 @@ class TranscriptionService:
                     i + 1, len(segment_paths), seg_size,
                 )
 
-                with open(seg_path, "rb") as f:
-                    response = client.audio.transcriptions.create(
-                        model=info.api_model,
-                        file=f,
-                        # See note in _transcribe_single — gpt-4o transcribe models
-                        # only support `json` / `text`, not `verbose_json`.
-                        response_format="json",
-                    )
+                response = self._call_create(client, seg_path, info, prompt)
 
                 seg_duration_ms = int((time.perf_counter() - t0) * 1000)
                 text = response.text if hasattr(response, "text") else str(response)
@@ -213,6 +216,41 @@ class TranscriptionService:
         finally:
             for p in segment_paths:
                 p.unlink(missing_ok=True)
+
+    def _call_create(self, client, file_path: Path, info, prompt: str | None):
+        """Call the OpenAI transcription API with optional prompt + graceful fallback.
+
+        If the API rejects the request because the prompt is invalid (BadRequestError
+        whose message mentions 'prompt'), retry once with prompt stripped. This avoids
+        preemptive truncation and lets the API tell us when it can't accept the prompt.
+        """
+        kwargs = {
+            "model": info.api_model,
+            # `verbose_json` is rejected by gpt-4o-transcribe / gpt-4o-mini-transcribe
+            # (only whisper-1 supports it). We use plain `json` and compute audio
+            # duration locally for cost tracking.
+            "response_format": "json",
+        }
+        if prompt:
+            kwargs["prompt"] = prompt
+
+        try:
+            with open(file_path, "rb") as f:
+                return client.audio.transcriptions.create(file=f, **kwargs)
+        except Exception as exc:
+            # Detect prompt-related BadRequest and retry without the prompt.
+            if not prompt:
+                raise
+            from openai import BadRequestError  # local import to keep top of file clean
+            if isinstance(exc, BadRequestError) and "prompt" in str(exc).lower():
+                logger.warning(
+                    "TranscriptionService: API rejected prompt (%s); retrying without prompt",
+                    exc,
+                )
+                kwargs.pop("prompt", None)
+                with open(file_path, "rb") as f:
+                    return client.audio.transcriptions.create(file=f, **kwargs)
+            raise
 
 
 # ---------------------------------------------------------------------------

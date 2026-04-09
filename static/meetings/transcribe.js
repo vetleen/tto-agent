@@ -672,4 +672,74 @@
     }
     startTranscription().catch(function (err) { console.error(err); });
   }
+
+  // ---------------- upload transcription progress poll ----------------
+  // The upload path runs in a Celery worker (the meetings/services/audio_transcription
+  // orchestrator). While it works, the meeting sits in LIVE_TRANSCRIBING with
+  // transcript_source=audio_upload. We poll a small JSON endpoint to surface
+  // chunk-level progress to the user via the same #transcribing-indicator.
+  (function uploadProgressPoll() {
+    const transcriptSource = root.dataset.meetingTranscriptSource || '';
+    if (initialStatus !== 'live_transcribing') return;
+    if (transcriptSource !== 'audio_upload') return;
+    // Don't poll if a live recording session is active in this tab — the WS
+    // path drives the indicator on its own and we'd race with it.
+    if (transcribing || stoppingPendingDrain) return;
+
+    const progressWrap = document.getElementById('transcribing-progress-wrap');
+    const progressBar = document.getElementById('transcribing-progress-bar');
+    const url = '/meetings/' + meetingUuid + '/transcription-progress/';
+    let stopped = false;
+
+    function showLabel(text) {
+      if (transcribingIndicator) transcribingIndicator.classList.remove('hidden');
+      if (transcribingIndicatorLabel) transcribingIndicatorLabel.textContent = text;
+    }
+
+    function setProgress(done, total) {
+      if (!progressWrap || !progressBar) return;
+      if (total > 0) {
+        progressWrap.classList.remove('hidden');
+        const pct = Math.min(100, Math.max(0, (done / total) * 100));
+        progressBar.style.width = pct.toFixed(1) + '%';
+      } else {
+        progressWrap.classList.add('hidden');
+      }
+    }
+
+    function poll() {
+      if (stopped) return;
+      fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(function (r) { if (!r.ok) throw new Error('progress ' + r.status); return r.json(); })
+        .then(function (data) {
+          if (stopped) return;
+          const status = data.status;
+          const chunksTotal = parseInt(data.chunks_total || 0, 10);
+          const chunksDone = parseInt(data.chunks_done || 0, 10);
+          if (status === 'ready' || status === 'failed') {
+            stopped = true;
+            window.location.reload();
+            return;
+          }
+          if (chunksTotal > 0) {
+            showLabel('Transcribing chunk ' + chunksDone + ' of ' + chunksTotal + '…');
+            setProgress(chunksDone, chunksTotal);
+          } else {
+            showLabel('Transcribing…');
+            setProgress(0, 0);
+          }
+          setTimeout(poll, 3000);
+        })
+        .catch(function (err) {
+          console.warn('upload progress poll error:', err);
+          if (!stopped) setTimeout(poll, 5000);
+        });
+    }
+
+    // Show indicator immediately so the user sees something while we wait
+    // for the first poll response.
+    showLabel('Transcribing…');
+    setProgress(0, 0);
+    poll();
+  })();
 })();

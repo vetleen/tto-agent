@@ -259,6 +259,25 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         except Meeting.DoesNotExist:
             return None
 
+        # Refuse the connect if an upload-path transcription is currently
+        # mid-flight on this meeting. The upload orchestrator owns the meeting
+        # row's status / transcription_chunks_* fields while it runs; if we
+        # let the live path take over here it would clobber those updates and
+        # the polling UI would show garbage.
+        if (
+            meeting.transcript_source == Meeting.TranscriptSource.AUDIO_UPLOAD
+            and meeting.status == Meeting.Status.LIVE_TRANSCRIBING
+            and meeting.transcription_chunks_done < meeting.transcription_chunks_total
+        ):
+            logger.info(
+                "_load_and_lock_meeting: refused WS connect for meeting %s — "
+                "audio upload transcription in progress (%d/%d chunks)",
+                meeting.uuid,
+                meeting.transcription_chunks_done,
+                meeting.transcription_chunks_total,
+            )
+            return None
+
         max_existing = (
             MeetingTranscriptSegment.objects
             .filter(meeting=meeting)

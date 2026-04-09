@@ -60,6 +60,8 @@ class Meeting(models.Model):
     )
     transcription_model = models.CharField(max_length=128, blank=True, default="")
     transcription_error = models.TextField(blank=True, default="")
+    transcription_chunks_total = models.PositiveIntegerField(default=0)
+    transcription_chunks_done = models.PositiveIntegerField(default=0)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     duration_seconds = models.PositiveIntegerField(null=True, blank=True)
