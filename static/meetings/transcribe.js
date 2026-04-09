@@ -77,17 +77,58 @@
   }
 
   if (metadataForm) {
+    // Block accidental form submission (e.g. Enter key in a field) — we
+    // auto-save on input changes instead.
     metadataForm.addEventListener('submit', function (ev) {
       ev.preventDefault();
-      postMetadata({
-        agenda: metadataForm.querySelector('[name="agenda"]').value,
-        participants: metadataForm.querySelector('[name="participants"]').value,
-        description: metadataForm.querySelector('[name="description"]').value,
-      }, function () {
-        if (metadataSavedEl) {
-          metadataSavedEl.classList.remove('hidden');
-          setTimeout(function () { metadataSavedEl.classList.add('hidden'); }, 2000);
+    });
+
+    const autoSaveFields = ['agenda', 'participants', 'description'];
+    const lastSaved = {};
+    const debounceTimers = {};
+    let savedHideTimer = null;
+
+    function flashSaved() {
+      if (!metadataSavedEl) return;
+      metadataSavedEl.textContent = 'Saved.';
+      metadataSavedEl.classList.remove('hidden');
+      if (savedHideTimer) clearTimeout(savedHideTimer);
+      savedHideTimer = setTimeout(function () {
+        metadataSavedEl.classList.add('hidden');
+      }, 2000);
+    }
+
+    autoSaveFields.forEach(function (field) {
+      const el = metadataForm.querySelector('[name="' + field + '"]');
+      if (!el) return;
+      lastSaved[field] = el.value;
+      el.addEventListener('input', function () {
+        if (debounceTimers[field]) clearTimeout(debounceTimers[field]);
+        debounceTimers[field] = setTimeout(function () {
+          const value = el.value;
+          if (value === lastSaved[field]) return;
+          const payload = {};
+          payload[field] = value;
+          postMetadata(payload, function () {
+            lastSaved[field] = value;
+            flashSaved();
+          });
+        }, 600);
+      });
+      el.addEventListener('blur', function () {
+        // Flush any pending debounced save immediately on blur.
+        if (debounceTimers[field]) {
+          clearTimeout(debounceTimers[field]);
+          debounceTimers[field] = null;
         }
+        const value = el.value;
+        if (value === lastSaved[field]) return;
+        const payload = {};
+        payload[field] = value;
+        postMetadata(payload, function () {
+          lastSaved[field] = value;
+          flashSaved();
+        });
       });
     });
   }

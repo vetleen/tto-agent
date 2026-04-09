@@ -4,12 +4,6 @@
 
 @theme {
   --font-handrawn: 'Delicious Handrawn', cursive;
-  /* Wilfred brand accent — used for buttons that activate Wilfred (chat send,
-     ask Wilfred, summarize, create minutes, etc.). Light pink so it stands
-     apart from the blue primary brand without being aggressive. */
-  --color-wilfred: var(--color-pink-200);
-  --color-wilfred-strong: var(--color-pink-300);
-  --color-wilfred-on: var(--color-pink-900);
 }
 
 /* MINIMAL THEME

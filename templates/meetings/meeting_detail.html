@@ -110,17 +110,7 @@
         <textarea id="meeting-description" name="description" rows="2"
                   class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.description }}</textarea>
       </div>
-      <div class="flex flex-wrap items-center gap-3">
-        <button type="submit" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
-        <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
-          {% csrf_token %}
-          <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
-                  class="inline-flex items-center gap-2 bg-wilfred text-wilfred-on hover:bg-wilfred-strong focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
-            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
-            Create meeting minutes with Wilfred
-          </button>
-        </form>
+      <div class="flex flex-wrap items-center gap-3 min-h-5">
         <span id="meeting-metadata-saved" class="hidden text-xs text-fg-success">Saved.</span>
       </div>
     </form>
@@ -159,33 +149,54 @@
       <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
         {% csrf_token %}
         <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
-                class="inline-flex items-center gap-2 bg-wilfred text-wilfred-on hover:bg-wilfred-strong focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                class="inline-flex items-center gap-2 text-white bg-gradient-to-r from-purple-500 via-purple-600 to-purple-700 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-purple-300 dark:focus:ring-purple-800 font-medium rounded-base text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
-          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z"/></svg>
-          Summarize in chat
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+          Summarize meeting in chat
         </button>
       </form>
 
       {% if user_data_rooms %}
-      <form method="post" action="{% url 'meeting_save_to_data_room' meeting_uuid=meeting.uuid %}" class="inline-flex items-center gap-2">
-        {% csrf_token %}
-        <select name="data_room_id" required
-                class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block px-3 py-2 max-w-sm">
-          <option value="">Choose a data room…</option>
-          {% for dr in user_data_rooms %}
-            <option value="{{ dr.uuid }}">{{ dr.name }}</option>
-          {% endfor %}
-        </select>
-        <button type="submit" {% if not meeting.transcript %}disabled{% endif %}
-                class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
-          Save to data room
-        </button>
-      </form>
+      <button type="button" {% if not meeting.transcript %}disabled{% endif %}
+              data-modal-target="save-to-dataroom-modal" data-modal-show="save-to-dataroom-modal"
+              class="inline-flex items-center gap-2 text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+              title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
+        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
+        Save raw transcript to data room
+      </button>
       {% endif %}
     </div>
-    <p class="mt-2 text-xs text-body">Tip: we recommend saving a meeting summary (created with Wilfred) rather than the raw transcript.</p>
+    <p class="mt-2 text-xs text-body">Tip: keep the raw transcript here, and use Wilfred to create a meeting summary. Then keep that in the data room.</p>
   </section>
+
+  {% if user_data_rooms %}
+  <div id="save-to-dataroom-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+    <div class="relative w-full max-w-md max-h-full">
+      <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+        <div class="px-6 py-4 border-b border-default">
+          <h3 class="text-lg font-semibold text-heading">Save raw transcript to data room</h3>
+        </div>
+        <form method="post" action="{% url 'meeting_save_to_data_room' meeting_uuid=meeting.uuid %}">
+          {% csrf_token %}
+          <div class="p-6 space-y-4">
+            <label for="save-to-dataroom-select" class="block text-sm font-medium text-heading">Choose a data room</label>
+            <select name="data_room_id" id="save-to-dataroom-select" required
+                    class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs">
+              <option value="">Select…</option>
+              {% for dr in user_data_rooms %}
+                <option value="{{ dr.uuid }}">{{ dr.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="flex gap-3 px-6 py-4 border-t border-default">
+            <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">Save</button>
+            <button type="button" data-modal-hide="save-to-dataroom-modal" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   {# ----- Transcript display ----- #}
   <section class="mb-8">
