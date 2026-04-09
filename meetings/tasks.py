@@ -41,10 +41,12 @@ def _push_to_ws(meeting_uuid, payload: dict) -> None:
         logger.exception("meetings: failed to push WS event for meeting %s", meeting_uuid)
 
 
+# NOTE: no autoretry. The temp audio file is unconditionally deleted in the
+# `finally:` block below, so a Celery retry would just re-run with a missing
+# file and fail with FileNotFoundError — masking the real first-attempt error.
+# If we want retries on transient API failures later, we need to keep the file
+# alive across attempts (skip cleanup until success or final failure).
 @shared_task(
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_kwargs={"max_retries": 3},
     time_limit=600,
     soft_time_limit=540,
 )
@@ -107,7 +109,11 @@ def transcribe_meeting_chunk_task(
                 "segment_index": segment_index,
                 "error": err,
             })
-            raise
+            # Don't re-raise: the failure is already recorded on the segment
+            # and pushed to the WS. Re-raising here would only escalate to
+            # Celery, which has no useful retry path (file is deleted in
+            # `finally:` below) and the new error would just clobber `err`.
+            return
 
         MeetingTranscriptSegment.objects.filter(pk=segment.pk).update(
             text=text or "",

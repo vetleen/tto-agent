@@ -36,11 +36,17 @@
   const autoStopInput = document.getElementById('auto-stop-input');
   const levelBar = document.getElementById('mic-level-bar');
   const transcriptPane = document.getElementById('transcript-pane');
+  const transcribingIndicator = document.getElementById('transcribing-indicator');
+  const transcribingIndicatorLabel = document.getElementById('transcribing-indicator-label');
   const unsupportedBanner = document.getElementById('transcribe-unsupported');
+  const uploadForm = document.getElementById('upload-form');
 
   const metadataForm = document.getElementById('meeting-metadata-form');
   const metadataSavedEl = document.getElementById('meeting-metadata-saved');
   const nameInput = document.getElementById('meeting-name-input');
+
+  const meetingHasTranscript = root.dataset.meetingHasTranscript === '1';
+  const startLabel = meetingHasTranscript ? 'Continue transcription' : 'Start transcription';
 
   function setTranscribeBtnLabel(text) {
     if (transcribeBtnLabel) {
@@ -169,7 +175,9 @@
   let elapsedSec = 0;
   let ws = null;
   let transcribing = false;
+  let stoppingPendingDrain = false;  // user clicked Stop, waiting for in-flight chunks
   let pendingSegments = {};      // index -> placeholder DOM node
+  const inFlightSegments = new Set();  // segment indices queued but not yet ready/failed
   let preferredMime = '';
   let audioContext = null;
   let analyserNode = null;
@@ -291,7 +299,7 @@
 
   function installBeforeUnloadGuard() {
     beforeUnloadHandler = function (e) {
-      if (transcribing) {
+      if (transcribing || stoppingPendingDrain) {
         e.preventDefault();
         e.returnValue = '';
         return '';
@@ -305,6 +313,33 @@
       window.removeEventListener('beforeunload', beforeUnloadHandler);
       beforeUnloadHandler = null;
     }
+  }
+
+  // ---------------- transcribing indicator + upload visibility ----------------
+
+  function updateIndicator() {
+    if (!transcribingIndicator) return;
+    const pendingCount = inFlightSegments.size;
+    const shouldShow = transcribing || stoppingPendingDrain || pendingCount > 0;
+    if (shouldShow) {
+      transcribingIndicator.classList.remove('hidden');
+      let label;
+      if (stoppingPendingDrain && pendingCount > 0) {
+        label = 'Finalizing transcription… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' left)';
+      } else if (pendingCount > 0) {
+        label = 'Transcribing… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' in flight)';
+      } else {
+        label = 'Transcribing…';
+      }
+      if (transcribingIndicatorLabel) transcribingIndicatorLabel.textContent = label;
+    } else {
+      transcribingIndicator.classList.add('hidden');
+    }
+  }
+
+  function setUploadFormVisible(visible) {
+    if (!uploadForm) return;
+    uploadForm.style.display = visible ? '' : 'none';
   }
 
   function appendOrUpdateSegmentNode(idx, text, kind) {
@@ -355,11 +390,18 @@
           segmentIndex = segmentIndexBase;
           if (!resolved) { resolved = true; resolve(); }
         } else if (msg.type === 'segment.queued') {
-          // optional UI hook
+          inFlightSegments.add(msg.segment_index);
+          updateIndicator();
         } else if (msg.type === 'segment.ready') {
           appendOrUpdateSegmentNode(msg.segment_index, msg.text, 'ready');
+          inFlightSegments.delete(msg.segment_index);
+          updateIndicator();
+          maybeFlushStop();
         } else if (msg.type === 'segment.failed') {
           appendOrUpdateSegmentNode(msg.segment_index, msg.error, 'failed');
+          inFlightSegments.delete(msg.segment_index);
+          updateIndicator();
+          maybeFlushStop();
         } else if (msg.type === 'stopped') {
           // server confirmed stop; reload to show final transcript + status
           window.setTimeout(function () { window.location.reload(); }, 500);
@@ -460,7 +502,7 @@
     } catch (err) {
       transcribing = false;
       transcribeBtn.disabled = false;
-      setTranscribeBtnLabel('Start transcription');
+      setTranscribeBtnLabel(startLabel);
       alert('Could not access microphone: ' + err.message);
       return;
     }
@@ -471,21 +513,27 @@
       transcribing = false;
       shutdownLocal();
       transcribeBtn.disabled = false;
-      setTranscribeBtnLabel('Start transcription');
+      setTranscribeBtnLabel(startLabel);
       alert('Could not open transcription connection.');
       return;
     }
 
     autoStopInput.value = String(Math.round(autoStopDefault / 60));
     controlsEl.classList.remove('hidden');
-    transcribeBtn.classList.add('hidden');
+    // Use inline style instead of the `hidden` class: the button has
+    // `inline-flex`, and Tailwind v4 emits `.inline-flex` *after* `.hidden`,
+    // so the class would lose the cascade and the button would stay visible.
+    transcribeBtn.style.display = 'none';
+    setUploadFormVisible(false);
+    updateIndicator();
     startLevelMeter(mediaStream);
     startElapsedTimer();
     installBeforeUnloadGuard();
     startSegmentRecorder();
   }
 
-  function shutdownLocal() {
+  function shutdownLocal(opts) {
+    opts = opts || {};
     transcribing = false;
     stopElapsedTimer();
     stopLevelMeter();
@@ -498,25 +546,110 @@
       mediaStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
       mediaStream = null;
     }
-    removeBeforeUnloadGuard();
+    if (!opts.keepBeforeUnload) removeBeforeUnloadGuard();
   }
 
   function stopTranscription() {
-    if (!transcribing) return;
+    if (!transcribing && !stoppingPendingDrain) return;
     transcribing = false;
+    stoppingPendingDrain = true;
+    if (stopBtn) stopBtn.disabled = true;
     if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
     // Force the current recorder to stop so the final chunk gets uploaded.
     if (mediaRecorder && mediaRecorder.state === 'recording') {
       try { mediaRecorder.stop(); } catch (e) {}
     }
-    // Send the stop signal once any in-flight chunk_meta has flushed.
-    setTimeout(function () {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: 'stop' })); } catch (e) {}
-      }
-      shutdownLocal();
-    }, 250);
+    updateIndicator();
+    // Tear down local recording state immediately, but keep the WS open
+    // so we can keep receiving segment.ready/segment.failed events for any
+    // in-flight chunks. We only send the actual `stop` message once all
+    // in-flight chunks have come back; otherwise the server finalizes the
+    // meeting too early and the reload shows an incomplete transcript.
+    shutdownLocal({ keepBeforeUnload: true });
+    // The recorder.onstop handler runs asynchronously and uploads the final
+    // chunk, which then becomes "in flight". Give it a tick before checking.
+    setTimeout(maybeFlushStop, 300);
   }
+
+  function maybeFlushStop() {
+    if (!stoppingPendingDrain) return;
+    if (inFlightSegments.size > 0) return;
+    stoppingPendingDrain = false;
+    removeBeforeUnloadGuard();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: 'stop' })); } catch (e) {}
+    }
+    updateIndicator();
+  }
+
+  // ---------------- transcription model picker ----------------
+
+  const modelPicker = (function () {
+    const btn = document.getElementById('transcription-model-btn');
+    const label = document.getElementById('transcription-model-label');
+    const dropdown = document.getElementById('transcription-model-dropdown');
+    const optionsContainer = document.getElementById('transcription-model-options');
+    const choicesEl = document.getElementById('transcription-model-choices');
+    const selectedEl = document.getElementById('transcription-model-selected');
+    if (!btn || !dropdown || !optionsContainer || !choicesEl || !selectedEl) {
+      return null;
+    }
+
+    let choices = [];
+    let selected = '';
+    try {
+      choices = JSON.parse(choicesEl.textContent || '[]') || [];
+      selected = JSON.parse(selectedEl.textContent || '""') || '';
+    } catch (e) {
+      console.warn('transcription model picker: failed to parse choices', e);
+      return null;
+    }
+
+    function renderOptions() {
+      optionsContainer.innerHTML = '';
+      choices.forEach(function (m) {
+        const opt = document.createElement('button');
+        opt.type = 'button';
+        opt.className = 'flex items-center justify-between w-full px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading';
+        opt.setAttribute('data-model-id', m.id);
+        const checkHidden = m.id === selected ? '' : 'hidden';
+        opt.innerHTML = '<span></span><svg class="w-4 h-4 ' + checkHidden + '" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>';
+        opt.firstChild.textContent = m.display_name;
+        opt.addEventListener('click', function () {
+          selectModel(m.id);
+          dropdown.classList.add('hidden');
+        });
+        optionsContainer.appendChild(opt);
+      });
+    }
+
+    function selectModel(modelId) {
+      if (!modelId || modelId === selected) return;
+      selected = modelId;
+      const found = choices.find(function (c) { return c.id === modelId; });
+      if (label && found) label.textContent = found.display_name;
+      renderOptions();
+      // Persist on the meeting record so reload + future WS connects use it.
+      postMetadata({ transcription_model: modelId });
+      // Hot-update the active session if any.
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'set_model', model_id: modelId })); } catch (e) {}
+      }
+    }
+
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      dropdown.classList.toggle('hidden');
+    });
+    document.addEventListener('click', function (e) {
+      if (!dropdown.contains(e.target) && e.target !== btn) {
+        dropdown.classList.add('hidden');
+      }
+    });
+
+    renderOptions();
+    return { selectModel: selectModel };
+  })();
 
   // ---------------- wire-up ----------------
   if (transcribeBtn) {

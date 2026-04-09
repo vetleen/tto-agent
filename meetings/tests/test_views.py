@@ -279,6 +279,26 @@ class MeetingMetadataUpdateTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_update_metadata_accepts_allowed_transcription_model(self):
+        # The default user prefs allow both gpt-4o-transcribe and gpt-4o-mini-transcribe
+        # (per llm.transcription_registry).
+        response = self.client.post(
+            reverse("meeting_update_metadata", args=[self.meeting.uuid]),
+            {"transcription_model": "openai/gpt-4o-transcribe"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcription_model, "openai/gpt-4o-transcribe")
+
+    def test_update_metadata_rejects_unknown_transcription_model(self):
+        response = self.client.post(
+            reverse("meeting_update_metadata", args=[self.meeting.uuid]),
+            {"transcription_model": "evil/not-a-real-model"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcription_model, "")
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingUnifiedUploadTests(TestCase):

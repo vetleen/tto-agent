@@ -16,25 +16,25 @@ from llm.service.transcription_service import (
 from llm.transcription_registry import TranscriptionModelInfo
 
 
-def _mock_verbose_response(text="Hello transcript.", duration=10.0):
-    """Create a mock OpenAI verbose_json transcription response."""
+def _mock_response(text="Hello transcript."):
+    """Create a mock OpenAI `json` transcription response (just `.text`)."""
     resp = MagicMock()
     resp.text = text
-    resp.duration = duration
     return resp
 
 
 class TranscriptionServiceTests(TestCase):
     """Tests for llm.service.transcription_service.TranscriptionService."""
 
+    @patch("llm.service.transcription_service._get_audio_duration_seconds", return_value=15.5)
     @patch("llm.service.transcription_service.log_transcription")
     @patch("openai.OpenAI")
-    def test_transcribe_single_file(self, mock_openai_cls, mock_log):
+    def test_transcribe_single_file(self, mock_openai_cls, mock_log, mock_duration):
         """Small file transcribed directly; LLMCallLog entry written."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
-        mock_client.audio.transcriptions.create.return_value = _mock_verbose_response(
-            "Hello, this is a test.", 15.5,
+        mock_client.audio.transcriptions.create.return_value = _mock_response(
+            "Hello, this is a test.",
         )
 
         service = TranscriptionService()
@@ -48,9 +48,9 @@ class TranscriptionServiceTests(TestCase):
         self.assertEqual(result.segments, 1)
         self.assertIsNotNone(result.cost_usd)
 
-        # Verify verbose_json format used
+        # Verify json format used (gpt-4o-* transcribe models reject verbose_json).
         call_kwargs = mock_client.audio.transcriptions.create.call_args[1]
-        self.assertEqual(call_kwargs["response_format"], "verbose_json")
+        self.assertEqual(call_kwargs["response_format"], "json")
 
         # Verify logging called
         mock_log.assert_called_once()
@@ -59,11 +59,12 @@ class TranscriptionServiceTests(TestCase):
         self.assertAlmostEqual(log_kwargs["audio_duration_seconds"], 15.5)
 
     @override_settings(AUDIO_UPLOAD_MAX_SIZE_BYTES=500)
+    @patch("llm.service.transcription_service._get_audio_duration_seconds", side_effect=[300.0, 280.0])
     @patch("llm.service.transcription_service.log_transcription")
     @patch("openai.OpenAI")
     @patch("llm.service.transcription_service._split_audio_file")
     @patch("llm.service.transcription_service.get_transcription_model_info")
-    def test_transcribe_splits_large_file(self, mock_get_info, mock_split, mock_openai_cls, mock_log):
+    def test_transcribe_splits_large_file(self, mock_get_info, mock_split, mock_openai_cls, mock_log, mock_duration):
         """Files exceeding API limit are split, transcribed per-segment, and joined."""
         mock_get_info.return_value = TranscriptionModelInfo(
             display_name="Test", provider="openai", api_model="test-model",
@@ -81,8 +82,8 @@ class TranscriptionServiceTests(TestCase):
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.audio.transcriptions.create.side_effect = [
-            _mock_verbose_response("First segment.", 300.0),
-            _mock_verbose_response("Second segment.", 280.0),
+            _mock_response("First segment."),
+            _mock_response("Second segment."),
         ]
 
         service = TranscriptionService()
@@ -125,7 +126,7 @@ class TranscriptionServiceTests(TestCase):
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.audio.transcriptions.create.side_effect = [
-            _mock_verbose_response("First.", 300.0),
+            _mock_response("First."),
             RuntimeError("API error"),
         ]
 
@@ -171,7 +172,7 @@ class TranscriptionServiceTests(TestCase):
         """Files under the API limit are transcribed directly without splitting."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
-        mock_client.audio.transcriptions.create.return_value = _mock_verbose_response()
+        mock_client.audio.transcriptions.create.return_value = _mock_response()
 
         service = TranscriptionService()
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
@@ -191,7 +192,7 @@ class TranscribeAudioWrapperTests(TestCase):
         """transcribe_audio() returns just the text string."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
-        mock_client.audio.transcriptions.create.return_value = _mock_verbose_response("Wrapper test.")
+        mock_client.audio.transcriptions.create.return_value = _mock_response("Wrapper test.")
 
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             f.write(b"\x00" * 1000)
@@ -210,7 +211,7 @@ class TranscribeAudioWrapperTests(TestCase):
 
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
-        mock_client.audio.transcriptions.create.return_value = _mock_verbose_response()
+        mock_client.audio.transcriptions.create.return_value = _mock_response()
 
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             f.write(b"\x00" * 1000)

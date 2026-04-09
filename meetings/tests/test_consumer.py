@@ -150,6 +150,39 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
         self.assertEqual(meeting.status, Meeting.Status.INTERRUPTED)
 
+    async def test_set_model_persists_allowed_choice(self):
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "set_model",
+            "model_id": "openai/gpt-4o-transcribe",
+        }))
+        # Give the database_sync_to_async write a tick to complete.
+        await asyncio.sleep(0.2)
+
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
+        self.assertEqual(meeting.transcription_model, "openai/gpt-4o-transcribe")
+        await comm.disconnect()
+
+    async def test_set_model_rejects_unknown_choice(self):
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "set_model",
+            "model_id": "evil/not-a-real-model",
+        }))
+        msg = json.loads(await comm.receive_from())
+        self.assertEqual(msg["type"], "error")
+        self.assertIn("not allowed", msg["message"])
+
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
+        self.assertEqual(meeting.transcription_model, "")
+        await comm.disconnect()
+
     async def test_resume_continues_segment_index_base(self):
         # Pre-populate one segment so the resume reconnect picks up at index 1.
         await database_sync_to_async(MeetingTranscriptSegment.objects.create)(

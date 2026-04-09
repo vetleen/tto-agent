@@ -119,12 +119,15 @@ class TranscriptionService:
             response = client.audio.transcriptions.create(
                 model=info.api_model,
                 file=f,
-                response_format="verbose_json",
+                # `verbose_json` is rejected by gpt-4o-transcribe / gpt-4o-mini-transcribe
+                # (only whisper-1 supports it). We use plain `json` and compute audio
+                # duration locally for cost tracking.
+                response_format="json",
             )
 
         duration_ms = int((time.perf_counter() - t0) * 1000)
         text = response.text if hasattr(response, "text") else str(response)
-        audio_duration = getattr(response, "duration", 0.0) or 0.0
+        audio_duration = _get_audio_duration_seconds(file_path)
         cost = calculate_transcription_cost(model_id, audio_duration)
 
         log_transcription(
@@ -173,12 +176,14 @@ class TranscriptionService:
                     response = client.audio.transcriptions.create(
                         model=info.api_model,
                         file=f,
-                        response_format="verbose_json",
+                        # See note in _transcribe_single — gpt-4o transcribe models
+                        # only support `json` / `text`, not `verbose_json`.
+                        response_format="json",
                     )
 
                 seg_duration_ms = int((time.perf_counter() - t0) * 1000)
                 text = response.text if hasattr(response, "text") else str(response)
-                audio_duration = getattr(response, "duration", 0.0) or 0.0
+                audio_duration = _get_audio_duration_seconds(seg_path)
                 cost = calculate_transcription_cost(model_id, audio_duration)
 
                 total_audio_duration += audio_duration
@@ -227,6 +232,25 @@ def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
         return len(audio) > max_seconds * 1000
     except Exception:
         return False
+
+
+def _get_audio_duration_seconds(file_path: Path) -> float:
+    """Best-effort audio duration in seconds, used for cost tracking.
+
+    Returns 0.0 if pydub is unavailable or the file cannot be parsed. We accept
+    a 0.0 fallback because the alternative (failing the whole transcription
+    because we can't compute cost) is worse than logging a $0 cost.
+    """
+    try:
+        from pydub import AudioSegment
+    except ImportError:
+        return 0.0
+    try:
+        audio = AudioSegment.from_file(file_path)
+        return len(audio) / 1000.0
+    except Exception:
+        logger.warning("could not compute audio duration for %s", file_path)
+        return 0.0
 
 
 def _split_audio_file(

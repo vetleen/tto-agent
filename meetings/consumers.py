@@ -118,6 +118,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         if msg_type == "extend_auto_stop":
             # Auto-stop is enforced client-side. Server just acknowledges.
             return
+        if msg_type == "set_model":
+            await self._handle_set_model(payload)
+            return
         if msg_type == "stop":
             await self._handle_stop()
             return
@@ -175,6 +178,30 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         except Exception as exc:
             logger.exception("enqueue chunk task failed")
             await self._send_error(f"Could not start transcription: {exc}")
+
+    async def _handle_set_model(self, payload: dict) -> None:
+        """Switch the transcription model used for *future* chunks.
+
+        Already-queued chunks keep whatever model they were enqueued with.
+        We validate against the user's allowed models so a malicious client
+        can't escape the org's allow-list via the WS.
+        """
+        new_model = str(payload.get("model_id") or "").strip()
+        if not new_model:
+            await self._send_error("set_model: missing model_id")
+            return
+        try:
+            allowed = await self._get_allowed_transcription_models()
+        except Exception:
+            allowed = []
+        if new_model not in allowed:
+            await self._send_error(f"set_model: '{new_model}' is not allowed for this user")
+            return
+        self._model_id = new_model
+        try:
+            await self._persist_meeting_model(new_model)
+        except Exception:
+            logger.exception("set_model: failed to persist meeting.transcription_model")
 
     async def _handle_stop(self) -> None:
         self._stop_requested = True
@@ -241,18 +268,26 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         )
         segment_index_base = (max_existing + 1) if max_existing is not None else 0
 
-        # Pick a transcription model from user prefs, falling back to project default.
+        # Pick the transcription model: meeting's saved choice wins, then user
+        # prefs default, then the project default. The meeting's choice is set
+        # by the model picker in the UI (POST to meeting_update_metadata).
         try:
             from core.preferences import get_preferences
             prefs = get_preferences(self.user)
             allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
+            prefs_default = getattr(prefs, "transcription_model", "") or ""
         except Exception:
             allowed_models = []
-        model_id = (
-            allowed_models[0]
-            if allowed_models
-            else getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
-        )
+            prefs_default = ""
+        meeting_model = (meeting.transcription_model or "").strip()
+        if meeting_model and meeting_model in allowed_models:
+            model_id = meeting_model
+        elif prefs_default and prefs_default in allowed_models:
+            model_id = prefs_default
+        elif allowed_models:
+            model_id = allowed_models[0]
+        else:
+            model_id = getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
 
         # Transition the meeting to LIVE_TRANSCRIBING (preserve started_at on resume).
         update_fields = ["status", "transcript_source", "updated_at"]
@@ -273,6 +308,19 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             "segment_index_base": segment_index_base,
             "model_id": model_id,
         }
+
+    @database_sync_to_async
+    def _get_allowed_transcription_models(self) -> list[str]:
+        from core.preferences import get_preferences
+        prefs = get_preferences(self.user)
+        return list(getattr(prefs, "allowed_transcription_models", None) or [])
+
+    @database_sync_to_async
+    def _persist_meeting_model(self, model_id: str) -> None:
+        from .models import Meeting
+        Meeting.objects.filter(pk=self.meeting_id).update(
+            transcription_model=model_id,
+        )
 
     @database_sync_to_async
     def _write_chunk(self, meta: dict, raw: bytes):

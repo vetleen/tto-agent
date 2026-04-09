@@ -146,6 +146,37 @@ def meeting_detail(request, meeting_uuid):
         DataRoom.objects.filter(created_by=request.user, is_archived=False).order_by("name")
     )
 
+    # Build the transcription model picker choices: every model the user is
+    # allowed to use (per cascading prefs), with display names from the
+    # transcription registry. Default = the meeting's saved model if any,
+    # else the user's resolved transcription default.
+    from llm.transcription_registry import get_transcription_model_info
+
+    try:
+        from core.preferences import get_preferences
+        prefs = get_preferences(request.user)
+        allowed_models = list(prefs.allowed_transcription_models or [])
+        prefs_default = prefs.transcription_model or ""
+    except Exception:
+        allowed_models = []
+        prefs_default = ""
+
+    transcription_model_choices = []
+    for model_id in allowed_models:
+        info = get_transcription_model_info(model_id)
+        transcription_model_choices.append({
+            "id": model_id,
+            "display_name": info.display_name if info else model_id,
+        })
+
+    selected_model = meeting.transcription_model or prefs_default or (
+        allowed_models[0] if allowed_models else ""
+    )
+    selected_display = next(
+        (c["display_name"] for c in transcription_model_choices if c["id"] == selected_model),
+        selected_model,
+    )
+
     return render(
         request,
         "meetings/meeting_detail.html",
@@ -157,6 +188,9 @@ def meeting_detail(request, meeting_uuid):
             "user_data_rooms": user_data_rooms,
             "auto_stop_default_seconds": getattr(settings, "MEETING_AUTO_STOP_DEFAULT_SECONDS", 3600),
             "auto_stop_max_seconds": getattr(settings, "MEETING_AUTO_STOP_MAX_SECONDS", 14400),
+            "transcription_model_choices": transcription_model_choices,
+            "transcription_model_selected": selected_model,
+            "transcription_model_selected_display": selected_display,
         },
     )
 
@@ -204,7 +238,7 @@ def meeting_delete(request, meeting_uuid):
 @login_required
 @require_POST
 def meeting_update_metadata(request, meeting_uuid):
-    """Update editable metadata fields (name, agenda, participants, description)."""
+    """Update editable metadata fields (name, agenda, participants, description, transcription_model)."""
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
         return JsonResponse({"error": "Forbidden"}, status=403)
@@ -218,6 +252,22 @@ def meeting_update_metadata(request, meeting_uuid):
                 value = value[:255]
             setattr(meeting, field, value)
             fields.append(field)
+    if "transcription_model" in request.POST:
+        new_model = (request.POST.get("transcription_model") or "").strip()
+        # Validate against the user's allowed transcription models so we can't
+        # be talked into using something the org has disabled.
+        try:
+            from core.preferences import get_preferences
+            allowed = list(get_preferences(request.user).allowed_transcription_models or [])
+        except Exception:
+            allowed = []
+        if new_model and new_model not in allowed:
+            return JsonResponse(
+                {"error": f"Model '{new_model}' is not in your allowed transcription models."},
+                status=400,
+            )
+        meeting.transcription_model = new_model
+        fields.append("transcription_model")
     if not fields:
         return JsonResponse({"error": "No editable fields supplied"}, status=400)
     fields.append("updated_at")
