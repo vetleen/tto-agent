@@ -26,6 +26,7 @@ from __future__ import annotations
 import difflib
 import logging
 import math
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -159,6 +160,20 @@ def split_audio_with_overlap(
             "pydub is required for upload transcription chunking. "
             "Install it with: pip install pydub"
         ) from exc
+
+    if not shutil.which("ffmpeg"):
+        # ffmpeg not installed — cannot split or probe audio. Return a single
+        # chunk pointing at the original file and let the API handle it
+        # directly. If the file exceeds the API limits the transcription
+        # service will surface a clear error.
+        file_size = file_path.stat().st_size
+        if file_size > max_bytes:
+            raise RuntimeError(
+                f"Audio file is {file_size / 1_000_000:.1f} MB which exceeds "
+                f"the {max_bytes / 1_000_000:.0f} MB API limit, and ffmpeg is "
+                f"not installed to split it into smaller chunks."
+            )
+        return [ChunkSpec(path=file_path, index=0, start_ms=0, end_ms=0)]
 
     audio = AudioSegment.from_file(file_path)
     total_ms = len(audio)
