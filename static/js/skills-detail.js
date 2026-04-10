@@ -309,9 +309,13 @@
     overrideSlugMap = {};
   }
 
+  function slugify(s) {
+    return s.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
   function checkSlugOverride() {
     if (!slugInput || !slugWarning) return;
-    var slug = slugInput.value.trim();
+    var slug = slugify(slugInput.value);
     var matchedName = overrideSlugMap[slug];
     if (matchedName) {
       slugWarningText.textContent =
