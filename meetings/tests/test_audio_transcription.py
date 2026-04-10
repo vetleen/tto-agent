@@ -202,6 +202,36 @@ class SplitAudioWithOverlapTests(TestCase):
                 max_seconds=1400,
             )
 
+    def test_ffprobe_json_error_falls_back_to_single_chunk(self):
+        """When ffprobe returns empty output, AudioSegment.from_file raises
+        JSONDecodeError. The splitter should fall back to a single chunk
+        pointing at the original file instead of crashing."""
+        import json
+
+        pydub_mod = MagicMock()
+        pydub_mod.AudioSegment.from_file.side_effect = json.JSONDecodeError(
+            "Expecting value", "", 0
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+            f.write(b"\x00" * 1024)
+            tmp = Path(f.name)
+        try:
+            with patch.dict("sys.modules", {"pydub": pydub_mod}), \
+                 patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+                specs = split_audio_with_overlap(
+                    tmp,
+                    target_chunk_seconds=900,
+                    overlap_seconds=15,
+                    max_bytes=25_000_000,
+                    max_seconds=1400,
+                )
+            self.assertEqual(len(specs), 1)
+            self.assertEqual(specs[0].path, tmp)
+            self.assertEqual(specs[0].index, 0)
+        finally:
+            tmp.unlink(missing_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # stitch_transcripts
