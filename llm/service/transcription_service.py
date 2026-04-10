@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import logging
 import math
+import shutil
 import tempfile
 import threading
 import time
-import warnings
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -327,18 +327,23 @@ def _extract_transcription_usage(
 # Audio helpers
 # ---------------------------------------------------------------------------
 
+def _ffmpeg_available() -> bool:
+    """Return True if ffmpeg is on PATH."""
+    return shutil.which("ffmpeg") is not None
+
+
 def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
     """Return True if the audio file is longer than *max_seconds*."""
     if max_seconds <= 0:
+        return False
+    if not _ffmpeg_available():
         return False
     try:
         from pydub import AudioSegment
     except ImportError:
         return False
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            audio = AudioSegment.from_file(file_path)
+        audio = AudioSegment.from_file(file_path)
         return len(audio) > max_seconds * 1000
     except Exception:
         return False
@@ -347,18 +352,19 @@ def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
 def _get_audio_duration_seconds(file_path: Path) -> float:
     """Best-effort audio duration in seconds, used for cost tracking.
 
-    Returns 0.0 if pydub is unavailable or the file cannot be parsed. We accept
-    a 0.0 fallback because the alternative (failing the whole transcription
-    because we can't compute cost) is worse than logging a $0 cost.
+    Returns 0.0 if pydub/ffmpeg is unavailable or the file cannot be parsed.
+    We accept a 0.0 fallback because the alternative (failing the whole
+    transcription because we can't compute cost) is worse than logging a $0
+    cost.
     """
+    if not _ffmpeg_available():
+        return 0.0
     try:
         from pydub import AudioSegment
     except ImportError:
         return 0.0
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            audio = AudioSegment.from_file(file_path)
+        audio = AudioSegment.from_file(file_path)
         return len(audio) / 1000.0
     except Exception:
         logger.info("could not compute audio duration for %s", file_path)
