@@ -2248,6 +2248,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "/clear": self._cmd_clear,
             "/new": self._cmd_clear,
             "/cost": self._cmd_cost,
+            "/name": self._cmd_name,
             "/tag": self._cmd_tag,
             "/untag": self._cmd_untag,
             "/compact": self._cmd_compact,
@@ -2294,6 +2295,39 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             formatted = f"${cost:.2f}"
         await self._send_command_result("/cost", "ok", f"Thread cost: {formatted}")
+
+    async def _cmd_name(self, args, data):
+        """Handle /name — rename the current thread."""
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            await self._send_command_result(
+                "/name", "error", "No active thread to rename.",
+            )
+            return
+
+        new_title = args.strip()[:255] if args else ""
+        if not new_title:
+            await self._send_command_result(
+                "/name", "error", "Usage: /name <new title>",
+            )
+            return
+
+        thread = await self._get_thread_by_id(thread_id)
+        if not thread:
+            await self._send_command_result(
+                "/name", "error", "Thread not found.",
+            )
+            return
+
+        await self._update_thread_title(thread, new_title)
+        await self.send(text_data=json.dumps({
+            "event_type": "thread.title_updated",
+            "thread_id": str(thread_id),
+            "title": new_title,
+        }))
+        await self._send_command_result(
+            "/name", "ok", f"Renamed thread to \"{new_title}\"",
+        )
 
     async def _cmd_tag(self, args, data):
         """Handle /tag — set or auto-pick a thread emoji."""

@@ -78,6 +78,7 @@
   </div>
   {# Shared thread action dropdown menu #}
   <div id="thread-menu" class="hidden absolute z-50 w-32 bg-neutral-primary border border-default rounded-base shadow-lg py-1" style="top:0;left:0;">
+    <button type="button" data-action="rename" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Rename</button>
     <button type="button" data-action="star" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Star</button>
     <button type="button" data-action="archive" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Archive</button>
     <button type="button" data-action="delete" class="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-neutral-tertiary">Delete</button>
@@ -1837,6 +1838,7 @@
     {name: "/new", desc: "Start a new chat"},
     {name: "/compact", desc: "Compact context"},
     {name: "/cost", desc: "Show thread cost"},
+    {name: "/name", desc: "Rename this chat"},
     {name: "/tag", desc: "Tag with emoji"},
     {name: "/untag", desc: "Remove emoji tag"},
   ];
@@ -1964,6 +1966,18 @@
     if (!actionBtn || !menuThreadId) return;
     const action = actionBtn.getAttribute("data-action");
     threadMenu.classList.add("hidden");
+    if (action === "rename") {
+      var link = document.querySelector('a[data-thread-id="' + menuThreadId + '"]');
+      var currentTitle = link ? link.getAttribute("title") : "";
+      var newTitle = prompt("Rename chat:", currentTitle);
+      if (newTitle === null || !newTitle.trim()) return;
+      var tid = menuThreadId;
+      fetch("/chat/threads/" + tid + "/rename/", { method: "POST", headers: {"X-CSRFToken": getCSRFToken(), "Content-Type": "application/json"}, body: JSON.stringify({title: newTitle.trim()}) }).then(function(res) { return res.json(); }).then(function(data) {
+        if (!data.ok) return;
+        var el = document.querySelector('a[data-thread-id="' + tid + '"]');
+        if (el) { el.setAttribute("title", data.title); var span = el.querySelector("span"); if (span) span.textContent = data.title.length > 30 ? data.title.substring(0, 27) + "..." : data.title; }
+      });
+    }
     if (action === "star") {
       var li = document.querySelector('[data-thread-li="' + menuThreadId + '"]');
       var currentEmoji = li ? li.getAttribute("data-emoji") : "";

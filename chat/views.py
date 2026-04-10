@@ -188,6 +188,24 @@ def thread_archive(request, thread_id):
 
 @login_required
 @require_POST
+def thread_rename(request, thread_id):
+    thread = get_object_or_404(
+        ChatThread, id=thread_id, created_by=request.user
+    )
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    title = body.get("title", "").strip()[:255]
+    if not title:
+        return JsonResponse({"error": "Title is required"}, status=400)
+    thread.title = title
+    thread.save(update_fields=["title"])
+    return JsonResponse({"ok": True, "title": thread.title})
+
+
+@login_required
+@require_POST
 def thread_emoji(request, thread_id):
     thread = get_object_or_404(
         ChatThread, id=thread_id, created_by=request.user
