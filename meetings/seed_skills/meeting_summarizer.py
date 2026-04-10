@@ -43,13 +43,12 @@ A new title creates a new tab — do not overwrite the transcript canvas.
 3. **Build the structure from what's actually in the transcript.** Include a \
 section only if there is real content for it — never pad with empty headings. \
 A sensible default to adapt:
-   - **Header**: meeting name, date, duration, known participants
+   - **Header**: meeting name, date, agenda, duration, participants
    - **Key discussion points**, grouped by topic — usually the bulk of the document
    - **Decisions** — only if any were made, one line each with enough context \
 to stand alone later
-   - **Action items** — only if any were assigned; format as *owner — task — \
-due date*, omitting fields that were not stated
-   - **Open questions** — only if any were flagged as unresolved
+   - **Action items** — only if any were assigned
+   - **Open questions** — only if any were clearly unresolved
 
    For a summary, collapse the middle into a tight narrative or a handful of \
 bullets and skip the header table unless it adds value.
