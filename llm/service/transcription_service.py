@@ -388,6 +388,13 @@ def _split_audio_file(
             "Install it with: pip install pydub"
         )
 
+    if not _ffmpeg_available():
+        raise RuntimeError(
+            "ffmpeg is required for splitting large audio files but is not "
+            "installed. Install ffmpeg to enable splitting files that exceed "
+            f"the {max_segment_bytes / 1_000_000:.0f} MB API limit."
+        )
+
     audio = AudioSegment.from_file(file_path)
     total_ms = len(audio)
 

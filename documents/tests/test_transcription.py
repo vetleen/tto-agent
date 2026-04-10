@@ -312,6 +312,18 @@ class SplitAudioFileTests(TestCase):
                     _split_audio_file(Path(f.name), 50)
                 self.assertIn("pydub is required", str(ctx.exception))
 
+    def test_ffmpeg_not_installed(self):
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"\x00" * 100)
+            f.flush()
+            with patch(
+                "llm.service.transcription_service._ffmpeg_available",
+                return_value=False,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    _split_audio_file(Path(f.name), 50)
+                self.assertIn("ffmpeg is required", str(ctx.exception))
+
 
 class TranscriptionCostTests(TestCase):
     """Tests for transcription cost calculation (per-minute fallback path)."""

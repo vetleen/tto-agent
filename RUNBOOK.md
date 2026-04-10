@@ -14,7 +14,7 @@ Operational reference for Wilfred (tto-agent). For dev setup see README.md, for 
 
 ## Deployment (Heroku)
 
-**Buildpacks:** Node.js (first, builds Tailwind CSS) → Python.
+**Buildpacks:** apt (first, installs ffmpeg) → Node.js (builds Tailwind CSS) → Python.
 
 **Procfile:**
 ```
