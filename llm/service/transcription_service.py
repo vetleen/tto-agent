@@ -12,6 +12,7 @@ import math
 import tempfile
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -335,7 +336,9 @@ def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
     except ImportError:
         return False
     try:
-        audio = AudioSegment.from_file(file_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            audio = AudioSegment.from_file(file_path)
         return len(audio) > max_seconds * 1000
     except Exception:
         return False
@@ -353,10 +356,12 @@ def _get_audio_duration_seconds(file_path: Path) -> float:
     except ImportError:
         return 0.0
     try:
-        audio = AudioSegment.from_file(file_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            audio = AudioSegment.from_file(file_path)
         return len(audio) / 1000.0
     except Exception:
-        logger.warning("could not compute audio duration for %s", file_path)
+        logger.info("could not compute audio duration for %s", file_path)
         return 0.0
 
 
