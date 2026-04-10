@@ -230,6 +230,18 @@ def skills_detail(request, skill_id):
             org_id=skill.organization_id
         ).exclude(user=request.user).count()
 
+    # Build slug → name map for system/org skills so JS can show override
+    # warnings dynamically as the user edits the slug field.
+    override_slug_map = {}
+    if skill.level == "user":
+        from django.db.models import Q
+
+        q = Q(level="system")
+        if org:
+            q |= Q(level="org", organization=org)
+        for s in AgentSkill.objects.filter(q, is_active=True).values("slug", "name"):
+            override_slug_map[s["slug"]] = s["name"]
+
     return render(
         request,
         "agent_skills/skills_detail.html",
@@ -247,6 +259,7 @@ def skills_detail(request, skill_id):
             "user_org": org,
             "colleague_count": colleague_count,
             "level_label": skill.get_level_display(),
+            "override_slug_map_json": json.dumps(override_slug_map),
         },
     )
 
@@ -323,6 +336,22 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
         _parse_tool_names_json(request.POST.get("tool_names_json", ""))
     )
 
+    # Handle slug updates for user-level skills.
+    raw_slug = request.POST.get("slug", "").strip()
+    if raw_slug and skill.level == "user":
+        from django.utils.text import slugify
+
+        new_slug = slugify(raw_slug)[:64]
+        if new_slug and new_slug != skill.slug:
+            conflict = AgentSkill.objects.filter(
+                slug=new_slug, level="user", created_by=skill.created_by,
+            ).exclude(pk=skill.pk).exists()
+            if conflict:
+                raise SkillFormValidationError(
+                    f"You already have a skill with slug '{new_slug}'."
+                )
+            skill.slug = new_slug
+
     # Reconcile templates: incoming list is the source of truth.
     incoming = _parse_templates_json(request.POST.get("templates_json", ""))
 
@@ -343,7 +372,7 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     skill.instructions = instructions
     skill.tool_names = tool_names
     skill.save(update_fields=[
-        "name", "description", "instructions", "tool_names", "updated_at",
+        "slug", "name", "description", "instructions", "tool_names", "updated_at",
     ])
 
     # Delete templates the user removed BEFORE updating kept ones, so a

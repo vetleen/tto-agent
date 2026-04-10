@@ -296,6 +296,39 @@
     }
   });
 
+  // ----- Slug override warning -----
+  var slugInput = document.getElementById("skill-slug");
+  var slugWarning = document.getElementById("slug-override-warning");
+  var slugWarningText = document.getElementById("slug-override-text");
+  var overrideSlugMap = {};
+  try {
+    overrideSlugMap = JSON.parse(
+      (config && config.getAttribute("data-override-slug-map")) || "{}"
+    );
+  } catch (e) {
+    overrideSlugMap = {};
+  }
+
+  function checkSlugOverride() {
+    if (!slugInput || !slugWarning) return;
+    var slug = slugInput.value.trim();
+    var matchedName = overrideSlugMap[slug];
+    if (matchedName) {
+      slugWarningText.textContent =
+        "This slug matches the system skill \u2018" +
+        matchedName +
+        "\u2019 \u2014 your version will override it by default (for you only, and can be changed).";
+      slugWarning.classList.remove("hidden");
+    } else {
+      slugWarning.classList.add("hidden");
+    }
+  }
+
+  if (slugInput) {
+    slugInput.addEventListener("input", checkSlugOverride);
+    checkSlugOverride();
+  }
+
   // ----- Initial render -----
   renderToolChips();
   renderTemplates();

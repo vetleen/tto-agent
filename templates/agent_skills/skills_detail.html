@@ -30,10 +30,21 @@
           <input type="text" name="name" id="skill-name" value="{{ skill.name }}" maxlength="255"
                  {% if not editable %}readonly{% endif %}
                  class="bg-neutral-secondary-medium border border-default-medium text-heading text-lg font-semibold rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2 shadow-xs {% if not editable %}cursor-not-allowed{% endif %}">
-          <p class="mt-2 text-xs text-body">
-            <span class="inline-block px-2 py-0.5 rounded-base bg-neutral-tertiary text-heading me-1">{{ level_label }}</span>
+          <p class="mt-2 text-xs text-body flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span class="inline-block px-2 py-0.5 rounded-base bg-neutral-tertiary text-heading">{{ level_label }}</span>
+            {% if editable and skill.level == "user" %}
+            <span class="inline-flex items-center gap-1">slug:
+              <input type="text" name="slug" id="skill-slug" value="{{ skill.slug }}" maxlength="64"
+                     class="bg-neutral-secondary-medium border border-default-medium text-heading text-xs rounded-base focus:ring-brand focus:border-brand px-2 py-0.5 w-48 font-mono">
+            </span>
+            {% else %}
             <span>slug: <code>{{ skill.slug }}</code></span>
-            {% if skill.parent %}<span class="ms-2">copied from <em>{{ skill.parent.name }}</em></span>{% endif %}
+            {% endif %}
+            {% if skill.parent %}<span>copied from <em>{{ skill.parent.name }}</em></span>{% endif %}
+          </p>
+          <p id="slug-override-warning" class="mt-1.5 text-xs text-fg-warning hidden">
+            <svg class="w-3.5 h-3.5 inline-block -mt-0.5 me-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>
+            <span id="slug-override-text"></span>
           </p>
         </div>
       </div>
@@ -215,7 +226,8 @@
        data-editable="{{ editable|yesno:'1,0' }}"
        data-skill-name="{{ skill.name|escapejs }}"
        data-skill-level="{{ skill.level }}"
-       data-colleague-count="{{ colleague_count }}"></div>
+       data-colleague-count="{{ colleague_count }}"
+       data-override-slug-map="{{ override_slug_map_json }}"></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>

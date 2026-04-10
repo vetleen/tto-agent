@@ -41,7 +41,7 @@ class SaveMeetingMinutesTool(ContextAwareTool):
         "as a Markdown artifact. Use this once the user is satisfied with the draft."
     )
     args_schema: type[BaseModel] = SaveMeetingMinutesInput
-    section: str = "meetings"
+    section: str = "skills"
 
     def _run(self, meeting_id: str, content_md: str, kind: str = "minutes", title: str = "", **kwargs) -> str:
         from django.contrib.auth import get_user_model
