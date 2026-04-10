@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Membership, Organization, UserSettings
+from agent_skills.models import AgentSkill
 
 User = get_user_model()
 
@@ -947,6 +948,81 @@ class PreferencesTranscriptionModelUpdateTests(TestCase):
         response = self.client.post(
             self.url,
             json.dumps({"model": "openai/gpt-4o-transcribe"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+class MeetingSummarizerSkillPrefTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="msp@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.url = reverse("accounts:preferences_meeting_summarizer_skill_update")
+        AgentSkill.objects.filter(slug="meeting-summarizer").delete()
+        self.skill = AgentSkill.objects.create(
+            slug="meeting-summarizer",
+            name="Meeting Summarizer",
+            instructions="x",
+            level="system",
+            tool_names=["save_meeting_minutes"],
+        )
+
+    def test_set_default_skill(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"skill_id": str(self.skill.id)}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        us = UserSettings.objects.get(user=self.user)
+        self.assertEqual(
+            us.preferences["meetings"]["summarizer_skill_id"],
+            str(self.skill.id),
+        )
+
+    def test_clear_default_skill(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"skill_id": ""}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        us = UserSettings.objects.get(user=self.user)
+        self.assertIsNone(us.preferences["meetings"]["summarizer_skill_id"])
+
+    def test_rejects_ineligible_skill(self):
+        other = AgentSkill.objects.create(
+            slug="other", name="Other", instructions="x",
+            level="system", tool_names=["some_tool"],
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"skill_id": str(other.id)}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_rejects_nonexistent_skill(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"skill_id": "00000000-0000-0000-0000-000000000000"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"skill_id": str(self.skill.id)}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 302)

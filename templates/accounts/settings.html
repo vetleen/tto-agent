@@ -83,6 +83,34 @@
   </section>
   {% endif %}
 
+  <!-- Meeting Summarizer Skill -->
+  {% if summarizer_skills %}
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Meeting Summarizer Skill</h2>
+    <p class="mt-1 text-sm text-body">Choose the default skill used when summarizing meetings.</p>
+
+    <div class="mt-4">
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="meeting-summarizer-skill">
+          Summarizer skill
+        </label>
+        <p class="text-xs text-body mt-0.5">Used when you click "Summarize meeting in chat" on any meeting page.</p>
+        <select
+          id="meeting-summarizer-skill"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">Default (Meeting Summarizer)</option>
+          {% for skill in summarizer_skills %}
+          <option value="{{ skill.id }}" {% if user_summarizer_skill_id == skill.id|stringformat:"s" %}selected{% endif %}>
+            {{ skill.name }}{% if skill.level == "user" %} (yours){% elif skill.level == "org" %} (org){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   <!-- Context Window -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">Context Window</h2>
@@ -161,6 +189,24 @@
         if (data.error) {
           alert(data.error);
           transcriptionSelect.value = '';
+        }
+      });
+    });
+  }
+
+  // Meeting summarizer skill preference
+  var summarizerSelect = document.getElementById('meeting-summarizer-skill');
+  if (summarizerSelect) {
+    summarizerSelect.addEventListener('change', function() {
+      fetch('{% url "accounts:preferences_meeting_summarizer_skill_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skill_id: this.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          summarizerSelect.value = '';
         }
       });
     });

@@ -63,6 +63,11 @@ def settings_page(request):
         mid: info.display_name for mid, info in get_all_transcription_models().items()
     }
 
+    from meetings.services.minutes import get_eligible_summarizer_skills
+
+    summarizer_skills = get_eligible_summarizer_skills(request.user)
+    user_summarizer_skill_id = (user_settings.preferences or {}).get("meetings", {}).get("summarizer_skill_id") or ""
+
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
         "user_models": user_models,
@@ -73,6 +78,8 @@ def settings_page(request):
         "user_transcription_model": user_transcription_model or "",
         "resolved_transcription_model": prefs.transcription_model,
         "transcription_model_display": transcription_model_display,
+        "summarizer_skills": summarizer_skills,
+        "user_summarizer_skill_id": user_summarizer_skill_id,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"]},
@@ -141,6 +148,36 @@ def preferences_transcription_model_update(request):
     settings.save()
 
     return JsonResponse({"ok": True, "model": model})
+
+
+@login_required
+@require_POST
+def preferences_meeting_summarizer_skill_update(request):
+    """Update user's default meeting summarizer skill."""
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    skill_id = (data.get("skill_id") or "").strip() or None
+
+    if skill_id:
+        from agent_skills.services import get_skill_for_user
+
+        skill = get_skill_for_user(request.user, skill_id)
+        if not skill:
+            return JsonResponse({"error": "Skill not found or not accessible"}, status=400)
+        if "save_meeting_minutes" not in (skill.tool_names or []):
+            return JsonResponse({"error": "Skill is not eligible as a meeting summarizer"}, status=400)
+
+    settings, _ = UserSettings.objects.get_or_create(user=request.user)
+    prefs_dict = settings.preferences or {}
+    meetings_prefs = prefs_dict.get("meetings", {})
+    meetings_prefs["summarizer_skill_id"] = skill_id
+    prefs_dict["meetings"] = meetings_prefs
+    settings.preferences = prefs_dict
+    settings.save()
+
+    return JsonResponse({"ok": True, "skill_id": skill_id})
 
 
 # ---- Organization Settings Page ----

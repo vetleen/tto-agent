@@ -183,15 +183,45 @@
   {# ----- Transcript actions: summarize in chat / save to data room ----- #}
   <section class="mb-3">
     <div class="flex flex-wrap items-center gap-3">
-      <form method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
+      <form id="summarize-form" method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
         {% csrf_token %}
-        <button type="submit" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
-                class="inline-flex items-center gap-2 text-white bg-gradient-to-r from-purple-500 via-purple-600 to-purple-700 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-purple-300 dark:focus:ring-purple-800 font-medium rounded-base text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="{% if not meeting.transcript %}Add a transcript first.{% endif %}">
-          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
-          Summarize meeting in chat
-        </button>
+        <input type="hidden" name="skill_id" id="summarize-skill-id" value="{{ effective_summarizer_id }}">
+        <div class="inline-flex rounded-base" role="group">
+          <button type="submit" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
+                  class="inline-flex items-center gap-2 text-white bg-gradient-to-r from-purple-500 via-purple-600 to-purple-700 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-purple-300 dark:focus:ring-purple-800 font-medium {% if summarizer_skills|length > 1 %}rounded-s-base{% else %}rounded-base{% endif %} text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="{% if not meeting.transcript %}Add a transcript first.{% else %}Summarize with {{ effective_summarizer_name }}{% endif %}">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+            Summarize meeting in chat
+          </button>
+          {% if summarizer_skills|length > 1 %}
+          <button type="button" {% if not meeting.transcript %}disabled{% endif %}
+                  data-dropdown-toggle="summarizer-skill-dropdown"
+                  class="inline-flex items-center text-white bg-gradient-to-r from-purple-600 to-purple-700 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-purple-300 dark:focus:ring-purple-800 font-medium rounded-e-base text-sm px-2 py-2 border-l border-purple-400/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Choose summarizer skill">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>
+          </button>
+          {% endif %}
+        </div>
       </form>
+
+      {% if summarizer_skills|length > 1 %}
+      <div id="summarizer-skill-dropdown" class="z-50 hidden min-w-56 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+        <div class="px-3 py-2 text-xs font-medium text-body border-b border-default">Summarizer skill</div>
+        {% for skill in summarizer_skills %}
+        <button type="button"
+                class="summarizer-skill-option inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary text-left gap-2"
+                data-skill-id="{{ skill.id }}"
+                data-skill-name="{{ skill.name }}">
+          <svg class="summarizer-check w-4 h-4 shrink-0 {% if effective_summarizer_id == skill.id|stringformat:'s' %}text-purple-500{% else %}text-transparent{% endif %}"
+               xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/>
+          </svg>
+          <span>{{ skill.name }}</span>
+          {% if skill.level == "user" %}<span class="text-xs text-body">(yours)</span>{% elif skill.level == "org" %}<span class="text-xs text-body">(org)</span>{% endif %}
+        </button>
+        {% endfor %}
+      </div>
+      {% endif %}
 
       {% if user_data_rooms %}
       <button type="button" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
@@ -321,5 +351,36 @@
   {% endif %}
 </div>
 
+{% if summarizer_skills|length > 1 %}
+<script>
+(function() {
+  var skillInput = document.getElementById('summarize-skill-id');
+  var buttons = document.querySelectorAll('.summarizer-skill-option');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var skillId = this.dataset.skillId;
+      var skillName = this.dataset.skillName;
+      skillInput.value = skillId;
+      // Update checkmarks
+      buttons.forEach(function(b) {
+        var svg = b.querySelector('.summarizer-check');
+        if (b.dataset.skillId === skillId) {
+          svg.classList.remove('text-transparent');
+          svg.classList.add('text-purple-500');
+        } else {
+          svg.classList.remove('text-purple-500');
+          svg.classList.add('text-transparent');
+        }
+      });
+      // Update tooltip on main button
+      var mainBtn = document.querySelector('#summarize-form button[type="submit"]');
+      if (mainBtn && mainBtn.title) {
+        mainBtn.title = 'Summarize with ' + skillName;
+      }
+    });
+  });
+})();
+</script>
+{% endif %}
 <script src="{% static 'meetings/transcribe.js' %}" defer></script>
 {% endblock %}

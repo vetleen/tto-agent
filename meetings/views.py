@@ -219,6 +219,13 @@ def meeting_detail(request, meeting_uuid):
         selected_model,
     )
 
+    from meetings.services.minutes import get_eligible_summarizer_skills, resolve_summarizer_skill
+
+    summarizer_skills = get_eligible_summarizer_skills(request.user)
+    effective_summarizer = resolve_summarizer_skill(request.user, meeting)
+    effective_summarizer_id = str(effective_summarizer.id) if effective_summarizer else ""
+    effective_summarizer_name = effective_summarizer.name if effective_summarizer else "Meeting Summarizer"
+
     return render(
         request,
         "meetings/meeting_detail.html",
@@ -235,6 +242,9 @@ def meeting_detail(request, meeting_uuid):
             "transcription_model_choices": transcription_model_choices,
             "transcription_model_selected": selected_model,
             "transcription_model_selected_display": selected_display,
+            "summarizer_skills": summarizer_skills,
+            "effective_summarizer_id": effective_summarizer_id,
+            "effective_summarizer_name": effective_summarizer_name,
         },
     )
 
@@ -747,7 +757,9 @@ def meeting_delete_artifact(request, meeting_uuid, artifact_id):
 @login_required
 @require_POST
 def meeting_create_minutes_thread(request, meeting_uuid):
-    from .services.minutes import create_minutes_thread
+    from agent_skills.services import get_skill_for_user
+
+    from .services.minutes import create_minutes_thread, resolve_summarizer_skill
 
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
@@ -755,7 +767,21 @@ def meeting_create_minutes_thread(request, meeting_uuid):
     if not (meeting.transcript or "").strip():
         messages.error(request, "This meeting has no transcript yet.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-    thread, err = create_minutes_thread(request.user, meeting)
+
+    # Resolve skill: explicit POST param > per-meeting > per-user > system
+    skill_id = (request.POST.get("skill_id") or "").strip()
+    summarizer_skill = None
+    if skill_id:
+        candidate = get_skill_for_user(request.user, skill_id)
+        if candidate and "save_meeting_minutes" in (candidate.tool_names or []):
+            summarizer_skill = candidate
+            meeting.summarizer_skill = summarizer_skill
+            meeting.save(update_fields=["summarizer_skill"])
+
+    if summarizer_skill is None:
+        summarizer_skill = resolve_summarizer_skill(request.user, meeting)
+
+    thread, err = create_minutes_thread(request.user, meeting, summarizer_skill=summarizer_skill)
     if err or thread is None:
         messages.error(request, err or "Could not start a chat session.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)

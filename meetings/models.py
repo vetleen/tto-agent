@@ -71,6 +71,13 @@ class Meeting(models.Model):
         related_name="meetings",
     )
     is_archived = models.BooleanField(default=False)
+    summarizer_skill = models.ForeignKey(
+        "agent_skills.AgentSkill",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="meetings_as_summarizer",
+    )
     data_rooms = models.ManyToManyField(
         "documents.DataRoom",
         through="MeetingDataRoom",

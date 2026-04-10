@@ -12,6 +12,52 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def get_eligible_summarizer_skills(user):
+    """Return all skills accessible to *user* that include ``save_meeting_minutes`` in tool_names."""
+    from agent_skills.services import get_accessible_skills
+
+    return sorted(
+        [s for s in get_accessible_skills(user) if "save_meeting_minutes" in (s.tool_names or [])],
+        key=lambda s: s.name,
+    )
+
+
+def resolve_summarizer_skill(user, meeting):
+    """Determine which summarizer skill to use.
+
+    Priority: per-meeting override > per-user default > system fallback.
+    Each level validates access and eligibility before accepting.
+    """
+    from accounts.models import UserSettings
+    from agent_skills.models import AgentSkill
+    from agent_skills.services import get_skill_for_user
+
+    def _is_eligible(skill):
+        return skill and "save_meeting_minutes" in (skill.tool_names or [])
+
+    # 1. Per-meeting override
+    if meeting.summarizer_skill_id:
+        skill = get_skill_for_user(user, str(meeting.summarizer_skill_id))
+        if _is_eligible(skill):
+            return skill
+
+    # 2. Per-user default
+    try:
+        us = UserSettings.objects.get(user=user)
+        skill_id = (us.preferences or {}).get("meetings", {}).get("summarizer_skill_id")
+        if skill_id:
+            skill = get_skill_for_user(user, skill_id)
+            if _is_eligible(skill):
+                return skill
+    except UserSettings.DoesNotExist:
+        pass
+
+    # 3. System fallback
+    return AgentSkill.objects.filter(
+        slug="meeting-summarizer", level="system", is_active=True,
+    ).first()
+
+
 def _format_duration_minutes(seconds) -> str:
     if not seconds:
         return "unknown"
@@ -19,7 +65,7 @@ def _format_duration_minutes(seconds) -> str:
     return f"~{minutes} minutes"
 
 
-def _build_seed_message(meeting, canvas_title: str, model_label: str) -> str:
+def _build_seed_message(meeting, canvas_title: str, model_label: str, skill_name: str = "Meeting Summarizer") -> str:
     transcript = meeting.transcript or ""
     n_chars = len(transcript)
     parts: list[str] = []
@@ -40,18 +86,18 @@ def _build_seed_message(meeting, canvas_title: str, model_label: str) -> str:
         f"and save them with `save_meeting_minutes` (the meeting_id is `{meeting.uuid}`). "
         "If important context is missing — attendees, meeting purpose, the boundary "
         "between decisions and action items — greet the user briefly and ask one "
-        "focused question before drafting. Use the attached Meeting Summarizer skill "
+        f"focused question before drafting. Use the attached {skill_name} skill "
         "to complete the task."
     )
     return " ".join(parts)
 
 
-def create_minutes_thread(user, meeting):
-    """Create a ChatThread pre-loaded with the Meeting Summarizer skill.
+def create_minutes_thread(user, meeting, summarizer_skill=None):
+    """Create a ChatThread pre-loaded with a summarizer skill.
 
+    *summarizer_skill* overrides the cascade resolution when provided.
     Returns ``(thread, error_message)``: exactly one is non-None.
     """
-    from agent_skills.models import AgentSkill
     from chat.models import ChatCanvas, ChatMessage, ChatThread
     from chat.services import (
         CANVAS_MAX_CHARS,
@@ -59,14 +105,11 @@ def create_minutes_thread(user, meeting):
         set_active_canvas,
     )
 
-    summarizer = (
-        AgentSkill.objects
-        .filter(slug="meeting-summarizer", level="system", is_active=True)
-        .first()
-    )
-    if summarizer is None:
+    if summarizer_skill is None:
+        summarizer_skill = resolve_summarizer_skill(user, meeting)
+    if summarizer_skill is None:
         logger.error(
-            "create_minutes_thread: Meeting Summarizer system skill not found "
+            "create_minutes_thread: No eligible summarizer skill found "
             "(did the post_migrate seed run?)"
         )
         return None, "Meeting summarization is unavailable right now (skill missing)."
@@ -76,7 +119,7 @@ def create_minutes_thread(user, meeting):
 
     thread = ChatThread.objects.create(
         created_by=user,
-        skill=summarizer,
+        skill=summarizer_skill,
         title=f"Minutes for {meeting.name}",
         metadata={
             "source_meeting_id": str(meeting.uuid),
@@ -105,7 +148,7 @@ def create_minutes_thread(user, meeting):
     # `pending_initial_turn` flag triggers an auto-assistant turn on first
     # WS load.
     model_label = meeting.transcription_model or "uploaded text"
-    seed_content = _build_seed_message(meeting, canvas_title, model_label)
+    seed_content = _build_seed_message(meeting, canvas_title, model_label, skill_name=summarizer_skill.name)
     ChatMessage.objects.create(
         thread=thread,
         role="user",
