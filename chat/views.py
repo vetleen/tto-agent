@@ -243,10 +243,38 @@ async def canvas_export(request, thread_id, canvas_id=None):
     full_html = f"<html><body>{html_content}</body></html>"
     buf = html2docx(full_html, title=canvas.title)
 
+    # html2docx sets gridCol widths to span the full page but leaves
+    # cell widths at 0 and table width at auto. With autofit Word
+    # auto-sizes from content, making tables narrower than the page.
+    # Fix: set table width to 100%, copy gridCol widths into cells,
+    # and switch to fixed layout so Word honours the widths exactly.
+    from docx import Document as DocxDocument
+    from docx.oxml.ns import qn
+
+    doc = DocxDocument(buf)
+    for table in doc.tables:
+        table.autofit = False
+        tblW = table._tbl.tblPr.find(qn("w:tblW"))
+        if tblW is not None:
+            tblW.set(qn("w:type"), "pct")
+            tblW.set(qn("w:w"), "5000")  # 5000 = 100%
+        grid_cols = table._tbl.tblGrid.findall(qn("w:gridCol"))
+        col_widths = [int(gc.get(qn("w:w"))) for gc in grid_cols]
+        for row in table.rows:
+            for i, cell in enumerate(row.cells):
+                if i < len(col_widths):
+                    tcW = cell._tc.tcPr.find(qn("w:tcW"))
+                    if tcW is not None:
+                        tcW.set(qn("w:w"), str(col_widths[i]))
+                        tcW.set(qn("w:type"), "dxa")
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
     safe_title = "".join(c for c in canvas.title if c.isalnum() or c in " _-").strip() or "document"
     filename = f"{safe_title}.docx"
     return FileResponse(
-        io.BytesIO(buf.getvalue()),
+        buf,
         as_attachment=True,
         filename=filename,
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

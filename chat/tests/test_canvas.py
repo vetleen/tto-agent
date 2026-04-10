@@ -323,14 +323,7 @@ class CanvasExportViewTests(TestCase):
         self.thread.active_canvas = self.canvas
         self.thread.save(update_fields=["active_canvas"])
 
-    @patch("html2docx.html2docx")
-    @patch("markdown.markdown")
-    def test_export_returns_docx(self, mock_md, mock_h2d):
-        mock_md.return_value = "<h1>NDA</h1>"
-        buf = MagicMock()
-        buf.getvalue.return_value = b"PK fake docx bytes"
-        mock_h2d.return_value = buf
-
+    def test_export_returns_docx(self):
         url = f"/chat/threads/{self.thread.id}/canvas/export/"
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -339,6 +332,32 @@ class CanvasExportViewTests(TestCase):
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
         self.assertIn("My NDA", response.get("Content-Disposition", ""))
+
+    def test_export_tables_use_fixed_layout(self):
+        """Tables in exported .docx should span the full page width."""
+        self.canvas.content = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+        from docx.oxml.ns import qn
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        self.assertTrue(len(doc.tables) > 0, "Expected at least one table")
+        for table in doc.tables:
+            self.assertFalse(table.autofit)
+            # Table width should be 100% (5000 in OOXML pct units)
+            tblW = table._tbl.tblPr.find(qn("w:tblW"))
+            self.assertEqual(tblW.get(qn("w:type")), "pct")
+            self.assertEqual(tblW.get(qn("w:w")), "5000")
+            # Cell widths should be non-zero
+            for row in table.rows:
+                for cell in row.cells:
+                    tcW = cell._tc.tcPr.find(qn("w:tcW"))
+                    self.assertGreater(int(tcW.get(qn("w:w"))), 0)
 
     def test_export_404_no_canvas(self):
         other_thread = ChatThread.objects.create(created_by=self.user)
