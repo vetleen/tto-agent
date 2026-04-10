@@ -18,7 +18,7 @@ from pathlib import Path
 from celery import shared_task
 from django.utils import timezone
 
-from .services.chunks import cleanup_temp, recompute_meeting_transcript
+from .services.chunks import cleanup_temp, download_chunk_to_local, recompute_meeting_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +101,9 @@ def transcribe_meeting_chunk_task(
         prior_tail = (meeting.transcript or "")[-LIVE_PROMPT_TAIL_CHARS:] or None
         prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
 
+        local_path = download_chunk_to_local(temp_path, mime)
         try:
-            text = transcribe_audio(Path(temp_path), model_id, user, prompt=prompt)
+            text = transcribe_audio(local_path, model_id, user, prompt=prompt)
         except Exception as exc:
             err = str(exc)[:1000]
             logger.exception(
@@ -124,6 +125,11 @@ def transcribe_meeting_chunk_task(
             # Celery, which has no useful retry path (file is deleted in
             # `finally:` below) and the new error would just clobber `err`.
             return
+        finally:
+            # Clean up the downloaded local temp file (may differ from
+            # the storage key when chunks are stored remotely).
+            if str(local_path) != temp_path:
+                local_path.unlink(missing_ok=True)
 
         MeetingTranscriptSegment.objects.filter(pk=segment.pk).update(
             text=text or "",
@@ -177,11 +183,12 @@ def transcribe_uploaded_audio_task(
     from .models import Meeting
     from .services.audio_transcription import orchestrate_upload_transcription
 
+    local_path = download_chunk_to_local(temp_path)
     try:
         try:
             orchestrate_upload_transcription(
                 meeting_id=meeting_id,
-                temp_path=Path(temp_path),
+                temp_path=local_path,
                 model_id=model_id,
                 user_id=user_id,
             )
@@ -209,4 +216,6 @@ def transcribe_uploaded_audio_task(
             # in finally) and Celery would just log a redundant traceback.
             return
     finally:
+        if str(local_path) != temp_path:
+            local_path.unlink(missing_ok=True)
         cleanup_temp(temp_path)

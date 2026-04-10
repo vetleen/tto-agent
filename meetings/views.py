@@ -647,16 +647,14 @@ def meeting_upload_audio(request, meeting_uuid):
     else:
         model_id = getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
 
-    # Persist the audio to a temp location under MEETING_CHUNK_TEMP_DIR so the
-    # task can read it. We delete the file after transcription succeeds OR fails.
-    from pathlib import Path
+    # Persist the audio so the Celery worker can read it. On Heroku (S3
+    # storage) this goes to shared remote storage; locally it writes to disk.
+    from meetings.services.chunks import write_chunk_to_temp
 
-    temp_dir = Path(getattr(settings, "MEETING_CHUNK_TEMP_DIR", "")) / str(meeting.uuid)
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = temp_dir / f"upload-{int(timezone.now().timestamp())}.{ext}"
-    with open(temp_path, "wb") as f:
-        for chunk in file_obj.chunks():
-            f.write(chunk)
+    raw_bytes = file_obj.read()
+    temp_path = write_chunk_to_temp(
+        meeting.uuid, segment_index=0, raw_bytes=raw_bytes, mime=f"audio/{ext}",
+    )
 
     meeting.status = Meeting.Status.LIVE_TRANSCRIBING  # treat upload as in-progress until task finishes
     meeting.transcript_source = Meeting.TranscriptSource.AUDIO_UPLOAD
@@ -678,10 +676,8 @@ def meeting_upload_audio(request, meeting_uuid):
         meeting.status = Meeting.Status.FAILED
         meeting.transcription_error = str(exc)[:1000]
         meeting.save(update_fields=["status", "transcription_error", "updated_at"])
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
+        from meetings.services.chunks import cleanup_temp
+        cleanup_temp(temp_path)
         messages.error(request, "Could not start audio transcription. Please try again.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
