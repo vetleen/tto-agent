@@ -1087,6 +1087,25 @@
     attachedImagesContainer.appendChild(pill);
   }
 
+  var uploadBatchCounter = 0;
+  function addUploadingPills(files) {
+    var batchId = ++uploadBatchCounter;
+    files.forEach(function(f) {
+      var pill = document.createElement('span');
+      pill.className = 'uploading-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-body bg-neutral-secondary-soft border border-default rounded-full opacity-70';
+      pill.setAttribute('data-upload-batch', batchId);
+      pill.innerHTML =
+        '<svg class="w-3 h-3 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>' +
+        escapeHtml(f.name);
+      attachedImagesContainer.appendChild(pill);
+    });
+    return batchId;
+  }
+
+  function removeUploadingPills(batchId) {
+    attachedImagesContainer.querySelectorAll('[data-upload-batch="' + batchId + '"]').forEach(function(el) { el.remove(); });
+  }
+
   function removeImagePill(id) {
     var idx = pendingAttachmentIds.indexOf(id);
     if (idx !== -1) { pendingAttachmentIds.splice(idx, 1); pendingAttachmentNames.splice(idx, 1); pendingAttachmentTypes.splice(idx, 1); }
@@ -1098,6 +1117,7 @@
     pendingAttachmentIds = [];
     pendingAttachmentNames = [];
     pendingAttachmentTypes = [];
+    uploadBatchCounter = 0;
     attachedImagesContainer.innerHTML = '';
   }
 
@@ -1143,6 +1163,8 @@
         }
       }
 
+      var batchId = addUploadingPills(files);
+
       function doUpload(threadId) {
         var fd = new FormData();
         files.forEach(function(f) { fd.append('files', f); });
@@ -1154,6 +1176,7 @@
           if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Upload failed'); });
           return r.json();
         }).then(function(data) {
+          removeUploadingPills(batchId);
           (data.attachments || []).forEach(function(att) {
             pendingAttachmentIds.push(att.id);
             pendingAttachmentNames.push(att.filename);
@@ -1161,6 +1184,7 @@
             addAttachmentPill(att.id, att.filename, att.content_type);
           });
         }).catch(function(err) {
+          removeUploadingPills(batchId);
           showToast('Upload failed: ' + err.message);
         });
       }
@@ -1179,6 +1203,7 @@
           addThreadToSidebar(data.thread_id, 'New chat');
           doUpload(data.thread_id);
         }).catch(function(err) {
+          removeUploadingPills(batchId);
           showToast('Failed to create conversation: ' + err.message);
         });
       }
