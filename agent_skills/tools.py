@@ -333,13 +333,9 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
         except ValueError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
-        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
-
         return json.dumps({
             "status": "ok",
             "title": canvas.title,
-            "content": canvas.content,
-            "accepted_content": accepted_content,
             "canvas_id": str(canvas.pk),
         })
 
@@ -628,13 +624,9 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
 
         set_active_canvas(thread_id, canvas)
 
-        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
-
         return json.dumps({
             "status": "ok",
             "title": title,
-            "content": content,
-            "accepted_content": accepted_content,
             "canvas_id": str(canvas.pk),
         })
 

@@ -1600,7 +1600,7 @@
         let displayText = "Working...";
         if (toolName === "search_documents") displayText = "Searching documents...";
         else if (toolName === "read_document") displayText = "Reading document...";
-        else if (toolName === "read_canvas") displayText = "Reading canvas...";
+        else if (toolName === "active_canvas") displayText = "Switching active canvases...";
         else if (toolName === "write_canvas") displayText = "Writing document...";
         else if (toolName === "edit_canvas") displayText = "Editing document...";
         else if (toolName === "web_fetch") displayText = "Fetching web page...";
@@ -1637,7 +1637,7 @@
           try { const result = JSON.parse(resultStr); if (toolName === "search_documents" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "read_document" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); } catch (e) {}
           if (doneLabel === "Done") { if (toolName === "search_documents") doneLabel = "Searched documents";
           else if (toolName === "read_document") doneLabel = "Read document";
-          else if (toolName === "read_canvas") doneLabel = "Read canvas";
+          else if (toolName === "active_canvas") doneLabel = "Updated active canvases";
           else if (toolName === "write_canvas") doneLabel = "Rewrote the canvas text from scratch";
           else if (toolName === "edit_canvas") doneLabel = "Edited the canvas text";
           else if (toolName === "web_fetch") doneLabel = "Fetched web page";

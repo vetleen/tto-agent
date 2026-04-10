@@ -16,16 +16,17 @@ logger = logging.getLogger(__name__)
 
 CANVAS_MAX_CHARS = 75_000
 MAX_CANVASES_PER_THREAD = 10
+MAX_ACTIVE_CANVASES = 3
 MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
 EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
 
 
 def resolve_canvas(thread_id, canvas_name=None):
-    """Resolve a canvas by name or fall back to active canvas.
+    """Resolve a canvas by name or fall back to the most recently activated canvas.
 
     Returns (canvas, error_msg). One of the two is always None.
     """
-    from chat.models import ChatCanvas, ChatThread
+    from chat.models import ChatCanvas
 
     if canvas_name:
         try:
@@ -36,23 +37,83 @@ def resolve_canvas(thread_id, canvas_name=None):
         except ChatCanvas.DoesNotExist:
             return None, f"No canvas named '{canvas_name}' in this thread."
 
-    try:
-        thread = ChatThread.objects.select_related(
-            "active_canvas__accepted_checkpoint",
-        ).get(pk=thread_id)
-    except ChatThread.DoesNotExist:
-        return None, "Thread not found."
-
-    if thread.active_canvas:
-        return thread.active_canvas, None
+    canvas = (
+        ChatCanvas.objects.filter(thread_id=thread_id, is_active=True)
+        .select_related("accepted_checkpoint")
+        .order_by("-last_activated_at")
+        .first()
+    )
+    if canvas:
+        return canvas, None
     return None, "No active canvas in this thread."
 
 
-def set_active_canvas(thread_id, canvas):
-    """Update the thread's active_canvas pointer."""
-    from chat.models import ChatThread
+def activate_canvas(thread_id, canvas):
+    """Mark a canvas as active (LLM-visible) and update the UI tab pointer.
+
+    If already active, bumps last_activated_at. Enforces the 3-canvas cap
+    by deactivating the oldest-activated canvas when needed.
+    """
+    from django.utils import timezone
+
+    from chat.models import ChatCanvas, ChatThread
+
+    now = timezone.now()
+
+    if canvas.is_active:
+        canvas.last_activated_at = now
+        canvas.save(update_fields=["last_activated_at"])
+    else:
+        active_count = ChatCanvas.objects.filter(
+            thread_id=thread_id, is_active=True,
+        ).count()
+
+        if active_count >= MAX_ACTIVE_CANVASES:
+            excess = active_count - MAX_ACTIVE_CANVASES + 1
+            oldest_pks = list(
+                ChatCanvas.objects.filter(thread_id=thread_id, is_active=True)
+                .order_by("last_activated_at")
+                .values_list("pk", flat=True)[:excess]
+            )
+            ChatCanvas.objects.filter(pk__in=oldest_pks).update(is_active=False)
+
+        canvas.is_active = True
+        canvas.last_activated_at = now
+        canvas.save(update_fields=["is_active", "last_activated_at"])
 
     ChatThread.objects.filter(pk=thread_id).update(active_canvas=canvas)
+
+
+def set_active_canvases(thread_id, canvas_names):
+    """Deactivate ALL canvases for the thread, then activate the named ones.
+
+    Returns (activated_list, errors).
+    """
+    from django.utils import timezone
+
+    from chat.models import ChatCanvas
+
+    now = timezone.now()
+    ChatCanvas.objects.filter(thread_id=thread_id).update(is_active=False)
+
+    activated = []
+    errors = []
+    for name in canvas_names[:MAX_ACTIVE_CANVASES]:
+        try:
+            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=name)
+            canvas.is_active = True
+            canvas.last_activated_at = now
+            canvas.save(update_fields=["is_active", "last_activated_at"])
+            activated.append(canvas)
+        except ChatCanvas.DoesNotExist:
+            errors.append(f"No canvas named '{name}' in this thread.")
+
+    return activated, errors
+
+
+def set_active_canvas(thread_id, canvas):
+    """Activate a single canvas and update the UI tab pointer."""
+    activate_canvas(thread_id, canvas)
 
 
 def create_canvas_checkpoint(canvas, source, description=""):

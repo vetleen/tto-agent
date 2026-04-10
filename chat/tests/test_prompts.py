@@ -386,7 +386,7 @@ class BuildSemiStaticPromptTests(TestCase):
         prompt = build_semi_static_prompt(canvases=canvases)
         self.assertIn("Doc A", prompt)
         self.assertIn("Doc B", prompt)
-        self.assertIn("← active", prompt)
+        self.assertIn("in context", prompt)
 
     def test_no_active_canvas_content(self):
         """Semi-static prompt must not contain active canvas content."""
@@ -476,10 +476,25 @@ class BuildDynamicContextTests(TestCase):
             title = "My Draft"
             content = "Hello world"
 
-        result = build_dynamic_context(active_canvas=FakeCanvas())
+        result = build_dynamic_context(active_canvases=[FakeCanvas()])
         self.assertIn("Active Canvas Content", result)
         self.assertIn("My Draft", result)
         self.assertIn("Hello world", result)
+
+    def test_multiple_active_canvases(self):
+        class FakeCanvas:
+            def __init__(self, title, content):
+                self.title = title
+                self.content = content
+
+        result = build_dynamic_context(active_canvases=[
+            FakeCanvas("Draft A", "Content A"),
+            FakeCanvas("Draft B", "Content B"),
+        ])
+        self.assertIn("Draft A", result)
+        self.assertIn("Content A", result)
+        self.assertIn("Draft B", result)
+        self.assertIn("Content B", result)
 
     def test_single_canvas_content(self):
         """Old single-canvas API via 'canvas' param."""

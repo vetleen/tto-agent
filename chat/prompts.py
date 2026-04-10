@@ -260,13 +260,14 @@ as a starting point.
 
     # -- Canvas metadata & usage instructions --
     if canvases:
-        prompt += "\n# Canvas workspace\nYou have a canvas workspace with multiple document tabs. Available canvases:\n"
+        prompt += "\n# Canvas workspace\nYou have a canvas workspace with document tabs. Active canvases (marked below) have their full content in your context.\n"
         for c in canvases:
-            active_marker = " ← active" if c.get("is_active") else ""
+            active_marker = " ← in context" if c.get("is_active") else ""
             prompt += f'- **{c["title"]}** ({c["chars"]} chars){active_marker}\n'
         prompt += """\
 \nUse `write_canvas(title="...", content="...")` to create a new canvas tab or rewrite an existing one.
-Use `edit_canvas(canvas_name="...", edits=[...])` to make targeted edits. When canvas_name is omitted, the active canvas is used.
+Use `edit_canvas(canvas_name="...", edits=[...])` to make targeted edits. When canvas_name is omitted, the most recently activated canvas is used.
+Use `active_canvas(canvas_names=["..."])` to choose which canvases (up to 3) are in your context.
 After using canvas tools, don't reproduce the content in chat.
 """
     elif canvas:
@@ -297,6 +298,7 @@ After using either canvas tool, do not repeat or reproduce the generated text in
 def build_dynamic_context(
     *,
     doc_context: dict[str, Any] | None = None,
+    active_canvases: list[Any] | None = None,
     active_canvas: Any = None,
     canvas: Any = None,
     tasks: list[dict] | None = None,
@@ -358,17 +360,14 @@ def build_dynamic_context(
     elif data_rooms:
         parts.append("# Retrieved Documents\nThe attached data rooms have no documents uploaded yet.")
 
-    # -- Active canvas content --
-    if active_canvas:
-        parts.append(
-            f'# Active Canvas Content: "{active_canvas.title}"\n'
-            f"```markdown\n{active_canvas.content}\n```"
-        )
-    elif canvas:
-        parts.append(
-            f'# Active Canvas Content: "{canvas.title}"\n'
-            f"```markdown\n{canvas.content}\n```"
-        )
+    # -- Active canvas content (up to 3) --
+    canvases_to_inject = active_canvases or ([active_canvas] if active_canvas else [canvas] if canvas else [])
+    for ac in canvases_to_inject:
+        if ac:
+            parts.append(
+                f'# Active Canvas Content: "{ac.title}"\n'
+                f"```markdown\n{ac.content}\n```"
+            )
 
     # -- Current task plan status --
     if tasks:

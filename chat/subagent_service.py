@@ -33,7 +33,7 @@ def resolve_subagent_tools(
     - Removes sub-agent tools (prevents recursion)
     - Removes document tools if no data rooms attached
     """
-    excluded = {"read_canvas", "write_canvas", "edit_canvas", "create_subagent"}
+    excluded = {"active_canvas", "write_canvas", "edit_canvas", "create_subagent"}
     tools = [t for t in prefs.allowed_tools if t not in excluded]
 
     if not data_room_ids:

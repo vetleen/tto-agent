@@ -172,8 +172,11 @@ class SaveCanvasToSkillFieldToolTests(TestCase):
         from chat.models import ChatCanvas, ChatThread
 
         self.thread = ChatThread.objects.create(created_by=self.user)
+        from django.utils import timezone
+
         self.canvas = ChatCanvas.objects.create(
             thread=self.thread, title="Draft", content="Canvas content here.",
+            is_active=True, last_activated_at=timezone.now(),
         )
         self.thread.active_canvas = self.canvas
         self.thread.save(update_fields=["active_canvas"])
@@ -243,14 +246,15 @@ class ShowSkillFieldInCanvasToolTests(TestCase):
     def test_show_instructions(self):
         result = json.loads(self.tool._run(skill_slug="show-skill", field_name="instructions"))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["content"], "Skill instructions here.")
         self.assertIn("title", result)
-        self.assertIn("accepted_content", result)
+        self.assertNotIn("content", result)
+        self.assertNotIn("accepted_content", result)
 
     def test_show_template(self):
         result = json.loads(self.tool._run(skill_slug="show-skill", field_name="My Template"))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["content"], "Template content.")
+        self.assertIn("title", result)
+        self.assertNotIn("content", result)
 
     def test_nonexistent_template(self):
         result = json.loads(self.tool._run(skill_slug="show-skill", field_name="No Such"))
@@ -389,8 +393,8 @@ class LoadTemplateToCanvasToolTests(TestCase):
         result = json.loads(self.tool._run(template_name="Claim Template"))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["title"], "Claim Template")
-        self.assertIn("step one", result["content"])
-        self.assertIn("accepted_content", result)
+        self.assertNotIn("content", result)
+        self.assertNotIn("accepted_content", result)
 
         # Verify canvas was created
         from chat.models import ChatCanvas

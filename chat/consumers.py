@@ -751,7 +751,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
             dynamic_context = build_dynamic_context(
                 doc_context=doc_context,
-                active_canvas=canvases_info["active_canvas"] if canvases_info else None,
+                active_canvases=canvases_info["active_canvases"] if canvases_info else None,
                 tasks=tasks,
                 subagent_runs=subagent_runs if subagent_runs else None,
                 history_meta=meta,
@@ -979,18 +979,33 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     if tool_name in ("write_canvas", "edit_canvas", "show_skill_field_in_canvas", "load_template_to_canvas"):
                         try:
                             result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok" and result.get("canvas_id"):
+                                canvas_id = result["canvas_id"]
+                                self._modified_canvas_ids.add(canvas_id)
+                                canvas = await database_sync_to_async(self._resolve_canvas_id)(
+                                    str(thread.id), canvas_id,
+                                )
+                                if canvas:
+                                    accepted = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else None
+                                    canvas_event = {
+                                        "event_type": "canvas.updated",
+                                        "title": canvas.title,
+                                        "content": canvas.content,
+                                        "canvas_id": canvas_id,
+                                    }
+                                    if accepted is not None:
+                                        canvas_event["accepted_content"] = accepted
+                                    await self.send(text_data=json.dumps(canvas_event))
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    if tool_name == "active_canvas":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
-                                canvas_event = {
-                                    "event_type": "canvas.updated",
-                                    "title": result.get("title", ""),
-                                    "content": result.get("content", ""),
-                                }
-                                if "accepted_content" in result:
-                                    canvas_event["accepted_content"] = result["accepted_content"]
-                                if "canvas_id" in result:
-                                    canvas_event["canvas_id"] = result["canvas_id"]
-                                    self._modified_canvas_ids.add(result["canvas_id"])
-                                await self.send(text_data=json.dumps(canvas_event))
+                                await self.send(text_data=json.dumps({
+                                    "event_type": "canvases.active_changed",
+                                    "activated": result.get("activated", []),
+                                }))
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     # Intercept task tool results and broadcast tasks.updated
@@ -1518,6 +1533,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _get_canvases_for_prompt(self, thread_id):
         """Load canvases info for the system prompt."""
         from chat.models import ChatCanvas, ChatThread
+
+        from chat.services import MAX_ACTIVE_CANVASES
+
         try:
             thread = ChatThread.objects.get(pk=thread_id, created_by=self.user)
         except ChatThread.DoesNotExist:
@@ -1529,20 +1547,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         if not canvases:
             return None
-        active_id = thread.active_canvas_id
-        active_canvas = None
-        if active_id:
-            active_canvas = next((c for c in canvases if c.pk == active_id), None)
-        if not active_canvas:
-            active_canvas = canvases[0]
+
+        active_canvases = [c for c in canvases if c.is_active]
+        if not active_canvases:
+            active_canvases = sorted(canvases, key=lambda c: c.updated_at, reverse=True)[:MAX_ACTIVE_CANVASES]
+
+        active_pks = {c.pk for c in active_canvases}
         canvases_info = []
         for c in canvases:
             canvases_info.append({
                 "title": c.title,
                 "chars": len(c.content),
-                "is_active": c.pk == active_canvas.pk,
+                "is_active": c.pk in active_pks,
             })
-        return {"canvases": canvases_info, "active_canvas": active_canvas}
+        return {"canvases": canvases_info, "active_canvases": active_canvases}
 
     def _resolve_canvas_id(self, thread_id, canvas_id=None):
         """Resolve a canvas by ID or fall back to active canvas. Sync helper."""

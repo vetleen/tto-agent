@@ -9,9 +9,13 @@ from pydantic import BaseModel, Field
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 
-class ReadCanvasInput(ReasonBaseModel):
-    canvas_name: str = Field(
-        description="Title of the canvas to read."
+class ActiveCanvasInput(ReasonBaseModel):
+    canvas_names: list[str] = Field(
+        description=(
+            "List of canvas titles (1-3) to make active. All other canvases "
+            "will be deactivated. Active canvases have their full content "
+            "included in your context."
+        ),
     )
 
 
@@ -44,38 +48,42 @@ class EditCanvasInput(ReasonBaseModel):
     )
 
 
-class ReadCanvasTool(ContextAwareTool):
-    """Read the full content of a canvas in this thread by title."""
+class ActiveCanvasTool(ContextAwareTool):
+    """Set which canvases are active (visible in your context)."""
 
-    name: str = "read_canvas"
+    name: str = "active_canvas"
     description: str = (
-        "Read the full content of a canvas in this thread by title. Use this "
-        "to retrieve the text of a canvas that is not currently active — for "
-        "example a transcript, source document, or earlier draft sitting in "
-        "another tab. The content is returned in the tool result and stays "
-        "available in the conversation context for follow-up turns. Only the "
-        "active canvas is included in your prompt automatically; use this "
-        "tool whenever you need to look at any other canvas."
+        "Set which canvases are active. Active canvases have their full "
+        "content included in your prompt context (up to 3). When called, "
+        "ALL existing active canvases are deactivated, then ONLY the listed "
+        "ones are activated. Use this when you need to bring specific "
+        "canvases into your working context — for example, to compare two "
+        "documents or to reference a source while editing another."
     )
-    args_schema: type[BaseModel] = ReadCanvasInput
+    args_schema: type[BaseModel] = ActiveCanvasInput
 
-    def _run(self, canvas_name: str, **kwargs) -> str:
-        from chat.services import resolve_canvas
+    def _run(self, canvas_names: list[str], **kwargs) -> str:
+        from chat.services import MAX_ACTIVE_CANVASES, set_active_canvases
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
-        canvas, err = resolve_canvas(thread_id, canvas_name)
-        if err:
-            return json.dumps({"status": "error", "message": err})
+        if len(canvas_names) > MAX_ACTIVE_CANVASES:
+            return json.dumps({
+                "status": "error",
+                "message": f"You can activate at most {MAX_ACTIVE_CANVASES} canvases at a time.",
+            })
 
-        return json.dumps({
+        activated, errors = set_active_canvases(thread_id, canvas_names)
+
+        result = {
             "status": "ok",
-            "title": canvas.title,
-            "content": canvas.content,
-            "canvas_id": str(canvas.pk),
-        })
+            "activated": [{"title": c.title, "canvas_id": str(c.pk)} for c in activated],
+        }
+        if errors:
+            result["errors"] = errors
+        return json.dumps(result)
 
 
 class WriteCanvasTool(ContextAwareTool):
@@ -96,8 +104,8 @@ class WriteCanvasTool(ContextAwareTool):
         from chat.services import (
             CANVAS_MAX_CHARS,
             MAX_CANVASES_PER_THREAD,
+            activate_canvas,
             create_canvas_checkpoint,
-            set_active_canvas,
         )
 
         thread_id = self.context.conversation_id if self.context else None
@@ -145,13 +153,10 @@ class WriteCanvasTool(ContextAwareTool):
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
 
-        set_active_canvas(thread_id, canvas)
+        activate_canvas(thread_id, canvas)
 
-        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
         return json.dumps({
-            "status": "ok", "title": title, "content": content,
-            "accepted_content": accepted_content,
-            "canvas_id": str(canvas.pk),
+            "status": "ok", "title": canvas.title, "canvas_id": str(canvas.pk),
         })
 
 
@@ -206,7 +211,7 @@ class EditCanvasTool(ContextAwareTool):
             else:
                 failed.append({"old_text": old_text[:80], "error": "Text not found in document."})
 
-        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
+        from chat.services import CANVAS_MAX_CHARS, activate_canvas, create_canvas_checkpoint
 
         truncated = len(content) > CANVAS_MAX_CHARS
         if truncated:
@@ -216,20 +221,17 @@ class EditCanvasTool(ContextAwareTool):
         canvas.save(update_fields=["content", "updated_at"])
 
         if applied > 0:
+            activate_canvas(thread_id, canvas)
             create_canvas_checkpoint(
                 canvas, source="ai_edit",
                 description="Edited %d section(s)" % applied,
             )
-
-        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else ""
 
         result = {
             "status": "ok",
             "applied": applied,
             "failed": failed,
             "title": canvas.title,
-            "content": content,
-            "accepted_content": accepted_content,
             "canvas_id": str(canvas.pk),
         }
         if truncated:
@@ -239,6 +241,6 @@ class EditCanvasTool(ContextAwareTool):
 
 # Register on import
 _registry = get_tool_registry()
-_registry.register_tool(ReadCanvasTool())
+_registry.register_tool(ActiveCanvasTool())
 _registry.register_tool(WriteCanvasTool())
 _registry.register_tool(EditCanvasTool())

@@ -172,6 +172,8 @@ class ChatCanvas(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    is_active = models.BooleanField(default=False)
+    last_activated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -183,7 +185,10 @@ class ChatCanvas(models.Model):
                 name="unique_canvas_title_per_thread",
             ),
         ]
-        indexes = [models.Index(fields=["thread", "created_at"])]
+        indexes = [
+            models.Index(fields=["thread", "created_at"]),
+            models.Index(fields=["thread", "is_active", "-last_activated_at"]),
+        ]
 
     def __str__(self):
         return f"Canvas for thread {self.thread_id}: {self.title}"
