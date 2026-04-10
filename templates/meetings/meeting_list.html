@@ -48,7 +48,7 @@
           <button type="button" class="rename-mtg-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                   data-rename-modal="rename-mtg-modal"
                   data-action="{% url 'meeting_rename' meeting_uuid=m.uuid %}"
-                  data-name="{{ m.name|escapejs }}">
+                  data-name="{{ m.name }}">
             Rename
           </button>
           <form method="post" action="{% url 'meeting_archive' meeting_uuid=m.uuid %}" class="p-0">
