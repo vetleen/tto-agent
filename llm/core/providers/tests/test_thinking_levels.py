@@ -141,7 +141,7 @@ class GeminiThinkingLevelTests(TestCase):
         model._get_streaming_client(request)
         mock_create.assert_called_once()
         call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking"]["thinking_budget"], 8_192)
+        self.assertEqual(call_kwargs["thinking_budget"], 8_192)
         self.assertTrue(call_kwargs["include_thoughts"])
 
     def test_non_thinking_model_ignores_level(self):
@@ -157,7 +157,7 @@ class GeminiThinkingLevelTests(TestCase):
         request = _make_request("high")
         model._get_streaming_client(request)
         call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking"]["thinking_budget"], 24_576)
+        self.assertEqual(call_kwargs["thinking_budget"], 24_576)
 
     @patch("llm.core.providers.gemini.create_variant_client")
     def test_fallback_on_create_failure(self, mock_create):

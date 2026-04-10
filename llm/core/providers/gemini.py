@@ -45,7 +45,7 @@ class GeminiChatModel(BaseLangChainChatModel):
                 client = create_variant_client(
                     self._api_model,
                     provider="google_genai",
-                    thinking={"thinking_budget": budget},
+                    thinking_budget=budget,
                     include_thoughts=True,
                 )
             except Exception:
