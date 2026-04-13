@@ -1,6 +1,6 @@
 """Unit tests for meetings.services.audio_transcription.
 
-Covers the prompt builder, the overlap-aware audio splitter (with pydub
+Covers the prompt builder, the overlap-aware audio splitter (with ffmpeg
 mocked), the fuzzy transcript stitcher, and the top-level orchestrator
 that drives the upload-path Celery task. The shared TranscriptionService
 is always mocked here — its own behaviour is tested in
@@ -8,6 +8,7 @@ is always mocked here — its own behaviour is tested in
 """
 from __future__ import annotations
 
+import contextlib
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -89,42 +90,36 @@ class BuildTranscriptionPromptTests(TestCase):
 # ---------------------------------------------------------------------------
 
 
-class FakeAudio:
-    """Minimal pydub.AudioSegment stand-in."""
-
-    def __init__(self, total_ms: int):
-        self.total_ms = total_ms
-
-    def __len__(self):
-        return self.total_ms
-
-    def __getitem__(self, item):
-        # Slicing returns another FakeAudio whose length matches the slice.
-        if isinstance(item, slice):
-            start = item.start or 0
-            stop = item.stop if item.stop is not None else self.total_ms
-            return FakeAudio(max(0, min(stop, self.total_ms) - max(0, start)))
-        raise TypeError("FakeAudio only supports slicing")
-
-    def export(self, path, format="mp3"):
-        # Write a tiny placeholder so .stat().st_size > 0 but well under any limit.
-        with open(path, "wb") as f:
-            f.write(b"\x00" * 32)
+def _fake_extract(file_path, start_ms, end_ms, index, *, output_prefix="chunk", timeout=120):
+    """Create a tiny temp file simulating ffmpeg chunk output."""
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".mp3", delete=False, prefix=f"{output_prefix}{index}_",
+    )
+    tmp.write(b"\x00" * 32)
+    tmp.close()
+    return Path(tmp.name)
 
 
-def _patch_pydub(total_ms: int):
-    """Patch pydub.AudioSegment.from_file to return a FakeAudio of the given length."""
-    fake = FakeAudio(total_ms)
-    pydub_mod = MagicMock()
-    pydub_mod.AudioSegment.from_file.return_value = fake
-    return patch.dict("sys.modules", {"pydub": pydub_mod})
+def _patch_audio_helpers(total_ms: int):
+    """Context manager that mocks ffprobe/ffmpeg helpers for splitter tests."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(
+        patch("llm.service._audio_subprocess.ffmpeg_available", return_value=True)
+    )
+    stack.enter_context(
+        patch("llm.service._audio_subprocess.ffprobe_duration_ms", return_value=total_ms)
+    )
+    stack.enter_context(
+        patch("llm.service._audio_subprocess.ffmpeg_extract_chunk", side_effect=_fake_extract)
+    )
+    return stack
 
 
 class SplitAudioWithOverlapTests(TestCase):
     """Splitter tests use FakeAudio to avoid touching real audio files."""
 
     def test_short_file_single_chunk_no_overlap(self):
-        with _patch_pydub(total_ms=60_000):  # 60 s
+        with _patch_audio_helpers(total_ms=60_000):  # 60 s
             specs = split_audio_with_overlap(
                 Path("/fake.mp3"),
                 target_chunk_seconds=900,
@@ -142,7 +137,7 @@ class SplitAudioWithOverlapTests(TestCase):
         # 2 * target = 1800 s. We expect 2 chunks; the second should start
         # at 900_000 - 15_000 = 885_000 ms (15 s leading overlap).
         total_ms = 1_800_000
-        with _patch_pydub(total_ms=total_ms):
+        with _patch_audio_helpers(total_ms=total_ms):
             specs = split_audio_with_overlap(
                 Path("/fake.mp3"),
                 target_chunk_seconds=900,
@@ -163,7 +158,7 @@ class SplitAudioWithOverlapTests(TestCase):
     def test_four_chunks_for_3_5x_target(self):
         # 3.5 * target = 3150 s -> ceil(3150/900) = 4 chunks
         total_ms = 3_150_000
-        with _patch_pydub(total_ms=total_ms):
+        with _patch_audio_helpers(total_ms=total_ms):
             specs = split_audio_with_overlap(
                 Path("/fake.mp3"),
                 target_chunk_seconds=900,
@@ -204,23 +199,15 @@ class SplitAudioWithOverlapTests(TestCase):
                 max_seconds=1400,
             )
 
-    def test_ffprobe_json_error_falls_back_to_single_chunk(self):
-        """When ffprobe returns empty output, AudioSegment.from_file raises
-        JSONDecodeError. The splitter should fall back to a single chunk
-        pointing at the original file instead of crashing."""
-        import json
-
-        pydub_mod = MagicMock()
-        pydub_mod.AudioSegment.from_file.side_effect = json.JSONDecodeError(
-            "Expecting value", "", 0
-        )
-
+    def test_ffprobe_failure_falls_back_to_single_chunk(self):
+        """When ffprobe cannot determine duration, the splitter should fall
+        back to a single chunk pointing at the original file."""
         with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
             f.write(b"\x00" * 1024)
             tmp = Path(f.name)
         try:
-            with patch.dict("sys.modules", {"pydub": pydub_mod}), \
-                 patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+            with patch("llm.service._audio_subprocess.ffmpeg_available", return_value=True), \
+                 patch("llm.service._audio_subprocess.ffprobe_duration_ms", return_value=None):
                 specs = split_audio_with_overlap(
                     tmp,
                     target_chunk_seconds=900,

@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import logging
 import math
-import shutil
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -328,8 +326,9 @@ def _extract_transcription_usage(
 # ---------------------------------------------------------------------------
 
 def _ffmpeg_available() -> bool:
-    """Return True if ffmpeg is on PATH."""
-    return shutil.which("ffmpeg") is not None
+    """Return True if ffmpeg and ffprobe are on PATH."""
+    from llm.service._audio_subprocess import ffmpeg_available
+    return ffmpeg_available()
 
 
 def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
@@ -339,12 +338,11 @@ def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
     if not _ffmpeg_available():
         return False
     try:
-        from pydub import AudioSegment
-    except ImportError:
-        return False
-    try:
-        audio = AudioSegment.from_file(file_path)
-        return len(audio) > max_seconds * 1000
+        from llm.service._audio_subprocess import ffprobe_duration_ms
+        duration = ffprobe_duration_ms(file_path)
+        if duration is None:
+            return False
+        return duration > max_seconds * 1000
     except Exception:
         return False
 
@@ -352,7 +350,7 @@ def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
 def _get_audio_duration_seconds(file_path: Path) -> float:
     """Best-effort audio duration in seconds, used for cost tracking.
 
-    Returns 0.0 if pydub/ffmpeg is unavailable or the file cannot be parsed.
+    Returns 0.0 if ffprobe is unavailable or the file cannot be parsed.
     We accept a 0.0 fallback because the alternative (failing the whole
     transcription because we can't compute cost) is worse than logging a $0
     cost.
@@ -360,12 +358,11 @@ def _get_audio_duration_seconds(file_path: Path) -> float:
     if not _ffmpeg_available():
         return 0.0
     try:
-        from pydub import AudioSegment
-    except ImportError:
-        return 0.0
-    try:
-        audio = AudioSegment.from_file(file_path)
-        return len(audio) / 1000.0
+        from llm.service._audio_subprocess import ffprobe_duration_ms
+        duration_ms = ffprobe_duration_ms(file_path)
+        if duration_ms is None:
+            return 0.0
+        return duration_ms / 1000.0
     except Exception:
         logger.info("could not compute audio duration for %s", file_path)
         return 0.0
@@ -380,23 +377,26 @@ def _split_audio_file(
 
     Returns a list of Path objects to temporary files. Caller must delete them.
     """
-    try:
-        from pydub import AudioSegment
-    except ImportError:
-        raise RuntimeError(
-            "pydub is required for splitting long or large audio files. "
-            "Install it with: pip install pydub"
-        )
+    from llm.service._audio_subprocess import (
+        ffmpeg_available,
+        ffmpeg_extract_chunk,
+        ffprobe_duration_ms,
+    )
 
-    if not _ffmpeg_available():
+    if not ffmpeg_available():
         raise RuntimeError(
-            "ffmpeg is required for splitting large audio files but is not "
-            "installed. Install ffmpeg to enable splitting files that exceed "
+            "ffmpeg/ffprobe is required for splitting large audio files but is "
+            "not installed. Install ffmpeg to enable splitting files that exceed "
             f"the {max_segment_bytes / 1_000_000:.0f} MB API limit."
         )
 
-    audio = AudioSegment.from_file(file_path)
-    total_ms = len(audio)
+    duration_ms = ffprobe_duration_ms(file_path)
+    if duration_ms is None or duration_ms <= 0:
+        raise RuntimeError(
+            f"Could not determine audio duration for {file_path}. "
+            "The file may be corrupted or in an unsupported format."
+        )
+    total_ms = duration_ms
 
     file_size = file_path.stat().st_size
     safe_limit = int(max_segment_bytes * 0.8)
@@ -412,18 +412,19 @@ def _split_audio_file(
     segment_ms = math.ceil(total_ms / num_segments)
 
     segment_paths: list[Path] = []
-    for i in range(num_segments):
-        start = i * segment_ms
-        end = min((i + 1) * segment_ms, total_ms)
-        chunk = audio[start:end]
-
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".mp3", delete=False, prefix=f"transcribe_seg{i}_"
-        )
-        tmp.close()
-        seg_path = Path(tmp.name)
-        chunk.export(str(seg_path), format="mp3")
-        segment_paths.append(seg_path)
+    try:
+        for i in range(num_segments):
+            start = i * segment_ms
+            end = min((i + 1) * segment_ms, total_ms)
+            seg_path = ffmpeg_extract_chunk(
+                file_path, start, end, i,
+                output_prefix="transcribe_seg",
+            )
+            segment_paths.append(seg_path)
+    except Exception:
+        for p in segment_paths:
+            p.unlink(missing_ok=True)
+        raise
 
     return segment_paths
 

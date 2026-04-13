@@ -24,11 +24,8 @@ transcribed chunk.
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 import math
-import shutil
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,19 +156,13 @@ def split_audio_with_overlap(
             f"2 * overlap_seconds ({overlap_seconds * 2})"
         )
 
-    try:
-        from pydub import AudioSegment
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            "pydub is required for upload transcription chunking. "
-            "Install it with: pip install pydub"
-        ) from exc
+    from llm.service._audio_subprocess import (
+        ffmpeg_available,
+        ffmpeg_extract_chunk,
+        ffprobe_duration_ms,
+    )
 
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        # ffmpeg/ffprobe not installed — cannot split or probe audio. Return a
-        # single chunk pointing at the original file and let the API handle it
-        # directly. If the file exceeds the API limits the transcription
-        # service will surface a clear error.
+    if not ffmpeg_available():
         file_size = file_path.stat().st_size
         if file_size > max_bytes:
             raise RuntimeError(
@@ -181,12 +172,10 @@ def split_audio_with_overlap(
             )
         return [ChunkSpec(path=file_path, index=0, start_ms=0, end_ms=0)]
 
-    try:
-        audio = AudioSegment.from_file(file_path)
-    except json.JSONDecodeError:
-        # ffprobe returned empty or invalid output — treat like missing ffmpeg
+    duration_ms = ffprobe_duration_ms(file_path)
+    if duration_ms is None:
         logger.warning(
-            "ffprobe returned invalid output for %s; falling back to single chunk",
+            "ffprobe could not determine duration for %s; falling back to single chunk",
             file_path,
         )
         file_size = file_path.stat().st_size
@@ -197,7 +186,8 @@ def split_audio_with_overlap(
                 f"could not probe the file to split it into smaller chunks."
             )
         return [ChunkSpec(path=file_path, index=0, start_ms=0, end_ms=0)]
-    total_ms = len(audio)
+
+    total_ms = duration_ms
     if total_ms <= 0:
         return []
 
@@ -213,7 +203,11 @@ def split_audio_with_overlap(
 
     # Single-chunk fast path: file fits inside a single API-legal chunk.
     if total_ms <= effective_ms:
-        path = _export_segment(audio, 0, total_ms, 0, max_bytes)
+        path = ffmpeg_extract_chunk(
+            file_path, 0, total_ms, 0,
+            output_prefix="meet_upload_seg",
+        )
+        _validate_chunk_size(path, 0, max_bytes)
         return [ChunkSpec(path=path, index=0, start_ms=0, end_ms=total_ms)]
 
     num_chunks = math.ceil(total_ms / effective_ms)
@@ -225,7 +219,11 @@ def split_audio_with_overlap(
             end = min((i + 1) * effective_ms, total_ms)
             if end <= start:
                 break
-            path = _export_segment(audio, start, end, i, max_bytes)
+            path = ffmpeg_extract_chunk(
+                file_path, start, end, i,
+                output_prefix="meet_upload_seg",
+            )
+            _validate_chunk_size(path, i, max_bytes)
             specs.append(ChunkSpec(path=path, index=i, start_ms=start, end_ms=end))
     except Exception:
         # On failure mid-split, clean up anything we already wrote.
@@ -236,25 +234,15 @@ def split_audio_with_overlap(
     return specs
 
 
-def _export_segment(audio, start_ms: int, end_ms: int, index: int, max_bytes: int) -> Path:
-    """Export an in-memory pydub segment to a temp MP3 and validate its size."""
-    chunk = audio[start_ms:end_ms]
-    tmp = tempfile.NamedTemporaryFile(
-        suffix=".mp3", delete=False, prefix=f"meet_upload_seg{index}_"
-    )
-    tmp.close()
-    seg_path = Path(tmp.name)
-    chunk.export(str(seg_path), format="mp3")
-    size = seg_path.stat().st_size
+def _validate_chunk_size(path: Path, index: int, max_bytes: int) -> None:
+    """Check that an exported chunk does not exceed the safe byte limit."""
+    size = path.stat().st_size
     safe_bytes = int(max_bytes * 0.8)
     if size > safe_bytes:
-        # Defensive — at 128 kbps mp3 a 15 min chunk is ~14 MB, comfortably
-        # under 20 MB. If we ever hit this, the caller's chunking math is wrong.
-        seg_path.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
         raise ValueError(
             f"Audio chunk {index} too large after export: {size} bytes > {safe_bytes} safe limit"
         )
-    return seg_path
 
 
 # ---------------------------------------------------------------------------

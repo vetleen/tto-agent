@@ -42,8 +42,6 @@ markdownify
 flashrank>=0.2.0
 chardet>=5.0.0,<6.0.0
 extract-msg>=0.48.0
-pydub>=0.25.1
-audioop-lts>=0.2.1  # audioop backport for Python 3.13+, required by pydub
 sentry-sdk[django]>=2.29.0
 Pillow>=11.0.0
 django-storages[s3]==1.14.4
