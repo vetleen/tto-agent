@@ -17,8 +17,10 @@ from django.test import TestCase
 
 from meetings.models import Meeting
 from meetings.services.audio_transcription import (
+    AUDIO_SPLIT_TIMEOUT_SECONDS,
     CHARS_PER_OVERLAP_SECOND,
     DEFAULT_OVERLAP_SECONDS,
+    AudioSplitTimeoutError,
     ChunkSpec,
     build_transcription_prompt,
     orchestrate_upload_transcription,
@@ -613,3 +615,73 @@ class OrchestratorTests(TestCase):
         self.assertIn("second chunk content after retry", m.transcript)
         # We slept for the first backoff entry.
         self.assertTrue(mock_sleep.called)
+
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_split_duration_is_logged(self, mock_split):
+        """The orchestrator logs the split duration at INFO level."""
+        spec = _make_chunk_spec(0)
+        mock_split.return_value = [spec]
+
+        service = MagicMock()
+        service.transcribe.return_value = _FakeResult("ok")
+
+        with self.assertLogs("meetings.services.audio_transcription", level="INFO") as cm:
+            orchestrate_upload_transcription(
+                meeting_id=self.meeting.pk,
+                temp_path=Path("/fake.mp3"),
+                model_id="openai/gpt-4o-mini-transcribe",
+                user_id=self.user.pk,
+                service=service,
+            )
+
+        split_log = [line for line in cm.output if "audio split completed" in line]
+        self.assertEqual(len(split_log), 1)
+        self.assertIn("1 chunks", split_log[0])
+
+    @patch("meetings.services.audio_transcription.AUDIO_SPLIT_TIMEOUT_SECONDS", 0.1)
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_split_timeout_raises_error(self, mock_split):
+        """When the split hangs beyond the timeout, AudioSplitTimeoutError is raised."""
+        import threading
+
+        def hang_forever(*args, **kwargs):
+            threading.Event().wait(timeout=10)
+            return []
+
+        mock_split.side_effect = hang_forever
+
+        with self.assertRaises(AudioSplitTimeoutError) as ctx:
+            orchestrate_upload_transcription(
+                meeting_id=self.meeting.pk,
+                temp_path=Path("/fake.mp3"),
+                model_id="openai/gpt-4o-mini-transcribe",
+                user_id=self.user.pk,
+                service=MagicMock(),
+            )
+
+        self.assertIn("timed out", str(ctx.exception))
+
+    @patch("meetings.services.audio_transcription.AUDIO_SPLIT_TIMEOUT_SECONDS", 0.1)
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_split_timeout_logs_error(self, mock_split):
+        """The orchestrator logs an ERROR when the split times out."""
+        import threading
+
+        def hang_forever(*args, **kwargs):
+            threading.Event().wait(timeout=10)
+            return []
+
+        mock_split.side_effect = hang_forever
+
+        with self.assertLogs("meetings.services.audio_transcription", level="ERROR") as cm:
+            with self.assertRaises(AudioSplitTimeoutError):
+                orchestrate_upload_transcription(
+                    meeting_id=self.meeting.pk,
+                    temp_path=Path("/fake.mp3"),
+                    model_id="openai/gpt-4o-mini-transcribe",
+                    user_id=self.user.pk,
+                    service=MagicMock(),
+                )
+
+        timeout_log = [line for line in cm.output if "audio split timed out" in line]
+        self.assertEqual(len(timeout_log), 1)

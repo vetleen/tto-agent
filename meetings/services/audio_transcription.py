@@ -55,6 +55,11 @@ DEFAULT_PRIOR_TAIL_CHARS = 800       # transcript tail length used in prompt car
 LIVE_PROMPT_TAIL_CHARS = 1200        # tail length for live-path prompt seeding
 TRANSIENT_RETRY_BACKOFFS = (1.0, 3.0)  # per-chunk transient retry sleep schedule
 CHARS_PER_OVERLAP_SECOND = 15        # ~150 wpm * ~6 chars/word; used by stitcher
+AUDIO_SPLIT_TIMEOUT_SECONDS = 120    # safety net: kill the split if ffmpeg hangs
+
+
+class AudioSplitTimeoutError(RuntimeError):
+    """Raised when the audio splitting operation exceeds AUDIO_SPLIT_TIMEOUT_SECONDS."""
 
 
 @dataclass
@@ -376,12 +381,37 @@ def orchestrate_upload_transcription(
 
     # Build the chunks before touching any meeting state — if pydub blows up
     # we don't want partially-set progress fields lying around.
-    chunk_specs = split_audio_with_overlap(
-        temp_path,
-        target_chunk_seconds=target_chunk_seconds,
-        overlap_seconds=overlap_seconds,
-        max_bytes=info.max_file_size_bytes,
-        max_seconds=info.max_duration_seconds,
+    # Wrap in a timeout so a hung ffmpeg process cannot burn the entire Celery
+    # time_limit (30 min). The timeout is deliberately generous — normal splits
+    # finish in single-digit seconds even for hour-long files.
+    import concurrent.futures
+
+    t0 = time.perf_counter()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                split_audio_with_overlap,
+                temp_path,
+                target_chunk_seconds=target_chunk_seconds,
+                overlap_seconds=overlap_seconds,
+                max_bytes=info.max_file_size_bytes,
+                max_seconds=info.max_duration_seconds,
+            )
+            chunk_specs = future.result(timeout=AUDIO_SPLIT_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        split_duration = time.perf_counter() - t0
+        logger.error(
+            "audio split timed out after %.1fs (limit=%ds) for meeting=%s file=%s",
+            split_duration, AUDIO_SPLIT_TIMEOUT_SECONDS, meeting_id, temp_path,
+        )
+        raise AudioSplitTimeoutError(
+            f"Audio splitting timed out after {AUDIO_SPLIT_TIMEOUT_SECONDS}s. "
+            f"The file may be corrupted or too complex for ffmpeg to process."
+        )
+    split_duration = time.perf_counter() - t0
+    logger.info(
+        "audio split completed in %.1fs (%d chunks) for meeting=%s file=%s",
+        split_duration, len(chunk_specs), meeting_id, temp_path,
     )
 
     if not chunk_specs:
