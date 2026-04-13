@@ -59,9 +59,10 @@
 
     <form id="upload-form" method="post" action="{% url 'meeting_upload' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
       {% csrf_token %}
-      <label data-disable-while-busy class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer">
-        {% if meeting.transcript %}Add to transcript from a file{% else %}Upload audio or transcript{% endif %}
-        <input type="file" name="file" class="hidden" accept=".txt,.md,text/plain,text/markdown,audio/*,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg" onchange="this.form.submit()">
+      <label id="upload-label" data-disable-while-busy class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer inline-flex items-center gap-2">
+        <svg id="upload-spinner" class="hidden animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+        <span id="upload-label-text">{% if meeting.transcript %}Add to transcript from a file{% else %}Upload audio or transcript{% endif %}</span>
+        <input type="file" name="file" class="hidden" accept=".txt,.md,text/plain,text/markdown,audio/*,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg" onchange="document.getElementById('upload-spinner').classList.remove('hidden');document.getElementById('upload-label-text').textContent='Uploading\u2026';document.getElementById('upload-label').classList.add('pointer-events-none','opacity-60');this.form.submit()">
       </label>
     </form>
 
