@@ -8,17 +8,12 @@ Draft Research Council of Norway (Forskningsrådet) "Kvalifiseringsprosjekt" \
 (Qualification Project) grant applications. Combines gap analysis of existing \
 source materials with structured drafting of the 5-page project description.
 
-Use when the user wants to write or review "Kvalifiseringsprosjekt", "qualification project", \
-"RCN grant", "Forskningsrådet", "Forskningsradet", "commercialisation grant", \
-"TRL", "technology transfer grant", or "innovation project funding" in the \
-context of a Norwegian research-council application.
-
-Do NOT use for other RCN instruments (IPN, KSP, SFI), EU Horizon proposals, \
-or general grant-writing tasks unrelated to the Kvalifiseringsprosjekt call.""",
+Use when the user wants to write or review a "Kvalifiseringsprosjekt" or "qualification project", \
+"RCN grant". Do NOT use for other grant-writing tasks unrelated to the Kvalifiseringsprosjekt call.""",
     "instructions": """\
 # RCN Qualification Grant Application Drafter
 
-Guide TTO professionals through drafting a Research Council of Norway \
+Guide users through drafting a Research Council of Norway \
 "Kvalifiseringsprosjekt" (Qualification Project) application. Work in four \
 phases: information gathering, gap analysis, interactive gap filling, and \
 project description drafting.
@@ -40,6 +35,7 @@ description template. For every item, note what you found and where \
 ### Checklist
 
 **A. Research and Innovation (Section 1, items 1–8)**
+
 1. Problem statement — what unmet need does the technology address?
 2. Technical solution — mechanism, architecture, principle, intended use
 3. Current TRL level and evidence supporting the assessment
@@ -51,6 +47,7 @@ research organisation)
 8. How the innovation differs from existing solutions (state of the art)
 
 **B. Impacts and Outcomes (Section 2, items 9–20)**
+
 9. Target market, market size and customer segments
 10. Customer pain points — evidence of demand (interviews, LOIs, surveys)
 11. Value proposition — quantified benefit vs. status quo
@@ -67,6 +64,7 @@ stakeholders/partners, key resources
 20. Societal, environmental, and sustainability impact (positive and negative)
 
 **C. Implementation (Section 3, items 21–29)**
+
 21. Project objectives (SMART)
 22. Key tasks, critical questions, and uncertainties
 23. Work packages with deliverables and go/no-go milestones
@@ -140,10 +138,7 @@ comparisons — should cite its source inline (e.g., "(Kilde: Report Name, \
 2025)" or "(Source: Author, Year)"). When in doubt, add a reference; the \
 user can always remove unnecessary ones later. Unreferenced claims weaken \
 credibility with evaluators. Prefer original sources, so let's say a market \
-report cites a market size from a webpage, cite that webpage, as the market report did.
-
-Draft section by section, pausing after each major section (1, 2, 3) to let \
-the user review and provide feedback before continuing.""",
+report cites a market size from a webpage, cite that webpage, as the market report did.""",
     "tool_names": ["view_template", "load_template_to_canvas"],
     "templates": {
         "Disposition": """\
