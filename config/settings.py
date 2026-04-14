@@ -40,7 +40,21 @@ load_dotenv(BASE_DIR / ".env")
 # Assistant branding
 # ---------------------------------------------------------------------------
 ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Wilfred")
-ASSISTANT_EMOJI = os.environ.get("ASSISTANT_EMOJI", "🤖")
+
+
+def _validate_assistant_emoji(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    # Accept only a short, all-non-ASCII, whitespace-free string.
+    # A single emoji grapheme can be several code points (skin tone, ZWJ
+    # sequences), but should never contain ASCII or whitespace.
+    if len(value) > 16 or any(ch.isascii() or ch.isspace() for ch in value):
+        return ""
+    return value
+
+
+ASSISTANT_EMOJI = _validate_assistant_emoji(os.environ.get("ASSISTANT_EMOJI", "🤖"))
 
 # SECURITY: DEBUG defaults to False. Set DJANGO_DEBUG=True only for local development.
 DEBUG = _get_env_bool(os.environ.get("DJANGO_DEBUG"), False)
