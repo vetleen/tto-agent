@@ -4,6 +4,7 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock
 
+from django.conf import settings
 from django.test import TestCase
 
 from chat.prompts import (
@@ -272,7 +273,7 @@ class BuildStaticSystemPromptTests(TestCase):
 
     def test_contains_identity(self):
         prompt = build_static_system_prompt()
-        self.assertIn("Wilfred", prompt)
+        self.assertIn(settings.ASSISTANT_NAME, prompt)
         self.assertIn("technology transfer office", prompt)
 
     def test_contains_org_name(self):
@@ -611,7 +612,7 @@ class BuildSystemPromptRegressionTests(TestCase):
             has_task_tool=True,
         )
         # Static content
-        self.assertIn("Wilfred", prompt)
+        self.assertIn(settings.ASSISTANT_NAME, prompt)
         self.assertIn("# Task Planning", prompt)
         self.assertIn("Room", prompt)
         # Dynamic content
@@ -621,7 +622,7 @@ class BuildSystemPromptRegressionTests(TestCase):
     def test_wrapper_no_dynamic_content(self):
         """When there's no dynamic content, wrapper returns just static."""
         prompt = build_system_prompt()
-        self.assertIn("Wilfred", prompt)
+        self.assertIn(settings.ASSISTANT_NAME, prompt)
         self.assertNotIn("<context>", prompt)
 
     def test_static_is_stable_across_calls(self):

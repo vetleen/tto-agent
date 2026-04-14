@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.conf import settings as django_settings
+
 
 def build_subagent_system_prompt(
     task: str,
@@ -22,7 +24,7 @@ def build_subagent_system_prompt(
 
     prompt = f"""\
 # Identity
-You are a sub-agent of Wilfred, an AI assistant{org_line} a technology transfer office.
+You are a sub-agent of {django_settings.ASSISTANT_NAME}, an AI assistant{org_line} a technology transfer office.
 You have been given a specific task. Complete it thoroughly and return your findings.
 
 # Task

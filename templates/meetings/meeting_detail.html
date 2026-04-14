@@ -240,7 +240,7 @@
       </button>
       {% endif %}
     </div>
-    <p class="mt-2 text-xs text-body">Tip: keep the raw transcript here, and use Wilfred to create a meeting summary. Then keep that in the data room.</p>
+    <p class="mt-2 text-xs text-body">Tip: keep the raw transcript here, and use {{ assistant_name }} to create a meeting summary. Then keep that in the data room.</p>
 
     {% if saved_doc_groups %}
     <div class="mt-4 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base">
@@ -336,7 +336,7 @@
   {# ----- Wilfred-saved artifacts (minutes/summary/notes) ----- #}
   {% if artifacts %}
   <section class="mb-8">
-    <h2 class="text-sm font-medium text-heading mb-3">Saved by Wilfred</h2>
+    <h2 class="text-sm font-medium text-heading mb-3">Saved by {{ assistant_name }}</h2>
     <ul class="space-y-4">
       {% for art in artifacts %}
       <li class="bg-neutral-primary-soft border border-default rounded-base px-4 py-4">

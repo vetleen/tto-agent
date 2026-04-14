@@ -36,6 +36,12 @@ def _get_env_bool(value: str | None, default: bool = False) -> bool:
 
 load_dotenv(BASE_DIR / ".env")
 
+# ---------------------------------------------------------------------------
+# Assistant branding
+# ---------------------------------------------------------------------------
+ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Wilfred")
+ASSISTANT_EMOJI = os.environ.get("ASSISTANT_EMOJI", "🤖")
+
 # SECURITY: DEBUG defaults to False. Set DJANGO_DEBUG=True only for local development.
 DEBUG = _get_env_bool(os.environ.get("DJANGO_DEBUG"), False)
 

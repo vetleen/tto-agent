@@ -159,7 +159,7 @@
             <div class="flex items-start gap-2.5 opacity-60" data-role="assistant">
               <div class="flex flex-col w-full">
                 <div class="flex items-center space-x-2">
-                  <span class="text-sm font-semibold text-heading">Wilfred</span>
+                  <span class="text-sm font-semibold text-heading">{{ assistant_name }}</span>
                   <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
                 </div>
                 <div class="text-sm text-body/50 italic mt-2">This message was removed by the content safety system.</div>
@@ -197,7 +197,7 @@
             <div class="flex items-start gap-2.5" data-role="assistant">
               <div class="flex flex-col w-full">
                 <div class="flex items-center space-x-2">
-                  <span class="text-sm font-semibold text-heading">Wilfred</span>
+                  <span class="text-sm font-semibold text-heading">{{ assistant_name }}</span>
                   <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
                 </div>
                 <div class="text-sm text-body mt-2 markdown-content">{{ m.content }}</div>
@@ -537,6 +537,7 @@
 (function () {
   const THREAD_ID = "{{ thread.id|default:'' }}";
   const USER_INITIAL = "{{ user.email|first|upper }}";
+  const ASSISTANT_NAME = "{{ assistant_name|escapejs }}";
   const STREAM_TIMEOUT_MS = 660000;
   const CHAT_HOME = "{% url 'chat_home' %}";
   const PENDING_INITIAL_TURN = {{ pending_initial_turn|yesno:"true,false" }};
@@ -1759,7 +1760,7 @@
     const now = new Date();
     const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
     const div = document.createElement("div"); div.className = "flex items-start gap-2.5"; div.setAttribute("data-role", "assistant");
-    div.innerHTML = `<div class="flex flex-col w-full"><div class="flex items-center space-x-2"><span class="text-sm font-semibold text-heading">Wilfred</span><span class="text-sm text-body">${ts}</span></div><div class="thinking-block hidden mt-2"><button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thinking...</span></button><div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto"></div></div><div class="tool-cards mt-1 space-y-1"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-2"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-2 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
+    div.innerHTML = `<div class="flex flex-col w-full"><div class="flex items-center space-x-2"><span class="text-sm font-semibold text-heading">${ASSISTANT_NAME}</span><span class="text-sm text-body">${ts}</span></div><div class="thinking-block hidden mt-2"><button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thinking...</span></button><div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto"></div></div><div class="tool-cards mt-1 space-y-1"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-2"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-2 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
     const toggle = div.querySelector(".thinking-toggle");
     if (toggle) { toggle.addEventListener("click", function() { toggle.closest(".thinking-block").classList.toggle("collapsed"); }); }
     return div;

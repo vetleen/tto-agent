@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from django.conf import settings as django_settings
 from django.utils import timezone
 
 
@@ -36,8 +37,8 @@ def build_static_system_prompt(
     """
     org_line = f" {organization_name}," if organization_name else ""
     prompt = f"""\
-# 🤖 Identity
-- You are Wilfred, a helpful assistant at{org_line} a technology transfer office (TTO).
+# {django_settings.ASSISTANT_EMOJI} Identity
+- You are {django_settings.ASSISTANT_NAME}, a helpful assistant at{org_line} a technology transfer office (TTO).
 
 # General instructions
 - When answering a question, consider planning out your responses into sections for high clarity and exhaustive answers.

@@ -7,6 +7,7 @@ import uuid
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -193,7 +194,7 @@ class ResolveSubagentToolsTests(TestCase):
 class BuildSubagentSystemPromptTests(TestCase):
     def test_contains_identity_and_task(self):
         prompt = build_subagent_system_prompt("Analyze the patent")
-        self.assertIn("sub-agent of Wilfred", prompt)
+        self.assertIn(f"sub-agent of {settings.ASSISTANT_NAME}", prompt)
         self.assertIn("Analyze the patent", prompt)
 
     def test_includes_org_name(self):

@@ -2,6 +2,7 @@
 import json
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -247,7 +248,7 @@ class OrgSettingsAccessTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Wilfred Chat")
+        self.assertContains(response, f"{settings.ASSISTANT_NAME} Chat")
 
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")

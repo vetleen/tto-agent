@@ -1,5 +1,7 @@
 """Skill Creator seed skill definition."""
 
+from django.conf import settings as django_settings
+
 SKILL_CREATOR = {
     "slug": "skill-creator",
     "name": "Skill Creator",
@@ -19,11 +21,11 @@ or optimize a skill description for better activation. Also use \
 when the user indicates that they want to reuse the work process \
 that was just completed, for example by saying "make this a skill", \
 "capture this as a skill", or "turn this into a reusable workflow".""",
-    "instructions": """\
+    "instructions": f"""\
 # Skill Creator
-A meta-skill for building high-quality agent skills for yourself (Wilfred, a Technology Transfer Office - TTO - AI assistant).
+A meta-skill for building high-quality agent skills for yourself ({django_settings.ASSISTANT_NAME}, a Technology Transfer Office - TTO - AI assistant).
 
-## How skills work in Wilfred
+## How skills work in {django_settings.ASSISTANT_NAME}
 
 A skill is a database record with these fields:
 
@@ -203,7 +205,7 @@ Once the user is happy with the drafts:
 Use `list_all_tools` to see every tool that exists. The output is split into
 two groups:
 
-- **Standard tools** — always available to Wilfred (e.g. web search, canvas,
+- **Standard tools** — always available to {django_settings.ASSISTANT_NAME} (e.g. web search, canvas,
   document search, sub-agents). These do **not** need to be attached to a skill.
   Note: Sub-agents (`create_subagent`) are standard tools — use them for parallel research or delegated sub-tasks when designing skills. No need to declare them in `tool_names`.
 
@@ -214,7 +216,7 @@ To discover and attach tools:
 1. Use `list_all_tools` to see both groups
 2. Use `inspect_tool` to read a tool's full description
 3. Discuss with the user which skill-specific tools the skill actually needs
-4. Save the list via `edit_skill`, e.g. `updates={"tool_names": ["view_template", "load_template_to_canvas"]}`
+4. Save the list via `edit_skill`, e.g. `updates={{"tool_names": ["view_template", "load_template_to_canvas"]}}`
 
 ---
 

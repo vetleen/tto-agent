@@ -9,6 +9,8 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from django.conf import settings as django_settings
+
 from accounts.models import Membership, Organization, User, UserSettings
 
 
@@ -213,7 +215,7 @@ def org_settings_page(request):
 
     SECTION_META = {
         "chat": {
-            "label": "Wilfred Chat",
+            "label": f"{django_settings.ASSISTANT_NAME} Chat",
             "description": "Tools available during chat conversations.",
         },
         "document_processing": {
@@ -275,7 +277,6 @@ def org_settings_page(request):
     if not isinstance(org_max_context_tokens, int):
         org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
 
-    from django.conf import settings as django_settings
     from llm.transcription_registry import get_all_transcription_models
 
     system_transcription_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))

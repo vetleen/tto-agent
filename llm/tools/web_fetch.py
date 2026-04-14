@@ -8,9 +8,11 @@ import json
 import logging
 import re
 import socket
+
 from urllib.parse import urlparse
 
 import requests
+from django.conf import settings as django_settings
 from bs4 import BeautifulSoup, Comment
 from pydantic import BaseModel, Field
 
@@ -172,7 +174,7 @@ class WebFetchTool(ContextAwareTool):
                 url,
                 timeout=15,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; WilfredBot/1.0)",
+                    "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 },
                 allow_redirects=False,
@@ -191,7 +193,7 @@ class WebFetchTool(ContextAwareTool):
                     redirect_url,
                     timeout=15,
                     headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; WilfredBot/1.0)",
+                        "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     },
                     allow_redirects=False,

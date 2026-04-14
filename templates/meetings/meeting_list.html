@@ -3,7 +3,7 @@
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-10">
   <h1 class="text-2xl font-semibold text-heading mb-2">Meetings</h1>
-  <p class="text-sm text-body mb-8">Transcribe meetings, then have Wilfred turn them into minutes.</p>
+  <p class="text-sm text-body mb-8">Transcribe meetings, then have {{ assistant_name }} turn them into minutes.</p>
 
   <div class="flex flex-wrap gap-3 mb-16">
     <form method="post" action="{% url 'meeting_create' %}">
