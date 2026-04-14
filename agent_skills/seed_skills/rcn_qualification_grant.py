@@ -225,7 +225,7 @@ project numbers and project types - RCN, others) have led to the results. \
 Summarise prototype data, publications, or prior project results that demonstrate feasibility. \
 Reference publications and project outputs by name/number.\
 Describe why these research results support the feasibility and potential of the innovation.\
-State current TRL and target TRL at project end.
+State current TRL and target TRL at project end.]
 
 ### Level of Innovation
 [Describe the needs or problems that potentially can be solved from the user or \
