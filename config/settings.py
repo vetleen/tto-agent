@@ -359,7 +359,7 @@ if _aws_bucket:
             "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
             "OPTIONS": {
                 "bucket_name": _aws_bucket,
-                "region_name": os.environ.get("AWS_S3_REGION_NAME", "us-east-1"),
+                "region_name": os.environ.get("AWS_S3_REGION_NAME", "eu-north-1"),
                 "location": os.environ.get("AWS_LOCATION", ""),
                 "file_overwrite": False,
                 "default_acl": None,
