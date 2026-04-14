@@ -443,6 +443,28 @@ def orchestrate_upload_transcription(
     running_new_transcript = ""  # only the *new* upload's stitched text
     try:
         for i, spec in enumerate(chunk_specs):
+            # Cancellation check: if the user clicked Stop, the cancel view
+            # flipped status to FAILED. Bail out with the partial transcript
+            # we've stitched so far. We can't interrupt the in-flight chunk,
+            # but we won't start a new one.
+            current_status = Meeting.objects.filter(pk=meeting_id).values_list("status", flat=True).first()
+            if current_status != Meeting.Status.LIVE_TRANSCRIBING:
+                logger.info(
+                    "orchestrator: upload transcription cancelled for meeting=%s after %d/%d chunks",
+                    meeting_id, i, n,
+                )
+                partial_combined = combine_existing_and_new_transcript(
+                    existing_transcript, running_new_transcript,
+                )
+                Meeting.objects.filter(pk=meeting_id).update(
+                    transcript=partial_combined,
+                    transcription_chunks_total=0,
+                    transcription_chunks_done=0,
+                    transcript_updated_at=timezone.now() if partial_combined else None,
+                    updated_at=timezone.now(),
+                )
+                return partial_combined
+
             # Prior tail seeds prompt carryover across chunks. For the first
             # chunk we pull from the existing transcript (if any); for later
             # chunks we pull from the running new transcript. Either way we

@@ -354,6 +354,91 @@ class MeetingTranscriptionProgressTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class MeetingCancelTranscriptionTests(TestCase):
+    """Cancel endpoint for in-flight upload transcriptions."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="cancel@example.com", password="pw")
+        self.other = User.objects.create_user(email="cancel-other@example.com", password="pw")
+        self.meeting = Meeting.objects.create(
+            name="Cancel meeting",
+            slug="m-cancel",
+            created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+            transcript_source=Meeting.TranscriptSource.AUDIO_UPLOAD,
+            transcription_chunks_total=4,
+            transcription_chunks_done=1,
+        )
+
+    def test_cancels_in_flight_upload_transcription(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("meeting_cancel_transcription", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "cancelled"})
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, Meeting.Status.FAILED)
+        self.assertEqual(self.meeting.transcription_error, "Cancelled by user")
+        self.assertIsNotNone(self.meeting.ended_at)
+
+    def test_non_owner_forbidden(self):
+        self.client.force_login(self.other)
+        response = self.client.post(
+            reverse("meeting_cancel_transcription", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 403)
+        self.meeting.refresh_from_db()
+        # Meeting state must not change.
+        self.assertEqual(self.meeting.status, Meeting.Status.LIVE_TRANSCRIBING)
+
+    def test_unknown_uuid_returns_404(self):
+        import uuid as _uuid
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("meeting_cancel_transcription", args=[_uuid.uuid4()])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_rejects_when_not_transcribing(self):
+        self.meeting.status = Meeting.Status.READY
+        self.meeting.save(update_fields=["status"])
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("meeting_cancel_transcription", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 400)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, Meeting.Status.READY)
+
+    def test_rejects_live_transcription_source(self):
+        # Live (WebSocket) transcription has its own stop path; this endpoint
+        # is strictly for the upload flow.
+        self.meeting.transcript_source = Meeting.TranscriptSource.LIVE
+        self.meeting.save(update_fields=["transcript_source"])
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("meeting_cancel_transcription", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 400)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, Meeting.Status.LIVE_TRANSCRIBING)
+
+    def test_get_not_allowed(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("meeting_cancel_transcription", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 405)
+
+    def test_requires_login(self):
+        response = self.client.post(
+            reverse("meeting_cancel_transcription", args=[self.meeting.uuid])
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingUnifiedUploadTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="unified@example.com", password="pw")

@@ -15,6 +15,11 @@ urlpatterns = [
         views.meeting_transcription_progress,
         name="meeting_transcription_progress",
     ),
+    path(
+        "<uuid:meeting_uuid>/cancel-transcription/",
+        views.meeting_cancel_transcription,
+        name="meeting_cancel_transcription",
+    ),
     path("<uuid:meeting_uuid>/link-data-room/", views.meeting_link_data_room, name="meeting_link_data_room"),
     path(
         "<uuid:meeting_uuid>/unlink-data-room/<uuid:data_room_uuid>/",

@@ -416,6 +416,114 @@ class OrchestratorTests(TestCase):
         self.assertEqual(m.transcription_chunks_done, 0)
 
     @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_cancellation_bails_before_next_chunk_and_preserves_partial(self, mock_split):
+        """When the user clicks Stop mid-way, the cancel view flips status to
+        FAILED. The orchestrator must detect that before starting the next
+        chunk, persist whatever was stitched so far, and return instead of
+        raising."""
+        specs = [_make_chunk_spec(i) for i in range(3)]
+        mock_split.return_value = specs
+
+        service = MagicMock()
+
+        # Simulate the user clicking Stop after chunk 0 returns. The cancel
+        # view sets status=FAILED; subsequent iterations of the orchestrator
+        # loop should observe that and bail.
+        def transcribe_side_effect(*args, **kwargs):
+            call_num = service.transcribe.call_count
+            if call_num == 1:
+                # Before the first return, flip status to FAILED to simulate
+                # the cancel endpoint firing while this chunk was in flight.
+                Meeting.objects.filter(pk=self.meeting.pk).update(
+                    status=Meeting.Status.FAILED,
+                    transcription_error="Cancelled by user",
+                )
+                return _FakeResult("first chunk text that survives cancellation")
+            raise AssertionError(
+                "orchestrator called transcribe after cancellation "
+                "— should have bailed before starting next chunk"
+            )
+
+        service.transcribe.side_effect = transcribe_side_effect
+
+        # Must return normally (not raise) — cancellation is not an error.
+        text = orchestrate_upload_transcription(
+            meeting_id=self.meeting.pk,
+            temp_path=Path("/fake.mp3"),
+            model_id="openai/gpt-4o-mini-transcribe",
+            user_id=self.user.pk,
+            service=service,
+        )
+
+        # Only chunk 0 should have been transcribed; chunks 1 and 2 skipped.
+        self.assertEqual(service.transcribe.call_count, 1)
+        self.assertIn("first chunk text that survives cancellation", text)
+
+        m = self._fresh()
+        # Cancel view already set status=FAILED; the orchestrator must not
+        # overwrite it back to READY.
+        self.assertEqual(m.status, Meeting.Status.FAILED)
+        self.assertEqual(m.transcription_error, "Cancelled by user")
+        # Partial transcript is preserved.
+        self.assertIn("first chunk text that survives cancellation", m.transcript)
+        # Progress fields reset so the polling UI does not show a stale bar.
+        self.assertEqual(m.transcription_chunks_total, 0)
+        self.assertEqual(m.transcription_chunks_done, 0)
+
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
+    def test_cancellation_before_first_chunk_preserves_existing_transcript(self, mock_split):
+        """If cancellation happens before ANY chunk completes (edge case: user
+        is fast, or the first chunk hasn't been dispatched yet), the meeting's
+        existing transcript must survive untouched."""
+        self.meeting.transcript = "PRIOR TRANSCRIPT FROM FILE ONE"
+        self.meeting.save(update_fields=["transcript"])
+
+        specs = [_make_chunk_spec(i) for i in range(3)]
+        mock_split.return_value = specs
+
+        # Flip status before the loop even starts.
+        Meeting.objects.filter(pk=self.meeting.pk).update(
+            status=Meeting.Status.FAILED,
+            transcription_error="Cancelled by user",
+        )
+        # But the multi-chunk branch also resets status to LIVE_TRANSCRIBING
+        # at the top of the loop (line ~437 in the orchestrator). Simulate a
+        # cancel that races in AFTER that reset by using a service that flips
+        # status to FAILED *during* the status check itself — but simpler: we
+        # just let the orchestrator start normally, and the cancel-check at
+        # the top of the loop iteration catches it when we flip status inside
+        # the first transcribe call.
+        service = MagicMock()
+
+        def flip_and_raise(*args, **kwargs):
+            # Before any chunk returns, flip status to FAILED. Since this is
+            # inside the first transcribe call, the orchestrator will still
+            # receive this result and advance to the next iteration, where
+            # it should see FAILED and bail.
+            Meeting.objects.filter(pk=self.meeting.pk).update(
+                status=Meeting.Status.FAILED,
+                transcription_error="Cancelled by user",
+            )
+            return _FakeResult("")  # empty result — user cancelled immediately
+
+        service.transcribe.side_effect = flip_and_raise
+
+        text = orchestrate_upload_transcription(
+            meeting_id=self.meeting.pk,
+            temp_path=Path("/fake.mp3"),
+            model_id="openai/gpt-4o-mini-transcribe",
+            user_id=self.user.pk,
+            service=service,
+        )
+
+        m = self._fresh()
+        self.assertEqual(m.status, Meeting.Status.FAILED)
+        # Existing transcript MUST still be present even though the new
+        # chunk produced empty text.
+        self.assertIn("PRIOR TRANSCRIPT FROM FILE ONE", m.transcript)
+        self.assertIn("PRIOR TRANSCRIPT FROM FILE ONE", text)
+
+    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
     def test_single_chunk_appends_to_existing_transcript(self, mock_split):
         """Re-uploading a short (single-chunk) file to a meeting that already
         has a transcript must append the new text, never replace it."""

@@ -730,7 +730,35 @@
     const progressWrap = document.getElementById('transcribing-progress-wrap');
     const progressBar = document.getElementById('transcribing-progress-bar');
     const url = '/meetings/' + meetingUuid + '/transcription-progress/';
+    const cancelBtn = document.getElementById('cancel-upload-transcription-btn');
     let stopped = false;
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function () {
+        if (!confirm('Stop transcription? Any chunks already transcribed will be kept as a partial transcript.')) return;
+        cancelBtn.disabled = true;
+        cancelBtn.classList.add('opacity-50');
+        const csrf = document.querySelector('meta[name="csrf-token"]');
+        fetch('/meetings/' + meetingUuid + '/cancel-transcription/', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'X-CSRFToken': csrf ? csrf.getAttribute('content') : '',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+        })
+          .then(function (r) {
+            if (!r.ok) throw new Error('cancel ' + r.status);
+            // Let the next poll observe the FAILED status and reload the page.
+            showLabel('Stopping — waiting for current chunk to finish…');
+          })
+          .catch(function (err) {
+            console.warn('cancel transcription error:', err);
+            cancelBtn.disabled = false;
+            cancelBtn.classList.remove('opacity-50');
+          });
+      });
+    }
 
     // While upload transcription is in flight, disable every action button
     // on the page so the user can't navigate the meeting into an inconsistent

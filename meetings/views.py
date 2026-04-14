@@ -330,6 +330,38 @@ def meeting_update_metadata(request, meeting_uuid):
 
 
 @login_required
+@require_POST
+def meeting_cancel_transcription(request, meeting_uuid):
+    """Cancel an in-flight upload transcription.
+
+    Marks the meeting as FAILED with a "cancelled by user" note so the
+    orchestrator's per-chunk status check will bail out after the current
+    chunk finishes. Any already-transcribed partial text is preserved. The
+    currently-running chunk cannot be interrupted — the user may have to
+    wait up to ~15 min for it to return from the transcription API.
+    """
+    try:
+        meeting = Meeting.objects.get(uuid=meeting_uuid)
+    except Meeting.DoesNotExist:
+        return JsonResponse({"error": "Not found"}, status=404)
+    if not _user_can_modify_meeting(request.user, meeting):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    if meeting.status != Meeting.Status.LIVE_TRANSCRIBING:
+        return JsonResponse({"error": "Not transcribing"}, status=400)
+    if meeting.transcript_source != Meeting.TranscriptSource.AUDIO_UPLOAD:
+        return JsonResponse({"error": "Not an upload transcription"}, status=400)
+
+    Meeting.objects.filter(pk=meeting.pk).update(
+        status=Meeting.Status.FAILED,
+        transcription_error="Cancelled by user",
+        ended_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+    logger.info("meeting_cancel_transcription: user %s cancelled upload transcription for meeting %s", request.user.id, meeting.uuid)
+    return JsonResponse({"status": "cancelled"})
+
+
+@login_required
 @require_http_methods(["GET"])
 def meeting_transcription_progress(request, meeting_uuid):
     """Polling endpoint used by the meeting detail page to track upload transcription progress.
