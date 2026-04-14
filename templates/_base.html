@@ -37,8 +37,8 @@
       <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex flex-wrap items-center justify-between h-16">
         <a href="{% if user.is_authenticated %}/chat/{% else %}/{% endif %}" class="flex items-center shrink-0" aria-label="Home">
-          <span class="text-2xl" aria-hidden="true">{{ assistant_emoji }}</span>
-          <span class="ml-2 self-center text-3xl text-heading font-semibold whitespace-nowrap font-handrawn">{{ assistant_name }}</span>
+          {% if assistant_emoji %}<span class="text-2xl" aria-hidden="true">{{ assistant_emoji }}</span>{% endif %}
+          <span class="{% if assistant_emoji %}ml-2 {% endif %}self-center text-3xl text-heading font-semibold whitespace-nowrap font-handrawn">{{ assistant_name }}</span>
         </a>
         {% if user.is_authenticated %}
           {% if budget_status %}
