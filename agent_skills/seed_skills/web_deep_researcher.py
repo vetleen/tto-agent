@@ -8,13 +8,9 @@ Conduct comprehensive web research for broad or high-effort questions that \
 require many searches, source collection, synthesis, and verification. Use \
 when the user explicitly asks for deep research, comprehensive web search, \
 many web searches, a full web scan, an exhaustive web-based investigation, \
-to research something thoroughly on the web, to investigate something online \
-in depth, or similarly thorough online research. Best for tasks that benefit \
-from decomposing the question into subquestions, running parallel research \
-threads, and producing a sourced markdown report with footnote references. \
-Do not use for quick factual lookups, simple summaries, narrow single-search \
-questions, or literature reviews unless the user explicitly frames them as \
-deep web research.""",
+to research something thoroughly on the web. Do not use for quick factual \
+lookups, simple summaries, narrow single-search \
+or questions.""",
     "instructions": """\
 # web-deep-researcher
 
@@ -27,51 +23,56 @@ Prefer breadth, provenance, and synthesis over fast conversational answering.
 ## Operating model
 Treat the work as an orchestrator workflow:
 1. Clarify the question, scope, and success criteria if needed.
-2. Create a task plan that **as a minimum** includes the main research goal, \
-the sub-research questions, a replanning step to add subagent use once goals \
-are set, synthesis, and verification.
-3. Break the problem into focused sub-research questions before doing \
-substantive research.
-4. Add a separate task for each important sub-research question when the \
-problem benefits from decomposition.
-5. For each important sub-research question, generate multiple candidate \
+2. Decompose the problem into sub-research questions — focused, independent \
+threads that together cover the main research goal.
+3. Build a task plan. At minimum the plan should include:
+   - an exploratory search to understand the landscape
+   - one task per sub-research question
+   - a replanning checkpoint after initial results return
+   - synthesis
+   - verification
+4. For each sub-research question, generate multiple candidate \
 search queries before launching workers. Include synonyms, alternative \
 phrasings, acronyms, entity names, regional variants, and comparison terms \
 where relevant.
-6. Launch parallel sub-agents aggressively so they do the actual searching, \
+5. Launch parallel sub-agents aggressively so they do the actual searching, \
 reading, and evidence collection for those subquestions.
-7. In every sub-agent prompt, require that every substantive claim be tied \
+6. In every sub-agent prompt, require that every substantive claim be tied \
 to a source.
-8. Wait for sub-agents to return results, and wait until you are satisfied \
-that the issue is sufficiently illuminated, before synthesizing across topics.
-9. Reconsider and expand the task plan whenever sub-agent results reveal new \
+7. Wait for sub-agents to return results, and wait until you are satisfied \
+that each issue or topic is sufficiently illuminated, before synthesizing across topics.
+8. Reconsider and expand the task plan whenever sub-agent results reveal new \
 subquestions, missing evidence, source conflicts, new terminology, or \
 important follow-up work.
-10. Collect evidence before drafting prose.
-11. Synthesize only from collected evidence.
-12. Run a final verification pass for unsupported claims, source gaps, \
+9. Collect evidence before drafting prose.
+10. Synthesize only from collected evidence.
+11. Run a final verification pass for unsupported claims, source gaps, \
 contradictions, and overstatement.
-13. Write the final report in markdown in canvas using footnotes for \
+12. Write the final report in markdown in canvas using footnotes for \
 references.
 
 ## Example task planning pattern
 Example user request:
-"Do deep research on the competitive landscape for solid-state battery \
-startups in Europe and Asia. I want a sourced markdown report."
+> "Do deep research on the competitive landscape for solid-state battery startups?"
 
-Example strong initial task plan:
-1. Clarify scope
-2. Exploratory search, using subagent, to understand the topic even better
-3. Define the main research goal, and set the sub-research questions
-4. Generate candidate search queries for the main research goal and \
-sub-research questions
-5. Update task list with to include new tasks based on gathered information \
-and reasoning done, like
-6. Launch subagents to investigate topics
-7. Review returned evidence, identify gaps or conflicts, and expand the plan \
-if more information would improve the final output
-8. Synthesize findings into a markdown report with footnote references
-9. Run final verification for claim support, citation accuracy, and missing \
+Example sub-research questions:
+- Which established actors are active in solid-state batteries?
+- Which startups are active in solid-state batteries?
+- Which research results, groups and universities are promising in the field solid-state batteries?
+- What are the key technology approaches?
+- How do regulatory environments differ across regions?
+- What funding and partnerships have been announced?
+
+Example strong initial task plan (after decomposition):
+1. Clarify scope with the user
+2. Exploratory search via subagent to map the landscape
+3. Generate candidate search queries for each sub-research question
+4. Launch subagents to investigate each question
+5. Replanning checkpoint — review returned evidence, identify gaps or \
+conflicts, and expand the plan if needed
+6. Launch follow-up subagents for any new threads, iterate as needed.
+7. Synthesize findings into a markdown report with footnote references
+8. Run final verification for claim support, citation accuracy, and missing \
 caveats
 
 Why this is a good pattern:
@@ -87,20 +88,23 @@ regulation are major drivers, expand the task plan with tasks such as:
 - revisit the comparative synthesis after those new threads return
 
 ## When to use sub-agents
+Deep research involves many searches and many pages of raw content. Doing \
+all of that in the orchestrator would flood your context window and degrade \
+reasoning quality. Delegate all searching and evidence collection to \
+sub-agents so the orchestrator's context stays lean — reserved for planning, \
+reviewing structured results, and synthesizing.
+
 Use `create_subagent` proactively for breadth. Prefer multiple focused \
 sub-agents over one broad worker. Use `model_tier="mid"` unless there is a \
 clear reason to choose otherwise.
 
-Default to having sub-agents do the actual web searching and evidence \
-collection. The orchestrator should mainly scope the work, define \
-subquestions, launch workers, review returned evidence, update the plan, and \
-synthesize. Avoid doing large amounts of direct searching at the \
-orchestrator level unless a quick clarifying search is necessary to plan \
-the work.
+The orchestrator should scope the work, define subquestions, launch workers, \
+review returned evidence, update the plan, and synthesize. You can even use sub-agents to do direct \
+search when only  a quick clarifying lookup is necessary in order to plan the next step. 
 
 ## Sub-agent requirements
 When delegating, instruct each sub-agent to:
-- find information on a specific topic and return any findings
+- find information on a specific topic and return relevant findings
 - perform multiple distinct searches, not a single search-and-summarize pass
 - start with broad discovery queries, then run targeted validation queries, \
 then run gap-filling queries
@@ -108,12 +112,12 @@ then run gap-filling queries
 acronyms, competitors, regions, or competing explanations
 - use multiple candidate search queries supplied by the orchestrator and \
 refine them during the work
-- search broadly, then narrow to the best sources
-- return structured findings, not polished final prose
-- provide a source for every substantive claim
+- first search broadly, then search narrow to find the best sources
+- return structured findings the orchestrator can quickly scan — for each \
+finding include: the claim, the source (title + URL), and optionally key snippets or \
+details, and any uncertainty or conflicts. No need to return polished prose.
 - distinguish supported findings from uncertainty
-- note what it could not verify
-- include enough source detail for the orchestrator to cite accurately
+- note what could not be verified
 
 ## Evidence standard
 Do not treat an unsourced statement as established fact. Prefer claims that \
@@ -155,6 +159,7 @@ organized, and explicit about uncertainty, limitations, and open questions \
 where relevant.
 
 ## Verification pass
+
 Before finishing, check:
 - every major claim has support
 - references match the claims they support
@@ -162,6 +167,8 @@ Before finishing, check:
 - important conflicts are not hidden
 - missing evidence is disclosed
 - the report answers the user's actual question
+
+**Note: ** If verification requires searching the web or fetching pages, delegate it to a sub-agent to avoid cluttering your context, or taking uneccessary rounds for multiple tool calls with your entire context.
 
 ## Do not-list
 - Do not present unsourced claims as facts

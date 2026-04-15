@@ -8,14 +8,9 @@ Help users write college-level written assignments such as essays, research \
 papers, response papers, literature reviews, and argumentative essays.
 
 Use this skill when the user wants to write, draft, outline, or revise an \
-academic assignment, or when they mention "essay", "research paper", "written \
-assignment", "thesis statement", "argument", "literature review", "response \
-paper", "term paper", or "assignment prompt". Also use when the user pastes \
-a marking rubric, assignment brief, or grading criteria and wants help \
-producing the written work.
+academic assignment.
 
-Do NOT use for citation-only tasks (e.g. "format this in APA"), slide decks, \
-creative writing, or non-academic writing like emails or cover letters.""",
+Do NOT use for non-academic writing.""",
     "instructions": """\
 # Written Assignment Writer
 

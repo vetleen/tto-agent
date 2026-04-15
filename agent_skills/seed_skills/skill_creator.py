@@ -6,21 +6,17 @@ SKILL_CREATOR = {
     "slug": "skill-creator",
     "name": "Skill Creator",
     "description": """\
-Create a new agent skill, improve existing ones, and optimize skill \
-triggering.
+Create a new agent skill or improve existing ones.\
 
-**Note:** A skill is a set of instructions, tools and templates you drop into an AI agent's prompt \
-that teaches it how to do something specific. At its core, a skill \
-is just markdown text with 3-5 parts: a name, a description,  \
-a body of instructions, and optionally, additional tools and templates.
+**Note:** A skill is a set of instructions, tools and templates that is dropped into an AI agent's prompt \
+that teaches it how to do something specific. 
 
 Use this skill when the user wants to build \
 a skill from scratch, turn a workflow into a reusable skill, edit \
-or refine an existing skill, debug why a skill isn't triggering, \
-or optimize a skill description for better activation. Also use \
+or refine or optimize an existing skill or debug a skill. \
+Also use \
 when the user indicates that they want to reuse the work process \
-that was just completed, for example by saying "make this a skill", \
-"capture this as a skill", or "turn this into a reusable workflow".""",
+that was just completed.""",
     "instructions": f"""\
 # Skill Creator
 A meta-skill for building high-quality agent skills for yourself ({django_settings.ASSISTANT_NAME}, a Technology Transfer Office - TTO - AI assistant).
@@ -30,16 +26,16 @@ A meta-skill for building high-quality agent skills for yourself ({django_settin
 A skill is a database record with these fields:
 
 - **name** — Human-readable title (e.g. "Patent Claim Drafter")
-- **description** — 1-1024 chars. This is the ONLY text the system sees when deciding whether to activate the skill. It is the primary trigger mechanism.
+- **description** — 1-1024 chars. This is the ONLY text the system sees when deciding whether to activate the skill. It is the primary trigger mechanism. Keep it short.
 - **instructions** — The full playbook injected into your system prompt when the skill is active. This is where the skill's logic lives.
-- **tool_names** — List of tool names the skill needs (e.g. `["search_documents", "read_document"]`). These tools become available only when this skill is active.
+- **tool_names** — List of tool names the skill needs (e.g. `["search_documents", "read_document"]`). These tools become available only when they are attached to ab active skill.
 - **templates** — Named text templates associated with the skill (e.g. a patent claim format, a report skeleton). When the skill is active, template names are listed in the system prompt; the agent accesses their content on demand via `view_template` or `load_template_to_canvas`.
 
-Skills exist at three levels: **system** (built-in, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it.
+Skills exist at three levels: **system** (built-in, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it for the user by default, but user may toggle which version is active in the settings.
 
 ## Workspace and tools
 
-Use one canvas tab per skill field you are drafting:
+Each skill field lives in its own canvas tab:
 
 | Canvas tab title | Skill field | Persist with |
 |---|---|---|
@@ -52,7 +48,7 @@ Use one canvas tab per skill field you are drafting:
 You guide the user through a repeating loop:
 
 1. **Capture intent** — understand what the skill should do
-2. **Draft in canvas** — open one tab per field (Description, Instructions, Templates). Iterate with the user.
+2. **Draft in canvas** — each field (description, instructions, and any templates) gets its own canvas tab. Iterate with the user.
 3. **Create & persist** — `create_skill` to create the DB record, then `save_canvas_to_skill_field` for each tab
 4. **Attach tools** — choose which existing tools the skill needs via `edit_skill` with `tool_names`
 5. **Test** — have the user try the skill in a fresh conversation
@@ -106,7 +102,7 @@ Come prepared with context to reduce the burden on the user.
 
 ## Step 2: Draft in canvas
 
-Open one canvas tab per field you need to draft — typically Title, Description, Instructions, and optionally Templates. Iterate with the user on all tabs before persisting.
+Draft each field in its own canvas tab. Iterate with the user before persisting.
 
 ### Writing a great description
 
@@ -135,15 +131,16 @@ description means the skill never fires, no matter how good the instructions are
 6. **Stay under 1024 characters.**
 
 **Good example:**
-> Drafts patent claims based on invention disclosures and prior art analysis.
-> Use when the user wants to write, review, or refine patent claims, or when
-> they mention "claims", "independent claim", "dependent claim", or "claim set".
-> Also use when discussing claim scope, claim language, or patent prosecution
-> strategy. Do NOT use for freedom-to-operate analyses, patentability searches,
-> or general IP portfolio questions.
+> Interactive PDF viewer. Use when the user wants to open, show, or view a PDF and collaborate on it visually — annotate, highlight, stamp, fill form fields, place signature/initials, or review markup together. Not for summarization or text extraction.
 
 **Bad example:**
-> Helps with patents.
+> Helps you read PDFs better. Especially complex ones.
+
+**Good example:**
+> Triage and prioritize a support ticket or customer issue. Use when a new ticket comes in and needs categorization, assigning P1-P4 priority, deciding which team should handle it, or checking whether it's a duplicate or known issue before routing.
+
+**Bad example:**
+> Sort tickets by priority and delegate to team members. 
 
 ### Writing instructions
 
@@ -165,14 +162,19 @@ activates. They are loaded into the system prompt, so every token counts.
 
 - **Use consistent terminology.** Pick one term per concept and stick to it.
 
-- **Include examples.** Show concrete inputs and outputs:
+- **Include examples.** Show concrete inputs and outputs. For instance, a support-desk skill might include this example in its instructions:
+````
+  ### How-to — Initial Response
   ```
-  ## Claim format
-  Example:
-  Input: A method for detecting anomalies using machine learning
-  Output: 1. A method comprising: receiving sensor data...
-  ```
+  Great question! [Direct answer or link to documentation]
 
+  [If more complex: "Let me walk you through the steps:"]
+  [Steps or guidance]
+
+  Let me know if that helps, or if you have any follow-up
+  questions.
+  ```
+````
 - **Define output formats explicitly** when the output needs structure.
   Consider whether a template would be more appropriate for
   reusable output skeletons.
@@ -182,7 +184,7 @@ activates. They are loaded into the system prompt, so every token counts.
 Use templates when the skill should produce output in a very specific format
 (e.g. a report skeleton, email template, meeting minutes format).
 
-Draft each template in its own canvas tab (`Template: <name>`), iterate with
+When adding a template to the skill, draft it in its own canvas tab (`Template: <name>`), iterate with
 the user, then persist alongside the other fields in Step 3.
 
 **Important:** When a skill has templates, add `view_template` and
@@ -207,7 +209,6 @@ two groups:
 
 - **Standard tools** — always available to {django_settings.ASSISTANT_NAME} (e.g. web search, canvas,
   document search, sub-agents). These do **not** need to be attached to a skill.
-  Note: Sub-agents (`create_subagent`) are standard tools — use them for parallel research or delegated sub-tasks when designing skills. No need to declare them in `tool_names`.
 
 - **Skill-specific tools** — only available when a skill explicitly lists them
   in its `tool_names`. These are the ones you need to attach.
@@ -229,7 +230,6 @@ would actually say, or have the user come up with the prompts themselves.
 - Realistic detail and context
 - A mix of lengths and formality
 - At least one edge case
-- At least one near-miss that *shouldn't* trigger the skill
 
 Have the user try the skill in a **fresh conversation** with the skill
 attached. They can then come back to this conversation to give feedback.
@@ -240,7 +240,7 @@ attached. They can then come back to this conversation to give feedback.
 
 Based on test results, iterate on the skill:
 
-1. Use `show_skill_field_in_canvas` to load fields into canvas tabs
+1. Use `show_skill_field_in_canvas` to load fields into canvas tabs, if they are not already loaded.
 2. Edit with the user
 3. Save back with `save_canvas_to_skill_field`
 
@@ -251,8 +251,8 @@ Based on test results, iterate on the skill:
 
 - **Keep the prompt lean.** Remove instructions that aren't pulling their weight.
 
-- **Explain the why.** Instead of "ALWAYS include axis labels", explain why
-  labels matter. The model generalizes better from reasoning than from rules.
+- **Explain the why.** Instead of saying "ALWAYS include axis labels", explain why
+  labels matter, and let the model decide. The model generalizes better from reasoning than from rules.
 
 - **Revisit the description.** Did the skill trigger correctly? Were there
   false positives or negatives? Are there keywords users might use that

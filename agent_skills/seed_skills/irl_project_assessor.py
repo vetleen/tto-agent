@@ -4,15 +4,15 @@ IRL_PROJECT_ASSESSOR = {
     "slug": "irl-project-assessor",
     "name": "IRL Project Assessor",
     "description": """\
-Assess university invention disclosures and innovation projects using the \
+Assess innovation projects using the \
 KTH Innovation Readiness Level (IRL) framework. Scores projects across 6 \
 dimensions — Customer Readiness (CRL), Technology Readiness (TRL), Business \
 Readiness (BRL), IP Readiness (IPRL), Team Readiness (TeRL), and Funding \
-Readiness (FRL) — on 1–9 scales using objective criteria. Identifies gaps \
-and recommends concrete next steps for each dimension.
+Readiness (FRL) — on 1–9 scales using objective criteria. 
 
-Use when the user mentions scoring a project using "IRL", "innovation readiness", "readiness level \
-assessment", or doing or mapping "maturity assessment", "innovation maturity", or "readiness scoring".""",
+Use when the user mentions scoring a project using "IRL", "innovation readiness" \
+or "readiness level", or if the users wants your help to to assess any of the \
+other concrete explicitly dimensions mentioned.""",
     "instructions": """\
 # IRL Project Assessor
 

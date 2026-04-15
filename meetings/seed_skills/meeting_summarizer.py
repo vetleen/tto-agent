@@ -4,13 +4,12 @@ MEETING_SUMMARIZER = {
     "slug": "meeting-summarizer",
     "name": "Meeting Summarizer",
     "description": (
-        "Turns a meeting transcript into faithful, well-structured minutes or "
+        "Turn a meeting transcript into faithful, well-structured minutes or "
         "a summary. Use when the user opens a meeting in chat to draft minutes, "
         "asks to summarize a transcript, extract decisions or action items, or "
         "produce a recap of a recorded conversation. Also use when the user "
         "mentions 'meeting notes', 'meeting minutes', 'recap', 'takeaways', or "
-        "'what was decided'. Works for any meeting type — board meetings, "
-        "standups, interviews, brainstorms, workshops, sales calls."
+        "'what was decided'. Works for any meeting type."
     ),
     "instructions": """\
 # Meeting Summarizer
