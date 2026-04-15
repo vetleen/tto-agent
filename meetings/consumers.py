@@ -15,6 +15,7 @@ Audio is never persisted past the chunk task — it's deleted in a finally:.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid as uuid_lib
@@ -26,6 +27,12 @@ from django.conf import settings
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+# Interval at which the consumer sends a ping frame while idle so the socket
+# doesn't go unused long enough for any transport (Heroku router, corporate
+# proxy, browser throttle) to decide it's dead. Kept well under Heroku's ~55s
+# WebSocket idle window.
+MEETING_WS_HEARTBEAT_SECONDS = 20
 
 
 class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
@@ -84,8 +91,17 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             "started_at": meeting["started_at"],
             "segment_index_base": self._segment_index_base,
         }))
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def disconnect(self, close_code):
+        task = getattr(self, "_heartbeat_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._heartbeat_task = None
         if self.meeting_id and not self._stopped and not self._stop_requested:
             try:
                 await self._finalize_meeting(interrupted=True)
@@ -96,6 +112,24 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 await self.channel_layer.group_discard(self._group_name, self.channel_name)
             except Exception:
                 pass
+
+    async def _heartbeat_loop(self):
+        """Send a lightweight ping frame at a fixed cadence.
+
+        The client ignores `type=ping`. This keeps the WS socket non-idle so
+        transports that kill idle connections (Heroku router, proxies) don't
+        tear it down during a quiet stretch — e.g. when transcription of a
+        chunk takes longer than usual and no other frames are flowing.
+        """
+        try:
+            while True:
+                await asyncio.sleep(MEETING_WS_HEARTBEAT_SECONDS)
+                try:
+                    await self.send(text_data=json.dumps({"type": "ping"}))
+                except Exception:
+                    return
+        except asyncio.CancelledError:
+            raise
 
     async def receive(self, text_data=None, bytes_data=None):
         if bytes_data is not None:

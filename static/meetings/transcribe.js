@@ -16,7 +16,15 @@
   'use strict';
 
   const SEGMENT_DURATION_MS = 30000;
-  const RECONNECT_BACKOFF_MS = 2000;
+  const RECONNECT_BACKOFF_MS_BASE = 2000;
+  const RECONNECT_BACKOFF_MS_MAX = 30000;
+  const RECONNECT_MAX_ATTEMPTS = 6;
+  // Watchdog fires if we haven't uploaded a chunk in 2× the segment duration,
+  // indicating MediaRecorder has stalled (common when the tab is backgrounded
+  // or the OS briefly suspended the process).
+  const WATCHDOG_INTERVAL_MS = 5000;
+  const WATCHDOG_CHUNK_STALL_MS = SEGMENT_DURATION_MS * 2;
+  const WATCHDOG_CHUNK_GIVEUP_MS = SEGMENT_DURATION_MS * 3;
 
   const root = document.querySelector('[data-meeting-uuid]');
   if (!root) return;
@@ -187,6 +195,20 @@
   let analyserNode = null;
   let levelLoop = null;
   let beforeUnloadHandler = null;
+  let visibilityHandler = null;
+  let trackEndedHandler = null;
+  // Reconnect + resume state. When the socket drops mid-session, we keep the
+  // recorder running, buffer finished chunks here, and flush them once a new
+  // socket is up. The original session is only abandoned once attempts are
+  // exhausted — unlike the previous "one drop = reload" behavior.
+  let reconnectAttempts = 0;
+  let reconnecting = false;
+  let reconnectTimer = null;
+  const pendingUploads = [];
+  // Watchdog state — detects a stalled MediaRecorder.
+  let lastChunkSentAt = 0;
+  let watchdogTimer = null;
+  let watchdogRestartAttempted = false;
 
   // Choose the best supported audio mime type for MediaRecorder.
   function pickMime() {
@@ -301,6 +323,99 @@
     }
   }
 
+  // ---------------- watchdog + visibility handling ----------------
+
+  function startWatchdog() {
+    if (watchdogTimer) return;
+    lastChunkSentAt = Date.now();
+    watchdogRestartAttempted = false;
+    watchdogTimer = setInterval(function () {
+      if (!transcribing) return;
+      const silenceMs = Date.now() - lastChunkSentAt;
+      if (silenceMs < WATCHDOG_CHUNK_STALL_MS) return;
+
+      if (silenceMs >= WATCHDOG_CHUNK_GIVEUP_MS) {
+        // Recorder has been silent for 3× the segment duration and our one
+        // restart attempt didn't produce a chunk. Treat as a terminal local
+        // failure and surface the same reconnect/alert path.
+        console.warn('watchdog: recorder silent for ' + silenceMs + 'ms, giving up');
+        handleUnexpectedClose();
+        return;
+      }
+
+      if (!watchdogRestartAttempted) {
+        watchdogRestartAttempted = true;
+        console.warn('watchdog: recorder appears stalled (' + silenceMs + 'ms), restarting');
+        try {
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            try { mediaRecorder.stop(); } catch (e) {}
+          }
+          if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
+          if (mediaStream && mediaStream.active) {
+            startSegmentRecorder();
+          }
+        } catch (err) {
+          console.warn('watchdog: restart failed', err);
+        }
+      }
+    }, WATCHDOG_INTERVAL_MS);
+  }
+
+  function stopWatchdog() {
+    if (watchdogTimer) {
+      clearInterval(watchdogTimer);
+      watchdogTimer = null;
+    }
+  }
+
+  function installVisibilityHandler() {
+    if (visibilityHandler) return;
+    visibilityHandler = function () {
+      if (document.visibilityState !== 'visible') return;
+      if (!transcribing) return;
+      // Tab is back in the foreground. If the socket died while we were
+      // hidden, kick off reconnect immediately rather than waiting for the
+      // watchdog interval.
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        if (!reconnecting) {
+          handleUnexpectedClose();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+  }
+
+  function removeVisibilityHandler() {
+    if (visibilityHandler) {
+      document.removeEventListener('visibilitychange', visibilityHandler);
+      visibilityHandler = null;
+    }
+  }
+
+  function installTrackEndedHandler(stream) {
+    if (!stream) return;
+    trackEndedHandler = function () {
+      if (!transcribing) return;
+      console.warn('microphone track ended');
+      shutdownLocal();
+      alert('The microphone was disconnected. Reload the page to resume transcription.');
+    };
+    stream.getAudioTracks().forEach(function (track) {
+      try { track.addEventListener('ended', trackEndedHandler); } catch (e) {}
+    });
+  }
+
+  function removeTrackEndedHandler() {
+    if (!mediaStream || !trackEndedHandler) {
+      trackEndedHandler = null;
+      return;
+    }
+    mediaStream.getAudioTracks().forEach(function (track) {
+      try { track.removeEventListener('ended', trackEndedHandler); } catch (e) {}
+    });
+    trackEndedHandler = null;
+  }
+
   function installBeforeUnloadGuard() {
     beforeUnloadHandler = function (e) {
       if (transcribing || stoppingPendingDrain) {
@@ -324,11 +439,13 @@
   function updateIndicator() {
     if (!transcribingIndicator) return;
     const pendingCount = inFlightSegments.size;
-    const shouldShow = transcribing || stoppingPendingDrain || pendingCount > 0;
+    const shouldShow = transcribing || stoppingPendingDrain || pendingCount > 0 || reconnecting;
     if (shouldShow) {
       transcribingIndicator.classList.remove('hidden');
       let label;
-      if (stoppingPendingDrain && pendingCount > 0) {
+      if (reconnecting) {
+        label = 'Reconnecting… (attempt ' + reconnectAttempts + ' of ' + RECONNECT_MAX_ATTEMPTS + ')';
+      } else if (stoppingPendingDrain && pendingCount > 0) {
         label = 'Finalizing transcription… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' left)';
       } else if (pendingCount > 0) {
         label = 'Transcribing… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' in flight)';
@@ -425,9 +542,23 @@
       ws.onmessage = function (ev) {
         let msg;
         try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        if (msg.type === 'ping') {
+          return;
+        }
         if (msg.type === 'started') {
           segmentIndexBase = parseInt(msg.segment_index_base || 0, 10);
-          segmentIndex = segmentIndexBase;
+          // On a fresh session we reset segmentIndex; on a reconnect we keep
+          // it (the recorder kept advancing while disconnected) and just
+          // rely on the server's base for correctness on the next clean start.
+          if (!reconnecting) {
+            segmentIndex = segmentIndexBase;
+          }
+          if (reconnecting) {
+            reconnecting = false;
+            reconnectAttempts = 0;
+            flushPendingUploads();
+            updateIndicator();
+          }
           if (!resolved) { resolved = true; resolve(); }
         } else if (msg.type === 'segment.queued') {
           inFlightSegments.add(msg.segment_index);
@@ -450,17 +581,84 @@
         }
       };
       ws.onclose = function () {
+        if (!resolved) {
+          // Socket closed before we received `started`. Either the initial
+          // connect failed (onerror already rejected, this is idempotent) or
+          // a reconnect attempt failed — reject so the .catch in
+          // handleUnexpectedClose schedules the next retry.
+          reject(new Error('WebSocket closed before ready'));
+          return;
+        }
         if (transcribing) {
-          // Connection dropped mid-stream. Tear down local recording so the
-          // user sees an interrupted state instead of a silent failure.
+          handleUnexpectedClose();
+        } else if (stoppingPendingDrain) {
+          // User is stopping and the socket died mid-drain. Can't recover
+          // server-side `segment_ready` events that haven't arrived yet;
+          // clean up and let the server's disconnect() mark it INTERRUPTED.
+          stoppingPendingDrain = false;
           shutdownLocal();
-          alert('The transcription connection was lost. Reload the page to resume.');
+          alert('The transcription connection was lost while finalizing. Reload the page to see the partial transcript.');
         }
       };
       ws.onerror = function () {
         if (!resolved) reject(new Error('WebSocket connection failed'));
       };
     });
+  }
+
+  function handleUnexpectedClose() {
+    // The transport dropped mid-session. Keep MediaRecorder running so we
+    // don't lose audio, and try to reopen the socket. Only give up — and
+    // alert the user — after exhausting the retry budget.
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+      reconnecting = false;
+      shutdownLocal();
+      alert('Transcription disconnected and could not reconnect. Reload the page to resume.');
+      return;
+    }
+    reconnectAttempts += 1;
+    reconnecting = true;
+    const backoff = Math.min(
+      RECONNECT_BACKOFF_MS_MAX,
+      RECONNECT_BACKOFF_MS_BASE * Math.pow(2, reconnectAttempts - 1),
+    );
+    updateIndicator();
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      openWebSocket().catch(function () {
+        // openWebSocket's internal onclose already re-enters this function
+        // via the reject path — fall back to an explicit retry schedule in
+        // case it didn't (e.g. `onerror` before open).
+        if (reconnecting && transcribing) {
+          handleUnexpectedClose();
+        }
+      });
+    }, backoff);
+  }
+
+  function flushPendingUploads() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    while (pendingUploads.length > 0) {
+      const item = pendingUploads.shift();
+      try {
+        ws.send(JSON.stringify({
+          type: 'chunk_meta',
+          segment_index: item.idx,
+          byte_length: item.ab.byteLength,
+          mime: item.mime,
+          start_offset_seconds: item.offsetSec,
+        }));
+        ws.send(item.ab);
+      } catch (err) {
+        console.warn('flushPendingUploads: send failed, re-queuing', err);
+        pendingUploads.unshift(item);
+        return;
+      }
+    }
   }
 
   function startSegmentRecorder() {
@@ -507,21 +705,30 @@
   }
 
   function uploadChunkBlob(idx, offsetSec, blob) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (!blob || blob.size === 0) return;
+    const mime = preferredMime || 'audio/webm';
     blob.arrayBuffer().then(function (ab) {
+      lastChunkSentAt = Date.now();
+      watchdogRestartAttempted = false;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // Socket is down (reconnect in progress or initial open races). Buffer
+        // the chunk so we can flush it once the next `started` message lands.
+        pendingUploads.push({ idx: idx, offsetSec: offsetSec, ab: ab, mime: mime });
+        return;
+      }
       const meta = {
         type: 'chunk_meta',
         segment_index: idx,
         byte_length: ab.byteLength,
-        mime: preferredMime || 'audio/webm',
+        mime: mime,
         start_offset_seconds: offsetSec,
       };
       try {
         ws.send(JSON.stringify(meta));
         ws.send(ab);
       } catch (err) {
-        console.warn('failed to send chunk', err);
+        console.warn('failed to send chunk, buffering for retry', err);
+        pendingUploads.push({ idx: idx, offsetSec: offsetSec, ab: ab, mime: mime });
       }
     });
   }
@@ -570,6 +777,9 @@
     startLevelMeter(mediaStream);
     startElapsedTimer();
     installBeforeUnloadGuard();
+    installVisibilityHandler();
+    installTrackEndedHandler(mediaStream);
+    startWatchdog();
     startSegmentRecorder();
   }
 
@@ -578,11 +788,16 @@
     transcribing = false;
     stopElapsedTimer();
     stopLevelMeter();
+    stopWatchdog();
+    removeVisibilityHandler();
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    reconnecting = false;
     if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
     if (mediaRecorder && mediaRecorder.state === 'recording') {
       try { mediaRecorder.stop(); } catch (e) {}
     }
     mediaRecorder = null;
+    removeTrackEndedHandler();
     if (mediaStream) {
       mediaStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
       mediaStream = null;

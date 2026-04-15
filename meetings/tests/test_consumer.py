@@ -16,6 +16,7 @@ from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.test import TransactionTestCase, override_settings
 
+from meetings import consumers as consumers_module
 from meetings.consumers import MeetingTranscribeConsumer
 from meetings.models import Meeting, MeetingTranscriptSegment
 
@@ -182,6 +183,21 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
         self.assertEqual(meeting.transcription_model, "")
         await comm.disconnect()
+
+    async def test_heartbeat_ping_on_idle_socket(self):
+        """The consumer sends a ping at a fixed cadence so idle sockets don't
+        get torn down by an intermediary (Heroku router, proxy, etc.).
+        Shortens the interval to keep the test fast.
+        """
+        with patch.object(consumers_module, "MEETING_WS_HEARTBEAT_SECONDS", 0.1):
+            comm = _make_communicator(self.meeting.uuid, self.user)
+            await comm.connect()
+            msg = json.loads(await comm.receive_from())
+            self.assertEqual(msg["type"], "started")
+
+            ping = json.loads(await comm.receive_from(timeout=2))
+            self.assertEqual(ping["type"], "ping")
+            await comm.disconnect()
 
     async def test_resume_continues_segment_index_base(self):
         # Pre-populate one segment so the resume reconnect picks up at index 1.
