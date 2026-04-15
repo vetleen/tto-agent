@@ -38,6 +38,9 @@
   const transcribeBtn = document.getElementById('transcribe-btn');
   const transcribeBtnLabel = document.getElementById('transcribe-btn-label');
   const stopBtn = document.getElementById('stop-btn');
+  const stopBtnIcon = document.getElementById('stop-btn-icon');
+  const stopBtnSpinner = document.getElementById('stop-btn-spinner');
+  const stopBtnLabel = document.getElementById('stop-btn-label');
   const controlsEl = document.getElementById('transcribe-controls');
   const elapsedEl = document.getElementById('elapsed-counter');
   const micSelect = document.getElementById('mic-select');
@@ -809,7 +812,12 @@
     if (!transcribing && !stoppingPendingDrain) return;
     transcribing = false;
     stoppingPendingDrain = true;
-    if (stopBtn) stopBtn.disabled = true;
+    if (stopBtn) {
+      stopBtn.disabled = true;
+      if (stopBtnLabel) stopBtnLabel.textContent = 'Stopping…';
+      if (stopBtnIcon) stopBtnIcon.classList.add('hidden');
+      if (stopBtnSpinner) stopBtnSpinner.classList.remove('hidden');
+    }
     if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
     // Force the current recorder to stop so the final chunk gets uploaded.
     if (mediaRecorder && mediaRecorder.state === 'recording') {
