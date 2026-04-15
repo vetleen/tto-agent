@@ -19,6 +19,26 @@ if TYPE_CHECKING:
 _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
 
 
+def _org_disabled_slugs(user) -> set[str]:
+    """Return slugs the user's org has disabled (empty set if no membership).
+
+    Hidden from the Skills overview, detail pages, and every other flow that
+    resolves skills through ``get_accessible_skills`` / ``get_skill_for_user``.
+    The org settings page queries ``AgentSkill`` directly and intentionally
+    bypasses this so admins can still toggle disabled skills back on.
+    """
+    from accounts.models import Membership
+
+    membership = Membership.objects.filter(user=user).select_related("org").first()
+    if not membership or not membership.org:
+        return set()
+    org_skills = (membership.org.preferences or {}).get("skills") or {}
+    return {
+        slug for slug, pref in org_skills.items()
+        if isinstance(pref, dict) and pref.get("enabled", True) is False
+    }
+
+
 def get_accessible_skills(user) -> list[AgentSkill]:
     """Return every active skill the user has access to (no shadowing)."""
     from django.db.models import Q
@@ -32,7 +52,8 @@ def get_accessible_skills(user) -> list[AgentSkill]:
         q |= Q(level="org", organization=membership.org)
     q |= Q(level="user", created_by=user)
 
-    return list(AgentSkill.objects.filter(q, is_active=True))
+    disabled = _org_disabled_slugs(user)
+    return [s for s in AgentSkill.objects.filter(q, is_active=True) if s.slug not in disabled]
 
 
 def shadowing_default(candidates: list[AgentSkill]) -> AgentSkill:
@@ -100,6 +121,9 @@ def get_skill_for_user(user, skill_id: str) -> AgentSkill | None:
     try:
         skill = AgentSkill.objects.get(pk=skill_id, is_active=True)
     except AgentSkill.DoesNotExist:
+        return None
+
+    if skill.slug in _org_disabled_slugs(user):
         return None
 
     if skill.level == "system":

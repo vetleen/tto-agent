@@ -306,6 +306,33 @@ class OrgSettingsAccessTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 302)
 
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_disabled_system_skill_still_listed_for_admin(self, mock_reg, mock_models):
+        """Org admins need to see disabled skills so they can re-enable them.
+
+        The overview page and chat flow hide these (covered elsewhere); the
+        settings page intentionally does not.
+        """
+        from agent_skills.models import AgentSkill
+
+        mock_reg.return_value.list_tools.return_value = {}
+        AgentSkill.objects.filter(slug="disabled-demo").delete()
+        AgentSkill.objects.create(
+            slug="disabled-demo", name="Disabled Demo",
+            instructions="i", level="system",
+        )
+        self.org.preferences = {"skills": {"disabled-demo": {"enabled": False}}}
+        self.org.save(update_fields=["preferences"])
+
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        skills = response.context["skills_data"]
+        row = next((s for s in skills if s["slug"] == "disabled-demo"), None)
+        self.assertIsNotNone(row, "Disabled skill must remain visible on the settings page")
+        self.assertFalse(row["enabled"])
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class OrgAllowedModelsUpdateTests(TestCase):

@@ -10,6 +10,7 @@ from agent_skills.services import (
     create_org_skill,
     create_user_skill,
     fork_skill,
+    get_accessible_skills,
     get_available_skills,
     get_editable_skill_for_user,
     get_skill_for_user,
@@ -532,3 +533,79 @@ class PromoteSkillToOrgTests(TestCase):
         )
         result = promote_skill_to_org(self.admin, existing, self.org)
         self.assertEqual(result.pk, existing.pk)
+
+
+class OrgDisabledSkillVisibilityTests(TestCase):
+    """An org admin's disable flag hides the skill from every access helper.
+
+    The org settings page queries AgentSkill directly and is covered by a
+    separate test in accounts/tests/test_settings_views.py.
+    """
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.org = Organization.objects.create(name="Co", slug="co")
+        self.member = User.objects.create_user(email="m@example.com", password="pass")
+        self.admin = User.objects.create_user(email="a@example.com", password="pass", is_superuser=True)
+        self.outsider = User.objects.create_user(email="o@example.com", password="pass")
+        Membership.objects.create(user=self.member, org=self.org, role=Membership.Role.MEMBER)
+        Membership.objects.create(user=self.admin, org=self.org, role=Membership.Role.ADMIN)
+
+    def _disable(self, slug):
+        self.org.preferences = {"skills": {slug: {"enabled": False}}}
+        self.org.save(update_fields=["preferences"])
+
+    def test_accessible_skills_hides_disabled_system_skill(self):
+        AgentSkill.objects.create(
+            slug="research", name="Research", instructions="i", level="system",
+        )
+        self._disable("research")
+        self.assertEqual(get_accessible_skills(self.member), [])
+
+    def test_accessible_skills_hides_for_superuser_member(self):
+        AgentSkill.objects.create(
+            slug="research", name="Research", instructions="i", level="system",
+        )
+        self._disable("research")
+        # is_superuser gets no special treatment — still a member of the org.
+        self.assertEqual(get_accessible_skills(self.admin), [])
+
+    def test_accessible_skills_unaffected_for_user_without_membership(self):
+        AgentSkill.objects.create(
+            slug="research", name="Research", instructions="i", level="system",
+        )
+        self._disable("research")
+        skills = get_accessible_skills(self.outsider)
+        self.assertEqual([s.slug for s in skills], ["research"])
+
+    def test_accessible_skills_hides_user_fork_with_disabled_slug(self):
+        # Preserves existing preferences.py semantics: disable is by slug.
+        AgentSkill.objects.create(
+            slug="research", name="Sys Research", instructions="i", level="system",
+        )
+        AgentSkill.objects.create(
+            slug="research", name="My Research", instructions="i",
+            level="user", created_by=self.member,
+        )
+        self._disable("research")
+        self.assertEqual(get_accessible_skills(self.member), [])
+
+    def test_skill_for_user_returns_none_when_org_disabled(self):
+        skill = AgentSkill.objects.create(
+            slug="research", name="Research", instructions="i", level="system",
+        )
+        self._disable("research")
+        self.assertIsNone(get_skill_for_user(self.member, str(skill.pk)))
+        self.assertIsNone(get_skill_for_user(self.admin, str(skill.pk)))
+        # Non-member unaffected.
+        self.assertIsNotNone(get_skill_for_user(self.outsider, str(skill.pk)))
+
+    def test_re_enabling_restores_visibility(self):
+        skill = AgentSkill.objects.create(
+            slug="research", name="Research", instructions="i", level="system",
+        )
+        self._disable("research")
+        self.assertEqual(get_accessible_skills(self.member), [])
+        self.org.preferences = {"skills": {"research": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+        self.assertEqual([s.pk for s in get_accessible_skills(self.member)], [skill.pk])

@@ -535,3 +535,57 @@ class SkillsPromoteViewTests(TestCase):
             reverse("agent_skills_promote", kwargs={"skill_id": own_skill.id})
         )
         self.assertEqual(response.status_code, 403)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgDisabledSkillViewTests(TestCase):
+    """System skills disabled in org preferences are invisible everywhere
+    except the org settings page (covered in accounts tests)."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.org = Organization.objects.create(
+            name="Disabled Org", slug="dis-org",
+            preferences={"skills": {"research": {"enabled": False}}},
+        )
+        self.member = User.objects.create_user(email="dm@example.com", password="pw")
+        self.member.email_verified = True
+        self.member.save(update_fields=["email_verified"])
+        Membership.objects.create(user=self.member, org=self.org, role=Membership.Role.MEMBER)
+
+        self.skill = AgentSkill.objects.create(
+            slug="research", name="Research Skill", instructions="i", level="system",
+        )
+
+    def test_skills_list_hides_disabled_system_skill(self):
+        self.client.force_login(self.member)
+        response = self.client.get(reverse("agent_skills_list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Research Skill")
+
+    def test_skills_detail_redirects_for_disabled_skill(self):
+        self.client.force_login(self.member)
+        response = self.client.get(
+            reverse("agent_skills_detail", kwargs={"skill_id": self.skill.id})
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("agent_skills_list"))
+
+    def test_skills_toggle_returns_404_for_disabled_skill(self):
+        self.client.force_login(self.member)
+        response = self.client.post(
+            reverse("agent_skills_toggle", kwargs={"skill_id": self.skill.id}),
+            {"enabled": "1"},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_superuser_member_also_blocked(self):
+        admin = User.objects.create_user(
+            email="su@example.com", password="pw", is_superuser=True,
+        )
+        admin.email_verified = True
+        admin.save(update_fields=["email_verified"])
+        Membership.objects.create(user=admin, org=self.org, role=Membership.Role.ADMIN)
+        self.client.force_login(admin)
+        response = self.client.get(reverse("agent_skills_list"))
+        self.assertNotContains(response, "Research Skill")
