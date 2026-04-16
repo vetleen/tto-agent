@@ -97,7 +97,11 @@
 <div id="content-area" class="flex sm:ml-64" style="height: calc(100vh - 4rem);">
 
 {# Chat pane #}
-<div id="chat-pane" class="flex flex-col flex-1 min-w-0 transition-all duration-200">
+<div id="chat-pane" class="flex flex-col flex-1 min-w-0 transition-all duration-200 relative">
+  {# Drop overlay for drag-and-drop file upload #}
+  <div id="drop-overlay" class="hidden absolute inset-0 z-50 bg-brand/10 border-2 border-dashed border-brand rounded-lg flex items-center justify-center pointer-events-none">
+    <span class="text-brand font-medium text-lg">Drop files to attach</span>
+  </div>
   {# Model selector dropdown #}
   <div class="relative px-4 pt-2 pb-0 max-w-3xl mx-auto w-full flex items-center justify-between">
     <div class="flex items-center">
@@ -1130,87 +1134,118 @@
     if (pill) removeImagePill(pill.getAttribute('data-attachment-id'));
   });
 
+  function handleFiles(files) {
+    if (!files.length) return;
+
+    // Client-side validation
+    var hasImages = false;
+    for (var i = 0; i < files.length; i++) {
+      var ft = files[i].type;
+      // Browsers sometimes report .docx as application/octet-stream
+      if (ALL_SUPPORTED_TYPES.indexOf(ft) === -1) {
+        if (files[i].name && files[i].name.toLowerCase().endsWith('.docx')) {
+          ft = SUPPORTED_DOCX_TYPES[0];
+        } else {
+          showToast('Unsupported file type: ' + files[i].name);
+          return;
+        }
+      }
+      if (SUPPORTED_IMAGE_TYPES.indexOf(ft) !== -1) hasImages = true;
+      var maxSize = getMaxSizeForType(ft);
+      var maxLabel = maxSize === MAX_PDF_SIZE ? '30 MB' : '10 MB';
+      if (files[i].size > maxSize) {
+        showToast('File too large (max ' + maxLabel + '): ' + files[i].name);
+        return;
+      }
+    }
+    // Vision check — only warn for image files
+    if (hasImages) {
+      var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
+      if (current && !current.supports_vision) {
+        showToast('The selected model does not support image inputs. Please select a vision-capable model.');
+      }
+    }
+
+    var batchId = addUploadingPills(files);
+
+    function doUpload(threadId) {
+      var fd = new FormData();
+      files.forEach(function(f) { fd.append('files', f); });
+      fetch('/chat/api/threads/' + threadId + '/attachments/upload/', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCSRFToken() },
+        body: fd,
+      }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Upload failed'); });
+        return r.json();
+      }).then(function(data) {
+        removeUploadingPills(batchId);
+        (data.attachments || []).forEach(function(att) {
+          pendingAttachmentIds.push(att.id);
+          pendingAttachmentNames.push(att.filename);
+          pendingAttachmentTypes.push(att.content_type);
+          addAttachmentPill(att.id, att.filename, att.content_type);
+        });
+      }).catch(function(err) {
+        removeUploadingPills(batchId);
+        showToast('Upload failed: ' + err.message);
+      });
+    }
+
+    if (activeThreadId) {
+      doUpload(activeThreadId);
+    } else {
+      fetch('/chat/api/threads/create/', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCSRFToken() },
+      }).then(function(r) {
+        if (!r.ok) throw new Error('Could not create thread');
+        return r.json();
+      }).then(function(data) {
+        activeThreadId = data.thread_id;
+        addThreadToSidebar(data.thread_id, 'New chat');
+        doUpload(data.thread_id);
+      }).catch(function(err) {
+        removeUploadingPills(batchId);
+        showToast('Failed to create conversation: ' + err.message);
+      });
+    }
+  }
+
   if (imageUploadInput) {
     imageUploadInput.addEventListener('change', function() {
       var files = Array.from(imageUploadInput.files);
       imageUploadInput.value = '';
-      if (!files.length) return;
-
-      // Client-side validation
-      var hasImages = false;
-      for (var i = 0; i < files.length; i++) {
-        var ft = files[i].type;
-        // Browsers sometimes report .docx as application/octet-stream
-        if (ALL_SUPPORTED_TYPES.indexOf(ft) === -1) {
-          if (files[i].name && files[i].name.toLowerCase().endsWith('.docx')) {
-            ft = SUPPORTED_DOCX_TYPES[0];
-          } else {
-            showToast('Unsupported file type: ' + files[i].name);
-            return;
-          }
-        }
-        if (SUPPORTED_IMAGE_TYPES.indexOf(ft) !== -1) hasImages = true;
-        var maxSize = getMaxSizeForType(ft);
-        var maxLabel = maxSize === MAX_PDF_SIZE ? '30 MB' : '10 MB';
-        if (files[i].size > maxSize) {
-          showToast('File too large (max ' + maxLabel + '): ' + files[i].name);
-          return;
-        }
-      }
-      // Vision check — only warn for image files
-      if (hasImages) {
-        var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
-        if (current && !current.supports_vision) {
-          showToast('The selected model does not support image inputs. Please select a vision-capable model.');
-        }
-      }
-
-      var batchId = addUploadingPills(files);
-
-      function doUpload(threadId) {
-        var fd = new FormData();
-        files.forEach(function(f) { fd.append('files', f); });
-        fetch('/chat/api/threads/' + threadId + '/attachments/upload/', {
-          method: 'POST',
-          headers: { 'X-CSRFToken': getCSRFToken() },
-          body: fd,
-        }).then(function(r) {
-          if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Upload failed'); });
-          return r.json();
-        }).then(function(data) {
-          removeUploadingPills(batchId);
-          (data.attachments || []).forEach(function(att) {
-            pendingAttachmentIds.push(att.id);
-            pendingAttachmentNames.push(att.filename);
-            pendingAttachmentTypes.push(att.content_type);
-            addAttachmentPill(att.id, att.filename, att.content_type);
-          });
-        }).catch(function(err) {
-          removeUploadingPills(batchId);
-          showToast('Upload failed: ' + err.message);
-        });
-      }
-
-      if (activeThreadId) {
-        doUpload(activeThreadId);
-      } else {
-        fetch('/chat/api/threads/create/', {
-          method: 'POST',
-          headers: { 'X-CSRFToken': getCSRFToken() },
-        }).then(function(r) {
-          if (!r.ok) throw new Error('Could not create thread');
-          return r.json();
-        }).then(function(data) {
-          activeThreadId = data.thread_id;
-          addThreadToSidebar(data.thread_id, 'New chat');
-          doUpload(data.thread_id);
-        }).catch(function(err) {
-          removeUploadingPills(batchId);
-          showToast('Failed to create conversation: ' + err.message);
-        });
-      }
+      handleFiles(files);
     });
   }
+
+  // -- Drag-and-drop file upload --
+  var chatPane = document.getElementById('chat-pane');
+  var dropOverlay = document.getElementById('drop-overlay');
+  var dragCounter = 0;
+
+  chatPane.addEventListener('dragenter', function(e) {
+    e.preventDefault();
+    dragCounter++;
+    dropOverlay.classList.remove('hidden');
+  });
+
+  chatPane.addEventListener('dragover', function(e) {
+    e.preventDefault();
+  });
+
+  chatPane.addEventListener('dragleave', function(e) {
+    dragCounter--;
+    if (dragCounter === 0) dropOverlay.classList.add('hidden');
+  });
+
+  chatPane.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dragCounter = 0;
+    dropOverlay.classList.add('hidden');
+    handleFiles(Array.from(e.dataTransfer.files));
+  });
 
   // -- Model selector --
   var modelSelectorBtn = document.getElementById('model-selector-btn');
