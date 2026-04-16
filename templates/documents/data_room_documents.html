@@ -4,7 +4,11 @@
 {% block body_class %}pt-16 bg-neutral-primary min-h-screen{% endblock %}
 {% block content %}
 {% include "documents/_data_room_header.html" %}
-<div class="max-w-4xl mx-auto px-4 py-10">
+<div class="max-w-4xl mx-auto px-4 py-10 relative" id="page-container">
+  {# Drop overlay for drag-and-drop file upload #}
+  <div id="drop-overlay" class="hidden absolute inset-0 z-50 bg-brand/10 border-2 border-dashed border-brand rounded-lg flex items-center justify-center pointer-events-none">
+    <span class="text-brand font-medium text-lg">Drop files to upload</span>
+  </div>
   {% if messages %}
   <ul class="mb-6 space-y-2">
     {% for message in messages %}
@@ -36,7 +40,7 @@
 
   <section class="mb-10 p-6 bg-neutral-primary-soft border border-default rounded-base">
     <h2 class="text-lg font-medium text-heading mb-4">Upload documents</h2>
-    <form method="post" action="{% url 'document_upload' data_room_id=data_room.uuid %}" enctype="multipart/form-data" class="max-w-lg">
+    <form id="upload-form" method="post" action="{% url 'document_upload' data_room_id=data_room.uuid %}" enctype="multipart/form-data" class="max-w-lg">
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
@@ -260,5 +264,36 @@
   <script src="{% static 'js/view-document-modal.js' %}"></script>
   <script src="{% static 'js/document-list.js' %}"></script>
   <script src="{% static 'js/data-room-description.js' %}"></script>
+  <script>
+  (function() {
+    var container = document.getElementById('page-container');
+    var dropOverlay = document.getElementById('drop-overlay');
+    var fileInput = document.getElementById('file_input');
+    var uploadForm = document.getElementById('upload-form');
+    if (!container || !dropOverlay || !fileInput || !uploadForm) return;
+    var dragCounter = 0;
+    container.addEventListener('dragenter', function(e) {
+      e.preventDefault();
+      dragCounter++;
+      dropOverlay.classList.remove('hidden');
+    });
+    container.addEventListener('dragover', function(e) {
+      e.preventDefault();
+    });
+    container.addEventListener('dragleave', function(e) {
+      dragCounter--;
+      if (dragCounter === 0) dropOverlay.classList.add('hidden');
+    });
+    container.addEventListener('drop', function(e) {
+      e.preventDefault();
+      dragCounter = 0;
+      dropOverlay.classList.add('hidden');
+      var files = e.dataTransfer.files;
+      if (!files.length) return;
+      fileInput.files = files;
+      uploadForm.submit();
+    });
+  })();
+  </script>
 </div>
 {% endblock %}

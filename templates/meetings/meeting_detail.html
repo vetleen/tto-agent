@@ -4,7 +4,7 @@
 {% block content %}
 {% include "meetings/_meeting_header.html" %}
 
-<div class="max-w-4xl mx-auto px-4 py-8"
+<div class="max-w-4xl mx-auto px-4 py-8 relative" id="page-container"
      data-meeting-uuid="{{ meeting.uuid }}"
      data-meeting-status="{{ meeting.status }}"
      data-meeting-transcript-source="{{ meeting.transcript_source }}"
@@ -12,6 +12,10 @@
      data-auto-stop-default="{{ auto_stop_default_seconds }}"
      data-auto-stop-max="{{ auto_stop_max_seconds }}"
      data-auto-start-transcription="{% if request.GET.transcribe %}1{% else %}0{% endif %}">
+  {# Drop overlay for drag-and-drop file upload #}
+  <div id="drop-overlay" class="hidden absolute inset-0 z-50 bg-brand/10 border-2 border-dashed border-brand rounded-lg flex items-center justify-center pointer-events-none">
+    <span class="text-brand font-medium text-lg">Drop files to upload</span>
+  </div>
   {% if messages %}
   <ul class="mb-6 space-y-2">
     {% for message in messages %}
@@ -179,7 +183,7 @@
     {% else %}
       <p class="text-sm text-body mb-3">No attachments yet.</p>
     {% endif %}
-    <form method="post" action="{% url 'meeting_upload_attachment' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
+    <form id="attachment-upload-form" method="post" action="{% url 'meeting_upload_attachment' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
       {% csrf_token %}
       <label data-disable-while-busy class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 cursor-pointer">
         Add attachment
@@ -390,5 +394,76 @@
 })();
 </script>
 {% endif %}
+<script>
+(function() {
+  var container = document.getElementById('page-container');
+  var dropOverlay = document.getElementById('drop-overlay');
+  if (!container || !dropOverlay) return;
+
+  var TRANSCRIPT_EXTENSIONS = ['.txt', '.md'];
+  var AUDIO_EXTENSIONS = ['.mp3', '.mp4', '.m4a', '.wav', '.webm', '.flac', '.ogg'];
+
+  function getExtension(filename) {
+    var dot = filename.lastIndexOf('.');
+    return dot !== -1 ? filename.substring(dot).toLowerCase() : '';
+  }
+
+  function isTranscriptOrAudio(file) {
+    var ext = getExtension(file.name);
+    return TRANSCRIPT_EXTENSIONS.indexOf(ext) !== -1 || AUDIO_EXTENSIONS.indexOf(ext) !== -1;
+  }
+
+  var dragCounter = 0;
+
+  container.addEventListener('dragenter', function(e) {
+    e.preventDefault();
+    dragCounter++;
+    dropOverlay.classList.remove('hidden');
+  });
+
+  container.addEventListener('dragover', function(e) {
+    e.preventDefault();
+  });
+
+  container.addEventListener('dragleave', function(e) {
+    dragCounter--;
+    if (dragCounter === 0) dropOverlay.classList.add('hidden');
+  });
+
+  container.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dragCounter = 0;
+    dropOverlay.classList.add('hidden');
+    var files = e.dataTransfer.files;
+    if (!files.length) return;
+
+    var file = files[0];
+
+    if (isTranscriptOrAudio(file)) {
+      var uploadForm = document.getElementById('upload-form');
+      if (!uploadForm) return;
+      var fileInput = uploadForm.querySelector('input[type="file"]');
+      if (!fileInput) return;
+
+      var spinner = document.getElementById('upload-spinner');
+      var labelText = document.getElementById('upload-label-text');
+      var label = document.getElementById('upload-label');
+      if (spinner) spinner.classList.remove('hidden');
+      if (labelText) labelText.textContent = 'Uploading\u2026';
+      if (label) label.classList.add('pointer-events-none', 'opacity-60');
+
+      fileInput.files = files;
+      uploadForm.submit();
+    } else {
+      var attachForm = document.getElementById('attachment-upload-form');
+      if (!attachForm) return;
+      var attachInput = attachForm.querySelector('input[type="file"]');
+      if (!attachInput) return;
+      attachInput.files = files;
+      attachForm.submit();
+    }
+  });
+})();
+</script>
 <script src="{% static 'meetings/transcribe.js' %}" defer></script>
 {% endblock %}
