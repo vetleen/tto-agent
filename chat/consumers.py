@@ -821,9 +821,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "thread_cost_usd": thread_cost,
             }))
 
-            # Auto-generate title for new threads (skipped in seed mode —
-            # the seeding view sets a meaningful title up front).
-            if created and not seed_mode:
+            # Auto-generate title for untitled threads (skipped in seed
+            # mode — the seeding view sets a meaningful title up front).
+            # Also covers threads created by file upload (HTTP) before the
+            # first WebSocket message, where ``created`` is False.
+            if not seed_mode and not thread.title:
                 await self._generate_thread_title(thread, content)
 
             # Trigger summarization if history exceeds budget
