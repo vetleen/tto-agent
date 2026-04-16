@@ -236,15 +236,54 @@ def build_text_content_block(text: str, filename: str) -> dict:
     }
 
 
-def extract_docx_text(file_bytes: bytes) -> str:
-    """Extract text from a .docx file as markdown using mammoth + markdownify."""
+DOCX_MAX_DESCRIBED_IMAGES = 10
+
+
+def extract_docx_text(file_bytes: bytes, *, user=None) -> str:
+    """Extract text from a .docx file as markdown using mammoth + markdownify.
+
+    Images are replaced with ``[Image N: <description>]`` placeholders.  When
+    *user* is provided, the first :data:`DOCX_MAX_DESCRIBED_IMAGES` images are
+    described via a vision-capable LLM; remaining images get a format-only
+    label.  Without a user, all images get a simple ``[Image N]`` placeholder.
+    """
     import io
 
     import mammoth
     from markdownify import markdownify as md
 
-    result = mammoth.convert_to_html(io.BytesIO(file_bytes))
-    return md(result.value, heading_style="ATX").strip()
+    image_counter = 0
+
+    def convert_image(image):
+        nonlocal image_counter
+        image_counter += 1
+        idx = image_counter
+
+        if user is not None and idx <= DOCX_MAX_DESCRIBED_IMAGES:
+            with image.open() as img_file:
+                img_bytes = img_file.read()
+            description = describe_image(
+                img_bytes, image.content_type, user, alt_text=image.alt_text,
+            )
+            if description:
+                return {"alt": f"[Image {idx}: {description}]", "src": "#"}
+
+        # Fallback: format-only label or simple placeholder
+        if user is not None:
+            fmt = (image.content_type or "").split("/")[-1].upper().lstrip("X-")
+            label = f"{fmt} image" if fmt else "image"
+            return {"alt": f"[Image {idx}: {label}]", "src": "#"}
+        return {"alt": f"[Image {idx}]", "src": "#"}
+
+    result = mammoth.convert_to_html(
+        io.BytesIO(file_bytes),
+        convert_image=mammoth.images.img_element(convert_image),
+    )
+    content = md(result.value, heading_style="ATX").strip()
+
+    # Clean up markdown image syntax: ![placeholder](#) → placeholder
+    content = re.sub(r"!\[(\[Image \d+[^\]]*\])\]\([^)]*\)", r"\1", content)
+    return content
 
 
 async def generate_summary(

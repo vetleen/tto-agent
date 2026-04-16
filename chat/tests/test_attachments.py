@@ -50,6 +50,59 @@ def _tiny_docx():
     return buf.getvalue()
 
 
+def _docx_with_image():
+    """Return a valid .docx byte string containing an embedded PNG image."""
+    import zipfile
+
+    png_data = _tiny_png()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Default Extension="png" ContentType="image/png"/>'
+            '<Override PartName="/word/document.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '</Types>'
+        ))
+        zf.writestr("_rels/.rels", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="word/document.xml"/>'
+            '</Relationships>'
+        ))
+        zf.writestr("word/_rels/document.xml.rels", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            'Target="media/image1.png"/>'
+            '</Relationships>'
+        ))
+        zf.writestr("word/document.xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+            ' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+            ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+            ' xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"'
+            ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<w:body>'
+            '<w:p><w:r><w:t>Before image</w:t></w:r></w:p>'
+            '<w:p><w:r><w:drawing>'
+            '<wp:inline><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:pic><pic:blipFill><a:blip r:embed="rId1"/></pic:blipFill></pic:pic>'
+            '</a:graphicData></a:graphic></wp:inline>'
+            '</w:drawing></w:r></w:p>'
+            '<w:p><w:r><w:t>After image</w:t></w:r></w:p>'
+            '</w:body>'
+            '</w:document>'
+        ))
+        zf.writestr("word/media/image1.png", png_data)
+    return buf.getvalue()
+
+
 def _tiny_png():
     """Return a minimal valid 1x1 PNG byte string."""
     import struct
@@ -344,6 +397,14 @@ class ExtractDocxTextTests(TestCase):
     def test_extract_from_minimal_docx(self):
         text = extract_docx_text(_tiny_docx())
         self.assertIn("Hello World", text)
+
+    def test_images_replaced_with_placeholder_no_user(self):
+        """Without a user, images become [Image N] placeholders (no base64)."""
+        docx_bytes = _docx_with_image()
+        text = extract_docx_text(docx_bytes)
+        self.assertIn("[Image 1]", text)
+        self.assertNotIn("data:image", text)
+        self.assertNotIn("base64", text)
 
 
 class LoggerTruncationTests(TestCase):

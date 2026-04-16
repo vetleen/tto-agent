@@ -584,14 +584,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     validated.append(room["id"])
             self.data_room_ids = validated
 
-        # Allow payload to specify skill_id
+        # Allow payload to specify skill_id — resolved after thread
+        # creation so the payload value can override DB state when needed.
         payload_skill_id = data.get("skill_id")
+        payload_skill_validated: str | None = None
         if payload_skill_id:
             validated_skill = await self._validate_skill(payload_skill_id)
             if validated_skill:
-                self.active_skill_id = str(validated_skill["id"])
-        elif payload_skill_id == "":
-            self.active_skill_id = None
+                payload_skill_validated = str(validated_skill["id"])
+        payload_wants_clear = payload_skill_id == ""
 
         try:
             # Get or create thread
@@ -602,7 +603,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # Persist session data_room_ids as M2M for new threads
                 if self.data_room_ids:
                     await self._persist_data_room_links(thread.id, self.data_room_ids)
-                # Persist skill FK for new threads
+                # Apply payload skill to memory (and persist for new threads)
+                if payload_skill_validated:
+                    self.active_skill_id = payload_skill_validated
+                elif payload_wants_clear:
+                    self.active_skill_id = None
                 if self.active_skill_id:
                     await self._persist_thread_skill(str(thread.id), self.active_skill_id)
 
@@ -619,6 +624,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
                 self.data_room_ids = thread_dr["data_room_ids"] if thread_dr else []
                 self.active_skill_id = skill_data["skill_id"] if skill_data else None
+
+                # Payload skill overrides DB state — handles the case where
+                # the thread was created without a skill (e.g. by file upload)
+                # but the user attached one in the UI before sending.
+                if payload_skill_validated:
+                    self.active_skill_id = payload_skill_validated
+                    if not skill_data or skill_data["skill_id"] != payload_skill_validated:
+                        await self._persist_thread_skill(str(thread.id), payload_skill_validated)
+                elif payload_wants_clear and self.active_skill_id:
+                    self.active_skill_id = None
+                    await self._persist_thread_skill(str(thread.id), None)
 
             # Persist user message (skipped in seed mode — caller pre-persisted it)
             if not seed_mode:
@@ -2025,7 +2041,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         b64 = base64.b64encode(file_bytes).decode("ascii")
                         block = build_pdf_content_block(b64, att.original_filename, provider)
                     elif ct in SUPPORTED_DOCX_TYPES:
-                        extracted = extract_docx_text(file_bytes)
+                        extracted = await database_sync_to_async(
+                            extract_docx_text
+                        )(file_bytes, user=self.user)
                         block = build_text_content_block(extracted, att.original_filename)
                     elif ct in SUPPORTED_TEXT_TYPES:
                         decoded = file_bytes.decode("utf-8", errors="replace")
