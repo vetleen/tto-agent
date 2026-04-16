@@ -68,12 +68,11 @@ def _parse_provider(model_name: str) -> tuple[str, str]:
 
 def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
     """Return provider-specific default kwargs."""
+    kwargs: dict[str, Any] = {"stream_usage": True}
     if provider == "openai":
-        kwargs: dict[str, Any] = {"stream_usage": True}
         if any(api_model.startswith(p) for p in _RESPONSES_API_PREFIXES):
             kwargs["use_responses_api"] = True
-        return kwargs
-    return {}
+    return kwargs
 
 
 # Shared per-provider rate limiters (thread-safe singletons)

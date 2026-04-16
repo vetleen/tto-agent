@@ -5,6 +5,7 @@ Run only when TEST_APIS=True in the environment and the corresponding API key is
 Use: get_llm_service().run("simple_chat", request) as another app would.
 """
 
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -122,3 +123,67 @@ class FullPromptGuardrailTests(TestCase):
                     f"{model} produced a suspiciously long response ({len(content)} chars) "
                     f"to 'Ping' — likely derailed by injected context.",
                 )
+
+
+@require_test_apis()
+class StreamingUsageCostTests(TestCase):
+    """Stream one message per provider and assert usage metadata and cost are populated."""
+
+    def _stream_and_collect(self, model: str) -> dict:
+        """Stream a short prompt, return the message_end event data."""
+        service = get_llm_service()
+        request = ChatRequest(
+            messages=[Message(role="user", content="Reply with exactly the word OK.")],
+            stream=True,
+            model=model,
+            context=RunContext.create(),
+        )
+        end_data = None
+        with patch.dict(
+            "os.environ",
+            {"LLM_ALLOWED_MODELS": model, "DEFAULT_LLM_MODEL": model},
+            clear=False,
+        ):
+            for event in service.stream("simple_chat", request):
+                if event.event_type == "message_end":
+                    end_data = event.data
+        self.assertIsNotNone(end_data, "No message_end event received from stream")
+        return end_data
+
+    def _assert_usage_and_cost(self, end_data: dict, model: str):
+        self.assertIsNotNone(
+            end_data.get("input_tokens"),
+            f"{model}: input_tokens missing from message_end",
+        )
+        self.assertGreater(
+            end_data["input_tokens"], 0,
+            f"{model}: input_tokens should be > 0",
+        )
+        self.assertIsNotNone(
+            end_data.get("output_tokens"),
+            f"{model}: output_tokens missing from message_end",
+        )
+        self.assertGreater(
+            end_data["output_tokens"], 0,
+            f"{model}: output_tokens should be > 0",
+        )
+        self.assertIsNotNone(
+            end_data.get("cost_usd"),
+            f"{model}: cost_usd missing from message_end",
+        )
+        self.assertGreater(
+            end_data["cost_usd"], 0,
+            f"{model}: cost_usd should be > 0",
+        )
+
+    def test_openai_streaming_returns_usage_and_cost(self):
+        end_data = self._stream_and_collect("gpt-5-nano")
+        self._assert_usage_and_cost(end_data, "gpt-5-nano")
+
+    def test_anthropic_streaming_returns_usage_and_cost(self):
+        end_data = self._stream_and_collect("claude-haiku-4-5-20251001")
+        self._assert_usage_and_cost(end_data, "claude-haiku-4-5-20251001")
+
+    def test_gemini_streaming_returns_usage_and_cost(self):
+        end_data = self._stream_and_collect("gemini-3.1-flash-lite-preview")
+        self._assert_usage_and_cost(end_data, "gemini-3.1-flash-lite-preview")
