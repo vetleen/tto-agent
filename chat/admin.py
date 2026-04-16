@@ -1,4 +1,8 @@
 from django.contrib import admin
+from django.db.models import CharField, OuterRef, Subquery, Sum
+from django.db.models.functions import Cast
+
+from llm.models import LLMCallLog
 
 from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, ThreadTask
 
@@ -26,11 +30,27 @@ class ThreadTaskInline(admin.TabularInline):
 
 @admin.register(ChatThread)
 class ChatThreadAdmin(admin.ModelAdmin):
-    list_display = ("id", "title", "created_by", "created_at", "updated_at")
+    list_display = ("id", "title", "created_by", "cost_usd", "created_at", "updated_at")
     list_filter = ("created_at",)
     search_fields = ("title",)
     readonly_fields = ("id", "created_at", "updated_at")
     inlines = [ChatThreadDataRoomInline, ThreadTaskInline, ChatMessageInline]
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        cost_subquery = (
+            LLMCallLog.objects.filter(conversation_id=Cast(OuterRef("id"), output_field=CharField()))
+            .values("conversation_id")
+            .annotate(total=Sum("cost_usd"))
+            .values("total")
+        )
+        return qs.annotate(_cost_usd=Subquery(cost_subquery))
+
+    @admin.display(description="Cost (USD)", ordering="_cost_usd")
+    def cost_usd(self, obj):
+        if obj._cost_usd is None:
+            return "-"
+        return f"${obj._cost_usd:.4f}"
 
 
 class CanvasCheckpointInline(admin.TabularInline):
