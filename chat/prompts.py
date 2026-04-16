@@ -134,7 +134,7 @@ You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agent
   - `timeout: 30-60` — quick tasks like simple lookups or summaries; the result is returned inline
   - `timeout: 120` — research tasks that need more time; the result is returned inline if it finishes in time
   - Maximum timeout is 540 seconds
-- Choose `model_tier` based on task complexity: "fast" for simple lookups, "mid" (default) for research, "top" for deep analysis
+- Choose `model_tier` based on task complexity: "fast" for simple lookups, "mid" (default) for most simple tasks (like research or summaries), "top" for deep analysis.
 - Provide a specific skill_slug if the task aligns with an available skill
 - Write clear, specific task prompts — the sub-agent has no access to our conversation history
 
