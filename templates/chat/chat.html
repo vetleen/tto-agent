@@ -1350,21 +1350,27 @@
     });
   }
 
+  var latestTasks = [];
   function renderTaskPlan(tasks) {
+    if (tasks !== undefined) latestTasks = tasks;
     if (!taskPlanCard || !taskPlanList || !taskPlanBadge) return;
-    if (!tasks || tasks.length === 0) {
+    if (!latestTasks || latestTasks.length === 0) {
       taskPlanCard.classList.add("hidden");
       return;
     }
-    var completed = tasks.filter(function(t) { return t.status === "completed"; }).length;
-    taskPlanBadge.textContent = "Task Plan (" + completed + "/" + tasks.length + ")";
+    var completed = latestTasks.filter(function(t) { return t.status === "completed"; }).length;
+    taskPlanBadge.textContent = "Task Plan (" + completed + "/" + latestTasks.length + ")";
     var html = "";
-    tasks.forEach(function(t) {
+    latestTasks.forEach(function(t) {
       var icon = "";
       if (t.status === "completed") {
         icon = '<svg class="w-3.5 h-3.5 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
       } else if (t.status === "in_progress") {
-        icon = '<svg class="w-3.5 h-3.5 shrink-0 animate-spin text-brand" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+        if (locked) {
+          icon = '<svg class="w-3.5 h-3.5 shrink-0 animate-spin text-brand" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+        } else {
+          icon = '<svg class="w-3.5 h-3.5 shrink-0 text-brand" fill="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg>';
+        }
       } else {
         icon = '<svg class="w-3.5 h-3.5 shrink-0 text-body/40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-width="2"/></svg>';
       }
@@ -1431,13 +1437,17 @@
     const indicator = document.getElementById("connection-indicator");
     const spinner = document.getElementById("connection-spinner");
     const text = document.getElementById("connection-text");
+    const statusContainer = document.getElementById("connection-status");
     if (isConnecting) {
+      if (statusContainer) statusContainer.classList.remove("hidden");
       if (spinner) spinner.classList.remove("hidden"); if (indicator) indicator.classList.add("hidden");
       text.textContent = "Connecting..."; input.disabled = true; button.disabled = true;
     } else if (connected) {
-      if (spinner) spinner.classList.add("hidden"); if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-success"; }
+      if (statusContainer) statusContainer.classList.add("hidden");
+      if (spinner) spinner.classList.add("hidden"); if (indicator) indicator.classList.add("hidden");
       text.textContent = ""; if (!currentStreamingElement) { input.disabled = false; button.disabled = false; }
     } else {
+      if (statusContainer) statusContainer.classList.remove("hidden");
       if (spinner) spinner.classList.add("hidden"); if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-danger"; }
       text.textContent = reconnectAttempts > 0 ? `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})` : "Disconnected";
       text.className = "text-xs text-body" + (reconnectAttempts === 0 ? " text-danger" : "");
@@ -1753,7 +1763,7 @@
     if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
-  function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = "Send"; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } }
+  function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = "Send"; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } renderTaskPlan(); }
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("[Timed out]"); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   function createAssistantBubble() {
@@ -1820,6 +1830,7 @@
     var sendAttachmentIds = pendingAttachmentIds.slice();
     clearImagePills();
     input.value = ""; autoResize(input); input.disabled = true; button.disabled = true; locked = true;
+    renderTaskPlan();
     button.classList.add("hidden"); stopButton.classList.remove("hidden");
     currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); accumulatedContent = "";
     // Force scroll to absolute bottom so user sees their message + Wilfred's spinner
