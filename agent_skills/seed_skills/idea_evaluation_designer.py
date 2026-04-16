@@ -657,6 +657,22 @@ comparable deal values from similar products.
 - *Work:* Customer interviews with value quantification, comparable \
 analysis, business case modeling.
 
+### Checkpoint: verify with the user
+
+Before building the plan, **present the selected key questions to the \
+user in chat** — the same table that will appear in the final plan \
+(question, why it matters, current evidence, target evidence). Then \
+ask:
+
+> "These are the questions I think we need to answer to make a go/no-go call for this idea. \
+> Before I build the plan around them — would you adjust any of \
+> these, and is there anything else we should have a solid answer \
+> to before making a decision?"
+
+Wait for the user's response and incorporate their feedback before \
+proceeding. This is a judgment call the user must actively make — \
+don't skip it even if the user seems eager to move on.
+
 ## Building the plan — from questions to activities
 
 Once questions are selected and prioritized, **consolidate them \
@@ -753,22 +769,6 @@ pad with work that depends on an unformed hypothesis.""",
 [1–3 sentences. What kind of case is this? Why does that shape the \
 plan?]
 
-## Idea Classification
-
-- **Type:** [component / single product / platform in one domain / \
-platform across domains]
-- **Maturity:** [scientific principle / early data / working prototype \
-/ field-tested]
-- **Path bias:** [license / startup / unclear — evaluating both]
-- **Domain:** [pharma / medtech / diagnostics / ICT & software / \
-energy & materials / industrial / consumer / other]
-- **Deep tech:** [yes / no]
-
-## What We Already Know
-
-- [fact — source]
-- [fact — source]
-
 ## Key Questions to Answer
 
 | # | Question | Why it matters for this idea | Current evidence | Target evidence |
@@ -780,7 +780,16 @@ energy & materials / industrial / consumer / other]
 **Questions considered but deprioritized:** [name them and say why — \
 keeps the plan honest about trade-offs.]
 
-## Idea Evaluation Activities
+## Activity Overview
+
+| # | Activity | Questions | Budget (hrs) | Priority |
+|---|----------|-----------|--------------|----------|
+| 1 | [e.g. User/customer interviews] | Q1, Q2, Q3 | [e.g. 10–15] | Critical |
+| 2 | [e.g. Desktop research] | Q5, Q7, Q8 | [e.g. 5–10] | Critical |
+| 3 | [...] | [...] | [...] | Important |
+| 4 | [...] | [...] | [...] | Optional |
+
+## Detailed Activity Descriptions
 
 ### Critical
 
