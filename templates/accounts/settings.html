@@ -74,7 +74,7 @@
           data-kind="live"
           class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">Default ({{ transcription_model_display|default_if_none:"" }}{{ resolved_transcription_model_live }})</option>
+          <option value="">Default ({{ resolved_transcription_model_live }})</option>
           {% for model in live_capable_transcription_models %}
           <option value="{{ model }}" {% if user_transcription_model_live == model %}selected{% endif %}>{{ model }}</option>
           {% endfor %}
