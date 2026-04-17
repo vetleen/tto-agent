@@ -57,6 +57,17 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._segments_total: int = 0
         self._segments_failed: int = 0
         self._model_id: str = ""
+        # Realtime-mode state. None in the default "chunked" path — filled in
+        # by _maybe_start_realtime() when the cascading preference asks for
+        # the OpenAI Realtime session instead of the per-chunk Celery tasks.
+        self._realtime_mode: str = "chunked"
+        self._realtime_session = None
+        self._pcm_pipe = None
+        self._realtime_tasks: list[asyncio.Task] = []
+        self._realtime_started: bool = False
+        self._realtime_language: str = ""
+        self._total_pcm_bytes: int = 0
+        self._live_segment_counter: int = 0  # counts utterances persisted in realtime mode
 
         if not self.user or self.user.is_anonymous:
             await self.close(code=4401)
@@ -81,6 +92,10 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self.meeting_uuid = str(meeting["uuid"])
         self._segment_index_base = meeting["segment_index_base"]
         self._model_id = meeting["model_id"]
+        self._realtime_mode = meeting.get("live_mode") or "chunked"
+        self._realtime_language = meeting.get("forced_language") or ""
+        self._realtime_prompt = meeting.get("prompt") or ""
+        self._live_segment_counter = self._segment_index_base
         self._group_name = f"meetings.{self.meeting_uuid}"
 
         await self.channel_layer.group_add(self._group_name, self.channel_name)
@@ -102,6 +117,13 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             except (asyncio.CancelledError, Exception):
                 pass
             self._heartbeat_task = None
+        # Teardown realtime first so pending utterances get a chance to persist
+        # before we flip the meeting row to INTERRUPTED.
+        if self._realtime_started:
+            try:
+                await self._teardown_realtime()
+            except Exception:
+                logger.exception("disconnect: realtime teardown failed")
         if self.meeting_id and not self._stopped and not self._stop_requested:
             try:
                 await self._finalize_meeting(interrupted=True)
@@ -185,6 +207,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         })
 
     async def _handle_binary_frame(self, raw: bytes) -> None:
+        if self._realtime_mode != "chunked":
+            await self._handle_binary_frame_realtime(raw)
+            return
         if not self._pending_meta:
             await self._send_error("Binary frame received with no pending chunk_meta.")
             return
@@ -213,6 +238,230 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             logger.exception("enqueue chunk task failed")
             await self._send_error(f"Could not start transcription: {exc}")
 
+    # -------------------------------------------------- realtime mode
+
+    async def _handle_binary_frame_realtime(self, raw: bytes) -> None:
+        """Forward raw container bytes straight to the ffmpeg pipe.
+
+        chunk_meta is optional in realtime mode — if the client sends it we
+        use the first one's ``mime`` to pick ffmpeg's input demuxer; any
+        subsequent metadata is consumed but not required to match. The
+        byte_length sanity check is kept as DoS protection.
+        """
+        max_bytes = getattr(settings, "MEETING_CHUNK_MAX_BYTES", 20 * 1024 * 1024)
+        if len(raw) > max_bytes:
+            await self._send_error(f"chunk too large: {len(raw)} > {max_bytes}")
+            return
+        mime = "audio/webm"
+        if self._pending_meta:
+            # Drain the metadata queue so it doesn't grow unbounded. The first
+            # entry provides the mime for the pipe on the very first frame.
+            meta = self._pending_meta.pop(0)
+            mime = meta.get("mime") or mime
+
+        if not self._realtime_started:
+            try:
+                await self._start_realtime_session(mime)
+            except Exception as exc:
+                logger.exception("realtime: could not start session")
+                await self._send_error(f"Could not start realtime session: {exc}")
+                self._realtime_mode = "chunked"  # give up on realtime for this meeting
+                return
+        try:
+            await self._pcm_pipe.write(raw)
+        except Exception as exc:
+            logger.warning("realtime: pipe write failed (%s)", exc)
+
+    async def _start_realtime_session(self, mime: str) -> None:
+        from meetings.services.pcm_pipe import PcmPipe
+        from meetings.services.realtime_session import build_realtime_session
+
+        self._pcm_pipe = PcmPipe(mime=mime)
+        await self._pcm_pipe.start()
+
+        self._realtime_session = build_realtime_session(
+            model_id=self._model_id,
+            prompt=self._realtime_prompt or None,
+            language=self._realtime_language or None,
+        )
+        try:
+            await self._realtime_session.connect()
+        except Exception:
+            # Unwind the pipe so we don't leak ffmpeg on connect failure.
+            try:
+                await self._pcm_pipe.aclose()
+            finally:
+                self._pcm_pipe = None
+            raise
+
+        self._realtime_tasks = [
+            asyncio.create_task(self._pump_pcm_to_realtime()),
+            asyncio.create_task(self._consume_realtime_events()),
+        ]
+        self._realtime_started = True
+        logger.info(
+            "realtime: session started (meeting=%s model=%s mime=%s)",
+            self.meeting_uuid, self._model_id, mime,
+        )
+
+    async def _pump_pcm_to_realtime(self) -> None:
+        """Forward decoded PCM from the ffmpeg pipe to the realtime session."""
+        try:
+            async for frame in self._pcm_pipe.read_frames():
+                self._total_pcm_bytes += len(frame)
+                await self._realtime_session.send_pcm(frame)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("realtime: PCM pump crashed")
+
+    async def _consume_realtime_events(self) -> None:
+        """Translate structured provider events into client-facing WS messages."""
+        from meetings.services.realtime_session import (
+            SessionError,
+            SessionStatus,
+            TranscriptCompleted,
+            TranscriptDelta,
+        )
+
+        try:
+            async for evt in self._realtime_session.events():
+                if isinstance(evt, TranscriptDelta):
+                    await self.send(text_data=json.dumps({
+                        "type": "transcript.delta",
+                        "item_id": evt.item_id,
+                        "text": evt.text,
+                    }))
+                elif isinstance(evt, TranscriptCompleted):
+                    await self._persist_realtime_utterance(evt)
+                elif isinstance(evt, SessionStatus):
+                    await self.send(text_data=json.dumps({
+                        "type": "session.status",
+                        "state": evt.state,
+                    }))
+                    if evt.state == "disconnected":
+                        return
+                elif isinstance(evt, SessionError):
+                    await self.send(text_data=json.dumps({
+                        "type": "error",
+                        "message": f"{evt.code}: {evt.message}",
+                    }))
+                    if evt.fatal:
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("realtime: event consumer crashed")
+
+    async def _persist_realtime_utterance(self, completed) -> None:
+        """Create a MeetingTranscriptSegment row + push segment.ready to client."""
+        # Compute the start offset from cumulative PCM bytes forwarded before
+        # this utterance started. The server's clock is authoritative for the
+        # server-VAD turn boundaries; we just need a stable ordering hint for
+        # the UI.
+        start_offset = self._total_pcm_bytes / (24_000 * 2)
+        idx = await self._allocate_and_persist_segment(
+            text=completed.text,
+            start_offset=start_offset,
+            model_id=self._model_id,
+            usage=completed.usage,
+        )
+        if idx is None:
+            return
+        await self.send(text_data=json.dumps({
+            "type": "segment.ready",
+            "segment_index": idx,
+            "text": completed.text,
+            "start_offset_seconds": start_offset,
+            "transcription_model": self._model_id,
+        }))
+
+    @database_sync_to_async
+    def _allocate_and_persist_segment(self, *, text, start_offset, model_id, usage):
+        """Persist one realtime utterance as a MeetingTranscriptSegment row.
+
+        Also writes a cost-tracking row to LLMCallLog via log_transcription_streaming
+        so billing analytics sees one row per utterance, matching how the chunked
+        path produces one row per chunk.
+        """
+        from django.db import transaction
+        from .models import Meeting, MeetingTranscriptSegment
+        from .services.chunks import recompute_meeting_transcript
+
+        try:
+            with transaction.atomic():
+                max_existing = (
+                    MeetingTranscriptSegment.objects
+                    .select_for_update()
+                    .filter(meeting_id=self.meeting_id)
+                    .order_by("-segment_index")
+                    .values_list("segment_index", flat=True)
+                    .first()
+                )
+                idx = (max_existing + 1) if max_existing is not None else 0
+                MeetingTranscriptSegment.objects.create(
+                    meeting_id=self.meeting_id,
+                    segment_index=idx,
+                    text=text,
+                    transcription_model=model_id,
+                    start_offset_seconds=start_offset,
+                    status=MeetingTranscriptSegment.Status.READY,
+                    transcribed_at=timezone.now(),
+                )
+                recompute_meeting_transcript(self.meeting_id)
+            self._segments_total += 1
+
+            # Cost logging — never raises.
+            try:
+                from llm.service.logger import log_transcription_streaming
+                from llm.types.context import RunContext
+                log_transcription_streaming(
+                    model=model_id,
+                    context=RunContext.create(user_id=self.user.id),
+                    kind="realtime_utterance",
+                    item_id="",  # filled by caller if we track it
+                    audio_duration_seconds=0.0,  # server doesn't give us per-utterance audio seconds reliably
+                    transcript_len=len(text),
+                    input_tokens=(usage or {}).get("input_tokens"),
+                    output_tokens=(usage or {}).get("output_tokens"),
+                    total_tokens=(usage or {}).get("total_tokens"),
+                )
+            except Exception:
+                logger.exception("realtime: log_transcription_streaming failed")
+            return idx
+        except Exception:
+            logger.exception("realtime: persist utterance failed")
+            return None
+
+    async def _teardown_realtime(self) -> None:
+        """Cancel forwarder tasks, flush the session, close the pipe."""
+        if self._realtime_session is not None:
+            try:
+                await self._realtime_session.finalize(timeout=2.0)
+            except Exception:
+                pass
+        for task in self._realtime_tasks:
+            task.cancel()
+        for task in self._realtime_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._realtime_tasks = []
+        if self._realtime_session is not None:
+            try:
+                await self._realtime_session.aclose()
+            except Exception:
+                pass
+            self._realtime_session = None
+        if self._pcm_pipe is not None:
+            try:
+                await self._pcm_pipe.aclose()
+            except Exception:
+                pass
+            self._pcm_pipe = None
+        self._realtime_started = False
+
     async def _handle_set_model(self, payload: dict) -> None:
         """Switch the transcription model used for *future* chunks.
 
@@ -239,6 +488,11 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
     async def _handle_stop(self) -> None:
         self._stop_requested = True
+        if self._realtime_started:
+            try:
+                await self._teardown_realtime()
+            except Exception:
+                logger.exception("_handle_stop: realtime teardown failed")
         try:
             duration_seconds, segments_total, segments_failed = await self._finalize_meeting(interrupted=False)
         except Exception:
@@ -324,11 +578,13 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         # Pick the transcription model: meeting's saved choice wins, then user
         # prefs default, then the project default. The meeting's choice is set
         # by the model picker in the UI (POST to meeting_update_metadata).
+        live_mode = "chunked"
         try:
             from core.preferences import get_preferences
             prefs = get_preferences(self.user)
             allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
             prefs_default = getattr(prefs, "transcription_model", "") or ""
+            live_mode = getattr(prefs, "live_transcription_mode", "chunked") or "chunked"
         except Exception:
             allowed_models = []
             prefs_default = ""
@@ -341,6 +597,30 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             model_id = allowed_models[0]
         else:
             model_id = getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
+
+        # Defend against a user picking a batch-only model while the effective
+        # mode asks for realtime: fall back to chunked for that session.
+        from llm.transcription_registry import get_transcription_model_info
+        info = get_transcription_model_info(model_id)
+        if live_mode != "chunked" and (info is None or not info.supports_live_streaming):
+            logger.info(
+                "_load_and_lock_meeting: selected model %s cannot stream live; "
+                "forcing chunked mode for this session",
+                model_id,
+            )
+            live_mode = "chunked"
+
+        # Seed a prompt for the realtime session from meeting metadata so the
+        # model biases toward proper nouns. Reuses the same builder the upload
+        # path uses so both routes see identical context.
+        prompt = ""
+        if live_mode != "chunked":
+            try:
+                from meetings.services.audio_transcription import build_transcription_prompt
+                tail = (meeting.transcript or "")[-1200:] if meeting.transcript else None
+                prompt = build_transcription_prompt(meeting, prior_tail=tail)
+            except Exception:
+                prompt = ""
 
         # Transition the meeting to LIVE_TRANSCRIBING (preserve started_at on resume).
         update_fields = ["status", "transcript_source", "updated_at"]
@@ -360,6 +640,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             "started_at": meeting.started_at.isoformat() if meeting.started_at else None,
             "segment_index_base": segment_index_base,
             "model_id": model_id,
+            "live_mode": live_mode,
+            "forced_language": (meeting.forced_language or "") or None,
+            "prompt": prompt,
         }
 
     @database_sync_to_async

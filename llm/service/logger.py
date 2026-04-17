@@ -394,4 +394,78 @@ def log_transcription_error(
         logger.exception("Failed to write LLM error log (transcription)")
 
 
-__all__ = ["log_call", "log_stream", "log_error", "log_transcription", "log_transcription_error"]
+def log_transcription_streaming(
+    model: str,
+    context: "RunContext | None",
+    *,
+    kind: str,                # "realtime_utterance" or "realtime_session"
+    session_id: str | None = None,
+    item_id: str | None = None,
+    audio_duration_seconds: float = 0.0,
+    transcript_len: int = 0,
+    cost_usd: "Decimal | None" = None,
+    duration_ms: int = 0,
+    input_tokens: "int | None" = None,
+    output_tokens: "int | None" = None,
+    total_tokens: "int | None" = None,
+    audio_tokens: "int | None" = None,
+    extra_metadata: dict | None = None,
+) -> None:
+    """Write a SUCCESS log entry for a realtime transcription event. Never raises.
+
+    Used for both per-utterance events (one row per completed utterance) and
+    session summaries (one row on session close with aggregate counters). The
+    ``kind`` column in ``response_metadata`` distinguishes them so analytics
+    can GROUP BY mode without breaking existing transcription cost dashboards
+    that read ``LLMCallLog.cost_usd`` directly.
+    """
+    try:
+        from llm.models import LLMCallLog
+
+        metadata = {
+            "kind": kind,
+            "session_id": session_id or "",
+            "item_id": item_id or "",
+            "audio_duration_seconds": audio_duration_seconds,
+            "transcript_len": transcript_len,
+            "audio_tokens": audio_tokens,
+        }
+        if extra_metadata:
+            metadata.update(extra_metadata)
+
+        label = "realtime utterance" if kind == "realtime_utterance" else "realtime session"
+        LLMCallLog.objects.create(
+            user=_resolve_user(context.user_id if context else None),
+            run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
+            model=model,
+            is_stream=True,
+            prompt=[{
+                "role": "user",
+                "content": (
+                    f"[{label}: {audio_duration_seconds:.1f}s audio, "
+                    f"transcript_len={transcript_len}]"
+                ),
+            }],
+            raw_output=f"[transcript: {transcript_len:,} chars]",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+            status=LLMCallLog.Status.SUCCESS,
+            response_metadata=metadata,
+        )
+    except Exception:
+        logger.exception("Failed to write LLM call log (realtime transcription)")
+
+
+__all__ = [
+    "log_call",
+    "log_stream",
+    "log_error",
+    "log_transcription",
+    "log_transcription_error",
+    "log_transcription_streaming",
+]

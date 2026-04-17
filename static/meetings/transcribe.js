@@ -525,6 +525,8 @@
     if (transcriptPane.querySelector('.italic')) {
       transcriptPane.innerHTML = '';
     }
+    // Clear any interim delta node — the canonical segment text supersedes it.
+    clearInterimDelta();
     let node = pendingSegments[idx];
     if (!node) {
       node = document.createElement('span');
@@ -549,6 +551,39 @@
     } else {
       node.textContent = (text || '') + ' ';
       node.className = '';
+    }
+  }
+
+  // ---------------- realtime interim delta rendering ----------------
+  let interimNode = null;
+  function renderInterimDelta(textChunk) {
+    if (!transcriptPane) return;
+    if (transcriptPane.querySelector('.italic')) {
+      transcriptPane.innerHTML = '';
+    }
+    if (!interimNode) {
+      interimNode = document.createElement('span');
+      interimNode.className = 'text-body italic opacity-70';
+      interimNode.dataset.interim = '1';
+      transcriptPane.appendChild(interimNode);
+    }
+    interimNode.textContent = (interimNode.textContent || '') + textChunk;
+  }
+  function clearInterimDelta() {
+    if (interimNode && interimNode.parentNode) {
+      interimNode.parentNode.removeChild(interimNode);
+    }
+    interimNode = null;
+  }
+  function updateSessionStatus(state) {
+    // Surface upstream-provider state next to the transcribe indicator so a
+    // silent OpenAI dropout is visible to the user rather than looking like
+    // the mic stopped working.
+    if (!transcribingIndicatorLabel) return;
+    if (state === 'reconnecting') {
+      transcribingIndicatorLabel.textContent = 'Reconnecting to transcription…';
+    } else if (state === 'connected') {
+      transcribingIndicatorLabel.textContent = 'Transcribing…';
     }
   }
 
@@ -594,6 +629,15 @@
           inFlightSegments.delete(msg.segment_index);
           updateIndicator();
           maybeFlushStop();
+        } else if (msg.type === 'transcript.delta') {
+          // Realtime path: interim text appears between segment.ready boundaries.
+          // Render as a single grey/italic node that we update in place, then
+          // clear when the next segment.ready lands.
+          renderInterimDelta(msg.text || '');
+        } else if (msg.type === 'session.status') {
+          // Realtime only — reflects connection state with the upstream provider.
+          // "reconnecting" shows a warning; "connected" / "disconnected" clear it.
+          updateSessionStatus(msg.state);
         } else if (msg.type === 'stopped') {
           // server confirmed stop; reload to show final transcript + status
           window.setTimeout(function () { window.location.reload(); }, 500);

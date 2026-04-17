@@ -9,6 +9,13 @@ from django.conf import settings as django_settings
 DEFAULT_MAX_CONTEXT_TOKENS = 200_000
 MIN_CONTEXT_TOKENS = 10_000
 
+# Live transcription path preference — cascades system → org → user → meeting.
+# "chunked" (default) uses the HTTP /v1/audio/transcriptions batching path;
+# "realtime" opens an OpenAI Realtime session for sub-second latency;
+# "realtime_with_fallback" tries realtime and falls back to chunked on connect
+# failure. Invalid values fall back to "chunked".
+LIVE_TRANSCRIPTION_MODES = ("chunked", "realtime", "realtime_with_fallback")
+
 
 @dataclass
 class ResolvedPreferences:
@@ -23,6 +30,7 @@ class ResolvedPreferences:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     transcription_model: str = ""
     allowed_transcription_models: list[str] = field(default_factory=list)
+    live_transcription_mode: str = "chunked"
 
 
 def _get_system_model_defaults() -> dict[str, str]:
@@ -118,6 +126,14 @@ def get_preferences(user) -> ResolvedPreferences:
         # Empty allowed list = transcription disabled
         transcription_model = ""
 
+    # --- Live transcription mode cascade (system → org → user) ---
+    system_live_mode = getattr(django_settings, "MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT", "chunked")
+    org_live_mode = org_prefs.get("live_transcription_mode")
+    user_live_mode = user_prefs.get("live_transcription_mode")
+    resolved_live_mode = user_live_mode or org_live_mode or system_live_mode
+    if resolved_live_mode not in LIVE_TRANSCRIPTION_MODES:
+        resolved_live_mode = "chunked"
+
     # Resolve tools: base chat-section tools filtered by org toggles
     base_allowed = [t for t in chat_tools if org_tools.get(t, True) is not False]
 
@@ -178,6 +194,7 @@ def get_preferences(user) -> ResolvedPreferences:
         max_context_tokens=max_context_tokens,
         transcription_model=transcription_model,
         allowed_transcription_models=effective_transcription_allowed,
+        live_transcription_mode=resolved_live_mode,
     )
 
 
