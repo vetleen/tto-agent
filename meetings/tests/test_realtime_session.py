@@ -102,8 +102,10 @@ class _FakeConnectionManager:
 class _FakeRealtimeNamespace:
     def __init__(self, conn: _FakeConnection):
         self.conn = conn
+        self.last_connect_kwargs: dict = {}
 
-    def connect(self, *, model: str):
+    def connect(self, **kwargs):
+        self.last_connect_kwargs = kwargs
         return _FakeConnectionManager(self.conn)
 
 
@@ -170,11 +172,12 @@ class OpenAIRealtimeSessionTests(TestCase):
         conn = _FakeConnection(script=[
             _FakeEvent(type="transcription_session.created", session=_FakeEvent(id="sess_1")),
         ])
+        fake_client = _FakeAsyncOpenAI(conn)
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
             prompt="OncoBio Therapeutics meeting",
             language="en",
-            _client_factory=_factory_for(conn),
+            _client_factory=lambda: fake_client,
         )
 
         async def run():
@@ -184,6 +187,18 @@ class OpenAIRealtimeSessionTests(TestCase):
             await session.aclose()
 
         _run(run())
+
+        # The SDK's connect() must receive ``intent=transcription`` via
+        # extra_query — without it OpenAI rejects the transcription model
+        # with invalid_request_error.invalid_model.
+        self.assertEqual(
+            fake_client.beta.realtime.last_connect_kwargs.get("extra_query"),
+            {"intent": "transcription"},
+        )
+        self.assertEqual(
+            fake_client.beta.realtime.last_connect_kwargs.get("model"),
+            "gpt-4o-mini-transcribe",
+        )
 
         # The SDK's "send" accepts a dict for raw event shapes.
         self.assertEqual(len(conn.sent), 1)

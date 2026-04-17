@@ -216,7 +216,16 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
 
     async def _open(self) -> None:
         client = self._client_factory()
-        self._cm = client.beta.realtime.connect(model=self._api_model)
+        # The /v1/realtime endpoint expects a conversational model in the
+        # ``?model=`` query parameter (e.g. gpt-4o-realtime-preview). Passing
+        # a transcription model there yields ``invalid_request_error.invalid_model``.
+        # For transcription-only sessions we add ``?intent=transcription`` so
+        # OpenAI routes to the transcription path and the transcription model
+        # in the session config below is the one that actually runs.
+        self._cm = client.beta.realtime.connect(
+            model=self._api_model,
+            extra_query={"intent": "transcription"},
+        )
         self._conn = await self._cm.__aenter__()
         await self._send_session_update()
         self._recv_task = asyncio.create_task(self._receive_loop())
