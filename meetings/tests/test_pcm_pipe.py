@@ -30,17 +30,15 @@ def _ffmpeg_on_path() -> bool:
 
 
 def _run_async(coro):
-    """Run a coroutine on an event loop that can spawn subprocesses.
+    """Run a coroutine on a fresh event loop.
 
-    On Windows Python 3.10+ defaults to SelectorEventLoop which raises
-    NotImplementedError on ``create_subprocess_exec``. Force a
-    ProactorEventLoop here so the test mirrors the runtime we'd get under
-    Channels/Daphne (which itself configures the proactor loop).
+    PcmPipe uses ``subprocess.Popen`` plus a pair of background threads
+    rather than ``asyncio.create_subprocess_exec``, so the loop type
+    doesn't matter anymore — works on both SelectorEventLoop and
+    ProactorEventLoop. We still create a fresh loop to avoid leaking
+    state between tests.
     """
-    if sys.platform == "win32":
-        loop = asyncio.ProactorEventLoop()
-    else:
-        loop = asyncio.new_event_loop()
+    loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
