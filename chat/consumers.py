@@ -2030,6 +2030,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             build_image_content_block,
             build_pdf_content_block,
             build_text_content_block,
+            detect_provider,
             extract_docx_text,
         )
 
@@ -2047,9 +2048,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         # Determine provider from model
-        provider = ""
-        if model and "/" in model:
-            provider = model.split("/", 1)[0].lower()
+        provider = detect_provider(model or "")
 
         # messages[0] is system prompt, so history[i] corresponds to messages[i+1]
         for i, msg in enumerate(history):

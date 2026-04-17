@@ -7,6 +7,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from llm.core.model_factory import detect_provider
+
 if TYPE_CHECKING:
     from django.core.files.uploadedfile import UploadedFile
 
@@ -386,7 +388,7 @@ def describe_image(
         prompt += f"\nThe original alt text was: {alt_text}"
 
     # Determine provider to use the right content block format
-    provider = model.split("/", 1)[0].lower() if "/" in model else ""
+    provider = detect_provider(model)
     image_block = build_image_content_block(b64, media_type, provider)
 
     content_blocks: list = [

@@ -66,9 +66,30 @@ def _parse_provider(model_name: str) -> tuple[str, str]:
     )
 
 
+def detect_provider(model_name: str | None) -> str:
+    """Return the provider id for *model_name*, or ``""`` if unknown.
+
+    Accepts both explicit-prefix forms (``anthropic/…``, ``openai/…``,
+    ``gemini/…``) and bare api names (``claude-…``, ``gpt-…``, ``gemini-…``).
+    Callers that only need provider identity for content-block formatting
+    should use this instead of splitting on ``/`` — prefix-less names
+    otherwise resolve to ``""`` and the request ships with the wrong
+    provider's schema.
+    """
+    if not model_name:
+        return ""
+    try:
+        return _parse_provider(model_name)[0]
+    except LLMConfigurationError:
+        return ""
+
+
 def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
     """Return provider-specific default kwargs."""
-    kwargs: dict[str, Any] = {"stream_usage": True}
+    kwargs: dict[str, Any] = {}
+    # stream_usage is supported by OpenAI and Anthropic but not Google
+    if provider != "google_genai":
+        kwargs["stream_usage"] = True
     if provider == "openai":
         if any(api_model.startswith(p) for p in _RESPONSES_API_PREFIXES):
             kwargs["use_responses_api"] = True
@@ -185,4 +206,4 @@ def create_variant_client(api_model: str, provider: str, **extra_kwargs):
     )
 
 
-__all__ = ["create_chat_model", "create_variant_client"]
+__all__ = ["create_chat_model", "create_variant_client", "detect_provider"]

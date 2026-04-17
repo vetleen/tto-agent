@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from llm.core.model_factory import _parse_provider, _get_rate_limiter, _rate_limiters
+from llm.core.model_factory import (
+    _get_rate_limiter,
+    _parse_provider,
+    _rate_limiters,
+    detect_provider,
+)
 from llm.service.errors import LLMConfigurationError
 
 
@@ -63,6 +68,33 @@ class ParseProviderTests(SimpleTestCase):
         self.assertIn("Cannot determine provider", str(ctx.exception))
 
 
+class DetectProviderTests(SimpleTestCase):
+    """detect_provider must handle prefix-less model names without raising —
+    block-building for multimodal messages relies on this."""
+
+    def test_explicit_prefix(self):
+        self.assertEqual(detect_provider("anthropic/claude-sonnet-4-6"), "anthropic")
+        self.assertEqual(detect_provider("openai/gpt-5-mini"), "openai")
+        self.assertEqual(detect_provider("gemini/gemini-2.5-flash"), "google_genai")
+
+    def test_prefix_less_claude(self):
+        self.assertEqual(detect_provider("claude-sonnet-4-6"), "anthropic")
+
+    def test_prefix_less_gpt(self):
+        self.assertEqual(detect_provider("gpt-5-mini"), "openai")
+
+    def test_prefix_less_gemini(self):
+        self.assertEqual(detect_provider("gemini-2.5-pro"), "google_genai")
+
+    def test_empty_and_none(self):
+        self.assertEqual(detect_provider(""), "")
+        self.assertEqual(detect_provider(None), "")
+
+    def test_unknown_model_returns_empty(self):
+        """Unknown model must not raise — callers fall through to a safe default."""
+        self.assertEqual(detect_provider("llama-3-70b"), "")
+
+
 class CreateChatModelTests(SimpleTestCase):
     """Test create_chat_model wrapper class selection."""
 
@@ -107,6 +139,8 @@ class CreateChatModelTests(SimpleTestCase):
         model = create_chat_model("gemini-2.5-pro")
         self.assertIsInstance(model, GeminiChatModel)
         self.assertEqual(model.name, "gemini-2.5-pro")
+        call_kwargs = mock_init.call_args
+        self.assertNotIn("stream_usage", call_kwargs[1])
 
     @patch("llm.core.model_factory.init_chat_model")
     def test_explicit_prefix_stripped_for_api(self, mock_init):

@@ -13,6 +13,7 @@ from chat.services import (
     build_image_content_block,
     build_pdf_content_block,
     build_text_content_block,
+    detect_provider,
     extract_docx_text,
 )
 
@@ -363,6 +364,27 @@ class ChatHomeVisionContextTests(TestCase):
         for c in choices:
             self.assertIn("supports_vision", c)
             self.assertIsInstance(c["supports_vision"], bool)
+
+
+class AttachmentProviderDetectionTests(TestCase):
+    """Regression: prefix-less Claude model names must still resolve to the
+    anthropic block schema. A prior ``"/" in model`` check produced
+    ``provider=""`` for ``claude-sonnet-4-6`` and shipped image_url-style PDF
+    blocks to Anthropic, which rejected them with a Malformed-URL ValueError."""
+
+    def test_prefix_less_claude_builds_anthropic_pdf_block(self):
+        provider = detect_provider("claude-sonnet-4-6")
+        self.assertEqual(provider, "anthropic")
+        block = build_pdf_content_block("abc", "report.pdf", provider)
+        self.assertEqual(block["type"], "document")
+        self.assertEqual(block["source"]["type"], "base64")
+        self.assertEqual(block["source"]["media_type"], "application/pdf")
+
+    def test_prefix_less_claude_builds_anthropic_image_block(self):
+        provider = detect_provider("claude-opus-4-6")
+        block = build_image_content_block("abc", "image/png", provider)
+        self.assertEqual(block["type"], "image")
+        self.assertEqual(block["source"]["media_type"], "image/png")
 
 
 class BuildPdfContentBlockTests(TestCase):
