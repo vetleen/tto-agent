@@ -733,11 +733,13 @@ def meeting_upload_audio(request, meeting_uuid):
 
     # Persist the audio so the Celery worker can read it. On Heroku (S3
     # storage) this goes to shared remote storage; locally it writes to disk.
-    from meetings.services.chunks import write_chunk_to_temp
+    # Stream the UploadedFile straight to storage — never buffer the full
+    # payload on the web dyno. For a 512 MB dyno, a 50-200 MB audio.read()
+    # is what historically triggered R14.
+    from meetings.services.chunks import write_chunk_stream_to_temp
 
-    raw_bytes = file_obj.read()
-    temp_path = write_chunk_to_temp(
-        meeting.uuid, segment_index=0, raw_bytes=raw_bytes, mime=f"audio/{ext}",
+    temp_path = write_chunk_stream_to_temp(
+        meeting.uuid, segment_index=0, fileobj=file_obj, mime=f"audio/{ext}",
     )
 
     meeting.status = Meeting.Status.LIVE_TRANSCRIBING  # treat upload as in-progress until task finishes

@@ -102,6 +102,68 @@ def write_chunk_to_temp(meeting_uuid, segment_index: int, raw_bytes: bytes, mime
     return str(target)
 
 
+def _iter_chunks(fileobj, chunk_size: int = 1024 * 1024):
+    """Yield bounded-size chunks from *fileobj* without loading the whole thing.
+
+    Prefers Django's ``UploadedFile.chunks()`` (which honours the configured
+    upload handlers) and falls back to ``.read(chunk_size)`` for plain file
+    objects.
+    """
+    if hasattr(fileobj, "chunks"):
+        yield from fileobj.chunks(chunk_size)
+        return
+    while True:
+        data = fileobj.read(chunk_size)
+        if not data:
+            return
+        yield data
+
+
+def write_chunk_stream_to_temp(meeting_uuid, segment_index: int, fileobj, mime: str) -> str:
+    """Streaming counterpart to :func:`write_chunk_to_temp`.
+
+    Accepts any file-like with ``.chunks()`` or ``.read(size)`` (typically a
+    Django ``UploadedFile``) and persists it without ever holding the full
+    payload in memory. On a 512 MB dyno this is the difference between
+    accepting a 150 MB audio upload and crashing with R14.
+
+    Contract (return value, storage location, caller-owned cleanup) is
+    identical to ``write_chunk_to_temp`` — this is just the memory-safe
+    variant for HTTP upload paths. Use ``write_chunk_to_temp`` when the
+    caller legitimately already has bytes in memory (e.g. a small realtime
+    WebSocket delta).
+    """
+    if not isinstance(segment_index, int) or segment_index < 0:
+        raise ValueError(f"invalid segment_index: {segment_index!r}")
+
+    # Rewind if possible; request.FILES objects are typically at pos 0 but
+    # callers may have peeked at the stream.
+    if hasattr(fileobj, "seek"):
+        try:
+            fileobj.seek(0)
+        except (OSError, ValueError):
+            pass
+
+    if _uses_remote_storage():
+        key = _storage_key(meeting_uuid, segment_index, mime)
+        # django-storages (S3) passes the File through to boto3's
+        # upload_fileobj, which uploads in multipart chunks — no full-file
+        # buffer. Same story for gcloud/azure backends.
+        default_storage.save(key, fileobj)
+        return key
+
+    base = Path(getattr(settings, "MEETING_CHUNK_TEMP_DIR", ""))
+    if not str(base):
+        raise RuntimeError("MEETING_CHUNK_TEMP_DIR is not configured")
+    target_dir = base / _safe_uuid_dir(meeting_uuid)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{segment_index:06d}.{_ext_for_mime(mime)}"
+    with open(target, "wb") as out:
+        for chunk in _iter_chunks(fileobj):
+            out.write(chunk)
+    return str(target)
+
+
 def download_chunk_to_local(storage_path: str, mime: str = "") -> Path:
     """Download a chunk from storage to a local temp file.
 
