@@ -33,3 +33,10 @@
 @plugin "flowbite/plugin";
 @source "../../node_modules/flowbite";
 
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+}
+
