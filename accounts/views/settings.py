@@ -372,7 +372,7 @@ def org_settings_page(request):
     if not isinstance(org_max_context_tokens, int):
         org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
 
-    from llm.transcription_registry import get_all_transcription_models
+    from llm.transcription_registry import get_all_transcription_models, get_transcription_model_info
 
     system_transcription_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
     org_allowed_transcription = org_prefs.get("allowed_transcription_models")
@@ -380,6 +380,23 @@ def org_settings_page(request):
     transcription_model_display = {
         mid: info.display_name for mid, info in get_all_transcription_models().items()
     }
+
+    # Partition by capability so each dropdown only offers viable options.
+    effective_allowed = (
+        org_allowed_transcription
+        if isinstance(org_allowed_transcription, list)
+        else system_transcription_models
+    )
+    live_capable_transcription_models = [
+        mid for mid in effective_allowed
+        if (info := get_transcription_model_info(mid)) and info.supports_live_streaming
+    ]
+    upload_capable_transcription_models = [
+        mid for mid in effective_allowed
+        if get_transcription_model_info(mid) is not None
+    ]
+    system_transcription_default_live = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "") or ""
+    system_transcription_default_upload = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "") or ""
 
     return render(request, "accounts/org_settings.html", {
         "org": org,
@@ -398,6 +415,12 @@ def org_settings_page(request):
         "system_transcription_models": system_transcription_models,
         "org_allowed_transcription": org_allowed_transcription,
         "org_transcription_default": org_transcription_models.get("default", ""),
+        "org_transcription_default_live": org_transcription_models.get("live", ""),
+        "org_transcription_default_upload": org_transcription_models.get("upload", ""),
+        "live_capable_transcription_models": live_capable_transcription_models,
+        "upload_capable_transcription_models": upload_capable_transcription_models,
+        "system_transcription_default_live": system_transcription_default_live,
+        "system_transcription_default_upload": system_transcription_default_upload,
         "transcription_model_display": transcription_model_display,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
@@ -476,7 +499,15 @@ def org_allowed_transcription_models_update(request):
 @login_required
 @require_POST
 def org_transcription_model_update(request):
-    """Set org's default transcription model."""
+    """Set an organization-level default transcription model.
+
+    Accepts ``kind`` in the POST body: ``default`` (generic), ``live``
+    (must be a streaming-capable model), or ``upload`` (any registered
+    transcription model, including diarize). Unknown / missing ``kind``
+    is treated as ``default``.
+    """
+    from llm.transcription_registry import get_transcription_model_info
+
     membership = _get_admin_membership(request.user)
     if not membership:
         return HttpResponseForbidden("Admin access required.")
@@ -486,7 +517,10 @@ def org_transcription_model_update(request):
     except (json.JSONDecodeError, ValueError):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    model = data.get("model", "").strip() or None
+    model = (data.get("model") or "").strip() or None
+    kind = (data.get("kind") or "default").strip().lower()
+    if kind not in ("default", "live", "upload"):
+        return JsonResponse({"error": "Invalid kind"}, status=400)
 
     org = membership.org
     prefs = org.preferences or {}
@@ -498,14 +532,21 @@ def org_transcription_model_update(request):
         effective = [m for m in org_allowed if m in system_models] if isinstance(org_allowed, list) else system_models
         if model not in effective:
             return JsonResponse({"error": "Model not in allowed list"}, status=400)
+        if kind == "live":
+            info = get_transcription_model_info(model)
+            if info is None or not info.supports_live_streaming:
+                return JsonResponse(
+                    {"error": "This model cannot be used for live transcription."},
+                    status=400,
+                )
 
     transcription_models = prefs.get("transcription_models", {})
-    transcription_models["default"] = model
+    transcription_models[kind] = model
     prefs["transcription_models"] = transcription_models
     org.preferences = prefs
     org.save(update_fields=["preferences"])
 
-    return JsonResponse({"ok": True, "model": model})
+    return JsonResponse({"ok": True, "model": model, "kind": kind})
 
 
 @login_required

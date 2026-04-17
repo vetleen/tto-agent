@@ -132,21 +132,48 @@
     </div>
 
     {% if system_transcription_models %}
-    <div class="mt-4">
+    <div class="mt-4 grid gap-4 md:grid-cols-2">
       <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="org-transcription-model">
-          Default transcription model
+        <label class="block text-sm font-medium text-heading" for="org-transcription-model-live">
+          Default live transcription model
         </label>
-        <p class="text-xs text-body mt-0.5">The model used for audio transcription when members haven't set a preference.</p>
+        <p class="text-xs text-body mt-0.5">Used when a member clicks Start transcription on a meeting and hasn't set their own preference.</p>
         <select
-          id="org-transcription-model"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+          id="org-transcription-model-live"
+          data-kind="live"
+          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm pl-3 pr-9 py-2 truncate focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
           <option value="">System default</option>
-          {% for model in system_transcription_models %}
-          <option value="{{ model }}" {% if org_transcription_default == model %}selected{% endif %}>{{ model }}</option>
+          {% for model in live_capable_transcription_models %}
+          <option value="{{ model }}" {% if org_transcription_default_live == model %}selected{% endif %}>{{ model }}</option>
           {% endfor %}
         </select>
+        {% if system_transcription_default_live %}
+        <p class="mt-1 text-xs text-body truncate" title="{{ system_transcription_default_live }}">Falls back to <span class="font-mono">{{ system_transcription_default_live }}</span></p>
+        {% endif %}
+        {% if not live_capable_transcription_models %}
+        <p class="mt-2 text-xs text-fg-warning">No live-streaming-capable models in the allow-list above.</p>
+        {% endif %}
+      </div>
+
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="org-transcription-model-upload">
+          Default file-upload transcription model
+        </label>
+        <p class="text-xs text-body mt-0.5">Used when a member uploads an audio file and hasn't set their own preference.</p>
+        <select
+          id="org-transcription-model-upload"
+          data-kind="upload"
+          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm pl-3 pr-9 py-2 truncate focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">System default</option>
+          {% for model in upload_capable_transcription_models %}
+          <option value="{{ model }}" {% if org_transcription_default_upload == model %}selected{% endif %}>{{ model }}</option>
+          {% endfor %}
+        </select>
+        {% if system_transcription_default_upload %}
+        <p class="mt-1 text-xs text-body truncate" title="{{ system_transcription_default_upload }}">Falls back to <span class="font-mono">{{ system_transcription_default_upload }}</span></p>
+        {% endif %}
       </div>
     </div>
     {% endif %}
@@ -428,20 +455,21 @@
     });
   });
 
-  // Org transcription model default
-  var orgTranscriptionSelect = document.getElementById('org-transcription-model');
-  if (orgTranscriptionSelect) {
-    orgTranscriptionSelect.addEventListener('change', function() {
+  // Org transcription model defaults (live + upload).  Both go through the
+  // same endpoint; the ``kind`` dataset attribute tells the server which to
+  // update.
+  document.querySelectorAll('.org-transcription-kind-select').forEach(function(sel) {
+    sel.addEventListener('change', function() {
       fetch('{% url "accounts:org_transcription_model_update" %}', {
         method: 'POST',
         headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.value }),
+        body: JSON.stringify({ model: this.value, kind: this.dataset.kind }),
         credentials: 'same-origin',
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) alert(data.error);
       });
     });
-  }
+  });
 
   // Tool toggles (Tools section)
   document.querySelectorAll('.tool-toggle').forEach(function(cb) {

@@ -37,18 +37,27 @@ def _make_communicator(meeting_uuid, user):
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
-    # These tests cover the chunked (Celery) live-transcription path. The
-    # realtime path has its own test module. Pin the system default so the
-    # consumer takes the chunked branch regardless of what we ship as the
-    # user-facing default.
-    MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT="chunked",
 )
 class MeetingTranscribeConsumerTests(TransactionTestCase):
-    """TransactionTestCase because we use database_sync_to_async."""
+    """TransactionTestCase because we use database_sync_to_async.
+
+    These tests cover the chunked (Celery) live-transcription path. The
+    realtime path has its own test module. We pin the live mode to
+    "chunked" via a user-level preference so the consumer takes the
+    chunked branch regardless of the shipping default.
+    """
 
     def setUp(self):
+        from accounts.models import UserSettings
         Meeting.objects.all().delete()
         self.user = User.objects.create_user(email="cons@example.com", password="pw")
+        # Opt this user into chunked mode — the shipping default is
+        # realtime_with_fallback which would otherwise route binary frames
+        # to the ffmpeg/Realtime path that these tests aren't exercising.
+        UserSettings.objects.update_or_create(
+            user=self.user,
+            defaults={"preferences": {"live_transcription_mode": "chunked"}},
+        )
         self.meeting = Meeting.objects.create(
             name="M", slug="m-cons", created_by=self.user,
         )

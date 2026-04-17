@@ -72,13 +72,16 @@
         <select
           id="transcription-model-live"
           data-kind="live"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm pl-3 pr-9 py-2 truncate focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">Default ({{ resolved_transcription_model_live }})</option>
+          <option value="">Default</option>
           {% for model in live_capable_transcription_models %}
           <option value="{{ model }}" {% if user_transcription_model_live == model %}selected{% endif %}>{{ model }}</option>
           {% endfor %}
         </select>
+        {% if resolved_transcription_model_live %}
+        <p class="mt-1 text-xs text-body truncate" title="{{ resolved_transcription_model_live }}">Falls back to <span class="font-mono">{{ resolved_transcription_model_live }}</span></p>
+        {% endif %}
         {% if not live_capable_transcription_models %}
         <p class="mt-2 text-xs text-fg-warning">None of your allowed models support live streaming. Live transcription will not work until one is added.</p>
         {% endif %}
@@ -88,17 +91,20 @@
         <label class="block text-sm font-medium text-heading" for="transcription-model-upload">
           File-upload transcription model
         </label>
-        <p class="text-xs text-body mt-0.5">Used when you upload an audio file to a meeting or data room. Diarization models are fine here.</p>
+        <p class="text-xs text-body mt-0.5">Used when you upload an audio file to a meeting or data room.</p>
         <select
           id="transcription-model-upload"
           data-kind="upload"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm pl-3 pr-9 py-2 truncate focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">Default ({{ resolved_transcription_model_upload }})</option>
+          <option value="">Default</option>
           {% for model in upload_capable_transcription_models %}
           <option value="{{ model }}" {% if user_transcription_model_upload == model %}selected{% endif %}>{{ model }}</option>
           {% endfor %}
         </select>
+        {% if resolved_transcription_model_upload %}
+        <p class="mt-1 text-xs text-body truncate" title="{{ resolved_transcription_model_upload }}">Falls back to <span class="font-mono">{{ resolved_transcription_model_upload }}</span></p>
+        {% endif %}
       </div>
     </div>
 
@@ -106,12 +112,12 @@
       <label class="block text-sm font-medium text-heading" for="live-transcription-mode">
         Live transcription path
       </label>
-      <p class="text-xs text-body mt-0.5">The Realtime path streams audio continuously for ~1s latency. "Try realtime, fall back" is the safe default — uses realtime when it works, drops to the legacy chunked path otherwise.</p>
+      <p class="text-xs text-body mt-0.5">The Realtime path streams audio continuously for ~1s latency. Default is "Try realtime, fall back" — uses realtime when it works, drops to the legacy chunked path otherwise. Most users can leave this alone.</p>
       <select
         id="live-transcription-mode"
         class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
       >
-        <option value="" {% if not user_live_transcription_mode %}selected{% endif %}>Default ({{ resolved_live_transcription_mode }})</option>
+        <option value="" {% if not user_live_transcription_mode %}selected{% endif %}>Default (try realtime, fall back to chunked)</option>
         <option value="realtime_with_fallback" {% if user_live_transcription_mode == "realtime_with_fallback" %}selected{% endif %}>Try realtime, fall back to chunked</option>
         <option value="realtime" {% if user_live_transcription_mode == "realtime" %}selected{% endif %}>Realtime only</option>
         <option value="chunked" {% if user_live_transcription_mode == "chunked" %}selected{% endif %}>Chunked (legacy)</option>

@@ -1,15 +1,15 @@
-"""Preference cascade test for the live_transcription_mode flag.
+"""Preference cascade tests for the live_transcription_mode flag.
 
-System default is "chunked" so the existing chunked path is unchanged for
-every org that hasn't opted in. Org and user overrides cascade and any
-invalid value falls back to chunked so a typo can't break live
-transcription.
+The system default is hardcoded to ``realtime_with_fallback`` — there is
+no env var to override it and no org-level preference. Users can change
+their own path via the settings page. Invalid values fall back to the
+shipping default.
 """
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from core.preferences import get_preferences
 
@@ -30,33 +30,24 @@ def _prefs(*, org=None, user=None):
 
 
 class LiveTranscriptionModeCascadeTests(TestCase):
-    # Pin the setting explicitly so the test is independent of whatever the
-    # local developer has in their ``.env`` (devs often experiment with
-    # ``realtime`` / ``chunked`` while testing).
-
-    @override_settings(MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT="realtime_with_fallback")
     def test_shipping_default_is_realtime_with_fallback(self):
         prefs = _prefs()
         self.assertEqual(prefs.live_transcription_mode, "realtime_with_fallback")
 
-    @override_settings(MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT="chunked")
-    def test_system_default_can_be_pinned_to_chunked(self):
-        # Operators can opt every dyno out of realtime via the env var
-        # (e.g. during a known OpenAI Realtime incident).
-        prefs = _prefs()
+    def test_user_override_wins(self):
+        prefs = _prefs(user={"live_transcription_mode": "chunked"})
         self.assertEqual(prefs.live_transcription_mode, "chunked")
 
-    def test_org_overrides_system(self):
-        prefs = _prefs(org={"live_transcription_mode": "realtime"})
+    def test_user_override_realtime_only(self):
+        prefs = _prefs(user={"live_transcription_mode": "realtime"})
         self.assertEqual(prefs.live_transcription_mode, "realtime")
 
-    def test_user_overrides_org(self):
-        prefs = _prefs(
-            org={"live_transcription_mode": "realtime_with_fallback"},
-            user={"live_transcription_mode": "chunked"},
-        )
-        self.assertEqual(prefs.live_transcription_mode, "chunked")
+    def test_invalid_user_value_falls_back_to_shipping_default(self):
+        prefs = _prefs(user={"live_transcription_mode": "teleportation"})
+        self.assertEqual(prefs.live_transcription_mode, "realtime_with_fallback")
 
-    def test_invalid_value_falls_back_to_chunked(self):
-        prefs = _prefs(org={"live_transcription_mode": "teleportation"})
-        self.assertEqual(prefs.live_transcription_mode, "chunked")
+    def test_org_preference_ignored(self):
+        # There is no org-level override. If an org has an old value in
+        # preferences it's silently ignored (shipping default applies).
+        prefs = _prefs(org={"live_transcription_mode": "chunked"})
+        self.assertEqual(prefs.live_transcription_mode, "realtime_with_fallback")

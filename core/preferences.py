@@ -158,35 +158,42 @@ def get_preferences(user) -> ResolvedPreferences:
     # diarize and whisper-1), so we don't filter here.
     upload_capable = list(effective_transcription_allowed)
 
-    def _resolve_for_pool(pool: list[str], key: str) -> str:
+    # Per-capability system defaults. The env vars let ops pin a specific
+    # model per path without touching the generic TRANSCRIPTION_DEFAULT_MODEL
+    # (which stays around as the ultimate fallback).
+    system_default_live = (
+        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "")
+        or system_transcription_default
+    )
+    system_default_upload = (
+        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
+        or system_transcription_default
+    )
+
+    def _resolve_for_pool(pool: list[str], key: str, system_default: str) -> str:
         if not pool:
             return ""
         return _resolve_tier(
             user_choice=user_transcription_models.get(key),
             org_default=org_transcription_models.get(key),
-            system_default=system_transcription_default,
+            system_default=system_default,
             effective_allowed=pool,
             system_allowed=system_transcription_allowed,
         )
 
-    transcription_model_live = _resolve_for_pool(live_capable, "live")
-    transcription_model_upload = _resolve_for_pool(upload_capable, "upload")
+    transcription_model_live = _resolve_for_pool(live_capable, "live", system_default_live)
+    transcription_model_upload = _resolve_for_pool(upload_capable, "upload", system_default_upload)
 
-    # If the pool-specific key isn't set, inherit from the generic default
-    # when it happens to be compatible — otherwise stick with whatever
-    # _resolve_for_pool picked from the first-in-pool fallback.
-    if transcription_model and transcription_model in live_capable and not user_transcription_models.get("live") and not org_transcription_models.get("live"):
-        transcription_model_live = transcription_model
-    if transcription_model and transcription_model in upload_capable and not user_transcription_models.get("upload") and not org_transcription_models.get("upload"):
-        transcription_model_upload = transcription_model
-
-    # --- Live transcription mode cascade (system → org → user) ---
-    system_live_mode = getattr(django_settings, "MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT", "chunked")
-    org_live_mode = org_prefs.get("live_transcription_mode")
+    # --- Live transcription mode (user override only; system default is fixed) ---
+    # Every org gets realtime-with-fallback — realtime when it works, legacy
+    # chunked otherwise. Individual users can opt themselves into a specific
+    # path via the settings page (rarely needed, exposed mainly for debugging).
+    # There is no org-level override because no org has asked for one and
+    # the complexity isn't worth a hypothetical need.
     user_live_mode = user_prefs.get("live_transcription_mode")
-    resolved_live_mode = user_live_mode or org_live_mode or system_live_mode
+    resolved_live_mode = user_live_mode or "realtime_with_fallback"
     if resolved_live_mode not in LIVE_TRANSCRIPTION_MODES:
-        resolved_live_mode = "chunked"
+        resolved_live_mode = "realtime_with_fallback"
 
     # Resolve tools: base chat-section tools filtered by org toggles
     base_allowed = [t for t in chat_tools if org_tools.get(t, True) is not False]

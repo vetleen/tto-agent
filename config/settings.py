@@ -453,6 +453,12 @@ BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
+# Per-path defaults. When unset, fall back to TRANSCRIPTION_DEFAULT_MODEL.
+# ``TRANSCRIPTION_DEFAULT_MODEL_LIVE`` must be a streaming-capable model — the
+# preference resolver filters to live-capable candidates so an incompatible
+# value is silently replaced by the first valid option.
+TRANSCRIPTION_DEFAULT_MODEL_LIVE = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_LIVE", "")
+TRANSCRIPTION_DEFAULT_MODEL_UPLOAD = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
 TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,openai/gpt-4o-transcribe-diarize").split(",") if m.strip()]
 AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
 
@@ -468,12 +474,6 @@ MEETING_CHUNK_MAX_BYTES = int(os.environ.get("MEETING_CHUNK_MAX_BYTES", str(20 *
 # to OpenAI. 2.0 roughly halves the tokens billed with minimal intelligibility
 # loss; 1.0 disables the speed-up. Clamped to [0.5, 3.0] in code.
 MEETING_UPLOAD_SPEED_UP_FACTOR = float(os.environ.get("MEETING_UPLOAD_SPEED_UP_FACTOR", "2.0"))
-# Live transcription mode cascades through preferences. Default is
-# ``realtime_with_fallback`` — open the OpenAI Realtime API session, and
-# if that fails for any reason (transient outage, misconfigured model)
-# drop back to the chunked path automatically. Admins can override per
-# org / user, or pin every dyno back to "chunked" via this env var.
-MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT = os.environ.get("MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT", "realtime_with_fallback")
 
 # Celery (use Redis as broker)
 _celery_broker_url = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
