@@ -603,3 +603,38 @@ class TranscriptionModelCascadeTest(TestCase):
         prefs = get_preferences(user)
         # User's choice not in org allowed, so falls back
         self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")
+
+
+class AllowAgentAttachSkillsTest(TestCase):
+    """The allow_agent_attach_skills user preference."""
+
+    def test_defaults_true(self):
+        user = _create_user()
+        prefs = get_preferences(user)
+        self.assertTrue(prefs.allow_agent_attach_skills)
+
+    def test_user_can_disable(self):
+        user = _create_user()
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {"allow_agent_attach_skills": False}
+        settings.save()
+        prefs = get_preferences(user)
+        self.assertFalse(prefs.allow_agent_attach_skills)
+
+    def test_user_explicit_true(self):
+        user = _create_user()
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {"allow_agent_attach_skills": True}
+        settings.save()
+        prefs = get_preferences(user)
+        self.assertTrue(prefs.allow_agent_attach_skills)
+
+    def test_org_prefs_do_not_override(self):
+        """The pref is user-scope only — org prefs do not cascade."""
+        user = _create_user()
+        org = Organization.objects.create(
+            name="Org", preferences={"allow_agent_attach_skills": False},
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+        prefs = get_preferences(user)
+        self.assertTrue(prefs.allow_agent_attach_skills)

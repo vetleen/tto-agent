@@ -249,7 +249,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         assert self._ws is not None
         transcription_cfg: dict = {"model": self._api_model}
         if self.prompt:
-            transcription_cfg["prompt"] = self.prompt[:2048]
+            # OpenAI Realtime transcription prompts are capped at 1024 chars
+            # (shorter than the batch transcription endpoint's 2048 limit).
+            # Longer prompts close the session with string_above_max_length.
+            transcription_cfg["prompt"] = self.prompt[:1024]
         if self.language:
             transcription_cfg["language"] = self.language
         session_cfg: dict = {

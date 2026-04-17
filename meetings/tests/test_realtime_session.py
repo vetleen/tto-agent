@@ -145,6 +145,29 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(cfg["input_audio_transcription"]["language"], "en")
         self.assertIn("OncoBio Therapeutics", cfg["input_audio_transcription"]["prompt"])
 
+    def test_long_prompt_is_capped_at_1024(self):
+        # OpenAI's Realtime transcription endpoint closes the session with
+        # ``string_above_max_length`` if the prompt exceeds 1024 chars.
+        ws = _FakeWebSocket(script=[
+            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            prompt="x" * 5000,
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            await session.aclose()
+
+        _run(run())
+
+        payload = json.loads(ws.sent[0])
+        prompt = payload["session"]["input_audio_transcription"]["prompt"]
+        self.assertEqual(len(prompt), 1024)
+
     def test_missing_api_key_raises(self):
         # Patch the env so even a machine running with a real OPENAI_API_KEY
         # still exercises the missing-key branch.

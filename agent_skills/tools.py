@@ -693,6 +693,115 @@ class InspectToolTool(ContextAwareTool):
         })
 
 
+# NOTE: Section is "chat" (not "skills" like the tools above) because this
+# tool manages which skill is attached to the thread — it is exposed to the
+# base chat agent, not gated behind an already-attached skill.
+class AttachSkillsInput(ReasonBaseModel):
+    skill_slugs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Slugs of skills to attach. Pass an empty list to detach the "
+            "current skill. Currently only one skill may be attached per "
+            "thread — pass at most one slug."
+        ),
+    )
+
+
+class AttachSkillsTool(ContextAwareTool):
+    name: str = "attach_skills"
+    description: str = (
+        "Attach a skill from the available skills list to this chat thread, "
+        "replacing any skill currently attached. Pass an empty list to "
+        "detach. Skill-declared tools become available on your next turn, "
+        "not the turn you attach."
+    )
+    args_schema: type[BaseModel] = AttachSkillsInput
+    section: str = "chat"
+
+    def _run(self, skill_slugs: list[str] | None = None, **kwargs) -> str:
+        from django.contrib.auth import get_user_model
+
+        from agent_skills.services import get_available_skills
+        from chat.models import ChatThread
+
+        user_id = self.context.user_id if self.context else None
+        thread_id = self.context.conversation_id if self.context else None
+        if not user_id or not thread_id:
+            return json.dumps({"status": "error", "message": "No context available."})
+
+        slugs = [s.strip() for s in (skill_slugs or []) if s and s.strip()]
+        if len(slugs) > 1:
+            return json.dumps({
+                "status": "error",
+                "message": "Only one skill can be attached per thread. Pass at most one slug.",
+            })
+
+        User = get_user_model()
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return json.dumps({"status": "error", "message": "User not found."})
+
+        try:
+            thread = ChatThread.objects.select_related("skill").get(
+                pk=thread_id, created_by=user,
+            )
+        except ChatThread.DoesNotExist:
+            return json.dumps({"status": "error", "message": "Thread not found."})
+
+        previous_skill_id = str(thread.skill_id) if thread.skill_id else None
+        previous_skill_name = thread.skill.name if thread.skill else None
+
+        if not slugs:
+            if thread.skill_id is None:
+                return json.dumps({
+                    "status": "ok",
+                    "detached": False,
+                    "attached_skill_id": None,
+                    "attached_skill_name": None,
+                    "message": "No skill was attached; nothing to detach.",
+                })
+            ChatThread.objects.filter(pk=thread_id).update(skill=None)
+            return json.dumps({
+                "status": "ok",
+                "detached": True,
+                "previous_skill_id": previous_skill_id,
+                "previous_skill_name": previous_skill_name,
+                "attached_skill_id": None,
+                "attached_skill_name": None,
+            })
+
+        slug = slugs[0]
+        available = get_available_skills(user)
+        chosen = next((s for s in available if s.slug == slug), None)
+        if chosen is None:
+            return json.dumps({
+                "status": "error",
+                "message": f"Skill '{slug}' is not available to this user.",
+                "available_slugs": [s.slug for s in available],
+            })
+
+        if thread.skill_id == chosen.id:
+            return json.dumps({
+                "status": "ok",
+                "detached": False,
+                "no_change": True,
+                "attached_skill_id": str(chosen.id),
+                "attached_skill_name": chosen.name,
+            })
+
+        ChatThread.objects.filter(pk=thread_id).update(skill_id=chosen.id)
+
+        return json.dumps({
+            "status": "ok",
+            "detached": bool(previous_skill_id),
+            "previous_skill_id": previous_skill_id,
+            "previous_skill_name": previous_skill_name,
+            "attached_skill_id": str(chosen.id),
+            "attached_skill_name": chosen.name,
+        })
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(CreateSkillTool())
@@ -704,3 +813,4 @@ _registry.register_tool(ViewTemplateTool())
 _registry.register_tool(LoadTemplateToCanvasTool())
 _registry.register_tool(ListAllToolsTool())
 _registry.register_tool(InspectToolTool())
+_registry.register_tool(AttachSkillsTool())

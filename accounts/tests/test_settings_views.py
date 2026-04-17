@@ -1054,3 +1054,71 @@ class MeetingSummarizerSkillPrefTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 302)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class AgentAttachSkillsPreferenceViewTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="attachpref@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.url = reverse("accounts:preferences_agent_attach_skills_update")
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url, json.dumps({"enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_rejects_get(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+
+    def test_set_false(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["enabled"])
+        settings_obj = UserSettings.objects.get(user=self.user)
+        self.assertFalse(settings_obj.preferences["allow_agent_attach_skills"])
+
+    def test_set_true(self):
+        self.client.login(email=self.user.email, password=self.password)
+        # First disable so we can observe a re-enable
+        self.client.post(
+            self.url, json.dumps({"enabled": False}),
+            content_type="application/json",
+        )
+        response = self.client.post(
+            self.url, json.dumps({"enabled": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["enabled"])
+        settings_obj = UserSettings.objects.get(user=self.user)
+        self.assertTrue(settings_obj.preferences["allow_agent_attach_skills"])
+
+    def test_invalid_json_returns_400(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, "not-json", content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_missing_enabled_defaults_true(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["enabled"])

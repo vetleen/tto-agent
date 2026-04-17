@@ -37,6 +37,7 @@ class ResolvedPreferences:
     transcription_model_live: str = ""
     transcription_model_upload: str = ""
     live_transcription_mode: str = "chunked"
+    allow_agent_attach_skills: bool = True
 
 
 def _get_system_model_defaults() -> dict[str, str]:
@@ -81,6 +82,7 @@ def get_preferences(user) -> ResolvedPreferences:
     user_prefs = _get_user_preferences(user)
     user_models = user_prefs.get("models", {})
     user_theme = user_prefs.get("theme", "light")
+    allow_agent_attach_skills = bool(user_prefs.get("allow_agent_attach_skills", True))
 
     # Resolve each model tier with cascade
     top_model = _resolve_tier(
@@ -249,6 +251,7 @@ def get_preferences(user) -> ResolvedPreferences:
         transcription_model_live=transcription_model_live,
         transcription_model_upload=transcription_model_upload,
         live_transcription_mode=resolved_live_mode,
+        allow_agent_attach_skills=allow_agent_attach_skills,
     )
 
 

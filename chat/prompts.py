@@ -161,6 +161,7 @@ def build_semi_static_prompt(
     skill: Any = None,
     organization_description: str | None = None,
     user_context: dict[str, str] | None = None,
+    available_skills: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the semi-static portion of the system prompt.
 
@@ -200,6 +201,23 @@ def build_semi_static_prompt(
         )
         for line in context_lines:
             prompt += f"- {line}\n"
+
+    # -- Available skills catalogue --
+    if available_skills:
+        prompt += (
+            "\n# Skills available to this user\n"
+            "The following skills are available. Call "
+            "`attach_skills(skill_slugs=[\"<slug>\"])` to attach one when it "
+            "fits the user's request. Pass an empty list to detach.\n"
+        )
+        for s in available_skills:
+            desc = (s.get("description") or "").strip().replace("\n", " ")
+            if len(desc) > 160:
+                desc = desc[:157] + "..."
+            line = f"- **{s['slug']}** — {s.get('name', '')}"
+            if desc:
+                line += f": {desc}"
+            prompt += line + "\n"
 
     # -- Skill section --
     if skill:
@@ -439,6 +457,7 @@ def build_system_prompt(
     canvases: list | None = None,
     active_canvas: Any = None,
     skill: Any = None,
+    available_skills: list[dict[str, Any]] | None = None,
     has_subagent_tool: bool = False,
     subagent_runs: list[dict] | None = None,
     tasks: list[dict] | None = None,
@@ -476,6 +495,7 @@ def build_system_prompt(
         skill=skill,
         organization_description=organization_description,
         user_context=user_context,
+        available_skills=available_skills,
     )
 
     dynamic = build_dynamic_context(

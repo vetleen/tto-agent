@@ -709,6 +709,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     )
                 )
 
+            # Refresh preferences per message so toggles (e.g. the "+" menu
+            # autonomy switch) take effect on the next turn without requiring
+            # a WebSocket reconnect. get_preferences() is cheap.
+            self.resolved_prefs = await self._resolve_preferences()
+
             # Resolve model early for dynamic history budget
             prefs = self.resolved_prefs
             if requested_model and prefs and requested_model in prefs.allowed_models:
@@ -757,12 +762,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 has_task_tool=self._has_tool("update_tasks"),
                 parallel_subagents=parallel_subagents,
             )
+            available_skills_for_prompt = (
+                prefs.allowed_skills
+                if prefs and prefs.allow_agent_attach_skills
+                else None
+            )
             semi_static_system = build_semi_static_prompt(
                 data_rooms=data_rooms,
                 canvases=canvases_info["canvases"] if canvases_info else None,
                 skill=skill_obj,
                 organization_description=self._org_description or None,
                 user_context=self._user_context,
+                available_skills=available_skills_for_prompt,
             )
             dynamic_context = build_dynamic_context(
                 doc_context=doc_context,
@@ -950,6 +961,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if t not in tools:
                     tools.append(t)
 
+        # Strip attach_skills when the user has disabled agent-driven skill
+        # attachment (the catalogue is also omitted from the prompt above).
+        if prefs and not prefs.allow_agent_attach_skills:
+            tools = [t for t in tools if t != "attach_skills"]
+
         if cancel_event is not None:
             self._cancel_event = cancel_event
         elif self._cancel_event is None:
@@ -1034,6 +1050,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     "event_type": "tasks.updated",
                                     "tasks": result.get("tasks", []),
                                 }))
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    # Intercept attach_skills results: mirror on self.active_skill_id
+                    # and emit the existing skill.attached / skill.detached events
+                    # so the frontend pill UI updates automatically.
+                    if tool_name == "attach_skills":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok":
+                                new_id = result.get("attached_skill_id")
+                                if new_id:
+                                    self.active_skill_id = str(new_id)
+                                    await self.send(text_data=json.dumps({
+                                        "event_type": "skill.attached",
+                                        "skill_id": str(new_id),
+                                        "skill_name": result.get("attached_skill_name", ""),
+                                    }))
+                                elif result.get("detached"):
+                                    self.active_skill_id = None
+                                    await self.send(text_data=json.dumps({
+                                        "event_type": "skill.detached",
+                                    }))
                         except (json.JSONDecodeError, AttributeError):
                             pass
                 elif event.event_type == "error":

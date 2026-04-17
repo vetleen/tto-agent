@@ -118,6 +118,8 @@ def chat_home(request):
             thread_skill = {"id": str(thread.skill_id), "name": thread.skill.name}
 
     # Resolve preferences (model choices, allowed skills, etc.)
+    from django.conf import settings as django_settings
+
     from core.preferences import get_preferences
     from llm.display import get_display_name, supports_thinking, supports_vision
 
@@ -161,6 +163,8 @@ def chat_home(request):
             "thread_tasks_json": thread_tasks_json,
             "thread_cost_usd": thread_cost_usd,
             "pending_initial_turn": pending_initial_turn,
+            "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
+            "assistant_name": django_settings.ASSISTANT_NAME,
         },
     )
 

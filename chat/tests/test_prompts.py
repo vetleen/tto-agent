@@ -791,3 +791,73 @@ class UserOrgContextInSemiStaticPromptTests(TestCase):
         )
         self.assertIn("Organization description: Wrapper test org", prompt)
         self.assertIn("User name: Test", prompt)
+
+
+class AvailableSkillsSectionTests(TestCase):
+    """The # Skills available to this user section in the semi-static prompt."""
+
+    def test_section_included_when_skills_provided(self):
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "patent", "name": "Patent Drafter", "description": "Drafts patents."},
+                {"slug": "licensing", "name": "Licensing Helper", "description": "Helps with licensing."},
+            ],
+        )
+        self.assertIn("# Skills available to this user", prompt)
+        self.assertIn("**patent** — Patent Drafter", prompt)
+        self.assertIn("Drafts patents.", prompt)
+        self.assertIn("**licensing** — Licensing Helper", prompt)
+        self.assertIn("attach_skills", prompt)
+
+    def test_section_omitted_when_available_skills_none(self):
+        prompt = build_semi_static_prompt(available_skills=None)
+        self.assertNotIn("# Skills available to this user", prompt)
+
+    def test_section_omitted_when_available_skills_empty(self):
+        prompt = build_semi_static_prompt(available_skills=[])
+        self.assertNotIn("# Skills available to this user", prompt)
+
+    def test_description_truncated_at_160_chars(self):
+        long_desc = "x" * 400
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "big", "name": "Big", "description": long_desc},
+            ],
+        )
+        self.assertIn("**big** — Big", prompt)
+        self.assertIn("x" * 100, prompt)  # It's there
+        self.assertIn("...", prompt)  # truncation marker
+        # The bullet line itself should be at most ~ slug+name+160 chars + markup
+        bullet_line = next(
+            line for line in prompt.splitlines() if line.startswith("- **big**")
+        )
+        self.assertLess(len(bullet_line), 250)
+
+    def test_description_optional(self):
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "bare", "name": "Bare", "description": ""},
+            ],
+        )
+        self.assertIn("**bare** — Bare", prompt)
+
+    def test_build_system_prompt_forwards_available_skills(self):
+        prompt = build_system_prompt(
+            available_skills=[
+                {"slug": "via-wrapper", "name": "Wrapper", "description": "w"},
+            ],
+        )
+        self.assertIn("**via-wrapper** — Wrapper", prompt)
+        self.assertIn("# Skills available to this user", prompt)
+
+    def test_newlines_in_description_collapsed(self):
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "multi", "name": "Multi", "description": "line one\nline two"},
+            ],
+        )
+        # Description rendered as one line (no embedded \n in the bullet)
+        bullet_line = next(
+            line for line in prompt.splitlines() if line.startswith("- **multi**")
+        )
+        self.assertIn("line one line two", bullet_line)

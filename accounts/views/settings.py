@@ -106,6 +106,8 @@ def settings_page(request):
         "transcription_model_display": transcription_model_display,
         "summarizer_skills": summarizer_skills,
         "user_summarizer_skill_id": user_summarizer_skill_id,
+        "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
+        "assistant_name": django_settings.ASSISTANT_NAME,
         "tiers": [
             {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"]},
             {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"]},
@@ -257,6 +259,22 @@ def preferences_meeting_summarizer_skill_update(request):
     settings.save()
 
     return JsonResponse({"ok": True, "skill_id": skill_id})
+
+
+@login_required
+@require_POST
+def preferences_agent_attach_skills_update(request):
+    """Toggle whether the assistant may autonomously attach skills to a thread."""
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+    enabled = bool(data.get("enabled", True))
+    settings, _ = UserSettings.objects.get_or_create(user=request.user)
+    prefs_dict = settings.preferences or {}
+    prefs_dict["allow_agent_attach_skills"] = enabled
+    settings.preferences = prefs_dict
+    settings.save()
+    return JsonResponse({"ok": True, "enabled": enabled})
 
 
 # ---- Organization Settings Page ----

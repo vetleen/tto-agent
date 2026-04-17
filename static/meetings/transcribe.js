@@ -528,9 +528,12 @@
   }
 
   function appendOrUpdateSegmentNode(idx, text, kind) {
-    // Replace the "no transcript yet" placeholder if present.
-    if (transcriptPane.querySelector('.italic')) {
-      transcriptPane.innerHTML = '';
+    // Replace the "no transcript yet" placeholder if present. The placeholder
+    // is the only node in the pane with data-placeholder; don't match the
+    // interim delta node (also italic) or we'd nuke live text on every seg.
+    const placeholder = transcriptPane.querySelector('[data-placeholder="1"]');
+    if (placeholder) {
+      placeholder.remove();
     }
     // Clear any interim delta node — the canonical segment text supersedes it.
     clearInterimDelta();
@@ -565,9 +568,11 @@
   let interimNode = null;
   function renderInterimDelta(textChunk) {
     if (!transcriptPane) return;
-    if (transcriptPane.querySelector('.italic')) {
-      transcriptPane.innerHTML = '';
-    }
+    // Evict only the "No transcript yet" placeholder (not the interim node
+    // which is also italic). Previous version ran innerHTML='' here and
+    // destroyed every already-committed segment on each delta.
+    const placeholder = transcriptPane.querySelector('[data-placeholder="1"]');
+    if (placeholder) placeholder.remove();
     if (!interimNode) {
       interimNode = document.createElement('span');
       interimNode.className = 'text-body italic opacity-70';

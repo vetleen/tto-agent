@@ -148,6 +148,27 @@
   </section>
   {% endif %}
 
+  <!-- Assistant autonomy -->
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">{{ assistant_name }}'s autonomy</h2>
+    <p class="mt-1 text-sm text-body">Control what {{ assistant_name }} is allowed to do on its own during a conversation.</p>
+
+    <div class="mt-4">
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4 flex items-start justify-between gap-4">
+        <div class="flex-1">
+          <label class="block text-sm font-medium text-heading" for="allow-agent-attach-skills">
+            Allow {{ assistant_name }} to attach skills
+          </label>
+          <p class="text-xs text-body mt-0.5">When enabled, {{ assistant_name }} can autonomously attach a skill to this chat when one fits your request. When off, you attach skills manually.</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+          <input type="checkbox" id="allow-agent-attach-skills" class="sr-only peer" {% if allow_agent_attach_skills %}checked{% endif %}>
+          <div class="w-11 h-6 bg-gray-200 peer-focus:ring-2 peer-focus:ring-brand-medium rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand"></div>
+        </label>
+      </div>
+    </div>
+  </section>
+
   <!-- Context Window -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">Context Window</h2>
@@ -264,6 +285,25 @@
         if (data.error) {
           alert(data.error);
           summarizerSelect.value = '';
+        }
+      });
+    });
+  }
+
+  // Allow agent to attach skills preference
+  var attachSkillsToggle = document.getElementById('allow-agent-attach-skills');
+  if (attachSkillsToggle) {
+    attachSkillsToggle.addEventListener('change', function() {
+      var enabled = this.checked;
+      fetch('{% url "accounts:preferences_agent_attach_skills_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabled }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          attachSkillsToggle.checked = !enabled;
         }
       });
     });
