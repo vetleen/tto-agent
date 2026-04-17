@@ -539,8 +539,12 @@
     clearInterimDelta();
     let node = pendingSegments[idx];
     if (!node) {
-      node = document.createElement('span');
+      // Block-level <p> so each utterance renders on its own paragraph,
+      // matching what ``whitespace-pre-wrap + meeting.transcript`` shows
+      // after the page reloads (segments joined with \n\n server-side).
+      node = document.createElement('p');
       node.dataset.segmentIndex = String(idx);
+      node.className = 'mb-3';
       pendingSegments[idx] = node;
       // Insert in order based on dataset.segmentIndex.
       const existing = Array.prototype.slice.call(transcriptPane.children);
@@ -556,11 +560,11 @@
       if (!inserted) transcriptPane.appendChild(node);
     }
     if (kind === 'failed') {
-      node.textContent = '[transcription failed: ' + (text || 'unknown error') + '] ';
-      node.className = 'text-fg-danger';
+      node.textContent = '[transcription failed: ' + (text || 'unknown error') + ']';
+      node.className = 'text-fg-danger mb-3';
     } else {
-      node.textContent = (text || '') + ' ';
-      node.className = '';
+      node.textContent = text || '';
+      node.className = 'mb-3';
     }
   }
 
