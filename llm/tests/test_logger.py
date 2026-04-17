@@ -450,6 +450,52 @@ class LogStreamTests(TestCase):
         with patch.object(LLMCallLog.objects, "create", side_effect=RuntimeError("DB is down")):
             log_stream(request, [], duration_ms=10)
 
+    def test_error_event_without_message_end_writes_error_row(self):
+        """Providers convert stream exceptions into ``error`` events and return,
+        so ``LLMService.stream`` never sees the exception. log_stream must
+        recognise this and write an ERROR row rather than a bogus SUCCESS."""
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id),
+            StreamEvent(
+                event_type="error",
+                data={
+                    "message": "The request could not be processed.",
+                    "error_code": "invalid_request",
+                    "details": "Malformed url parameter. Must be either an image URL or base64...",
+                },
+                sequence=2,
+                run_id=run_id,
+            ),
+        ]
+        log_stream(request, events, duration_ms=120)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "error")
+        self.assertTrue(log.is_stream)
+        self.assertEqual(log.error_type, "invalid_request")
+        self.assertIn("Malformed url parameter", log.error_message)
+        self.assertEqual(log.duration_ms, 120)
+
+    def test_error_event_default_error_type_when_code_missing(self):
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(
+                event_type="error",
+                data={"message": "boom"},
+                sequence=1,
+                run_id=run_id,
+            ),
+        ]
+        log_stream(request, events, duration_ms=10)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "error")
+        self.assertEqual(log.error_type, "stream_error")
+        self.assertEqual(log.error_message, "boom")
+
 
 class LogErrorTests(TestCase):
     """Tests for log_error."""

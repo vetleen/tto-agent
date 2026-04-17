@@ -205,7 +205,15 @@ def log_stream(
     events: "List[StreamEvent]",
     duration_ms: int,
 ) -> None:
-    """Write a SUCCESS log entry after a streaming call completes. raw_output = assembled response JSON."""
+    """Write a SUCCESS or ERROR log entry after a streaming call completes.
+
+    Providers catch exceptions in ``BaseLangChainChatModel.stream`` and yield
+    an ``error`` ``StreamEvent`` instead of re-raising, so ``LLMService.stream``
+    never sees the underlying exception and can't call ``log_error`` itself.
+    Detect that case here: when the stream ended without a ``message_end`` and
+    an ``error`` event is present, write an ERROR row so failed calls stay
+    visible in ``LLMCallLog``.
+    """
     try:
         from llm.models import LLMCallLog
 
@@ -216,6 +224,31 @@ def log_stream(
             (e for e in events if e.event_type == "message_end"),
             None,
         )
+        error_event = next(
+            (e for e in events if e.event_type == "error"),
+            None,
+        )
+
+        if end_event is None and error_event is not None:
+            err_data = error_event.data or {}
+            context = request.context
+            LLMCallLog.objects.create(
+                user=_resolve_user(context.user_id if context else None),
+                run_id=context.run_id if context else "",
+                trace_id=(context.trace_id if context else "") or "",
+                conversation_id=(context.conversation_id if context else "") or "",
+                model=request.model or "",
+                is_stream=True,
+                prompt=_serialize_messages(request),
+                tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
+                raw_output=raw_output,
+                duration_ms=duration_ms,
+                status=LLMCallLog.Status.ERROR,
+                error_type=(err_data.get("error_code") or "stream_error")[:255],
+                error_message=(err_data.get("details") or err_data.get("message") or "")[:2000],
+            )
+            return
+
         end_data = end_event.data if end_event else {}
         input_tokens = end_data.get("input_tokens")
         output_tokens = end_data.get("output_tokens")
