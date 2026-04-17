@@ -738,6 +738,7 @@
     // Dispatch on the effective live-transcription mode announced by the
     // server. Realtime modes want a single continuous MediaRecorder; the
     // legacy chunked mode stops and restarts every 30s.
+    console.log('[meetings] startRecorder: liveMode=' + liveMode);
     if (liveMode === 'realtime' || liveMode === 'realtime_with_fallback') {
       startStreamingRecorder();
     } else {
