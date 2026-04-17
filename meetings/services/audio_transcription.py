@@ -46,13 +46,18 @@ logger = logging.getLogger(__name__)
 # Defaults — see plan file for rationale
 # ---------------------------------------------------------------------------
 
-DEFAULT_TARGET_CHUNK_SECONDS = 900   # 15 min target chunk length
+DEFAULT_TARGET_CHUNK_SECONDS = 1800  # 30 min *source* chunk (becomes 15 min output at 2x)
 DEFAULT_OVERLAP_SECONDS = 15         # audio overlap between consecutive chunks
 DEFAULT_PRIOR_TAIL_CHARS = 800       # transcript tail length used in prompt carryover
 LIVE_PROMPT_TAIL_CHARS = 1200        # tail length for live-path prompt seeding
 TRANSIENT_RETRY_BACKOFFS = (1.0, 3.0)  # per-chunk transient retry sleep schedule
 CHARS_PER_OVERLAP_SECOND = 15        # ~150 wpm * ~6 chars/word; used by stitcher
 AUDIO_SPLIT_TIMEOUT_SECONDS = 120    # safety net: kill the split if ffmpeg hangs
+
+# Encoded output bitrate used by ffmpeg_extract_chunk (128 kbps mono MP3 = 16 kB/s).
+# Used to estimate per-chunk output file size when planning boundaries so we can
+# fit as much source audio as possible into each API call.
+OUTPUT_MP3_BYTES_PER_SECOND = 16_000
 
 
 class AudioSplitTimeoutError(RuntimeError):
@@ -191,12 +196,32 @@ def split_audio_with_overlap(
     if total_ms <= 0:
         return []
 
-    # Effective chunk duration: respect both the user-supplied target and the
-    # API duration cap, leaving headroom for the trailing overlap on each chunk.
-    safe_seconds = max(0, max_seconds - overlap_seconds - 60)
-    effective_seconds = min(target_chunk_seconds, safe_seconds) if safe_seconds else target_chunk_seconds
+    # ffmpeg_extract_chunk applies atempo=factor to each chunk, producing
+    # output audio that is ``factor`` times shorter than the source time
+    # range. Compute the largest source-time chunk that still lands within
+    # BOTH API limits on the encoded output: duration (max_seconds) and
+    # bytes (max_bytes). Without this the chunking planner treats 900 s of
+    # source as if the API saw 900 s — even though at factor=2 the API
+    # only sees 450 s. The result is over-chunking (e.g. 4 chunks for a
+    # 60-min file instead of 2).
+    from llm.service._audio_subprocess import _resolve_speed_up_factor
+    factor = _resolve_speed_up_factor(None)
+
+    # Size cap in output seconds: safe_bytes / bytes_per_output_second.
+    safe_output_bytes = int(max_bytes * 0.8)
+    max_output_seconds_by_size = max(0, safe_output_bytes // OUTPUT_MP3_BYTES_PER_SECOND)
+    # Duration cap in output seconds with headroom.
+    max_output_seconds = max(0, min(max_seconds - 60, max_output_seconds_by_size))
+    # Convert back to source seconds (what we actually pass to ffmpeg -t).
+    # Leave room for the trailing overlap so chunk i's [start-overlap, end]
+    # window still fits after expansion.
+    max_source_seconds = int(max_output_seconds * factor) - overlap_seconds
+    if max_source_seconds <= 0:
+        # Pathological limits — fall back to the pre-speed-up behaviour.
+        max_source_seconds = max(0, max_seconds - overlap_seconds - 60)
+
+    effective_seconds = min(target_chunk_seconds, max_source_seconds) if max_source_seconds else target_chunk_seconds
     if effective_seconds <= overlap_seconds:
-        # Pathological max_seconds — fall back to target.
         effective_seconds = target_chunk_seconds
     effective_ms = effective_seconds * 1000
     overlap_ms = overlap_seconds * 1000

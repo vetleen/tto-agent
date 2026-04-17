@@ -198,6 +198,73 @@ class PartialTranscriptFlusherTests(TestCase):
         self.assertEqual(flusher._buffer, "")
 
 
+class ChunkPlannerSpeedUpAwarenessTests(TestCase):
+    """split_audio_with_overlap accounts for the speed-up factor.
+
+    At factor=2 the API only sees half the source audio per chunk, so we can
+    fit much more source into each API call and avoid over-chunking.
+    """
+
+    def _run_planner(self, duration_seconds: float, factor: float) -> int:
+        from llm.service import _audio_subprocess
+        from meetings.services import audio_transcription as at
+
+        def fake_extract(file_path, start_ms, end_ms, index, **_):
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=".mp3", delete=False, prefix=f"plan_{index}_"
+            )
+            # ~1MB placeholder so the in-test size validation (80% of 25MB)
+            # never trips regardless of chunk count.
+            tmp.write(b"\x00" * (1 * 1024 * 1024))
+            tmp.close()
+            return Path(tmp.name)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as src:
+            src.write(b"\x00" * 1024)
+            src_path = Path(src.name)
+
+        try:
+            # split_audio_with_overlap imports the helpers lazily from
+            # llm.service._audio_subprocess — patch there, not on the
+            # meetings module, or the local import bypasses the mocks.
+            with patch.object(_audio_subprocess, "ffmpeg_available", return_value=True), \
+                 patch.object(_audio_subprocess, "ffprobe_duration_ms",
+                              return_value=int(duration_seconds * 1000)), \
+                 patch.object(_audio_subprocess, "ffmpeg_extract_chunk",
+                              side_effect=fake_extract), \
+                 patch.object(_audio_subprocess, "_resolve_speed_up_factor",
+                              return_value=factor):
+                specs = at.split_audio_with_overlap(
+                    src_path,
+                    max_bytes=25_000_000,
+                    max_seconds=1400,
+                )
+            n = len(specs)
+            # Clean up the temp extracted files.
+            for s in specs:
+                if s.path != src_path:
+                    s.path.unlink(missing_ok=True)
+            return n
+        finally:
+            src_path.unlink(missing_ok=True)
+
+    def test_sixty_minute_file_at_2x_produces_two_chunks(self):
+        # A 60-min source at 2x speed-up should fit in 2 chunks of 30 min each
+        # (15 min output each — well under the 1400s API limit).
+        self.assertEqual(self._run_planner(duration_seconds=3600, factor=2.0), 2)
+
+    def test_ninety_minute_file_at_2x_produces_three_chunks(self):
+        self.assertEqual(self._run_planner(duration_seconds=5400, factor=2.0), 3)
+
+    def test_short_file_is_single_chunk(self):
+        self.assertEqual(self._run_planner(duration_seconds=300, factor=2.0), 1)
+
+    def test_factor_one_falls_back_to_half_as_many_chunks(self):
+        # At factor=1 (no speed-up) a 60-min file must split further — size
+        # limit at 128 kbps mono bounds a chunk to ~20 min of output.
+        self.assertGreater(self._run_planner(duration_seconds=3600, factor=1.0), 2)
+
+
 class OrchestratorLanguageAndDeltaTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="lang@example.com", password="pw")
