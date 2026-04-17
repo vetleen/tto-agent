@@ -7,11 +7,23 @@ For more information on this file, see
 https://docs.djangoproject.com/en/6.0/howto/deployment/asgi/
 """
 
+import asyncio
 import os
+import sys
 
 from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter, URLRouter
 from django.core.asgi import get_asgi_application
+
+# Windows Python 3.10+ defaults to SelectorEventLoop for asyncio, which does
+# NOT implement ``subprocess_exec``. The realtime live-transcription path
+# spawns ``ffmpeg`` via ``asyncio.create_subprocess_exec`` to decode WebM/Opus
+# into PCM16 — that crashes with NotImplementedError on the selector loop.
+# Force the Proactor policy before Daphne instantiates its loop so async
+# subprocesses work during ``daphne`` / ``runserver`` on dev machines.
+# Heroku (Linux) is unaffected — its default loop supports subprocesses.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 

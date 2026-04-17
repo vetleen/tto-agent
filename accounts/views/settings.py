@@ -59,11 +59,27 @@ def settings_page(request):
         org_max_context = DEFAULT_MAX_CONTEXT_TOKENS
     user_max_context = (user_settings.preferences or {}).get("max_context_tokens")
 
-    user_transcription_model = (user_settings.preferences or {}).get("transcription_models", {}).get("default")
-    from llm.transcription_registry import get_all_transcription_models
-    transcription_model_display = {
-        mid: info.display_name for mid, info in get_all_transcription_models().items()
-    }
+    user_transcription_prefs = (user_settings.preferences or {}).get("transcription_models", {})
+    user_transcription_model = user_transcription_prefs.get("default")
+    user_transcription_model_live = user_transcription_prefs.get("live")
+    user_transcription_model_upload = user_transcription_prefs.get("upload")
+    user_live_transcription_mode = (user_settings.preferences or {}).get("live_transcription_mode", "")
+
+    from llm.transcription_registry import get_all_transcription_models, get_transcription_model_info
+    all_models = get_all_transcription_models()
+    transcription_model_display = {mid: info.display_name for mid, info in all_models.items()}
+
+    # Partition the allow-list into per-capability pools so each dropdown
+    # shows only options that work in its context. Unknown registry entries
+    # are dropped silently (same filtering the meeting picker does).
+    live_capable_models = [
+        mid for mid in prefs.allowed_transcription_models
+        if (info := get_transcription_model_info(mid)) and info.supports_live_streaming
+    ]
+    upload_capable_models = [
+        mid for mid in prefs.allowed_transcription_models
+        if get_transcription_model_info(mid) is not None
+    ]
 
     from meetings.services.minutes import get_eligible_summarizer_skills
 
@@ -77,8 +93,16 @@ def settings_page(request):
         "org_max_context_tokens": org_max_context,
         "user_max_context_tokens": user_max_context,
         "allowed_transcription_models": prefs.allowed_transcription_models,
+        "live_capable_transcription_models": live_capable_models,
+        "upload_capable_transcription_models": upload_capable_models,
         "user_transcription_model": user_transcription_model or "",
+        "user_transcription_model_live": user_transcription_model_live or "",
+        "user_transcription_model_upload": user_transcription_model_upload or "",
         "resolved_transcription_model": prefs.transcription_model,
+        "resolved_transcription_model_live": prefs.transcription_model_live,
+        "resolved_transcription_model_upload": prefs.transcription_model_upload,
+        "user_live_transcription_mode": user_live_transcription_mode,
+        "resolved_live_transcription_mode": prefs.live_transcription_mode,
         "transcription_model_display": transcription_model_display,
         "summarizer_skills": summarizer_skills,
         "user_summarizer_skill_id": user_summarizer_skill_id,
@@ -126,30 +150,83 @@ def preferences_models_update(request):
 @login_required
 @require_POST
 def preferences_transcription_model_update(request):
-    """Update user's preferred transcription model."""
+    """Update a user's preferred transcription model.
+
+    Accepts ``kind`` in the POST body: ``default`` (generic fallback),
+    ``live`` (used when starting a live meeting — must be a streaming-
+    capable model), or ``upload`` (used for uploaded audio files).
+    Missing / unknown ``kind`` is treated as ``default`` for backwards
+    compatibility with older clients.
+    """
     from core.preferences import get_preferences
+    from llm.transcription_registry import get_transcription_model_info
 
     try:
         data = json.loads(request.body)
     except (json.JSONDecodeError, ValueError):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    model = data.get("model", "").strip() or None
+    model = (data.get("model") or "").strip() or None
+    kind = (data.get("kind") or "default").strip().lower()
+    if kind not in ("default", "live", "upload"):
+        return JsonResponse({"error": "Invalid kind"}, status=400)
 
     if model:
         prefs = get_preferences(request.user)
         if model not in prefs.allowed_transcription_models:
             return JsonResponse({"error": "Model not allowed"}, status=400)
+        if kind == "live":
+            info = get_transcription_model_info(model)
+            if info is None or not info.supports_live_streaming:
+                return JsonResponse(
+                    {"error": "This model cannot be used for live transcription."},
+                    status=400,
+                )
 
     settings, _ = UserSettings.objects.get_or_create(user=request.user)
     prefs_dict = settings.preferences or {}
     transcription_models = prefs_dict.get("transcription_models", {})
-    transcription_models["default"] = model
+    transcription_models[kind] = model
     prefs_dict["transcription_models"] = transcription_models
     settings.preferences = prefs_dict
     settings.save()
 
-    return JsonResponse({"ok": True, "model": model})
+    return JsonResponse({"ok": True, "model": model, "kind": kind})
+
+
+@login_required
+@require_POST
+def preferences_live_transcription_mode_update(request):
+    """Update the user's live transcription mode preference.
+
+    Values: ``chunked``, ``realtime``, ``realtime_with_fallback``. An
+    empty string / missing value clears the user's override and lets the
+    org or system default take effect.
+    """
+    from core.preferences import LIVE_TRANSCRIPTION_MODES
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    mode = (data.get("mode") or "").strip().lower() or None
+    if mode and mode not in LIVE_TRANSCRIPTION_MODES:
+        return JsonResponse(
+            {"error": f"Invalid mode. Choose from {list(LIVE_TRANSCRIPTION_MODES)}."},
+            status=400,
+        )
+
+    settings, _ = UserSettings.objects.get_or_create(user=request.user)
+    prefs_dict = settings.preferences or {}
+    if mode is None:
+        prefs_dict.pop("live_transcription_mode", None)
+    else:
+        prefs_dict["live_transcription_mode"] = mode
+    settings.preferences = prefs_dict
+    settings.save()
+
+    return JsonResponse({"ok": True, "mode": mode})
 
 
 @login_required

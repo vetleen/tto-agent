@@ -35,7 +35,14 @@ def _make_communicator(meeting_uuid, user):
     return communicator
 
 
-@override_settings(CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}})
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+    # These tests cover the chunked (Celery) live-transcription path. The
+    # realtime path has its own test module. Pin the system default so the
+    # consumer takes the chunked branch regardless of what we ship as the
+    # user-facing default.
+    MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT="chunked",
+)
 class MeetingTranscribeConsumerTests(TransactionTestCase):
     """TransactionTestCase because we use database_sync_to_async."""
 

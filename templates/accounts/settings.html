@@ -57,28 +57,65 @@
     </div>
   </section>
 
-  <!-- Transcription Model -->
+  <!-- Transcription -->
   {% if allowed_transcription_models %}
   <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Transcription Model</h2>
-    <p class="mt-1 text-sm text-body">Choose your preferred model for audio transcription.</p>
+    <h2 class="text-lg font-medium text-heading">Transcription</h2>
+    <p class="mt-1 text-sm text-body">Choose your preferred models for audio transcription. Live and file-upload paths can use different models — e.g. a streaming model for live meetings and a diarization model for uploads.</p>
 
-    <div class="mt-4">
+    <div class="mt-4 grid gap-4 md:grid-cols-2">
       <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="transcription-model">
-          Transcription model
+        <label class="block text-sm font-medium text-heading" for="transcription-model-live">
+          Live transcription model
         </label>
-        <p class="text-xs text-body mt-0.5">Used when you upload audio files to data rooms.</p>
+        <p class="text-xs text-body mt-0.5">Used when you click Start transcription on a meeting.</p>
         <select
-          id="transcription-model"
+          id="transcription-model-live"
+          data-kind="live"
           class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">Default ({{ resolved_transcription_model }})</option>
-          {% for model in allowed_transcription_models %}
-          <option value="{{ model }}" {% if user_transcription_model == model %}selected{% endif %}>{{ model }}</option>
+          <option value="">Default ({{ transcription_model_display|default_if_none:"" }}{{ resolved_transcription_model_live }})</option>
+          {% for model in live_capable_transcription_models %}
+          <option value="{{ model }}" {% if user_transcription_model_live == model %}selected{% endif %}>{{ model }}</option>
+          {% endfor %}
+        </select>
+        {% if not live_capable_transcription_models %}
+        <p class="mt-2 text-xs text-fg-warning">None of your allowed models support live streaming. Live transcription will not work until one is added.</p>
+        {% endif %}
+      </div>
+
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="transcription-model-upload">
+          File-upload transcription model
+        </label>
+        <p class="text-xs text-body mt-0.5">Used when you upload an audio file to a meeting or data room. Diarization models are fine here.</p>
+        <select
+          id="transcription-model-upload"
+          data-kind="upload"
+          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">Default ({{ resolved_transcription_model_upload }})</option>
+          {% for model in upload_capable_transcription_models %}
+          <option value="{{ model }}" {% if user_transcription_model_upload == model %}selected{% endif %}>{{ model }}</option>
           {% endfor %}
         </select>
       </div>
+    </div>
+
+    <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
+      <label class="block text-sm font-medium text-heading" for="live-transcription-mode">
+        Live transcription path
+      </label>
+      <p class="text-xs text-body mt-0.5">The Realtime path streams audio continuously for ~1s latency. "Try realtime, fall back" is the safe default — uses realtime when it works, drops to the legacy chunked path otherwise.</p>
+      <select
+        id="live-transcription-mode"
+        class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+      >
+        <option value="" {% if not user_live_transcription_mode %}selected{% endif %}>Default ({{ resolved_live_transcription_mode }})</option>
+        <option value="realtime_with_fallback" {% if user_live_transcription_mode == "realtime_with_fallback" %}selected{% endif %}>Try realtime, fall back to chunked</option>
+        <option value="realtime" {% if user_live_transcription_mode == "realtime" %}selected{% endif %}>Realtime only</option>
+        <option value="chunked" {% if user_live_transcription_mode == "chunked" %}selected{% endif %}>Chunked (legacy)</option>
+      </select>
     </div>
   </section>
   {% endif %}
@@ -176,19 +213,39 @@
     });
   });
 
-  // Transcription model preference
-  var transcriptionSelect = document.getElementById('transcription-model');
-  if (transcriptionSelect) {
-    transcriptionSelect.addEventListener('change', function() {
+  // Transcription model preferences (live + upload) — the server distinguishes
+  // via the ``kind`` field so we can post to the same endpoint.
+  ['transcription-model-live', 'transcription-model-upload'].forEach(function(id) {
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    sel.addEventListener('change', function() {
       fetch('{% url "accounts:preferences_transcription_model_update" %}', {
         method: 'POST',
         headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.value }),
+        body: JSON.stringify({ model: this.value, kind: this.dataset.kind }),
         credentials: 'same-origin',
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) {
           alert(data.error);
-          transcriptionSelect.value = '';
+          sel.value = '';
+        }
+      });
+    });
+  });
+
+  // Live transcription mode (chunked / realtime / realtime_with_fallback)
+  var modeSelect = document.getElementById('live-transcription-mode');
+  if (modeSelect) {
+    modeSelect.addEventListener('change', function() {
+      fetch('{% url "accounts:preferences_live_transcription_mode_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: this.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          modeSelect.value = '';
         }
       });
     });

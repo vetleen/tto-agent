@@ -411,20 +411,36 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 recompute_meeting_transcript(self.meeting_id)
             self._segments_total += 1
 
-            # Cost logging — never raises.
+            # Cost logging — never raises. Realtime is officially priced per
+            # token on the same rate card as the batch transcription model,
+            # so we reuse the existing calculator. When the server doesn't
+            # return usage (older API versions, cancelled utterances) we
+            # fall through to a None cost_usd rather than guessing.
             try:
                 from llm.service.logger import log_transcription_streaming
+                from llm.service.pricing import calculate_transcription_cost
                 from llm.types.context import RunContext
+
+                input_tokens = (usage or {}).get("input_tokens")
+                output_tokens = (usage or {}).get("output_tokens")
+                total_tokens = (usage or {}).get("total_tokens")
+                cost_usd = calculate_transcription_cost(
+                    model_id,
+                    audio_duration_seconds=0.0,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
                 log_transcription_streaming(
                     model=model_id,
                     context=RunContext.create(user_id=self.user.id),
                     kind="realtime_utterance",
-                    item_id="",  # filled by caller if we track it
-                    audio_duration_seconds=0.0,  # server doesn't give us per-utterance audio seconds reliably
+                    item_id="",
+                    audio_duration_seconds=0.0,
                     transcript_len=len(text),
-                    input_tokens=(usage or {}).get("input_tokens"),
-                    output_tokens=(usage or {}).get("output_tokens"),
-                    total_tokens=(usage or {}).get("total_tokens"),
+                    cost_usd=cost_usd,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
                 )
             except Exception:
                 logger.exception("realtime: log_transcription_streaming failed")
@@ -575,32 +591,51 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         )
         segment_index_base = (max_existing + 1) if max_existing is not None else 0
 
-        # Pick the transcription model: meeting's saved choice wins, then user
-        # prefs default, then the project default. The meeting's choice is set
-        # by the model picker in the UI (POST to meeting_update_metadata).
+        # Pick the transcription model. Priority order for the *live* path:
+        #   1. Meeting-level override (only if it's live-capable)
+        #   2. User/org "live" default from preferences
+        #   3. First live-capable model in the allow-list
+        # This means a user whose general default is a diarize model (batch-only)
+        # still gets a working live session — the consumer picks a live-capable
+        # model from their allow-list automatically.
+        from llm.transcription_registry import get_transcription_model_info
+
         live_mode = "chunked"
+        allowed_models: list[str] = []
+        live_default = ""
         try:
             from core.preferences import get_preferences
             prefs = get_preferences(self.user)
             allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
-            prefs_default = getattr(prefs, "transcription_model", "") or ""
+            live_default = getattr(prefs, "transcription_model_live", "") or ""
             live_mode = getattr(prefs, "live_transcription_mode", "chunked") or "chunked"
         except Exception:
-            allowed_models = []
-            prefs_default = ""
+            pass
+
+        def _is_live_capable(mid: str) -> bool:
+            info = get_transcription_model_info(mid)
+            return bool(info and info.supports_live_streaming)
+
+        live_capable_allowed = [m for m in allowed_models if _is_live_capable(m)]
+
         meeting_model = (meeting.transcription_model or "").strip()
-        if meeting_model and meeting_model in allowed_models:
+        if meeting_model and meeting_model in live_capable_allowed:
             model_id = meeting_model
-        elif prefs_default and prefs_default in allowed_models:
-            model_id = prefs_default
+        elif live_default and live_default in live_capable_allowed:
+            model_id = live_default
+        elif live_capable_allowed:
+            model_id = live_capable_allowed[0]
         elif allowed_models:
-            model_id = allowed_models[0]
+            # No live-capable models in the allow-list. Keep the meeting's
+            # choice so the user sees a meaningful error downstream rather
+            # than silently switching to something else.
+            model_id = meeting_model or allowed_models[0]
         else:
             model_id = getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
 
-        # Defend against a user picking a batch-only model while the effective
-        # mode asks for realtime: fall back to chunked for that session.
-        from llm.transcription_registry import get_transcription_model_info
+        # If no live-capable model is available (e.g. org only allows diarize),
+        # force chunked mode — which will also fail, but at least with a clearer
+        # error path. Realtime is physically impossible without a capable model.
         info = get_transcription_model_info(model_id)
         if live_mode != "chunked" and (info is None or not info.supports_live_streaming):
             logger.info(

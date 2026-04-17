@@ -468,9 +468,12 @@ MEETING_CHUNK_MAX_BYTES = int(os.environ.get("MEETING_CHUNK_MAX_BYTES", str(20 *
 # to OpenAI. 2.0 roughly halves the tokens billed with minimal intelligibility
 # loss; 1.0 disables the speed-up. Clamped to [0.5, 3.0] in code.
 MEETING_UPLOAD_SPEED_UP_FACTOR = float(os.environ.get("MEETING_UPLOAD_SPEED_UP_FACTOR", "2.0"))
-# Live transcription mode cascades through preferences. Default keeps the
-# existing chunked path — admins opt in to "realtime" per-org or per-user.
-MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT = os.environ.get("MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT", "chunked")
+# Live transcription mode cascades through preferences. Default is
+# ``realtime_with_fallback`` — open the OpenAI Realtime API session, and
+# if that fails for any reason (transient outage, misconfigured model)
+# drop back to the chunked path automatically. Admins can override per
+# org / user, or pin every dyno back to "chunked" via this env var.
+MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT = os.environ.get("MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT", "realtime_with_fallback")
 
 # Celery (use Redis as broker)
 _celery_broker_url = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))

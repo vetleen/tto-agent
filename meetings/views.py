@@ -709,22 +709,23 @@ def meeting_upload_audio(request, meeting_uuid):
         messages.error(request, f"Audio file is too large (max {max_bytes // (1024 * 1024)} MB).")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    # Pick the transcription model: meeting's saved choice wins, then user
-    # prefs default, then the project default. The meeting's choice is set
-    # by the model picker in the UI (POST to meeting_update_metadata).
+    # Pick the transcription model for the *upload* path. User's upload-
+    # specific default wins; the meeting-level override is honoured only if
+    # it's a registered model (any capability works for upload, including
+    # diarize and whisper-1).
     try:
         from core.preferences import get_preferences
         prefs = get_preferences(request.user)
         allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
-        prefs_default = getattr(prefs, "transcription_model", "") or ""
+        upload_default = getattr(prefs, "transcription_model_upload", "") or ""
     except Exception:
         allowed_models = []
-        prefs_default = ""
+        upload_default = ""
     meeting_model = (meeting.transcription_model or "").strip()
     if meeting_model and meeting_model in allowed_models:
         model_id = meeting_model
-    elif prefs_default and prefs_default in allowed_models:
-        model_id = prefs_default
+    elif upload_default and upload_default in allowed_models:
+        model_id = upload_default
     elif allowed_models:
         model_id = allowed_models[0]
     else:

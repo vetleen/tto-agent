@@ -30,6 +30,12 @@ class ResolvedPreferences:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     transcription_model: str = ""
     allowed_transcription_models: list[str] = field(default_factory=list)
+    # Capability-specific defaults. ``transcription_model_live`` is the one
+    # used when starting a live recording; ``transcription_model_upload`` is
+    # used for uploaded audio files. The generic ``transcription_model``
+    # above is the fallback when neither is set — kept for backwards compat.
+    transcription_model_live: str = ""
+    transcription_model_upload: str = ""
     live_transcription_mode: str = "chunked"
 
 
@@ -126,6 +132,52 @@ def get_preferences(user) -> ResolvedPreferences:
         # Empty allowed list = transcription disabled
         transcription_model = ""
 
+    # Capability-specific defaults. The pool of viable models for each path
+    # is the effective allow-list filtered by the relevant capability flag.
+    # Diarize models, whisper-1, or any model without ``supports_live_streaming``
+    # are dropped from the live pool so a user with "openai/gpt-4o-transcribe-
+    # diarize" as their default can still start a live recording — the server
+    # picks the first live-capable model from the allow-list instead.
+    from llm.transcription_registry import get_transcription_model_info
+
+    def _filter_by_capability(models: list[str], flag: str) -> list[str]:
+        filtered = []
+        for mid in models:
+            info = get_transcription_model_info(mid)
+            if info is None:
+                continue
+            if getattr(info, flag, False):
+                filtered.append(mid)
+        return filtered
+
+    live_capable = _filter_by_capability(effective_transcription_allowed, "supports_live_streaming")
+    # "upload" means anything callable via the batch transcription endpoint —
+    # that's every known transcription model in the registry (including
+    # diarize and whisper-1), so we don't filter here.
+    upload_capable = list(effective_transcription_allowed)
+
+    def _resolve_for_pool(pool: list[str], key: str) -> str:
+        if not pool:
+            return ""
+        return _resolve_tier(
+            user_choice=user_transcription_models.get(key),
+            org_default=org_transcription_models.get(key),
+            system_default=system_transcription_default,
+            effective_allowed=pool,
+            system_allowed=system_transcription_allowed,
+        )
+
+    transcription_model_live = _resolve_for_pool(live_capable, "live")
+    transcription_model_upload = _resolve_for_pool(upload_capable, "upload")
+
+    # If the pool-specific key isn't set, inherit from the generic default
+    # when it happens to be compatible — otherwise stick with whatever
+    # _resolve_for_pool picked from the first-in-pool fallback.
+    if transcription_model and transcription_model in live_capable and not user_transcription_models.get("live") and not org_transcription_models.get("live"):
+        transcription_model_live = transcription_model
+    if transcription_model and transcription_model in upload_capable and not user_transcription_models.get("upload") and not org_transcription_models.get("upload"):
+        transcription_model_upload = transcription_model
+
     # --- Live transcription mode cascade (system → org → user) ---
     system_live_mode = getattr(django_settings, "MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT", "chunked")
     org_live_mode = org_prefs.get("live_transcription_mode")
@@ -194,6 +246,8 @@ def get_preferences(user) -> ResolvedPreferences:
         max_context_tokens=max_context_tokens,
         transcription_model=transcription_model,
         allowed_transcription_models=effective_transcription_allowed,
+        transcription_model_live=transcription_model_live,
+        transcription_model_upload=transcription_model_upload,
         live_transcription_mode=resolved_live_mode,
     )
 

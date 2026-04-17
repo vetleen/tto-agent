@@ -30,14 +30,21 @@ def _prefs(*, org=None, user=None):
 
 
 class LiveTranscriptionModeCascadeTests(TestCase):
-    def test_system_default_is_chunked(self):
+    # Pin the setting explicitly so the test is independent of whatever the
+    # local developer has in their ``.env`` (devs often experiment with
+    # ``realtime`` / ``chunked`` while testing).
+
+    @override_settings(MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT="realtime_with_fallback")
+    def test_shipping_default_is_realtime_with_fallback(self):
+        prefs = _prefs()
+        self.assertEqual(prefs.live_transcription_mode, "realtime_with_fallback")
+
+    @override_settings(MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT="chunked")
+    def test_system_default_can_be_pinned_to_chunked(self):
+        # Operators can opt every dyno out of realtime via the env var
+        # (e.g. during a known OpenAI Realtime incident).
         prefs = _prefs()
         self.assertEqual(prefs.live_transcription_mode, "chunked")
-
-    @override_settings(MEETING_LIVE_TRANSCRIPTION_MODE_DEFAULT="realtime")
-    def test_system_default_can_be_raised_via_setting(self):
-        prefs = _prefs()
-        self.assertEqual(prefs.live_transcription_mode, "realtime")
 
     def test_org_overrides_system(self):
         prefs = _prefs(org={"live_transcription_mode": "realtime"})
