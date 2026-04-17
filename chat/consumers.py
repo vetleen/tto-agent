@@ -302,15 +302,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "canvases": canvases_data["tabs"],
                     "active_canvas": canvases_data["active"],
                 }))
-            if task_list:
-                await self.send(text_data=json.dumps({
-                    "event_type": "tasks.loaded",
-                    "tasks": [{
-                        "id": str(t["id"]),
-                        "title": t["title"],
-                        "status": t["status"],
-                    } for t in task_list],
-                }))
+            await self.send(text_data=json.dumps({
+                "event_type": "tasks.loaded",
+                "tasks": [{
+                    "id": str(t["id"]),
+                    "title": t["title"],
+                    "status": t["status"],
+                } for t in task_list],
+            }))
 
             # Now that the client has the thread state, kick off the seed
             # assistant turn if one was pending. We pass through the same
