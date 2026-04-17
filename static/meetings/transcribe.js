@@ -230,6 +230,13 @@
   let lastChunkSentAt = 0;
   let watchdogTimer = null;
   let watchdogRestartAttempted = false;
+  // Active live-transcription mode — server announces this in the "started"
+  // event. "chunked" (legacy) stops and restarts MediaRecorder every 30s to
+  // get self-contained WebM files. "realtime" / "realtime_with_fallback"
+  // use a single continuous MediaRecorder with a small timeslice so the
+  // server-side ffmpeg pipe sees one unbroken Matroska stream.
+  let liveMode = 'chunked';
+  const STREAMING_TIMESLICE_MS = 250;
 
   // Choose the best supported audio mime type for MediaRecorder.
   function pickMime() {
@@ -373,7 +380,7 @@
           }
           if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
           if (mediaStream && mediaStream.active) {
-            startSegmentRecorder();
+            startRecorder();
           }
         } catch (err) {
           console.warn('watchdog: restart failed', err);
@@ -603,6 +610,7 @@
         }
         if (msg.type === 'started') {
           segmentIndexBase = parseInt(msg.segment_index_base || 0, 10);
+          liveMode = msg.live_mode || 'chunked';
           // On a fresh session we reset segmentIndex; on a reconnect we keep
           // it (the recorder kept advancing while disconnected) and just
           // rely on the server's base for correctness on the next clean start.
@@ -726,6 +734,78 @@
     }
   }
 
+  function startRecorder() {
+    // Dispatch on the effective live-transcription mode announced by the
+    // server. Realtime modes want a single continuous MediaRecorder; the
+    // legacy chunked mode stops and restarts every 30s.
+    if (liveMode === 'realtime' || liveMode === 'realtime_with_fallback') {
+      startStreamingRecorder();
+    } else {
+      startSegmentRecorder();
+    }
+  }
+
+  function startStreamingRecorder() {
+    if (!mediaStream) return;
+    const opts = preferredMime ? { mimeType: preferredMime } : undefined;
+    let recorder;
+    try {
+      recorder = new MediaRecorder(mediaStream, opts);
+    } catch (err) {
+      console.error('MediaRecorder constructor failed', err);
+      return;
+    }
+    mediaRecorder = recorder;
+    // Single continuous recording. The first ondataavailable burst contains
+    // the Matroska init segment; every subsequent burst is a cluster that
+    // extends the same WebM stream. Server-side ffmpeg decodes them as one
+    // continuous input — no timestamp resets, no DTS warnings.
+    recorder.ondataavailable = function (ev) {
+      if (!ev.data || ev.data.size === 0) return;
+      ev.data.arrayBuffer().then(function (ab) { pushStreamBurst(ab); });
+    };
+    recorder.onstop = function () {
+      // If we're still transcribing when this fires (user paused mic, then
+      // resumed via visibility handler) restart a fresh continuous session.
+      if (transcribing && mediaStream && mediaStream.active) {
+        startStreamingRecorder();
+      }
+    };
+    try {
+      recorder.start(STREAMING_TIMESLICE_MS);
+    } catch (err) {
+      console.error('recorder.start failed', err);
+      return;
+    }
+  }
+
+  function pushStreamBurst(ab) {
+    lastChunkSentAt = Date.now();
+    watchdogRestartAttempted = false;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      // Socket is down — drop the burst. Unlike chunked mode we can't meaningfully
+      // buffer: ffmpeg expects a continuous stream, and replaying mid-stream
+      // bytes out of order would corrupt it. The reconnect code will start a
+      // fresh MediaRecorder on re-open.
+      return;
+    }
+    const mime = preferredMime || 'audio/webm';
+    const meta = {
+      type: 'chunk_meta',
+      segment_index: segmentIndex,
+      byte_length: ab.byteLength,
+      mime: mime,
+      start_offset_seconds: 0,
+    };
+    segmentIndex += 1;
+    try {
+      ws.send(JSON.stringify(meta));
+      ws.send(ab);
+    } catch (err) {
+      console.warn('failed to send stream burst', err);
+    }
+  }
+
   function startSegmentRecorder() {
     if (!mediaStream) return;
     let chunks = [];
@@ -845,7 +925,7 @@
     installVisibilityHandler();
     installTrackEndedHandler(mediaStream);
     startWatchdog();
-    startSegmentRecorder();
+    startRecorder();
   }
 
   function shutdownLocal(opts) {

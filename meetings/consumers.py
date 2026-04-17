@@ -100,11 +100,16 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
         await self.channel_layer.group_add(self._group_name, self.channel_name)
         await self.accept()
+        # Hand the effective mode to the client so it can pick the right
+        # MediaRecorder strategy: chunked ⇒ stop/restart every 30s producing
+        # self-contained WebM files; realtime ⇒ single continuous recorder
+        # with a small timeslice so ffmpeg sees one unbroken Matroska stream.
         await self.send(text_data=json.dumps({
             "type": "started",
             "meeting_id": self.meeting_uuid,
             "started_at": meeting["started_at"],
             "segment_index_base": self._segment_index_base,
+            "live_mode": self._realtime_mode,
         }))
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
