@@ -230,9 +230,10 @@ class MeetingArtifact(models.Model):
 class MeetingAttachment(models.Model):
     """A supporting file uploaded to a meeting (slides, agenda PDF, etc.).
 
-    Distinct from the transcript and from any chat-thread attachments. Lives
-    on the meeting page only; not part of the chat-thread context unless the
-    user explicitly references it.
+    Distinct from the transcript and from any chat-thread attachments. When
+    the user opens a "Summarize meeting in chat" thread, supported files are
+    copied into fresh ChatAttachment rows on that thread; the originals stay
+    on the meeting page. See ``meetings.services.minutes``.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

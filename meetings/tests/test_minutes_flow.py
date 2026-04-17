@@ -1,19 +1,25 @@
 """Integration tests for the 'Create meeting minutes with Wilfred' flow."""
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+from django.core.files.storage import InMemoryStorage
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import UserSettings
 from agent_skills.models import AgentSkill
-from chat.models import ChatCanvas, ChatMessage, ChatThread
-from meetings.models import Meeting
+from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThread
+from meetings.models import Meeting, MeetingAttachment
 from meetings.services.minutes import (
     create_minutes_thread,
     get_eligible_summarizer_skills,
     resolve_summarizer_skill,
 )
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 User = get_user_model()
 
@@ -289,3 +295,149 @@ class MeetingCreateMinutesWithSkillViewTests(TestCase):
         # Should fall back to system default, not use the ineligible skill
         thread = ChatThread.objects.filter(created_by=self.user).first()
         self.assertEqual(thread.skill_id, self.system_skill.id)
+
+
+@override_settings(
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
+)
+class CreateMinutesThreadAttachmentTests(TestCase):
+    def setUp(self):
+        AgentSkill.objects.filter(slug="meeting-summarizer").delete()
+        self.skill = _seed_meeting_summarizer()
+        self.user = User.objects.create_user(email="att-mt@example.com", password="pw")
+        self.meeting = Meeting.objects.create(
+            name="Acme call",
+            slug="acme-call-att",
+            created_by=self.user,
+            transcript="Speaker says hello. Speaker says goodbye.",
+        )
+
+    def _add_attachment(self, filename, data, content_type, size_bytes=None):
+        return MeetingAttachment.objects.create(
+            meeting=self.meeting,
+            uploaded_by=self.user,
+            file=ContentFile(data, name=filename),
+            original_filename=filename,
+            content_type=content_type,
+            size_bytes=size_bytes if size_bytes is not None else len(data),
+        )
+
+    def test_no_attachments_no_extra_message(self):
+        thread, err = create_minutes_thread(self.user, self.meeting)
+        self.assertIsNone(err)
+        msgs = list(ChatMessage.objects.filter(thread=thread).order_by("created_at"))
+        self.assertEqual(len(msgs), 1)
+        self.assertTrue(msgs[0].is_hidden_from_user)
+        self.assertEqual(ChatAttachment.objects.filter(thread=thread).count(), 0)
+
+    def test_supported_pdf_copied_and_linked(self):
+        ma = self._add_attachment("slides.pdf", b"%PDF-1.4 fake body", "application/pdf")
+        thread, err = create_minutes_thread(self.user, self.meeting)
+        self.assertIsNone(err)
+        atts = list(ChatAttachment.objects.filter(thread=thread))
+        self.assertEqual(len(atts), 1)
+        ca = atts[0]
+        self.assertEqual(ca.original_filename, "slides.pdf")
+        self.assertEqual(ca.content_type, "application/pdf")
+        # Fresh storage path — chat copy is independent of the meeting file.
+        self.assertNotEqual(ca.file.name, ma.file.name)
+        self.assertTrue(ca.file.name.startswith("chat_attachments/"))
+        # Linked to a visible user message.
+        self.assertIsNotNone(ca.message_id)
+        self.assertFalse(ca.message.is_hidden_from_user)
+        self.assertEqual(ca.message.role, "user")
+
+    def test_supported_docx_with_octet_stream_normalized(self):
+        self._add_attachment("notes.docx", b"PK fake docx bytes", "application/octet-stream")
+        thread, _ = create_minutes_thread(self.user, self.meeting)
+        atts = list(ChatAttachment.objects.filter(thread=thread))
+        self.assertEqual(len(atts), 1)
+        self.assertEqual(atts[0].content_type, _DOCX_MIME)
+
+    def test_unsupported_type_skipped_in_disclaimer(self):
+        self._add_attachment("archive.zip", b"PK zip bytes", "application/zip")
+        thread, _ = create_minutes_thread(self.user, self.meeting)
+        self.assertEqual(ChatAttachment.objects.filter(thread=thread).count(), 0)
+        visible = ChatMessage.objects.filter(
+            thread=thread, is_hidden_from_user=False,
+        ).first()
+        self.assertIsNotNone(visible)
+        self.assertIn("archive.zip", visible.content)
+        self.assertIn("unsupported file type", visible.content)
+
+    def test_oversized_pdf_skipped(self):
+        # Lie about size without allocating 31 MB in memory — validation uses
+        # MeetingAttachment.size_bytes.
+        self._add_attachment(
+            "huge.pdf", b"%PDF-1.4 stub", "application/pdf",
+            size_bytes=31 * 1024 * 1024,
+        )
+        thread, _ = create_minutes_thread(self.user, self.meeting)
+        self.assertEqual(ChatAttachment.objects.filter(thread=thread).count(), 0)
+        visible = ChatMessage.objects.filter(
+            thread=thread, is_hidden_from_user=False,
+        ).first()
+        self.assertIsNotNone(visible)
+        self.assertIn("huge.pdf", visible.content)
+        self.assertIn("too large", visible.content)
+
+    def test_mixed_accepted_and_skipped(self):
+        self._add_attachment("slides.pdf", b"%PDF-1.4 body", "application/pdf")
+        self._add_attachment("archive.zip", b"PK zip", "application/zip")
+        thread, _ = create_minutes_thread(self.user, self.meeting)
+        # One accepted, one skipped.
+        self.assertEqual(ChatAttachment.objects.filter(thread=thread).count(), 1)
+        visible = ChatMessage.objects.filter(
+            thread=thread, is_hidden_from_user=False,
+        ).first()
+        self.assertIsNotNone(visible)
+        self.assertIn("automatically included", visible.content)
+        self.assertIn("archive.zip", visible.content)
+        self.assertIn("unsupported file type", visible.content)
+        # Hidden seed mentions the 1 accepted file.
+        hidden = ChatMessage.objects.filter(
+            thread=thread, is_hidden_from_user=True,
+        ).first()
+        self.assertIn("1 supporting file", hidden.content)
+
+    def test_copy_failure_does_not_break_thread(self):
+        self._add_attachment("slides.pdf", b"%PDF-1.4 body", "application/pdf")
+        # Simulate storage.open raising — the helper should log and record the
+        # file as skipped rather than propagating.
+        with patch.object(InMemoryStorage, "open", side_effect=OSError("boom")):
+            thread, err = create_minutes_thread(self.user, self.meeting)
+        self.assertIsNone(err)
+        self.assertIsNotNone(thread)
+        self.assertEqual(ChatAttachment.objects.filter(thread=thread).count(), 0)
+        visible = ChatMessage.objects.filter(
+            thread=thread, is_hidden_from_user=False,
+        ).first()
+        self.assertIsNotNone(visible)
+        self.assertIn("slides.pdf", visible.content)
+        self.assertIn("copy failed", visible.content)
+
+    def test_visible_message_ordered_after_hidden_seed(self):
+        self._add_attachment("slides.pdf", b"%PDF-1.4 body", "application/pdf")
+        thread, _ = create_minutes_thread(self.user, self.meeting)
+        msgs = list(ChatMessage.objects.filter(thread=thread).order_by("created_at"))
+        self.assertEqual(len(msgs), 2)
+        self.assertTrue(msgs[0].is_hidden_from_user)
+        self.assertFalse(msgs[1].is_hidden_from_user)
+
+    def test_seed_mentions_attachment_count_only_when_accepted(self):
+        thread_empty, _ = create_minutes_thread(self.user, self.meeting)
+        seed_empty = ChatMessage.objects.filter(
+            thread=thread_empty, is_hidden_from_user=True,
+        ).first()
+        self.assertNotIn("supporting file", seed_empty.content)
+
+        self._add_attachment("a.pdf", b"%PDF-1.4", "application/pdf")
+        self._add_attachment("b.pdf", b"%PDF-1.4", "application/pdf")
+        thread_two, _ = create_minutes_thread(self.user, self.meeting)
+        seed_two = ChatMessage.objects.filter(
+            thread=thread_two, is_hidden_from_user=True,
+        ).first()
+        self.assertIn("2 supporting files", seed_two.content)
