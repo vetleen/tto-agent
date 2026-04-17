@@ -31,13 +31,16 @@ from __future__ import annotations
 import abc
 import asyncio
 import base64
+import json
 import logging
+import os
 import random
 import threading
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import AsyncIterator, Optional
 
 from llm.transcription_registry import get_transcription_model_info
@@ -156,29 +159,43 @@ _RECONNECT_BACKOFFS = (0.5, 1.0, 2.0, 4.0, 4.0, 4.0, 4.0, 4.0)
 _RECONNECT_COUNTER_RESET_SECONDS = 60
 
 
-# Process-wide AsyncOpenAI client. Lazy so importing this module in test
-# contexts without the API key doesn't blow up.
-_client_lock = threading.Lock()
-_async_client = None
+_REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 
 
-def _get_async_client():
-    global _async_client
-    if _async_client is None:
-        with _client_lock:
-            if _async_client is None:
-                from openai import AsyncOpenAI
-                _async_client = AsyncOpenAI()
-    return _async_client
+async def _default_ws_connect(api_key: str, url: str):
+    """Open a raw WebSocket to OpenAI's Realtime transcription endpoint.
+
+    We talk to ``/v1/realtime?intent=transcription`` directly instead of
+    going through ``client.beta.realtime.connect(model=...)`` because the
+    SDK's wrapper forces a ``?model=`` URL parameter that the transcription
+    path rejects with ``invalid_request_error.invalid_model``. The session
+    model is configured in the session.update event below instead.
+    """
+    from websockets.asyncio.client import connect
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "OpenAI-Beta": "realtime=v1",
+    }
+    return await connect(
+        url,
+        additional_headers=headers,
+        max_size=2**24,  # 16MB — plenty of headroom for delta events
+    )
 
 
 class OpenAIRealtimeSession(RealtimeTranscriptionSession):
-    """Wrap an ``AsyncOpenAI().beta.realtime.connect(...)`` connection.
+    """Open a direct WebSocket to OpenAI's Realtime transcription endpoint.
 
-    The SDK (openai==2.24.0) returns an ``AsyncRealtimeConnection`` with
-    typed helpers for the client events we need: ``transcription_session
-    .update`` to configure the session, ``input_audio_buffer.append`` to
-    stream PCM, and async iteration over incoming server events.
+    Connects to ``wss://api.openai.com/v1/realtime?intent=transcription``
+    using the process-wide ``OPENAI_API_KEY``. The transcription model
+    (``gpt-4o-mini-transcribe`` / ``gpt-4o-transcribe``) is sent inside
+    the ``transcription_session.update`` event, not in the URL.
+
+    The ``_ws_connect_factory`` kwarg is a test seam that returns an
+    awaitable which yields any websocket-like object. The interface used
+    is the subset of the ``websockets`` library: ``send(data)``,
+    async iteration over incoming messages, ``close(code)``.
     """
 
     def __init__(
@@ -187,7 +204,8 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         model_id: str,
         prompt: str | None = None,
         language: str | None = None,
-        _client_factory=None,  # test seam
+        _ws_connect_factory=None,   # test seam; replaces _default_ws_connect
+        _api_key: str | None = None,
     ):
         super().__init__(model_id=model_id, prompt=prompt, language=language)
         info = get_transcription_model_info(model_id)
@@ -199,8 +217,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             )
         self._info = info
         self._api_model = info.api_model
-        self._conn = None
-        self._cm = None
+        self._ws = None
         self._recv_task: Optional[asyncio.Task] = None
         self._closed = False
         self._session_id: str | None = None
@@ -208,37 +225,28 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         self._replay_bytes = 0
         self._reconnect_attempt = 0
         self._last_reconnect_success: float = 0.0
-        self._client_factory = _client_factory or _get_async_client
+        self._ws_connect_factory = _ws_connect_factory or _default_ws_connect
+        self._api_key = _api_key or os.environ.get("OPENAI_API_KEY", "")
 
     async def connect(self) -> None:
         await self._open()
         await self._events.put(SessionStatus(state="connected"))
 
     async def _open(self) -> None:
-        client = self._client_factory()
-        # The /v1/realtime endpoint expects a conversational model in the
-        # ``?model=`` query parameter (e.g. gpt-4o-realtime-preview). Passing
-        # a transcription model there yields ``invalid_request_error.invalid_model``.
-        # For transcription-only sessions we add ``?intent=transcription`` so
-        # OpenAI routes to the transcription path and the transcription model
-        # in the session config below is the one that actually runs.
-        self._cm = client.beta.realtime.connect(
-            model=self._api_model,
-            extra_query={"intent": "transcription"},
-        )
-        self._conn = await self._cm.__aenter__()
+        if not self._api_key:
+            raise RealtimeSessionError("OPENAI_API_KEY is not set")
+        self._ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
         await self._send_session_update()
         self._recv_task = asyncio.create_task(self._receive_loop())
 
     async def _send_session_update(self) -> None:
         """Configure the session for transcription-only.
 
-        The SDK exposes ``transcription_session.update`` which accepts the
-        same shape as ``/v1/realtime/transcription_sessions``. We ask for
-        server VAD (so the model auto-commits on silence) and near-field
-        noise reduction. Prompt and language are optional.
+        Tells OpenAI which transcription model to use, what audio format
+        we'll send (PCM16 @ 24kHz), and how to detect speech boundaries
+        (server-side VAD with a ~600ms silence gap for utterance end).
         """
-        assert self._conn is not None
+        assert self._ws is not None
         transcription_cfg: dict = {"model": self._api_model}
         if self.prompt:
             transcription_cfg["prompt"] = self.prompt[:2048]
@@ -255,21 +263,29 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             },
             "input_audio_noise_reduction": {"type": "near_field"},
         }
-        await self._conn.send({
+        payload = json.dumps({
             "type": "transcription_session.update",
             "session": session_cfg,
         })
+        await self._ws.send(payload)
 
     async def _receive_loop(self) -> None:
         """Drain server events and translate into provider-neutral events.
 
         Survives benign disconnects by scheduling a reconnect.
         """
-        assert self._conn is not None
+        assert self._ws is not None
         try:
-            async for event in self._conn:
-                evt_type = getattr(event, "type", "")
-                await self._dispatch_server_event(evt_type, event)
+            async for message in self._ws:
+                # websockets lib delivers strings for text frames; be defensive.
+                if isinstance(message, bytes):
+                    message = message.decode("utf-8", errors="replace")
+                try:
+                    event = json.loads(message)
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning("OpenAIRealtimeSession: non-JSON frame (%d bytes) — dropping", len(message))
+                    continue
+                await self._dispatch_server_event(event.get("type", ""), event)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -277,37 +293,37 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             if not self._closed:
                 asyncio.create_task(self._try_reconnect())
 
-    async def _dispatch_server_event(self, evt_type: str, event) -> None:
+    async def _dispatch_server_event(self, evt_type: str, event: dict) -> None:
         if evt_type in ("transcription_session.created", "transcription_session.updated"):
-            sess = getattr(event, "session", None)
-            if sess is not None:
-                self._session_id = getattr(sess, "id", None)
+            session = event.get("session") or {}
+            if isinstance(session, dict):
+                self._session_id = session.get("id")
             return
         if evt_type == "conversation.item.input_audio_transcription.delta":
-            item_id = getattr(event, "item_id", "") or ""
-            delta = getattr(event, "delta", "") or ""
+            item_id = event.get("item_id", "") or ""
+            delta = event.get("delta", "") or ""
             if delta:
                 await self._events.put(TranscriptDelta(item_id=item_id, text=delta))
             return
         if evt_type == "conversation.item.input_audio_transcription.completed":
-            item_id = getattr(event, "item_id", "") or ""
-            text = getattr(event, "transcript", "") or ""
+            item_id = event.get("item_id", "") or ""
+            text = event.get("transcript", "") or ""
+            usage_obj = event.get("usage") or {}
             usage = None
-            usage_obj = getattr(event, "usage", None)
-            if usage_obj is not None:
+            if isinstance(usage_obj, dict) and usage_obj:
                 usage = {
-                    "input_tokens": getattr(usage_obj, "input_tokens", None),
-                    "output_tokens": getattr(usage_obj, "output_tokens", None),
-                    "total_tokens": getattr(usage_obj, "total_tokens", None),
+                    "input_tokens": usage_obj.get("input_tokens"),
+                    "output_tokens": usage_obj.get("output_tokens"),
+                    "total_tokens": usage_obj.get("total_tokens"),
                 }
             await self._events.put(TranscriptCompleted(item_id=item_id, text=text, usage=usage))
             return
         if evt_type == "error":
-            err = getattr(event, "error", None)
-            code = getattr(err, "code", "") if err else ""
-            message = getattr(err, "message", "") if err else ""
+            err = event.get("error") or {}
+            code = (err.get("code") or "") if isinstance(err, dict) else ""
+            message = (err.get("message") or "") if isinstance(err, dict) else ""
             # Authentication / model errors are fatal; others are recoverable.
-            fatal = code in {"invalid_api_key", "model_not_found", "permission_denied"}
+            fatal = code in {"invalid_api_key", "model_not_found", "permission_denied", "invalid_request_error"}
             await self._events.put(SessionError(code=code or "unknown", message=message, fatal=fatal))
             return
         # Other event types (rate_limits.updated etc.) are ignored for now.
@@ -330,14 +346,13 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         await self._events.put(SessionStatus(state="reconnecting"))
         await asyncio.sleep(backoff)
 
-        # Tear down the old handles so _open can re-enter cleanly.
+        # Tear down the old socket so _open can re-enter cleanly.
         try:
-            if self._cm is not None:
-                await self._cm.__aexit__(None, None, None)
+            if self._ws is not None:
+                await self._ws.close()
         except Exception:
             pass
-        self._conn = None
-        self._cm = None
+        self._ws = None
 
         try:
             await self._open()
@@ -351,25 +366,30 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         # utterance boundaries is acceptable — the VAD will coalesce.
         for frame in list(self._replay_buffer):
             try:
-                await self._conn.input_audio_buffer.append(
-                    audio=base64.b64encode(frame).decode("ascii")
-                )
+                await self._send_audio_frame(frame)
             except Exception:
                 break
 
         self._last_reconnect_success = time.monotonic()
         await self._events.put(SessionStatus(state="connected"))
 
+    async def _send_audio_frame(self, frame: bytes) -> None:
+        """Send a base64-encoded PCM frame as an ``input_audio_buffer.append`` event."""
+        assert self._ws is not None
+        payload = json.dumps({
+            "type": "input_audio_buffer.append",
+            "audio": base64.b64encode(frame).decode("ascii"),
+        })
+        await self._ws.send(payload)
+
     async def send_pcm(self, frame: bytes) -> None:
         if self._closed:
             return
         self._remember_pcm(frame)
-        if self._conn is None:
+        if self._ws is None:
             return  # mid-reconnect; the ring buffer will replay once we're back.
         try:
-            await self._conn.input_audio_buffer.append(
-                audio=base64.b64encode(frame).decode("ascii")
-            )
+            await self._send_audio_frame(frame)
         except Exception as exc:
             logger.warning("OpenAIRealtimeSession: append failed (%s) — dropping and triggering reconnect", exc)
             # The recv loop will observe the close and kick off reconnect.
@@ -383,10 +403,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
 
     async def finalize(self, timeout: float = 3.0) -> None:
         """Commit any pending audio and wait briefly for ``.completed`` events."""
-        if self._closed or self._conn is None:
+        if self._closed or self._ws is None:
             return
         try:
-            await self._conn.input_audio_buffer.commit()
+            await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
         except Exception as exc:
             logger.debug("OpenAIRealtimeSession: commit raised (%s) — continuing", exc)
         # Let the server produce any last completed event — we don't wait
@@ -407,15 +427,11 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                 pass
             self._recv_task = None
         try:
-            if self._conn is not None:
-                await self._conn.close()
+            if self._ws is not None:
+                await self._ws.close()
         except Exception:
             pass
-        try:
-            if self._cm is not None:
-                await self._cm.__aexit__(None, None, None)
-        except Exception:
-            pass
+        self._ws = None
         await self._events.put(SessionStatus(state="disconnected"))
 
 
@@ -442,7 +458,11 @@ def build_realtime_session(
     if not info.supports_live_streaming:
         raise UnsupportedModelError(f"Model {model_id} does not support live streaming")
     if info.provider == "openai":
-        return OpenAIRealtimeSession(model_id=model_id, prompt=prompt, language=language)
+        return OpenAIRealtimeSession(
+            model_id=model_id,
+            prompt=prompt,
+            language=language,
+        )
     raise UnsupportedModelError(f"No realtime session implementation for provider {info.provider!r}")
 
 

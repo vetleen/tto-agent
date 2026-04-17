@@ -1,15 +1,17 @@
 """Tests for the provider-agnostic RealtimeTranscriptionSession.
 
-The OpenAI implementation is exercised against a fake AsyncRealtime
-connection so these tests never touch the live API. The fake mimics the
-subset of the SDK interface that ``OpenAIRealtimeSession`` relies on:
-``send``, iteration over server events, and the
-``input_audio_buffer.append`` helper.
+``OpenAIRealtimeSession`` now opens a raw WebSocket to
+``wss://api.openai.com/v1/realtime?intent=transcription`` rather than
+going through ``AsyncOpenAI().beta.realtime.connect(...)`` — the SDK's
+wrapper forces a ``?model=`` URL parameter that OpenAI's transcription
+endpoint rejects. The test seam is a factory that returns a fake
+websocket with ``send``, async iteration, and ``close``.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
+import json
 
 from django.test import TestCase
 
@@ -29,47 +31,26 @@ from meetings.services.realtime_session import (
 # ---------------------------------------------------------------------------
 
 
-class _FakeEvent:
-    """Bag-of-attributes standing in for the SDK's typed server events."""
+class _FakeWebSocket:
+    """Minimal stand-in for a websockets.asyncio.client connection.
 
-    def __init__(self, **kw):
-        for k, v in kw.items():
-            setattr(self, k, v)
-
-
-class _FakeInputAudioBuffer:
-    def __init__(self, conn):
-        self.conn = conn
-
-    async def append(self, *, audio: str) -> None:
-        self.conn.appended_b64.append(audio)
-
-    async def commit(self) -> None:
-        self.conn.commit_calls += 1
-
-
-class _FakeConnection:
-    """Stand-in for AsyncRealtimeConnection.
-
-    Drives an async queue of server events that tests push onto; async
-    iteration over the connection yields them in order.
+    Exposes the subset used by OpenAIRealtimeSession: ``send`` (text frames),
+    async iteration over inbound messages, and ``close``. Tests push server
+    events via ``push_server_json`` — they're JSON-serialised to match the
+    real wire format.
     """
 
-    def __init__(self, script: list[_FakeEvent]):
-        self._script = list(script)
+    def __init__(self, script: list[dict] | None = None):
         self._queue: asyncio.Queue = asyncio.Queue()
-        self.sent: list[dict] = []
-        self.appended_b64: list[str] = []
-        self.commit_calls = 0
+        self.sent: list[str] = []
         self.closed = False
-        self.input_audio_buffer = _FakeInputAudioBuffer(self)
-        for evt in self._script:
-            self._queue.put_nowait(evt)
+        for evt in (script or []):
+            self._queue.put_nowait(json.dumps(evt))
 
     async def send(self, payload):
         self.sent.append(payload)
 
-    async def close(self, *, code: int = 1000, reason: str = "") -> None:
+    async def close(self, *args, **kwargs) -> None:
         self.closed = True
         # Unblock any pending iteration.
         self._queue.put_nowait(None)
@@ -78,51 +59,23 @@ class _FakeConnection:
         return self
 
     async def __anext__(self):
-        evt = await self._queue.get()
-        if evt is None:
+        msg = await self._queue.get()
+        if msg is None:
             raise StopAsyncIteration
-        return evt
+        return msg
 
-    # Tests push additional events via this:
-    def push(self, evt):
-        self._queue.put_nowait(evt)
-
-
-class _FakeConnectionManager:
-    def __init__(self, conn: _FakeConnection):
-        self.conn = conn
-
-    async def __aenter__(self):
-        return self.conn
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
+    def push_server_json(self, event: dict) -> None:
+        self._queue.put_nowait(json.dumps(event))
 
 
-class _FakeRealtimeNamespace:
-    def __init__(self, conn: _FakeConnection):
-        self.conn = conn
-        self.last_connect_kwargs: dict = {}
-
-    def connect(self, **kwargs):
-        self.last_connect_kwargs = kwargs
-        return _FakeConnectionManager(self.conn)
-
-
-class _FakeBeta:
-    def __init__(self, conn: _FakeConnection):
-        self.realtime = _FakeRealtimeNamespace(conn)
-
-
-class _FakeAsyncOpenAI:
-    def __init__(self, conn: _FakeConnection):
-        self.beta = _FakeBeta(conn)
-
-
-def _factory_for(conn: _FakeConnection):
-    def _f():
-        return _FakeAsyncOpenAI(conn)
-    return _f
+def _factory_for(ws: _FakeWebSocket, captured: dict | None = None):
+    """Return a connect-factory that yields ``ws`` and optionally records args."""
+    async def factory(api_key: str, url: str):
+        if captured is not None:
+            captured["api_key"] = api_key
+            captured["url"] = url
+        return ws
+    return factory
 
 
 # ---------------------------------------------------------------------------
@@ -132,18 +85,6 @@ def _factory_for(conn: _FakeConnection):
 
 def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
-
-
-async def _collect_events(session, *, until_kinds: set[type], limit: int = 5):
-    """Consume ``session.events()`` until N events of the given types arrive."""
-    seen = []
-    async for evt in session.events():
-        seen.append(evt)
-        if any(isinstance(evt, k) for k in until_kinds) and len(seen) >= limit:
-            return seen
-        if len(seen) >= limit * 3:
-            return seen
-    return seen
 
 
 # ---------------------------------------------------------------------------
@@ -168,71 +109,85 @@ class FactoryTests(TestCase):
 
 
 class OpenAIRealtimeSessionTests(TestCase):
-    def test_connect_sends_transcription_session_update(self):
-        conn = _FakeConnection(script=[
-            _FakeEvent(type="transcription_session.created", session=_FakeEvent(id="sess_1")),
+    def test_connect_hits_transcription_url_and_sends_session_update(self):
+        ws = _FakeWebSocket(script=[
+            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
         ])
-        fake_client = _FakeAsyncOpenAI(conn)
+        captured: dict = {}
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
             prompt="OncoBio Therapeutics meeting",
             language="en",
-            _client_factory=lambda: fake_client,
+            _ws_connect_factory=_factory_for(ws, captured),
+            _api_key="sk-fake",
         )
 
         async def run():
             await session.connect()
-            # Let the recv loop drain the queued event.
-            await asyncio.sleep(0)
+            await asyncio.sleep(0)  # let recv loop drain the queued event
             await session.aclose()
 
         _run(run())
 
-        # The SDK's connect() must receive ``intent=transcription`` via
-        # extra_query — without it OpenAI rejects the transcription model
-        # with invalid_request_error.invalid_model.
         self.assertEqual(
-            fake_client.beta.realtime.last_connect_kwargs.get("extra_query"),
-            {"intent": "transcription"},
+            captured["url"],
+            "wss://api.openai.com/v1/realtime?intent=transcription",
         )
-        self.assertEqual(
-            fake_client.beta.realtime.last_connect_kwargs.get("model"),
-            "gpt-4o-mini-transcribe",
-        )
+        self.assertEqual(captured["api_key"], "sk-fake")
 
-        # The SDK's "send" accepts a dict for raw event shapes.
-        self.assertEqual(len(conn.sent), 1)
-        sent = conn.sent[0]
-        self.assertEqual(sent["type"], "transcription_session.update")
-        cfg = sent["session"]
+        # First (and only) sent frame should be the session.update event.
+        self.assertEqual(len(ws.sent), 1)
+        payload = json.loads(ws.sent[0])
+        self.assertEqual(payload["type"], "transcription_session.update")
+        cfg = payload["session"]
         self.assertEqual(cfg["input_audio_format"], "pcm16")
         self.assertEqual(cfg["input_audio_transcription"]["model"], "gpt-4o-mini-transcribe")
         self.assertEqual(cfg["input_audio_transcription"]["language"], "en")
         self.assertIn("OncoBio Therapeutics", cfg["input_audio_transcription"]["prompt"])
 
+    def test_missing_api_key_raises(self):
+        # Patch the env so even a machine running with a real OPENAI_API_KEY
+        # still exercises the missing-key branch.
+        import os
+        from unittest.mock import patch
+        ws = _FakeWebSocket()
+
+        async def run():
+            with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+                session = OpenAIRealtimeSession(
+                    model_id="openai/gpt-4o-mini-transcribe",
+                    _ws_connect_factory=_factory_for(ws),
+                )
+                await session.connect()
+
+        from meetings.services.realtime_session import RealtimeSessionError
+        with self.assertRaises(RealtimeSessionError):
+            _run(run())
+
     def test_deltas_and_completed_surface_as_structured_events(self):
-        conn = _FakeConnection(script=[
-            _FakeEvent(type="transcription_session.created", session=_FakeEvent(id="sess_1")),
-            _FakeEvent(
-                type="conversation.item.input_audio_transcription.delta",
-                item_id="item_1",
-                delta="Hello ",
-            ),
-            _FakeEvent(
-                type="conversation.item.input_audio_transcription.delta",
-                item_id="item_1",
-                delta="world.",
-            ),
-            _FakeEvent(
-                type="conversation.item.input_audio_transcription.completed",
-                item_id="item_1",
-                transcript="Hello world.",
-                usage=_FakeEvent(input_tokens=10, output_tokens=4, total_tokens=14),
-            ),
+        ws = _FakeWebSocket(script=[
+            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {
+                "type": "conversation.item.input_audio_transcription.delta",
+                "item_id": "item_1",
+                "delta": "Hello ",
+            },
+            {
+                "type": "conversation.item.input_audio_transcription.delta",
+                "item_id": "item_1",
+                "delta": "world.",
+            },
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item_1",
+                "transcript": "Hello world.",
+                "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+            },
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
-            _client_factory=_factory_for(conn),
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
         )
 
         async def run():
@@ -256,13 +211,14 @@ class OpenAIRealtimeSessionTests(TestCase):
             "input_tokens": 10, "output_tokens": 4, "total_tokens": 14,
         })
 
-    def test_send_pcm_appends_base64_audio(self):
-        conn = _FakeConnection(script=[
-            _FakeEvent(type="transcription_session.created", session=_FakeEvent(id="sess_1")),
+    def test_send_pcm_encodes_as_input_audio_buffer_append(self):
+        ws = _FakeWebSocket(script=[
+            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
-            _client_factory=_factory_for(conn),
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
         )
 
         async def run():
@@ -272,20 +228,21 @@ class OpenAIRealtimeSessionTests(TestCase):
             await session.aclose()
 
         _run(run())
-        self.assertEqual(len(conn.appended_b64), 2)
-        self.assertEqual(base64.b64decode(conn.appended_b64[0]), b"\x01\x02\x03\x04")
+
+        audio_frames = [json.loads(m) for m in ws.sent if '"input_audio_buffer.append"' in m]
+        self.assertEqual(len(audio_frames), 2)
+        self.assertEqual(audio_frames[0]["type"], "input_audio_buffer.append")
+        self.assertEqual(base64.b64decode(audio_frames[0]["audio"]), b"\x01\x02\x03\x04")
 
     def test_fatal_error_event_marks_session_error(self):
-        conn = _FakeConnection(script=[
-            _FakeEvent(type="transcription_session.created", session=_FakeEvent(id="sess_1")),
-            _FakeEvent(
-                type="error",
-                error=_FakeEvent(code="invalid_api_key", message="auth failed"),
-            ),
+        ws = _FakeWebSocket(script=[
+            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {"type": "error", "error": {"code": "invalid_api_key", "message": "auth failed"}},
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
-            _client_factory=_factory_for(conn),
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
         )
 
         async def run():
@@ -304,18 +261,18 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertTrue(errors[0].fatal)
 
     def test_aclose_emits_disconnected_status(self):
-        conn = _FakeConnection(script=[
-            _FakeEvent(type="transcription_session.created", session=_FakeEvent(id="sess_1")),
+        ws = _FakeWebSocket(script=[
+            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
-            _client_factory=_factory_for(conn),
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
         )
 
         async def run():
             await session.connect()
             await session.aclose()
-            # Drain the event queue after close — should end with disconnected.
             seen = []
             async for evt in session.events():
                 seen.append(evt)
