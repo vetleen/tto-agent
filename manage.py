@@ -1,7 +1,17 @@
 #!/usr/bin/env python
 """Django's command-line utility for administrative tasks."""
+import asyncio
 import os
 import sys
+
+# Windows-only: force the Proactor asyncio policy before Django / Channels /
+# Daphne import or instantiate their event loop. The Realtime live-transcription
+# path uses ``asyncio.create_subprocess_exec`` to spawn ffmpeg, which the
+# default SelectorEventLoop on Windows 3.10+ can't do (NotImplementedError).
+# Setting this in asgi.py is too late — Daphne has already created its loop
+# by then. Heroku (Linux) is unaffected.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 
 def main():
