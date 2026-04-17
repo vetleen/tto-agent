@@ -135,22 +135,19 @@
     <div class="mt-4 grid gap-4 md:grid-cols-2">
       <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
         <label class="block text-sm font-medium text-heading" for="org-transcription-model-live">
-          Default live transcription model
+          Live transcription model
         </label>
         <p class="text-xs text-body mt-0.5">Used when a member clicks Start transcription on a meeting and hasn't set their own preference.</p>
         <select
           id="org-transcription-model-live"
           data-kind="live"
-          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm pl-3 pr-9 py-2 truncate focus:outline-none focus:ring-2 focus:ring-brand-medium"
+          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">System default</option>
+          <option value="">Default ({{ system_transcription_default_live }})</option>
           {% for model in live_capable_transcription_models %}
           <option value="{{ model }}" {% if org_transcription_default_live == model %}selected{% endif %}>{{ model }}</option>
           {% endfor %}
         </select>
-        {% if system_transcription_default_live %}
-        <p class="mt-1 text-xs text-body truncate" title="{{ system_transcription_default_live }}">Falls back to <span class="font-mono">{{ system_transcription_default_live }}</span></p>
-        {% endif %}
         {% if not live_capable_transcription_models %}
         <p class="mt-2 text-xs text-fg-warning">No live-streaming-capable models in the allow-list above.</p>
         {% endif %}
@@ -158,22 +155,19 @@
 
       <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
         <label class="block text-sm font-medium text-heading" for="org-transcription-model-upload">
-          Default file-upload transcription model
+          File-upload transcription model
         </label>
         <p class="text-xs text-body mt-0.5">Used when a member uploads an audio file and hasn't set their own preference.</p>
         <select
           id="org-transcription-model-upload"
           data-kind="upload"
-          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm pl-3 pr-9 py-2 truncate focus:outline-none focus:ring-2 focus:ring-brand-medium"
+          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
-          <option value="">System default</option>
+          <option value="">Default ({{ system_transcription_default_upload }})</option>
           {% for model in upload_capable_transcription_models %}
           <option value="{{ model }}" {% if org_transcription_default_upload == model %}selected{% endif %}>{{ model }}</option>
           {% endfor %}
         </select>
-        {% if system_transcription_default_upload %}
-        <p class="mt-1 text-xs text-body truncate" title="{{ system_transcription_default_upload }}">Falls back to <span class="font-mono">{{ system_transcription_default_upload }}</span></p>
-        {% endif %}
       </div>
     </div>
     {% endif %}
