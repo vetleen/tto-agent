@@ -39,6 +39,12 @@ class TranscriptionModelInfo:
     supported_formats: frozenset[str] = frozenset(
         {"mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "flac", "ogg"}
     )
+    # Capability flags drive UI gating (which buttons to enable) and runtime
+    # routing (which API code path to take). All new registry entries must set
+    # these explicitly; callers should never hardcode per-model behavior.
+    supports_live_streaming: bool = False       # Realtime API / live WS path
+    supports_output_streaming: bool = False     # stream=True on batch transcription
+    supports_diarization: bool = False          # returns speaker-labelled segments
 
 
 _TRANSCRIPTION_MODELS: dict[str, TranscriptionModelInfo] = {
@@ -52,6 +58,9 @@ _TRANSCRIPTION_MODELS: dict[str, TranscriptionModelInfo] = {
         price_per_minute=Decimal("0.006"),
         input_price_per_1m_tokens=Decimal("2.50"),
         output_price_per_1m_tokens=Decimal("10.00"),
+        supports_live_streaming=True,
+        supports_output_streaming=True,
+        supports_diarization=False,
     ),
     "openai/gpt-4o-mini-transcribe": TranscriptionModelInfo(
         display_name="GPT-4o Mini Transcribe",
@@ -62,6 +71,23 @@ _TRANSCRIPTION_MODELS: dict[str, TranscriptionModelInfo] = {
         price_per_minute=Decimal("0.003"),
         input_price_per_1m_tokens=Decimal("1.25"),
         output_price_per_1m_tokens=Decimal("5.00"),
+        supports_live_streaming=True,
+        supports_output_streaming=True,
+        supports_diarization=False,
+    ),
+    "openai/gpt-4o-transcribe-diarize": TranscriptionModelInfo(
+        display_name="GPT-4o Transcribe (Diarized)",
+        provider="openai",
+        api_model="gpt-4o-transcribe-diarize",
+        # Same token pricing as full 4o-transcribe per OpenAI docs. The
+        # diarize variant returns speaker-labelled segments but is batch-only
+        # (no streaming, no Realtime API support).
+        price_per_minute=Decimal("0.006"),
+        input_price_per_1m_tokens=Decimal("2.50"),
+        output_price_per_1m_tokens=Decimal("10.00"),
+        supports_live_streaming=False,
+        supports_output_streaming=False,
+        supports_diarization=True,
     ),
 }
 

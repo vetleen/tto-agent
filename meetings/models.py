@@ -62,6 +62,11 @@ class Meeting(models.Model):
     transcription_error = models.TextField(blank=True, default="")
     transcription_chunks_total = models.PositiveIntegerField(default=0)
     transcription_chunks_done = models.PositiveIntegerField(default=0)
+    # Optional BCP-47 / ISO-639-1 language code (e.g. "en", "no"). When blank,
+    # the transcription model auto-detects per call. Set by the user from a
+    # dropdown on the meeting page when they know the meeting language and
+    # want to skip detection.
+    forced_language = models.CharField(max_length=8, blank=True, default="")
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     duration_seconds = models.PositiveIntegerField(null=True, blank=True)

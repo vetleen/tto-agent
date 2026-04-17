@@ -204,20 +204,48 @@ def meeting_detail(request, meeting_uuid):
         prefs_default = ""
 
     transcription_model_choices = []
+    unknown_models: list[str] = []
     for model_id in allowed_models:
         info = get_transcription_model_info(model_id)
+        if info is None:
+            # Allow-listed but not registered — almost always a typo
+            # (missing "openai/" prefix, or a model we retired). Keep the UI
+            # clean by hiding it from the dropdown and logging once per
+            # page-render so operators notice and fix the config.
+            unknown_models.append(model_id)
+            continue
         transcription_model_choices.append({
             "id": model_id,
-            "display_name": info.display_name if info else model_id,
+            "display_name": info.display_name,
+            # Capability flags drive UI gating (disable Start live when the
+            # selected model doesn't support streaming).
+            "supports_live_streaming": bool(info.supports_live_streaming),
+            "supports_output_streaming": bool(info.supports_output_streaming),
+            "supports_diarization": bool(info.supports_diarization),
         })
+    if unknown_models:
+        logger.warning(
+            "meeting_detail: dropping unknown transcription model ids from picker "
+            "(user=%s meeting=%s unknown=%s) — check TRANSCRIPTION_ALLOWED_MODELS / org preferences",
+            request.user.id, meeting.uuid, unknown_models,
+        )
 
+    known_ids = [c["id"] for c in transcription_model_choices]
     selected_model = meeting.transcription_model or prefs_default or (
-        allowed_models[0] if allowed_models else ""
+        known_ids[0] if known_ids else ""
     )
+    # If the saved selection is no longer valid (model retired, typo in allowed
+    # list), fall back to the first known choice so the picker stays consistent
+    # with the button's gating state.
+    if selected_model and selected_model not in known_ids:
+        selected_model = known_ids[0] if known_ids else ""
+    selected_info = get_transcription_model_info(selected_model)
     selected_display = next(
         (c["display_name"] for c in transcription_model_choices if c["id"] == selected_model),
         selected_model,
     )
+    selected_supports_live = bool(selected_info.supports_live_streaming) if selected_info else False
+    selected_supports_diarization = bool(selected_info.supports_diarization) if selected_info else False
 
     from meetings.services.minutes import get_eligible_summarizer_skills, resolve_summarizer_skill
 
@@ -242,6 +270,9 @@ def meeting_detail(request, meeting_uuid):
             "transcription_model_choices": transcription_model_choices,
             "transcription_model_selected": selected_model,
             "transcription_model_selected_display": selected_display,
+            "transcription_model_selected_supports_live": selected_supports_live,
+            "transcription_model_selected_supports_diarization": selected_supports_diarization,
+            "forced_language": meeting.forced_language or "",
             "summarizer_skills": summarizer_skills,
             "effective_summarizer_id": effective_summarizer_id,
             "effective_summarizer_name": effective_summarizer_name,
@@ -322,6 +353,19 @@ def meeting_update_metadata(request, meeting_uuid):
             )
         meeting.transcription_model = new_model
         fields.append("transcription_model")
+    if "forced_language" in request.POST:
+        raw_lang = (request.POST.get("forced_language") or "").strip().lower()
+        # Accept empty (= auto) or a short ISO-639-1-ish code. Whitelist the
+        # codes the UI offers to prevent arbitrary strings from reaching the
+        # transcription API.
+        allowed_langs = {"", "en", "no", "nb", "nn", "sv", "da", "de", "fr", "es"}
+        if raw_lang not in allowed_langs:
+            return JsonResponse(
+                {"error": f"Unsupported language code '{raw_lang}'."},
+                status=400,
+            )
+        meeting.forced_language = raw_lang
+        fields.append("forced_language")
     if not fields:
         return JsonResponse({"error": "No editable fields supplied"}, status=400)
     fields.append("updated_at")
@@ -367,20 +411,25 @@ def meeting_transcription_progress(request, meeting_uuid):
     """Polling endpoint used by the meeting detail page to track upload transcription progress.
 
     Returns a small JSON snapshot of the meeting's status, chunk progress, and
-    last error. Deliberately uses ``.only(...)`` to avoid loading the (potentially
-    large) ``transcript`` column on every poll.
+    last error. The ``transcript`` column is loaded only when the caller passes
+    ``?include_transcript=1``, since the client only needs fresh text when its
+    cached ``transcript_updated_at`` has advanced.
     """
+    include_transcript = request.GET.get("include_transcript") == "1"
+    fields = [
+        "uuid",
+        "status",
+        "created_by_id",
+        "transcript_source",
+        "transcription_chunks_total",
+        "transcription_chunks_done",
+        "transcription_error",
+        "transcript_updated_at",
+    ]
+    if include_transcript:
+        fields.append("transcript")
     try:
-        meeting = Meeting.objects.only(
-            "uuid",
-            "status",
-            "created_by_id",
-            "transcript_source",
-            "transcription_chunks_total",
-            "transcription_chunks_done",
-            "transcription_error",
-            "transcript_updated_at",
-        ).get(uuid=meeting_uuid)
+        meeting = Meeting.objects.only(*fields).get(uuid=meeting_uuid)
     except Meeting.DoesNotExist:
         return JsonResponse({"error": "Not found"}, status=404)
     if not _user_can_access_meeting(request.user, meeting):
@@ -397,6 +446,8 @@ def meeting_transcription_progress(request, meeting_uuid):
             else None
         ),
     }
+    if include_transcript:
+        payload["transcript"] = meeting.transcript or ""
     response = JsonResponse(payload)
     response["Cache-Control"] = "no-store"
     return response

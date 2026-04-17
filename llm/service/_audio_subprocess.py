@@ -62,6 +62,30 @@ def ffprobe_duration_ms(file_path: Path) -> int | None:
         return None
 
 
+def _resolve_speed_up_factor(explicit: float | None) -> float:
+    """Resolve the audio speed-up factor for upload chunks.
+
+    Pull from Django settings when no explicit value is supplied. Clamp to a
+    sensible range — atempo preserves quality well up to ~2x, degrades at 3x,
+    and ffmpeg's single atempo filter supports 0.5–100 (we chain higher values
+    if needed, but anything above 3x drops too much intelligibility for
+    transcription).
+    """
+    if explicit is not None:
+        factor = explicit
+    else:
+        try:
+            from django.conf import settings as _settings
+            factor = float(getattr(_settings, "MEETING_UPLOAD_SPEED_UP_FACTOR", 1.0))
+        except Exception:
+            factor = 1.0
+    if factor < 0.5:
+        factor = 0.5
+    if factor > 3.0:
+        factor = 3.0
+    return factor
+
+
 def ffmpeg_extract_chunk(
     file_path: Path,
     start_ms: int,
@@ -70,6 +94,7 @@ def ffmpeg_extract_chunk(
     *,
     output_prefix: str = "chunk",
     timeout: int = FFMPEG_CHUNK_TIMEOUT,
+    speed_up_factor: float | None = None,
 ) -> Path:
     """Extract a time range from *file_path* to a temporary MP3 file.
 
@@ -78,6 +103,12 @@ def ffmpeg_extract_chunk(
 
     Always re-encodes to MP3 at 128 kbps mono 16 kHz.  This is safe for
     all input formats and the OpenAI transcription API accepts MP3.
+
+    When ``speed_up_factor`` (or the ``MEETING_UPLOAD_SPEED_UP_FACTOR``
+    setting) is > 1.0, the output audio is time-compressed via the
+    ``atempo`` filter — a 60s source becomes 30s of audio at factor=2.0.
+    This roughly halves the tokens OpenAI bills for, with near-zero
+    intelligibility loss up to 2x.
 
     Returns the Path to the output temp file.  Caller must delete it.
     Raises ``subprocess.CalledProcessError`` on ffmpeg failure.
@@ -91,6 +122,9 @@ def ffmpeg_extract_chunk(
     start_sec = start_ms / 1000.0
     duration_sec = (end_ms - start_ms) / 1000.0
 
+    factor = _resolve_speed_up_factor(speed_up_factor)
+    filter_args = ["-filter:a", f"atempo={factor:.3f}"] if factor != 1.0 else []
+
     try:
         result = subprocess.run(
             [
@@ -99,6 +133,7 @@ def ffmpeg_extract_chunk(
                 "-ss", f"{start_sec:.3f}",
                 "-t", f"{duration_sec:.3f}",
                 "-i", str(file_path),
+                *filter_args,
                 "-c:a", "libmp3lame",
                 "-b:a", "128k",
                 "-ac", "1",

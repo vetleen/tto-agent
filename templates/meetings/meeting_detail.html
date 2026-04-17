@@ -60,6 +60,7 @@
   {# ----- Action buttons row ----- #}
   <div id="meeting-actions" class="flex flex-wrap items-center gap-3 mb-8">
     <button type="button" id="transcribe-btn" data-disable-while-busy
+            {% if not transcription_model_selected_supports_live %}disabled title="Live transcription is not available for this model. Upload an audio file instead."{% endif %}
             class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
       <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
       <span id="transcribe-btn-label">{% if meeting.transcript %}Continue transcription{% else %}Start transcription{% endif %}</span>
@@ -95,6 +96,11 @@
   {# ----- Browser-compat banner (shown only if MediaRecorder is unsupported) ----- #}
   <div id="transcribe-unsupported" class="hidden mb-6 px-4 py-3 text-sm text-body bg-neutral-primary-soft border border-default rounded-base">
     Live transcription is not supported in your browser. You can still upload an audio file or a transcript.
+  </div>
+
+  {# ----- Diarize-selected banner (shown when the selected model does not support live) ----- #}
+  <div id="diarize-live-banner" class="{% if transcription_model_selected_supports_live %}hidden{% endif %} mb-6 px-4 py-3 text-sm text-body bg-neutral-primary-soft border border-default rounded-base">
+    This model only works for uploaded audio. <strong>Live transcription is disabled</strong> while it's selected.
   </div>
 
   {# ----- Live transcribe controls (visible when transcribing) ----- #}
@@ -158,6 +164,21 @@
         <label for="meeting-description" class="block text-xs font-medium text-body mb-1">Description</label>
         <textarea id="meeting-description" name="description" rows="2"
                   class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.description }}</textarea>
+      </div>
+      <div>
+        <label for="meeting-forced-language" class="block text-xs font-medium text-body mb-1">Spoken language</label>
+        <select id="meeting-forced-language" name="forced_language"
+                class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">
+          <option value="" {% if not forced_language %}selected{% endif %}>Auto-detect</option>
+          <option value="en" {% if forced_language == "en" %}selected{% endif %}>English</option>
+          <option value="no" {% if forced_language == "no" %}selected{% endif %}>Norwegian</option>
+          <option value="sv" {% if forced_language == "sv" %}selected{% endif %}>Swedish</option>
+          <option value="da" {% if forced_language == "da" %}selected{% endif %}>Danish</option>
+          <option value="de" {% if forced_language == "de" %}selected{% endif %}>German</option>
+          <option value="fr" {% if forced_language == "fr" %}selected{% endif %}>French</option>
+          <option value="es" {% if forced_language == "es" %}selected{% endif %}>Spanish</option>
+        </select>
+        <p class="mt-1 text-xs text-body">Leave on Auto-detect unless the model keeps guessing the wrong language.</p>
       </div>
       <div class="flex flex-wrap items-center gap-3 min-h-5">
         <span id="meeting-metadata-saved" class="hidden text-xs text-fg-success">Saved.</span>

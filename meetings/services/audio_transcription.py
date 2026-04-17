@@ -319,6 +319,12 @@ def combine_existing_and_new_transcript(existing: str, new_text: str) -> str:
     return prev or nxt
 
 
+# Minimum interval between partial-transcript DB writes during streaming.
+# The UI polls Meeting.transcript; writing on every delta would hammer the DB
+# (dozens of deltas/sec) without measurably improving the poll experience.
+_PARTIAL_TRANSCRIPT_FLUSH_SECONDS = 0.5
+
+
 def orchestrate_upload_transcription(
     meeting_id: int,
     temp_path: Path,
@@ -361,6 +367,10 @@ def orchestrate_upload_transcription(
 
     meeting = Meeting.objects.get(pk=meeting_id)
     ctx = RunContext.create(user_id=user_id)
+
+    # Optional language hint from meeting settings. When blank, the model
+    # auto-detects per call — which is usually correct for multilingual orgs.
+    forced_language = (getattr(meeting, "forced_language", "") or "").strip() or None
 
     # Snapshot the existing transcript BEFORE any chunking work. If the user
     # is re-uploading to an existing meeting, new text is appended to this
@@ -419,8 +429,11 @@ def orchestrate_upload_transcription(
                 else None
             )
             prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
+            delta_buf = _PartialTranscriptFlusher(meeting_id, existing_transcript)
             result = _transcribe_with_transient_retry(
                 service, spec.path, model_id, ctx, prompt,
+                language=forced_language,
+                on_delta=delta_buf.on_delta,
             )
             text = result.text or ""
             combined = combine_existing_and_new_transcript(existing_transcript, text)
@@ -480,9 +493,18 @@ def orchestrate_upload_transcription(
                 prior_tail = running_new_transcript[-DEFAULT_PRIOR_TAIL_CHARS:]
             prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
 
+            # Delta flusher pushes partial text into Meeting.transcript as
+            # the stream arrives (throttled). The UI polls this field, so the
+            # user sees text grow in-place rather than waiting for the chunk
+            # to finish. Seeded with existing + stitched-so-far so the shown
+            # text always matches what a final successful run would produce.
+            seed = combine_existing_and_new_transcript(existing_transcript, running_new_transcript)
+            delta_buf = _PartialTranscriptFlusher(meeting_id, seed)
             try:
                 result = _transcribe_with_transient_retry(
                     service, spec.path, model_id, ctx, prompt,
+                    language=forced_language,
+                    on_delta=delta_buf.on_delta,
                 )
             except Exception as exc:
                 # Per-chunk failure: persist combined partial, mark FAILED, re-raise.
@@ -497,6 +519,22 @@ def orchestrate_upload_transcription(
             chunk_text = result.text or ""
             if i == 0:
                 running_new_transcript = chunk_text
+            elif info.supports_diarization:
+                # Diarized output has Speaker A/B/... labels that are scoped to
+                # a single API call. Speaker A in chunk 2 is not guaranteed to
+                # be the same person as Speaker A in chunk 1. Fuzzy-stitching
+                # the overlap would also corrupt the structured speaker lines.
+                # Concatenate with an explicit boundary marker so the reader
+                # knows to treat labels as local to each section.
+                running_new_transcript = (
+                    running_new_transcript.rstrip()
+                    + "\n\n--- Part "
+                    + str(i + 1)
+                    + " of "
+                    + str(n)
+                    + " (speaker labels may not match earlier parts) ---\n\n"
+                    + chunk_text.lstrip()
+                )
             else:
                 running_new_transcript = stitch_transcripts(
                     running_new_transcript,
@@ -523,7 +561,16 @@ def orchestrate_upload_transcription(
     return combined
 
 
-def _transcribe_with_transient_retry(service, file_path: Path, model_id: str, context: RunContext, prompt: str):
+def _transcribe_with_transient_retry(
+    service,
+    file_path: Path,
+    model_id: str,
+    context: RunContext,
+    prompt: str,
+    *,
+    language: str | None = None,
+    on_delta=None,
+):
     """Call ``service.transcribe`` with retries on transient OpenAI errors only.
 
     Retries on ``APIConnectionError`` / ``RateLimitError`` per the
@@ -542,7 +589,10 @@ def _transcribe_with_transient_retry(service, file_path: Path, model_id: str, co
     last_exc: Optional[Exception] = None
     while True:
         try:
-            return service.transcribe(file_path, model_id, context=context, prompt=prompt)
+            return service.transcribe(
+                file_path, model_id, context=context, prompt=prompt,
+                language=language, on_delta=on_delta,
+            )
         except Exception as exc:
             last_exc = exc
             if transient_excs and isinstance(exc, transient_excs) and attempt < len(TRANSIENT_RETRY_BACKOFFS):
@@ -559,6 +609,50 @@ def _transcribe_with_transient_retry(service, file_path: Path, model_id: str, co
     # Unreachable, but keeps type checkers happy.
     if last_exc is not None:  # pragma: no cover
         raise last_exc
+
+
+class _PartialTranscriptFlusher:
+    """Accumulate streaming transcript deltas and persist to Meeting.transcript.
+
+    Flushes to the DB at most once per ``_PARTIAL_TRANSCRIPT_FLUSH_SECONDS``
+    so a fast stream (dozens of deltas/sec) doesn't hammer the database.
+    Callers that poll ``Meeting.transcript`` see text grow progressively
+    without needing a WebSocket.
+
+    The seed is the transcript state the user already expects to see at the
+    start of this chunk (existing transcript + stitched-so-far). Deltas are
+    appended to a separate buffer and the combined value written out.
+    """
+
+    def __init__(self, meeting_id: int, seed_transcript: str):
+        self._meeting_id = meeting_id
+        self._seed = seed_transcript or ""
+        self._buffer = ""
+        self._last_flush = 0.0
+
+    def on_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        self._buffer += delta
+        now = time.perf_counter()
+        if now - self._last_flush < _PARTIAL_TRANSCRIPT_FLUSH_SECONDS:
+            return
+        self._last_flush = now
+        self._flush()
+
+    def _flush(self) -> None:
+        from meetings.models import Meeting
+
+        combined = combine_existing_and_new_transcript(self._seed, self._buffer)
+        try:
+            Meeting.objects.filter(pk=self._meeting_id).update(
+                transcript=combined,
+                transcript_updated_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+        except Exception:
+            # A DB hiccup during partial flush must not abort transcription.
+            logger.exception("partial transcript flush failed for meeting=%s", self._meeting_id)
 
 
 def _finalize_meeting_success(meeting_id: int, text: str, model_id: str) -> None:

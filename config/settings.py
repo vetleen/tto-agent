@@ -453,7 +453,7 @@ BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
-TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe").split(",") if m.strip()]
+TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,openai/gpt-4o-transcribe-diarize").split(",") if m.strip()]
 AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
 
 # Meetings settings
@@ -464,6 +464,10 @@ MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_TRANSCRIPT_UPL
 MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS = {"txt", "md"}
 MEETING_AUDIO_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_AUDIO_UPLOAD_MAX_BYTES", str(200 * 1024 * 1024)))  # 200 MB
 MEETING_CHUNK_MAX_BYTES = int(os.environ.get("MEETING_CHUNK_MAX_BYTES", str(20 * 1024 * 1024)))  # 20 MB per WS chunk
+# Audio speed-up factor applied to uploaded meeting audio chunks before sending
+# to OpenAI. 2.0 roughly halves the tokens billed with minimal intelligibility
+# loss; 1.0 disables the speed-up. Clamped to [0.5, 3.0] in code.
+MEETING_UPLOAD_SPEED_UP_FACTOR = float(os.environ.get("MEETING_UPLOAD_SPEED_UP_FACTOR", "2.0"))
 
 # Celery (use Redis as broker)
 _celery_broker_url = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))

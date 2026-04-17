@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from django.conf import settings
 
@@ -25,6 +25,8 @@ from llm.transcription_registry import get_transcription_model_info
 from llm.types.context import RunContext
 
 logger = logging.getLogger(__name__)
+
+DeltaCallback = Callable[[str], None]
 
 
 @dataclass
@@ -47,6 +49,8 @@ class TranscriptionService:
         model_id: str,
         context: RunContext | None = None,
         prompt: str | None = None,
+        language: str | None = None,
+        on_delta: DeltaCallback | None = None,
     ) -> TranscriptionResult:
         """Transcribe an audio file, splitting if needed.
 
@@ -56,6 +60,16 @@ class TranscriptionService:
         ``prompt`` is forwarded to the OpenAI transcription API and biases the
         model toward proper nouns / vocabulary in the prompt. Empty / None means
         no prompt is sent.
+
+        ``language`` is an optional ISO-639-1 code (e.g. ``"en"``, ``"no"``). When
+        set, skips the model's language detection pass and forces output in that
+        language. When ``None``, the model auto-detects per request.
+
+        ``on_delta`` enables output streaming for models with
+        ``supports_output_streaming=True``. Each text delta is passed to the
+        callback as it arrives from the server. The final text is still
+        returned in the result. Ignored for models that don't support
+        streaming (whisper-1, diarize).
         """
         if context is None:
             context = RunContext.create()
@@ -85,8 +99,9 @@ class TranscriptionService:
 
         run_id = context.run_id
         logger.info(
-            "TranscriptionService.transcribe: run_id=%s model=%s file_size=%d prompt_len=%d",
+            "TranscriptionService.transcribe: run_id=%s model=%s file_size=%d prompt_len=%d lang=%s stream=%s",
             run_id, model_id, file_size, len(prompt) if prompt else 0,
+            language or "-", bool(on_delta and info.supports_output_streaming),
         )
 
         try:
@@ -94,10 +109,12 @@ class TranscriptionService:
                 result = self._transcribe_chunked(
                     client, file_path, model_id, info, context, file_size,
                     api_limit, max_duration, prompt=prompt,
+                    language=language, on_delta=on_delta,
                 )
             else:
                 result = self._transcribe_single(
-                    client, file_path, model_id, info, context, file_size, prompt=prompt,
+                    client, file_path, model_id, info, context, file_size,
+                    prompt=prompt, language=language, on_delta=on_delta,
                 )
         except (FileNotFoundError, ValueError):
             raise
@@ -116,12 +133,17 @@ class TranscriptionService:
 
         return result
 
-    def _transcribe_single(self, client, file_path, model_id, info, context, file_size, prompt: str | None = None):
+    def _transcribe_single(
+        self, client, file_path, model_id, info, context, file_size,
+        prompt: str | None = None,
+        language: str | None = None,
+        on_delta: DeltaCallback | None = None,
+    ):
         """Transcribe a single file directly."""
         t0 = time.perf_counter()
-        response = self._call_create(client, file_path, info, prompt)
+        response = self._call_create(client, file_path, info, prompt, language=language, on_delta=on_delta)
         duration_ms = int((time.perf_counter() - t0) * 1000)
-        text = response.text if hasattr(response, "text") else str(response)
+        text = _extract_text_from_response(response, info)
         audio_duration = _get_audio_duration_seconds(file_path)
 
         # Prefer token counts reported by the API over per-minute estimates.
@@ -158,7 +180,12 @@ class TranscriptionService:
             segments=1,
         )
 
-    def _transcribe_chunked(self, client, file_path, model_id, info, context, file_size, api_limit, max_duration, prompt: str | None = None):
+    def _transcribe_chunked(
+        self, client, file_path, model_id, info, context, file_size, api_limit, max_duration,
+        prompt: str | None = None,
+        language: str | None = None,
+        on_delta: DeltaCallback | None = None,
+    ):
         """Split file into segments and transcribe each.
 
         This is the legacy fallback path: it's only entered when a caller hands
@@ -195,10 +222,13 @@ class TranscriptionService:
                     i + 1, len(segment_paths), seg_size,
                 )
 
-                response = self._call_create(client, seg_path, info, prompt)
+                response = self._call_create(
+                    client, seg_path, info, prompt,
+                    language=language, on_delta=on_delta,
+                )
 
                 seg_duration_ms = int((time.perf_counter() - t0) * 1000)
-                text = response.text if hasattr(response, "text") else str(response)
+                text = _extract_text_from_response(response, info)
                 audio_duration = _get_audio_duration_seconds(seg_path)
 
                 input_tokens, output_tokens, total_tokens, audio_tokens = _extract_transcription_usage(response)
@@ -240,28 +270,79 @@ class TranscriptionService:
             for p in segment_paths:
                 p.unlink(missing_ok=True)
 
-    def _call_create(self, client, file_path: Path, info, prompt: str | None):
+    def _call_create(
+        self,
+        client,
+        file_path: Path,
+        info,
+        prompt: str | None,
+        *,
+        language: str | None = None,
+        on_delta: DeltaCallback | None = None,
+    ):
         """Call the OpenAI transcription API with optional prompt + graceful fallback.
 
+        Branches on the model's capability flags (set in the registry):
+
+        * ``supports_diarization=True`` — uses ``response_format="diarized_json"``
+          (skips streaming since the diarize endpoint only returns a full
+          formatted response).
+        * ``supports_output_streaming=True`` AND ``on_delta`` set — opens a
+          streaming response, forwards each ``transcript.text.delta`` event to
+          the callback, returns the final ``.done`` event.
+        * Otherwise — plain ``response_format="json"`` as before.
+
+        Other kwargs added for newer models:
+
+        * ``chunking_strategy="auto"`` — required by diarize on inputs >30s,
+          recommended by OpenAI for ``gpt-4o-transcribe`` / ``-mini`` to avoid
+          the ~8-minute output truncation bug. Skipped for whisper-1.
+        * ``language`` — optional ISO-639-1 code. When set, skips the 30-second
+          language detection pass.
+
         If the API rejects the request because the prompt is invalid (BadRequestError
-        whose message mentions 'prompt'), retry once with prompt stripped. This avoids
-        preemptive truncation and lets the API tell us when it can't accept the prompt.
+        whose message mentions 'prompt'), retry once with prompt stripped.
         """
-        kwargs = {
-            "model": info.api_model,
+        kwargs: dict = {"model": info.api_model}
+
+        if info.supports_diarization:
+            # Diarize endpoint only supports diarized_json; streaming not available.
+            kwargs["response_format"] = "diarized_json"
+        else:
             # `verbose_json` is rejected by gpt-4o-transcribe / gpt-4o-mini-transcribe
             # (only whisper-1 supports it). We use plain `json` and compute audio
             # duration locally for cost tracking.
-            "response_format": "json",
-        }
-        if prompt:
+            kwargs["response_format"] = "json"
+
+        # chunking_strategy is only supported by the gpt-4o transcription family;
+        # whisper-1 rejects it. Required for diarize on >30s input; for 4o/4o-mini
+        # it prevents output truncation on segments >8 minutes.
+        if info.api_model.startswith("gpt-4o"):
+            kwargs["chunking_strategy"] = "auto"
+
+        if prompt and not info.supports_diarization:
+            # Diarize rejects the prompt parameter per OpenAI docs.
             kwargs["prompt"] = prompt
 
-        try:
+        if language:
+            kwargs["language"] = language
+
+        use_stream = bool(on_delta) and info.supports_output_streaming and not info.supports_diarization
+        if use_stream:
+            kwargs["stream"] = True
+
+        def _do_call():
             with open(file_path, "rb") as f:
+                if use_stream:
+                    return self._consume_streaming(
+                        client.audio.transcriptions.create(file=f, **kwargs),
+                        on_delta,
+                    )
                 return client.audio.transcriptions.create(file=f, **kwargs)
+
+        try:
+            return _do_call()
         except Exception as exc:
-            # Detect prompt-related BadRequest and retry without the prompt.
             if not prompt:
                 raise
             from openai import BadRequestError  # local import to keep top of file clean
@@ -271,14 +352,93 @@ class TranscriptionService:
                     exc,
                 )
                 kwargs.pop("prompt", None)
-                with open(file_path, "rb") as f:
-                    return client.audio.transcriptions.create(file=f, **kwargs)
+                return _do_call()
             raise
+
+    def _consume_streaming(self, event_stream, on_delta: DeltaCallback | None):
+        """Drain a streaming transcription response, forwarding deltas.
+
+        Returns the final response object from the ``transcript.text.done``
+        event, which carries the full text and (on newer SDKs) usage. The
+        event objects are typed by the SDK; we access them defensively in
+        case OpenAI tweaks the shape.
+        """
+        final_event = None
+        full_text_parts: list[str] = []
+        for event in event_stream:
+            etype = getattr(event, "type", None)
+            if etype == "transcript.text.delta":
+                delta = getattr(event, "delta", "") or ""
+                if delta:
+                    full_text_parts.append(delta)
+                    if on_delta is not None:
+                        try:
+                            on_delta(delta)
+                        except Exception:
+                            # A faulty callback must not break transcription.
+                            logger.exception("on_delta callback raised")
+            elif etype == "transcript.text.done":
+                final_event = event
+                # Some SDK versions carry the full text here; keep both for safety.
+                final_text = getattr(event, "text", None)
+                if final_text and not full_text_parts:
+                    full_text_parts.append(final_text)
+
+        if final_event is not None:
+            # Reuse the done event as the "response" — it has .text and .usage
+            # on the SDKs we care about. If .text is missing/short, fall back
+            # to the assembled delta buffer.
+            assembled = "".join(full_text_parts)
+            if not getattr(final_event, "text", None):
+                # Attach assembled text as a dynamic attribute for downstream.
+                try:
+                    setattr(final_event, "text", assembled)
+                except Exception:
+                    pass
+            return final_event
+
+        # No done event — synthesize a minimal response object.
+        assembled = "".join(full_text_parts)
+        return _SynthesizedResponse(text=assembled)
 
 
 # ---------------------------------------------------------------------------
 # Response helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SynthesizedResponse:
+    """Fallback response shape when the streaming path produces no `.done` event."""
+    text: str
+
+
+def _extract_text_from_response(response, info) -> str:
+    """Pull the transcript text from a response, handling all branches.
+
+    For diarized responses we flatten ``response.segments`` into
+    ``Speaker A: ...`` lines; for plain responses we return ``response.text``.
+    """
+    if info.supports_diarization:
+        segments = getattr(response, "segments", None)
+        if segments:
+            lines: list[str] = []
+            for seg in segments:
+                speaker = getattr(seg, "speaker", None)
+                text = (getattr(seg, "text", "") or "").strip()
+                if not text:
+                    continue
+                if speaker:
+                    lines.append(f"Speaker {speaker}: {text}")
+                else:
+                    lines.append(text)
+            if lines:
+                return "\n".join(lines)
+        # Fall through — diarize responses usually also carry a flat .text.
+    if hasattr(response, "text"):
+        return response.text or ""
+    return str(response)
+
 
 def _extract_transcription_usage(
     response,

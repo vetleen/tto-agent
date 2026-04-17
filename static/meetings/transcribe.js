@@ -74,7 +74,10 @@
   // ---------------- feature detection ----------------
   if (!('MediaRecorder' in window) || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     if (unsupportedBanner) unsupportedBanner.classList.remove('hidden');
-    if (transcribeBtn) transcribeBtn.disabled = true;
+    if (transcribeBtn) {
+      transcribeBtn.disabled = true;
+      transcribeBtn.dataset.unsupported = '1';
+    }
   }
 
   // ---------------- metadata save (fetch, no reload) ----------------
@@ -152,6 +155,21 @@
         });
       });
     });
+
+    // Language select saves immediately on change — no debounce because it's
+    // a discrete choice, not a typing stream.
+    const langEl = metadataForm.querySelector('[name="forced_language"]');
+    if (langEl) {
+      let lastSavedLang = langEl.value;
+      langEl.addEventListener('change', function () {
+        const value = langEl.value;
+        if (value === lastSavedLang) return;
+        postMetadata({ forced_language: value }, function () {
+          lastSavedLang = value;
+          flashSaved();
+        });
+      });
+    }
   }
 
   // Save the meeting name when the user blurs the title input or hits Enter.
@@ -887,12 +905,35 @@
       });
     }
 
+    function applyCapabilityGating(modelChoice) {
+      // Disable the live Start button and show the diarize banner when the
+      // selected model doesn't support live streaming. The server re-enforces
+      // this — the gating is a UX affordance, not a security boundary.
+      const supportsLive = !!(modelChoice && modelChoice.supports_live_streaming);
+      const diarizeBanner = document.getElementById('diarize-live-banner');
+      if (transcribeBtn) {
+        transcribeBtn.disabled = !supportsLive || transcribeBtn.dataset.unsupported === '1';
+        if (!supportsLive) {
+          transcribeBtn.classList.add('opacity-50', 'cursor-not-allowed');
+          transcribeBtn.title = 'Live transcription is not available for this model. Upload an audio file instead.';
+        } else {
+          transcribeBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+          transcribeBtn.removeAttribute('title');
+        }
+      }
+      if (diarizeBanner) {
+        if (supportsLive) diarizeBanner.classList.add('hidden');
+        else diarizeBanner.classList.remove('hidden');
+      }
+    }
+
     function selectModel(modelId) {
       if (!modelId || modelId === selected) return;
       selected = modelId;
       const found = choices.find(function (c) { return c.id === modelId; });
       if (label && found) label.textContent = found.display_name;
       renderOptions();
+      applyCapabilityGating(found);
       // Persist on the meeting record so reload + future WS connects use it.
       postMetadata({ transcription_model: modelId });
       // Hot-update the active session if any.
@@ -900,6 +941,9 @@
         try { ws.send(JSON.stringify({ type: 'set_model', model_id: modelId })); } catch (e) {}
       }
     }
+
+    // Initial gating: whatever was selected at page render.
+    applyCapabilityGating(choices.find(function (c) { return c.id === selected; }));
 
     btn.addEventListener('click', function (e) {
       e.stopPropagation();
@@ -1025,15 +1069,52 @@
       }
     }
 
+    let lastTranscriptAt = null;
+
+    function renderTranscript(text) {
+      if (!transcriptPane) return;
+      // Replace the pane's innerText (not innerHTML) so a transcript
+      // containing angle brackets can't inject markup.
+      transcriptPane.textContent = text || '';
+    }
+
     function poll() {
       if (stopped) return;
-      fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      // Ask for the transcript body only when it's changed since our last
+      // snapshot. First poll unconditionally pulls it so the user sees
+      // whatever partial text the server has already flushed.
+      const needTranscript = lastTranscriptAt === null;
+      const qs = needTranscript ? '?include_transcript=1' : '';
+      fetch(url + qs, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         .then(function (r) { if (!r.ok) throw new Error('progress ' + r.status); return r.json(); })
         .then(function (data) {
           if (stopped) return;
           const status = data.status;
           const chunksTotal = parseInt(data.chunks_total || 0, 10);
           const chunksDone = parseInt(data.chunks_done || 0, 10);
+          const updatedAt = data.transcript_updated_at || null;
+
+          if (typeof data.transcript === 'string') {
+            renderTranscript(data.transcript);
+            lastTranscriptAt = updatedAt;
+          } else if (updatedAt && updatedAt !== lastTranscriptAt) {
+            // Transcript changed since last time — fetch it on the next poll
+            // rather than a second round-trip right now. Trigger immediately
+            // so the user doesn't wait the full poll interval for fresh text.
+            fetch(url + '?include_transcript=1', {
+              credentials: 'same-origin',
+              headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            })
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (d) {
+                if (!stopped && d && typeof d.transcript === 'string') {
+                  renderTranscript(d.transcript);
+                  lastTranscriptAt = d.transcript_updated_at || null;
+                }
+              })
+              .catch(function () { /* ignore; next poll will retry */ });
+          }
+
           if (status === 'ready' || status === 'failed') {
             stopped = true;
             window.location.reload();
