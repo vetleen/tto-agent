@@ -39,7 +39,8 @@ def scan_document_chunks(document_id: int) -> None:
     try:
         doc = DataRoomDocument.objects.get(pk=document_id)
     except DataRoomDocument.DoesNotExist:
-        logger.warning("scan_document_chunks: document_id=%s not found", document_id)
+        # Document was deleted between enqueue and scan — expected, not an error.
+        logger.info("scan_document_chunks: document_id=%s not found (deleted before scan)", document_id)
         return
 
     chunks = list(

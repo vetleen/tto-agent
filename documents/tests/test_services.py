@@ -598,6 +598,44 @@ class ProcessDocumentSemanticTests(TestCase):
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.READY)
 
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_description_save_after_delete_logged_as_info(self):
+        """Document deleted during description generation is logged at INFO, not ERROR (WILFRED-3P)."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [{"text": "chunk", "token_count": 5, "chunk_index": 0}]
+
+        original_save = DataRoomDocument.save
+
+        def save_raising_notupdated_for_description(self, *args, **kwargs):
+            if "description" in (kwargs.get("update_fields") or []):
+                raise DataRoomDocument.NotUpdated("Save with update_fields did not affect any rows.")
+            return original_save(self, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="deleted.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("deleted.txt", ContentFile(b"test"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.description.generate_description_and_tags_from_text",
+                           return_value={"description": "A description", "tags": {}}), \
+                     patch.object(DataRoomDocument, "save", save_raising_notupdated_for_description):
+                    with self.assertLogs("documents.services.process_document", level="INFO") as cm:
+                        process_document(doc.id)
+
+                log_output = "\n".join(cm.output)
+                self.assertIn("deleted during description generation", log_output)
+                # Must not be logged as an exception/error
+                self.assertNotIn("description generation failed", log_output)
+
 
 class RetrievalServiceTests(TestCase):
     """Unit tests for documents.services.retrieval non-search functions."""

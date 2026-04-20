@@ -209,6 +209,12 @@ def process_document(document_id: int) -> None:
                         document=doc, key=tag_key,
                         defaults={"value": tag_value},
                     )
+            except DataRoomDocument.NotUpdated:
+                # Document was deleted during description generation — expected, not an error.
+                logger.info(
+                    "process_document: document_id=%s deleted during description generation, skipping",
+                    document_id,
+                )
             except Exception:
                 logger.exception("process_document: document_id=%s description generation failed (non-critical)", document_id)
 
