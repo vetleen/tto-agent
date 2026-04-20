@@ -37,10 +37,10 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("0.175"),
         output_price=Decimal("14.00"),
     ),
-    "openai/gpt-5-mini": ModelInfo(
-        display_name="GPT-5 Mini",
+    "openai/gpt-5.4-mini": ModelInfo(
+        display_name="GPT-5.4 Mini",
         provider="openai",
-        api_model="gpt-5-mini",
+        api_model="gpt-5.4-mini",
         supports_thinking=False,
         supports_vision=True,
         context_window=1_000_000,
@@ -48,10 +48,10 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("0.025"),
         output_price=Decimal("2.00"),
     ),
-    "openai/gpt-5-nano": ModelInfo(
-        display_name="GPT-5 Nano",
+    "openai/gpt-5.4-nano": ModelInfo(
+        display_name="GPT-5.4 Nano",
         provider="openai",
-        api_model="gpt-5-nano",
+        api_model="gpt-5.4-nano",
         supports_thinking=False,
         supports_vision=True,
         context_window=128_000,
@@ -82,10 +82,10 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("0.30"),
         output_price=Decimal("15.00"),
     ),
-    "anthropic/claude-haiku-4-5-20251001": ModelInfo(
+    "anthropic/claude-haiku-4-5": ModelInfo(
         display_name="Claude Haiku 4.5",
         provider="anthropic",
-        api_model="claude-haiku-4-5-20251001",
+        api_model="claude-haiku-4-5",
         supports_thinking=True,
         supports_vision=True,
         context_window=200_000,

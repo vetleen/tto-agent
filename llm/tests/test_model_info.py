@@ -40,8 +40,8 @@ class GetHistoryBudgetTests(TestCase):
         self.assertEqual(get_history_budget("gpt-5.4"), 150_000)
 
     def test_small_context_not_capped(self):
-        # gpt-5-nano: 128k * 0.75 = 96k (under cap)
-        self.assertEqual(get_history_budget("gpt-5-nano"), 96_000)
+        # gpt-5.4-nano: 128k * 0.75 = 96k (under cap)
+        self.assertEqual(get_history_budget("gpt-5.4-nano"), 96_000)
 
     def test_none_model(self):
         # Default: 128k * 0.75 = 96k

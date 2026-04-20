@@ -36,23 +36,23 @@ class ProviderLiveAPITests(TestCase):
         return response.message.content
 
     def test_openai_returns_valid_response(self):
-        """Call OpenAI (gpt-5-mini) through LLMService and assert valid response."""
+        """Call OpenAI (gpt-5.4-mini) through LLMService and assert valid response."""
         with patch.dict(
             "os.environ",
-            {"LLM_ALLOWED_MODELS": "gpt-5-mini", "DEFAULT_LLM_MODEL": "gpt-5-mini"},
+            {"LLM_ALLOWED_MODELS": "gpt-5.4-mini", "DEFAULT_LLM_MODEL": "gpt-5.4-mini"},
             clear=False,
         ):
-            content = self._run_simple_chat("gpt-5-mini")
+            content = self._run_simple_chat("gpt-5.4-mini")
         self.assertIn("OK", content.upper())
 
     def test_anthropic_returns_valid_response(self):
-        """Call Anthropic (claude-haiku-4-5-20251001) through LLMService and assert valid response."""
+        """Call Anthropic (claude-haiku-4-5) through LLMService and assert valid response."""
         with patch.dict(
             "os.environ",
-            {"LLM_ALLOWED_MODELS": "claude-haiku-4-5-20251001", "DEFAULT_LLM_MODEL": "claude-haiku-4-5-20251001"},
+            {"LLM_ALLOWED_MODELS": "claude-haiku-4-5", "DEFAULT_LLM_MODEL": "claude-haiku-4-5"},
             clear=False,
         ):
-            content = self._run_simple_chat("claude-haiku-4-5-20251001")
+            content = self._run_simple_chat("claude-haiku-4-5")
         self.assertIn("OK", content.upper())
 
     def test_gemini_returns_valid_response(self):
@@ -72,7 +72,7 @@ class FullPromptGuardrailTests(TestCase):
     cause cheap models to hallucinate off the context instead of answering
     the user's actual message."""
 
-    CHEAP_MODELS = ["gpt-5-nano", "gpt-5-mini"]
+    CHEAP_MODELS = ["gpt-5.4-nano", "gpt-5.4-mini"]
 
     def test_simple_ping_not_derailed_by_injected_context(self):
         """Send 'Ping' with the full system prompt + injected context.
@@ -177,12 +177,12 @@ class StreamingUsageCostTests(TestCase):
         )
 
     def test_openai_streaming_returns_usage_and_cost(self):
-        end_data = self._stream_and_collect("gpt-5-nano")
-        self._assert_usage_and_cost(end_data, "gpt-5-nano")
+        end_data = self._stream_and_collect("gpt-5.4-nano")
+        self._assert_usage_and_cost(end_data, "gpt-5.4-nano")
 
     def test_anthropic_streaming_returns_usage_and_cost(self):
-        end_data = self._stream_and_collect("claude-haiku-4-5-20251001")
-        self._assert_usage_and_cost(end_data, "claude-haiku-4-5-20251001")
+        end_data = self._stream_and_collect("claude-haiku-4-5")
+        self._assert_usage_and_cost(end_data, "claude-haiku-4-5")
 
     def test_gemini_streaming_returns_usage_and_cost(self):
         end_data = self._stream_and_collect("gemini-3.1-flash-lite-preview")

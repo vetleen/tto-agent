@@ -81,14 +81,17 @@ class RedactOldLLMLogsCommandTests(TestCase):
 
     def test_batch_size_processes_all_rows(self):
         now = timezone.now()
-        for _ in range(5):
-            _make_log(created_at=now - timedelta(days=91))
+        created_ids = [
+            _make_log(created_at=now - timedelta(days=91)).pk for _ in range(5)
+        ]
 
         call_command(
             "redact_old_llm_logs", "--batch-size", "2", stdout=StringIO()
         )
 
-        qs = LLMCallLog.objects.all()
-        for log in qs:
+        # Scope to the rows this test created — asserting against
+        # ``LLMCallLog.objects.all()`` is brittle because other tests spawn
+        # threads whose writes escape the TestCase transaction.
+        for log in LLMCallLog.objects.filter(pk__in=created_ids):
             self.assertEqual(log.prompt, {"redacted": True})
             self.assertEqual(log.raw_output, "")

@@ -28,7 +28,7 @@ class GetModelInfoTests(TestCase):
         for model_id in [
             "anthropic/claude-opus-4-6",
             "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-haiku-4-5-20251001",
+            "anthropic/claude-haiku-4-5",
         ]:
             info = get_model_info(model_id)
             self.assertIsNotNone(info, f"{model_id} not found")
@@ -39,7 +39,7 @@ class GetModelInfoTests(TestCase):
         self.assertTrue(info.supports_thinking)
 
     def test_gpt5_mini_no_thinking(self):
-        info = get_model_info("openai/gpt-5-mini")
+        info = get_model_info("openai/gpt-5.4-mini")
         self.assertFalse(info.supports_thinking)
 
     def test_gemini_3_supports_thinking(self):
@@ -58,7 +58,7 @@ class GetModelInfoTests(TestCase):
 
     def test_all_registered_models_have_vision(self):
         for model_id in [
-            "openai/gpt-5.4", "openai/gpt-5-mini", "openai/gpt-5-nano",
+            "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
             "anthropic/claude-opus-4-6",
             "gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview",
         ]:
@@ -68,7 +68,7 @@ class GetModelInfoTests(TestCase):
 
     def test_context_windows(self):
         self.assertEqual(get_model_info("openai/gpt-5.4").context_window, 1_000_000)
-        self.assertEqual(get_model_info("openai/gpt-5-nano").context_window, 128_000)
+        self.assertEqual(get_model_info("openai/gpt-5.4-nano").context_window, 128_000)
         self.assertEqual(get_model_info("anthropic/claude-sonnet-4-6").context_window, 200_000)
 
     def test_pricing(self):

@@ -23,3 +23,17 @@ class LlmConfig(AppConfig):
                 "LLM features will be unavailable until the issue is resolved.",
                 exc_info=True,
             )
+
+        try:
+            from .service.policies import get_env_unregistered_models
+
+            missing = get_env_unregistered_models()
+            if missing:
+                logger.warning(
+                    "LLM_ALLOWED_MODELS contains %d model(s) not in the registry: %s. "
+                    "These are hidden from the org settings UI and will be rejected by "
+                    "resolve_model() — add them to llm.model_registry or remove from the env.",
+                    len(missing), missing,
+                )
+        except Exception:
+            logger.exception("Failed to cross-check LLM_ALLOWED_MODELS against the registry")

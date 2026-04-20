@@ -177,7 +177,12 @@ class LLMServiceTests(TestCase):
         self.assertIn("does not support streaming", str(ctx.exception))
         fake_pipeline.run.assert_not_called()
 
-    async def test_arun_delegates_to_run(self):
+    @patch("llm.service.llm_service.log_call")
+    async def test_arun_delegates_to_run(self, _mock_log):
+        # ``arun`` delegates to ``run`` via ``asyncio.to_thread``; patching
+        # ``log_call`` here prevents the thread's connection from committing
+        # an ``LLMCallLog`` row outside the test transaction (which would
+        # leak into later tests that query the log table).
         request = ChatRequest(
             messages=[Message(role="user", content="Hello")],
             stream=False,
@@ -305,7 +310,11 @@ class LLMServiceTests(TestCase):
         self.assertNotIn("super secret prompt", log_output)
         self.assertNotIn("super secret response", log_output)
 
-    async def test_astream_yields_events(self):
+    @patch("llm.service.llm_service.log_stream")
+    async def test_astream_yields_events(self, _mock_log):
+        # ``astream`` spawns a producer thread to bridge sync→async. Patching
+        # ``log_stream`` keeps the thread's DB connection from committing an
+        # ``LLMCallLog`` row outside the test transaction.
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=True,

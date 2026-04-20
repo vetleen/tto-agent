@@ -16,7 +16,7 @@ class GetModelPricingTests(SimpleTestCase):
         self.assertEqual(pricing, (Decimal("3.00"), Decimal("0.30"), Decimal("15.00")))
 
     def test_openai_model(self):
-        pricing = get_model_pricing("gpt-5-mini")
+        pricing = get_model_pricing("gpt-5.4-mini")
         self.assertEqual(pricing, (Decimal("0.25"), Decimal("0.025"), Decimal("2.00")))
 
     def test_gemini_model(self):
@@ -24,8 +24,8 @@ class GetModelPricingTests(SimpleTestCase):
         self.assertEqual(pricing, (Decimal("0.30"), Decimal("0.03"), Decimal("2.50")))
 
     def test_strips_openai_prefix(self):
-        pricing = get_model_pricing("openai/gpt-5-mini")
-        self.assertEqual(pricing, get_model_pricing("gpt-5-mini"))
+        pricing = get_model_pricing("openai/gpt-5.4-mini")
+        self.assertEqual(pricing, get_model_pricing("gpt-5.4-mini"))
 
     def test_strips_anthropic_prefix(self):
         pricing = get_model_pricing("anthropic/claude-opus-4-6")
@@ -46,8 +46,8 @@ class CalculateCostTests(SimpleTestCase):
     """Tests for calculate_cost()."""
 
     def test_basic_cost(self):
-        # 1000 input, 500 output of gpt-5-mini: (1000*0.25 + 500*2.00) / 1M
-        cost = calculate_cost("gpt-5-mini", 1000, 500)
+        # 1000 input, 500 output of gpt-5.4-mini: (1000*0.25 + 500*2.00) / 1M
+        cost = calculate_cost("gpt-5.4-mini", 1000, 500)
         expected = (Decimal("1000") * Decimal("0.25") + Decimal("500") * Decimal("2.00")) / Decimal("1000000")
         self.assertEqual(cost, expected)
 
@@ -63,7 +63,7 @@ class CalculateCostTests(SimpleTestCase):
 
     def test_output_only_fallback(self):
         """Streaming case: only output tokens known."""
-        cost = calculate_cost("gpt-5-mini", None, 1000)
+        cost = calculate_cost("gpt-5.4-mini", None, 1000)
         expected = Decimal("1000") * Decimal("2.00") / Decimal("1000000")
         self.assertEqual(cost, expected)
 
@@ -71,11 +71,11 @@ class CalculateCostTests(SimpleTestCase):
         self.assertIsNone(calculate_cost("unknown-model", 100, 50))
 
     def test_zero_tokens(self):
-        cost = calculate_cost("gpt-5-mini", 0, 0)
+        cost = calculate_cost("gpt-5.4-mini", 0, 0)
         self.assertEqual(cost, Decimal("0"))
 
     def test_none_tokens_treated_as_zero(self):
-        cost = calculate_cost("gpt-5-mini", None, None)
+        cost = calculate_cost("gpt-5.4-mini", None, None)
         self.assertEqual(cost, Decimal("0"))
 
     def test_all_registry_entries_have_pricing(self):

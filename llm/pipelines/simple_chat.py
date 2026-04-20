@@ -267,11 +267,13 @@ class SimpleChatPipeline(BasePipeline):
         sequence = 1
         cancel_event = (request.params or {}).get("_cancel_event")
 
-        # Aggregate usage across all iterations
+        # Aggregate usage across all iterations.
+        # Cost stays None until at least one iteration reports it, so unknown-pricing
+        # models log NULL (like the non-streaming path) instead of 0.0.
         agg_input_tokens = 0
         agg_output_tokens = 0
         agg_total_tokens = 0
-        agg_cost_usd = 0.0
+        agg_cost_usd: float | None = None
 
         def _do_stream_iteration(req, sequence):
             """Stream one LLM call, forwarding events and returning (end_data, sequence)."""
@@ -309,7 +311,9 @@ class SimpleChatPipeline(BasePipeline):
             agg_input_tokens += end_data.get("input_tokens") or 0
             agg_output_tokens += end_data.get("output_tokens") or 0
             agg_total_tokens += end_data.get("total_tokens") or 0
-            agg_cost_usd += end_data.get("cost_usd") or 0.0
+            iter_cost = end_data.get("cost_usd")
+            if iter_cost is not None:
+                agg_cost_usd = (agg_cost_usd or 0.0) + iter_cost
 
             # Check for tool calls
             tool_call_dicts = end_data.get("tool_calls")
@@ -397,7 +401,9 @@ class SimpleChatPipeline(BasePipeline):
         agg_input_tokens += end_data.get("input_tokens") or 0
         agg_output_tokens += end_data.get("output_tokens") or 0
         agg_total_tokens += end_data.get("total_tokens") or 0
-        agg_cost_usd += end_data.get("cost_usd") or 0.0
+        iter_cost = end_data.get("cost_usd")
+        if iter_cost is not None:
+            agg_cost_usd = (agg_cost_usd or 0.0) + iter_cost
         end_data["input_tokens"] = agg_input_tokens
         end_data["output_tokens"] = agg_output_tokens
         end_data["total_tokens"] = agg_total_tokens
