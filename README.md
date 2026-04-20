@@ -4,10 +4,12 @@
 
 - **Stack:** Django 6, Tailwind CSS v4, Flowbite. Branded UI ("Wilfred"), dark/light theme.
 - **Auth:** accounts app — login, signup, email verification, password reset, per-user theme (UserSettings), organizations.
-- **Documents:** Data Rooms (UUID), upload (PDF, TXT, MD, HTML, DOCX), Celery processing, LangChain + tiktoken chunking, OpenAI embeddings, optional pgvector (Postgres).
-- **Chat:** Thread-based WebSocket assistant at `/chat/`; threads attach one or more data rooms and an optional skill. Includes a canvas editor and sub-agent delegation.
-- **LLM app:** Internal API — OpenAI, Anthropic, Gemini, Moonshot (and others via .env); pipeline registry, model allowlist, three-tier model defaults, optional live API tests.
+- **Documents:** Data Rooms (UUID), upload (PDF, TXT, MD, HTML, DOCX), Celery processing, LangChain + tiktoken chunking, OpenAI embeddings, hybrid retrieval (pgvector semantic + Postgres full-text search with RRF fusion).
+- **Chat:** Thread-based WebSocket assistant at `/chat/`; threads attach one or more data rooms and an optional skill. Includes a multi-canvas editor and sub-agent delegation.
+- **Meetings:** First-class meeting objects (`/meetings/`) with live WebSocket transcription, audio/transcript upload, attachments, artifacts, and "minutes with Wilfred" threads that can search linked data rooms.
+- **LLM app:** Internal API — OpenAI, Anthropic, Gemini, Moonshot (and others via .env); pipeline registry, model allowlist, three-tier model defaults, transcription registry, optional live API tests.
 - **Skills:** Agent skills system (system, organization, and user level) with templates, attached to chat threads to customize assistant behavior and available tools.
+- **Feedback:** In-app feedback submission (text + screenshot + console errors) via `/api/feedback/submit/`.
 
 ## Setup
 
@@ -79,31 +81,45 @@ Live LLM API tests: set `TEST_APIS=True` and add API keys to `.env`.
 
 - **config/** — Project settings, root URL conf, ASGI/WSGI entry points.
 - **accounts/** — Auth (login, signup, email verification, password reset), user settings, organizations.
-- **documents/** — Data Rooms, file upload, Celery-based processing pipeline (extract → chunk → embed).
-- **chat/** — Thread-based WebSocket consumer for LLM chat with streaming, canvas editing, and sub-agent delegation. Users attach data rooms and skills to threads.
-- **llm/** — Multi-provider LLM abstraction. Entry point: `get_llm_service()` in `llm/service/llm_service.py`.
+- **documents/** — Data Rooms, file upload, Celery-based processing pipeline (extract → chunk → embed), hybrid retrieval.
+- **chat/** — Thread-based WebSocket consumer for LLM chat with streaming, multi-canvas editing, and sub-agent delegation. Users attach data rooms and skills to threads.
+- **meetings/** — Meetings with live transcription (WebSocket), audio/text upload transcription, attachments, artifacts, and minutes generation via chat threads.
+- **llm/** — Multi-provider LLM abstraction. Entry point: `get_llm_service()` in `llm/service/llm_service.py`. Also hosts the transcription service and registry.
 - **agent_skills/** — Skill and template management. Three-tier hierarchy: system, organization, user. Skills customize assistant behavior and tool availability per thread.
-- **core/** — Shared utilities (tokens, preferences).
+- **guardrails/** — Adversarial-content scanning of document chunks (heuristic pre-filter + LLM classifier).
+- **feedback/** — User feedback submission (text, screenshot, console errors).
+- **core/** — Shared utilities (tokens, preferences), custom error pages, request-ID middleware.
 
 ## Documents app
 
 - **URLs:** `/data-rooms/` (list), `/data-rooms/<uuid>/documents/` (documents), `/data-rooms/<uuid>/documents/upload/`, delete/rename/archive via UI, chunks at `.../documents/<id>/chunks/`.
-- **Flow:** Upload → Celery `process_document_task` → extract text → chunk (tiktoken, max 1200 tokens, overlap 100) → save chunks → embed and pgvector when `PGVECTOR_CONNECTION` set.
+- **Flow:** Upload → Celery `process_document_task` → extract text → chunk (tiktoken, max 1200 tokens, overlap 100) → save chunks → populate tsvector `search_vector` + embed/pgvector when `PGVECTOR_CONNECTION` set → guardrails scan.
+- **Retrieval:** Hybrid search combines pgvector semantic similarity with Postgres full-text search using Reciprocal Rank Fusion (RRF). Gracefully degrades to either backend if the other is unavailable. See `documents/services/retrieval.py`.
 
 ## Chat app
 
 - **URLs:** `/chat/` (home, thread list and chat UI), `/chat/threads/<uuid>/delete/`, `/chat/threads/<uuid>/canvas/export/`, `/chat/threads/<uuid>/canvas/import/`.
-- **Threads:** Each `ChatThread` can attach multiple data rooms (many-to-many via `ChatThreadDataRoom`) and an optional `AgentSkill`.
-- **Canvas:** In-thread document editor (`ChatCanvas`) with checkpoint history. Can export to DOCX, import content, and save to data rooms.
-- **Sub-agents:** Delegate tasks to background or blocking sub-agent runs (`SubAgentRun`) with tiered model selection (fast/mid/top).
+- **Threads:** Each `ChatThread` can attach multiple data rooms (many-to-many via `ChatThreadDataRoom`) and any number of `AgentSkill`s.
+- **Canvas:** Per-thread document editor (`ChatCanvas`) with multi-canvas support, checkpoint history, DOCX export/import, and save-to-data-room. Up to 3 canvases can be active at once; only active canvases are included in the LLM's context.
+- **Sub-agents:** Delegate tasks to background or timeout-bounded sub-agent runs (`SubAgentRun`) with tiered model selection (cheap/mid/top).
 - **Tools available in chat:**
-  - `search_documents` — Hybrid search on attached data rooms
+  - `search_documents` — Hybrid (semantic + full-text) search on attached data rooms
   - `read_document` — Read full document content
-  - `write_canvas` / `edit_canvas` — Create or edit canvas content
+  - `active_canvas` — Choose which canvases are active in context (max 3)
+  - `write_canvas` / `edit_canvas` — Create/overwrite or find-replace on a canvas
+  - `update_tasks` — Manage the thread's task list (`ThreadTask`)
   - `web_fetch` — Fetch and extract web page text
   - `brave_search` — Web search via Brave Search API
-  - `create_subagent` — Delegate tasks to sub-agents (status/results delivered via system prompt)
-  - Skill tools: `create_skill`, `edit_skill`, `delete_skill`, `add_skill_template`, `edit_skill_template`, `delete_skill_template`, `view_template`, `load_template_to_canvas`, `save_canvas_to_skill_field`, `show_skill_field_in_canvas`, `list_all_tools`, `inspect_tool`
+  - `create_subagent` — Delegate tasks to sub-agents (results returned via system prompt)
+  - `save_meeting_minutes` — Persist canvas content as meeting minutes (meeting-attached threads)
+  - Skill tools: `create_skill`, `edit_skill`, `delete_skill`, `attach_skills`, `view_template`, `load_template_to_canvas`, `save_canvas_to_skill_field`, `show_skill_field_in_canvas`, `list_all_tools`, `inspect_tool`
+
+## Meetings app
+
+- **URLs:** `/meetings/` (list), `/meetings/create/`, `/meetings/<uuid>/`, transcript upload/audio upload, live transcription WebSocket, "create minutes thread" that spawns a pre-attached chat thread.
+- **Transcript sources:** live WebSocket streaming, uploaded audio (transcribed asynchronously via Celery), or direct text upload.
+- **Data rooms:** Any meeting can link multiple data rooms via `MeetingDataRoom`; the chat tools then search those rooms from the minutes thread.
+- **Transcription config:** `TRANSCRIPTION_ALLOWED_MODELS`, `TRANSCRIPTION_DEFAULT_MODEL`, optional per-path overrides `TRANSCRIPTION_DEFAULT_MODEL_LIVE` / `TRANSCRIPTION_DEFAULT_MODEL_UPLOAD`. Requires `ffmpeg` (installed via Heroku apt buildpack).
 
 ## LLM app
 
@@ -143,8 +159,10 @@ Use `.env` (from `.env.example`). Key variables:
 | `LLM_DEFAULT_MID_MODEL` | Default model for mid-tier tasks (sub-agents) |
 | `LLM_DEFAULT_CHEAP_MODEL` | Default model for cheap/fast tasks (sub-agents) |
 | `LLM_REQUEST_TIMEOUT`, `LLM_MAX_RETRIES` | Request timeout (seconds) and retry count |
+| `TRANSCRIPTION_ALLOWED_MODELS`, `TRANSCRIPTION_DEFAULT_MODEL` | Transcription model allowlist and default (meetings) |
 | `TEST_APIS` | Set `True` for live LLM API tests |
 | `EMAIL_VERIFICATION_REQUIRED`, `DJANGO_EMAIL_BACKEND` | Auth and email |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT` | Optional error tracking / performance monitoring |
 
 See `.env.example` for more (e.g. Mailgun, chunk tuning, dev superuser).
 

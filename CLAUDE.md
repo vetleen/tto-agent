@@ -60,12 +60,14 @@ For deploy details, config vars, rollback, and ops, see `RUNBOOK.md`.
 
 - **config/** — Project settings, root URL conf, ASGI/WSGI entry points.
 - **accounts/** — Auth (login, signup, email verification, password reset), user settings, organizations.
-- **documents/** — Data Rooms, file upload, Celery-based processing pipeline (extract → chunk → embed).
-- **chat/** — WebSocket consumer for LLM chat with streaming, canvas editing, sub-agent delegation. Users attach data rooms and skills to threads.
-- **llm/** — Multi-provider LLM abstraction. Entry point: `get_llm_service()` in `llm/service/llm_service.py`.
+- **documents/** — Data Rooms, file upload, Celery-based processing pipeline (extract → chunk → embed), hybrid retrieval (pgvector + Postgres FTS).
+- **chat/** — WebSocket consumer for LLM chat with streaming, multi-canvas editing, sub-agent delegation. Users attach data rooms and skills to threads.
+- **meetings/** — Meetings with live WebSocket transcription, audio/text upload, attachments, artifacts, and "minutes with Wilfred" chat threads. Has its own Celery tasks for audio transcription.
+- **llm/** — Multi-provider LLM abstraction. Entry point: `get_llm_service()` in `llm/service/llm_service.py`. Also hosts the transcription service and registry.
 - **agent_skills/** — Skill and template management (system, organization, user tiers). Skills customize assistant behavior and tool availability per thread.
 - **guardrails/** — Adversarial content scanning for document chunks (heuristic pre-filter + LLM classifier).
-- **core/** — Shared utilities (tokens, preferences), custom error pages.
+- **feedback/** — In-app feedback submissions (text + screenshot + console errors) via `/api/feedback/submit/`.
+- **core/** — Shared utilities (tokens, preferences), custom error pages, request-ID middleware.
 
 ## Chat Tool Labels
 

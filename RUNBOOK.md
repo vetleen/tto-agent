@@ -45,7 +45,9 @@ If the release included a migration, rolling back the code without reversing the
 |------|-----|---------|------------|---------|
 | `process_document_task` | documents | 5 | 600s hard / 540s soft | Extract → chunk → embed uploaded documents |
 | `run_subagent_task` | chat | 3 | 600s hard / 540s soft | Execute sub-agent runs |
-| `scan_document_chunks` | guardrails | 3 | 300s hard / 270s soft | Adversarial content scanning (heuristic + LLM) |
+| `scan_document_chunks` | guardrails | 3 | 600s hard / 570s soft | Adversarial content scanning (heuristic + LLM) |
+| `transcribe_meeting_chunk_task` | meetings | default | 600s hard / 540s soft | Transcribe a live-meeting audio chunk |
+| `transcribe_uploaded_audio_task` | meetings | default | 1800s hard / 1740s soft | Transcribe an uploaded audio file (may be long) |
 
 All tasks use exponential backoff on retry.
 
