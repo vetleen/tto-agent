@@ -94,14 +94,14 @@
             <button type="button"
                     class="view-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                     data-chunks-url="{% url 'document_chunks' data_room_id=data_room.uuid document_id=doc.id %}"
-                    data-doc-name="{{ doc.original_filename|escapejs }}">
+                    data-doc-name="{{ doc.original_filename }}">
               View document
             </button>
             {% endif %}
             <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                     data-rename-modal="rename-document-modal"
                     data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
-                    data-name="{{ doc.original_filename|escapejs }}">
+                    data-name="{{ doc.original_filename }}">
               Rename
             </button>
             <form method="post" action="{% url 'document_archive' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">
@@ -163,14 +163,14 @@
               <button type="button"
                       class="view-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                       data-chunks-url="{% url 'document_chunks' data_room_id=data_room.uuid document_id=doc.id %}"
-                      data-doc-name="{{ doc.original_filename|escapejs }}">
+                      data-doc-name="{{ doc.original_filename }}">
                 View document
               </button>
               {% endif %}
               <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                       data-rename-modal="rename-document-modal"
                       data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
-                      data-name="{{ doc.original_filename|escapejs }}">
+                      data-name="{{ doc.original_filename }}">
                 Rename
               </button>
               <form method="post" action="{% url 'document_archive' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">

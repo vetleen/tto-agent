@@ -38,7 +38,7 @@
           <button type="button" class="rename-dr-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                   data-rename-modal="rename-dr-modal"
                   data-action="{% url 'data_room_rename' data_room_id=dr.uuid %}"
-                  data-name="{{ dr.name|escapejs }}">
+                  data-name="{{ dr.name }}">
             Rename
           </button>
           <form method="post" action="{% url 'data_room_archive' data_room_id=dr.uuid %}" class="p-0">
@@ -82,7 +82,7 @@
             <button type="button" class="rename-dr-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                     data-rename-modal="rename-dr-modal"
                     data-action="{% url 'data_room_rename' data_room_id=dr.uuid %}"
-                    data-name="{{ dr.name|escapejs }}">
+                    data-name="{{ dr.name }}">
               Rename
             </button>
             <form method="post" action="{% url 'data_room_archive' data_room_id=dr.uuid %}" class="p-0">
