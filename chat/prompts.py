@@ -214,7 +214,9 @@ def build_semi_static_prompt(
             desc = (s.get("description") or "").strip().replace("\n", " ")
             if len(desc) > 160:
                 desc = desc[:157] + "..."
-            line = f"- **{s['slug']}** — {s.get('name', '')}"
+            emoji = (s.get("emoji") or "").strip()
+            prefix = f"{emoji} " if emoji else ""
+            line = f"- {prefix}**{s['slug']}** — {s.get('name', '')}"
             if desc:
                 line += f": {desc}"
             prompt += line + "\n"

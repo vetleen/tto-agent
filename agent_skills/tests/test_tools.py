@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -38,12 +39,30 @@ class CreateSkillToolTests(TestCase):
         self.tool = CreateSkillTool()
         self.tool.context = _make_context(self.user)
 
-    def test_create_skill(self):
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="")
+    def test_create_skill(self, mock_gen):
         result = json.loads(self.tool._run(name="My Skill"))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["name"], "My Skill")
         self.assertEqual(result["slug"], "my-skill")
         self.assertTrue(AgentSkill.objects.filter(slug="my-skill", created_by=self.user).exists())
+
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="🧪")
+    def test_create_skill_saves_generated_emoji(self, mock_gen):
+        result = json.loads(self.tool._run(name="Lab Notes"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["emoji"], "🧪")
+        skill = AgentSkill.objects.get(slug="lab-notes", created_by=self.user)
+        self.assertEqual(skill.emoji, "🧪")
+        mock_gen.assert_called_once()
+
+    @patch("agent_skills.tools._generate_emoji_for_skill", side_effect=RuntimeError("llm down"))
+    def test_create_skill_ignores_emoji_failure(self, mock_gen):
+        result = json.loads(self.tool._run(name="Resilient"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["emoji"], "")
+        skill = AgentSkill.objects.get(slug="resilient", created_by=self.user)
+        self.assertEqual(skill.emoji, "")
 
 
 class EditSkillToolTests(TestCase):

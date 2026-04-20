@@ -154,6 +154,7 @@ class SkillsSaveViewTests(TestCase):
         payload = {
             "action": action,
             "name": extra.get("name", "Updated"),
+            "emoji": extra.get("emoji", ""),
             "description": extra.get("description", "desc"),
             "instructions": extra.get("instructions", "new instructions"),
             "tool_names_json": extra.get("tool_names_json", "[]"),
@@ -171,6 +172,22 @@ class SkillsSaveViewTests(TestCase):
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.name, "Updated")
         self.assertEqual(self.skill.instructions, "new instructions")
+
+    def test_save_persists_emoji(self):
+        self.client.force_login(self.user)
+        response = self._post("save", emoji="🧪")
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.emoji, "🧪")
+
+    def test_save_clears_emoji_when_empty(self):
+        self.skill.emoji = "🧪"
+        self.skill.save(update_fields=["emoji"])
+        self.client.force_login(self.user)
+        response = self._post("save", emoji="")
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.emoji, "")
 
     def test_save_as_user_creates_copy(self):
         self.client.force_login(self.user)

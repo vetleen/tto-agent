@@ -3,6 +3,7 @@
 IRL_PROJECT_ASSESSOR = {
     "slug": "irl-project-assessor",
     "name": "IRL Project Assessor",
+    "emoji": "📊",
     "description": """\
 Assess innovation projects using the \
 KTH Innovation Readiness Level (IRL) framework. Scores projects across 6 \

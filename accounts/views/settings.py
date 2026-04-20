@@ -357,6 +357,7 @@ def org_settings_page(request):
         skills_data.append({
             "slug": skill.slug,
             "name": skill.name,
+            "emoji": skill.emoji,
             "description": skill.description,
             "tool_names": skill.tool_names or [],
             "enabled": sp.get("enabled", True) is not False,

@@ -261,7 +261,7 @@
       <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
         <label class="flex items-center justify-between cursor-pointer">
           <div>
-            <span class="text-sm font-medium text-heading">{{ skill.name }}</span>
+            <span class="text-sm font-medium text-heading">{% if skill.emoji %}{{ skill.emoji }} {% endif %}{{ skill.name }}</span>
             {% if skill.description %}
             <p class="text-xs text-body mt-0.5 max-w-lg truncate">{{ skill.description|truncatechars:120 }}</p>
             {% endif %}

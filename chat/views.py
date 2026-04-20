@@ -128,7 +128,12 @@ def chat_home(request):
     # Skills for the skill modal — use prefs.allowed_skills which respects
     # org admin enable/disable settings, rather than raw get_available_skills()
     skills_json = json.dumps([
-        {"id": s["id"], "name": s["name"], "description": s.get("description", "")}
+        {
+            "id": s["id"],
+            "name": s["name"],
+            "emoji": s.get("emoji", ""),
+            "description": s.get("description", ""),
+        }
         for s in prefs.allowed_skills
     ])
     model_choices = [

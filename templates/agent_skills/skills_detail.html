@@ -25,6 +25,13 @@
     {# ----- Header card ----- #}
     <section class="p-6 bg-neutral-primary-soft border border-default rounded-base">
       <div class="flex items-start justify-between gap-4 mb-4">
+        <div class="shrink-0">
+          <label for="skill-emoji" class="block mb-2 text-xs font-medium uppercase tracking-wide text-body">Emoji</label>
+          <input type="text" name="emoji" id="skill-emoji" value="{{ skill.emoji }}" maxlength="16"
+                 {% if not editable %}readonly{% endif %}
+                 placeholder="✨"
+                 class="bg-neutral-secondary-medium border border-default-medium text-heading text-2xl text-center rounded-base focus:ring-brand focus:border-brand px-2 py-2 w-16 shadow-xs {% if not editable %}cursor-not-allowed{% endif %}">
+        </div>
         <div class="flex-1 min-w-0">
           <label for="skill-name" class="block mb-2 text-xs font-medium uppercase tracking-wide text-body">Name</label>
           <input type="text" name="name" id="skill-name" value="{{ skill.name }}" maxlength="255"

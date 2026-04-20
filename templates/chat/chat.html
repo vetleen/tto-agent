@@ -256,7 +256,7 @@
       <div id="attached-skill" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
         {% if thread_skill %}
         <span class="skill-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 rounded-full" data-skill-id="{{ thread_skill.id }}">
-          <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          {% if thread_skill.emoji %}<span>{{ thread_skill.emoji }}</span>{% else %}<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>{% endif %}
           {{ thread_skill.name }}
           <button type="button" class="detach-skill-btn hover:text-fg-danger" aria-label="Detach skill">
             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
@@ -907,11 +907,14 @@
   // -- Skill pill helpers --
   var attachedSkillContainer = document.getElementById('attached-skill');
 
-  function addSkillPill(id, name) {
+  function addSkillPill(id, name, emoji) {
     activeSkillId = id;
     activeSkillName = name;
+    var iconHtml = emoji
+      ? '<span>' + escapeHtml(emoji) + '</span>'
+      : '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>';
     attachedSkillContainer.innerHTML = '<span class="skill-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 rounded-full" data-skill-id="' + escapeHtml(id) + '">' +
-      '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' +
+      iconHtml +
       escapeHtml(name) +
       '<button type="button" class="detach-skill-btn hover:text-fg-danger" aria-label="Detach skill"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></span>';
     updateSkillModalChecks();
@@ -1047,7 +1050,10 @@
       btn.setAttribute('data-skill-id', s.id);
       btn.setAttribute('data-skill-name', s.name);
       if (s.description) btn.title = s.description;
-      btn.innerHTML = '<span class="flex items-center gap-2"><svg class="w-4 h-4 shrink-0 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' + escapeHtml(s.name) + '</span>' +
+      var iconHtml = s.emoji
+        ? '<span class="shrink-0">' + escapeHtml(s.emoji) + '</span>'
+        : '<svg class="w-4 h-4 shrink-0 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>';
+      btn.innerHTML = '<span class="flex items-center gap-2">' + iconHtml + escapeHtml(s.name) + '</span>' +
         '<svg class="w-4 h-4 text-success skill-attached-check ' + (activeSkillId === s.id ? '' : 'hidden') + '" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
       btn.addEventListener('click', function() {
         if (activeSkillId === s.id) {
@@ -1061,7 +1067,7 @@
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "chat.attach_skill", skill_id: s.id, thread_id: activeThreadId || "" }));
           }
-          addSkillPill(s.id, s.name);
+          addSkillPill(s.id, s.name, s.emoji);
         }
         skillModal.classList.add('hidden');
       });
@@ -1657,7 +1663,7 @@
       attachedDataRoomIds = [];
       if (data.data_rooms) { data.data_rooms.forEach(function(r) { addDataRoomPill(r.id, r.name); }); }
       // Restore or clear skill pill
-      if (data.skill && data.skill.skill_id) { addSkillPill(data.skill.skill_id, data.skill.skill_name); } else { removeSkillPill(); }
+      if (data.skill && data.skill.skill_id) { addSkillPill(data.skill.skill_id, data.skill.skill_name, data.skill.skill_emoji); } else { removeSkillPill(); }
       // Reset multi-canvas state (will be populated by canvases.loaded event)
       canvasStates = {};
       activeCanvasId = null;
@@ -1669,7 +1675,7 @@
       updateThreadCost(data.thread_cost_usd);
       return;
     }
-    if (et === "skill.attached") { addSkillPill(data.skill_id, data.skill_name); return; }
+    if (et === "skill.attached") { addSkillPill(data.skill_id, data.skill_name, data.skill_emoji); return; }
     if (et === "skill.detached") { removeSkillPill(); return; }
     if (et === "data_room.attached") { addDataRoomPill(data.data_room_id, data.data_room_name); return; }
     if (et === "data_room.detached") { removeDataRoomPill(data.data_room_id); return; }

@@ -139,7 +139,7 @@
           <option value="">Default (Meeting Summarizer)</option>
           {% for skill in summarizer_skills %}
           <option value="{{ skill.id }}" {% if user_summarizer_skill_id == skill.id|stringformat:"s" %}selected{% endif %}>
-            {{ skill.name }}{% if skill.level == "user" %} (yours){% elif skill.level == "org" %} (org){% endif %}
+            {% if skill.emoji %}{{ skill.emoji }} {% endif %}{{ skill.name }}{% if skill.level == "user" %} (yours){% elif skill.level == "org" %} (org){% endif %}
           </option>
           {% endfor %}
         </select>

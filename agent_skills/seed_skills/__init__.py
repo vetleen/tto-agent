@@ -26,6 +26,7 @@ def seed_system_skills():
     for skill_data in SYSTEM_SKILLS:
         fields = {
             "name": skill_data["name"],
+            "emoji": skill_data.get("emoji", ""),
             "description": skill_data["description"],
             "instructions": skill_data["instructions"],
             "tool_names": skill_data["tool_names"],

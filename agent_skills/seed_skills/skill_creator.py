@@ -5,6 +5,7 @@ from django.conf import settings as django_settings
 SKILL_CREATOR = {
     "slug": "skill-creator",
     "name": "Skill Creator",
+    "emoji": "🧩",
     "description": """\
 Create a new agent skill or improve existing ones.\
 

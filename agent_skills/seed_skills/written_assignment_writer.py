@@ -3,6 +3,7 @@
 WRITTEN_ASSIGNMENT_WRITER = {
     "slug": "written-assignment-writer",
     "name": "Written Assignment Writer",
+    "emoji": "📝",
     "description": """\
 Help users write college-level written assignments such as essays, research \
 papers, response papers, literature reviews, and argumentative essays.

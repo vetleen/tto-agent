@@ -3,6 +3,7 @@
 WEB_DEEP_RESEARCHER = {
     "slug": "web-deep-researcher",
     "name": "Web Deep Researcher",
+    "emoji": "🔎",
     "description": """\
 Conduct comprehensive web research for broad or high-effort questions that \
 require many searches, source collection, synthesis, and verification. Use \

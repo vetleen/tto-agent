@@ -3,9 +3,50 @@
 from __future__ import annotations
 
 import json
+import logging
 from pydantic import BaseModel, Field
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
+
+logger = logging.getLogger(__name__)
+
+
+class _EmojiResult(BaseModel):
+    """Structured-output schema for the skill-emoji auto-pick call."""
+
+    emoji: str = Field(description="A single emoji representing the skill.")
+
+
+def _generate_emoji_for_skill(name: str, user_id, conversation_id) -> str:
+    """Best-effort: ask the cheap LLM for one emoji for a skill name.
+
+    Returns empty string on any failure. Caller decides whether to persist.
+    """
+    from django.conf import settings
+
+    cheap_model = getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", "")
+    if not cheap_model:
+        return ""
+
+    from llm import get_llm_service
+    from llm.types import ChatRequest, Message, RunContext
+
+    request = ChatRequest(
+        messages=[
+            Message(role="system", content=(
+                "You pick a single emoji to represent a skill by its name. "
+                "Return exactly one emoji character, no other text."
+            )),
+            Message(role="user", content=f"Skill name: {name}"),
+        ],
+        model=cheap_model,
+        stream=False,
+        tools=[],
+        context=RunContext.create(user_id=user_id, conversation_id=conversation_id),
+    )
+    service = get_llm_service()
+    parsed, _ = service.run_structured(request, _EmojiResult)
+    return (parsed.emoji or "").strip()[:16]
 
 
 def resolve_skill_for_thread_edit(user, thread_id, slug: str):
@@ -220,10 +261,23 @@ class CreateSkillTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "User not found."})
 
         skill = create_user_skill(user, name)
+
+        # Best-effort emoji auto-pick. Any failure leaves emoji empty; the
+        # user can still set one manually via the skill detail form.
+        try:
+            conversation_id = self.context.conversation_id if self.context else None
+            emoji = _generate_emoji_for_skill(name, user_id, conversation_id)
+            if emoji:
+                skill.emoji = emoji
+                skill.save(update_fields=["emoji", "updated_at"])
+        except Exception:
+            logger.exception("Failed to auto-generate emoji for skill %s", skill.id)
+
         return json.dumps({
             "status": "ok",
             "slug": skill.slug,
             "name": skill.name,
+            "emoji": skill.emoji,
             "id": str(skill.id),
         })
 
@@ -788,6 +842,7 @@ class AttachSkillsTool(ContextAwareTool):
                 "no_change": True,
                 "attached_skill_id": str(chosen.id),
                 "attached_skill_name": chosen.name,
+                "attached_skill_emoji": chosen.emoji,
             })
 
         ChatThread.objects.filter(pk=thread_id).update(skill_id=chosen.id)
@@ -799,6 +854,7 @@ class AttachSkillsTool(ContextAwareTool):
             "previous_skill_name": previous_skill_name,
             "attached_skill_id": str(chosen.id),
             "attached_skill_name": chosen.name,
+            "attached_skill_emoji": chosen.emoji,
         })
 
 

@@ -330,6 +330,7 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     every template on a freshly-copied skill was deleted.
     """
     name = (request.POST.get("name") or skill.name).strip() or skill.name
+    emoji = (request.POST.get("emoji") or "").strip()[:16]
     description = request.POST.get("description") or ""
     instructions = request.POST.get("instructions") or ""
     tool_names = _filter_skill_tools(
@@ -368,11 +369,12 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
         seen_names.add(entry["name"])
 
     skill.name = name[:255]
+    skill.emoji = emoji
     skill.description = description[:1024]
     skill.instructions = instructions
     skill.tool_names = tool_names
     skill.save(update_fields=[
-        "slug", "name", "description", "instructions", "tool_names", "updated_at",
+        "slug", "name", "emoji", "description", "instructions", "tool_names", "updated_at",
     ])
 
     # Delete templates the user removed BEFORE updating kept ones, so a

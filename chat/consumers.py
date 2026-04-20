@@ -249,6 +249,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "event_type": "skill.attached",
             "skill_id": str(skill["id"]),
             "skill_name": skill["name"],
+            "skill_emoji": skill.get("emoji", ""),
         }))
 
     async def _handle_detach_skill(self, data):
@@ -1066,6 +1067,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                         "event_type": "skill.attached",
                                         "skill_id": str(new_id),
                                         "skill_name": result.get("attached_skill_name", ""),
+                                        "skill_emoji": result.get("attached_skill_emoji", ""),
                                     }))
                                 elif result.get("detached"):
                                     self.active_skill_id = None
@@ -1801,7 +1803,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         skill = get_skill_for_user(self.user, skill_id)
         if not skill:
             return None
-        return {"id": str(skill.pk), "name": skill.name}
+        return {"id": str(skill.pk), "name": skill.name, "emoji": skill.emoji}
 
     @database_sync_to_async
     def _persist_thread_skill(self, thread_id, skill_id):
@@ -1822,7 +1824,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except ChatThread.DoesNotExist:
             return None
         if thread.skill and thread.skill.is_active:
-            return {"skill_id": str(thread.skill.pk), "skill_name": thread.skill.name}
+            return {
+                "skill_id": str(thread.skill.pk),
+                "skill_name": thread.skill.name,
+                "skill_emoji": thread.skill.emoji,
+            }
         return None
 
     @database_sync_to_async

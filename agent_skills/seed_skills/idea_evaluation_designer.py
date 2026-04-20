@@ -3,6 +3,7 @@
 IDEA_EVALUATION_DESIGNER = {
     "slug": "idea-evaluation-planner",
     "name": "Idea Evaluation Planner",
+    "emoji": "💡",
     "description": """\
 Design a commercial evaluation plan for a new invention disclosure (DOFI) \
 or business idea at a university technology transfer office. Produces a \

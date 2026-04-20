@@ -15,6 +15,7 @@ class AgentSkill(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     slug = models.SlugField(max_length=64)
     name = models.CharField(max_length=255)
+    emoji = models.CharField(max_length=16, blank=True, default="")
     description = models.TextField(max_length=1024, blank=True)
     instructions = models.TextField()
     tool_names = models.JSONField(default=list, blank=True)

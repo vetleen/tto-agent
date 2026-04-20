@@ -861,3 +861,19 @@ class AvailableSkillsSectionTests(TestCase):
             line for line in prompt.splitlines() if line.startswith("- **multi**")
         )
         self.assertIn("line one line two", bullet_line)
+
+    def test_emoji_prefixed_when_provided(self):
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "lab", "name": "Lab Notes", "emoji": "🧪", "description": ""},
+            ],
+        )
+        self.assertIn("- 🧪 **lab** — Lab Notes", prompt)
+
+    def test_emoji_absent_when_empty(self):
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "plain", "name": "Plain", "emoji": "", "description": ""},
+            ],
+        )
+        self.assertIn("- **plain** — Plain", prompt)

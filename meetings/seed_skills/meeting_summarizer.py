@@ -3,6 +3,7 @@
 MEETING_SUMMARIZER = {
     "slug": "meeting-summarizer",
     "name": "Meeting Summarizer",
+    "emoji": "🗒️",
     "description": (
         "Turn a meeting transcript into faithful, well-structured minutes or "
         "a summary. Use when the user opens a meeting in chat to draft minutes, "
