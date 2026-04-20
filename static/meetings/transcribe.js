@@ -218,6 +218,7 @@
   let beforeUnloadHandler = null;
   let visibilityHandler = null;
   let trackEndedHandler = null;
+  let wakeLockSentinel = null;
   // Reconnect + resume state. When the socket drops mid-session, we keep the
   // recorder running, buffer finished chunks here, and flush them once a new
   // socket is up. The original session is only abandoned once attempts are
@@ -353,40 +354,46 @@
 
   // ---------------- watchdog + visibility handling ----------------
 
+  function attemptRecorderRestart() {
+    try {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        try { mediaRecorder.stop(); } catch (e) {}
+      }
+      if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
+      if (mediaStream && mediaStream.active) {
+        startRecorder();
+      }
+    } catch (err) {
+      console.warn('recorder restart failed', err);
+    }
+  }
+
+  function checkForStall() {
+    if (!transcribing) return;
+    const silenceMs = Date.now() - lastChunkSentAt;
+    if (silenceMs < WATCHDOG_CHUNK_STALL_MS) return;
+
+    if (silenceMs >= WATCHDOG_CHUNK_GIVEUP_MS) {
+      // Recorder has been silent for 3× the segment duration and our one
+      // restart attempt didn't produce a chunk. Treat as a terminal local
+      // failure and surface the same reconnect/alert path.
+      console.warn('recorder silent for ' + silenceMs + 'ms, giving up');
+      handleUnexpectedClose();
+      return;
+    }
+
+    if (!watchdogRestartAttempted) {
+      watchdogRestartAttempted = true;
+      console.warn('recorder appears stalled (' + silenceMs + 'ms), restarting');
+      attemptRecorderRestart();
+    }
+  }
+
   function startWatchdog() {
     if (watchdogTimer) return;
     lastChunkSentAt = Date.now();
     watchdogRestartAttempted = false;
-    watchdogTimer = setInterval(function () {
-      if (!transcribing) return;
-      const silenceMs = Date.now() - lastChunkSentAt;
-      if (silenceMs < WATCHDOG_CHUNK_STALL_MS) return;
-
-      if (silenceMs >= WATCHDOG_CHUNK_GIVEUP_MS) {
-        // Recorder has been silent for 3× the segment duration and our one
-        // restart attempt didn't produce a chunk. Treat as a terminal local
-        // failure and surface the same reconnect/alert path.
-        console.warn('watchdog: recorder silent for ' + silenceMs + 'ms, giving up');
-        handleUnexpectedClose();
-        return;
-      }
-
-      if (!watchdogRestartAttempted) {
-        watchdogRestartAttempted = true;
-        console.warn('watchdog: recorder appears stalled (' + silenceMs + 'ms), restarting');
-        try {
-          if (mediaRecorder && mediaRecorder.state === 'recording') {
-            try { mediaRecorder.stop(); } catch (e) {}
-          }
-          if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
-          if (mediaStream && mediaStream.active) {
-            startRecorder();
-          }
-        } catch (err) {
-          console.warn('watchdog: restart failed', err);
-        }
-      }
-    }, WATCHDOG_INTERVAL_MS);
+    watchdogTimer = setInterval(checkForStall, WATCHDOG_INTERVAL_MS);
   }
 
   function stopWatchdog() {
@@ -396,19 +403,53 @@
     }
   }
 
+  // Screen Wake Lock keeps the OS from sleeping the screen while recording.
+  // When the screen sleeps, MediaRecorder often stops firing ondataavailable
+  // silently — the state stays "recording" but no audio reaches us, so the
+  // elapsed counter keeps ticking while the transcript stops growing.
+  // The sentinel is auto-released whenever the page becomes hidden, so the
+  // visibility handler reacquires it on return to the foreground.
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    if (wakeLockSentinel) return;
+    try {
+      wakeLockSentinel = await navigator.wakeLock.request('screen');
+      wakeLockSentinel.addEventListener('release', function () {
+        wakeLockSentinel = null;
+      });
+    } catch (err) {
+      // Non-fatal: recording still works, just without sleep prevention.
+      console.warn('wakeLock.request failed', err);
+    }
+  }
+
+  async function releaseWakeLock() {
+    if (!wakeLockSentinel) return;
+    const sentinel = wakeLockSentinel;
+    wakeLockSentinel = null;
+    try { await sentinel.release(); } catch (e) {}
+  }
+
   function installVisibilityHandler() {
     if (visibilityHandler) return;
     visibilityHandler = function () {
       if (document.visibilityState !== 'visible') return;
       if (!transcribing) return;
-      // Tab is back in the foreground. If the socket died while we were
-      // hidden, kick off reconnect immediately rather than waiting for the
-      // watchdog interval.
+      // Tab is back in the foreground.
+      // 1) Wake lock is auto-released when the page is hidden — reacquire.
+      requestWakeLock();
+      // 2) If the socket died while we were hidden, kick off reconnect
+      //    immediately rather than waiting for the watchdog interval.
       if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
         if (!reconnecting) {
           handleUnexpectedClose();
         }
+        return;
       }
+      // 3) If the OS suspended the process while hidden and MediaRecorder
+      //    silently stopped producing chunks, restart it now rather than
+      //    waiting up to WATCHDOG_INTERVAL_MS for the watchdog to notice.
+      checkForStall();
     };
     document.addEventListener('visibilitychange', visibilityHandler);
   }
@@ -937,6 +978,7 @@
     installVisibilityHandler();
     installTrackEndedHandler(mediaStream);
     startWatchdog();
+    requestWakeLock();
     startRecorder();
   }
 
@@ -946,6 +988,7 @@
     stopElapsedTimer();
     stopLevelMeter();
     stopWatchdog();
+    releaseWakeLock();
     removeVisibilityHandler();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     reconnecting = false;
