@@ -65,16 +65,23 @@ DEBUG = _get_env_bool(os.environ.get("DJANGO_DEBUG"), False)
 _sentry_dsn = os.environ.get("SENTRY_DSN", "")
 if _sentry_dsn:
     from core.middleware import get_request_id
+    from core.sentry_scrub import scrub_event
 
     def _sentry_before_send(event, hint):
-        """Tag every Sentry error event with the current request_id."""
+        """Scrub PII, then tag every Sentry error event with the request_id."""
+        event = scrub_event(event)
+        if event is None:
+            return None
         request_id = get_request_id()
         if request_id and request_id != "-":
             event.setdefault("tags", {})["request_id"] = request_id
         return event
 
     def _sentry_before_send_transaction(event, hint):
-        """Tag every Sentry transaction with the current request_id."""
+        """Scrub PII, then tag every Sentry transaction with the request_id."""
+        event = scrub_event(event)
+        if event is None:
+            return None
         request_id = get_request_id()
         if request_id and request_id != "-":
             event.setdefault("tags", {})["request_id"] = request_id
@@ -91,13 +98,15 @@ if _sentry_dsn:
         profiles_sample_rate=float(
             os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "1.0")
         ),
-        send_default_pii=True,
+        # GDPR: never attach default PII (IPs, User objects, cookies, headers).
+        # Anything we still want is explicitly set via tags or extras elsewhere.
+        send_default_pii=False,
         environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
         release=os.environ.get(
             "SENTRY_RELEASE", os.environ.get("SOURCE_VERSION", "")
         ),
-        enable_db_query_source=True,
-        db_query_source_threshold_ms=100,
+        # enable_db_query_source intentionally disabled: it ships SQL bind values
+        # which can contain emails, chat content, and other personal data.
         before_send=_sentry_before_send,
         before_send_transaction=_sentry_before_send_transaction,
         integrations=[
@@ -388,6 +397,8 @@ if _aws_bucket:
                     os.environ.get("AWS_QUERYSTRING_EXPIRE", "3600")
                 ),
                 "custom_domain": None,
+                # SSE-S3 (AES256) on every PUT. GETs are unaffected.
+                "object_parameters": {"ServerSideEncryption": "AES256"},
             },
         },
         "staticfiles": {

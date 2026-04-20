@@ -63,6 +63,54 @@ class AuthViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(get_user_model().objects.filter(pk=self.user.pk).exists())
 
+    def test_delete_account_wipes_chat_and_feedback_and_redacts_llm_logs(self) -> None:
+        """GDPR Art. 17: deleting the account must CASCADE chat + feedback
+        personal data and redact LLMCallLog content while preserving usage
+        metadata (model, tokens) with a nulled user FK."""
+        from chat.models import ChatMessage, ChatThread
+        from feedback.models import Feedback
+        from llm.models import LLMCallLog
+
+        thread = ChatThread.objects.create(created_by=self.user, title="t")
+        message = ChatMessage.objects.create(
+            thread=thread, role=ChatMessage.Role.USER, content="hello world"
+        )
+        feedback = Feedback.objects.create(
+            user=self.user, text="this is my feedback", user_agent="Mozilla"
+        )
+        llm_log = LLMCallLog.objects.create(
+            user=self.user,
+            model="gpt-5-mini",
+            prompt=[{"role": "user", "content": "secret prompt"}],
+            raw_output="secret response",
+            tools=[{"name": "tool_a"}],
+            input_tokens=10,
+            output_tokens=20,
+            total_tokens=30,
+        )
+
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            reverse("accounts:account_delete"),
+            {"password": self.password},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.assertFalse(ChatThread.objects.filter(pk=thread.pk).exists())
+        self.assertFalse(ChatMessage.objects.filter(pk=message.pk).exists())
+        self.assertFalse(Feedback.objects.filter(pk=feedback.pk).exists())
+
+        llm_log.refresh_from_db()
+        self.assertEqual(llm_log.prompt, {"redacted": True})
+        self.assertEqual(llm_log.raw_output, "")
+        self.assertIsNone(llm_log.tools)
+        self.assertIsNone(llm_log.user_id)
+        self.assertEqual(llm_log.model, "gpt-5-mini")
+        self.assertEqual(llm_log.input_tokens, 10)
+        self.assertEqual(llm_log.output_tokens, 20)
+        self.assertEqual(llm_log.total_tokens, 30)
+
     def test_delete_account_wrong_password_rejected(self) -> None:
         self.client.login(email=self.user.email, password=self.password)
 

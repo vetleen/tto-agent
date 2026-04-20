@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from django.test import SimpleTestCase
 
 from llm.core.model_factory import (
+    _get_provider_kwargs,
     _get_rate_limiter,
     _parse_provider,
     _rate_limiters,
@@ -170,6 +171,27 @@ class CreateChatModelTests(SimpleTestCase):
 
         with self.assertRaises(LLMConfigurationError):
             create_chat_model("unknown-model-xyz")
+
+
+class ProviderKwargsTests(SimpleTestCase):
+    """GDPR: OpenAI calls must carry store=False. Other providers must not."""
+
+    def test_openai_store_false_for_chat_completions(self):
+        kwargs = _get_provider_kwargs("openai", "gpt-5-mini")
+        self.assertIs(kwargs["store"], False)
+
+    def test_openai_store_false_for_responses_api(self):
+        kwargs = _get_provider_kwargs("openai", "gpt-5.4")
+        self.assertIs(kwargs["store"], False)
+        self.assertTrue(kwargs.get("use_responses_api"))
+
+    def test_anthropic_has_no_store_flag(self):
+        kwargs = _get_provider_kwargs("anthropic", "claude-sonnet-4-6")
+        self.assertNotIn("store", kwargs)
+
+    def test_google_has_no_store_flag(self):
+        kwargs = _get_provider_kwargs("google_genai", "gemini-2.5-pro")
+        self.assertNotIn("store", kwargs)
 
 
 class RateLimiterTests(SimpleTestCase):

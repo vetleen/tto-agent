@@ -5,8 +5,7 @@ from django.db import models
 class Feedback(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
+        on_delete=models.CASCADE,
         related_name="feedback_submissions",
     )
     url = models.URLField(max_length=2000, blank=True, default="")

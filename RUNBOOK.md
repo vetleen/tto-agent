@@ -78,6 +78,36 @@ python manage.py backfill_search_vectors --batch-size 200
 # Generate LLM descriptions for documents missing them
 python manage.py backfill_descriptions
 python manage.py backfill_descriptions --doc-ids 30 33
+
+# Redact prompt/raw_output on LLMCallLog rows older than 90 days (GDPR).
+# Idempotent — safe to run repeatedly. Scheduled daily via Heroku Scheduler.
+python manage.py redact_old_llm_logs
+python manage.py redact_old_llm_logs --days 30 --dry-run
+```
+
+### GDPR data-retention scheduling
+
+`redact_old_llm_logs` must run at least daily in staging and production. It is
+provisioned via the Heroku Scheduler add-on (one-off setup):
+
+```bash
+heroku addons:create scheduler:standard -a wilfred-staging
+heroku addons:create scheduler:standard -a wilfred-production
+heroku addons:open scheduler -a wilfred-staging     # then add the job in the UI
+heroku addons:open scheduler -a wilfred-production  # then add the job in the UI
+```
+
+Job definition (same on both apps):
+
+- Command: `python manage.py redact_old_llm_logs`
+- Frequency: every day at 03:00 UTC
+- Dyno size: Standard-1X
+
+Verify after provisioning:
+
+```bash
+heroku run python manage.py redact_old_llm_logs --dry-run -a wilfred-staging
+heroku logs --tail -a wilfred-staging               # look for "Redacted N row(s)"
 ```
 
 ## Database

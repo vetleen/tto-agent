@@ -91,6 +91,13 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
     if provider != "google_genai":
         kwargs["stream_usage"] = True
     if provider == "openai":
+        # GDPR: opt out of OpenAI's 30-day prompt/response retention. Applies
+        # to both Chat Completions and Responses API clients.
+        # Anthropic does not train on API traffic by default and exposes no
+        # per-call retention flag. google_genai (LangChain) has no equivalent
+        # flag; retention is governed by the Google Cloud / AI Studio org
+        # settings.
+        kwargs["store"] = False
         if any(api_model.startswith(p) for p in _RESPONSES_API_PREFIXES):
             kwargs["use_responses_api"] = True
     return kwargs
