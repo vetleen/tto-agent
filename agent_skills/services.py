@@ -276,6 +276,7 @@ def fork_skill(
     new_skill = AgentSkill.objects.create(
         slug=slug,
         name=new_name,
+        emoji=source_skill.emoji,
         description=source_skill.description,
         instructions=source_skill.instructions,
         tool_names=list(source_skill.tool_names or []),
@@ -424,6 +425,7 @@ def promote_skill_to_org(
     new_skill = AgentSkill.objects.create(
         slug=slug,
         name=source_skill.name,
+        emoji=source_skill.emoji,
         description=source_skill.description,
         instructions=source_skill.instructions,
         tool_names=list(source_skill.tool_names or []),

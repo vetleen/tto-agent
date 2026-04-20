@@ -272,7 +272,7 @@ class ForkSkillTests(TestCase):
 
     def test_forks_skill_with_templates(self):
         source = AgentSkill.objects.create(
-            slug="source", name="Source", instructions="Do stuff.",
+            slug="source", name="Source", emoji="🧪", instructions="Do stuff.",
             description="A source skill.", level="system",
             tool_names=["search_documents"],
         )
@@ -283,6 +283,7 @@ class ForkSkillTests(TestCase):
 
         self.assertEqual(forked.slug, "source")
         self.assertEqual(forked.name, "Source")
+        self.assertEqual(forked.emoji, "🧪")
         self.assertEqual(forked.instructions, "Do stuff.")
         self.assertEqual(forked.description, "A source skill.")
         self.assertEqual(forked.tool_names, ["search_documents"])
@@ -503,7 +504,7 @@ class PromoteSkillToOrgTests(TestCase):
 
     def test_admin_promotes_user_skill(self):
         source = AgentSkill.objects.create(
-            slug="my-skill", name="My Skill", instructions="i",
+            slug="my-skill", name="My Skill", emoji="🧪", instructions="i",
             description="d", level="user", created_by=self.admin,
             tool_names=["search"],
         )
@@ -512,6 +513,7 @@ class PromoteSkillToOrgTests(TestCase):
         promoted = promote_skill_to_org(self.admin, source, self.org)
         self.assertEqual(promoted.level, "org")
         self.assertEqual(promoted.organization, self.org)
+        self.assertEqual(promoted.emoji, "🧪")
         self.assertEqual(promoted.instructions, "i")
         self.assertEqual(promoted.description, "d")
         self.assertEqual(promoted.tool_names, ["search"])

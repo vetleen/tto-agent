@@ -29,7 +29,6 @@
           <label for="skill-emoji" class="block mb-2 text-xs font-medium uppercase tracking-wide text-body">Emoji</label>
           <input type="text" name="emoji" id="skill-emoji" value="{{ skill.emoji }}" maxlength="16"
                  {% if not editable %}readonly{% endif %}
-                 placeholder="✨"
                  class="bg-neutral-secondary-medium border border-default-medium text-heading text-2xl text-center rounded-base focus:ring-brand focus:border-brand px-2 py-2 w-16 shadow-xs {% if not editable %}cursor-not-allowed{% endif %}">
         </div>
         <div class="flex-1 min-w-0">

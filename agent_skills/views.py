@@ -418,7 +418,7 @@ def skills_save(request, skill_id):
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
         messages.success(request, f"Saved '{skill.name}'.")
-        return redirect("agent_skills_detail", skill_id=skill.id)
+        return redirect("agent_skills_list")
 
     if action == "save_as_user":
         # Make a user copy first, then write the form data into it.
@@ -433,7 +433,7 @@ def skills_save(request, skill_id):
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
         messages.success(request, f"Saved as new copy '{copy.name}'.")
-        return redirect("agent_skills_detail", skill_id=copy.id)
+        return redirect("agent_skills_list")
 
     if action == "save_as_org":
         org = _user_org(request.user)
@@ -452,7 +452,7 @@ def skills_save(request, skill_id):
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
         messages.success(request, f"Saved as organization skill '{promoted.name}'.")
-        return redirect("agent_skills_detail", skill_id=promoted.id)
+        return redirect("agent_skills_list")
 
     return redirect("agent_skills_detail", skill_id=skill.id)
 

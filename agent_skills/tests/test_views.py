@@ -169,6 +169,7 @@ class SkillsSaveViewTests(TestCase):
         self.client.force_login(self.user)
         response = self._post("save")
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("agent_skills_list"))
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.name, "Updated")
         self.assertEqual(self.skill.instructions, "new instructions")
@@ -194,6 +195,7 @@ class SkillsSaveViewTests(TestCase):
         before = AgentSkill.objects.filter(level="user").count()
         response = self._post("save_as_user", name="Forked")
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("agent_skills_list"))
         self.assertEqual(AgentSkill.objects.filter(level="user").count(), before + 1)
         # Original is unchanged.
         self.skill.refresh_from_db()
@@ -362,6 +364,7 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
             self._detail_payload("save_as_org"),
         )
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("agent_skills_list"))
 
         org_copies = AgentSkill.objects.filter(level="org", organization=self.org)
         self.assertEqual(org_copies.count(), 1)
