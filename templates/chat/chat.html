@@ -282,6 +282,7 @@
           </div>
           <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-gray-400 dark:bg-gray-500"></span>
           <span id="connection-text" class="text-xs text-body">Connecting...</span>
+          <button type="button" id="reconnect-btn" class="hidden text-xs text-fg-brand hover:underline ml-1">Reconnect</button>
         </div>
         <div class="flex-1 flex items-end">
           <div class="flex w-full shadow-xs rounded-base ring-offset-0 focus-within:ring-2 focus-within:ring-brand focus-within:rounded-base">
@@ -1501,18 +1502,28 @@
     const spinner = document.getElementById("connection-spinner");
     const text = document.getElementById("connection-text");
     const statusContainer = document.getElementById("connection-status");
+    const reconnectBtn = document.getElementById("reconnect-btn");
     if (isConnecting) {
       if (statusContainer) statusContainer.classList.remove("hidden");
       if (spinner) spinner.classList.remove("hidden"); if (indicator) indicator.classList.add("hidden");
+      if (reconnectBtn) reconnectBtn.classList.add("hidden");
       text.textContent = "Connecting..."; input.disabled = true; button.disabled = true;
     } else if (connected) {
       if (statusContainer) statusContainer.classList.add("hidden");
       if (spinner) spinner.classList.add("hidden"); if (indicator) indicator.classList.add("hidden");
+      if (reconnectBtn) reconnectBtn.classList.add("hidden");
       text.textContent = ""; if (!currentStreamingElement) { input.disabled = false; button.disabled = false; }
     } else {
       if (statusContainer) statusContainer.classList.remove("hidden");
       if (spinner) spinner.classList.add("hidden"); if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-danger"; }
-      text.textContent = reconnectAttempts > 0 ? `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})` : "Disconnected";
+      const exhausted = reconnectAttempts >= maxReconnectAttempts;
+      if (exhausted) {
+        text.textContent = "Disconnected";
+        if (reconnectBtn) reconnectBtn.classList.remove("hidden");
+      } else {
+        text.textContent = reconnectAttempts > 0 ? `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})` : "Disconnected";
+        if (reconnectBtn) reconnectBtn.classList.add("hidden");
+      }
       text.className = "text-xs text-body" + (reconnectAttempts === 0 ? " text-danger" : "");
       input.disabled = true; button.disabled = true;
     }
@@ -2135,6 +2146,14 @@
   if (document.getElementById('budget-exceeded-banner')) { input.disabled = true; button.disabled = true; }
   setTimeout(scrollToBottom, 100);
   window.addEventListener("beforeunload", disconnect);
+  const reconnectBtnEl = document.getElementById("reconnect-btn");
+  if (reconnectBtnEl) {
+    reconnectBtnEl.addEventListener("click", function() {
+      clearTimeout(reconnectTimeout);
+      reconnectAttempts = 0;
+      connect();
+    });
+  }
 
   // If the server seeded an opening turn for this thread (e.g. from
   // "Edit skill in chat"), show the assistant bubble + spinner immediately
