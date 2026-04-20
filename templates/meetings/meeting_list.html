@@ -2,6 +2,13 @@
 {% load static %}
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-10">
+  {% if messages %}
+  <ul class="mb-6 space-y-2">
+    {% for message in messages %}
+    <li class="text-sm {% if message.tags == 'error' %}text-fg-danger-strong bg-danger-soft border border-danger-subtle rounded-base px-3 py-2{% else %}text-fg-success bg-neutral-primary-soft border border-default rounded-base px-3 py-2{% endif %}">{{ message }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
   <h1 class="text-2xl font-semibold text-heading mb-2">Meetings</h1>
   <p class="text-sm text-body mb-8">Transcribe meetings, then have {{ assistant_name }} turn them into minutes.</p>
 

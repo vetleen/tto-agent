@@ -66,7 +66,7 @@
       <span id="transcribe-btn-label">{% if meeting.transcript %}Continue transcription{% else %}Start transcription{% endif %}</span>
     </button>
 
-    <span class="text-sm text-body">or</span>
+    <span id="upload-or-separator" class="text-sm text-body">or</span>
 
     <form id="upload-form" method="post" action="{% url 'meeting_upload' meeting_uuid=meeting.uuid %}" enctype="multipart/form-data" class="inline-flex">
       {% csrf_token %}

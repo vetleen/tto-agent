@@ -927,6 +927,8 @@
     // so the class would lose the cascade and the button would stay visible.
     transcribeBtn.style.display = 'none';
     setUploadFormVisible(false);
+    const orSeparator = document.getElementById('upload-or-separator');
+    if (orSeparator) orSeparator.style.display = 'none';
     setActionsBusy(true);
     updateIndicator();
     startLevelMeter(mediaStream);
