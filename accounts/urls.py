@@ -10,7 +10,6 @@ from .forms import (
 from .views.auth import (
     LoginView,
     PasswordResetView,
-    delete_account,
 )
 from .views.settings import (
     org_allowed_models_update,
@@ -69,7 +68,6 @@ urlpatterns = [
     path("org/settings/description/", org_description_update, name="org_description_update"),
     path("org/settings/transcription-model/", org_transcription_model_update, name="org_transcription_model_update"),
     path("org/usage/", org_usage_page, name="org_usage"),
-    path("delete/", delete_account, name="account_delete"),
     path(
         "password_change/",
         auth_views.PasswordChangeView.as_view(

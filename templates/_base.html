@@ -100,9 +100,6 @@
                   <a href="{% url 'accounts:password_change' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Change password</a>
                 </li>
                 <li>
-                  <a href="{% url 'accounts:account_delete' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">Delete account</a>
-                </li>
-                <li>
                   <form action="{% url 'accounts:logout' %}" method="post">
                     {% csrf_token %}
                     <button class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded" type="submit">

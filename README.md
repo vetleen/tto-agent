@@ -176,5 +176,5 @@ See `.env.example` for more (e.g. Mailgun, chunk tuning, dev superuser).
 ## Other
 
 - **Admin:** `/admin/`. Auto superuser when `DJANGO_USER_NAME` and `DJANGO_PASSWORD` set (dev).
-- **Auth URLs:** Login, signup, delete account, password change/reset, email verification under `/accounts/`.
+- **Auth URLs:** Login, signup, password change/reset, email verification under `/accounts/`.
 - **Theme:** UserSettings stores light/dark; toggle in nav for logged-in users.

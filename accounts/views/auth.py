@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.contrib.auth import get_user_model, login, logout
+from django.contrib.auth import get_user_model, login
 from django.contrib.auth.views import LoginView as BaseLoginView
 from django.contrib.auth.views import PasswordResetView as BasePasswordResetView
 from django.shortcuts import redirect, render
@@ -121,19 +121,3 @@ def verify_required(request):
         "registration/verify_required.html",
         {"email": email},
     )
-
-
-def delete_account(request):
-    if not request.user.is_authenticated:
-        return redirect("accounts:login")
-
-    error = None
-    if request.method == "POST":
-        password = request.POST.get("password", "")
-        if request.user.check_password(password):
-            request.user.delete()
-            logout(request)
-            return redirect("index")
-        error = "Incorrect password. Please try again."
-
-    return render(request, "registration/delete_account.html", {"error": error})
