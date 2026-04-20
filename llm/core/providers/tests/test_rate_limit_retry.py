@@ -37,6 +37,12 @@ def _rate_limit_error():
     return exc
 
 
+def _overloaded_error():
+    exc = Exception("overloaded")
+    exc.status_code = 529
+    return exc
+
+
 def _auth_error():
     exc = Exception("unauthorized")
     exc.status_code = 401
@@ -92,18 +98,28 @@ class TestGenerateErrorHandling(TestCase):
         self.assertEqual(model._client.invoke.call_count, 1)
         mock_sleep.assert_not_called()
 
-    def test_generate_overloaded_raises_LLMOverloadedError(self, mock_sleep):
-        """529 error raises LLMOverloadedError with correct error_code."""
+    def test_generate_overloaded_retries_then_raises(self, mock_sleep):
+        """529 errors retry with backoff, then raise LLMOverloadedError."""
         model = _make_model()
-        exc = Exception("overloaded")
-        exc.status_code = 529
-        model._client.invoke = MagicMock(side_effect=exc)
+        model._client.invoke = MagicMock(side_effect=_overloaded_error())
         with self.assertRaises(LLMOverloadedError) as ctx:
             model.generate(_make_request())
         self.assertEqual(ctx.exception.error_code, "overloaded")
         self.assertIn("overloaded", str(ctx.exception))
-        self.assertEqual(model._client.invoke.call_count, 1)
-        mock_sleep.assert_not_called()
+        # 1 initial + 3 retries = 4 total calls
+        self.assertEqual(model._client.invoke.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 3)
+
+    def test_generate_overloaded_succeeds_on_retry(self, mock_sleep):
+        """Overloaded on first attempt, success on second."""
+        model = _make_model()
+        model._client.invoke = MagicMock(
+            side_effect=[_overloaded_error(), _ai_message("ok")]
+        )
+        result = model.generate(_make_request())
+        self.assertEqual(result.message.content, "ok")
+        self.assertEqual(model._client.invoke.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
 
     def test_generate_success(self, mock_sleep):
         model = _make_model()
@@ -191,11 +207,68 @@ class TestStreamErrorHandling(TestCase):
         self.assertEqual(model._client.stream.call_count, 1)
         mock_sleep.assert_not_called()
 
-    def test_stream_overloaded_yields_correct_error_code(self, mock_sleep):
-        """529 error yields an error event with error_code='overloaded'."""
+    def test_stream_overloaded_retries_then_errors(self, mock_sleep):
+        """529 errors on stream retry with backoff, then yield overloaded error event."""
         model = _make_model()
-        exc = Exception("overloaded")
-        exc.status_code = 529
+        model._client.stream = MagicMock(side_effect=_overloaded_error())
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        error_event = [e for e in events if e.event_type == "error"][0]
+        self.assertEqual(error_event.data["error_code"], "overloaded")
+        self.assertIn("overloaded", error_event.data["message"])
+        # 1 initial + 3 retries = 4 total calls
+        self.assertEqual(model._client.stream.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 3)
+
+    def test_stream_overloaded_succeeds_on_retry(self, mock_sleep):
+        """Overloaded on first attempt, success on second."""
+        model = _make_model()
+
+        chunk = MagicMock()
+        chunk.content = "hello"
+        chunk.usage_metadata = {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        chunk.response_metadata = {}
+
+        model._client.stream = MagicMock(side_effect=[_overloaded_error(), [chunk]])
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        event_types = [e.event_type for e in events]
+        self.assertIn("token", event_types)
+        self.assertIn("message_end", event_types)
+        self.assertNotIn("error", event_types)
+        self.assertEqual(model._client.stream.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    def test_stream_mid_stream_overloaded_no_retry(self, mock_sleep):
+        """Overloaded after tokens have been yielded should NOT retry."""
+        model = _make_model()
+
+        chunk = MagicMock()
+        chunk.content = "partial"
+        chunk.usage_metadata = {}
+        chunk.response_metadata = {}
+
+        def stream_then_fail(*args, **kwargs):
+            yield chunk
+            raise _overloaded_error()
+
+        model._client.stream = MagicMock(side_effect=stream_then_fail)
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        error_event = [e for e in events if e.event_type == "error"][0]
+        self.assertEqual(error_event.data["error_code"], "overloaded")
+        self.assertEqual(model._client.stream.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_stream_mid_stream_sse_overloaded_classified(self, mock_sleep):
+        """SSE-delivered overloaded_error (status_code=200) retries then yields overloaded event."""
+        model = _make_model()
+        exc = Exception("Overloaded")
+        exc.status_code = 200  # SSE stream opened OK; error arrived in body
+        exc.body = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
         model._client.stream = MagicMock(side_effect=exc)
         model._client.bind_tools = MagicMock(return_value=model._client)
 
@@ -203,8 +276,31 @@ class TestStreamErrorHandling(TestCase):
         error_event = [e for e in events if e.event_type == "error"][0]
         self.assertEqual(error_event.data["error_code"], "overloaded")
         self.assertIn("overloaded", error_event.data["message"])
-        self.assertEqual(model._client.stream.call_count, 1)
-        mock_sleep.assert_not_called()
+        self.assertEqual(model._client.stream.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 3)
+
+    def test_stream_mid_stream_sse_rate_limit_retries(self, mock_sleep):
+        """SSE-delivered rate_limit_error triggers rate-limit retry behavior."""
+        model = _make_model()
+        exc = Exception("Rate limited")
+        exc.status_code = 200
+        exc.body = {"type": "error", "error": {"type": "rate_limit_error", "message": "Rate limited"}}
+
+        chunk = MagicMock()
+        chunk.content = "hello"
+        chunk.usage_metadata = {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        chunk.response_metadata = {}
+
+        model._client.stream = MagicMock(side_effect=[exc, [chunk]])
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        event_types = [e.event_type for e in events]
+        self.assertIn("token", event_types)
+        self.assertIn("message_end", event_types)
+        self.assertNotIn("error", event_types)
+        self.assertEqual(model._client.stream.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
 
     def test_stream_success(self, mock_sleep):
         model = _make_model()

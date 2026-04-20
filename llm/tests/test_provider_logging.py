@@ -115,7 +115,8 @@ class GenerateLoggingTests(SimpleTestCase):
                 model.generate(request)
 
         log_output = "\n".join(cm.output)
-        self.assertIn("rate limit", log_output.lower())
+        self.assertIn("error_code=rate_limited", log_output)
+        self.assertIn("retries exhausted", log_output)
 
     def test_generate_includes_run_id_in_logs(self):
         model = _TestModel()

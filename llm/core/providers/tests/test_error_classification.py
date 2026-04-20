@@ -13,6 +13,19 @@ def _exc_with_status(status_code: int, message: str = "error") -> Exception:
     return exc
 
 
+def _exc_mid_stream(error_type: str, message: str = "error") -> Exception:
+    """Simulate an SDK exception raised mid-stream over a 200 response.
+
+    The Anthropic SDK maps SSE ``error`` events to ``APIStatusError`` whose
+    ``status_code`` reflects the initial 200 response, with the real error
+    type in ``exc.body["error"]["type"]``.
+    """
+    exc = Exception(message)
+    exc.status_code = 200
+    exc.body = {"type": "error", "error": {"type": error_type, "message": message}}
+    return exc
+
+
 class TestClassifyApiError(TestCase):
 
     def test_429_maps_to_rate_limited(self):
@@ -93,6 +106,22 @@ class TestClassifyApiError(TestCase):
         self.assertEqual(result.error_code, "unknown")
         self.assertIn("unexpected error", result.user_message)
         self.assertEqual(result.log_level, "error")
+
+    def test_mid_stream_overloaded_body_maps_to_overloaded(self):
+        """SSE-delivered overloaded_error (status_code=200) still classifies correctly."""
+        exc = _exc_mid_stream("overloaded_error", "Overloaded")
+        result = classify_api_error(exc, "Anthropic")
+        self.assertEqual(result.error_code, "overloaded")
+        self.assertIn("overloaded", result.user_message)
+        self.assertIn("Anthropic", result.user_message)
+        self.assertEqual(result.log_level, "warning")
+
+    def test_mid_stream_rate_limit_body_maps_to_rate_limited(self):
+        """SSE-delivered rate_limit_error (status_code=200) still classifies correctly."""
+        exc = _exc_mid_stream("rate_limit_error", "Rate limited")
+        result = classify_api_error(exc, "Anthropic")
+        self.assertEqual(result.error_code, "rate_limited")
+        self.assertIn("rate limiting", result.user_message)
 
     def test_provider_label_appears_in_messages(self):
         """Provider label is included in user messages for most error codes."""
