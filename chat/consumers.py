@@ -1870,7 +1870,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return thread, True
 
     @database_sync_to_async
-    def _create_message(self, thread, role, content, tool_call_id=None, metadata=None):
+    def _create_message(self, thread, role, content, tool_call_id=None, metadata=None, is_hidden_from_user=False):
         from chat.models import ChatMessage
         from core.tokens import count_tokens
 
@@ -1881,6 +1881,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             tool_call_id=tool_call_id,
             metadata=metadata or {},
             token_count=count_tokens(content),
+            is_hidden_from_user=is_hidden_from_user,
         )
 
     @database_sync_to_async
@@ -2115,7 +2116,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             attachment.file.close()
 
     async def _persist_tool_loop_messages(self, thread, tool_calls, tool_results):
-        """Persist assistant tool-call message and tool result messages."""
+        """Persist assistant tool-call message and tool result messages.
+
+        These intermediate messages are needed in the LLM conversation history
+        but are hidden from the chat UI — they have no user-visible content
+        (empty body + tool_calls in metadata), so rendering them produced
+        empty "Wilfred HH:MM" bubbles on page reload.
+        """
         # 1. Assistant message requesting tools (content empty, tool_calls in metadata)
         tc_data = [
             {
@@ -2127,12 +2134,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ]
         await self._create_message(
             thread, "assistant", "", metadata={"tool_calls": tc_data},
+            is_hidden_from_user=True,
         )
         # 2. Tool result messages
         for tr in tool_results:
             await self._create_message(
                 thread, "tool", tr.get("result", ""),
                 tool_call_id=tr.get("tool_call_id", ""),
+                is_hidden_from_user=True,
             )
 
     async def _generate_thread_title(self, thread, first_user_message):
