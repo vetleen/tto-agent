@@ -40,7 +40,7 @@
 
   <section class="mb-10 p-6 bg-neutral-primary-soft border border-default rounded-base">
     <h2 class="text-lg font-medium text-heading mb-4">Upload documents</h2>
-    <form id="upload-form" method="post" action="{% url 'document_upload' data_room_id=data_room.uuid %}" enctype="multipart/form-data" class="max-w-lg">
+    <form id="upload-form" method="post" action="{% url 'document_upload' data_room_id=data_room.uuid %}" enctype="multipart/form-data">
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
@@ -48,8 +48,9 @@
         <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file.</p>
       </div>
       <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
-        Upload
+        Add to data room
       </button>
+      <p class="mt-2 text-xs text-body">Added files are processed: text is extracted, split into searchable chunks, and indexed. {{ assistant_name }} can search the indexed content whenever this data room is attached to the chat.</p>
     </form>
   </section>
 
