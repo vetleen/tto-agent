@@ -364,13 +364,19 @@
       placeholder="Document title" />
     <div class="flex items-center gap-1 shrink-0">
       {# 1. Save version (floppy disk) #}
-      <button id="canvas-save-version-btn" title="Save version" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-8H7v8M7 3v5h8"/></svg>
+      <button id="canvas-save-version-btn" title="Save version" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
+        <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-8H7v8M7 3v5h8"/></svg>
+        <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+        <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
       {# 2. Save to data room (bookmark) #}
       <div class="relative">
-        <button id="canvas-save-to-dr-btn" title="Save to data room" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/></svg>
+        <button id="canvas-save-to-dr-btn" title="Save to data room" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
+          <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/></svg>
+          <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+          <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
         <div id="canvas-save-to-dr-dropdown" class="hidden absolute right-0 top-full mt-1 z-50 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg w-64 max-h-72 overflow-y-auto">
           <div class="px-3 py-2 border-b border-default text-xs font-semibold text-heading">Save to data room</div>
@@ -380,8 +386,11 @@
         </div>
       </div>
       {# 3. Export as .docx #}
-      <button id="canvas-export-link" title="Export as .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      <button id="canvas-export-link" title="Export as .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
+        <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+        <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
       {# 4. Version history #}
       <div class="relative">
@@ -401,8 +410,10 @@
       </button>
       {# 6. Import .docx #}
       <label id="canvas-import-label" title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg id="canvas-import-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-        <svg id="canvas-import-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        <svg id="canvas-import-icon" class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        <svg id="canvas-import-spinner" class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+        <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
         <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
       </label>
       {# 7. Clear canvas (trash) #}
@@ -1641,6 +1652,11 @@
       canvasAcceptedContent = data.accepted_content;
       if (data.canvas_id && canvasStates[data.canvas_id]) canvasStates[data.canvas_id].acceptedContent = data.accepted_content;
       canvasShowBannerIfNeeded();
+      if (canvasSaveVersionPending) {
+        canvasSaveVersionPending = false;
+        clearTimeout(canvasSaveVersionTimer);
+        flashCanvasBtnSuccess(canvasSaveVersionBtn);
+      }
       return;
     }
     if (et === "canvas.restored") {
@@ -2259,6 +2275,34 @@
   var activeCanvasId = null;
   var canvasTabsEl = document.getElementById("canvas-tabs");
 
+  // Canvas action-button feedback: spinner -> check/X -> original icon.
+  // Buttons opt in by including child SVGs with classes canvas-btn-icon,
+  // canvas-btn-spinner, canvas-btn-check, canvas-btn-error.
+  function setCanvasBtnState(btn, state) {
+    if (!btn) return;
+    var icon = btn.querySelector(".canvas-btn-icon");
+    var spinner = btn.querySelector(".canvas-btn-spinner");
+    var check = btn.querySelector(".canvas-btn-check");
+    var err = btn.querySelector(".canvas-btn-error");
+    [icon, spinner, check, err].forEach(function(el) { if (el) el.classList.add("hidden"); });
+    var target = state === "loading" ? spinner : state === "success" ? check : state === "error" ? err : icon;
+    if (target) target.classList.remove("hidden");
+    // Labels (e.g. the import <label>) don't honor `disabled`; swap pointer-events instead.
+    if (btn.tagName === "BUTTON") { btn.disabled = state === "loading"; }
+    else { btn.style.pointerEvents = state === "loading" ? "none" : ""; }
+  }
+  function flashCanvasBtnSuccess(btn) {
+    setCanvasBtnState(btn, "success");
+    setTimeout(function() { setCanvasBtnState(btn, "idle"); }, 1500);
+  }
+  function flashCanvasBtnError(btn) {
+    setCanvasBtnState(btn, "error");
+    setTimeout(function() { setCanvasBtnState(btn, "idle"); }, 2000);
+  }
+
+  var canvasSaveVersionPending = false;
+  var canvasSaveVersionTimer = null;
+
   var canvasExportUrl = "";
   function canvasUpdateExportLink() {
     if (activeThreadId && activeCanvasId) {
@@ -2270,7 +2314,7 @@
   if (canvasExportLink) {
     canvasExportLink.addEventListener("click", async function() {
       if (!canvasExportUrl) return;
-      canvasExportLink.disabled = true;
+      setCanvasBtnState(canvasExportLink, "loading");
       canvasExportLink.title = "Exporting...";
       try {
         // Pre-render mermaid blocks client-side so the server doesn't need Playwright.
@@ -2305,10 +2349,11 @@
         document.body.appendChild(a); a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        flashCanvasBtnSuccess(canvasExportLink);
       } catch (err) {
+        flashCanvasBtnError(canvasExportLink);
         alert("Export failed: " + err.message);
       } finally {
-        canvasExportLink.disabled = false;
         canvasExportLink.title = "Export as .docx";
       }
     });
@@ -2817,6 +2862,17 @@
         var svMsg = { type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content };
         if (activeCanvasId) svMsg.canvas_id = activeCanvasId;
         ws.send(JSON.stringify(svMsg));
+        setCanvasBtnState(canvasSaveVersionBtn, "loading");
+        canvasSaveVersionPending = true;
+        clearTimeout(canvasSaveVersionTimer);
+        canvasSaveVersionTimer = setTimeout(function() {
+          if (canvasSaveVersionPending) {
+            canvasSaveVersionPending = false;
+            flashCanvasBtnError(canvasSaveVersionBtn);
+          }
+        }, 8000);
+      } else {
+        flashCanvasBtnError(canvasSaveVersionBtn);
       }
       canvasAcceptedContent = content;
       canvasShowBannerIfNeeded();
@@ -2927,6 +2983,7 @@
                 canvasSaveToDrDropdown.classList.add("hidden");
                 if (!activeThreadId) return;
                 btn.disabled = true;
+                setCanvasBtnState(canvasSaveToDrBtn, "loading");
                 var saveToDrUrl = "/chat/api/threads/" + activeThreadId + "/canvas/" + (activeCanvasId ? activeCanvasId + "/" : "") + "save-to-data-room/";
                 fetch(saveToDrUrl, {
                   method: "POST",
@@ -2936,12 +2993,15 @@
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                   if (data.ok) {
+                    flashCanvasBtnSuccess(canvasSaveToDrBtn);
                     if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved to " + data.data_room_name; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
                   } else {
+                    flashCanvasBtnError(canvasSaveToDrBtn);
                     if (canvasSaveStatus) { canvasSaveStatus.textContent = data.error || "Save failed"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
                   }
                 })
                 .catch(function() {
+                  flashCanvasBtnError(canvasSaveToDrBtn);
                   if (canvasSaveStatus) { canvasSaveStatus.textContent = "Save failed"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
                 });
               });
@@ -2976,18 +3036,12 @@
       if (!file) return;
       canvasImportInput.value = "";
 
-      var importIcon = document.getElementById("canvas-import-icon");
-      var importSpinner = document.getElementById("canvas-import-spinner");
       var importLabel = document.getElementById("canvas-import-label");
-      function setImporting(on) {
-        if (importIcon) importIcon.classList.toggle("hidden", on);
-        if (importSpinner) importSpinner.classList.toggle("hidden", !on);
-        if (importLabel) { importLabel.style.pointerEvents = on ? "none" : ""; importLabel.title = on ? "Importing\u2026" : "Import .docx"; }
-      }
       function doImport(threadId) {
         var fd = new FormData();
         fd.append("file", file);
-        setImporting(true);
+        setCanvasBtnState(importLabel, "loading");
+        if (importLabel) importLabel.title = "Importing\u2026";
         var importUrl = "/chat/threads/" + threadId + "/canvas/" + (activeCanvasId ? activeCanvasId + "/" : "") + "import/";
         fetch(importUrl, {
           method: "POST",
@@ -3010,10 +3064,12 @@
           if (data.truncated) {
             showToast("Document was truncated to 75,000 characters.");
           }
+          flashCanvasBtnSuccess(importLabel);
+          if (importLabel) importLabel.title = "Import .docx";
         }).catch(function(err) {
+          flashCanvasBtnError(importLabel);
+          if (importLabel) importLabel.title = "Import .docx";
           alert("Failed to import document: " + err.message);
-        }).finally(function() {
-          setImporting(false);
         });
       }
 
