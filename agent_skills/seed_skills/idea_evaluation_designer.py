@@ -141,20 +141,17 @@ What does that cost? Have we talked to someone who does it today?"
 
 ## Task planning
 
-Use the provided task planning tools ad instructions to track your\ 
-progress through this skill. Create \
-a task plan early and keep it updated as you work. This helps the \
-user see where you are and what's coming. Here is a strong example \
-of a task plan for a standard commercial evaluation:
+Use the provided task planning tools to track progress through this \
+skill. Create a plan early and keep it updated as you work so the \
+user can see where you are and what's next. Example plan for a \
+standard commercial evaluation:
 
 ```
-update_tasks(tasks=[
-  {"title": "Analyze provided materials", "status": "in_progress"},
-  {"title": "User Q&A: fill context gaps", "status": "pending"},
-  {"title": "Establish commercial hypothesis", "status": "pending"},
-  {"title": "Select and prioritize evaluation questions", "status": "pending"},
-  {"title": "Create evaluation plan", "status": "pending"},
-])
+- Analyze provided materials
+- User Q&A: fill context gaps
+- Establish commercial hypothesis
+- Select and prioritize evaluation questions
+- Create evaluation plan
 ```
 
 Adapt the plan to the actual case. 
@@ -163,7 +160,7 @@ Adapt the plan to the actual case.
 
 The goal of this phase is to build a comprehensive picture of the idea and its \
 context before any planning begins. This happens in two steps: \
-first analyze what's already provided, then do a Q&A session with the user to \
+first analyze the information that is already provided, then do a Q&A session with the user to \
 fill gaps.
 
 ### Step 1: Analyze provided materials
@@ -171,7 +168,7 @@ fill gaps.
 Before asking the user anything, find answers in material that's already \
 available in yor context. Extract what \
 you can for each of the context items listed below. No need to present a \
-brief summary of what you found or what's still missing. Just note whether \
+summary of what you found or what's still missing. Just note whether \
 you found good information or not. Something like:
 
 > "I've read the DOFI form and the inventor meeting notes. There's alot of relevant information there, but I do need to ask some follow up questions. \n\n{your first question}"
@@ -196,8 +193,8 @@ Continue until items 1–5 are covered. Items 6–7 are useful if \
 volunteered but don't pursue them.
 
 When you have enough, summarize the full situational picture back \
-to the user and ask: "Does this capture the situation correctly, \
-or is there anything I'm missing?" Only then move to Phase 2.
+to the user and askif this captures the situation correctly, \
+or if there is anything missing?" Only then move to Phase 2.
 
 ### Essential context items
 
@@ -295,6 +292,10 @@ company rather than a full commercial evaluation. What do you think?
 should only focus on licensee identification and deal terms; skip \
 startup-oriented work and most customer-pull validation. I'll generate \
 the full plan now. 
+
+This is bad because the pattern is named as if the user should \
+already know it, and the generic recommendations for the pattern are \
+copied verbatim without adapting them to the situation at hand.
 
 ## Phase 2 — Establish the commercial hypothesis
 
@@ -663,16 +664,16 @@ analysis, business case modeling.
 Before building the plan, **present the selected key questions to the \
 user in chat** — the same table that will appear in the final plan \
 (question, why it matters, current evidence, target evidence). Then \
-ask:
+ask something like:
 
 > "These are the questions I think we need to answer to make a go/no-go call for this idea. \
-> Before I build the plan around them — would you adjust any of \
+> Before I build the plan around them, would you adjust any of \
 > these, and is there anything else we should have a solid answer \
 > to before making a decision?"
 
 Wait for the user's response and incorporate their feedback before \
 proceeding. This is a judgment call the user must actively make — \
-don't skip it even if the user seems eager to move on.
+don't skip it.
 
 ## Building the plan — from questions to activities
 
