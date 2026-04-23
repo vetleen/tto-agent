@@ -222,7 +222,7 @@ class PcmPipe:
                 line = stderr.readline()
                 if not line:
                     return
-                logger.warning(
+                logger.info(
                     "ffmpeg: %s", line.decode("utf-8", errors="replace").rstrip()
                 )
         except Exception:

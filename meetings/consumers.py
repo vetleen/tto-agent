@@ -275,7 +275,14 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         try:
             await self._pcm_pipe.write(raw)
         except Exception as exc:
-            logger.warning("realtime: pipe write failed (%s)", exc)
+            logger.warning(
+                "realtime: pipe write failed, falling back to chunked (%s)", exc
+            )
+            self._realtime_mode = "chunked"
+            try:
+                await self._teardown_realtime()
+            except Exception:
+                logger.exception("realtime: teardown after broken pipe failed")
 
     async def _start_realtime_session(self, mime: str) -> None:
         from meetings.services.pcm_pipe import PcmPipe

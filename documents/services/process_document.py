@@ -21,6 +21,7 @@ STALE_PROCESSING_MINUTES = 15
 from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from documents.services.chunking import clean_extracted_text, load_documents, semantic_chunk, structure_aware_chunk
 from documents.services.storage_utils import local_copy
+from llm.service.errors import LLMAuthError, LLMConfigurationError, LLMPolicyDenied
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,13 @@ def process_document(document_id: int) -> None:
                 # Document was deleted during description generation — expected, not an error.
                 logger.info(
                     "process_document: document_id=%s deleted during description generation, skipping",
+                    document_id,
+                )
+            except (LLMPolicyDenied, LLMConfigurationError, LLMAuthError):
+                # Config/policy errors won't self-heal — surface as a distinct Sentry issue
+                # instead of hiding under the "(non-critical)" bucket.
+                logger.exception(
+                    "process_document: document_id=%s description generation blocked by LLM config/policy",
                     document_id,
                 )
             except Exception:
