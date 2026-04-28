@@ -275,7 +275,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         try:
             await self._pcm_pipe.write(raw)
         except Exception as exc:
-            logger.warning(
+            # ffmpeg-stdin-closed mid-session is a graceful fallback to chunked,
+            # not an alert-worthy error — log at INFO so it stays a Sentry breadcrumb.
+            logger.info(
                 "realtime: pipe write failed, falling back to chunked (%s)", exc
             )
             self._realtime_mode = "chunked"
