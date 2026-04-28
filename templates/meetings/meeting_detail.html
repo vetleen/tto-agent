@@ -103,6 +103,37 @@
     <strong>Note:</strong> This model only works for uploaded audio.
   </div>
 
+  {# ----- Fatal error banner (shown when transcription cannot recover) ----- #}
+  <div id="transcribe-error-banner" class="hidden mb-6 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base">
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+      <div class="flex items-start gap-3 flex-1 min-w-0">
+        <svg class="w-4 h-4 mt-0.5 text-fg-danger shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152A11.959 11.959 0 0 1 12 5.714Zm-.002 4.286h.004v.008h-.004v-.008Z"/></svg>
+        <span id="transcribe-error-banner-label" class="text-sm text-fg-danger"></span>
+      </div>
+      <button type="button" id="transcribe-error-banner-resume"
+              class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
+        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+        Resume transcription
+      </button>
+    </div>
+  </div>
+
+  {# ----- Realtime → chunked fallback banner (persistent, shown when realtime fails repeatedly) ----- #}
+  <div id="transcribe-fallback-banner" class="hidden mb-6 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base">
+    <div class="flex items-start gap-3">
+      <svg class="w-4 h-4 mt-0.5 text-fg-warning shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152A11.959 11.959 0 0 1 12 5.714Zm-.002 4.286h.004v.008h-.004v-.008Z"/></svg>
+      <span id="transcribe-fallback-banner-label" class="text-sm text-body"></span>
+    </div>
+  </div>
+
+  {# ----- Inline transient error banner (server-emitted error frame) ----- #}
+  <div id="transcribe-inline-error-banner" class="hidden mb-6 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base">
+    <div class="flex items-start gap-3">
+      <svg class="w-4 h-4 mt-0.5 text-fg-warning shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152A11.959 11.959 0 0 1 12 5.714Zm-.002 4.286h.004v.008h-.004v-.008Z"/></svg>
+      <span id="transcribe-inline-error-banner-label" class="text-sm text-body"></span>
+    </div>
+  </div>
+
   {# ----- Live transcribe controls (visible when transcribing) ----- #}
   <div id="transcribe-controls" class="hidden mb-8 px-4 py-4 border border-default rounded-base bg-neutral-primary-soft">
     <div class="flex items-center justify-between gap-4 mb-4">
@@ -336,24 +367,70 @@
   </div>
   {% endif %}
 
-  {# ----- Transcript display ----- #}
-  <section class="mb-8">
-    <h2 class="text-sm font-medium text-heading mb-3">Transcript</h2>
-    <div class="bg-neutral-primary-soft border border-default rounded-base px-4 py-4 min-h-32 text-sm text-heading">
-      <div id="transcript-pane" class="whitespace-pre-wrap">{% if meeting.transcript %}{{ meeting.transcript }}{% else %}<span class="text-body italic" data-placeholder="1">No transcript yet. Click "Start transcription" or upload one.</span>{% endif %}</div>
-      <div id="transcribing-indicator" class="hidden mt-4 flex flex-col items-center gap-2 text-xs text-body">
+  {% comment %}
+    Transcript display — wrapped in <details> so users can collapse it
+    during a live session. While live transcribing the pane is collapsed
+    by default (only the incrementing line count is visible) so the
+    meeting controls below remain accessible without a long scroll.
+    After the meeting is over the pane defaults to expanded.
+  {% endcomment %}
+  <section class="mb-3">
+    <details id="transcript-details" class="bg-neutral-primary-soft border border-default rounded-base group"
+             {% if meeting.status != "live_transcribing" %}open{% endif %}>
+      <summary class="flex items-center justify-between gap-3 px-4 py-3 cursor-pointer list-none select-none">
         <div class="flex items-center gap-2">
-          <svg class="w-4 h-4 animate-spin text-fg-warning" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
-          <span id="transcribing-indicator-label">Transcribing…</span>
+          <h2 class="text-sm font-medium text-heading">Transcript</h2>
+          <span class="text-xs text-body">·</span>
+          <span id="transcript-line-count" class="text-xs text-body">0 lines</span>
         </div>
-        <div id="transcribing-progress-wrap" class="hidden w-48">
-          <div class="h-1 bg-neutral-secondary-medium rounded">
-            <div id="transcribing-progress-bar" class="h-full bg-fg-warning rounded transition-[width]" style="width: 0%"></div>
+        <span class="flex items-center gap-1 text-xs text-body">
+          <span class="group-open:hidden">Show</span>
+          <span class="hidden group-open:inline">Hide</span>
+          <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-180" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>
+        </span>
+      </summary>
+      <div class="px-4 pb-4 min-h-32 text-sm text-heading border-t border-default">
+        <div id="transcript-pane" class="whitespace-pre-wrap pt-4">{% if meeting.transcript %}{{ meeting.transcript }}{% else %}<span class="text-body italic" data-placeholder="1">No transcript yet. Click "Start transcription" or upload one.</span>{% endif %}</div>
+        <div id="transcribing-indicator" class="hidden mt-4 flex flex-col items-center gap-2 text-xs text-body">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 animate-spin text-fg-warning" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+            <span id="transcribing-indicator-label">Transcribing…</span>
+          </div>
+          <div id="transcribing-progress-wrap" class="hidden w-48">
+            <div class="h-1 bg-neutral-secondary-medium rounded">
+              <div id="transcribing-progress-bar" class="h-full bg-fg-warning rounded transition-[width]" style="width: 0%"></div>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </details>
   </section>
+
+  {% comment %}
+    Duplicate Stop/Continue buttons under the transcript — mirror the
+    header controls so a user reading a long collapsed transcript or
+    scrolled to the bottom doesn't have to scroll back up. transcribe.js
+    binds both pairs to the same handlers and mirrors disabled/label/
+    visibility state from the originals.
+  {% endcomment %}
+  <div class="mb-8">
+    <button type="button" id="transcribe-btn-bottom" data-disable-while-busy
+            style="{% if meeting.status == "live_transcribing" %}display:none{% endif %}"
+            {% if not transcription_model_selected_supports_live %}disabled{% endif %}
+            class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+      <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+      <span id="transcribe-btn-bottom-label">{% if meeting.transcript %}Continue transcription{% else %}Start transcription{% endif %}</span>
+    </button>
+    <div class="flex justify-center">
+      <button type="button" id="stop-btn-bottom"
+              style="display:none"
+              class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+        <svg id="stop-btn-bottom-icon" class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+        <svg id="stop-btn-bottom-spinner" class="hidden w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        <span id="stop-btn-bottom-label">Stop transcription</span>
+      </button>
+    </div>
+  </div>
 
   {% if transcription_model_choices %}
   {{ transcription_model_choices|json_script:"transcription-model-choices" }}
@@ -487,5 +564,5 @@
   });
 })();
 </script>
-<script src="{% static 'meetings/transcribe.js' %}?v=rt4" defer></script>
+<script src="{% static 'meetings/transcribe.js' %}?v=rt7" defer></script>
 {% endblock %}

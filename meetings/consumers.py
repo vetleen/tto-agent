@@ -34,6 +34,48 @@ logger = logging.getLogger(__name__)
 # WebSocket idle window.
 MEETING_WS_HEARTBEAT_SECONDS = 20
 
+# Number of realtime failures (broken ffmpeg pipe, fatal upstream session error)
+# we tolerate inside one WS session before giving up on realtime entirely and
+# pinning the session to chunked mode for the rest of the meeting. The first
+# failure is still allowed to retry once because realtime + a flaky audio chain
+# is genuinely common; two strikes means the chain is bad enough that chunked
+# is the better experience even though it's slower.
+REALTIME_FAILURE_BUDGET = 2
+
+# Marker text format inserted into the transcript when transcription was
+# interrupted. The leading/trailing em-dashes give it visual separation from
+# real text in the rendered transcript pane.
+_INTERRUPT_MARKER_MODEL = "_interrupt_marker"
+# Anything shorter than this means the round-trip was fast enough that the
+# user wouldn't notice anything missing — skip the marker to avoid clutter.
+_INTERRUPT_MARKER_MIN_SECONDS = 5
+# Defensive cap: a "gap" longer than this is almost certainly a clock skew or
+# bad client clamp, not a real interruption.
+_INTERRUPT_MARKER_MAX_SECONDS = 24 * 60 * 60
+
+
+def _format_interruption_marker_text(gap_seconds: float) -> str:
+    """Render the inline marker text used for an interruption segment.
+
+    The format is human-friendly so the marker reads well in a transcript:
+    "[Transcription was interrupted for 32 seconds]" /
+    "[Transcription was interrupted for 1 minute and 14 seconds]".
+    """
+    total = max(0, int(round(gap_seconds)))
+    if total < 60:
+        unit = "second" if total == 1 else "seconds"
+        return f"[Transcription was interrupted for {total} {unit}]"
+    minutes, seconds = divmod(total, 60)
+    if seconds == 0:
+        m_unit = "minute" if minutes == 1 else "minutes"
+        return f"[Transcription was interrupted for {minutes} {m_unit}]"
+    m_unit = "minute" if minutes == 1 else "minutes"
+    s_unit = "second" if seconds == 1 else "seconds"
+    return (
+        f"[Transcription was interrupted for {minutes} {m_unit} "
+        f"and {seconds} {s_unit}]"
+    )
+
 
 class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
     """Consumer that ingests live audio chunks and proxies transcription results.
@@ -68,6 +110,16 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._realtime_language: str = ""
         self._total_pcm_bytes: int = 0
         self._live_segment_counter: int = 0  # counts utterances persisted in realtime mode
+        # Realtime-failure bookkeeping. Counts pipe breaks + fatal upstream
+        # errors observed in this WS session; flips us into permanent chunked
+        # mode when we cross REALTIME_FAILURE_BUDGET.
+        self._realtime_failure_count: int = 0
+        self._realtime_permanently_disabled: bool = False
+        # Stamped when an interruption begins (pipe break, fatal upstream
+        # error). Cleared once a marker has been written for it. Used to
+        # produce inline "[Transcription was interrupted for N seconds]"
+        # markers in the transcript.
+        self._interruption_started_at = None
 
         if not self.user or self.user.is_anonymous:
             await self.close(code=4401)
@@ -182,6 +234,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         if msg_type == "set_model":
             await self._handle_set_model(payload)
             return
+        if msg_type == "interruption_marker":
+            await self._handle_interruption_marker(payload)
+            return
         if msg_type == "stop":
             await self._handle_stop()
             return
@@ -270,7 +325,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             except Exception as exc:
                 logger.exception("realtime: could not start session")
                 await self._send_error(f"Could not start realtime session: {exc}")
-                self._realtime_mode = "chunked"  # give up on realtime for this meeting
+                await self._fall_back_to_chunked(reason="realtime_start_failed")
                 return
         try:
             await self._pcm_pipe.write(raw)
@@ -280,11 +335,11 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             logger.info(
                 "realtime: pipe write failed, falling back to chunked (%s)", exc
             )
-            self._realtime_mode = "chunked"
             try:
                 await self._teardown_realtime()
             except Exception:
                 logger.exception("realtime: teardown after broken pipe failed")
+            await self._fall_back_to_chunked(reason="realtime_unstable")
 
     async def _start_realtime_session(self, mime: str) -> None:
         from meetings.services.pcm_pipe import PcmPipe
@@ -361,6 +416,17 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                         "message": f"{evt.code}: {evt.message}",
                     }))
                     if evt.fatal:
+                        # Surface a disconnected status alongside the error so
+                        # the client can show its fatal-error banner instead of
+                        # just logging the error to the console.
+                        try:
+                            await self.send(text_data=json.dumps({
+                                "type": "session.status",
+                                "state": "disconnected",
+                            }))
+                        except Exception:
+                            pass
+                        await self._fall_back_to_chunked(reason="realtime_unstable")
                         return
         except asyncio.CancelledError:
             raise
@@ -404,15 +470,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
         try:
             with transaction.atomic():
-                max_existing = (
-                    MeetingTranscriptSegment.objects
-                    .select_for_update()
-                    .filter(meeting_id=self.meeting_id)
-                    .order_by("-segment_index")
-                    .values_list("segment_index", flat=True)
-                    .first()
-                )
-                idx = (max_existing + 1) if max_existing is not None else 0
+                idx = self._allocate_next_segment_index_locked()
                 MeetingTranscriptSegment.objects.create(
                     meeting_id=self.meeting_id,
                     segment_index=idx,
@@ -491,6 +549,119 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 pass
             self._pcm_pipe = None
         self._realtime_started = False
+
+    async def _fall_back_to_chunked(self, *, reason: str) -> None:
+        """Flip the consumer to chunked mode and tell the client.
+
+        Tracks how many times realtime has failed inside this WS session.
+        On the second failure (``REALTIME_FAILURE_BUDGET``) we pin chunked
+        for the rest of the session — re-trying realtime when the audio
+        chain is bad enough to break it twice in a row just produces more
+        silent stalls.
+        """
+        was_realtime = self._realtime_mode != "chunked"
+        if not was_realtime and not self._realtime_permanently_disabled:
+            # Already chunked; nothing to flip. (Idempotent so callers can
+            # invoke this from multiple failure sites without bookkeeping.)
+            return
+
+        self._realtime_failure_count += 1
+        self._realtime_mode = "chunked"
+        if self._realtime_failure_count >= REALTIME_FAILURE_BUDGET:
+            self._realtime_permanently_disabled = True
+        # Stamp the start of the gap so the next real segment that lands can
+        # be preceded by an inline marker telling the reader audio was lost.
+        if self._interruption_started_at is None:
+            self._interruption_started_at = timezone.now()
+
+        effective_reason = (
+            "realtime_unstable_fallback"
+            if self._realtime_permanently_disabled
+            else reason
+        )
+        try:
+            await self.send(text_data=json.dumps({
+                "type": "live_mode_changed",
+                "live_mode": "chunked",
+                "reason": effective_reason,
+                "permanent": self._realtime_permanently_disabled,
+            }))
+        except Exception:
+            logger.exception("live_mode_changed: failed to send")
+
+    async def _handle_interruption_marker(self, payload: dict) -> None:
+        """Insert an inline `[interrupted for N seconds]` segment.
+
+        Triggered by the client after it auto-recovers from a stall so
+        someone reading the transcript later can see exactly where audio
+        is missing and roughly how much.
+        """
+        try:
+            gap_seconds = float(payload.get("gap_seconds") or 0)
+        except (TypeError, ValueError):
+            await self._send_error("interruption_marker: gap_seconds must be a number")
+            return
+        if gap_seconds < _INTERRUPT_MARKER_MIN_SECONDS:
+            return  # below noise floor — silently drop
+        if gap_seconds > _INTERRUPT_MARKER_MAX_SECONDS:
+            gap_seconds = _INTERRUPT_MARKER_MAX_SECONDS
+
+        idx = await self._insert_interruption_marker(gap_seconds)
+        if idx is None:
+            return
+        await self.send(text_data=json.dumps({
+            "type": "segment.ready",
+            "segment_index": idx,
+            "text": _format_interruption_marker_text(gap_seconds),
+            "start_offset_seconds": 0,
+            "transcription_model": _INTERRUPT_MARKER_MODEL,
+        }))
+
+    @database_sync_to_async
+    def _insert_interruption_marker(self, gap_seconds: float):
+        """Persist a single marker segment. Returns the allocated segment_index."""
+        from django.db import transaction
+        from .models import MeetingTranscriptSegment
+        from .services.chunks import recompute_meeting_transcript
+
+        try:
+            with transaction.atomic():
+                idx = self._allocate_next_segment_index_locked()
+                MeetingTranscriptSegment.objects.create(
+                    meeting_id=self.meeting_id,
+                    segment_index=idx,
+                    text=_format_interruption_marker_text(gap_seconds),
+                    transcription_model=_INTERRUPT_MARKER_MODEL,
+                    start_offset_seconds=0.0,
+                    status=MeetingTranscriptSegment.Status.READY,
+                    transcribed_at=timezone.now(),
+                )
+                recompute_meeting_transcript(self.meeting_id)
+            self._interruption_started_at = None
+            return idx
+        except Exception:
+            logger.exception("interruption_marker: insert failed")
+            return None
+
+    def _allocate_next_segment_index_locked(self) -> int:
+        """Return the next segment_index for this meeting, holding a row lock.
+
+        Must be called inside a ``transaction.atomic()`` block. The caller is
+        responsible for the transaction; this helper exists so realtime
+        utterances and interruption markers go through the same allocation
+        path and stay strictly ordered.
+        """
+        from .models import MeetingTranscriptSegment
+
+        max_existing = (
+            MeetingTranscriptSegment.objects
+            .select_for_update()
+            .filter(meeting_id=self.meeting_id)
+            .order_by("-segment_index")
+            .values_list("segment_index", flat=True)
+            .first()
+        )
+        return (max_existing + 1) if max_existing is not None else 0
 
     async def _handle_set_model(self, payload: dict) -> None:
         """Switch the transcription model used for *future* chunks.

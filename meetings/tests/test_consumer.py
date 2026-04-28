@@ -229,3 +229,143 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertEqual(msg["type"], "started")
         self.assertEqual(msg["segment_index_base"], 1)
         await comm.disconnect()
+
+    async def test_interruption_marker_inserts_segment_and_emits_ready(self):
+        """interruption_marker → marker segment + segment.ready frame."""
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "interruption_marker",
+            "gap_seconds": 17,
+        }))
+
+        msg = json.loads(await comm.receive_from(timeout=2))
+        self.assertEqual(msg["type"], "segment.ready")
+        self.assertIn("17 seconds", msg["text"])
+        self.assertEqual(msg["transcription_model"], "_interrupt_marker")
+
+        # Segment row was persisted with the marker's distinguishing
+        # transcription_model so we can audit/filter these later.
+        segs = await database_sync_to_async(list)(
+            MeetingTranscriptSegment.objects.filter(meeting_id=self.meeting.id)
+            .order_by("segment_index")
+        )
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0].transcription_model, "_interrupt_marker")
+        self.assertEqual(segs[0].status, MeetingTranscriptSegment.Status.READY)
+        self.assertIn("17 seconds", segs[0].text)
+        await comm.disconnect()
+
+    async def test_interruption_marker_below_threshold_is_ignored(self):
+        """Sub-threshold gaps (e.g. 2s) don't clutter the transcript."""
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "interruption_marker",
+            "gap_seconds": 2,
+        }))
+        # Give the consumer a moment to process; no frame should arrive.
+        await asyncio.sleep(0.2)
+        self.assertTrue(await comm.receive_nothing())
+
+        count = await database_sync_to_async(
+            MeetingTranscriptSegment.objects.filter(meeting_id=self.meeting.id).count
+        )()
+        self.assertEqual(count, 0)
+        await comm.disconnect()
+
+    async def test_interruption_marker_rejects_non_numeric_gap(self):
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "interruption_marker",
+            "gap_seconds": "soon",
+        }))
+        msg = json.loads(await comm.receive_from(timeout=2))
+        self.assertEqual(msg["type"], "error")
+        self.assertIn("gap_seconds", msg["message"])
+        await comm.disconnect()
+
+    async def test_fall_back_to_chunked_emits_live_mode_changed(self):
+        """First fallback emits live_mode_changed with permanent=False; second
+        emits with permanent=True. Bypasses the realtime infra by calling the
+        helper directly via a tiny consumer harness — covers the protocol
+        contract without needing a working ffmpeg child."""
+        from meetings.consumers import (
+            MeetingTranscribeConsumer,
+            REALTIME_FAILURE_BUDGET,
+        )
+        sent = []
+
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer._realtime_mode = "realtime"
+        consumer._realtime_failure_count = 0
+        consumer._realtime_permanently_disabled = False
+        consumer._interruption_started_at = None
+
+        async def _fake_send(text_data=None, **kwargs):
+            sent.append(json.loads(text_data))
+        consumer.send = _fake_send
+
+        await consumer._fall_back_to_chunked(reason="realtime_unstable")
+        # Re-arm the "was realtime" precondition so a second flip can fire
+        # — in production the second failure happens after a successful
+        # realtime restart, not here.
+        consumer._realtime_mode = "realtime"
+        await consumer._fall_back_to_chunked(reason="realtime_unstable")
+
+        events = [m for m in sent if m["type"] == "live_mode_changed"]
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["live_mode"], "chunked")
+        self.assertFalse(events[0]["permanent"])
+        # Second strike pins us to chunked.
+        self.assertTrue(events[1]["permanent"])
+        self.assertEqual(events[1]["reason"], "realtime_unstable_fallback")
+        self.assertGreaterEqual(consumer._realtime_failure_count, REALTIME_FAILURE_BUDGET)
+        self.assertTrue(consumer._realtime_permanently_disabled)
+
+
+class RecomputeIncludesMarkerTests(TransactionTestCase):
+    """A marker segment with status=READY must show up inline in the joined
+    transcript, ordered by segment_index. This guards the contract used by
+    the live transcription path."""
+
+    def setUp(self):
+        Meeting.objects.all().delete()
+        self.user = User.objects.create_user(email="rmark@example.com", password="pw")
+        self.meeting = Meeting.objects.create(
+            name="M", slug="m-rmark", created_by=self.user,
+        )
+
+    def test_marker_segment_renders_between_real_segments(self):
+        from meetings.services.chunks import recompute_meeting_transcript
+
+        MeetingTranscriptSegment.objects.create(
+            meeting=self.meeting, segment_index=0, text="Hello world.",
+            status=MeetingTranscriptSegment.Status.READY,
+        )
+        MeetingTranscriptSegment.objects.create(
+            meeting=self.meeting, segment_index=1,
+            text="[Transcription was interrupted for 14 seconds]",
+            transcription_model="_interrupt_marker",
+            status=MeetingTranscriptSegment.Status.READY,
+        )
+        MeetingTranscriptSegment.objects.create(
+            meeting=self.meeting, segment_index=2, text="Welcome back.",
+            status=MeetingTranscriptSegment.Status.READY,
+        )
+
+        joined = recompute_meeting_transcript(self.meeting.id)
+        self.assertEqual(
+            joined,
+            "Hello world.\n\n"
+            "[Transcription was interrupted for 14 seconds]\n\n"
+            "Welcome back.",
+        )

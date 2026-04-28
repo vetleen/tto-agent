@@ -25,6 +25,12 @@
   const WATCHDOG_INTERVAL_MS = 5000;
   const WATCHDOG_CHUNK_STALL_MS = SEGMENT_DURATION_MS * 2;
   const WATCHDOG_CHUNK_GIVEUP_MS = SEGMENT_DURATION_MS * 3;
+  // Transcript-activity watchdog: if no segment.ready / transcript.delta has
+  // arrived in this long while we're still actively transcribing, we assume
+  // an upstream stall (e.g. server-side flipped to chunked silently, OpenAI
+  // session went silent) and trigger an auto-recovery cycle.
+  const TRANSCRIPT_STALL_MS = 30000;
+  const AUTO_RECOVER_MAX = 3;
 
   const root = document.querySelector('[data-meeting-uuid]');
   if (!root) return;
@@ -50,6 +56,15 @@
   const transcribingIndicator = document.getElementById('transcribing-indicator');
   const transcribingIndicatorLabel = document.getElementById('transcribing-indicator-label');
   const unsupportedBanner = document.getElementById('transcribe-unsupported');
+  const fallbackBanner = document.getElementById('transcribe-fallback-banner');
+  const fallbackBannerLabel = document.getElementById('transcribe-fallback-banner-label');
+  const errorBanner = document.getElementById('transcribe-error-banner');
+  const errorBannerLabel = document.getElementById('transcribe-error-banner-label');
+  const errorBannerResume = document.getElementById('transcribe-error-banner-resume');
+  const inlineErrorBanner = document.getElementById('transcribe-inline-error-banner');
+  const inlineErrorBannerLabel = document.getElementById('transcribe-inline-error-banner-label');
+  const transcriptDetails = document.getElementById('transcript-details');
+  const transcriptLineCount = document.getElementById('transcript-line-count');
   const uploadForm = document.getElementById('upload-form');
   const uploadBanner = document.getElementById('upload-transcribing-banner');
   const uploadBannerLabel = document.getElementById('upload-transcribing-banner-label');
@@ -68,6 +83,13 @@
       transcribeBtnLabel.textContent = text;
     } else if (transcribeBtn) {
       transcribeBtn.textContent = text;
+    }
+    const bottomLabel = document.getElementById('transcribe-btn-bottom-label');
+    const bottomBtn = document.getElementById('transcribe-btn-bottom');
+    if (bottomLabel) {
+      bottomLabel.textContent = text;
+    } else if (bottomBtn) {
+      bottomBtn.textContent = text;
     }
   }
 
@@ -231,6 +253,14 @@
   let lastChunkSentAt = 0;
   let watchdogTimer = null;
   let watchdogRestartAttempted = false;
+  // Transcript-activity watchdog state. lastTranscriptActivityAt is bumped
+  // whenever a segment.ready / transcript.delta arrives. autoRecoverAttempts
+  // counts how many consecutive recoveries we've launched without seeing
+  // healthy text in between.
+  let lastTranscriptActivityAt = 0;
+  let autoRecoverAttempts = 0;
+  let autoRecoverInFlight = false;
+  let autoRecoverStartedAt = 0;
   // Active live-transcription mode — server announces this in the "started"
   // event. "chunked" (legacy) stops and restarts MediaRecorder every 30s to
   // get self-contained WebM files. "realtime" / "realtime_with_fallback"
@@ -370,28 +400,73 @@
 
   function checkForStall() {
     if (!transcribing) return;
+    // Recorder-level watchdog (existing): MediaRecorder stopped firing
+    // ondataavailable for too long.
     const silenceMs = Date.now() - lastChunkSentAt;
-    if (silenceMs < WATCHDOG_CHUNK_STALL_MS) return;
-
     if (silenceMs >= WATCHDOG_CHUNK_GIVEUP_MS) {
-      // Recorder has been silent for 3× the segment duration and our one
-      // restart attempt didn't produce a chunk. Treat as a terminal local
-      // failure and surface the same reconnect/alert path.
       console.warn('recorder silent for ' + silenceMs + 'ms, giving up');
       handleUnexpectedClose();
       return;
     }
-
-    if (!watchdogRestartAttempted) {
+    if (silenceMs >= WATCHDOG_CHUNK_STALL_MS && !watchdogRestartAttempted) {
       watchdogRestartAttempted = true;
       console.warn('recorder appears stalled (' + silenceMs + 'ms), restarting');
       attemptRecorderRestart();
     }
+    // Transcript-activity watchdog (new): bytes are still flowing to the
+    // server, but no transcript text has arrived in a while. Almost always
+    // means the server has silently fallen out of a working state — flip the
+    // socket and let the recorder restart on reconnect feed a fresh init
+    // segment to the new session.
+    const transcriptSilenceMs = Date.now() - lastTranscriptActivityAt;
+    if (
+      transcriptSilenceMs >= TRANSCRIPT_STALL_MS
+      && !autoRecoverInFlight
+      && !reconnecting
+    ) {
+      triggerAutoRecover();
+    }
+  }
+
+  function triggerAutoRecover() {
+    if (!transcribing) return;
+    if (autoRecoverAttempts >= AUTO_RECOVER_MAX) {
+      // We've already tried our budget; surface the fatal-error banner so
+      // the user can decide whether to keep going.
+      shutdownLocal({ keepBeforeUnload: false });
+      showFatalError(
+        'Transcription stopped responding and could not be recovered automatically. '
+        + 'Click "Resume transcription" to try again.'
+      );
+      return;
+    }
+    autoRecoverAttempts += 1;
+    autoRecoverInFlight = true;
+    autoRecoverStartedAt = Date.now();
+    console.warn('transcript stall detected, auto-recovering (attempt ' + autoRecoverAttempts + ')');
+    // Force-close the WS — the existing onclose path runs handleUnexpectedClose,
+    // which schedules a reconnect. The reconnect path also restarts the
+    // MediaRecorder in realtime mode (so the server sees a fresh init segment).
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      } else if (!reconnecting) {
+        handleUnexpectedClose();
+      }
+    } catch (err) {
+      console.warn('triggerAutoRecover: close failed', err);
+    }
+    // Reset the activity timestamp so we don't immediately re-fire while the
+    // reconnect is in progress.
+    lastTranscriptActivityAt = Date.now();
   }
 
   function startWatchdog() {
     if (watchdogTimer) return;
     lastChunkSentAt = Date.now();
+    lastTranscriptActivityAt = Date.now();
+    autoRecoverAttempts = 0;
+    autoRecoverInFlight = false;
     watchdogRestartAttempted = false;
     watchdogTimer = setInterval(checkForStall, WATCHDOG_INTERVAL_MS);
   }
@@ -467,7 +542,9 @@
       if (!transcribing) return;
       console.warn('microphone track ended');
       shutdownLocal();
-      alert('The microphone was disconnected. Reload the page to resume transcription.');
+      showFatalError(
+        'The microphone was disconnected. Click "Resume transcription" once it is back to continue.'
+      );
     };
     stream.getAudioTracks().forEach(function (track) {
       try { track.addEventListener('ended', trackEndedHandler); } catch (e) {}
@@ -530,6 +607,49 @@
   function setUploadFormVisible(visible) {
     if (!uploadForm) return;
     uploadForm.style.display = visible ? '' : 'none';
+  }
+
+  function showFatalError(message) {
+    if (transcribingIndicator) transcribingIndicator.classList.add('hidden');
+    if (errorBanner) {
+      errorBanner.classList.remove('hidden');
+      if (errorBannerLabel) errorBannerLabel.textContent = message;
+    } else {
+      // Fall back to alert if the banner element is missing — better than
+      // silently failing.
+      window.alert(message);
+    }
+  }
+
+  function hideFatalError() {
+    if (errorBanner) errorBanner.classList.add('hidden');
+  }
+
+  function showFallbackBanner(message) {
+    if (!fallbackBanner) return;
+    fallbackBanner.classList.remove('hidden');
+    if (fallbackBannerLabel) fallbackBannerLabel.textContent = message;
+  }
+
+  function showInlineError(message) {
+    if (!inlineErrorBanner) return;
+    inlineErrorBanner.classList.remove('hidden');
+    if (inlineErrorBannerLabel) inlineErrorBannerLabel.textContent = message;
+    // Auto-hide after 8s — these are transient.
+    setTimeout(function () { inlineErrorBanner.classList.add('hidden'); }, 8000);
+  }
+
+  function updateLineCount() {
+    if (!transcriptLineCount || !transcriptPane) return;
+    const text = (transcriptPane.textContent || '').trim();
+    if (!text) {
+      transcriptLineCount.textContent = '0 lines';
+      return;
+    }
+    // Count non-empty lines so the displayed number matches what the reader
+    // perceives (each utterance ends up on its own paragraph).
+    const lines = text.split(/\n+/).filter(function (l) { return l.trim().length > 0; }).length;
+    transcriptLineCount.textContent = lines + (lines === 1 ? ' line' : ' lines');
   }
 
   // Toggle disabled + visually-disabled styling on every element marked with
@@ -607,6 +727,7 @@
       node.textContent = text || '';
       node.className = 'mb-3';
     }
+    updateLineCount();
   }
 
   // ---------------- realtime interim delta rendering ----------------
@@ -659,6 +780,8 @@
           return;
         }
         if (msg.type === 'started') {
+          const wasReconnecting = reconnecting;
+          const wasAutoRecovering = autoRecoverInFlight;
           segmentIndexBase = parseInt(msg.segment_index_base || 0, 10);
           liveMode = msg.live_mode || 'chunked';
           // On a fresh session we reset segmentIndex; on a reconnect we keep
@@ -673,6 +796,30 @@
             flushPendingUploads();
             updateIndicator();
           }
+          // After a reconnect in realtime mode, restart MediaRecorder so the
+          // new server-side session gets a fresh Matroska init segment. Without
+          // this, ffmpeg would receive a mid-stream continuation and break.
+          if (wasReconnecting && (liveMode === 'realtime' || liveMode === 'realtime_with_fallback')
+              && mediaStream && mediaStream.active) {
+            restartRecorderForFreshInitSegment();
+          }
+          if (wasAutoRecovering) {
+            const gapSec = Math.round((Date.now() - autoRecoverStartedAt) / 1000);
+            autoRecoverInFlight = false;
+            // Tell the server to insert an inline marker so a reader of the
+            // transcript later knows that some audio was lost here.
+            try {
+              ws.send(JSON.stringify({
+                type: 'interruption_marker',
+                gap_seconds: gapSec,
+              }));
+            } catch (err) {
+              console.warn('interruption_marker send failed', err);
+            }
+          }
+          // Activity timestamp resets on a healthy started event so the
+          // stall watchdog gives the new session a fresh window.
+          lastTranscriptActivityAt = Date.now();
           if (!resolved) { resolved = true; resolve(); }
         } else if (msg.type === 'segment.queued') {
           inFlightSegments.add(msg.segment_index);
@@ -680,6 +827,11 @@
         } else if (msg.type === 'segment.ready') {
           appendOrUpdateSegmentNode(msg.segment_index, msg.text, 'ready');
           inFlightSegments.delete(msg.segment_index);
+          // A real segment landed: reset auto-recover budget so a long
+          // healthy interval restores the full retry budget.
+          lastTranscriptActivityAt = Date.now();
+          autoRecoverAttempts = 0;
+          updateLineCount();
           updateIndicator();
           maybeFlushStop();
         } else if (msg.type === 'segment.failed') {
@@ -692,15 +844,30 @@
           // Render as a single grey/italic node that we update in place, then
           // clear when the next segment.ready lands.
           renderInterimDelta(msg.text || '');
+          lastTranscriptActivityAt = Date.now();
         } else if (msg.type === 'session.status') {
           // Realtime only — reflects connection state with the upstream provider.
           // "reconnecting" shows a warning; "connected" / "disconnected" clear it.
           updateSessionStatus(msg.state);
+          if (msg.state === 'disconnected') {
+            // Upstream is gone for good — replace the misleading
+            // "Transcribing…" indicator with the actionable error banner.
+            shutdownLocal({ keepBeforeUnload: false });
+            showFatalError(
+              'The transcription service disconnected. Click "Resume transcription" to try again.'
+            );
+          }
+        } else if (msg.type === 'live_mode_changed') {
+          handleLiveModeChanged(msg);
         } else if (msg.type === 'stopped') {
           // server confirmed stop; reload to show final transcript + status
           window.setTimeout(function () { window.location.reload(); }, 500);
         } else if (msg.type === 'error') {
           console.warn('meeting WS error:', msg.message);
+          // Keep the user informed — a server-emitted `error` frame used to
+          // be invisible. Show it inline without tearing down the session,
+          // since most of these are transient.
+          showInlineError(msg.message || 'Transcription error');
         }
       };
       ws.onclose = function () {
@@ -720,7 +887,9 @@
           // clean up and let the server's disconnect() mark it INTERRUPTED.
           stoppingPendingDrain = false;
           shutdownLocal();
-          alert('The transcription connection was lost while finalizing. Reload the page to see the partial transcript.');
+          showFatalError(
+            'The transcription connection was lost while finalizing. The partial transcript was saved — reload the page to see it.'
+          );
         }
       };
       ws.onerror = function () {
@@ -740,7 +909,9 @@
     if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
       reconnecting = false;
       shutdownLocal();
-      alert('Transcription disconnected and could not reconnect. Reload the page to resume.');
+      showFatalError(
+        'Transcription disconnected and could not reconnect. Click "Resume transcription" to try again.'
+      );
       return;
     }
     reconnectAttempts += 1;
@@ -793,6 +964,44 @@
       startStreamingRecorder();
     } else {
       startSegmentRecorder();
+    }
+  }
+
+  function restartRecorderForFreshInitSegment() {
+    // Stop the current recorder so its onstop fires with whatever it had
+    // buffered, then start a new recording in the active mode. The new
+    // MediaRecorder's first ondataavailable burst contains a fresh WebM
+    // init segment, which a freshly-opened server-side session needs to
+    // start decoding.
+    if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      try { mediaRecorder.stop(); } catch (e) {}
+    }
+    mediaRecorder = null;
+    if (mediaStream && mediaStream.active) {
+      startRecorder();
+    }
+  }
+
+  function handleLiveModeChanged(msg) {
+    const newMode = msg.live_mode || 'chunked';
+    const permanent = !!msg.permanent;
+    const sameMode = newMode === liveMode;
+    liveMode = newMode;
+    // Show a persistent yellow banner when the server pinned us to chunked
+    // because realtime kept failing. The banner only appears once we've
+    // permanently fallen back; brief flips back-and-forth shouldn't surface
+    // because they're handled silently by the auto-recover path.
+    if (permanent || msg.reason === 'realtime_unstable_fallback') {
+      showFallbackBanner(
+        'Realtime transcription was unstable, so we switched to transcribing in 30-second chunks. '
+        + 'Transcripts will arrive a bit slower and in larger pieces, but should be more reliable.'
+      );
+    }
+    if (!sameMode && mediaStream && mediaStream.active) {
+      // Swap recorder strategies cleanly. New mode's startRecorder will
+      // take over once the previous recorder.onstop fires.
+      restartRecorderForFreshInitSegment();
     }
   }
 
@@ -1139,16 +1348,87 @@
   })();
 
   // ---------------- wire-up ----------------
-  if (transcribeBtn) {
-    transcribeBtn.addEventListener('click', function () { startTranscription().catch(function (err) { console.error(err); }); });
+  // Duplicate Stop/Continue buttons live below the transcript pane (so a
+  // user scrolled into a long transcript doesn't have to scroll back up to
+  // pause). Both pairs are bound to the same handlers.
+  const transcribeBtnBottom = document.getElementById('transcribe-btn-bottom');
+  const transcribeBtnBottomLabel = document.getElementById('transcribe-btn-bottom-label');
+  const stopBtnBottom = document.getElementById('stop-btn-bottom');
+  const stopBtnBottomLabel = document.getElementById('stop-btn-bottom-label');
+  const stopBtnBottomIcon = document.getElementById('stop-btn-bottom-icon');
+  const stopBtnBottomSpinner = document.getElementById('stop-btn-bottom-spinner');
+
+  function bindStartButton(btn) {
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      hideFatalError();
+      startTranscription().catch(function (err) { console.error(err); });
+    });
   }
-  if (stopBtn) {
-    stopBtn.addEventListener('click', stopTranscription);
+  function bindStopButton(btn) {
+    if (!btn) return;
+    btn.addEventListener('click', stopTranscription);
+  }
+  bindStartButton(transcribeBtn);
+  bindStartButton(transcribeBtnBottom);
+  bindStartButton(errorBannerResume);
+  bindStopButton(stopBtn);
+  bindStopButton(stopBtnBottom);
+
+  // Mirror disabled state on the bottom transcribe button whenever the
+  // top one changes (covered by a MutationObserver to keep this localised).
+  if (transcribeBtn && transcribeBtnBottom) {
+    const obs = new MutationObserver(function () {
+      transcribeBtnBottom.disabled = transcribeBtn.disabled;
+      if (transcribeBtn.style.display === 'none') {
+        transcribeBtnBottom.style.display = 'none';
+      } else {
+        transcribeBtnBottom.style.display = '';
+      }
+    });
+    obs.observe(transcribeBtn, { attributes: true, attributeFilter: ['disabled', 'style'] });
+  }
+
+  // Stop-button's icon/spinner/label live on both copies; mirror them too.
+  const _origStopBtn = stopBtn;
+  if (_origStopBtn && stopBtnBottom) {
+    const obs2 = new MutationObserver(function () {
+      stopBtnBottom.disabled = _origStopBtn.disabled;
+      if (stopBtnBottomLabel && stopBtnLabel) {
+        stopBtnBottomLabel.textContent = stopBtnLabel.textContent;
+      }
+      if (stopBtnBottomIcon && stopBtnIcon) {
+        stopBtnBottomIcon.classList.toggle('hidden', stopBtnIcon.classList.contains('hidden'));
+      }
+      if (stopBtnBottomSpinner && stopBtnSpinner) {
+        stopBtnBottomSpinner.classList.toggle('hidden', stopBtnSpinner.classList.contains('hidden'));
+      }
+    });
+    obs2.observe(_origStopBtn, { attributes: true, subtree: true, attributeFilter: ['disabled', 'class'] });
+  }
+
+  // Visibility of the bottom Stop button mirrors the top #transcribe-controls
+  // visibility so the duplicate Stop only appears while we're actively
+  // transcribing — same as the top one. We use inline style instead of the
+  // `hidden` class because Tailwind v4 emits `.inline-flex` after `.hidden`
+  // in this project, so toggling the class wouldn't actually hide the button.
+  if (controlsEl && stopBtnBottom) {
+    const syncStopVisibility = function () {
+      stopBtnBottom.style.display = controlsEl.classList.contains('hidden') ? 'none' : '';
+    };
+    syncStopVisibility();
+    const obs3 = new MutationObserver(syncStopVisibility);
+    obs3.observe(controlsEl, { attributes: true, attributeFilter: ['class'] });
   }
 
   // Pre-populate the mic dropdown with whatever labels are available before
   // permission is granted (most browsers return generic labels).
   populateMics();
+
+  // Seed the collapsed-summary line counter from the server-rendered
+  // transcript. After this point updateLineCount() is called from
+  // appendOrUpdateSegmentNode whenever new text streams in.
+  updateLineCount();
 
   // If the meeting was opened with ?transcribe=1, auto-start transcription on
   // load. Strip the query param so a refresh doesn't re-trigger it.
