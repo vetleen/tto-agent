@@ -3,7 +3,7 @@
 RCN_QUALIFICATION_GRANT = {
     "slug": "rcn-qualification-grant-drafter",
     "name": "RCN Qualification Grant Application Drafter",
-    "emoji": "💰",
+    "emoji": "🔬",
     "description": """\
 Draft Research Council of Norway (Forskningsrådet) "Kvalifiseringsprosjekt" \
 (Qualification Project) grant applications. Combines gap analysis of existing \

@@ -258,6 +258,35 @@ class SeedSystemSkillsTests(TestCase):
         project_desc = skill.templates.get(name="Project Description")
         self.assertIn("trigger effect", project_desc.content)
 
+    def test_rcn_verification_grant_fields(self):
+        from agent_skills.seed_skills import seed_system_skills
+
+        seed_system_skills()
+
+        skill = AgentSkill.objects.get(
+            slug="rcn-verification-grant-drafter", level="system"
+        )
+        self.assertEqual(skill.name, "RCN Verification Grant Application Drafter")
+        self.assertIn("Verifiseringsprosjekt", skill.description)
+        self.assertIn("Forskningsrådet", skill.description)
+        self.assertIn("Phase 1", skill.instructions)
+        self.assertIn("Phase 4", skill.instructions)
+        self.assertIn("triggering effect", skill.instructions.lower())
+        self.assertEqual(
+            skill.tool_names, ["view_template", "load_template_to_canvas"]
+        )
+        # Verify both templates were created
+        self.assertTrue(skill.templates.filter(name="Disposition").exists())
+        self.assertTrue(skill.templates.filter(name="Application Form").exists())
+        self.assertEqual(skill.templates.count(), 2)
+        # Verify template content
+        disposition = skill.templates.get(name="Disposition")
+        self.assertIn("Gap Analysis", disposition.content)
+        self.assertIn("Triggering effect", disposition.content)
+        app_form = skill.templates.get(name="Application Form")
+        self.assertIn("Arbeidspakke", app_form.content)
+        self.assertIn("Hovedmål", app_form.content)
+
     def test_seed_creates_and_updates_templates(self):
         from agent_skills.seed_skills import seed_system_skills
 
