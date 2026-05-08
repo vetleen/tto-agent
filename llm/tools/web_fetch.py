@@ -58,23 +58,28 @@ def _strip_hidden_elements(soup: BeautifulSoup) -> None:
 
     # Remove elements hidden via style, attributes, or input type
     for tag in list(soup.find_all(True)):
+        # Some malformed/parsed tags expose attrs=None, which would crash
+        # tag.has_attr / tag.get with TypeError. Treat them as having no
+        # hiding attributes and move on.
+        attrs = tag.attrs if isinstance(tag.attrs, dict) else {}
+
         # Hidden HTML attribute
-        if tag.has_attr("hidden"):
+        if "hidden" in attrs:
             tag.decompose()
             continue
 
         # aria-hidden="true"
-        if tag.get("aria-hidden", "").lower() == "true":
+        if str(attrs.get("aria-hidden") or "").lower() == "true":
             tag.decompose()
             continue
 
         # <input type="hidden">
-        if tag.name == "input" and tag.get("type", "").lower() == "hidden":
+        if tag.name == "input" and str(attrs.get("type") or "").lower() == "hidden":
             tag.decompose()
             continue
 
         # Inline style hiding
-        style = tag.get("style", "")
+        style = attrs.get("style") or ""
         if style:
             style_lower = style.lower().replace(" ", "")
             if any(m.replace(" ", "") in style_lower for m in _HIDDEN_STYLE_MARKERS):
