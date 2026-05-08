@@ -354,7 +354,8 @@ class BaseLangChainChatModel(ChatModel):
                         _RATE_LIMIT_MAX_WAIT,
                     )
                     err_code = classify_api_error(exc, self._provider_label).error_code
-                    logger.warning(
+                    # Mid-retry: only the "retries exhausted" path below is alert-worthy.
+                    logger.info(
                         "LLM generate transient error model=%s provider=%s error_code=%s "
                         "attempt=%d/%d waiting=%.0fs run_id=%s",
                         self.name, self._provider_label, err_code,
@@ -496,7 +497,8 @@ class BaseLangChainChatModel(ChatModel):
                         _RATE_LIMIT_MAX_WAIT,
                     )
                     err_code = classify_api_error(exc, self._provider_label).error_code
-                    logger.warning(
+                    # Mid-retry: only the "retries exhausted" path below is alert-worthy.
+                    logger.info(
                         "LLM stream transient error model=%s provider=%s error_code=%s "
                         "attempt=%d/%d waiting=%.0fs run_id=%s",
                         self.name, self._provider_label, err_code,
