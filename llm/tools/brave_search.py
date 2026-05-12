@@ -112,6 +112,7 @@ class BraveSearchTool(ContextAwareTool):
                     "https://api.search.brave.com/res/v1/web/search",
                     headers={
                         "Accept": "application/json",
+                        "Cache-Control": "no-cache",
                         "X-Subscription-Token": api_key,
                     },
                     params={"q": query, "count": count},
@@ -156,7 +157,7 @@ class BraveSearchTool(ContextAwareTool):
 
             except requests.exceptions.Timeout as e:
                 last_exc = e
-                logger.warning("Brave Search timeout (attempt %d)", attempt + 1)
+                logger.warning("Brave Search timeout (attempt %d) query=%r", attempt + 1, query)
             except requests.exceptions.HTTPError as e:
                 last_exc = e
                 if response.status_code == 429:
@@ -173,15 +174,23 @@ class BraveSearchTool(ContextAwareTool):
                         time.sleep(wait)
                         continue
                 elif response.status_code < 500:
-                    # Client error — don't retry
+                    body = ""
+                    try:
+                        body = response.text[:500]
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Brave Search client error %d query=%r body=%s",
+                        response.status_code, query, body,
+                    )
                     return json.dumps({
                         "error": f"Brave Search API error: {response.status_code}",
                         "results": [],
                     })
-                logger.warning("Brave Search HTTP %d (attempt %d)", response.status_code, attempt + 1)
+                logger.warning("Brave Search HTTP %d (attempt %d) query=%r", response.status_code, attempt + 1, query)
             except requests.exceptions.RequestException as e:
                 last_exc = e
-                logger.warning("Brave Search request error (attempt %d): %s", attempt + 1, e)
+                logger.warning("Brave Search request error (attempt %d) query=%r: %s", attempt + 1, query, e)
 
             if attempt < self._MAX_RETRIES:
                 time.sleep(self._BACKOFF_BASE * (2 ** attempt))
@@ -193,7 +202,7 @@ class BraveSearchTool(ContextAwareTool):
                 "error": "Brave Search rate limited — try again shortly",
                 "results": [],
             })
-        logger.error("Brave Search failed after retries: %s", last_exc)
+        logger.error("Brave Search failed after retries query=%r: %s", query, last_exc)
         return json.dumps({
             "error": "Brave Search failed after retries",
             "results": [],
