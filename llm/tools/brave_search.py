@@ -175,16 +175,26 @@ class BraveSearchTool(ContextAwareTool):
                         continue
                 elif response.status_code < 500:
                     body = ""
+                    detail = ""
                     try:
                         body = response.text[:500]
+                        detail = response.json().get("error", {}).get("detail", "")
                     except Exception:
                         pass
                     logger.warning(
                         "Brave Search client error %d query=%r body=%s",
                         response.status_code, query, body,
                     )
+                    error_msg = f"Brave Search API error {response.status_code}"
+                    if detail:
+                        error_msg += f": {detail}"
+                    error_msg += (
+                        ". This is a client-side error that will not resolve by retrying"
+                        " with a different query. Consider reporting this issue to the"
+                        " user rather than continuing to search."
+                    )
                     return json.dumps({
-                        "error": f"Brave Search API error: {response.status_code}",
+                        "error": error_msg,
                         "results": [],
                     })
                 logger.warning("Brave Search HTTP %d (attempt %d) query=%r", response.status_code, attempt + 1, query)
@@ -199,12 +209,16 @@ class BraveSearchTool(ContextAwareTool):
             getattr(last_exc, "response", None), "status_code", None
         ) == 429:
             return json.dumps({
-                "error": "Brave Search rate limited — try again shortly",
+                "error": "Brave Search rate limited after retries."
+                " Web search is temporarily unavailable."
+                " Consider reporting this to the user rather than continuing to search.",
                 "results": [],
             })
         logger.error("Brave Search failed after retries query=%r: %s", query, last_exc)
         return json.dumps({
-            "error": "Brave Search failed after retries",
+            "error": "Brave Search failed after retries."
+            " Web search is currently unavailable."
+            " Consider reporting this to the user rather than continuing to search.",
             "results": [],
         })
 
