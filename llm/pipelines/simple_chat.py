@@ -19,46 +19,7 @@ from llm.types.context import RunContext
 from llm.tools.interfaces import ContextAwareTool
 from llm.tools.registry import get_tool_registry
 
-try:  # pragma: no cover
-    from langchain_core.callbacks import BaseCallbackHandler
-except Exception:
-    BaseCallbackHandler = object  # type: ignore[assignment,misc]
-
 logger = logging.getLogger(__name__)
-
-
-class UsageMetadataCallbackHandler(BaseCallbackHandler):
-    """Aggregates token usage across multiple LLM calls within a pipeline run.
-
-    Collects usage_metadata from each on_llm_end callback and sums them,
-    giving accurate totals for multi-turn tool-calling conversations.
-    """
-
-    def __init__(self) -> None:
-        self.total_input_tokens: int = 0
-        self.total_output_tokens: int = 0
-        self.total_tokens: int = 0
-
-    def on_llm_end(self, response, *, run_id, **kwargs) -> None:
-        """Accumulate usage from each LLM call completion."""
-        for generation_list in (response.generations or []):
-            for generation in generation_list:
-                msg = getattr(generation, "message", None)
-                usage = getattr(msg, "usage_metadata", None)
-                if isinstance(usage, dict):
-                    self.total_input_tokens += usage.get("input_tokens", 0)
-                    self.total_output_tokens += usage.get("output_tokens", 0)
-                    self.total_tokens += usage.get("total_tokens", 0)
-
-    def get_aggregate_usage(self) -> dict:
-        """Return the aggregated usage across all calls."""
-        if self.total_tokens == 0 and self.total_input_tokens == 0:
-            return {}
-        return {
-            "input_tokens": self.total_input_tokens,
-            "output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_tokens,
-        }
 
 
 class SimpleChatPipeline(BasePipeline):
@@ -87,27 +48,8 @@ class SimpleChatPipeline(BasePipeline):
         tools = self._resolve_tools(tool_names, request.context)
         req = request.model_copy(update={"tool_schemas": tools})
 
-        # Create usage callback to aggregate across tool loop rounds
-        usage_callback = UsageMetadataCallbackHandler()
-        params = dict(req.params or {})
-        params["_usage_callback"] = usage_callback
-        req = req.model_copy(update={"params": params})
-
         max_iter = self._get_max_iterations(request)
-        response = self._run_tool_loop(create_chat_model(req.model), req, tools, max_iter)
-
-        # Attach aggregate usage if the response doesn't already have it
-        aggregate = usage_callback.get_aggregate_usage()
-        if aggregate and response.usage is None:
-            response = response.model_copy(update={
-                "usage": Usage(
-                    prompt_tokens=aggregate.get("input_tokens"),
-                    completion_tokens=aggregate.get("output_tokens"),
-                    total_tokens=aggregate.get("total_tokens"),
-                ),
-            })
-
-        return response
+        return self._run_tool_loop(create_chat_model(req.model), req, tools, max_iter)
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         tool_names = request.tools or []
@@ -213,18 +155,46 @@ class SimpleChatPipeline(BasePipeline):
         req = request
         cancel_check = (request.params or {}).get("_cancel_check")
 
+        agg_input = 0
+        agg_output = 0
+        agg_total = 0
+        agg_cached = 0
+        agg_cost: float | None = None
+
+        def _accumulate(usage: Usage | None) -> None:
+            nonlocal agg_input, agg_output, agg_total, agg_cached, agg_cost
+            if not usage:
+                return
+            agg_input += usage.prompt_tokens or 0
+            agg_output += usage.completion_tokens or 0
+            agg_total += usage.total_tokens or 0
+            agg_cached += usage.cached_tokens or 0
+            if usage.cost_usd is not None:
+                agg_cost = (agg_cost or 0.0) + usage.cost_usd
+
+        def _with_aggregate(response: ChatResponse) -> ChatResponse:
+            return response.model_copy(update={
+                "usage": Usage(
+                    prompt_tokens=agg_input,
+                    completion_tokens=agg_output,
+                    total_tokens=agg_total,
+                    cached_tokens=agg_cached or None,
+                    cost_usd=agg_cost,
+                ),
+            })
+
         for _ in range(max_iterations if max_iterations is not None else self.max_tool_iterations):
             if cancel_check and cancel_check():
-                # Return whatever we have so far
                 return ChatResponse(
                     message=Message(role="assistant", content="[Cancelled]"),
                     metadata={"stop_reason": "cancelled"},
                 )
 
             response = chat_model.generate(req)
+            _accumulate(response.usage)
             msg = response.message
             if not msg.tool_calls:
-                return response
+                return _with_aggregate(response)
 
             new_messages = list(req.messages) + [msg]
             results = self._execute_tool_calls(msg.tool_calls, tool_by_name)
@@ -238,14 +208,15 @@ class SimpleChatPipeline(BasePipeline):
 
             req = req.model_copy(update={"messages": new_messages})
 
-        # Max iterations reached: one final generate WITHOUT tools,
-        # forcing the model to synthesise a text response.
+        # Max iterations reached: one final generate WITHOUT tools.
         logger.warning(
             "Tool loop exhausted %d iterations; stripping tools for final generate",
             max_iterations if max_iterations is not None else self.max_tool_iterations,
         )
         final_req = req.model_copy(update={"tool_schemas": None})
-        return chat_model.generate(final_req)
+        response = chat_model.generate(final_req)
+        _accumulate(response.usage)
+        return _with_aggregate(response)
 
     def _stream_with_tools(
         self,
@@ -423,4 +394,4 @@ _registry = get_pipeline_registry()
 _registry.register_pipeline(SimpleChatPipeline())
 
 
-__all__ = ["SimpleChatPipeline", "UsageMetadataCallbackHandler"]
+__all__ = ["SimpleChatPipeline"]

@@ -10,7 +10,7 @@ from llm.tools.interfaces import ContextAwareTool
 from llm.types.context import RunContext
 from llm.types.messages import Message, ToolCall
 from llm.types.requests import ChatRequest
-from llm.types.responses import ChatResponse
+from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
 
 
@@ -509,3 +509,92 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(events[1].event_type, "token")
         self.assertEqual(events[1].data.get("text"), "Hello")
         self.assertEqual(events[2].event_type, "message_end")
+
+    def test_run_tool_loop_aggregates_usage_across_iterations(self):
+        """Usage from all tool loop iterations should be summed, not just the last."""
+        mock_tool = self._make_mock_tool("search_documents")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Multi-step")],
+            stream=False,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=RunContext.create(),
+        )
+        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+
+        iter1 = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tool_call]),
+            model="gpt-4o-mini",
+            usage=Usage(prompt_tokens=500, completion_tokens=100, total_tokens=600, cost_usd=0.01),
+            metadata={},
+        )
+        iter2 = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tool_call]),
+            model="gpt-4o-mini",
+            usage=Usage(prompt_tokens=800, completion_tokens=150, total_tokens=950, cached_tokens=200, cost_usd=0.02),
+            metadata={},
+        )
+        final = ChatResponse(
+            message=Message(role="assistant", content="Done."),
+            model="gpt-4o-mini",
+            usage=Usage(prompt_tokens=1000, completion_tokens=200, total_tokens=1200, cost_usd=0.03),
+            metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = [iter1, iter2, final]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            response = SimpleChatPipeline().run(request)
+
+        self.assertEqual(response.message.content, "Done.")
+        self.assertIsNotNone(response.usage)
+        self.assertEqual(response.usage.prompt_tokens, 2300)
+        self.assertEqual(response.usage.completion_tokens, 450)
+        self.assertEqual(response.usage.total_tokens, 2750)
+        self.assertEqual(response.usage.cached_tokens, 200)
+        self.assertAlmostEqual(response.usage.cost_usd, 0.06)
+
+    def test_stream_tool_loop_aggregates_usage_across_iterations(self):
+        """Streaming tool loop should aggregate usage from all iterations into message_end."""
+        mock_tool = self._make_mock_tool("search_documents")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Multi-step stream")],
+            stream=True,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=RunContext.create(),
+        )
+
+        def tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+                "input_tokens": 500, "output_tokens": 100, "total_tokens": 600, "cost_usd": 0.01,
+            }, sequence=2, run_id="")
+
+        def final_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "Done"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "Done",
+                "input_tokens": 800, "output_tokens": 200, "total_tokens": 1000, "cost_usd": 0.02,
+            }, sequence=3, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [tool_stream(None), final_stream(None)]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        end_events = [e for e in events if e.event_type == "message_end"]
+        self.assertEqual(len(end_events), 1)
+        end_data = end_events[0].data
+        self.assertEqual(end_data["input_tokens"], 1300)
+        self.assertEqual(end_data["output_tokens"], 300)
+        self.assertEqual(end_data["total_tokens"], 1600)
+        self.assertAlmostEqual(end_data["cost_usd"], 0.03)

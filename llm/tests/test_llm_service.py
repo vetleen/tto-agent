@@ -422,3 +422,63 @@ class RunStructuredTests(TestCase):
         parsed, usage = service.run_structured(request, _TestSchema)
         self.assertEqual(parsed.description, "A doc.")
         self.assertIsNone(usage)
+
+
+class InterruptedStreamLoggingTests(TestCase):
+    """Verify that interrupted/cancelled streams still get logged."""
+
+    @patch("llm.service.llm_service.log_stream")
+    def test_interrupted_stream_logs_via_finally(self, mock_log_stream):
+        """When a consumer stops iterating mid-stream, the finally block logs collected events."""
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=True,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        run_id = request.context.run_id
+
+        def fake_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id)
+            yield StreamEvent(event_type="token", data={"text": "Hello"}, sequence=2, run_id=run_id)
+            yield StreamEvent(event_type="token", data={"text": " world"}, sequence=3, run_id=run_id)
+            yield StreamEvent(event_type="token", data={"text": "!"}, sequence=4, run_id=run_id)
+            yield StreamEvent(event_type="message_end", data={}, sequence=5, run_id=run_id)
+
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = fake_stream
+        service = _make_service(fake_pipeline)
+
+        gen = service.stream("simple_chat", request)
+        next(gen)  # message_start
+        next(gen)  # first token
+        gen.close()  # simulate disconnect — triggers GeneratorExit → finally
+
+        mock_log_stream.assert_called_once()
+        logged_events = mock_log_stream.call_args[0][1]
+        self.assertEqual(len(logged_events), 2)
+
+    @patch("llm.service.llm_service.log_stream")
+    def test_fully_consumed_stream_logs_normally_not_twice(self, mock_log_stream):
+        """A fully consumed stream should be logged once in the try block, not again in finally."""
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=True,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        run_id = request.context.run_id
+
+        def fake_stream(req):
+            yield StreamEvent(event_type="token", data={"text": "Hi"}, sequence=1, run_id=run_id)
+            yield StreamEvent(event_type="message_end", data={}, sequence=2, run_id=run_id)
+
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = fake_stream
+        service = _make_service(fake_pipeline)
+
+        list(service.stream("simple_chat", request))
+
+        mock_log_stream.assert_called_once()

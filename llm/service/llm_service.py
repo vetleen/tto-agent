@@ -133,12 +133,14 @@ class LLMService:
         )
         t0 = time.monotonic()
         events: list[StreamEvent] = []
+        _logged = False
         try:
             for event in pipeline.stream(request):
                 events.append(event)
                 yield event
             duration_ms = int((time.monotonic() - t0) * 1000)
             log_stream(request, events, duration_ms)
+            _logged = True
             logger.info(
                 "LLMService.stream complete pipeline=%s model=%s duration_ms=%d run_id=%s",
                 pipeline_id, request.model, duration_ms, run_id,
@@ -146,6 +148,7 @@ class LLMService:
         except LLMError as exc:
             duration_ms = int((time.monotonic() - t0) * 1000)
             log_error(request, exc, duration_ms, is_stream=True)
+            _logged = True
             logger.error(
                 "LLMService.stream failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
                 pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
@@ -154,11 +157,19 @@ class LLMService:
         except Exception as exc:
             duration_ms = int((time.monotonic() - t0) * 1000)
             log_error(request, exc, duration_ms, is_stream=True)
+            _logged = True
             logger.error(
                 "LLMService.stream failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
                 pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
             )
             raise LLMProviderError(f"Pipeline {pipeline_id} stream failed") from exc
+        finally:
+            if not _logged and events:
+                try:
+                    duration_ms = int((time.monotonic() - t0) * 1000)
+                    log_stream(request, events, duration_ms)
+                except Exception:
+                    logger.debug("Failed to log interrupted stream (non-fatal)")
 
     # -- structured output --------------------------------------------------
 
