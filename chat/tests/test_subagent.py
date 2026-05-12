@@ -12,7 +12,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from chat.models import ChatThread, SubAgentRun
+from chat.models import ChatMessage, ChatThread, SubAgentRun
 from chat.subagent_limits import (
     _expire_stale_runs,
     check_subagent_limits,
@@ -645,8 +645,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         runs = [{
             "id": uuid.uuid4(), "status": "pending",
             "prompt": "Research patent claims", "model_tier": "mid",
-            "result": "", "error": "", "result_delivered": False,
-        }]
+            "result": "", "error": "",         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("# Sub-agent Status", prompt)
         self.assertIn("PENDING", prompt)
@@ -657,34 +656,21 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         runs = [{
             "id": uuid.uuid4(), "status": "running",
             "prompt": "Analyze documents", "model_tier": "fast",
-            "result": "", "error": "", "result_delivered": False,
-        }]
+            "result": "", "error": "",         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("RUNNING", prompt)
         self.assertIn("Still in progress", prompt)
 
-    def test_completed_undelivered_includes_result(self):
+    def test_completed_shows_delivered_as_message(self):
         from chat.prompts import build_system_prompt
         runs = [{
             "id": uuid.uuid4(), "status": "completed",
             "prompt": "Summarize findings", "model_tier": "top",
-            "result": "Found 3 key patents.", "error": "", "result_delivered": False,
+            "result": "Found 3 key patents.", "error": "",
         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("COMPLETED", prompt)
-        self.assertIn("Found 3 key patents.", prompt)
-        self.assertNotIn("already delivered", prompt.lower())
-
-    def test_completed_delivered_omits_result(self):
-        from chat.prompts import build_system_prompt
-        runs = [{
-            "id": uuid.uuid4(), "status": "completed",
-            "prompt": "Summarize findings", "model_tier": "top",
-            "result": "Found 3 key patents.", "error": "", "result_delivered": True,
-        }]
-        prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
-        self.assertIn("COMPLETED", prompt)
-        self.assertIn("already delivered", prompt.lower())
+        self.assertIn("delivered as message", prompt.lower())
         self.assertNotIn("Found 3 key patents.", prompt)
 
     def test_failed_shows_error(self):
@@ -692,8 +678,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         runs = [{
             "id": uuid.uuid4(), "status": "failed",
             "prompt": "Bad task", "model_tier": "mid",
-            "result": "", "error": "LLM provider timeout", "result_delivered": False,
-        }]
+            "result": "", "error": "LLM provider timeout",         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("FAILED", prompt)
         self.assertIn("LLM provider timeout", prompt)
@@ -703,18 +688,17 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         prompt = build_system_prompt(has_subagent_tool=True)
         self.assertNotIn("check_subagent_status", prompt)
 
-    def test_completed_result_truncated_at_8000_chars(self):
+    def test_completed_result_not_in_prompt(self):
         from chat.prompts import build_system_prompt
         long_result = "x" * 10000
         runs = [{
             "id": uuid.uuid4(), "status": "completed",
             "prompt": "Big task", "model_tier": "mid",
-            "result": long_result, "error": "", "result_delivered": False,
+            "result": long_result, "error": "",
         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
-        self.assertIn("(truncated)", prompt)
-        # The full 10000-char result should not appear
         self.assertNotIn(long_result, prompt)
+        self.assertIn("delivered as message", prompt.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +809,57 @@ class RunSubagentServiceTests(TestCase):
         call_args = mock_svc.return_value.run.call_args
         request = call_args[0][1]
         self.assertEqual(request.context.data_room_ids, [1, 2])
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_creates_hidden_message_on_completion(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = "Research findings here."
+        mock_response.usage.total_tokens = 100
+        mock_response.usage.cost_usd = 0.001
+        mock_svc.return_value.run.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        msg = ChatMessage.objects.filter(
+            thread=self.thread, tool_call_id=str(run.id),
+        ).first()
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.role, "tool")
+        self.assertEqual(msg.content, "Research findings here.")
+        self.assertTrue(msg.is_hidden_from_user)
+        self.assertEqual(msg.metadata["source"], "subagent")
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_no_message_created_for_empty_result(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = ""
+        mock_response.message.tool_calls = []
+        mock_response.usage.total_tokens = 50
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        msg_count = ChatMessage.objects.filter(
+            thread=self.thread, tool_call_id=str(run.id),
+        ).count()
+        self.assertEqual(msg_count, 0)
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")

@@ -149,6 +149,39 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             "result", "tokens_used", "cost_usd", "status", "completed_at",
         ])
 
+        # Persist the result as a hidden ChatMessage so it survives
+        # across reconnects and failed LLM streams.
+        if run.result:
+            from chat.models import ChatMessage
+            from core.tokens import count_tokens
+
+            ChatMessage.objects.create(
+                thread_id=run.thread_id,
+                role="tool",
+                content=run.result,
+                tool_call_id=str(run.id),
+                metadata={"source": "subagent", "subagent_run_id": str(run.id)},
+                token_count=count_tokens(run.result),
+                is_hidden_from_user=True,
+            )
+
+        # Notify the WebSocket consumer so it auto-triggers the orchestrator
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"thread_{run.thread_id}",
+                {
+                    "type": "subagent.completed",
+                    "run_id": str(run.id),
+                    "thread_id": str(run.thread_id),
+                },
+            )
+        except Exception:
+            logger.debug("Could not notify consumer of sub-agent completion (non-fatal)")
+
     except Exception as exc:
         logger.exception("Sub-agent run %s failed", run_id)
         # Set back to PENDING so Celery retries don't show a premature

@@ -31,6 +31,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._guardrail_warn_verdict: object | None = None  # stored for post-stream delivery
         self._org_id: int | None = None
         self._org_name: str | None = None
+        self._current_thread_id: str | None = None
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
@@ -55,6 +56,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         """Clean up background tasks when WebSocket disconnects."""
+        # Leave thread channel group
+        if self._current_thread_id:
+            await self.channel_layer.group_discard(
+                f"thread_{self._current_thread_id}", self.channel_name,
+            )
+
         # Signal any active LLM stream to stop
         if self._cancel_event:
             self._cancel_event.set()
@@ -66,6 +73,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 await self._guardrail_task
             except asyncio.CancelledError:
                 pass
+
+    async def subagent_completed(self, event):
+        """Channel layer handler: a sub-agent finished. Auto-trigger orchestrator turn."""
+        thread_id = event.get("thread_id")
+        if not thread_id or str(self._current_thread_id) != str(thread_id):
+            return
+        await self._handle_chat_message(
+            {"thread_id": thread_id, "content": ""},
+            seed_mode=True,
+        )
 
     @database_sync_to_async
     def _resolve_preferences(self):
@@ -270,6 +287,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thread_id = data.get("thread_id")
         if not thread_id:
             return
+
+        # Leave previous thread group, join the new one
+        if self._current_thread_id and self._current_thread_id != thread_id:
+            await self.channel_layer.group_discard(
+                f"thread_{self._current_thread_id}", self.channel_name,
+            )
+        self._current_thread_id = thread_id
+        await self.channel_layer.group_add(
+            f"thread_{thread_id}", self.channel_name,
+        )
 
         # If this thread was created with a pending initial assistant turn
         # (e.g. via the "edit skill in chat" flow), fire it now. The flag is
@@ -784,15 +811,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 history_meta=meta,
                 data_rooms=data_rooms,
             )
-
-            # Mark undelivered completed sub-agent results as delivered
-            if subagent_runs:
-                undelivered_ids = [
-                    r["id"] for r in subagent_runs
-                    if r["status"] == "completed" and not r["result_delivered"]
-                ]
-                if undelivered_ids:
-                    await self._mark_subagent_results_delivered(undelivered_ids)
 
             # Stream LLM response (cancel_event already created above)
             await self._stream_response(
@@ -1531,14 +1549,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return list(
             SubAgentRun.objects.filter(thread_id=thread_id)
             .order_by("-created_at")[:20]
-            .values("id", "status", "prompt", "model_tier", "result", "error", "result_delivered")
+            .values("id", "status", "prompt", "model_tier", "result", "error")
         )
-
-    @database_sync_to_async
-    def _mark_subagent_results_delivered(self, run_ids):
-        from chat.models import SubAgentRun
-        if run_ids:
-            SubAgentRun.objects.filter(pk__in=run_ids).update(result_delivered=True)
 
     # -- Canvas helpers --
 
