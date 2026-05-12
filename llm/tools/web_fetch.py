@@ -162,7 +162,11 @@ class WebFetchTool(ContextAwareTool):
         max_chars = max(1, min(max_chars, _ABSOLUTE_MAX_CHARS))
 
         cache_key = "web_fetch:" + hashlib.sha256(url.encode()).hexdigest()
-        cached = cache.get(cache_key)
+        try:
+            cached = cache.get(cache_key)
+        except Exception:
+            logger.debug("web_fetch: cache read failed, proceeding without cache")
+            cached = None
         if cached is not None:
             logger.debug("Web fetch cache hit for url=%s", url)
             # Re-truncate cached content to requested max_chars
@@ -270,7 +274,10 @@ class WebFetchTool(ContextAwareTool):
             "truncated": False,
             "char_count": len(text),
         })
-        cache.set(cache_key, full_result, timeout=3600)
+        try:
+            cache.set(cache_key, full_result, timeout=3600)
+        except Exception:
+            logger.debug("web_fetch: cache write failed, continuing")
 
         # Truncate for this request
         truncated = len(text) > max_chars

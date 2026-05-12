@@ -356,6 +356,25 @@ class BraveSearchCacheTests(TestCase):
         self.assertNotIn("error", result2)
         mock_get.assert_called()
 
+    @override_settings(
+        BRAVE_SEARCH_API_KEY="test-key",
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
+    @patch("llm.tools.brave_search.requests.get")
+    def test_cache_connection_error_falls_through(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"web": {"results": [{"title": "R", "url": "https://r.co", "description": "d"}]}}
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        with patch("django.core.cache.cache.get", side_effect=ConnectionError("Redis SSL EOF")), \
+             patch("django.core.cache.cache.set", side_effect=ConnectionError("Redis SSL EOF")):
+            result = json.loads(self.tool.invoke({"query": "redis down"}))
+
+        self.assertEqual(result["count"], 1)
+        mock_get.assert_called_once()
+
 
 class TokenBucketRateLimiterTests(TestCase):
     """Unit tests for _TokenBucketRateLimiter."""

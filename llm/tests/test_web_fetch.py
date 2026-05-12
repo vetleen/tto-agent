@@ -252,6 +252,23 @@ class WebFetchCacheTests(TestCase):
         self.assertNotIn("error", result2)
         mock_get.assert_called()
 
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_cache_connection_error_falls_through(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = "<html><body><p>Fresh content</p></body></html>"
+        mock_response.is_redirect = False
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        with patch("django.core.cache.cache.get", side_effect=ConnectionError("Redis SSL EOF")), \
+             patch("django.core.cache.cache.set", side_effect=ConnectionError("Redis SSL EOF")):
+            result = json.loads(self.tool.invoke({"url": "https://example.com/redis-down"}))
+
+        self.assertIn("Fresh content", result["content"])
+        mock_get.assert_called_once()
+
 
 class SSRFProtectionTests(TestCase):
     """Tests for SSRF protection in WebFetchTool."""

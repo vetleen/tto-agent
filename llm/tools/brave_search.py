@@ -97,7 +97,11 @@ class BraveSearchTool(ContextAwareTool):
         count = max(1, min(count, 10))
 
         cache_key = "brave_search:" + hashlib.sha256(f"{query}:{count}".encode()).hexdigest()
-        cached = cache.get(cache_key)
+        try:
+            cached = cache.get(cache_key)
+        except Exception:
+            logger.debug("brave_search: cache read failed, proceeding without cache")
+            cached = None
         if cached is not None:
             logger.debug("Brave Search cache hit for query=%r count=%d", query, count)
             return cached
@@ -152,7 +156,10 @@ class BraveSearchTool(ContextAwareTool):
                     logger.debug("brave_search: web content scan failed (non-fatal)")
 
                 result = json.dumps({"results": results, "count": len(results)})
-                cache.set(cache_key, result, timeout=900)
+                try:
+                    cache.set(cache_key, result, timeout=900)
+                except Exception:
+                    logger.debug("brave_search: cache write failed, continuing")
                 return result
 
             except requests.exceptions.Timeout as e:
