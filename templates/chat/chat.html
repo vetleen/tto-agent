@@ -1294,6 +1294,26 @@
     handleFiles(Array.from(e.dataTransfer.files));
   });
 
+  // -- Clipboard paste image upload --
+  input.addEventListener('paste', function(e) {
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    var imageFiles = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image/') === 0) {
+        var f = items[i].getAsFile();
+        if (f) imageFiles.push(f);
+      }
+    }
+    if (!imageFiles.length) return;
+    handleFiles(imageFiles);
+    var hasText = false;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type === 'text/plain') { hasText = true; break; }
+    }
+    if (!hasText) e.preventDefault();
+  });
+
   // -- Model selector --
   var modelSelectorBtn = document.getElementById('model-selector-btn');
   var modelSelectorLabel = document.getElementById('model-selector-label');
