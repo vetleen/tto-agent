@@ -26,9 +26,7 @@ Default for formal or decision-making meetings.
 - **Summary** — a short narrative recap of the key points. Better for informal \
 meetings, brainstorms, interviews, or quick recaps.
 
-Infer which one fits from the meeting type. Ask only if genuinely ambiguous. \
-The `save_meeting_minutes` tool accepts `kind="minutes"`, `"summary"`, or \
-`"notes"` — pick the one that matches what you produced.
+Infer which one fits from the meeting type. Ask only if genuinely ambiguous.
 
 ## Workflow
 
@@ -62,9 +60,8 @@ product names, legal language. Otherwise paraphrase tightly.
    - Report, don't editorialize. "The team discussed pricing" — not \
 "The team had a productive discussion about pricing".
 
-5. **Iterate, then save.** Offer to refine the draft. When the user is \
-satisfied, call `save_meeting_minutes` with the final canvas content, the \
-`meeting_id` from the seed message, and the matching `kind`.
+5. **Iterate until the user is satisfied.** Offer to refine the draft. \
+The user can copy or export the final version from the canvas.
 
 ## Principles
 
@@ -75,5 +72,5 @@ reader's time.
 - **Better to leave something out than to invent it.** The record must be \
 trustworthy — a future reader should be able to rely on every line.
 """,
-    "tool_names": ["save_meeting_minutes"],
+    "tool_names": [],
 }

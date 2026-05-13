@@ -298,7 +298,7 @@
       </button>
       {% endif %}
     </div>
-    <p class="mt-2 text-xs text-body">Tip: keep the raw transcript here, and use {{ assistant_name }} to create a meeting summary. Then keep that in the data room.</p>
+    <p class="mt-2 text-xs text-body">Tip: keep the raw transcript here, and use {{ assistant_name }} to create a meeting summary.</p>
 
     {% if saved_doc_groups %}
     <div class="mt-4 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base">
@@ -437,29 +437,6 @@
   {{ transcription_model_selected|json_script:"transcription-model-selected" }}
   {% endif %}
 
-  {# ----- Wilfred-saved artifacts (minutes/summary/notes) ----- #}
-  {% if artifacts %}
-  <section class="mb-8">
-    <h2 class="text-sm font-medium text-heading mb-3">Saved by {{ assistant_name }}</h2>
-    <ul class="space-y-4">
-      {% for art in artifacts %}
-      <li class="bg-neutral-primary-soft border border-default rounded-base px-4 py-4">
-        <div class="flex items-center justify-between mb-2">
-          <div>
-            <span class="text-sm font-medium text-heading">{{ art.title|default:art.get_kind_display }}</span>
-            <span class="ms-2 text-xs text-body">{{ art.get_kind_display }} · {{ art.created_at|date:"Y-m-d H:i" }}</span>
-          </div>
-          <form method="post" action="{% url 'meeting_delete_artifact' meeting_uuid=meeting.uuid artifact_id=art.id %}">
-            {% csrf_token %}
-            <button type="submit" data-disable-while-busy class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this artifact?');">Delete</button>
-          </form>
-        </div>
-        <div class="text-sm text-heading whitespace-pre-wrap">{{ art.content_md }}</div>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
 </div>
 
 {% if summarizer_skills|length > 1 %}

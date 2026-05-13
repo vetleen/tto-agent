@@ -17,7 +17,7 @@ class MeetingSummarizerSeedTests(TestCase):
         seed_system_skills()
         skill = AgentSkill.objects.get(slug="meeting-summarizer", level="system")
         self.assertEqual(skill.name, "Meeting Summarizer")
-        self.assertEqual(skill.tool_names, ["save_meeting_minutes"])
+        self.assertEqual(skill.tool_names, [])
         self.assertIn("transcript", skill.instructions.lower())
 
     def test_seed_is_idempotent(self):

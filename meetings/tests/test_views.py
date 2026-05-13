@@ -11,9 +11,7 @@ from django.urls import reverse
 from documents.models import DataRoom
 from meetings.models import (
     Meeting,
-    MeetingArtifact,
     MeetingAttachment,
-    MeetingDataRoom,
 )
 
 User = get_user_model()
@@ -112,40 +110,6 @@ class MeetingCRUDTests(TestCase):
         response = self.client.post(reverse("meeting_delete", args=[self.meeting.uuid]))
         self.assertEqual(response.status_code, 302)
         self.assertFalse(Meeting.objects.filter(pk=self.meeting.pk).exists())
-
-
-@override_settings(ALLOWED_HOSTS=["testserver"])
-class MeetingDataRoomLinkViewTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(email="dr@example.com", password="pw")
-        self.other = User.objects.create_user(email="dr-other@example.com", password="pw")
-        self.meeting = Meeting.objects.create(name="M", slug="m-link-view", created_by=self.user)
-        self.my_room = DataRoom.objects.create(name="Mine", slug="mine-room", created_by=self.user)
-        self.foreign_room = DataRoom.objects.create(name="Theirs", slug="theirs-room", created_by=self.other)
-        self.client.force_login(self.user)
-
-    def test_link_owned_room(self):
-        response = self.client.post(
-            reverse("meeting_link_data_room", args=[self.meeting.uuid]),
-            {"data_room_id": str(self.my_room.uuid)},
-        )
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(MeetingDataRoom.objects.filter(meeting=self.meeting, data_room=self.my_room).exists())
-
-    def test_cannot_link_foreign_room(self):
-        self.client.post(
-            reverse("meeting_link_data_room", args=[self.meeting.uuid]),
-            {"data_room_id": str(self.foreign_room.uuid)},
-        )
-        self.assertFalse(MeetingDataRoom.objects.filter(meeting=self.meeting, data_room=self.foreign_room).exists())
-
-    def test_unlink_room(self):
-        MeetingDataRoom.objects.create(meeting=self.meeting, data_room=self.my_room)
-        response = self.client.post(
-            reverse("meeting_unlink_data_room", args=[self.meeting.uuid, self.my_room.uuid])
-        )
-        self.assertEqual(response.status_code, 302)
-        self.assertFalse(MeetingDataRoom.objects.filter(meeting=self.meeting, data_room=self.my_room).exists())
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -503,24 +467,15 @@ class MeetingSaveToDataRoomTests(TestCase):
         mock_delay.assert_called_once()
 
     @patch("documents.tasks.process_document_task.delay")
-    def test_save_always_saves_raw_transcript_even_when_artifact_present(self, mock_delay):
-        """The button explicitly saves the raw transcript. Wilfred-generated
-        artifacts (minutes/summary/notes) live on the meeting page only — they
-        do not pre-empt the transcript export."""
+    def test_save_saves_raw_transcript(self, mock_delay):
+        """The button saves the raw transcript content."""
         from documents.models import DataRoomDocument
-        MeetingArtifact.objects.create(
-            meeting=self.meeting,
-            kind=MeetingArtifact.Kind.MINUTES,
-            content_md="# Minutes\nWilfred wrote these.",
-            created_by=self.user,
-        )
         self.client.post(
             reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
             {"data_room_id": str(self.my_room.uuid)},
         )
         doc = DataRoomDocument.objects.get(data_room=self.my_room)
         self.assertIn("transcript", doc.original_filename)
-        self.assertNotIn("minutes", doc.original_filename)
 
     @patch("documents.tasks.process_document_task.delay")
     def test_resave_overwrites_existing_transcript_export(self, mock_delay):

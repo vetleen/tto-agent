@@ -5,12 +5,9 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
 
-from documents.models import DataRoom
 from meetings.models import (
     Meeting,
-    MeetingArtifact,
     MeetingAttachment,
-    MeetingDataRoom,
     MeetingTranscriptSegment,
 )
 
@@ -61,36 +58,6 @@ class MeetingTranscriptSegmentTests(TestCase):
     def test_segment_default_status_pending(self):
         seg = MeetingTranscriptSegment.objects.create(meeting=self.meeting, segment_index=1)
         self.assertEqual(seg.status, MeetingTranscriptSegment.Status.PENDING)
-
-
-class MeetingDataRoomLinkTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(email="link@example.com", password="pw")
-        self.meeting = Meeting.objects.create(name="M", slug="m-link", created_by=self.user)
-        self.room = DataRoom.objects.create(name="Room", slug="room-link", created_by=self.user)
-
-    def test_link_is_unique(self):
-        MeetingDataRoom.objects.create(meeting=self.meeting, data_room=self.room)
-        with self.assertRaises(IntegrityError):
-            MeetingDataRoom.objects.create(meeting=self.meeting, data_room=self.room)
-
-    def test_m2m_accessor(self):
-        MeetingDataRoom.objects.create(meeting=self.meeting, data_room=self.room)
-        self.assertIn(self.room, list(self.meeting.data_rooms.all()))
-        self.assertIn(self.meeting, list(self.room.meetings.all()))
-
-
-class MeetingArtifactTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(email="art@example.com", password="pw")
-        self.meeting = Meeting.objects.create(name="M", slug="m-art", created_by=self.user)
-
-    def test_kind_default_minutes(self):
-        art = MeetingArtifact.objects.create(
-            meeting=self.meeting, content_md="# minutes", created_by=self.user,
-        )
-        self.assertEqual(art.kind, MeetingArtifact.Kind.MINUTES)
-        self.assertIn("Minutes", str(art))
 
 
 class MeetingAttachmentTests(TestCase):

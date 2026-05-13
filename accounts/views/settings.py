@@ -81,11 +81,6 @@ def settings_page(request):
         if get_transcription_model_info(mid) is not None
     ]
 
-    from meetings.services.minutes import get_eligible_summarizer_skills
-
-    summarizer_skills = get_eligible_summarizer_skills(request.user)
-    user_summarizer_skill_id = (user_settings.preferences or {}).get("meetings", {}).get("summarizer_skill_id") or ""
-
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
         "user_models": user_models,
@@ -104,8 +99,6 @@ def settings_page(request):
         "user_live_transcription_mode": user_live_transcription_mode,
         "resolved_live_transcription_mode": prefs.live_transcription_mode,
         "transcription_model_display": transcription_model_display,
-        "summarizer_skills": summarizer_skills,
-        "user_summarizer_skill_id": user_summarizer_skill_id,
         "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
         "assistant_name": django_settings.ASSISTANT_NAME,
         "tiers": [
@@ -229,36 +222,6 @@ def preferences_live_transcription_mode_update(request):
     settings.save()
 
     return JsonResponse({"ok": True, "mode": mode})
-
-
-@login_required
-@require_POST
-def preferences_meeting_summarizer_skill_update(request):
-    """Update user's default meeting summarizer skill."""
-    data, err = _parse_json_body(request)
-    if err:
-        return err
-
-    skill_id = (data.get("skill_id") or "").strip() or None
-
-    if skill_id:
-        from agent_skills.services import get_skill_for_user
-
-        skill = get_skill_for_user(request.user, skill_id)
-        if not skill:
-            return JsonResponse({"error": "Skill not found or not accessible"}, status=400)
-        if "save_meeting_minutes" not in (skill.tool_names or []):
-            return JsonResponse({"error": "Skill is not eligible as a meeting summarizer"}, status=400)
-
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    meetings_prefs = prefs_dict.get("meetings", {})
-    meetings_prefs["summarizer_skill_id"] = skill_id
-    prefs_dict["meetings"] = meetings_prefs
-    settings.preferences = prefs_dict
-    settings.save()
-
-    return JsonResponse({"ok": True, "skill_id": skill_id})
 
 
 @login_required
