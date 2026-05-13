@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Tuple
 
 from llm.core.interfaces import ChatModel
@@ -155,6 +156,14 @@ class SimpleChatPipeline(BasePipeline):
         req = request
         cancel_check = (request.params or {}).get("_cancel_check")
 
+        ctx = request.context
+        deadline_dt = None
+        if ctx and ctx.deadline_seconds:
+            # Reserve 60s for the final tool-stripped generate + result storage,
+            # so we don't race with the Celery soft time limit.
+            margin = min(60, ctx.deadline_seconds // 4)
+            deadline_dt = ctx.started_at + timedelta(seconds=ctx.deadline_seconds - margin)
+
         agg_input = 0
         agg_output = 0
         agg_total = 0
@@ -183,12 +192,21 @@ class SimpleChatPipeline(BasePipeline):
                 ),
             })
 
-        for _ in range(max_iterations if max_iterations is not None else self.max_tool_iterations):
+        effective_max = max_iterations if max_iterations is not None else self.max_tool_iterations
+        for i in range(effective_max):
             if cancel_check and cancel_check():
                 return ChatResponse(
                     message=Message(role="assistant", content="[Cancelled]"),
                     metadata={"stop_reason": "cancelled"},
                 )
+
+            if deadline_dt and datetime.now(timezone.utc) >= deadline_dt:
+                logger.warning(
+                    "Tool loop deadline (%ds) reached at iteration %d; "
+                    "stripping tools for final generate",
+                    ctx.deadline_seconds, i,
+                )
+                break
 
             response = chat_model.generate(req)
             _accumulate(response.usage)
@@ -207,12 +225,12 @@ class SimpleChatPipeline(BasePipeline):
             new_messages = deduplicate_tool_results(new_messages)
 
             req = req.model_copy(update={"messages": new_messages})
+        else:
+            logger.warning(
+                "Tool loop exhausted %d iterations; stripping tools for final generate",
+                effective_max,
+            )
 
-        # Max iterations reached: one final generate WITHOUT tools.
-        logger.warning(
-            "Tool loop exhausted %d iterations; stripping tools for final generate",
-            max_iterations if max_iterations is not None else self.max_tool_iterations,
-        )
         final_req = req.model_copy(update={"tool_schemas": None})
         response = chat_model.generate(final_req)
         _accumulate(response.usage)
@@ -237,6 +255,12 @@ class SimpleChatPipeline(BasePipeline):
         req = request
         sequence = 1
         cancel_event = (request.params or {}).get("_cancel_event")
+
+        ctx = request.context
+        deadline_dt = None
+        if ctx and ctx.deadline_seconds:
+            margin = min(60, ctx.deadline_seconds // 4)
+            deadline_dt = ctx.started_at + timedelta(seconds=ctx.deadline_seconds - margin)
 
         # Aggregate usage across all iterations.
         # Cost stays None until at least one iteration reports it, so unknown-pricing
@@ -266,9 +290,17 @@ class SimpleChatPipeline(BasePipeline):
             # Yield a sentinel to pass end_data back
             yield (end_data, sequence)
 
-        for _ in range(max_iterations):
+        for i in range(max_iterations):
             if cancel_event and cancel_event.is_set():
                 return
+
+            if deadline_dt and datetime.now(timezone.utc) >= deadline_dt:
+                logger.warning(
+                    "Streaming tool loop deadline (%ds) reached at iteration %d; "
+                    "stripping tools for final stream",
+                    ctx.deadline_seconds, i,
+                )
+                break
             # Stream from the model, forwarding all events except message_end
             end_data = {}
             for item in _do_stream_iteration(req, sequence):
@@ -356,12 +388,12 @@ class SimpleChatPipeline(BasePipeline):
             new_messages = deduplicate_tool_results(new_messages)
 
             req = req.model_copy(update={"messages": new_messages})
+        else:
+            logger.warning(
+                "Streaming tool loop exhausted %d iterations; stripping tools for final stream",
+                max_iterations,
+            )
 
-        # Max iterations reached: one final streaming call WITHOUT tools
-        logger.warning(
-            "Streaming tool loop exhausted %d iterations; stripping tools for final stream",
-            max_iterations,
-        )
         final_req = req.model_copy(update={"tool_schemas": None})
         for item in _do_stream_iteration(final_req, sequence):
             if isinstance(item, StreamEvent):

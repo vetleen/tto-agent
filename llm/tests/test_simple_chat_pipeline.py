@@ -1,5 +1,6 @@
 """Tests for the simple_chat pipeline (tool loop and model delegation)."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -598,3 +599,79 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(end_data["output_tokens"], 300)
         self.assertEqual(end_data["total_tokens"], 1600)
         self.assertAlmostEqual(end_data["cost_usd"], 0.03)
+
+    def test_run_tool_loop_respects_deadline(self):
+        """Tool loop should break early when the RunContext deadline is exceeded."""
+        mock_tool = self._make_mock_tool("search_documents")
+        # Context with started_at in the past so the deadline is already expired
+        ctx = RunContext.create(deadline_seconds=60)
+        ctx.started_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Loop")],
+            stream=False,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=ctx,
+        )
+        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        tool_response = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tool_call]),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        final_response = ChatResponse(
+            message=Message(role="assistant", content="Done via deadline."),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        fake_model = MagicMock()
+        # Only the final (tool-stripped) generate should be called since deadline is already past
+        fake_model.generate.side_effect = [final_response]
+
+        pipeline = SimpleChatPipeline(max_tool_iterations=50)
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            response = pipeline.run(request)
+
+        # Should only have 1 generate call (the final tool-stripped one), not 50
+        self.assertEqual(fake_model.generate.call_count, 1)
+        self.assertEqual(response.message.content, "Done via deadline.")
+
+    def test_stream_tool_loop_respects_deadline(self):
+        """Streaming tool loop should break early when the RunContext deadline is exceeded."""
+        mock_tool = self._make_mock_tool("search_documents")
+        ctx = RunContext.create(deadline_seconds=60)
+        ctx.started_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Stream loop")],
+            stream=True,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=ctx,
+        )
+
+        def final_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "Deadline hit"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "Deadline hit",
+                "input_tokens": 100, "output_tokens": 50, "total_tokens": 150,
+            }, sequence=3, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [final_stream(None)]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        # Should only have 1 stream call (the final tool-stripped one)
+        self.assertEqual(fake_model.stream.call_count, 1)
+        token_events = [e for e in events if e.event_type == "token"]
+        self.assertEqual(token_events[0].data["text"], "Deadline hit")
