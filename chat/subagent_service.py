@@ -150,18 +150,20 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         ])
 
         # Persist the result as a hidden ChatMessage so it survives
-        # across reconnects and failed LLM streams.
+        # across reconnects and failed LLM streams.  Uses role="user"
+        # (not "tool") to avoid orphan tool_call_ids that OpenAI rejects.
         if run.result:
             from chat.models import ChatMessage
             from core.tokens import count_tokens
 
+            short_id = str(run.id)[:8]
+            wrapped = f"[Sub-agent result: {short_id}]\n{run.result}"
             ChatMessage.objects.create(
                 thread_id=run.thread_id,
-                role="tool",
-                content=run.result,
-                tool_call_id=str(run.id),
+                role="user",
+                content=wrapped,
                 metadata={"source": "subagent", "subagent_run_id": str(run.id)},
-                token_count=count_tokens(run.result),
+                token_count=count_tokens(wrapped),
                 is_hidden_from_user=True,
             )
 

@@ -2313,6 +2313,43 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 msg_dict["attachment_ids"] = m.metadata["attachment_ids"]
             messages.append(msg_dict)
 
+        # 5. Strip orphan tool results whose tool_call_id doesn't match any
+        #    assistant tool_calls entry (e.g. from history truncation or
+        #    legacy sub-agent messages created before migration 0016).
+        valid_call_ids: set[str] = set()
+        for msg in messages:
+            for tc in msg.get("tool_calls") or []:
+                if tc.get("id"):
+                    valid_call_ids.add(tc["id"])
+        messages = [
+            msg for msg in messages
+            if msg["role"] != "tool"
+            or not msg.get("tool_call_id")
+            or msg["tool_call_id"] in valid_call_ids
+        ]
+
+        # 6. Merge consecutive user messages when at least one is a sub-agent
+        #    result, so providers requiring strict role alternation (Anthropic)
+        #    don't reject the request.  This happens when multiple sub-agents
+        #    complete simultaneously and their hidden messages land in the DB
+        #    before the consumer processes the first completion notification.
+        _SA_PREFIX = "[Sub-agent result:"
+        merged: list[dict] = []
+        for msg in messages:
+            if (
+                merged
+                and msg["role"] == "user"
+                and merged[-1]["role"] == "user"
+                and (
+                    merged[-1]["content"].startswith(_SA_PREFIX)
+                    or msg["content"].startswith(_SA_PREFIX)
+                )
+            ):
+                merged[-1] = {**merged[-1], "content": merged[-1]["content"] + "\n\n---\n\n" + msg["content"]}
+            else:
+                merged.append(msg)
+        messages = merged
+
         return {
             "messages": messages,
             "meta": {

@@ -829,11 +829,16 @@ class RunSubagentServiceTests(TestCase):
         run_subagent(run.id)
 
         msg = ChatMessage.objects.filter(
-            thread=self.thread, tool_call_id=str(run.id),
+            thread=self.thread,
+            metadata__source="subagent",
+            metadata__subagent_run_id=str(run.id),
         ).first()
         self.assertIsNotNone(msg)
-        self.assertEqual(msg.role, "tool")
-        self.assertEqual(msg.content, "Research findings here.")
+        self.assertEqual(msg.role, "user")
+        self.assertIsNone(msg.tool_call_id)
+        short_id = str(run.id)[:8]
+        self.assertTrue(msg.content.startswith(f"[Sub-agent result: {short_id}]"))
+        self.assertIn("Research findings here.", msg.content)
         self.assertTrue(msg.is_hidden_from_user)
         self.assertEqual(msg.metadata["source"], "subagent")
 
@@ -857,7 +862,9 @@ class RunSubagentServiceTests(TestCase):
         run_subagent(run.id)
 
         msg_count = ChatMessage.objects.filter(
-            thread=self.thread, tool_call_id=str(run.id),
+            thread=self.thread,
+            metadata__source="subagent",
+            metadata__subagent_run_id=str(run.id),
         ).count()
         self.assertEqual(msg_count, 0)
 

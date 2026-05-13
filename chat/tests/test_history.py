@@ -206,3 +206,53 @@ class LoadHistoryTests(TransactionTestCase):
                 msg.is_redacted,
                 "Redacted messages must not appear in summarisation candidates",
             )
+
+    async def test_orphan_tool_messages_stripped(self):
+        """Tool results with no matching assistant tool_call are excluded."""
+        await self._make_msg("Hello")
+        # Valid pair: assistant with tool_calls + matching tool result
+        await self._make_tool_call_msg(
+            [{"id": "tc_valid", "name": "search", "arguments": {}}]
+        )
+        await self._make_msg("search result", role="tool", tool_call_id="tc_valid")
+        # Orphan: tool result with no matching tool call
+        await self._make_msg("orphan result", role="tool", tool_call_id="no_such_call")
+        await self._make_msg("Final answer", role="assistant")
+
+        result = await self.consumer._load_history(self.thread)
+        messages = result["messages"]
+
+        tool_msgs = [m for m in messages if m["role"] == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertEqual(tool_msgs[0]["tool_call_id"], "tc_valid")
+        self.assertTrue(
+            all(m.get("tool_call_id") != "no_such_call" for m in messages),
+            "Orphan tool message should have been stripped",
+        )
+
+    async def test_consecutive_subagent_user_messages_merged(self):
+        """Consecutive user messages from sub-agent results are merged."""
+        await self._make_msg("[Sub-agent result: aaa11111]\nResult A")
+        await self._make_msg("[Sub-agent result: bbb22222]\nResult B")
+        await self._make_msg("OK", role="assistant")
+
+        result = await self.consumer._load_history(self.thread)
+        messages = result["messages"]
+
+        user_msgs = [m for m in messages if m["role"] == "user"]
+        self.assertEqual(len(user_msgs), 1)
+        self.assertIn("[Sub-agent result: aaa11111]", user_msgs[0]["content"])
+        self.assertIn("[Sub-agent result: bbb22222]", user_msgs[0]["content"])
+        self.assertIn("---", user_msgs[0]["content"])
+
+    async def test_consecutive_normal_user_messages_not_merged(self):
+        """Consecutive non-sub-agent user messages stay separate."""
+        await self._make_msg("First message")
+        await self._make_msg("Second message")
+        await self._make_msg("OK", role="assistant")
+
+        result = await self.consumer._load_history(self.thread)
+        messages = result["messages"]
+
+        user_msgs = [m for m in messages if m["role"] == "user"]
+        self.assertEqual(len(user_msgs), 2)
