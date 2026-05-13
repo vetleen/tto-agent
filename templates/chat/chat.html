@@ -1498,7 +1498,7 @@
   let activeThreadId = THREAD_ID || null;
   let currentStreamingElement = null;
   let accumulatedContent = "";
-  let isThinking = false;
+  let currentThinkingBlock = null;
   let thinkingStartTime = null;
 
   function getWsUrl() {
@@ -1575,15 +1575,19 @@
     }
   }
   function hideWaitingIndicator() { if (!currentStreamingElement) return; const el = currentStreamingElement.querySelector(".waiting-indicator"); if (el) el.remove(); }
+  function createThinkingBlock() {
+    const block = document.createElement("div");
+    block.className = "thinking-block mt-2";
+    block.innerHTML = '<button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thinking...</span></button><div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto"></div>';
+    block.querySelector(".thinking-toggle").addEventListener("click", function() { block.classList.toggle("collapsed"); });
+    return block;
+  }
   function collapseThinking() {
-    if (!currentStreamingElement) return;
-    const thinkingBlock = currentStreamingElement.querySelector(".thinking-block");
-    if (thinkingBlock && !thinkingBlock.classList.contains("collapsed")) {
-      thinkingBlock.classList.add("collapsed");
-      const label = thinkingBlock.querySelector(".thinking-label");
-      if (label && thinkingStartTime) { const secs = Math.round((Date.now() - thinkingStartTime) / 1000); label.textContent = "Thought for " + secs + "s"; }
-    }
-    isThinking = false; thinkingStartTime = null;
+    if (!currentThinkingBlock) return;
+    currentThinkingBlock.classList.add("collapsed");
+    const label = currentThinkingBlock.querySelector(".thinking-label");
+    if (label && thinkingStartTime) { const secs = Math.round((Date.now() - thinkingStartTime) / 1000); label.textContent = "Thought for " + secs + "s"; }
+    currentThinkingBlock = null; thinkingStartTime = null;
   }
 
   function handleEvent(data) {
@@ -1724,21 +1728,52 @@
     }
     if (et === "message_start") {
       const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
-      if (!currentStreamingElement) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); }
+      const isNewBubble = !currentStreamingElement;
+      if (isNewBubble) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); }
+      if (currentThinkingBlock) collapseThinking();
+      if (!isNewBubble && accumulatedContent.trim()) {
+        const block = createThinkingBlock();
+        block.classList.add("collapsed");
+        const label = block.querySelector(".thinking-label"); if (label) label.textContent = "Thought further";
+        const contentEl = block.querySelector(".thinking-content");
+        if (contentEl) { contentEl.style.fontFamily = "inherit"; contentEl.style.fontStyle = "normal"; contentEl.innerHTML = renderMarkdown(accumulatedContent); }
+        const msgContent = currentStreamingElement.querySelector(".message-content");
+        if (msgContent) msgContent.parentNode.insertBefore(block, msgContent);
+      }
       accumulatedContent = "";
       if (currentStreamingElement) { const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = ""; }
       startStreamingTimeout(); scrollToBottom(); return;
     }
     if (et === "thinking") {
       const text = (data.data && data.data.text) || ""; if (!text) return;
-      ensureBubble();
-      const thinkingBlock = currentStreamingElement.querySelector(".thinking-block");
-      if (thinkingBlock) { thinkingBlock.classList.remove("hidden"); if (!isThinking) { isThinking = true; thinkingStartTime = Date.now(); } const contentEl = thinkingBlock.querySelector(".thinking-content"); if (contentEl) contentEl.textContent += text; }
+      ensureBubble(); hideWaitingIndicator();
+      if (!currentThinkingBlock) {
+        currentThinkingBlock = createThinkingBlock();
+        thinkingStartTime = Date.now();
+        // Reclaim any leaked thinking tokens that arrived as token events before this thinking event
+        if (accumulatedContent.trim()) {
+          const reclaimed = currentThinkingBlock.querySelector(".thinking-content");
+          if (reclaimed) reclaimed.textContent = accumulatedContent;
+          accumulatedContent = "";
+          const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = "";
+        }
+        const msgContent = currentStreamingElement.querySelector(".message-content");
+        const existingCollapsed = currentStreamingElement.querySelector(".thinking-block.collapsed");
+        if (!existingCollapsed) {
+          const toolCards = currentStreamingElement.querySelector(".tool-cards");
+          if (toolCards) toolCards.parentNode.insertBefore(currentThinkingBlock, toolCards);
+          else if (msgContent) msgContent.parentNode.insertBefore(currentThinkingBlock, msgContent);
+        } else if (msgContent) {
+          msgContent.parentNode.insertBefore(currentThinkingBlock, msgContent);
+        }
+      }
+      const contentEl = currentThinkingBlock.querySelector(".thinking-content");
+      if (contentEl) contentEl.textContent += text;
       scrollToBottom(); return;
     }
     if (et === "token") {
       const tokenText = (data.data && data.data.text) || ""; if (!tokenText) return;
-      ensureBubble(); hideWaitingIndicator(); if (isThinking) collapseThinking();
+      ensureBubble(); hideWaitingIndicator(); if (currentThinkingBlock) collapseThinking();
       accumulatedContent += tokenText;
       const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl) contentEl.innerHTML = renderMarkdown(accumulatedContent);
       scrollToBottom(); return;
@@ -1865,7 +1900,7 @@
       scrollToBottom(); return;
     }
     if (et === "message_end") {
-      if (isThinking) collapseThinking(); hideWaitingIndicator();
+      if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {
         const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
         const toolCards = currentStreamingElement.querySelector(".tool-cards"); if (toolCards && toolCards.children.length > 0) toolCards.classList.add("tool-cards-done");
@@ -1876,7 +1911,7 @@
   }
 
   function finishStreaming(suffix) {
-    if (!currentStreamingElement) return; if (isThinking) collapseThinking(); hideWaitingIndicator();
+    if (!currentStreamingElement) return; if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
     const contentEl = currentStreamingElement.querySelector(".message-content");
     if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
@@ -1888,9 +1923,7 @@
     const now = new Date();
     const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
     const div = document.createElement("div"); div.className = "flex items-start gap-2.5"; div.setAttribute("data-role", "assistant");
-    div.innerHTML = `<div class="flex flex-col w-full"><div class="flex items-center space-x-2"><span class="text-sm font-semibold text-heading">${ASSISTANT_NAME}</span><span class="text-sm text-body">${ts}</span></div><div class="thinking-block hidden mt-2"><button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thinking...</span></button><div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto"></div></div><div class="tool-cards mt-1 space-y-1"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-2"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-2 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
-    const toggle = div.querySelector(".thinking-toggle");
-    if (toggle) { toggle.addEventListener("click", function() { toggle.closest(".thinking-block").classList.toggle("collapsed"); }); }
+    div.innerHTML = `<div class="flex flex-col w-full"><div class="flex items-center space-x-2"><span class="text-sm font-semibold text-heading">${ASSISTANT_NAME}</span><span class="text-sm text-body">${ts}</span></div><div class="tool-cards mt-1 space-y-1"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-2"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-2 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
     return div;
   }
 

@@ -1019,6 +1019,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
                 # Accumulate thinking/reasoning content
                 elif event.event_type == "thinking":
+                    # Reclaim any content that leaked as tokens before thinking started
+                    if accumulated_content and not accumulated_thinking:
+                        accumulated_thinking = accumulated_content
+                        accumulated_content = ""
                     accumulated_thinking += event.data.get("text", "")
 
                 # Track tool calls for persistence

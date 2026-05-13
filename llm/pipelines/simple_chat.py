@@ -328,6 +328,7 @@ class SimpleChatPipeline(BasePipeline):
                 end_data["cost_usd"] = agg_cost_usd
                 # Clean internal fields from end_data
                 end_data.pop("content", None)
+                end_data.pop("content_blocks", None)
                 end_data.pop("tool_calls", None)
                 yield StreamEvent(
                     event_type="message_end",
@@ -412,6 +413,7 @@ class SimpleChatPipeline(BasePipeline):
         end_data["total_tokens"] = agg_total_tokens
         end_data["cost_usd"] = agg_cost_usd
         end_data.pop("content", None)
+        end_data.pop("content_blocks", None)
         end_data.pop("tool_calls", None)
         yield StreamEvent(
             event_type="message_end",

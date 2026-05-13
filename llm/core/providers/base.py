@@ -316,9 +316,7 @@ class BaseLangChainChatModel(ChatModel):
 
     def generate(self, request: ChatRequest) -> ChatResponse:
         lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
-        client = self._client
-        if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas)
+        client = self._get_streaming_client(request)
         callbacks = self._get_callbacks(request)
         config = self._build_config(request, callbacks)
         run_id = request.context.run_id if request.context else "n/a"
@@ -377,21 +375,30 @@ class BaseLangChainChatModel(ChatModel):
             ) from last_exc
 
         raw_content = getattr(result, "content", "") or ""
-        # Responses API may return content as a list of typed blocks;
-        # normalise to a plain string.
+        content_blocks = None
         if isinstance(raw_content, list):
             content = "".join(
                 block.get("text", "") for block in raw_content
                 if isinstance(block, dict) and block.get("type") == "text"
             )
+            full_blocks = [
+                block for block in raw_content
+                if isinstance(block, dict) and block.get("type") in ("thinking", "text")
+            ]
+            if any(b.get("type") == "thinking" for b in full_blocks):
+                content_blocks = full_blocks
         else:
             content = str(raw_content)
         message_tool_calls = parse_tool_calls_from_ai_message(result)
 
+        msg_meta = {}
+        if content_blocks:
+            msg_meta["content_blocks"] = content_blocks
         message = Message(
             role="assistant",
             content=content,
             tool_calls=message_tool_calls,
+            metadata=msg_meta,
         )
 
         usage = None
@@ -569,6 +576,13 @@ class BaseLangChainChatModel(ChatModel):
                     block.get("text", "") for block in raw_content
                     if isinstance(block, dict) and block.get("type") == "text"
                 )
+                # Preserve thinking+text blocks for conversation history
+                full_blocks = [
+                    block for block in raw_content
+                    if isinstance(block, dict) and block.get("type") in ("thinking", "text")
+                ]
+                if any(b.get("type") == "thinking" for b in full_blocks):
+                    end_data["content_blocks"] = full_blocks
             else:
                 end_data["content"] = str(raw_content)
             tool_calls = parse_tool_calls_from_ai_message(accumulated)
