@@ -13,46 +13,16 @@ logger = logging.getLogger(__name__)
 
 
 def get_eligible_summarizer_skills(user):
-    """Return all skills accessible to *user* that include ``save_meeting_minutes`` in tool_names."""
+    """Return all skills accessible to *user* that can drive a meeting summarization thread."""
     from agent_skills.services import get_accessible_skills
 
-    return sorted(
-        [s for s in get_accessible_skills(user) if "save_meeting_minutes" in (s.tool_names or [])],
-        key=lambda s: s.name,
-    )
+    return sorted(get_accessible_skills(user), key=lambda s: s.name)
 
 
-def resolve_summarizer_skill(user, meeting):
-    """Determine which summarizer skill to use.
-
-    Priority: per-meeting override > per-user default > system fallback.
-    Each level validates access and eligibility before accepting.
-    """
-    from accounts.models import UserSettings
+def resolve_summarizer_skill(user):
+    """Return the system meeting-summarizer skill."""
     from agent_skills.models import AgentSkill
-    from agent_skills.services import get_skill_for_user
 
-    def _is_eligible(skill):
-        return skill and "save_meeting_minutes" in (skill.tool_names or [])
-
-    # 1. Per-meeting override
-    if meeting.summarizer_skill_id:
-        skill = get_skill_for_user(user, str(meeting.summarizer_skill_id))
-        if _is_eligible(skill):
-            return skill
-
-    # 2. Per-user default
-    try:
-        us = UserSettings.objects.get(user=user)
-        skill_id = (us.preferences or {}).get("meetings", {}).get("summarizer_skill_id")
-        if skill_id:
-            skill = get_skill_for_user(user, skill_id)
-            if _is_eligible(skill):
-                return skill
-    except UserSettings.DoesNotExist:
-        pass
-
-    # 3. System fallback
     return AgentSkill.objects.filter(
         slug="meeting-summarizer", level="system", is_active=True,
     ).first()
@@ -96,11 +66,11 @@ def _build_seed_message(
         )
     parts.append(
         "Your job is to produce well-structured meeting minutes (or a summary) "
-        f"and save them with `save_meeting_minutes` (the meeting_id is `{meeting.uuid}`). "
+        "and draft them into a new canvas. "
         "If important context is missing — attendees, meeting purpose, the boundary "
         "between decisions and action items — greet the user briefly and ask one "
         f"focused question before drafting. Use the attached {skill_name} skill "
-        "to complete the task."
+        "to complete the task. Iterate with the user until they are satisfied."
     )
     return " ".join(parts)
 
@@ -198,7 +168,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
     )
 
     if summarizer_skill is None:
-        summarizer_skill = resolve_summarizer_skill(user, meeting)
+        summarizer_skill = resolve_summarizer_skill(user)
     if summarizer_skill is None:
         logger.error(
             "create_minutes_thread: No eligible summarizer skill found "

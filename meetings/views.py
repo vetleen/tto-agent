@@ -16,7 +16,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 
-from .models import Meeting, MeetingArtifact, MeetingAttachment, MeetingDataRoom
+from .models import Meeting, MeetingAttachment
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,6 @@ def meeting_detail(request, meeting_uuid):
         return redirect("meeting_list")
 
     segments = list(meeting.segments.all().order_by("segment_index"))
-    artifacts = list(meeting.artifacts.all().order_by("-created_at"))
     attachments = list(meeting.attachments.all().order_by("-uploaded_at"))
 
     from documents.models import DataRoom, DataRoomDocument
@@ -250,7 +249,7 @@ def meeting_detail(request, meeting_uuid):
     from meetings.services.minutes import get_eligible_summarizer_skills, resolve_summarizer_skill
 
     summarizer_skills = get_eligible_summarizer_skills(request.user)
-    effective_summarizer = resolve_summarizer_skill(request.user, meeting)
+    effective_summarizer = resolve_summarizer_skill(request.user)
     effective_summarizer_id = str(effective_summarizer.id) if effective_summarizer else ""
     effective_summarizer_name = effective_summarizer.name if effective_summarizer else "Meeting Summarizer"
 
@@ -260,7 +259,6 @@ def meeting_detail(request, meeting_uuid):
         {
             "meeting": meeting,
             "segments": segments,
-            "artifacts": artifacts,
             "attachments": attachments,
             "user_data_rooms": user_data_rooms,
             "saved_doc_groups": saved_doc_groups,
@@ -451,55 +449,6 @@ def meeting_transcription_progress(request, meeting_uuid):
     response = JsonResponse(payload)
     response["Cache-Control"] = "no-store"
     return response
-
-
-# ---------------------------------------------------------------------------
-# Linking to data rooms
-# ---------------------------------------------------------------------------
-
-
-@login_required
-@require_POST
-def meeting_link_data_room(request, meeting_uuid):
-    from documents.models import DataRoom
-
-    meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
-    if not _user_can_modify_meeting(request.user, meeting):
-        return redirect("meeting_list")
-    data_room_id = request.POST.get("data_room_id")
-    if not data_room_id:
-        messages.error(request, "No data room selected.")
-        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-    try:
-        data_room = DataRoom.objects.get(uuid=data_room_id)
-    except (DataRoom.DoesNotExist, ValueError):
-        messages.error(request, "Data room not found.")
-        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-    if data_room.created_by_id != request.user.id:
-        messages.error(request, "You can only link data rooms you own.")
-        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-    MeetingDataRoom.objects.get_or_create(meeting=meeting, data_room=data_room)
-    meeting.save(update_fields=["updated_at"])
-    messages.success(request, f"Linked data room: {data_room.name}.")
-    return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-
-
-@login_required
-@require_POST
-def meeting_unlink_data_room(request, meeting_uuid, data_room_uuid):
-    from documents.models import DataRoom
-
-    meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
-    if not _user_can_modify_meeting(request.user, meeting):
-        return redirect("meeting_list")
-    try:
-        data_room = DataRoom.objects.get(uuid=data_room_uuid)
-    except (DataRoom.DoesNotExist, ValueError):
-        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-    MeetingDataRoom.objects.filter(meeting=meeting, data_room=data_room).delete()
-    meeting.save(update_fields=["updated_at"])
-    messages.success(request, "Data room unlinked.")
-    return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
 
 # ---------------------------------------------------------------------------
@@ -815,23 +764,6 @@ def meeting_delete_attachment(request, meeting_uuid, attachment_id):
 
 
 # ---------------------------------------------------------------------------
-# Artifact deletion (Wilfred-saved minutes)
-# ---------------------------------------------------------------------------
-
-
-@login_required
-@require_POST
-def meeting_delete_artifact(request, meeting_uuid, artifact_id):
-    meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
-    if not _user_can_modify_meeting(request.user, meeting):
-        return redirect("meeting_list")
-    artifact = get_object_or_404(MeetingArtifact, pk=artifact_id, meeting=meeting)
-    artifact.delete()
-    messages.success(request, "Artifact deleted.")
-    return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-
-
-# ---------------------------------------------------------------------------
 # "Create meeting minutes with Wilfred" — redirects into a chat thread
 # ---------------------------------------------------------------------------
 
@@ -841,7 +773,7 @@ def meeting_delete_artifact(request, meeting_uuid, artifact_id):
 def meeting_create_minutes_thread(request, meeting_uuid):
     from agent_skills.services import get_skill_for_user
 
-    from .services.minutes import create_minutes_thread, resolve_summarizer_skill
+    from .services.minutes import create_minutes_thread
 
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
@@ -850,18 +782,11 @@ def meeting_create_minutes_thread(request, meeting_uuid):
         messages.error(request, "This meeting has no transcript yet.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    # Resolve skill: explicit POST param > per-meeting > per-user > system
+    # Resolve skill: explicit POST param (transient, not persisted) > system default
     skill_id = (request.POST.get("skill_id") or "").strip()
     summarizer_skill = None
     if skill_id:
-        candidate = get_skill_for_user(request.user, skill_id)
-        if candidate and "save_meeting_minutes" in (candidate.tool_names or []):
-            summarizer_skill = candidate
-            meeting.summarizer_skill = summarizer_skill
-            meeting.save(update_fields=["summarizer_skill"])
-
-    if summarizer_skill is None:
-        summarizer_skill = resolve_summarizer_skill(request.user, meeting)
+        summarizer_skill = get_skill_for_user(request.user, skill_id)
 
     thread, err = create_minutes_thread(request.user, meeting, summarizer_skill=summarizer_skill)
     if err or thread is None:

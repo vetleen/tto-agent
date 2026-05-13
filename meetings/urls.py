@@ -20,12 +20,6 @@ urlpatterns = [
         views.meeting_cancel_transcription,
         name="meeting_cancel_transcription",
     ),
-    path("<uuid:meeting_uuid>/link-data-room/", views.meeting_link_data_room, name="meeting_link_data_room"),
-    path(
-        "<uuid:meeting_uuid>/unlink-data-room/<uuid:data_room_uuid>/",
-        views.meeting_unlink_data_room,
-        name="meeting_unlink_data_room",
-    ),
     path("<uuid:meeting_uuid>/upload/", views.meeting_upload, name="meeting_upload"),
     path("<uuid:meeting_uuid>/upload-transcript/", views.meeting_upload_transcript, name="meeting_upload_transcript"),
     path("<uuid:meeting_uuid>/upload-audio/", views.meeting_upload_audio, name="meeting_upload_audio"),
@@ -35,11 +29,6 @@ urlpatterns = [
         "<uuid:meeting_uuid>/attachments/<uuid:attachment_id>/delete/",
         views.meeting_delete_attachment,
         name="meeting_delete_attachment",
-    ),
-    path(
-        "<uuid:meeting_uuid>/artifacts/<uuid:artifact_id>/delete/",
-        views.meeting_delete_artifact,
-        name="meeting_delete_artifact",
     ),
     path(
         "<uuid:meeting_uuid>/create-minutes-thread/",

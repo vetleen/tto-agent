@@ -18,9 +18,6 @@ class MeetingsConfig(AppConfig):
     verbose_name = "Meetings"
 
     def ready(self):
-        # Register chat tools on startup so the LLM can call them.
-        import meetings.tools  # noqa: F401
-
         # Skip background side-effects when running the test runner.
         if len(sys.argv) >= 2 and sys.argv[1] == "test":
             return
