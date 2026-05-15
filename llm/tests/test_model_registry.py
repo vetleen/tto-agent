@@ -4,7 +4,19 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from llm.model_registry import ModelInfo, get_model_info
+from llm.model_registry import (
+    SLOT_ALLOWED_TIERS,
+    TIER_CHEAP,
+    TIER_MID,
+    TIER_STANDARD,
+    ModelInfo,
+    get_model_info,
+    get_model_tier,
+    get_models_at_or_above_tier,
+    get_models_by_tier,
+    get_models_for_slot,
+    is_model_valid_for_slot,
+)
 
 
 class GetModelInfoTests(TestCase):
@@ -86,3 +98,116 @@ class GetModelInfoTests(TestCase):
         info = get_model_info("gemini-3-flash-preview")
         self.assertIsNotNone(info)
         self.assertEqual(info.provider, "google_genai")
+
+
+class TierClassificationTests(TestCase):
+
+    def test_all_models_have_a_tier(self):
+        from llm.model_registry import _MODELS
+        for model_id, info in _MODELS.items():
+            self.assertIn(info.tier, (TIER_CHEAP, TIER_MID, TIER_STANDARD), f"{model_id} has invalid tier")
+
+    def test_cheap_models(self):
+        cheap = get_models_by_tier(TIER_CHEAP)
+        self.assertIn("openai/gpt-5.4-nano", cheap)
+        self.assertIn("gemini/gemini-2.5-flash-lite", cheap)
+        self.assertIn("gemini/gemini-3.1-flash-lite-preview", cheap)
+        self.assertNotIn("openai/gpt-5.4", cheap)
+
+    def test_mid_models(self):
+        mid = get_models_by_tier(TIER_MID)
+        self.assertIn("openai/gpt-5.4-mini", mid)
+        self.assertIn("anthropic/claude-haiku-4-5", mid)
+        self.assertIn("gemini/gemini-2.5-flash", mid)
+        self.assertNotIn("openai/gpt-5.4-nano", mid)
+
+    def test_standard_models(self):
+        standard = get_models_by_tier(TIER_STANDARD)
+        self.assertIn("openai/gpt-5.4", standard)
+        self.assertIn("anthropic/claude-opus-4-6", standard)
+        self.assertIn("anthropic/claude-sonnet-4-6", standard)
+        self.assertIn("gemini/gemini-2.5-pro", standard)
+        self.assertNotIn("openai/gpt-5.4-mini", standard)
+
+    def test_get_model_tier(self):
+        self.assertEqual(get_model_tier("openai/gpt-5.4-nano"), TIER_CHEAP)
+        self.assertEqual(get_model_tier("openai/gpt-5.4-mini"), TIER_MID)
+        self.assertEqual(get_model_tier("openai/gpt-5.4"), TIER_STANDARD)
+        self.assertIsNone(get_model_tier("unknown/model"))
+
+
+class SlotValidationTests(TestCase):
+
+    def test_cheap_slot_accepts_only_cheap(self):
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4-nano", "cheap"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-mini", "cheap"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4", "cheap"))
+
+    def test_mid_slot_accepts_mid_and_standard(self):
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4-mini", "mid"))
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4", "mid"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-nano", "mid"))
+
+    def test_primary_slot_accepts_only_standard(self):
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4", "primary"))
+        self.assertTrue(is_model_valid_for_slot("anthropic/claude-sonnet-4-6", "primary"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-mini", "primary"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-nano", "primary"))
+
+    def test_unknown_model_returns_false(self):
+        self.assertFalse(is_model_valid_for_slot("unknown/model", "cheap"))
+        self.assertFalse(is_model_valid_for_slot("unknown/model", "primary"))
+
+    def test_unknown_slot_allows_any_model(self):
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4", "nonexistent"))
+
+
+class GetModelsForSlotTests(TestCase):
+
+    def test_cheap_slot_returns_only_cheap(self):
+        models = get_models_for_slot("cheap")
+        for m in models:
+            self.assertEqual(get_model_tier(m), TIER_CHEAP)
+
+    def test_mid_slot_returns_mid_and_standard(self):
+        models = get_models_for_slot("mid")
+        for m in models:
+            self.assertIn(get_model_tier(m), (TIER_MID, TIER_STANDARD))
+
+    def test_primary_slot_returns_only_standard(self):
+        models = get_models_for_slot("primary")
+        for m in models:
+            self.assertEqual(get_model_tier(m), TIER_STANDARD)
+
+    def test_filtered_by_allowed_models(self):
+        allowed = ["openai/gpt-5.4-nano", "openai/gpt-5.4"]
+        cheap = get_models_for_slot("cheap", allowed)
+        self.assertEqual(cheap, ["openai/gpt-5.4-nano"])
+        primary = get_models_for_slot("primary", allowed)
+        self.assertEqual(primary, ["openai/gpt-5.4"])
+
+    def test_empty_allowed_returns_all_for_slot(self):
+        models = get_models_for_slot("cheap", [])
+        self.assertTrue(len(models) >= 3)
+
+    def test_no_allowed_returns_all_for_slot(self):
+        models = get_models_for_slot("cheap")
+        self.assertTrue(len(models) >= 3)
+
+
+class GetModelsAtOrAboveTierTests(TestCase):
+
+    def test_at_or_above_cheap_returns_all(self):
+        from llm.model_registry import _MODELS
+        models = get_models_at_or_above_tier(TIER_CHEAP)
+        self.assertEqual(len(models), len(_MODELS))
+
+    def test_at_or_above_mid_excludes_cheap(self):
+        models = get_models_at_or_above_tier(TIER_MID)
+        for m in models:
+            self.assertNotEqual(get_model_tier(m), TIER_CHEAP)
+
+    def test_at_or_above_standard_excludes_cheap_and_mid(self):
+        models = get_models_at_or_above_tier(TIER_STANDARD)
+        for m in models:
+            self.assertEqual(get_model_tier(m), TIER_STANDARD)

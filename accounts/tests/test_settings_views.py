@@ -148,17 +148,17 @@ class PreferencesModelsUpdateTests(TestCase):
     def test_update_model_preference(self, mock_prefs):
         from core.preferences import ResolvedPreferences
         mock_prefs.return_value = ResolvedPreferences(
-            top_model="openai/gpt-5",
+            top_model="openai/gpt-5.4",
             mid_model="",
             cheap_model="",
-            allowed_models=["openai/gpt-5", "anthropic/claude-sonnet-4-5"],
+            allowed_models=["openai/gpt-5.4", "anthropic/claude-sonnet-4-6"],
             allowed_tools=[],
             theme="light",
         )
         self.client.login(email=self.user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"tier": "primary", "model": "anthropic/claude-sonnet-4-5"}),
+            json.dumps({"tier": "primary", "model": "anthropic/claude-sonnet-4-6"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
@@ -166,7 +166,7 @@ class PreferencesModelsUpdateTests(TestCase):
         self.assertTrue(data["ok"])
 
         settings = UserSettings.objects.get(user=self.user)
-        self.assertEqual(settings.preferences["models"]["primary"], "anthropic/claude-sonnet-4-5")
+        self.assertEqual(settings.preferences["models"]["primary"], "anthropic/claude-sonnet-4-6")
 
     @patch("core.preferences.get_preferences")
     def test_reject_model_not_in_allowed(self, mock_prefs):
@@ -1064,3 +1064,256 @@ class AgentAttachSkillsPreferenceViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["enabled"])
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class TierValidationOnModelUpdateTests(TestCase):
+    """Tier-aware validation on preferences_models_update and org_models_update."""
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="tierval@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="TierOrg", slug="tierorg", preferences={
+            "allowed_models": [
+                "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+            ],
+        })
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.ADMIN)
+
+    @patch("core.preferences.get_preferences")
+    def test_user_rejects_standard_model_as_cheap(self, mock_prefs):
+        from core.preferences import ResolvedPreferences
+        mock_prefs.return_value = ResolvedPreferences(
+            top_model="openai/gpt-5.4", mid_model="openai/gpt-5.4-mini",
+            cheap_model="openai/gpt-5.4-nano",
+            allowed_models=["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano"],
+            allowed_tools=[], theme="light",
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            reverse("accounts:preferences_models_update"),
+            json.dumps({"tier": "cheap", "model": "openai/gpt-5.4"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot be used", response.json()["error"])
+
+    @patch("core.preferences.get_preferences")
+    def test_user_accepts_correct_tier(self, mock_prefs):
+        from core.preferences import ResolvedPreferences
+        mock_prefs.return_value = ResolvedPreferences(
+            top_model="openai/gpt-5.4", mid_model="openai/gpt-5.4-mini",
+            cheap_model="openai/gpt-5.4-nano",
+            allowed_models=["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano"],
+            allowed_tools=[], theme="light",
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            reverse("accounts:preferences_models_update"),
+            json.dumps({"tier": "cheap", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+
+    def test_org_rejects_wrong_tier(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            reverse("accounts:org_models_update"),
+            json.dumps({"tier": "cheap", "model": "openai/gpt-5.4"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot be used", response.json()["error"])
+
+    def test_org_accepts_correct_tier(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            reverse("accounts:org_models_update"),
+            json.dumps({"tier": "primary", "model": "openai/gpt-5.4"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PreferencesFeatureModelUpdateTests(TestCase):
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="userfeat@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.url = reverse("accounts:preferences_feature_model_update")
+
+    @patch("core.preferences.get_preferences")
+    def test_happy_path(self, mock_prefs):
+        from core.preferences import ResolvedPreferences
+        mock_prefs.return_value = ResolvedPreferences(
+            top_model="openai/gpt-5.4", mid_model="openai/gpt-5.4-mini",
+            cheap_model="openai/gpt-5.4-nano",
+            allowed_models=["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano"],
+            allowed_tools=[], theme="light",
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "thread_title", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["feature"], "thread_title")
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertEqual(settings.preferences["feature_models"]["thread_title"], "openai/gpt-5.4-nano")
+
+    @patch("core.preferences.get_preferences")
+    def test_rejects_too_low_tier(self, mock_prefs):
+        from core.preferences import ResolvedPreferences
+        mock_prefs.return_value = ResolvedPreferences(
+            top_model="openai/gpt-5.4", mid_model="openai/gpt-5.4-mini",
+            cheap_model="openai/gpt-5.4-nano",
+            allowed_models=["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano"],
+            allowed_tools=[], theme="light",
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        # chat feature requires standard tier minimum, nano is cheap
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "chat", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("tier too low", response.json()["error"])
+
+    def test_rejects_org_scoped_feature(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "document_description", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not user-configurable", response.json()["error"])
+
+    def test_rejects_unknown_feature(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "nonexistent", "model": "openai/gpt-5.4"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unknown feature", response.json()["error"])
+
+    def test_clear_override(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "thread_title", "model": ""}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertIsNone(settings.preferences["feature_models"]["thread_title"])
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "thread_title", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgFeatureModelUpdateTests(TestCase):
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="orgfeatadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="orgfeatmember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="FeatOrg", slug="featorg", preferences={
+            "allowed_models": [
+                "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+            ],
+        })
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_feature_model_update")
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    def test_happy_path(self, mock_models):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "document_description", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["feature_models"]["document_description"], "openai/gpt-5.4-nano")
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    def test_rejects_user_scoped_feature(self, mock_models):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "chat", "model": "openai/gpt-5.4"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not org-configurable", response.json()["error"])
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    def test_rejects_too_low_tier(self, mock_models):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        # guardrails_reviewer requires standard tier minimum
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "guardrails_reviewer", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("tier too low", response.json()["error"])
+
+    def test_requires_admin(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "document_description", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "document_description", "model": "openai/gpt-5.4-nano"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)

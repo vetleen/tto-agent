@@ -81,6 +81,33 @@ def settings_page(request):
         if get_transcription_model_info(mid) is not None
     ]
 
+    from core.preferences import FEATURE_DEFAULTS
+    from llm.model_registry import get_models_at_or_above_tier, get_models_for_slot
+
+    user_feature_models = (user_settings.preferences or {}).get("feature_models", {})
+    _USER_FEATURE_META = {
+        "chat": ("Chat", "The primary model used for conversations."),
+        "thread_title": ("Thread title", "Generates a short title for new chat threads."),
+        "thread_emoji": ("Thread emoji", "Picks an emoji when you use the /tag command on a chat thread."),
+        "canvas_title": ("Canvas title", "Generates a title when a new canvas is created."),
+        "image_description": ("Image description", f"Describes images pasted or uploaded in chat so {django_settings.ASSISTANT_NAME} can understand them."),
+    }
+    user_features = []
+    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
+        if scope != "user":
+            continue
+        label, desc = _USER_FEATURE_META.get(fkey, (fkey.replace("_", " ").title(), ""))
+        eligible = [m for m in get_models_at_or_above_tier(min_tier) if m in prefs.allowed_models]
+        user_features.append({
+            "key": fkey,
+            "label": label,
+            "desc": desc,
+            "default_slot": default_slot,
+            "current": user_feature_models.get(fkey) or "",
+            "resolved": prefs.feature_models.get(fkey, ""),
+            "eligible_models": eligible,
+        })
+
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
         "user_models": user_models,
@@ -101,10 +128,12 @@ def settings_page(request):
         "transcription_model_display": transcription_model_display,
         "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
         "assistant_name": django_settings.ASSISTANT_NAME,
+        "preference_warnings": prefs.warnings,
+        "user_features": user_features,
         "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"]},
-            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"]},
-            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": tier_defaults["cheap"]},
+            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"], "slot_models": get_models_for_slot("primary", prefs.allowed_models)},
+            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"], "slot_models": get_models_for_slot("mid", prefs.allowed_models)},
+            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": tier_defaults["cheap"], "slot_models": get_models_for_slot("cheap", prefs.allowed_models)},
         ],
     })
 
@@ -125,11 +154,15 @@ def preferences_models_update(request):
     if tier not in ("primary", "mid", "cheap"):
         return JsonResponse({"error": "Invalid tier"}, status=400)
 
-    # Validate model is in the user's allowed list
+    # Validate model is in the user's allowed list and correct tier
     if model:
+        from llm.model_registry import is_model_valid_for_slot
+
         prefs = get_preferences(request.user)
         if model not in prefs.allowed_models:
             return JsonResponse({"error": "Model not allowed"}, status=400)
+        if not is_model_valid_for_slot(model, tier):
+            return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
 
     settings, _ = UserSettings.objects.get_or_create(user=request.user)
     prefs_dict = settings.preferences or {}
@@ -238,6 +271,46 @@ def preferences_agent_attach_skills_update(request):
     settings.preferences = prefs_dict
     settings.save()
     return JsonResponse({"ok": True, "enabled": enabled})
+
+
+@login_required
+@require_POST
+def preferences_feature_model_update(request):
+    """Update user's preferred model for a specific feature."""
+    from core.preferences import FEATURE_DEFAULTS, get_preferences
+    from llm.model_registry import TIER_ORDER, get_model_tier
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    feature = data.get("feature", "").strip()
+    model = data.get("model", "").strip() or None
+
+    if feature not in FEATURE_DEFAULTS:
+        return JsonResponse({"error": "Unknown feature"}, status=400)
+
+    _default_slot, min_tier, scope = FEATURE_DEFAULTS[feature]
+    if scope != "user":
+        return JsonResponse({"error": "This feature is not user-configurable"}, status=400)
+
+    if model:
+        prefs = get_preferences(request.user)
+        if model not in prefs.allowed_models:
+            return JsonResponse({"error": "Model not allowed"}, status=400)
+        tier = get_model_tier(model)
+        if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
+            return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
+
+    settings, _ = UserSettings.objects.get_or_create(user=request.user)
+    prefs_dict = settings.preferences or {}
+    feature_models = prefs_dict.get("feature_models", {})
+    feature_models[feature] = model
+    prefs_dict["feature_models"] = feature_models
+    settings.preferences = prefs_dict
+    settings.save()
+
+    return JsonResponse({"ok": True, "feature": feature, "model": model})
 
 
 # ---- Organization Settings Page ----
@@ -362,6 +435,35 @@ def org_settings_page(request):
     system_transcription_default_live = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "") or ""
     system_transcription_default_upload = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "") or ""
 
+    from core.preferences import FEATURE_DEFAULTS
+    from llm.model_registry import get_models_at_or_above_tier, get_models_for_slot
+
+    effective_org_allowed = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
+
+    org_feature_models = org_prefs.get("feature_models", {})
+    _ORG_FEATURE_META = {
+        "message_summary": ("Message summary", "When conversations get long, this model summarizes the chat history to stay within the context window."),
+        "guardrails_classifier": ("Guardrails classifier", "Screens every user message and profile description for adversarial or policy-violating content. A cheap, fast model is ideal here since it only flags content for further review."),
+        "guardrails_reviewer": ("Guardrails reviewer", "Reviews content flagged by the classifier and decides whether action is needed (warn, block message, ban user, etc.). A stronger model is recommended since it actually makes the final decision."),
+        "document_description": ("Document description", f"Generates a short description of uploaded documents to help {django_settings.ASSISTANT_NAME} judge relevance."),
+        "skill_emoji": ("Skill emoji", "Picks an emoji for newly created skills."),
+        "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
+    }
+    org_features = []
+    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
+        if scope != "org":
+            continue
+        label, desc = _ORG_FEATURE_META.get(fkey, (fkey.replace("_", " ").title(), ""))
+        eligible = [m for m in get_models_at_or_above_tier(min_tier) if m in effective_org_allowed]
+        org_features.append({
+            "key": fkey,
+            "label": label,
+            "desc": desc,
+            "default_slot": default_slot,
+            "current": org_feature_models.get(fkey) or "",
+            "eligible_models": eligible,
+        })
+
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "monthly_budget_per_user": org_prefs.get("monthly_budget_per_user", 0),
@@ -386,10 +488,11 @@ def org_settings_page(request):
         "system_transcription_default_live": system_transcription_default_live,
         "system_transcription_default_upload": system_transcription_default_upload,
         "transcription_model_display": transcription_model_display,
+        "org_features": org_features,
         "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"]},
-            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"]},
-            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": system_defaults["cheap"]},
+            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"], "slot_models": get_models_for_slot("primary", effective_org_allowed)},
+            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"], "slot_models": get_models_for_slot("mid", effective_org_allowed)},
+            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": system_defaults["cheap"], "slot_models": get_models_for_slot("cheap", effective_org_allowed)},
         ],
     })
 
@@ -537,6 +640,12 @@ def org_models_update(request):
 
     if model and org_allowed and model not in org_allowed:
         return JsonResponse({"error": "Model not in org allowed list"}, status=400)
+
+    if model:
+        from llm.model_registry import is_model_valid_for_slot
+
+        if not is_model_valid_for_slot(model, tier):
+            return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
 
     models = prefs.get("models", {})
     models[tier] = model
@@ -754,6 +863,54 @@ def org_skills_update(request):
     org.save(update_fields=["preferences"])
 
     return JsonResponse({"ok": True, "slug": slug, "enabled": bool(enabled)})
+
+
+@login_required
+@require_POST
+def org_feature_model_update(request):
+    """Set org's preferred model for a specific feature."""
+    from core.preferences import FEATURE_DEFAULTS
+    from llm.model_registry import TIER_ORDER, get_model_tier
+    from llm.service.policies import get_allowed_models
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    feature = data.get("feature", "").strip()
+    model = data.get("model", "").strip() or None
+
+    if feature not in FEATURE_DEFAULTS:
+        return JsonResponse({"error": "Unknown feature"}, status=400)
+
+    _default_slot, min_tier, scope = FEATURE_DEFAULTS[feature]
+    if scope != "org":
+        return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
+
+    org = membership.org
+    prefs = org.preferences or {}
+
+    if model:
+        org_allowed = prefs.get("allowed_models") or []
+        system_models = get_allowed_models()
+        effective = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
+        if model not in effective:
+            return JsonResponse({"error": "Model not in allowed list"}, status=400)
+        tier = get_model_tier(model)
+        if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
+            return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
+
+    feature_models = prefs.get("feature_models", {})
+    feature_models[feature] = model
+    prefs["feature_models"] = feature_models
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True, "feature": feature, "model": model})
 
 
 # ---- Usage Page ----

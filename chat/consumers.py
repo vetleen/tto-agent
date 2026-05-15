@@ -747,7 +747,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if requested_model and prefs and requested_model in prefs.allowed_models:
                 model = requested_model
             else:
-                model = prefs.top_model if prefs else None
+                model = prefs.feature_models.get("chat", prefs.top_model) if prefs else None
 
             max_context_tokens = prefs.max_context_tokens if prefs else None
 
@@ -951,7 +951,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if requested_model and prefs and requested_model in prefs.allowed_models:
                 model = requested_model
             else:
-                model = prefs.top_model if prefs else None
+                model = prefs.feature_models.get("chat", prefs.top_model) if prefs else None
 
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
@@ -1240,11 +1240,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if not messages_to_summarise:
                 return
 
+            prefs = self.resolved_prefs
+            summary_model = prefs.feature_models.get("message_summary", prefs.mid_model) if prefs else None
             summary_text = await generate_summary(
                 messages_to_summarise,
                 existing_summary=thread_data["summary"],
                 user_id=self.user.pk,
                 conversation_id=str(thread.id),
+                model=summary_model,
             )
 
             last_msg = messages_to_summarise[-1]
@@ -2181,11 +2184,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 conversation_id=str(thread.id),
             )
             prefs = self.resolved_prefs
-            cheap_model = prefs.cheap_model if prefs else None
+            title_model = prefs.feature_models.get("thread_title", prefs.cheap_model) if prefs else None
 
             request = ChatRequest(
                 messages=[Message(role="user", content=prompt)],
-                model=cheap_model or None,
+                model=title_model or None,
                 stream=False,
                 tools=[],
                 context=context,
@@ -2543,11 +2546,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conversation_id=str(thread.id),
         )
         prefs = self.resolved_prefs
-        cheap_model = prefs.cheap_model if prefs else None
+        emoji_model = prefs.feature_models.get("thread_emoji", prefs.cheap_model) if prefs else None
 
         request = ChatRequest(
             messages=[Message(role="user", content=prompt)],
-            model=cheap_model or None,
+            model=emoji_model or None,
             stream=False,
             tools=[],
             context=context,
@@ -2586,11 +2589,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
                 return
 
+            prefs = self.resolved_prefs
+            compact_model = prefs.feature_models.get("message_summary", prefs.mid_model) if prefs else None
             summary_text = await generate_summary(
                 messages,
                 existing_summary=thread_data["summary"],
                 user_id=self.user.pk,
                 conversation_id=str(thread.id),
+                model=compact_model,
             )
 
             last_msg = messages[-1]

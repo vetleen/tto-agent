@@ -197,11 +197,19 @@ def process_document(document_id: int) -> None:
             logger.exception("process_document: document_id=%s guardrail scan dispatch failed (non-critical)", document_id)
 
         # Generate description + tags (fire-and-forget, after READY)
-        if getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", ""):
+        from accounts.models import Membership
+        from core.preferences import resolve_org_feature_model
+
+        desc_org_id = None
+        if doc.uploaded_by_id:
+            desc_org_id = Membership.objects.filter(user_id=doc.uploaded_by_id).values_list("org_id", flat=True).first()
+
+        desc_model = resolve_org_feature_model(desc_org_id, "document_description")
+        if desc_model:
             try:
                 from documents.services.description import generate_description_and_tags_from_text
                 result = generate_description_and_tags_from_text(
-                    cleaned, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id
+                    cleaned, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=desc_org_id
                 )
                 doc.description = result["description"]
                 doc.save(update_fields=["description", "updated_at"])

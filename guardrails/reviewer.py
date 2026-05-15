@@ -82,9 +82,10 @@ async def review_flagged_message(
     """
 
     def _run_reviewer() -> ReviewerDecision:
+        from core.preferences import resolve_org_feature_model
         from llm.types import ChatRequest, Message, RunContext
 
-        top_model = getattr(settings, "LLM_DEFAULT_TOP_MODEL", "")
+        top_model = resolve_org_feature_model(org_id, "guardrails_reviewer")
         if not top_model:
             logger.warning("review_flagged_message: no top model configured, defaulting to block")
             return ReviewerDecision(

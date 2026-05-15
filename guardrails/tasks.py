@@ -90,7 +90,16 @@ def scan_document_chunks(document_id: int) -> None:
             remaining_chunks.append(chunk)
 
     # Phase 2: Cheap model classifier (batch)
-    cheap_model = getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", "")
+    from accounts.models import Membership
+    from core.preferences import resolve_org_feature_model
+
+    org_id = None
+    if doc.uploaded_by_id:
+        mem = Membership.objects.filter(user_id=doc.uploaded_by_id).values_list("org_id", flat=True).first()
+        if mem:
+            org_id = mem
+
+    cheap_model = resolve_org_feature_model(org_id, "guardrail_chunk_scan")
     if not cheap_model or not remaining_chunks:
         logger.info(
             "scan_document_chunks: document_id=%s done heuristic_flagged=%s",
@@ -101,7 +110,7 @@ def scan_document_chunks(document_id: int) -> None:
     for batch_start in range(0, len(remaining_chunks), _BATCH_SIZE):
         batch = remaining_chunks[batch_start:batch_start + _BATCH_SIZE]
         try:
-            _classify_chunk_batch(doc, batch)
+            _classify_chunk_batch(doc, batch, cheap_model)
         except Exception:
             logger.exception(
                 "scan_document_chunks: classifier failed document_id=%s batch_start=%s",
@@ -114,13 +123,13 @@ def scan_document_chunks(document_id: int) -> None:
     )
 
 
-def _classify_chunk_batch(doc, chunks: list[dict]) -> None:
-    """Classify a batch of suspicious chunks using the cheap model."""
+def _classify_chunk_batch(doc, chunks: list[dict], model: str) -> None:
+    """Classify a batch of suspicious chunks using the given model."""
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
     from guardrails.schemas import BatchClassifierResult
 
-    cheap_model = settings.LLM_DEFAULT_CHEAP_MODEL
+    cheap_model = model
 
     numbered = []
     for i, chunk in enumerate(chunks):

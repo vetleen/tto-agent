@@ -41,11 +41,13 @@ def _run_classifier(
     user_id: int,
     conversation_id: str | None,
     system_prompt: str,
+    org_id: int | None = None,
 ) -> ClassifierResult:
     """Synchronous core: build a ChatRequest and call run_structured()."""
+    from core.preferences import resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
 
-    cheap_model = getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", "")
+    cheap_model = resolve_org_feature_model(org_id, "guardrails_classifier")
     if not cheap_model:
         logger.warning("classifier: no cheap model configured, defaulting to allow")
         return ClassifierResult(
@@ -85,7 +87,7 @@ async def classify_message(
     Returns a ClassifierResult with is_suspicious, concern_tags, confidence, reasoning.
     """
     return await asyncio.to_thread(
-        _run_classifier, text, user_id, conversation_id, _CLASSIFIER_SYSTEM_PROMPT,
+        _run_classifier, text, user_id, conversation_id, _CLASSIFIER_SYSTEM_PROMPT, org_id,
     )
 
 
@@ -115,7 +117,7 @@ def classify_description_sync(
     Called from sync Django views before saving descriptions that will be
     injected into the system prompt.
     """
-    return _run_classifier(text, user_id, None, _DESCRIPTION_CLASSIFIER_PROMPT)
+    return _run_classifier(text, user_id, None, _DESCRIPTION_CLASSIFIER_PROMPT, org_id)
 
 
 def _get_llm_service():

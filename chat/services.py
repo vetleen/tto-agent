@@ -294,14 +294,13 @@ async def generate_summary(
     *,
     user_id: int,
     conversation_id,
+    model: str | None = None,
 ) -> str:
     """Summarise *messages* into a concise rolling summary.
 
     When *existing_summary* is provided it is folded into the new summary
     so that the LLM produces a single coherent summary covering all prior
     history.
-
-    Uses the mid-tier model (same cheap model used for title generation).
     """
     from django.conf import settings as django_settings
 
@@ -336,7 +335,7 @@ async def generate_summary(
             Message(role="system", content=system_prompt),
             Message(role="user", content=user_prompt),
         ],
-        model=django_settings.LLM_DEFAULT_MID_MODEL,
+        model=model or django_settings.LLM_DEFAULT_MID_MODEL,
         stream=False,
         tools=[],
         context=context,
@@ -364,8 +363,9 @@ def describe_image(
     from llm.types import ChatRequest, Message, RunContext
 
     prefs = get_preferences(user)
+    preferred = prefs.feature_models.get("image_description", prefs.cheap_model)
     model = None
-    for candidate in [prefs.cheap_model, prefs.mid_model, prefs.top_model]:
+    for candidate in [preferred, prefs.cheap_model, prefs.mid_model, prefs.top_model]:
         if supports_vision(candidate):
             model = candidate
             break
@@ -433,7 +433,7 @@ def generate_canvas_title(doc_title: str, doc_content: str, user) -> str | None:
     context = RunContext.create(user_id=user.pk)
     request = ChatRequest(
         messages=[Message(role="user", content=prompt)],
-        model=prefs.cheap_model,
+        model=prefs.feature_models.get("canvas_title", prefs.cheap_model),
         stream=False,
         tools=[],
         context=context,

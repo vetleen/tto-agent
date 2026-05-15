@@ -53,12 +53,14 @@ def generate_description_and_tags_from_text(
     text: str,
     user_id: int | None = None,
     data_room_id: int | None = None,
+    org_id: int | None = None,
 ) -> dict:
     """Generate a description and document_type tag from raw text using the cheap LLM.
 
     Uses structured output (with_structured_output) for reliable JSON parsing.
     Returns ``{"description": "...", "tags": {"document_type": "Agreement"}}``.
     """
+    from core.preferences import resolve_org_feature_model
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
     from llm.types.structured import DocumentDescriptionOutput
@@ -67,6 +69,7 @@ def generate_description_and_tags_from_text(
         return {"description": "", "tags": {}}
 
     document_text = _prepare_document_text(text)
+    model = resolve_org_feature_model(org_id, "document_description")
 
     context = RunContext.create(
         user_id=user_id,
@@ -76,7 +79,7 @@ def generate_description_and_tags_from_text(
             Message(role="system", content=_STRUCTURED_SYSTEM_PROMPT),
             Message(role="user", content=document_text),
         ],
-        model=settings.LLM_DEFAULT_CHEAP_MODEL,
+        model=model,
         stream=False,
         tools=[],
         context=context,

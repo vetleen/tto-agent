@@ -30,6 +30,17 @@
     </div>
   </section>
 
+  <!-- Warnings -->
+  {% if preference_warnings %}
+  <section class="mt-8">
+    {% for warning in preference_warnings %}
+    <div class="mb-3 rounded-base border border-yellow-300 bg-yellow-50 dark:border-yellow-600 dark:bg-yellow-900/20 p-3 text-sm text-yellow-800 dark:text-yellow-200">
+      {{ warning }}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   <!-- AI Models -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">AI Models</h2>
@@ -48,14 +59,43 @@
           class="model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
           <option value="">Default ({{ tier.default_model }})</option>
-          {% for model in allowed_models %}
-          <option value="{{ model }}" {% if tier.key in user_models and user_models|dictsort:tier.key %}{% endif %}>{{ model }}</option>
+          {% for model in tier.slot_models %}
+          <option value="{{ model }}">{{ model }}</option>
           {% endfor %}
         </select>
       </div>
       {% endfor %}
     </div>
   </section>
+
+  <!-- Feature Model Overrides -->
+  {% if user_features %}
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Feature Model Overrides</h2>
+    <p class="mt-1 text-sm text-body">Override the model used for specific features. "Default" uses the tier model selected above.</p>
+
+    <div class="mt-4 space-y-4">
+      {% for feature in user_features %}
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="feature-model-{{ feature.key }}">
+          {{ feature.label }}
+        </label>
+        {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
+        <select
+          id="feature-model-{{ feature.key }}"
+          data-feature="{{ feature.key }}"
+          class="feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">Use my default {{ feature.default_slot }} model (recommended)</option>
+          {% for model in feature.eligible_models %}
+          <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <!-- Transcription -->
   {% if allowed_transcription_models %}
@@ -195,6 +235,28 @@
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ tier: tier, model: model }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          sel.value = '';
+        }
+      });
+    });
+  });
+
+  // Feature model overrides
+  document.querySelectorAll('.feature-model-select').forEach(function(sel) {
+    sel.addEventListener('change', function() {
+      var feature = this.dataset.feature;
+      var model = this.value;
+      fetch('{% url "accounts:preferences_feature_model_update" %}', {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': csrf,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ feature: feature, model: model }),
         credentials: 'same-origin',
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) {

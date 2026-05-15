@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from typing import Optional
 
 from django.conf import settings as django_settings
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 200_000
 MIN_CONTEXT_TOKENS = 10_000
@@ -38,6 +42,29 @@ class ResolvedPreferences:
     transcription_model_upload: str = ""
     live_transcription_mode: str = "chunked"
     allow_agent_attach_skills: bool = True
+    feature_models: dict[str, str] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+
+# Per-feature model catalog: feature_key -> (default_slot, min_tier, scope).
+# default_slot: which tier to use by default ("primary", "mid", "cheap").
+# min_tier: minimum model tier allowed ("cheap", "mid", "standard").
+# scope: "user" = user can override, "org" = org admin can override.
+FEATURE_DEFAULTS: dict[str, tuple[str, str, str]] = {
+    "chat": ("primary", "standard", "user"),
+    "thread_title": ("cheap", "cheap", "user"),
+    "thread_emoji": ("cheap", "cheap", "user"),
+    "canvas_title": ("cheap", "cheap", "user"),
+    "image_description": ("cheap", "cheap", "user"),
+    "message_summary": ("mid", "mid", "org"),
+    "guardrails_classifier": ("cheap", "cheap", "org"),
+    "guardrails_reviewer": ("primary", "standard", "org"),
+    "document_description": ("cheap", "cheap", "org"),
+    "skill_emoji": ("cheap", "cheap", "org"),
+    "guardrail_chunk_scan": ("cheap", "cheap", "org"),
+}
+
+_SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
 
 
 def _get_system_model_defaults() -> dict[str, str]:
@@ -85,12 +112,15 @@ def get_preferences(user) -> ResolvedPreferences:
     allow_agent_attach_skills = bool(user_prefs.get("allow_agent_attach_skills", True))
 
     # Resolve each model tier with cascade
+    from llm.model_registry import get_models_for_slot
+
     top_model = _resolve_tier(
         user_choice=user_models.get("primary"),
         org_default=org_models.get("primary"),
         system_default=sys_models["primary"],
         effective_allowed=effective_allowed,
         system_allowed=system_allowed,
+        slot="primary",
     )
     mid_model = _resolve_tier(
         user_choice=user_models.get("mid"),
@@ -98,6 +128,7 @@ def get_preferences(user) -> ResolvedPreferences:
         system_default=sys_models["mid"],
         effective_allowed=effective_allowed,
         system_allowed=system_allowed,
+        slot="mid",
     )
     cheap_model = _resolve_tier(
         user_choice=user_models.get("cheap"),
@@ -105,7 +136,19 @@ def get_preferences(user) -> ResolvedPreferences:
         system_default=sys_models["cheap"],
         effective_allowed=effective_allowed,
         system_allowed=system_allowed,
+        slot="cheap",
     )
+
+    # Fallback: if no model available for a tier, fall up to the next tier
+    warnings: list[str] = []
+    if not cheap_model and mid_model:
+        cheap_model = mid_model
+        warnings.append("No cheap-tier models in your organization's allowed list. Cheap-tier features will use a more expensive model.")
+    if not mid_model and top_model:
+        mid_model = top_model
+        warnings.append("No mid-tier models in your organization's allowed list. Mid-tier features will use the primary model.")
+    if not get_models_for_slot("primary", effective_allowed):
+        warnings.append("No standard-tier models in your organization's allowed list. Chat and primary features may not work correctly.")
 
     # --- Transcription model cascade ---
     system_transcription_allowed = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
@@ -244,6 +287,29 @@ def get_preferences(user) -> ResolvedPreferences:
         max_context_tokens = org_max_ctx
     max_context_tokens = max(max_context_tokens, MIN_CONTEXT_TOKENS)
 
+    # Resolve per-feature model overrides
+    from llm.model_registry import TIER_ORDER, get_model_tier
+
+    slot_model = {"primary": top_model, "mid": mid_model, "cheap": cheap_model}
+    user_feature_prefs = user_prefs.get("feature_models") or {}
+    org_feature_prefs = org_prefs.get("feature_models") or {}
+
+    feature_models: dict[str, str] = {}
+    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
+        override = None
+        if scope == "user":
+            override = user_feature_prefs.get(fkey)
+        if not override:
+            override = org_feature_prefs.get(fkey)
+
+        if override and override in effective_allowed:
+            tier = get_model_tier(override)
+            if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(min_tier, 0):
+                feature_models[fkey] = override
+                continue
+
+        feature_models[fkey] = slot_model.get(default_slot, top_model)
+
     return ResolvedPreferences(
         top_model=top_model,
         mid_model=mid_model,
@@ -260,6 +326,8 @@ def get_preferences(user) -> ResolvedPreferences:
         transcription_model_upload=transcription_model_upload,
         live_transcription_mode=resolved_live_mode,
         allow_agent_attach_skills=allow_agent_attach_skills,
+        feature_models=feature_models,
+        warnings=warnings,
     )
 
 
@@ -269,26 +337,40 @@ def _resolve_tier(
     system_default: str,
     effective_allowed: list[str],
     system_allowed: list[str],
+    slot: str | None = None,
 ) -> str:
     """Resolve a single model tier using the cascade.
 
-    1. User's choice if set AND in effective allowed list
-    2. Org's default if set AND in effective allowed list
-    3. System env var default if in effective allowed list
-    4. First model in effective allowed list
+    1. User's choice if set AND in effective allowed list AND valid for slot
+    2. Org's default if set AND in effective allowed list AND valid for slot
+    3. System env var default if in effective allowed list AND valid for slot
+    4. First model in effective allowed list that is valid for slot
     5. Empty string (no valid model available)
     """
-    if user_choice and user_choice in effective_allowed:
+    from llm.model_registry import is_model_valid_for_slot
+
+    def _valid(model_id: str | None) -> bool:
+        if not model_id or model_id not in effective_allowed:
+            return False
+        if slot and not is_model_valid_for_slot(model_id, slot):
+            return False
+        return True
+
+    if user_choice and user_choice in effective_allowed and not _valid(user_choice):
+        logger.info("Tier constraint: user choice %s skipped for slot %s", user_choice, slot)
+
+    if _valid(user_choice):
         return user_choice
 
-    if org_default and org_default in effective_allowed:
+    if _valid(org_default):
         return org_default
 
-    if system_default and system_default in effective_allowed:
+    if _valid(system_default):
         return system_default
 
-    if effective_allowed:
-        return effective_allowed[0]
+    for m in effective_allowed:
+        if slot is None or is_model_valid_for_slot(m, slot):
+            return m
 
     # No valid model in the effective allowed list. Do NOT fall back to the
     # system default here — that would bypass org-level restrictions when the
@@ -317,9 +399,9 @@ def get_tier_defaults(user) -> dict[str, str]:
         effective_allowed = list(system_allowed)
 
     return {
-        "primary": _resolve_tier(None, org_models.get("primary"), sys_models["primary"], effective_allowed, system_allowed),
-        "mid": _resolve_tier(None, org_models.get("mid"), sys_models["mid"], effective_allowed, system_allowed),
-        "cheap": _resolve_tier(None, org_models.get("cheap"), sys_models["cheap"], effective_allowed, system_allowed),
+        "primary": _resolve_tier(None, org_models.get("primary"), sys_models["primary"], effective_allowed, system_allowed, slot="primary"),
+        "mid": _resolve_tier(None, org_models.get("mid"), sys_models["mid"], effective_allowed, system_allowed, slot="mid"),
+        "cheap": _resolve_tier(None, org_models.get("cheap"), sys_models["cheap"], effective_allowed, system_allowed, slot="cheap"),
     }
 
 
@@ -331,9 +413,9 @@ def get_system_defaults() -> dict[str, str]:
     sys_models = _get_system_model_defaults()
 
     return {
-        "primary": _resolve_tier(None, None, sys_models["primary"], system_allowed, system_allowed),
-        "mid": _resolve_tier(None, None, sys_models["mid"], system_allowed, system_allowed),
-        "cheap": _resolve_tier(None, None, sys_models["cheap"], system_allowed, system_allowed),
+        "primary": _resolve_tier(None, None, sys_models["primary"], system_allowed, system_allowed, slot="primary"),
+        "mid": _resolve_tier(None, None, sys_models["mid"], system_allowed, system_allowed, slot="mid"),
+        "cheap": _resolve_tier(None, None, sys_models["cheap"], system_allowed, system_allowed, slot="cheap"),
     }
 
 
@@ -360,3 +442,58 @@ def _get_user_preferences(user) -> dict:
         return us.preferences or {}
     except UserSettings.DoesNotExist:
         return {}
+
+
+def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
+    """Resolve a feature model from org preferences, falling back to system env vars.
+
+    Used by org-scoped features (guardrails, document processing) that run in
+    Celery tasks or system contexts where only the org ID is available.
+    """
+    from accounts.models import Organization
+    from llm.model_registry import TIER_ORDER, get_model_tier
+    from llm.service.policies import get_allowed_models
+
+    feature_def = FEATURE_DEFAULTS.get(feature_key)
+    if not feature_def:
+        return getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
+
+    default_slot, min_tier, _scope = feature_def
+    sys_models = _get_system_model_defaults()
+    system_allowed = get_allowed_models()
+
+    # System-level default for this feature's tier
+    sys_default = sys_models.get(default_slot, sys_models.get("primary", ""))
+
+    if not org_id:
+        return sys_default if sys_default in system_allowed else (system_allowed[0] if system_allowed else "")
+
+    try:
+        org = Organization.objects.get(pk=org_id)
+    except Organization.DoesNotExist:
+        return sys_default if sys_default in system_allowed else (system_allowed[0] if system_allowed else "")
+
+    org_prefs = org.preferences or {}
+    org_allowed = org_prefs.get("allowed_models")
+    if org_allowed and isinstance(org_allowed, list):
+        effective_allowed = [m for m in org_allowed if m in system_allowed]
+    else:
+        effective_allowed = list(system_allowed)
+
+    # Check org-level feature override
+    override = (org_prefs.get("feature_models") or {}).get(feature_key)
+    if override and override in effective_allowed:
+        tier = get_model_tier(override)
+        if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(min_tier, 0):
+            return override
+
+    # Fall back to org's tier default → system tier default
+    org_models = org_prefs.get("models", {})
+    return _resolve_tier(
+        user_choice=None,
+        org_default=org_models.get(default_slot),
+        system_default=sys_default,
+        effective_allowed=effective_allowed,
+        system_allowed=system_allowed,
+        slot=default_slot,
+    )

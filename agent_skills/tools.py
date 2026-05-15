@@ -17,15 +17,15 @@ class _EmojiResult(BaseModel):
     emoji: str = Field(description="A single emoji representing the skill.")
 
 
-def _generate_emoji_for_skill(name: str, user_id, conversation_id) -> str:
+def _generate_emoji_for_skill(name: str, user_id, conversation_id, org_id: int | None = None) -> str:
     """Best-effort: ask the cheap LLM for one emoji for a skill name.
 
     Returns empty string on any failure. Caller decides whether to persist.
     """
-    from django.conf import settings
+    from core.preferences import resolve_org_feature_model
 
-    cheap_model = getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", "")
-    if not cheap_model:
+    model = resolve_org_feature_model(org_id, "skill_emoji")
+    if not model:
         return ""
 
     from llm import get_llm_service
@@ -39,7 +39,7 @@ def _generate_emoji_for_skill(name: str, user_id, conversation_id) -> str:
             )),
             Message(role="user", content=f"Skill name: {name}"),
         ],
-        model=cheap_model,
+        model=model,
         stream=False,
         tools=[],
         context=RunContext.create(user_id=user_id, conversation_id=conversation_id),

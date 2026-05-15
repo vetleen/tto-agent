@@ -22,12 +22,13 @@ _SYSTEM_PROMPT = (
 )
 
 
-def generate_data_room_description(data_room_id: int, user_id: int | None = None) -> str:
+def generate_data_room_description(data_room_id: int, user_id: int | None = None, org_id: int | None = None) -> str:
     """Generate a description for a data room based on its documents.
 
     Fetches the room name and up to 10 document descriptions, then asks
     the LLM to synthesize a room-level description.
     """
+    from core.preferences import resolve_org_feature_model
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
 
@@ -70,7 +71,7 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
             Message(role="system", content=_SYSTEM_PROMPT),
             Message(role="user", content=user_content),
         ],
-        model=settings.LLM_DEFAULT_CHEAP_MODEL,
+        model=resolve_org_feature_model(org_id, "document_description"),
         stream=False,
         tools=[],
         context=context,

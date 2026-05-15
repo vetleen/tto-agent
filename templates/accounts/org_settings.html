@@ -101,7 +101,7 @@
           class="org-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
         >
           <option value="">System default ({{ tier.default_model }})</option>
-          {% for model in system_models %}
+          {% for model in tier.slot_models %}
           <option value="{{ model }}">{{ model }}</option>
           {% endfor %}
         </select>
@@ -109,6 +109,35 @@
       {% endfor %}
     </div>
   </section>
+
+  <!-- Feature Model Overrides -->
+  {% if org_features %}
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">Feature Model Overrides</h2>
+    <p class="mt-1 text-sm text-body">Override the model used for specific background features. "Default" uses the tier model selected above.</p>
+
+    <div class="mt-4 space-y-4">
+      {% for feature in org_features %}
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+        <label class="block text-sm font-medium text-heading" for="org-feature-model-{{ feature.key }}">
+          {{ feature.label }}
+        </label>
+        {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
+        <select
+          id="org-feature-model-{{ feature.key }}"
+          data-feature="{{ feature.key }}"
+          class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+        >
+          <option value="">Use organization default {{ feature.default_slot }} model (recommended)</option>
+          {% for model in feature.eligible_models %}
+          <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <!-- Transcription Models -->
   <section class="mt-10">
@@ -427,6 +456,28 @@
         credentials: 'same-origin',
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) alert(data.error);
+      });
+    });
+  });
+
+  // Org feature model overrides
+  document.querySelectorAll('.org-feature-model-select').forEach(function(sel) {
+    sel.addEventListener('change', function() {
+      var feature = this.dataset.feature;
+      var model = this.value;
+      fetch('{% url "accounts:org_feature_model_update" %}', {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': csrf,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ feature: feature, model: model }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          sel.value = '';
+        }
       });
     });
   });
