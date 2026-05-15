@@ -205,19 +205,15 @@ Once the user is happy with the drafts:
 
 ## Step 4: Attach tools
 
-Use `list_all_tools` to see every tool that exists. The output is split into
-two groups:
-
-- **Standard tools** — always available to {django_settings.ASSISTANT_NAME} (e.g. web search, canvas,
-  document search, sub-agents). These do **not** need to be attached to a skill.
-
-- **Skill-specific tools** — only available when a skill explicitly lists them
-  in its `tool_names`. These are the ones you need to attach.
+Use `list_skill_tools` to see the tools that can be attached to a skill.
+These are skill-specific tools — they are only available when a skill explicitly
+lists them in its `tool_names`. Standard tools (web search, canvas, document
+search, sub-agents, etc.) are always available and do not need to be attached.
 
 To discover and attach tools:
-1. Use `list_all_tools` to see both groups
-2. Use `inspect_tool` to read a tool's full description
-3. Discuss with the user which skill-specific tools the skill actually needs
+1. Use `list_skill_tools` to see available skill-specific tools
+2. Use `inspect_tool` to inspect a specific tool in more detail
+3. Discuss with the user which tools the skill actually needs
 4. Save the list via `edit_skill`, e.g. `updates={{"tool_names": ["view_template", "load_template_to_canvas"]}}`
 
 ---
@@ -297,7 +293,7 @@ Repeat until the user is satisfied.
         "delete_skill",
         "save_canvas_to_skill_field",
         "show_skill_field_in_canvas",
-        "list_all_tools",
+        "list_skill_tools",
         "inspect_tool",
     ],
 }

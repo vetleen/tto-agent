@@ -685,16 +685,14 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         })
 
 
-class ListAllToolsTool(ContextAwareTool):
-    """List all tools grouped by availability."""
+class ListSkillToolsTool(ContextAwareTool):
+    """List skill-specific tools that can be attached to a skill."""
 
-    name: str = "list_all_tools"
+    name: str = "list_skill_tools"
     description: str = (
-        "List all available tools, grouped into two categories: "
-        "standard tools (always available — no need to attach) and "
-        "skill-specific tools (must be explicitly attached via tool_names). "
-        "Use this to discover which tools exist and decide which ones "
-        "a skill needs."
+        "List all skill-specific tools — the tools that must be explicitly "
+        "attached to a skill via tool_names. Use this to discover which "
+        "tools a skill can use."
     )
     args_schema: type[BaseModel] = ReasonBaseModel
     section: str = "skills"
@@ -702,21 +700,17 @@ class ListAllToolsTool(ContextAwareTool):
     def _run(self, **kwargs) -> str:
         registry = get_tool_registry()
         all_tools = registry.list_tools()
-        standard_tools = []
         skill_tools = []
         for name, tool in sorted(all_tools.items()):
-            first_sentence = (tool.description or "").split(". ")[0]
-            entry = {"name": name, "description": first_sentence}
             if getattr(tool, "section", "chat") == "skills":
-                skill_tools.append(entry)
-            else:
-                standard_tools.append(entry)
+                skill_tools.append({
+                    "name": name,
+                    "description": tool.description or "",
+                })
         return json.dumps({
             "status": "ok",
-            "standard_tools": standard_tools,
-            "standard_tools_note": "Always available. Do not need to be attached to a skill.",
-            "skill_tools": skill_tools,
-            "skill_tools_note": "Only available when explicitly listed in a skill's tool_names.",
+            "tools": skill_tools,
+            "note": "Only available when explicitly listed in a skill's tool_names.",
         })
 
 
@@ -867,6 +861,6 @@ _registry.register_tool(EditSkillTool())
 _registry.register_tool(DeleteSkillTool())
 _registry.register_tool(ViewTemplateTool())
 _registry.register_tool(LoadTemplateToCanvasTool())
-_registry.register_tool(ListAllToolsTool())
+_registry.register_tool(ListSkillToolsTool())
 _registry.register_tool(InspectToolTool())
 _registry.register_tool(AttachSkillsTool())

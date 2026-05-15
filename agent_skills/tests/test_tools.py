@@ -14,7 +14,7 @@ from agent_skills.tools import (
     DeleteSkillTool,
     EditSkillTool,
     InspectToolTool,
-    ListAllToolsTool,
+    ListSkillToolsTool,
     LoadTemplateToCanvasTool,
     SaveCanvasToSkillFieldTool,
     ShowSkillFieldInCanvasTool,
@@ -306,32 +306,25 @@ class ShowSkillFieldInCanvasToolTests(TestCase):
         self.assertTrue(ChatCanvas.objects.filter(thread=self.thread, title="My Custom Tab").exists())
 
 
-class ListAllToolsToolTests(TestCase):
+class ListSkillToolsToolTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="listtools@example.com", password="pass")
-        self.tool = ListAllToolsTool()
+        self.tool = ListSkillToolsTool()
         self.tool.context = _make_context(self.user)
 
-    def test_returns_both_standard_and_skill_tools(self):
+    def test_returns_only_skill_tools(self):
         result = json.loads(self.tool._run())
         self.assertEqual(result["status"], "ok")
-        # Both groups present
-        self.assertIn("standard_tools", result)
-        self.assertIn("skill_tools", result)
-        skill_names = [t["name"] for t in result["skill_tools"]]
-        standard_names = [t["name"] for t in result["standard_tools"]]
-        # Skill-section tools in skill_tools
-        self.assertIn("create_skill", skill_names)
-        self.assertIn("inspect_tool", skill_names)
-        # Chat-section tools in standard_tools
-        self.assertIn("write_canvas", standard_names)
-        self.assertIn("edit_canvas", standard_names)
-        # No overlap
-        self.assertFalse(set(skill_names) & set(standard_names))
+        self.assertIn("tools", result)
+        tool_names = [t["name"] for t in result["tools"]]
+        self.assertIn("create_skill", tool_names)
+        self.assertIn("inspect_tool", tool_names)
+        self.assertNotIn("write_canvas", tool_names)
+        self.assertNotIn("edit_canvas", tool_names)
 
     def test_each_entry_has_name_and_description(self):
         result = json.loads(self.tool._run())
-        for tool_entry in result["skill_tools"] + result["standard_tools"]:
+        for tool_entry in result["tools"]:
             self.assertIn("name", tool_entry)
             self.assertIn("description", tool_entry)
 

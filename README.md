@@ -112,7 +112,7 @@ Live LLM API tests: set `TEST_APIS=True` and add API keys to `.env`.
   - `brave_search` — Web search via Brave Search API
   - `create_subagent` — Delegate tasks to sub-agents (results returned via system prompt)
   - `save_meeting_minutes` — Persist canvas content as meeting minutes (meeting-attached threads)
-  - Skill tools: `create_skill`, `edit_skill`, `delete_skill`, `attach_skills`, `view_template`, `load_template_to_canvas`, `save_canvas_to_skill_field`, `show_skill_field_in_canvas`, `list_all_tools`, `inspect_tool`
+  - Skill tools: `create_skill`, `edit_skill`, `delete_skill`, `attach_skills`, `view_template`, `load_template_to_canvas`, `save_canvas_to_skill_field`, `show_skill_field_in_canvas`, `list_skill_tools`, `inspect_tool`
 
 ## Meetings app
 
