@@ -1,4 +1,4 @@
-"""Tests for the redact_old_llm_logs management command."""
+"""Tests for LLMCallLog redaction via the enforce_retention command."""
 
 from datetime import timedelta
 from io import StringIO
@@ -27,13 +27,16 @@ def _make_log(created_at, prompt=None, raw_output="body", user=None, tools=None)
     return log
 
 
-class RedactOldLLMLogsCommandTests(TestCase):
+class RedactLLMLogsViaEnforceRetentionTests(TestCase):
+    def _run(self, *args):
+        return call_command("enforce_retention", "--target", "LLMCallLog", *args, stdout=StringIO())
+
     def test_only_old_rows_redacted(self):
         now = timezone.now()
         old = _make_log(created_at=now - timedelta(days=91))
         recent = _make_log(created_at=now - timedelta(days=1))
 
-        call_command("redact_old_llm_logs", stdout=StringIO())
+        self._run()
 
         old.refresh_from_db()
         recent.refresh_from_db()
@@ -43,21 +46,12 @@ class RedactOldLLMLogsCommandTests(TestCase):
         self.assertEqual(recent.prompt, [{"role": "user", "content": "hi"}])
         self.assertEqual(recent.raw_output, "body")
 
-    def test_custom_days_argument(self):
-        now = timezone.now()
-        mid = _make_log(created_at=now - timedelta(days=45))
-
-        call_command("redact_old_llm_logs", "--days", "30", stdout=StringIO())
-
-        mid.refresh_from_db()
-        self.assertEqual(mid.prompt, {"redacted": True})
-
     def test_dry_run_does_not_modify(self):
         now = timezone.now()
         old = _make_log(created_at=now - timedelta(days=91))
 
         out = StringIO()
-        call_command("redact_old_llm_logs", "--dry-run", stdout=out)
+        call_command("enforce_retention", "--target", "LLMCallLog", "--dry-run", stdout=out)
 
         old.refresh_from_db()
         self.assertEqual(old.prompt, [{"role": "user", "content": "hi"}])
@@ -68,16 +62,11 @@ class RedactOldLLMLogsCommandTests(TestCase):
         now = timezone.now()
         _make_log(created_at=now - timedelta(days=91))
 
-        call_command("redact_old_llm_logs", stdout=StringIO())
+        self._run()
         out = StringIO()
-        call_command("redact_old_llm_logs", stdout=out)
+        call_command("enforce_retention", "--target", "LLMCallLog", stdout=out)
 
-        self.assertIn("No rows to redact", out.getvalue())
-
-    def test_empty_table_prints_nothing_to_do(self):
-        out = StringIO()
-        call_command("redact_old_llm_logs", stdout=out)
-        self.assertIn("No rows to redact", out.getvalue())
+        self.assertIn("0 rows to redact", out.getvalue())
 
     def test_batch_size_processes_all_rows(self):
         now = timezone.now()
@@ -86,12 +75,10 @@ class RedactOldLLMLogsCommandTests(TestCase):
         ]
 
         call_command(
-            "redact_old_llm_logs", "--batch-size", "2", stdout=StringIO()
+            "enforce_retention", "--target", "LLMCallLog",
+            "--batch-size", "2", stdout=StringIO(),
         )
 
-        # Scope to the rows this test created — asserting against
-        # ``LLMCallLog.objects.all()`` is brittle because other tests spawn
-        # threads whose writes escape the TestCase transaction.
         for log in LLMCallLog.objects.filter(pk__in=created_ids):
             self.assertEqual(log.prompt, {"redacted": True})
             self.assertEqual(log.raw_output, "")

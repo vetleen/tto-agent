@@ -18,6 +18,8 @@ class MeetingsConfig(AppConfig):
     verbose_name = "Meetings"
 
     def ready(self):
+        import meetings.signals  # noqa: F401 — retention + file cleanup signals
+
         # Skip background side-effects when running the test runner.
         if len(sys.argv) >= 2 and sys.argv[1] == "test":
             return

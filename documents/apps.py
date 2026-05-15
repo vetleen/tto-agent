@@ -7,3 +7,4 @@ class DocumentsConfig(AppConfig):
 
     def ready(self):
         from documents import signals  # noqa: F401
+        from documents import retention_signals  # noqa: F401

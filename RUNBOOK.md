@@ -81,16 +81,28 @@ python manage.py backfill_search_vectors --batch-size 200
 python manage.py backfill_descriptions
 python manage.py backfill_descriptions --doc-ids 30 33
 
-# Redact prompt/raw_output on LLMCallLog rows older than 90 days (GDPR).
-# Idempotent — safe to run repeatedly. Scheduled daily via Heroku Scheduler.
-python manage.py redact_old_llm_logs
-python manage.py redact_old_llm_logs --days 30 --dry-run
+# Enforce data-retention policies. Deletes expired records and redacts old
+# LLM logs. Idempotent — safe to run repeatedly. Scheduled daily via Heroku Scheduler.
+python manage.py enforce_retention
+python manage.py enforce_retention --dry-run
+python manage.py enforce_retention --target LLMCallLog   # single target
 ```
 
-### GDPR data-retention scheduling
+### Data-retention scheduling
 
-`redact_old_llm_logs` must run at least daily in staging and production. It is
-provisioned via the Heroku Scheduler add-on (one-off setup):
+`enforce_retention` must run at least daily in staging and production. It handles:
+
+| Target | Retention | Action |
+|--------|-----------|--------|
+| ChatThread | 365 days after last activity | Delete (cascades messages, attachments, canvases) |
+| DataRoom | 365 days after last activity | Delete (cascades documents, chunks) |
+| Meeting | 90 days after last activity | Delete (cascades segments, attachments) |
+| GuardrailEvent | 180 days | Delete |
+| Feedback | 90 days | Delete (removes screenshot from storage) |
+| EmailVerificationToken | 1 day | Delete |
+| LLMCallLog | 90 days | Redact (preserves cost/usage analytics) |
+
+Provisioned via the Heroku Scheduler add-on (one-off setup):
 
 ```bash
 heroku addons:create scheduler:standard -a wilfred-staging
@@ -101,15 +113,15 @@ heroku addons:open scheduler -a wilfred-production  # then add the job in the UI
 
 Job definition (same on both apps):
 
-- Command: `python manage.py redact_old_llm_logs`
+- Command: `python manage.py enforce_retention`
 - Frequency: every day at 03:00 UTC
 - Dyno size: Standard-1X
 
 Verify after provisioning:
 
 ```bash
-heroku run python manage.py redact_old_llm_logs --dry-run -a wilfred-staging
-heroku logs --tail -a wilfred-staging               # look for "Redacted N row(s)"
+heroku run python manage.py enforce_retention --dry-run -a wilfred-staging
+heroku logs --tail -a wilfred-staging
 ```
 
 ## Database

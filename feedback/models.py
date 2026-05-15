@@ -1,5 +1,8 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
+
+from core.retention import RETENTION_PERIODS
 
 
 class Feedback(models.Model):
@@ -19,6 +22,12 @@ class Feedback(models.Model):
     )
     console_errors = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    retain_until = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            self.retain_until = timezone.now() + RETENTION_PERIODS["feedback.Feedback"]
+        super().save(*args, **kwargs)
 
     class Meta:
         ordering = ["-created_at"]

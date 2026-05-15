@@ -4,6 +4,9 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
+
+from core.retention import RETENTION_PERIODS
 
 
 class ChatThread(models.Model):
@@ -51,6 +54,16 @@ class ChatThread(models.Model):
     summary_token_count = models.PositiveIntegerField(default=0)
     summary_up_to_message_id = models.UUIDField(null=True, blank=True)
     summary_message_count = models.PositiveIntegerField(default=0)
+
+    retain_until = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    def save(self, *args, **kwargs):
+        self.retain_until = timezone.now() + RETENTION_PERIODS["chat.ChatThread"]
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            if "retain_until" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["retain_until"]
+        super().save(*args, **kwargs)
 
     class Meta:
         ordering = ["-updated_at"]
