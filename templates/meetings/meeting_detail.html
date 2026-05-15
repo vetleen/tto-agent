@@ -390,7 +390,15 @@
         </span>
       </summary>
       <div class="px-4 pb-4 min-h-32 text-sm text-heading border-t border-default">
+        {% if meeting.status == "live_transcribing" %}
         <div id="transcript-pane" class="whitespace-pre-wrap pt-4">{% if meeting.transcript %}{{ meeting.transcript }}{% else %}<span class="text-body italic" data-placeholder="1">No transcript yet. Click "Start transcription" or upload one.</span>{% endif %}</div>
+        {% else %}
+        <textarea id="transcript-pane" class="w-full min-h-48 mt-4 p-2 bg-neutral-primary border border-default rounded-base text-sm text-heading font-mono whitespace-pre-wrap resize-y focus:outline-none focus:ring-1 focus:ring-fg-link" placeholder="No transcript yet. Click &quot;Start transcription&quot; or upload one.">{% if meeting.transcript %}{{ meeting.transcript }}{% endif %}</textarea>
+        <div class="flex items-center gap-3 mt-2">
+          <button type="button" id="transcript-save-btn" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">Save transcript</button>
+          <span id="transcript-saved-indicator" class="hidden text-xs text-fg-positive">Saved.</span>
+        </div>
+        {% endif %}
         <div id="transcribing-indicator" class="hidden mt-4 flex flex-col items-center gap-2 text-xs text-body">
           <div class="flex items-center gap-2">
             <svg class="w-4 h-4 animate-spin text-fg-warning" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>

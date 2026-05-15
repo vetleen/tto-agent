@@ -325,6 +325,11 @@ def meeting_update_metadata(request, meeting_uuid):
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
         return JsonResponse({"error": "Forbidden"}, status=403)
+    if "transcript" in request.POST and meeting.status == Meeting.Status.LIVE_TRANSCRIBING:
+        return JsonResponse(
+            {"error": "Cannot edit transcript while transcription is active."},
+            status=409,
+        )
     fields = []
     for field in ("name", "agenda", "participants", "description"):
         if field in request.POST:
@@ -335,6 +340,10 @@ def meeting_update_metadata(request, meeting_uuid):
                 value = value[:255]
             setattr(meeting, field, value)
             fields.append(field)
+    if "transcript" in request.POST:
+        meeting.transcript = request.POST["transcript"]
+        meeting.transcript_updated_at = timezone.now()
+        fields.extend(["transcript", "transcript_updated_at"])
     if "transcription_model" in request.POST:
         new_model = (request.POST.get("transcription_model") or "").strip()
         # Validate against the user's allowed transcription models so we can't

@@ -263,6 +263,38 @@ class MeetingMetadataUpdateTests(TestCase):
         self.meeting.refresh_from_db()
         self.assertEqual(self.meeting.transcription_model, "")
 
+    def test_update_transcript_via_metadata(self):
+        response = self.client.post(
+            reverse("meeting_update_metadata", args=[self.meeting.uuid]),
+            {"transcript": "Hello world, corrected."},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript, "Hello world, corrected.")
+        self.assertIsNotNone(self.meeting.transcript_updated_at)
+
+    def test_update_transcript_blocked_during_live_transcribing(self):
+        self.meeting.status = Meeting.Status.LIVE_TRANSCRIBING
+        self.meeting.save(update_fields=["status"])
+        response = self.client.post(
+            reverse("meeting_update_metadata", args=[self.meeting.uuid]),
+            {"transcript": "Should not save"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript, "")
+
+    def test_update_transcript_empty_clears(self):
+        self.meeting.transcript = "Some old text"
+        self.meeting.save(update_fields=["transcript"])
+        response = self.client.post(
+            reverse("meeting_update_metadata", args=[self.meeting.uuid]),
+            {"transcript": ""},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript, "")
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingTranscriptionProgressTests(TestCase):

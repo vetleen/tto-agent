@@ -218,6 +218,42 @@
     });
   }
 
+  // ---------------- transcript manual save ----------------
+  var transcriptSaveBtn = document.getElementById('transcript-save-btn');
+  var transcriptSavedEl = document.getElementById('transcript-saved-indicator');
+  var transcriptTextarea = (transcriptPane && transcriptPane.tagName === 'TEXTAREA') ? transcriptPane : null;
+
+  if (transcriptSaveBtn && transcriptTextarea) {
+    var lastSavedTranscript = transcriptTextarea.value;
+    var transcriptSavedTimer = null;
+
+    function flashTranscriptSaved() {
+      if (!transcriptSavedEl) return;
+      transcriptSavedEl.textContent = 'Saved.';
+      transcriptSavedEl.classList.remove('hidden');
+      if (transcriptSavedTimer) clearTimeout(transcriptSavedTimer);
+      transcriptSavedTimer = setTimeout(function () {
+        transcriptSavedEl.classList.add('hidden');
+      }, 2000);
+    }
+
+    transcriptSaveBtn.addEventListener('click', function () {
+      var value = transcriptTextarea.value;
+      if (value === lastSavedTranscript) {
+        flashTranscriptSaved();
+        return;
+      }
+      transcriptSaveBtn.disabled = true;
+      transcriptSaveBtn.textContent = 'Saving…';
+      postMetadata({ transcript: value }, function () {
+        lastSavedTranscript = value;
+        transcriptSaveBtn.disabled = false;
+        transcriptSaveBtn.textContent = 'Save transcript';
+        flashTranscriptSaved();
+      });
+    });
+  }
+
   // ---------------- live transcription state ----------------
   let mediaStream = null;
   let mediaRecorder = null;
@@ -1140,6 +1176,9 @@
 
   async function startTranscription() {
     if (transcribing) return;
+    if (transcriptTextarea && transcriptTextarea.value !== transcriptTextarea.defaultValue) {
+      postMetadata({ transcript: transcriptTextarea.value });
+    }
     transcribing = true;
     transcribeBtn.disabled = true;
     setTranscribeBtnLabel('Connecting…');
