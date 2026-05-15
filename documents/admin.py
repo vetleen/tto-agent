@@ -4,8 +4,8 @@ from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
 
 @admin.register(DataRoom)
 class DataRoomAdmin(admin.ModelAdmin):
-    list_display = ("uuid", "name", "slug", "created_by", "is_shared", "created_at", "updated_at")
-    list_filter = ("is_shared", "created_at")
+    list_display = ("uuid", "name", "slug", "created_by", "created_at", "updated_at")
+    list_filter = ("created_at",)
     search_fields = ("name", "slug")
     raw_id_fields = ("created_by",)
     readonly_fields = ("uuid",)

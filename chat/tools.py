@@ -41,44 +41,16 @@ def _record_chunk_usage(conversation_id: str, chunk_ids: list[int]) -> None:
 
 
 def _filter_accessible_rooms(data_room_ids: list[int], user_id: int | None) -> list[int]:
-    """Filter data room IDs to those the user can access (owned or shared). Raises if none remain."""
+    """Filter data room IDs to those the user owns. Raises if none remain."""
     if not user_id:
         return data_room_ids
-    from accounts.models import Membership
     from documents.models import DataRoom
 
-    # Rooms the user owns are always accessible
     accessible = set(
         DataRoom.objects.filter(
             pk__in=data_room_ids, created_by_id=user_id,
         ).values_list("pk", flat=True)
     )
-
-    # Check shared rooms the user can access via organization membership
-    remaining = [rid for rid in data_room_ids if rid not in accessible]
-    if remaining:
-        user_org_ids = set(
-            Membership.objects.filter(user_id=user_id).values_list("org_id", flat=True)
-        )
-        if user_org_ids:
-            shared_rooms = list(
-                DataRoom.objects.filter(
-                    pk__in=remaining,
-                    is_shared=True,
-                ).values_list("pk", "created_by_id")
-            )
-            # Batch-fetch all owner memberships in one query instead of per-owner
-            owner_ids = {owner_id for _, owner_id in shared_rooms}
-            owner_memberships = (
-                Membership.objects.filter(user_id__in=owner_ids)
-                .values_list("user_id", "org_id")
-            )
-            owner_org_map: dict[int, set[int]] = {}
-            for oid, org_id in owner_memberships:
-                owner_org_map.setdefault(oid, set()).add(org_id)
-            for room_pk, owner_id in shared_rooms:
-                if user_org_ids & owner_org_map.get(owner_id, set()):
-                    accessible.add(room_pk)
 
     data_room_ids = [rid for rid in data_room_ids if rid in accessible]
     if not data_room_ids:

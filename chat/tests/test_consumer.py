@@ -9,7 +9,7 @@ from django.test import override_settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase
 
-from accounts.models import Membership, Organization
+from accounts.models import Organization
 from chat.consumers import ChatConsumer
 from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom
 from chat.routing import websocket_urlpatterns
@@ -501,15 +501,11 @@ class SlashCommandTests(TransactionTestCase):
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 )
 class ValidateDataRoomTests(TransactionTestCase):
-    """Test _validate_data_room access control including shared rooms."""
+    """Test _validate_data_room access control."""
 
     def setUp(self):
         self.owner = User.objects.create_user(email="owner@example.com", password="pass")
-        self.colleague = User.objects.create_user(email="colleague@example.com", password="pass")
-        self.outsider = User.objects.create_user(email="outsider@example.com", password="pass")
-        self.org = Organization.objects.create(name="TestOrg", slug="testorg-consumer")
-        Membership.objects.create(user=self.owner, org=self.org)
-        Membership.objects.create(user=self.colleague, org=self.org)
+        self.other = User.objects.create_user(email="other@example.com", password="pass")
 
     def _make_consumer(self, user):
         consumer = ChatConsumer()
@@ -526,22 +522,11 @@ class ValidateDataRoomTests(TransactionTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["id"], room.pk)
 
-    async def test_colleague_can_access_shared_room(self):
+    async def test_non_owner_denied(self):
         room = await database_sync_to_async(DataRoom.objects.create)(
-            name="Shared Room", slug="shared-room-consumer",
-            created_by=self.owner, is_shared=True,
+            name="Owner Room", slug="deny-room-consumer", created_by=self.owner,
         )
-        consumer = self._make_consumer(self.colleague)
-        result = await consumer._validate_data_room(room.pk)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["id"], room.pk)
-
-    async def test_outsider_denied_shared_room(self):
-        room = await database_sync_to_async(DataRoom.objects.create)(
-            name="Shared Room", slug="shared-deny-consumer",
-            created_by=self.owner, is_shared=True,
-        )
-        consumer = self._make_consumer(self.outsider)
+        consumer = self._make_consumer(self.other)
         result = await consumer._validate_data_room(room.pk)
         self.assertIsNone(result)
 

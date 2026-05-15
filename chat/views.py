@@ -14,26 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 def _get_accessible_data_rooms(user):
-    """Return data rooms the user owns plus shared rooms from all their orgs."""
-    from accounts.models import Membership
-    from django.db.models import Q
-
-    q = Q(created_by=user, is_archived=False)
-
-    org_ids = list(
-        Membership.objects.filter(user=user).values_list("org_id", flat=True)
-    )
-    if org_ids:
-        colleague_ids = list(
-            Membership.objects.filter(org_id__in=org_ids)
-            .exclude(user=user)
-            .values_list("user_id", flat=True)
-        )
-        if colleague_ids:
-            q |= Q(created_by_id__in=colleague_ids, is_shared=True, is_archived=False)
-
+    """Return data rooms the user owns."""
     return list(
-        DataRoom.objects.filter(q)
+        DataRoom.objects.filter(created_by=user, is_archived=False)
         .order_by("-updated_at")
         .values("pk", "uuid", "name")
     )

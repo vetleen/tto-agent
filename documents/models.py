@@ -18,7 +18,6 @@ class DataRoom(models.Model):
         related_name="data_rooms",
     )
     is_archived = models.BooleanField(default=False)
-    is_shared = models.BooleanField(default=False)
     description = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

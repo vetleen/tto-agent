@@ -7,7 +7,6 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from accounts.models import Membership, Organization
 from chat.models import ChatCanvas, ChatThread
 from documents.models import DataRoom, DataRoomDocument
 from llm.models import LLMCallLog
@@ -104,20 +103,17 @@ class ThreadCostTests(TestCase):
 
 
 class CanvasSaveToDataRoomTests(TestCase):
-    """Test that canvas_save_to_data_room requires write (owner) access."""
+    """Test that canvas_save_to_data_room requires owner access."""
 
     def setUp(self):
         self.owner = User.objects.create_user(email="owner@example.com", password="pass")
         self.owner.email_verified = True
         self.owner.save(update_fields=["email_verified"])
-        self.colleague = User.objects.create_user(email="colleague@example.com", password="pass")
-        self.colleague.email_verified = True
-        self.colleague.save(update_fields=["email_verified"])
-        self.org = Organization.objects.create(name="TestOrg", slug="testorg-canvas")
-        Membership.objects.create(user=self.owner, org=self.org)
-        Membership.objects.create(user=self.colleague, org=self.org)
+        self.other = User.objects.create_user(email="other@example.com", password="pass")
+        self.other.email_verified = True
+        self.other.save(update_fields=["email_verified"])
         self.data_room = DataRoom.objects.create(
-            name="Shared", slug="shared-canvas", created_by=self.owner, is_shared=True,
+            name="Owner Room", slug="owner-canvas", created_by=self.owner,
         )
 
     def test_owner_can_save_canvas_to_own_room(self):
@@ -137,10 +133,9 @@ class CanvasSaveToDataRoomTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(DataRoomDocument.objects.filter(data_room=self.data_room).exists())
 
-    def test_shared_member_cannot_save_canvas_to_shared_room(self):
-        """Non-owner org members should not be able to write to shared rooms."""
-        self.client.force_login(self.colleague)
-        thread = ChatThread.objects.create(created_by=self.colleague)
+    def test_non_owner_cannot_save_canvas(self):
+        self.client.force_login(self.other)
+        thread = ChatThread.objects.create(created_by=self.other)
         canvas = ChatCanvas.objects.create(
             thread=thread, title="Doc", content="# Hello",
         )
@@ -154,65 +149,6 @@ class CanvasSaveToDataRoomTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
         self.assertFalse(DataRoomDocument.objects.filter(data_room=self.data_room).exists())
-
-
-@override_settings(
-    ALLOWED_HOSTS=["testserver"],
-    LLM_ALLOWED_MODELS=["openai/gpt-5-mini"],
-    LLM_DEFAULT_MODEL="openai/gpt-5-mini",
-)
-class SharedDataRoomVisibilityTests(TestCase):
-    """Shared data rooms must appear in the chat attach dropdown."""
-
-    def setUp(self):
-        self.owner = User.objects.create_user(email="owner@dr.com", password="pass")
-        self.member = User.objects.create_user(email="member@dr.com", password="pass")
-        self.member.email_verified = True
-        self.member.save(update_fields=["email_verified"])
-        self.org = Organization.objects.create(name="Org", slug="org-vis")
-        Membership.objects.create(user=self.owner, org=self.org)
-        Membership.objects.create(user=self.member, org=self.org)
-        self.shared_room = DataRoom.objects.create(
-            name="Shared Room", slug="shared-vis", created_by=self.owner, is_shared=True,
-        )
-        self.private_room = DataRoom.objects.create(
-            name="Private Room", slug="private-vis", created_by=self.owner, is_shared=False,
-        )
-        self.own_room = DataRoom.objects.create(
-            name="My Room", slug="my-vis", created_by=self.member,
-        )
-
-    def test_data_rooms_for_user_includes_shared(self):
-        self.client.force_login(self.member)
-        response = self.client.get(reverse("chat_data_rooms_api"))
-        rooms = response.json()["data_rooms"]
-        room_names = {r["name"] for r in rooms}
-        self.assertIn("My Room", room_names)
-        self.assertIn("Shared Room", room_names)
-        self.assertNotIn("Private Room", room_names)
-
-    def test_chat_home_context_includes_shared(self):
-        self.client.force_login(self.member)
-        response = self.client.get(reverse("chat_home"))
-        room_names = {r["name"] for r in response.context["data_rooms"]}
-        self.assertIn("My Room", room_names)
-        self.assertIn("Shared Room", room_names)
-        self.assertNotIn("Private Room", room_names)
-
-    def test_multi_org_shared_rooms_all_visible(self):
-        """Users in multiple orgs should see shared rooms from ALL orgs."""
-        org2 = Organization.objects.create(name="Org2", slug="org2-vis")
-        user2 = User.objects.create_user(email="org2owner@dr.com", password="pass")
-        Membership.objects.create(user=user2, org=org2)
-        Membership.objects.create(user=self.member, org=org2)
-        room2 = DataRoom.objects.create(
-            name="Org2 Shared", slug="org2-shared", created_by=user2, is_shared=True,
-        )
-        self.client.force_login(self.member)
-        response = self.client.get(reverse("chat_data_rooms_api"))
-        room_names = {r["name"] for r in response.json()["data_rooms"]}
-        self.assertIn("Shared Room", room_names)  # from org1
-        self.assertIn("Org2 Shared", room_names)  # from org2
 
 
 @override_settings(
