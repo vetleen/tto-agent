@@ -26,6 +26,12 @@ def _mock_response(text="Hello transcript."):
 class TranscriptionServiceTests(TestCase):
     """Tests for llm.service.transcription_service.TranscriptionService."""
 
+    def setUp(self):
+        super().setUp()
+        p = patch("llm.service.transcription_service._ffmpeg_available", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
+
     @patch("llm.service.transcription_service._get_audio_duration_seconds", return_value=15.5)
     @patch("llm.service.transcription_service.log_transcription")
     @patch("openai.OpenAI")
@@ -182,9 +188,27 @@ class TranscriptionServiceTests(TestCase):
 
         mock_split.assert_not_called()
 
+    @patch("llm.service.transcription_service._ffmpeg_available", return_value=True)
+    @patch("llm.service._audio_subprocess.ffprobe_duration_ms", return_value=None)
+    def test_transcribe_rejects_corrupted_audio(self, mock_probe, mock_ffmpeg):
+        """Corrupted files (ffprobe returns None) are rejected before hitting the API."""
+        service = TranscriptionService()
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+            f.write(b"\x00" * 100)
+            f.flush()
+            with self.assertRaises(ValueError) as ctx:
+                service.transcribe(Path(f.name), "openai/gpt-4o-mini-transcribe")
+            self.assertIn("corrupted", str(ctx.exception))
+
 
 class TranscribeAudioWrapperTests(TestCase):
     """Tests for the convenience wrapper in documents.services.transcription."""
+
+    def setUp(self):
+        super().setUp()
+        p = patch("llm.service.transcription_service._ffmpeg_available", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
 
     @patch("llm.service.transcription_service.log_transcription")
     @patch("openai.OpenAI")
@@ -225,6 +249,12 @@ class TranscribeAudioWrapperTests(TestCase):
 
 class TranscriptionPromptTests(TestCase):
     """Tests for the optional ``prompt`` parameter on the transcription stack."""
+
+    def setUp(self):
+        super().setUp()
+        p = patch("llm.service.transcription_service._ffmpeg_available", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
 
     @patch("llm.service.transcription_service.log_transcription")
     @patch("openai.OpenAI")
@@ -387,6 +417,12 @@ class TranscriptionUsageExtractionTests(TestCase):
     stand-ins so the test doesn't depend on pulling in real OpenAI SDK
     BaseModel classes. The stand-ins mimic the SDK shape exactly.
     """
+
+    def setUp(self):
+        super().setUp()
+        p = patch("llm.service.transcription_service._ffmpeg_available", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_extract_usage_tokens_variant(self):
         from llm.service.transcription_service import _extract_transcription_usage

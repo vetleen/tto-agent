@@ -95,7 +95,22 @@ class TranscriptionService:
         started_at = time.perf_counter()
         api_limit = info.max_file_size_bytes
         max_duration = info.max_duration_seconds
-        needs_split = file_size > api_limit or _audio_exceeds_duration(file_path, max_duration)
+
+        # Probe duration once: reject unreadable files early and decide
+        # whether the file needs splitting — avoids sending corrupted
+        # audio to the transcription API.
+        probe_ms: int | None = None
+        if _ffmpeg_available():
+            from llm.service._audio_subprocess import ffprobe_duration_ms
+            probe_ms = ffprobe_duration_ms(file_path)
+            if probe_ms is None:
+                raise ValueError(
+                    f"Audio file is corrupted or unreadable: {file_path.name}"
+                )
+
+        needs_split = file_size > api_limit or (
+            probe_ms is not None and max_duration > 0 and probe_ms > max_duration * 1000
+        )
 
         run_id = context.run_id
         logger.info(
@@ -490,21 +505,6 @@ def _ffmpeg_available() -> bool:
     from llm.service._audio_subprocess import ffmpeg_available
     return ffmpeg_available()
 
-
-def _audio_exceeds_duration(file_path: Path, max_seconds: int) -> bool:
-    """Return True if the audio file is longer than *max_seconds*."""
-    if max_seconds <= 0:
-        return False
-    if not _ffmpeg_available():
-        return False
-    try:
-        from llm.service._audio_subprocess import ffprobe_duration_ms
-        duration = ffprobe_duration_ms(file_path)
-        if duration is None:
-            return False
-        return duration > max_seconds * 1000
-    except Exception:
-        return False
 
 
 def _get_audio_duration_seconds(file_path: Path) -> float:
