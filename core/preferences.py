@@ -210,7 +210,7 @@ def get_preferences(user) -> ResolvedPreferences:
 
     for skill in user_skills:
         skill_pref = org_skills_prefs.get(skill.slug, {})
-        if skill_pref.get("enabled", True) is False:
+        if skill_pref.get("enabled", skill.level != "system") is False:
             continue
         # Filter tool_names through org per-skill tool settings AND org tool toggles
         tool_toggles = skill_pref.get("tools", {})

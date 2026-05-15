@@ -512,6 +512,8 @@ class PreferencesSkillCascadeTests(TestCase):
         from unittest.mock import MagicMock
 
         mock_reg.return_value.list_tools.return_value = {}
+        self.org.preferences = {"skills": {"test-skill": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
 
         from core.preferences import get_preferences
 
@@ -521,12 +523,25 @@ class PreferencesSkillCascadeTests(TestCase):
 
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")
+    def test_system_skill_excluded_by_default(self, mock_reg, mock_models):
+        from unittest.mock import MagicMock
+
+        mock_reg.return_value.list_tools.return_value = {}
+
+        from core.preferences import get_preferences
+
+        prefs = get_preferences(self.user)
+        skill_slugs = [s["slug"] for s in prefs.allowed_skills]
+        self.assertNotIn("test-skill", skill_slugs)
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
     def test_per_tool_toggle(self, mock_reg, mock_models):
         from unittest.mock import MagicMock
 
         mock_reg.return_value.list_tools.return_value = {}
         self.org.preferences = {
-            "skills": {"test-skill": {"tools": {"create_skill": False}}}
+            "skills": {"test-skill": {"enabled": True, "tools": {"create_skill": False}}}
         }
         self.org.save(update_fields=["preferences"])
 
@@ -543,6 +558,8 @@ class PreferencesSkillCascadeTests(TestCase):
         from unittest.mock import MagicMock
 
         mock_reg.return_value.list_tools.return_value = {}
+        self.org.preferences = {"skills": {"test-skill": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
 
         from core.preferences import get_preferences
 

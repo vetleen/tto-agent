@@ -32,14 +32,32 @@ class GetAvailableSkillsTests(TestCase):
 
         self.other_user = User.objects.create_user(email="other@example.com", password="pass")
 
-    def test_system_skills_visible_to_all(self):
+    def _enable(self, *slugs):
+        prefs = self.org.preferences or {}
+        skills = prefs.get("skills", {})
+        for slug in slugs:
+            skills.setdefault(slug, {})["enabled"] = True
+        prefs["skills"] = skills
+        self.org.preferences = prefs
+        self.org.save(update_fields=["preferences"])
+
+    def test_system_skills_visible_when_enabled(self):
+        AgentSkill.objects.create(
+            slug="sys-skill", name="System Skill",
+            instructions="Inst.", level="system",
+        )
+        self._enable("sys-skill")
+        skills = get_available_skills(self.user)
+        self.assertEqual(len(skills), 1)
+        self.assertEqual(skills[0].slug, "sys-skill")
+
+    def test_system_skills_hidden_by_default(self):
         AgentSkill.objects.create(
             slug="sys-skill", name="System Skill",
             instructions="Inst.", level="system",
         )
         skills = get_available_skills(self.user)
-        self.assertEqual(len(skills), 1)
-        self.assertEqual(skills[0].slug, "sys-skill")
+        self.assertEqual(len(skills), 0)
 
     def test_org_skills_visible_to_members(self):
         AgentSkill.objects.create(
@@ -120,6 +138,7 @@ class GetAvailableSkillsTests(TestCase):
             slug="a-skill", name="Alpha",
             instructions="Inst.", level="system",
         )
+        self._enable("a-skill", "b-skill")
         skills = get_available_skills(self.user)
         self.assertEqual([s.name for s in skills], ["Alpha", "Bravo"])
 
@@ -131,12 +150,33 @@ class GetSkillForUserTests(TestCase):
         self.org = Organization.objects.create(name="My Org", slug="my-org")
         self.membership = Membership.objects.create(user=self.user, org=self.org)
 
-    def test_system_skill_accessible_by_anyone(self):
+    def _enable(self, *slugs):
+        prefs = self.org.preferences or {}
+        skills = prefs.get("skills", {})
+        for slug in slugs:
+            skills.setdefault(slug, {})["enabled"] = True
+        prefs["skills"] = skills
+        self.org.preferences = prefs
+        self.org.save(update_fields=["preferences"])
+
+    def test_system_skill_accessible_when_org_enabled(self):
         skill = AgentSkill.objects.create(
             slug="sys", name="Sys", instructions="Inst.", level="system",
         )
+        self._enable("sys")
         self.assertIsNotNone(get_skill_for_user(self.user, str(skill.pk)))
+
+    def test_system_skill_accessible_without_membership(self):
+        skill = AgentSkill.objects.create(
+            slug="sys", name="Sys", instructions="Inst.", level="system",
+        )
         self.assertIsNotNone(get_skill_for_user(self.other_user, str(skill.pk)))
+
+    def test_system_skill_hidden_by_default_for_org_member(self):
+        skill = AgentSkill.objects.create(
+            slug="sys", name="Sys", instructions="Inst.", level="system",
+        )
+        self.assertIsNone(get_skill_for_user(self.user, str(skill.pk)))
 
     def test_org_skill_accessible_by_member(self):
         skill = AgentSkill.objects.create(

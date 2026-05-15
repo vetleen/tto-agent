@@ -32,6 +32,8 @@ class SkillsListViewTests(TestCase):
             slug="usr-x", name="My X", instructions="i",
             level="user", created_by=self.user,
         )
+        self.org.preferences = {"skills": {"sys-x": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
 
     def test_requires_login(self):
         response = self.client.get(reverse("agent_skills_list"))
@@ -47,6 +49,14 @@ class SkillsListViewTests(TestCase):
         self.assertContains(response, "Sys X")
         self.assertContains(response, "Org X")
         self.assertContains(response, "My X")
+
+    def test_disabled_system_skill_hidden(self):
+        self.org.preferences = {"skills": {}}
+        self.org.save(update_fields=["preferences"])
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("agent_skills_list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Sys X")
 
     def test_non_member_sees_no_org_section(self):
         outsider = User.objects.create_user(email="out@example.com", password="pw")
@@ -301,6 +311,8 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         self.t2 = SkillTemplate.objects.create(
             skill=self.source, name="Template B", content="Body B"
         )
+        self.org.preferences = {"skills": {"rich-source": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
 
     def _detail_payload(self, action: str, **overrides):
         """Build the POST payload the detail page would submit.
@@ -452,6 +464,8 @@ class SkillsCopyDeleteToggleTests(TestCase):
             slug="my-only", name="Mine", instructions="i",
             level="user", created_by=self.user,
         )
+        self.org.preferences = {"skills": {"sys-only": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
 
     def test_copy_creates_user_skill(self):
         self.client.force_login(self.user)

@@ -323,7 +323,7 @@ def org_settings_page(request):
             "emoji": skill.emoji,
             "description": skill.description,
             "tool_names": skill.tool_names or [],
-            "enabled": sp.get("enabled", True) is not False,
+            "enabled": sp.get("enabled", skill.level != "system") is not False,
             "tools": {t: tool_toggles.get(t, True) is not False for t in (skill.tool_names or [])},
         })
 

@@ -19,11 +19,15 @@ if TYPE_CHECKING:
 _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
 
 
-def _org_disabled_slugs(user) -> set[str]:
-    """Return slugs the user's org has disabled (empty set if no membership).
+def _org_disabled_info(user) -> tuple[set[str], set[str]]:
+    """Return ``(all_tier_disabled, system_tier_disabled)`` slug sets.
 
-    Hidden from the Skills overview, detail pages, and every other flow that
-    resolves skills through ``get_accessible_skills`` / ``get_skill_for_user``.
+    *all_tier_disabled*: slugs an admin explicitly set ``enabled: False`` —
+    hides every tier (system, org, user) of that slug.
+
+    *system_tier_disabled*: system-skill slugs not explicitly enabled — hides
+    only the system tier.  Org / user skills sharing the slug stay visible.
+
     The org settings page queries ``AgentSkill`` directly and intentionally
     bypasses this so admins can still toggle disabled skills back on.
     """
@@ -31,12 +35,33 @@ def _org_disabled_slugs(user) -> set[str]:
 
     membership = Membership.objects.filter(user=user).select_related("org").first()
     if not membership or not membership.org:
-        return set()
+        return set(), set()
     org_skills = (membership.org.preferences or {}).get("skills") or {}
-    return {
+
+    all_tier_disabled = {
         slug for slug, pref in org_skills.items()
-        if isinstance(pref, dict) and pref.get("enabled", True) is False
+        if isinstance(pref, dict) and pref.get("enabled") is False
     }
+
+    system_slugs = set(
+        AgentSkill.objects.filter(level="system", is_active=True)
+        .values_list("slug", flat=True)
+    )
+    system_tier_disabled = set()
+    for slug in system_slugs:
+        pref = org_skills.get(slug)
+        if not isinstance(pref, dict) or pref.get("enabled") is not True:
+            system_tier_disabled.add(slug)
+
+    return all_tier_disabled, system_tier_disabled
+
+
+def _is_org_hidden(skill, all_disabled: set[str], system_disabled: set[str]) -> bool:
+    if skill.slug in all_disabled:
+        return True
+    if skill.level == "system" and skill.slug in system_disabled:
+        return True
+    return False
 
 
 def get_accessible_skills(user) -> list[AgentSkill]:
@@ -52,8 +77,11 @@ def get_accessible_skills(user) -> list[AgentSkill]:
         q |= Q(level="org", organization=membership.org)
     q |= Q(level="user", created_by=user)
 
-    disabled = _org_disabled_slugs(user)
-    return [s for s in AgentSkill.objects.filter(q, is_active=True) if s.slug not in disabled]
+    all_disabled, system_disabled = _org_disabled_info(user)
+    return [
+        s for s in AgentSkill.objects.filter(q, is_active=True)
+        if not _is_org_hidden(s, all_disabled, system_disabled)
+    ]
 
 
 def shadowing_default(candidates: list[AgentSkill]) -> AgentSkill:
@@ -123,7 +151,8 @@ def get_skill_for_user(user, skill_id: str) -> AgentSkill | None:
     except AgentSkill.DoesNotExist:
         return None
 
-    if skill.slug in _org_disabled_slugs(user):
+    all_disabled, system_disabled = _org_disabled_info(user)
+    if _is_org_hidden(skill, all_disabled, system_disabled):
         return None
 
     if skill.level == "system":
