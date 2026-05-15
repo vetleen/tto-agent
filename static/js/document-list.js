@@ -6,8 +6,9 @@
 
   var bulkDeleteUrl = config.dataset.bulkDeleteUrl;
   var bulkArchiveUrl = config.dataset.bulkArchiveUrl;
+  var deleteCheckUrl = config.dataset.deleteCheckUrl;
   var statusUrl = config.dataset.statusUrl;
-  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var csrf = config.dataset.csrfToken || document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
 
   // ── Status icons ──────────────────────────────────────────────────
   var ICONS = {
@@ -148,6 +149,95 @@
     });
   }
 
+  // ── Delete-check + confirmation modal ─────────────────────────────
+  var pendingDeleteState = null;
+  var deleteModalTrigger = document.getElementById('delete-confirm-modal-trigger');
+  var deleteModalMessage = document.getElementById('delete-confirm-message');
+  var deleteModalThreadList = document.getElementById('delete-confirm-thread-list');
+  var deleteDocOnly = document.getElementById('delete-confirm-doc-only');
+  var deleteDocAndThreads = document.getElementById('delete-confirm-doc-and-threads');
+
+  function showDeleteModal(threads, docCount, deleteAction) {
+    var noun = docCount === 1 ? 'this document' : 'these ' + docCount + ' documents';
+    deleteModalMessage.textContent = threads.length + ' chat thread' +
+      (threads.length === 1 ? '' : 's') + ' previously used content from ' + noun + ':';
+    deleteModalThreadList.innerHTML = '';
+    threads.forEach(function (t) {
+      var li = document.createElement('li');
+      li.textContent = t.title;
+      deleteModalThreadList.appendChild(li);
+    });
+    pendingDeleteState = { deleteAction: deleteAction };
+    deleteModalTrigger.click();
+  }
+
+  function checkAndDelete(docIds, deleteAction) {
+    doFetch(deleteCheckUrl, { document_ids: docIds })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.affected_thread_count === 0) {
+          if (confirm('Are you sure you want to delete ' + (docIds.length === 1 ? 'this document' : docIds.length + ' document(s)') + '?')) {
+            deleteAction(false);
+          }
+        } else {
+          showDeleteModal(data.affected_threads, docIds.length, deleteAction);
+        }
+      })
+      .catch(function () {
+        if (confirm('Could not check for related chats. Delete anyway?')) {
+          deleteAction(false);
+        }
+      });
+  }
+
+  if (deleteDocOnly) {
+    deleteDocOnly.addEventListener('click', function () {
+      if (pendingDeleteState) {
+        pendingDeleteState.deleteAction(false);
+        pendingDeleteState = null;
+      }
+      document.querySelector('[data-modal-hide="delete-confirm-modal"]')?.click();
+    });
+  }
+
+  if (deleteDocAndThreads) {
+    deleteDocAndThreads.addEventListener('click', function () {
+      if (pendingDeleteState) {
+        pendingDeleteState.deleteAction(true);
+        pendingDeleteState = null;
+      }
+      document.querySelector('[data-modal-hide="delete-confirm-modal"]')?.click();
+    });
+  }
+
+  // ── Single-document delete ────────────────────────────────────────
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.delete-document-btn');
+    if (!btn) return;
+    var docId = Number(btn.dataset.docId);
+    var deleteUrl = btn.dataset.deleteUrl;
+    checkAndDelete([docId], function (deleteThreads) {
+      var form = document.createElement('form');
+      form.method = 'POST';
+      form.action = deleteUrl;
+      form.style.display = 'none';
+      var csrfInput = document.createElement('input');
+      csrfInput.type = 'hidden';
+      csrfInput.name = 'csrfmiddlewaretoken';
+      csrfInput.value = csrf;
+      form.appendChild(csrfInput);
+      if (deleteThreads) {
+        var threadInput = document.createElement('input');
+        threadInput.type = 'hidden';
+        threadInput.name = 'delete_threads';
+        threadInput.value = 'true';
+        form.appendChild(threadInput);
+      }
+      document.body.appendChild(form);
+      form.submit();
+    });
+  });
+
   // Active list buttons
   var activeBulkDelete = document.getElementById('active-bulk-delete');
   var activeBulkArchive = document.getElementById('active-bulk-archive');
@@ -156,11 +246,14 @@
     activeBulkDelete.addEventListener('click', function () {
       var ids = activeList.getSelectedIds();
       if (!ids.length) return;
-      if (!confirm('Are you sure you want to delete ' + ids.length + ' document(s)?')) return;
-      setButtonLoading(activeBulkDelete, true);
-      doFetch(bulkDeleteUrl, { document_ids: ids })
-        .then(function (r) { if (!r.ok) throw new Error('Delete failed'); location.reload(); })
-        .catch(function () { alert('Failed to delete documents. Please try again.'); setButtonLoading(activeBulkDelete, false); });
+      checkAndDelete(ids, function (deleteThreads) {
+        setButtonLoading(activeBulkDelete, true);
+        var body = { document_ids: ids };
+        if (deleteThreads) body.delete_threads = true;
+        doFetch(bulkDeleteUrl, body)
+          .then(function (r) { if (!r.ok) throw new Error('Delete failed'); location.reload(); })
+          .catch(function () { alert('Failed to delete documents. Please try again.'); setButtonLoading(activeBulkDelete, false); });
+      });
     });
   }
 
@@ -180,11 +273,14 @@
     archivedBulkDelete.addEventListener('click', function () {
       var ids = archivedList.getSelectedIds();
       if (!ids.length) return;
-      if (!confirm('Are you sure you want to delete ' + ids.length + ' document(s)?')) return;
-      setButtonLoading(archivedBulkDelete, true);
-      doFetch(bulkDeleteUrl, { document_ids: ids })
-        .then(function (r) { if (!r.ok) throw new Error('Delete failed'); location.reload(); })
-        .catch(function () { alert('Failed to delete documents. Please try again.'); setButtonLoading(archivedBulkDelete, false); });
+      checkAndDelete(ids, function (deleteThreads) {
+        setButtonLoading(archivedBulkDelete, true);
+        var body = { document_ids: ids };
+        if (deleteThreads) body.delete_threads = true;
+        doFetch(bulkDeleteUrl, body)
+          .then(function (r) { if (!r.ok) throw new Error('Delete failed'); location.reload(); })
+          .catch(function () { alert('Failed to delete documents. Please try again.'); setButtonLoading(archivedBulkDelete, false); });
+      });
     });
   }
 

@@ -289,3 +289,43 @@ class ThreadTask(models.Model):
 
     def __str__(self):
         return f"[{self.status}] {self.title[:60]}"
+
+
+class ThreadChunkUsage(models.Model):
+    """Records that a chat thread consumed a specific document chunk during RAG retrieval."""
+
+    thread = models.ForeignKey(
+        ChatThread,
+        on_delete=models.CASCADE,
+        related_name="chunk_usages",
+    )
+    chunk = models.ForeignKey(
+        "documents.DataRoomDocumentChunk",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="thread_usages",
+    )
+    document = models.ForeignKey(
+        "documents.DataRoomDocument",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="thread_usages",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["thread", "chunk"],
+                name="unique_thread_chunk_usage",
+                condition=models.Q(chunk__isnull=False),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["document"], name="threadchunkusage_doc_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Thread {self.thread_id} used chunk {self.chunk_id}"

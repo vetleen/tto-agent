@@ -54,12 +54,13 @@
               Archive
             </button>
           </form>
-          <form method="post" action="{% url 'data_room_delete' data_room_id=dr.uuid %}" class="p-0">
-            {% csrf_token %}
-            <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this data room?');">
-              Delete
-            </button>
-          </form>
+          <button type="button"
+                  class="delete-dr-btn inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left"
+                  data-delete-url="{% url 'data_room_delete' data_room_id=dr.uuid %}"
+                  data-check-url="{% url 'data_room_delete_check' data_room_id=dr.uuid %}"
+                  data-dr-name="{{ dr.name }}">
+            Delete
+          </button>
         </div>
       </div>
     </div>
@@ -98,12 +99,13 @@
                 Restore
               </button>
             </form>
-            <form method="post" action="{% url 'data_room_delete' data_room_id=dr.uuid %}" class="p-0">
-              {% csrf_token %}
-              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Are you sure you want to delete this data room?');">
-                Delete
-              </button>
-            </form>
+            <button type="button"
+                    class="delete-dr-btn inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left"
+                    data-delete-url="{% url 'data_room_delete' data_room_id=dr.uuid %}"
+                    data-check-url="{% url 'data_room_delete_check' data_room_id=dr.uuid %}"
+                    data-dr-name="{{ dr.name }}">
+              Delete
+            </button>
           </div>
         </div>
       </div>
@@ -140,5 +142,113 @@
     </div>
   </div>
 </div>
+<!-- Hidden trigger for delete confirmation modal -->
+<button type="button" id="delete-dr-modal-trigger" class="hidden" data-modal-target="delete-dr-modal" data-modal-show="delete-dr-modal" aria-label="Open delete confirmation modal"></button>
+<!-- Delete confirmation modal -->
+<div id="delete-dr-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+  <div class="relative w-full max-w-lg max-h-full">
+    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+      <div class="px-6 py-4 border-b border-default">
+        <h3 class="text-lg font-semibold text-heading">Delete data room</h3>
+      </div>
+      <div class="p-6">
+        <p class="text-sm text-body mb-3" id="delete-dr-message"></p>
+        <ul id="delete-dr-thread-list" class="max-h-40 overflow-y-auto text-sm text-heading list-disc list-inside space-y-1"></ul>
+      </div>
+      <div class="flex flex-wrap gap-3 px-6 py-4 border-t border-default">
+        <button type="button" id="delete-dr-only"
+                class="bg-brand text-white hover:bg-brand-strong font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
+          Delete data room only
+        </button>
+        <button type="button" id="delete-dr-and-threads"
+                class="bg-red-600 text-white hover:bg-red-700 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-red-300">
+          Delete data room and related chats
+        </button>
+        <button type="button" data-modal-hide="delete-dr-modal"
+                class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="{% static 'js/rename-modal.js' %}"></script>
+<script>
+(function () {
+  'use strict';
+  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var pendingAction = null;
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.delete-dr-btn');
+    if (!btn) return;
+    var checkUrl = btn.dataset.checkUrl;
+    var deleteUrl = btn.dataset.deleteUrl;
+
+    function doDelete(deleteThreads) {
+      var form = document.createElement('form');
+      form.method = 'POST';
+      form.action = deleteUrl;
+      form.style.display = 'none';
+      var csrfInput = document.createElement('input');
+      csrfInput.type = 'hidden';
+      csrfInput.name = 'csrfmiddlewaretoken';
+      csrfInput.value = csrf;
+      form.appendChild(csrfInput);
+      if (deleteThreads) {
+        var threadInput = document.createElement('input');
+        threadInput.type = 'hidden';
+        threadInput.name = 'delete_threads';
+        threadInput.value = 'true';
+        form.appendChild(threadInput);
+      }
+      document.body.appendChild(form);
+      form.submit();
+    }
+
+    fetch(checkUrl, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRFToken': csrf }
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.affected_thread_count === 0) {
+          if (confirm('Are you sure you want to delete this data room and all its documents?')) {
+            doDelete(false);
+          }
+        } else {
+          var msg = document.getElementById('delete-dr-message');
+          msg.textContent = data.affected_thread_count + ' chat thread' +
+            (data.affected_thread_count === 1 ? '' : 's') +
+            ' previously used content from this data room:';
+          var list = document.getElementById('delete-dr-thread-list');
+          list.innerHTML = '';
+          data.affected_threads.forEach(function (t) {
+            var li = document.createElement('li');
+            li.textContent = t.title;
+            list.appendChild(li);
+          });
+          pendingAction = doDelete;
+          document.getElementById('delete-dr-modal-trigger').click();
+        }
+      })
+      .catch(function () {
+        if (confirm('Could not check for related chats. Delete anyway?')) {
+          doDelete(false);
+        }
+      });
+  });
+
+  document.getElementById('delete-dr-only')?.addEventListener('click', function () {
+    if (pendingAction) { pendingAction(false); pendingAction = null; }
+    document.querySelector('[data-modal-hide="delete-dr-modal"]')?.click();
+  });
+  document.getElementById('delete-dr-and-threads')?.addEventListener('click', function () {
+    if (pendingAction) { pendingAction(true); pendingAction = null; }
+    document.querySelector('[data-modal-hide="delete-dr-modal"]')?.click();
+  });
+})();
+</script>
 {% endblock %}

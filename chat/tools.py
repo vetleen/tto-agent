@@ -13,6 +13,33 @@ from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 logger = logging.getLogger(__name__)
 
 
+def _record_chunk_usage(conversation_id: str, chunk_ids: list[int]) -> None:
+    """Persist ThreadChunkUsage records for the given thread and chunks. Best-effort."""
+    try:
+        import uuid as _uuid
+
+        from chat.models import ThreadChunkUsage
+        from documents.models import DataRoomDocumentChunk
+
+        thread_uuid = _uuid.UUID(conversation_id)
+        chunk_doc_map = dict(
+            DataRoomDocumentChunk.objects.filter(pk__in=chunk_ids).values_list("pk", "document_id")
+        )
+        usages = [
+            ThreadChunkUsage(
+                thread_id=thread_uuid,
+                chunk_id=cid,
+                document_id=chunk_doc_map.get(cid),
+            )
+            for cid in chunk_ids
+            if cid in chunk_doc_map
+        ]
+        if usages:
+            ThreadChunkUsage.objects.bulk_create(usages, ignore_conflicts=True)
+    except Exception:
+        logger.exception("Failed to record chunk usage")
+
+
 def _filter_accessible_rooms(data_room_ids: list[int], user_id: int | None) -> list[int]:
     """Filter data room IDs to those the user can access (owned or shared). Raises if none remain."""
     if not user_id:
@@ -134,6 +161,9 @@ class SearchDocumentsTool(ContextAwareTool):
         # Collect chunk IDs and build metadata lookup (preserves rank order)
         chunk_ids = [doc.metadata["chunk_id"] for doc in docs if doc.metadata.get("chunk_id")]
         meta_by_chunk_id = {doc.metadata["chunk_id"]: doc.metadata for doc in docs if doc.metadata.get("chunk_id")}
+
+        if chunk_ids and context and context.conversation_id:
+            _record_chunk_usage(context.conversation_id, chunk_ids)
 
         windows = get_merged_context_windows(chunk_ids)
 
@@ -334,16 +364,21 @@ class ReadDocumentTool(ContextAwareTool):
                     chunk_index__lte=chunk_end,
                 )
 
-            chunk_list = list(chunks_qs.values_list("chunk_index", "heading", "text"))
+            chunk_list = list(chunks_qs.values_list("id", "chunk_index", "heading", "text"))
             if not use_chunk_range:
                 total_chunk_count = len(chunk_list)
             content_parts = []
             headings = []
-            for ci, heading, text in chunk_list:
+            read_chunk_ids = []
+            for chunk_pk, ci, heading, text in chunk_list:
+                read_chunk_ids.append(chunk_pk)
                 content_parts.append(text)
                 if heading:
                     headings.append(heading)
             content = "\n\n".join(content_parts)
+
+            if read_chunk_ids and context and context.conversation_id:
+                _record_chunk_usage(context.conversation_id, read_chunk_ids)
 
             remaining = self._MAX_TOTAL_CHARS - total_chars
             if remaining <= 0:

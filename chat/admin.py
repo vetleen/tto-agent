@@ -4,7 +4,7 @@ from django.db.models.functions import Cast
 
 from llm.models import LLMCallLog
 
-from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, ThreadTask
+from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, ThreadChunkUsage, ThreadTask
 
 
 class ChatMessageInline(admin.TabularInline):
@@ -28,13 +28,20 @@ class ThreadTaskInline(admin.TabularInline):
     fields = ("order", "title", "status", "created_at", "updated_at")
 
 
+class ThreadChunkUsageInline(admin.TabularInline):
+    model = ThreadChunkUsage
+    extra = 0
+    readonly_fields = ("chunk", "document", "created_at")
+    raw_id_fields = ("chunk", "document")
+
+
 @admin.register(ChatThread)
 class ChatThreadAdmin(admin.ModelAdmin):
     list_display = ("id", "title", "created_by", "cost_usd", "created_at", "updated_at")
     list_filter = ("created_at",)
     search_fields = ("title",)
     readonly_fields = ("id", "created_at", "updated_at")
-    inlines = [ChatThreadDataRoomInline, ThreadTaskInline, ChatMessageInline]
+    inlines = [ChatThreadDataRoomInline, ThreadTaskInline, ThreadChunkUsageInline, ChatMessageInline]
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

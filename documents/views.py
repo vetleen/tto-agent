@@ -120,9 +120,37 @@ def data_room_delete(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
+    if request.POST.get("delete_threads") == "true":
+        doc_ids = list(data_room.documents.values_list("pk", flat=True))
+        if doc_ids:
+            _delete_threads_for_documents(doc_ids, data_room)
     data_room.delete()
     messages.success(request, "Data room deleted.")
     return redirect("data_room_list")
+
+
+@login_required
+@require_POST
+def data_room_delete_check(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_modify_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    from chat.models import ThreadChunkUsage
+
+    thread_qs = (
+        ThreadChunkUsage.objects.filter(document__data_room=data_room)
+        .values("thread_id", "thread__title")
+        .distinct()
+    )
+    threads = [
+        {"id": str(row["thread_id"]), "title": row["thread__title"] or "Untitled"}
+        for row in thread_qs
+    ]
+    return JsonResponse({
+        "affected_threads": threads,
+        "affected_thread_count": len(threads),
+    })
 
 
 @login_required
@@ -306,9 +334,61 @@ def document_delete(request, data_room_id, document_id):
     if not _user_can_modify_data_room(request.user, data_room):
         return redirect("data_room_list")
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
+    if request.POST.get("delete_threads") == "true":
+        _delete_threads_for_documents([doc.pk], data_room)
     doc.delete()
     messages.success(request, "Document deleted.")
     return redirect("data_room_documents", data_room_id=data_room.uuid)
+
+
+def _delete_threads_for_documents(doc_ids: list[int], data_room) -> int:
+    from chat.models import ChatThread, ThreadChunkUsage
+
+    thread_ids = list(
+        ThreadChunkUsage.objects.filter(
+            document_id__in=doc_ids,
+            document__data_room=data_room,
+        )
+        .values_list("thread_id", flat=True)
+        .distinct()
+    )
+    if thread_ids:
+        deleted, _ = ChatThread.objects.filter(pk__in=thread_ids).delete()
+        return deleted
+    return 0
+
+
+@login_required
+@require_POST
+def document_delete_check(request, data_room_id):
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_modify_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+    doc_ids = body.get("document_ids")
+    if not isinstance(doc_ids, list) or not doc_ids:
+        return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+
+    from chat.models import ThreadChunkUsage
+
+    thread_qs = (
+        ThreadChunkUsage.objects.filter(
+            document_id__in=doc_ids,
+            document__data_room=data_room,
+        )
+        .values("thread_id", "thread__title")
+        .distinct()
+    )
+    threads = [
+        {"id": str(row["thread_id"]), "title": row["thread__title"] or "Untitled"}
+        for row in thread_qs
+    ]
+    return JsonResponse({
+        "affected_threads": threads,
+        "affected_thread_count": len(threads),
+    })
 
 
 @login_required
@@ -378,6 +458,8 @@ def document_bulk_delete(request, data_room_id):
     doc_ids = body.get("document_ids")
     if not isinstance(doc_ids, list) or not doc_ids:
         return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+    if body.get("delete_threads"):
+        _delete_threads_for_documents(doc_ids, data_room)
     deleted, _ = DataRoomDocument.objects.filter(pk__in=doc_ids, data_room=data_room).delete()
     return JsonResponse({"deleted": deleted})
 

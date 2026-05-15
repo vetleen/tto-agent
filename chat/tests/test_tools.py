@@ -196,6 +196,73 @@ class SearchDocumentsToolTests(TestCase):
         self.assertIsInstance(result, str)
         mock_search.assert_called_once()
 
+    @patch("documents.services.retrieval.similarity_search_chunks")
+    @patch("documents.services.retrieval.get_merged_context_windows")
+    def test_records_chunk_usage(self, mock_windows, mock_search):
+        """Search should create ThreadChunkUsage records for retrieved chunks."""
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="usage.pdf", status=DataRoomDocument.Status.READY, doc_index=1,
+        )
+        c1 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="A", token_count=1)
+        c2 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="B", token_count=1)
+
+        mock_doc1 = MagicMock()
+        mock_doc1.metadata = {"chunk_id": c1.id, "doc_index": 1, "data_room_id": self.data_room.pk, "chunk_index": 0}
+        mock_doc2 = MagicMock()
+        mock_doc2.metadata = {"chunk_id": c2.id, "doc_index": 1, "data_room_id": self.data_room.pk, "chunk_index": 1}
+        mock_search.return_value = [mock_doc1, mock_doc2]
+        mock_windows.return_value = [{
+            "chunk_ids": [c1.id, c2.id], "document_id": doc.pk,
+            "context_text": "A\n\nB", "context_token_count": 2, "chunks_included": [0, 1],
+        }]
+
+        thread = ChatThread.objects.create(created_by=self.user, title="Usage test")
+        ctx = RunContext.create(
+            user_id=self.user.pk,
+            conversation_id=str(thread.id),
+            data_room_ids=[self.data_room.pk],
+        )
+        self._invoke({"query": "test"}, ctx)
+
+        usages = ThreadChunkUsage.objects.filter(thread=thread)
+        self.assertEqual(usages.count(), 2)
+        self.assertEqual(set(usages.values_list("chunk_id", flat=True)), {c1.id, c2.id})
+        self.assertTrue(all(u.document_id == doc.pk for u in usages))
+
+    @patch("documents.services.retrieval.similarity_search_chunks")
+    @patch("documents.services.retrieval.get_merged_context_windows")
+    def test_duplicate_search_no_duplicate_usage(self, mock_windows, mock_search):
+        """Searching same chunks twice should not create duplicate usage rows."""
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="dup.pdf", status=DataRoomDocument.Status.READY, doc_index=1,
+        )
+        chunk = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="X", token_count=1)
+
+        mock_doc = MagicMock()
+        mock_doc.metadata = {"chunk_id": chunk.id, "doc_index": 1, "data_room_id": self.data_room.pk, "chunk_index": 0}
+        mock_search.return_value = [mock_doc]
+        mock_windows.return_value = [{
+            "chunk_ids": [chunk.id], "document_id": doc.pk,
+            "context_text": "X", "context_token_count": 1, "chunks_included": [0],
+        }]
+
+        thread = ChatThread.objects.create(created_by=self.user, title="Dup test")
+        ctx = RunContext.create(
+            user_id=self.user.pk,
+            conversation_id=str(thread.id),
+            data_room_ids=[self.data_room.pk],
+        )
+        self._invoke({"query": "test"}, ctx)
+        self._invoke({"query": "test again"}, ctx)
+
+        self.assertEqual(ThreadChunkUsage.objects.filter(thread=thread).count(), 1)
+
     def test_denies_shared_room_if_not_in_same_org(self):
         """Shared room should be denied if user is not in the owner's org."""
         org1 = Organization.objects.create(name="Org1", slug="org1-tools-search")
@@ -399,3 +466,26 @@ class ReadDocumentToolTests(TestCase):
         self.assertIn("More safe content", d["content"])
         self.assertNotIn("Dangerous injected content", d["content"])
         self.assertEqual(d["total_chunks"], 2)
+
+    def test_records_chunk_usage(self):
+        """Reading a document should create ThreadChunkUsage records."""
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="read-usage.txt", status=DataRoomDocument.Status.READY,
+        )
+        c1 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="AA", token_count=1)
+        c2 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="BB", token_count=1)
+
+        thread = ChatThread.objects.create(created_by=self.user, title="Read usage test")
+        ctx = RunContext.create(
+            user_id=self.user.pk,
+            conversation_id=str(thread.id),
+            data_room_ids=[self.data_room.pk],
+        )
+        self._invoke({"doc_indices": [doc.doc_index]}, ctx)
+
+        usages = ThreadChunkUsage.objects.filter(thread=thread)
+        self.assertEqual(usages.count(), 2)
+        self.assertEqual(set(usages.values_list("chunk_id", flat=True)), {c1.id, c2.id})

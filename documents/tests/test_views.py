@@ -1053,3 +1053,145 @@ class SharedDataRoomAuthorizationTests(TestCase):
             reverse("data_room_delete", kwargs={"data_room_id": self.shared_room.uuid}),
         )
         self.assertFalse(DataRoom.objects.filter(pk=self.shared_room.pk).exists())
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class DocumentDeleteCheckTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="delcheck@example.com", password="testpass")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.data_room = DataRoom.objects.create(name="DC", slug="dc-check", created_by=self.user)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="check.txt", status=DataRoomDocument.Status.READY,
+        )
+        self.chunk = DataRoomDocumentChunk.objects.create(
+            document=self.doc, chunk_index=0, text="data", token_count=1,
+        )
+
+    def _check_url(self):
+        return reverse("document_delete_check", kwargs={"data_room_id": self.data_room.uuid})
+
+    def _delete_url(self, doc_id=None):
+        return reverse("document_delete", kwargs={
+            "data_room_id": self.data_room.uuid,
+            "document_id": doc_id or self.doc.id,
+        })
+
+    def _bulk_delete_url(self):
+        return reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid})
+
+    def test_check_returns_empty_when_no_usages(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            self._check_url(),
+            json.dumps({"document_ids": [self.doc.id]}),
+            content_type="application/json",
+        )
+        data = response.json()
+        self.assertEqual(data["affected_thread_count"], 0)
+        self.assertEqual(data["affected_threads"], [])
+
+    def test_check_returns_affected_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="Test Chat")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        response = self.client.post(
+            self._check_url(),
+            json.dumps({"document_ids": [self.doc.id]}),
+            content_type="application/json",
+        )
+        data = response.json()
+        self.assertEqual(data["affected_thread_count"], 1)
+        self.assertEqual(data["affected_threads"][0]["title"], "Test Chat")
+
+    def test_delete_without_delete_threads_preserves_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="Preserved")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        self.client.post(self._delete_url())
+        self.assertTrue(ChatThread.objects.filter(pk=thread.pk).exists())
+
+    def test_delete_with_delete_threads_removes_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="Doomed")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        self.client.post(self._delete_url(), {"delete_threads": "true"})
+        self.assertFalse(ChatThread.objects.filter(pk=thread.pk).exists())
+        self.assertFalse(DataRoomDocument.objects.filter(pk=self.doc.pk).exists())
+
+    def test_bulk_delete_with_delete_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="Bulk doomed")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        self.client.post(
+            self._bulk_delete_url(),
+            json.dumps({"document_ids": [self.doc.id], "delete_threads": True}),
+            content_type="application/json",
+        )
+        self.assertFalse(ChatThread.objects.filter(pk=thread.pk).exists())
+        self.assertFalse(DataRoomDocument.objects.filter(pk=self.doc.pk).exists())
+
+    def test_bulk_delete_without_delete_threads_preserves_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="Bulk preserved")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        self.client.post(
+            self._bulk_delete_url(),
+            json.dumps({"document_ids": [self.doc.id]}),
+            content_type="application/json",
+        )
+        self.assertTrue(ChatThread.objects.filter(pk=thread.pk).exists())
+
+    def test_data_room_delete_check_returns_affected_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="DR Chat")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        url = reverse("data_room_delete_check", kwargs={"data_room_id": self.data_room.uuid})
+        response = self.client.post(url)
+        data = response.json()
+        self.assertEqual(data["affected_thread_count"], 1)
+        self.assertEqual(data["affected_threads"][0]["title"], "DR Chat")
+
+    def test_data_room_delete_with_delete_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="DR Doomed")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        url = reverse("data_room_delete", kwargs={"data_room_id": self.data_room.uuid})
+        self.client.post(url, {"delete_threads": "true"})
+        self.assertFalse(ChatThread.objects.filter(pk=thread.pk).exists())
+        self.assertFalse(DataRoom.objects.filter(pk=self.data_room.pk).exists())
+
+    def test_data_room_delete_without_delete_threads_preserves_threads(self):
+        from chat.models import ChatThread, ThreadChunkUsage
+
+        self.client.force_login(self.user)
+        thread = ChatThread.objects.create(created_by=self.user, title="DR Preserved")
+        ThreadChunkUsage.objects.create(thread=thread, chunk=self.chunk, document=self.doc)
+
+        url = reverse("data_room_delete", kwargs={"data_room_id": self.data_room.uuid})
+        self.client.post(url)
+        self.assertTrue(ChatThread.objects.filter(pk=thread.pk).exists())
+        self.assertFalse(DataRoom.objects.filter(pk=self.data_room.pk).exists())
