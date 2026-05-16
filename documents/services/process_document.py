@@ -234,6 +234,15 @@ def process_document(document_id: int) -> None:
             except Exception:
                 logger.exception("process_document: document_id=%s description generation failed (non-critical)", document_id)
 
+    except ValueError as e:
+        duration_seconds = time.perf_counter() - started_at
+        logger.warning(
+            "process_document: document_id=%s data_room_id=%s stage=failed duration_seconds=%.2f — %s",
+            document_id, doc.data_room_id, duration_seconds, e,
+        )
+        doc.status = DataRoomDocument.Status.FAILED
+        doc.processing_error = str(e)[:2000]
+        doc.save(update_fields=["status", "processing_error", "updated_at"])
     except Exception as e:
         duration_seconds = time.perf_counter() - started_at
         logger.exception(

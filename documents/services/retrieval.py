@@ -82,6 +82,8 @@ def rerank_chunks(
             output.append(id_to_original[orig_id])
         return output
     except Exception:
+        global _ranker_cache
+        _ranker_cache = None
         logger.warning("Reranking failed; returning unranked results", exc_info=True)
         return results[:top_n]
 
