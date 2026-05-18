@@ -662,7 +662,7 @@ def meeting_upload_audio(request, meeting_uuid):
         messages.error(request, f"Unsupported audio format. Use one of: {sorted(AUDIO_EXTENSIONS)}.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    max_bytes = getattr(settings, "MEETING_AUDIO_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)
+    max_bytes = getattr(settings, "MEETING_AUDIO_UPLOAD_MAX_BYTES", 50_000_000)
     if file_obj.size > max_bytes:
         messages.error(request, f"Audio file is too large (max {max_bytes // (1024 * 1024)} MB).")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
