@@ -737,8 +737,8 @@ class RunSubagentTaskTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
-    def test_task_handles_failure_sets_pending_for_retry(self, mock_prefs, mock_svc):
-        """On failure, run_subagent sets PENDING (not FAILED) so Celery can retry."""
+    def test_task_handles_failure_sets_failed(self, mock_prefs, mock_svc):
+        """On failure, run_subagent sets FAILED directly."""
         mock_prefs.return_value = _prefs()
         mock_svc.return_value.run.side_effect = RuntimeError("Provider down")
 
@@ -752,7 +752,7 @@ class RunSubagentTaskTests(TestCase):
             run_subagent_task(str(run.id))
 
         run.refresh_from_db()
-        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
         self.assertIn("Provider down", run.error)
 
 
@@ -896,8 +896,8 @@ class RunSubagentServiceTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
-    def test_failure_sets_pending_for_retry(self, mock_prefs, mock_svc):
-        """run_subagent should set PENDING on failure for Celery retry."""
+    def test_failure_sets_failed(self, mock_prefs, mock_svc):
+        """run_subagent should set FAILED on failure."""
         mock_prefs.return_value = _prefs()
         mock_svc.return_value.run.side_effect = RuntimeError("Transient error")
 
@@ -911,8 +911,9 @@ class RunSubagentServiceTests(TestCase):
             run_subagent(run.id)
 
         run.refresh_from_db()
-        self.assertEqual(run.status, SubAgentRun.Status.PENDING)
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
         self.assertIn("Transient error", run.error)
+        self.assertIsNotNone(run.completed_at)
 
 
 # ---------------------------------------------------------------------------

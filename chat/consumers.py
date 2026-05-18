@@ -339,14 +339,46 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 } for t in task_list],
             }))
 
-            # Now that the client has the thread state, kick off the seed
-            # assistant turn if one was pending. We pass through the same
-            # chat-message handler so streaming/error semantics are identical.
-            if pending_consumed:
+            # Kick off the seed assistant turn if one was pending, or if
+            # subagents completed while the user was disconnected.
+            needs_seed = pending_consumed
+            if not needs_seed and self._has_tool("create_subagent"):
+                needs_seed = await self._check_unreported_subagents(thread_id)
+            if needs_seed:
                 await self._handle_chat_message(
                     {"thread_id": thread_id, "content": ""},
                     seed_mode=True,
                 )
+
+    @database_sync_to_async
+    def _check_unreported_subagents(self, thread_id) -> bool:
+        """Return True if any completed subagent results haven't been processed by the orchestrator."""
+        from chat.models import ChatMessage, SubAgentRun
+
+        completed_run_ids = list(
+            SubAgentRun.objects.filter(
+                thread_id=thread_id,
+                status=SubAgentRun.Status.COMPLETED,
+            ).exclude(result="").values_list("id", flat=True)
+        )
+        if not completed_run_ids:
+            return False
+
+        for run_id in completed_run_ids:
+            hidden_msg = ChatMessage.objects.filter(
+                thread_id=thread_id,
+                metadata__source="subagent",
+                metadata__subagent_run_id=str(run_id),
+            ).order_by("-created_at").first()
+            if hidden_msg:
+                has_response = ChatMessage.objects.filter(
+                    thread_id=thread_id,
+                    role="assistant",
+                    created_at__gt=hidden_msg.created_at,
+                ).exists()
+                if not has_response:
+                    return True
+        return False
 
     @database_sync_to_async
     def _consume_pending_initial_turn(self, thread_id) -> bool:

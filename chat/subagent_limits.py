@@ -12,8 +12,8 @@ from django.utils import timezone
 SUBAGENT_MAX_PER_USER = int(os.environ.get("SUBAGENT_MAX_PER_USER", "4"))
 SUBAGENT_MAX_SYSTEM = int(os.environ.get("SUBAGENT_MAX_SYSTEM", "20"))
 
-STALE_PENDING_MINUTES = 10
-STALE_RUNNING_MINUTES = 15
+STALE_PENDING_MINUTES = 7
+STALE_RUNNING_MINUTES = 10
 
 
 def _expire_stale_runs() -> int:
@@ -24,24 +24,54 @@ def _expire_stale_runs() -> int:
     from chat.models import SubAgentRun
 
     now = timezone.now()
-    expired = 0
-    expired += SubAgentRun.objects.filter(
+
+    stale_pending = list(SubAgentRun.objects.filter(
         status=SubAgentRun.Status.PENDING,
         created_at__lt=now - timedelta(minutes=STALE_PENDING_MINUTES),
-    ).update(
-        status=SubAgentRun.Status.FAILED,
-        error="Expired: stuck in pending too long.",
-        completed_at=now,
-    )
-    expired += SubAgentRun.objects.filter(
+    ).values_list("id", "thread_id"))
+
+    stale_running = list(SubAgentRun.objects.filter(
         status=SubAgentRun.Status.RUNNING,
         created_at__lt=now - timedelta(minutes=STALE_RUNNING_MINUTES),
-    ).update(
-        status=SubAgentRun.Status.FAILED,
-        error="Expired: stuck in running too long.",
-        completed_at=now,
-    )
+    ).values_list("id", "thread_id"))
+
+    expired = 0
+    if stale_pending:
+        expired += SubAgentRun.objects.filter(
+            pk__in=[r[0] for r in stale_pending],
+        ).update(
+            status=SubAgentRun.Status.FAILED,
+            error="Expired: stuck in pending too long.",
+            completed_at=now,
+        )
+    if stale_running:
+        expired += SubAgentRun.objects.filter(
+            pk__in=[r[0] for r in stale_running],
+        ).update(
+            status=SubAgentRun.Status.FAILED,
+            error="Expired: stuck in running too long.",
+            completed_at=now,
+        )
+
+    if expired:
+        _notify_expired_threads(stale_pending + stale_running)
+
     return expired
+
+
+def _notify_expired_threads(expired_runs: list[tuple]) -> None:
+    """Best-effort notify consumers of expired stale runs."""
+    try:
+        from chat.tasks import _notify_consumer
+
+        notified = set()
+        for run_id, thread_id in expired_runs:
+            tid = str(thread_id)
+            if tid not in notified:
+                notified.add(tid)
+                _notify_consumer(str(run_id), tid)
+    except Exception:
+        pass
 
 
 def check_subagent_limits(user) -> tuple[bool, str]:

@@ -55,11 +55,14 @@ def _get_vector_store():
             model=getattr(settings, "EMBEDDING_MODEL", "text-embedding-3-large"),
             request_timeout=timeout,
         )
+        from sqlalchemy.pool import NullPool
+
         _vector_store_cache = PGVector(
             embeddings,
             connection=conn,
             collection_name=COLLECTION_NAME,
             use_jsonb=True,
+            engine_args={"poolclass": NullPool},
         )
         return _vector_store_cache
 

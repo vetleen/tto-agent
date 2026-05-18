@@ -168,28 +168,26 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             )
 
         # Notify the WebSocket consumer so it auto-triggers the orchestrator
-        try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
+        from chat.tasks import _notify_consumer
 
-            channel_layer = get_channel_layer()
-            async_to_sync(channel_layer.group_send)(
-                f"thread_{run.thread_id}",
-                {
-                    "type": "subagent.completed",
-                    "run_id": str(run.id),
-                    "thread_id": str(run.thread_id),
-                },
-            )
-        except Exception:
-            logger.debug("Could not notify consumer of sub-agent completion (non-fatal)")
+        for _attempt in range(2):
+            try:
+                _notify_consumer(str(run.id), str(run.thread_id))
+                break
+            except Exception:
+                if _attempt == 0:
+                    import time
+                    time.sleep(0.5)
+                    continue
+                logger.warning(
+                    "Failed to notify consumer of sub-agent %s completion after 2 attempts",
+                    run.id,
+                )
 
     except Exception as exc:
         logger.exception("Sub-agent run %s failed", run_id)
-        # Set back to PENDING so Celery retries don't show a premature
-        # "failed" status to the user.  The Celery on_failure handler
-        # will set FAILED permanently once all retries are exhausted.
-        run.status = SubAgentRun.Status.PENDING
+        run.status = SubAgentRun.Status.FAILED
         run.error = str(exc)
-        run.save(update_fields=["status", "error"])
+        run.completed_at = timezone.now()
+        run.save(update_fields=["status", "error", "completed_at"])
         raise

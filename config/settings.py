@@ -247,7 +247,7 @@ if DATABASE_URL:
     # Production / Heroku: use Postgres from DATABASE_URL (SSL and options from URL).
     DATABASES = {
         "default": dj_database_url.config(
-            conn_max_age=0,
+            conn_max_age=600,
             conn_health_checks=True,
         )
     }
@@ -492,6 +492,13 @@ if _celery_broker_url.startswith("rediss://"):
     CELERY_BROKER_URL = _celery_broker_url + "?ssl_cert_reqs=CERT_NONE"
 else:
     CELERY_BROKER_URL = _celery_broker_url
+
+CELERY_BEAT_SCHEDULE = {
+    "expire-stale-subagent-runs": {
+        "task": "chat.tasks.expire_stale_subagent_runs",
+        "schedule": 120.0,
+    },
+}
 
 # Channels / Redis
 _redis_url = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")

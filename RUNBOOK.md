@@ -126,7 +126,7 @@ heroku logs --tail -a wilfred-staging
 
 ## Database
 
-**Production:** Postgres via `DATABASE_URL` (Heroku add-on). Connection settings: `conn_max_age=0` (close after each request), `conn_health_checks=True`.
+**Production:** Postgres via `DATABASE_URL` (Heroku add-on). Connection settings: `conn_max_age=600` (reuse connections for 10 min), `conn_health_checks=True`.
 
 **Local dev:** SQLite when `DATABASE_URL` is unset.
 

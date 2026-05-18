@@ -128,6 +128,8 @@ class SimpleChatPipeline(BasePipeline):
         """
 
         def _run_one(tc: ToolCall) -> Tuple[ToolCall, str]:
+            from django.db import close_old_connections
+
             tool = tool_by_name.get(tc.name)
             if not tool:
                 return (tc, json.dumps({"error": f"Unknown tool: {tc.name}"}))
@@ -136,6 +138,8 @@ class SimpleChatPipeline(BasePipeline):
                 result_str = result if isinstance(result, str) else json.dumps(result)
             except Exception as e:
                 result_str = json.dumps({"error": str(e)})
+            finally:
+                close_old_connections()
             return (tc, result_str)
 
         if len(tool_calls) <= 1:
