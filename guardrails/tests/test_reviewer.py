@@ -106,19 +106,20 @@ class BuildUserHistoryTest(TestCase):
 
     def test_no_history(self):
         result = _build_user_history(self.user.pk)
-        self.assertIn("No prior guardrail events", result)
+        self.assertIn("No prior reviewer decisions", result)
 
     def test_with_history(self):
         GuardrailEvent.objects.create(
             user=self.user,
             trigger_source="user_message",
-            check_type="heuristic",
+            check_type="llm_review",
             tags=["prompt_injection"],
             confidence=0.9,
             severity="high",
             action_taken="blocked",
             raw_input="test input",
+            reviewer_output="Confirmed injection attempt.",
         )
         result = _build_user_history(self.user.pk)
-        self.assertIn("heuristic/blocked", result)
+        self.assertIn("blocked", result)
         self.assertIn("prompt_injection", result)

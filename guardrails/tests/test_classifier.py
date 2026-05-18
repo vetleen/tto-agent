@@ -69,10 +69,10 @@ class ClassifyMessageSyncTest(TestCase):
         result = _classify(text="test", user_id=1, org_id=None)
         self.assertFalse(result.is_suspicious)
 
-    @override_settings(LLM_DEFAULT_CHEAP_MODEL="test-cheap-model")
+    @patch("core.preferences.resolve_org_feature_model", return_value="test-cheap-model")
     @patch("guardrails.classifier._get_llm_service")
-    def test_correct_model_used(self, mock_get_service):
-        """Classifier should use the cheap model from settings."""
+    def test_correct_model_used(self, mock_get_service, _mock_resolve):
+        """Classifier should pass the resolved model to the LLM service."""
         mock_service = MagicMock()
         mock_get_service.return_value = mock_service
         mock_service.run_structured.return_value = (
