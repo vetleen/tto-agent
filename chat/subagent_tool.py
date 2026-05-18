@@ -51,7 +51,7 @@ class CreateSubagentTool(ContextAwareTool):
         from django.contrib.auth import get_user_model
 
         from chat.models import SubAgentRun
-        from chat.subagent_limits import create_subagent_run_if_allowed
+        from chat.subagent_limits import create_subagent_run_if_allowed, get_queue_depth
 
         context = self.context
         if not context or not context.user_id:
@@ -108,11 +108,27 @@ class CreateSubagentTool(ContextAwareTool):
         run.save(update_fields=["celery_task_id"])
 
         if timeout == 0:
-            return json.dumps({
-                "status": "started",
+            queue = get_queue_depth()
+            # Don't count the run we just created as "ahead"
+            others_ahead = max(0, queue["pending"] - 1)
+            is_queued = others_ahead > 0 or queue["running"] >= queue["worker_slots"]
+            result = {
+                "status": "queued" if is_queued else "started",
                 "run_id": str(run.id),
-                "message": f"Sub-agent has been started in the background (model: {model_tier}). Its status will appear in the conversation automatically.",
-            })
+                "queue_position": others_ahead + 1,
+                "worker_slots": queue["worker_slots"],
+                "ahead_in_queue": others_ahead,
+                "currently_running": queue["running"],
+            }
+            if is_queued:
+                result["message"] = (
+                    f"Sub-agent queued (position {others_ahead + 1}). "
+                    f"Only {queue['worker_slots']} sub-agents execute at a time. "
+                    f"Currently {queue['running']} running, {others_ahead} others waiting ahead."
+                )
+            else:
+                result["message"] = f"Sub-agent started (model: {model_tier}). Its result will appear in the conversation automatically."
+            return json.dumps(result)
 
         # Poll for result until timeout
         deadline = time.monotonic() + timeout
@@ -134,11 +150,15 @@ class CreateSubagentTool(ContextAwareTool):
                     "message": f"Sub-agent failed: {run.error}",
                 })
 
-        # Timeout exceeded — still running
+        # Timeout exceeded — still running or queued
+        queue = get_queue_depth()
         return json.dumps({
             "status": "started",
             "run_id": str(run.id),
-            "message": f"Sub-agent is still running after {timeout}s. Its status will appear in the conversation automatically.",
+            "currently_running": queue["running"],
+            "ahead_in_queue": queue["pending"],
+            "worker_slots": queue["worker_slots"],
+            "message": f"Sub-agent is still running after {timeout}s. Its result will appear in the conversation automatically.",
         })
 
 

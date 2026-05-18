@@ -10,7 +10,8 @@ from django.utils import timezone
 
 
 SUBAGENT_MAX_PER_USER = int(os.environ.get("SUBAGENT_MAX_PER_USER", "4"))
-SUBAGENT_MAX_SYSTEM = int(os.environ.get("SUBAGENT_MAX_SYSTEM", "20"))
+SUBAGENT_MAX_SYSTEM = int(os.environ.get("SUBAGENT_MAX_SYSTEM", "8"))
+SUBAGENT_WORKER_SLOTS = int(os.environ.get("SUBAGENT_WORKER_SLOTS", "2"))
 
 STALE_PENDING_MINUTES = 7
 STALE_RUNNING_MINUTES = 10
@@ -100,6 +101,19 @@ def check_subagent_limits(user) -> tuple[bool, str]:
     return (True, "")
 
 
+def get_queue_depth() -> dict:
+    """Return current queue state: how many running and how many pending."""
+    from chat.models import SubAgentRun
+
+    running = SubAgentRun.objects.filter(status=SubAgentRun.Status.RUNNING).count()
+    pending = SubAgentRun.objects.filter(status=SubAgentRun.Status.PENDING).count()
+    return {
+        "running": running,
+        "pending": pending,
+        "worker_slots": SUBAGENT_WORKER_SLOTS,
+    }
+
+
 def create_subagent_run_if_allowed(user, **run_kwargs):
     """Atomically check limits and create a SubAgentRun.
 
@@ -115,10 +129,6 @@ def create_subagent_run_if_allowed(user, **run_kwargs):
     active_statuses = [SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING]
 
     with transaction.atomic():
-        # Lock ALL active runs (not just the user's) to prevent concurrent
-        # requests from both passing the system-wide limit check.
-        # select_for_update is a no-op on SQLite (used in tests) but
-        # provides real locking on Postgres.
         locked_qs = SubAgentRun.objects.select_for_update().filter(
             status__in=active_statuses,
         )
