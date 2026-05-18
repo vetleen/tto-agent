@@ -27,6 +27,7 @@ class ReviewerTest(TestCase):
         mock_service.run_structured.return_value = (
             ReviewerDecision(
                 action="dismiss",
+                confidence=0.92,
                 severity="low",
                 reasoning="This is a normal question about patent instructions.",
                 user_message="No issues found.",
@@ -58,6 +59,7 @@ class ReviewerTest(TestCase):
         mock_service.run_structured.return_value = (
             ReviewerDecision(
                 action="block",
+                confidence=0.95,
                 severity="high",
                 reasoning="Clear prompt injection attempt.",
                 user_message="Your message was blocked.",

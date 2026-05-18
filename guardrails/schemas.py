@@ -58,6 +58,10 @@ class ReviewerDecision(BaseModel):
     action: Literal["dismiss", "warn", "block", "suspend"] = Field(
         description="Decision: dismiss (false positive), warn, block, or suspend"
     )
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="How confident you are in your chosen action (0.0 = uncertain, 1.0 = certain)",
+    )
     severity: Literal["low", "medium", "high", "critical"] = Field(
         description="Severity level of the concern"
     )

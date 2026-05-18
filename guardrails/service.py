@@ -184,7 +184,7 @@ async def run_classifier_pipeline(
         trigger_source="user_message",
         check_type="llm_review",
         tags=classifier_result.concern_tags,
-        confidence=classifier_result.confidence,
+        confidence=reviewer_decision.confidence,
         severity=reviewer_decision.severity,
         action_taken=_map_action(reviewer_decision.action),
         raw_input=text[:2000],

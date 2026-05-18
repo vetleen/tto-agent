@@ -108,6 +108,7 @@ class RunClassifierPipelineTest(TransactionTestCase):
         )
         mock_review.return_value = ReviewerDecision(
             action="block",
+            confidence=0.9,
             severity="high",
             reasoning="Confirmed social engineering.",
             user_message="Your message was blocked.",
@@ -154,6 +155,7 @@ class RunClassifierPipelineTest(TransactionTestCase):
         )
         mock_review.return_value = ReviewerDecision(
             action="dismiss",
+            confidence=0.85,
             severity="low",
             reasoning="False positive.",
             user_message="No issues.",
@@ -182,6 +184,7 @@ class RunClassifierPipelineTest(TransactionTestCase):
         )
         mock_review.return_value = ReviewerDecision(
             action="suspend",
+            confidence=0.95,
             severity="critical",
             reasoning="Repeated severe violations.",
             user_message="Your account has been suspended.",
@@ -260,6 +263,7 @@ class CheckUserMessageTest(TransactionTestCase):
         )
         mock_review.return_value = ReviewerDecision(
             action="block",
+            confidence=0.9,
             severity="high",
             reasoning="Confirmed social engineering.",
             user_message="Your message was blocked.",
@@ -288,6 +292,7 @@ class CheckUserMessageTest(TransactionTestCase):
         )
         mock_review.return_value = ReviewerDecision(
             action="dismiss",
+            confidence=0.85,
             severity="low",
             reasoning="False positive.",
             user_message="No issues.",
@@ -315,6 +320,7 @@ class CheckUserMessageTest(TransactionTestCase):
         )
         mock_review.return_value = ReviewerDecision(
             action="suspend",
+            confidence=0.95,
             severity="critical",
             reasoning="Repeated severe violations.",
             user_message="Your account has been suspended.",

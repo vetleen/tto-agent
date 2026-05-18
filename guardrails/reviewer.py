@@ -65,6 +65,10 @@ whether the user has a genuine pattern of adversarial behavior:
 - SUSPEND requires a clear pattern of repeated, genuine adversarial intent — not a history \
 of ambiguous messages that the classifier happened to flag.
 
+Your **confidence** score (0.0–1.0) should reflect how certain you are in your chosen action. \
+For example, confidence=0.95 on a dismiss means you are very sure it is a false positive; \
+confidence=0.6 on a block means the message looks adversarial but you have significant doubt.
+
 Respond with your decision."""
 
 
@@ -90,6 +94,7 @@ async def review_flagged_message(
             logger.warning("review_flagged_message: no top model configured, defaulting to block")
             return ReviewerDecision(
                 action="block",
+                confidence=1.0,
                 severity="medium",
                 reasoning="No top model configured; defaulting to block.",
                 user_message="Your message has been flagged for review. Please contact your system administrator.",
