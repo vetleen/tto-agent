@@ -44,6 +44,7 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         "duration_ms",
         "created_at",
     ]
+    list_select_related = ["user"]
     list_filter = [
         "status",
         "model",
