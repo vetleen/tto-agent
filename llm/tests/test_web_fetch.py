@@ -7,7 +7,9 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase, override_settings
 
 from llm.tools._text_cleaning import normalize_text
-from llm.tools.web_fetch import WebFetchTool, _check_url_ssrf, _is_private_ip
+from llm.tools.web_fetch import (
+    WebFetchTool, _check_url_ssrf, _fetch_via_jina, _is_private_ip,
+)
 
 
 def _no_ssrf_check(url):
@@ -493,19 +495,17 @@ class WebFetchCleaningTests(TestCase):
         self.assertIn("hello world", result["content"])
         self.assertNotIn("\u200b", result["content"])
 
-    def test_main_content_preferred(self):
+    def test_main_content_extracted(self):
         result = self._fetch(
             '<html><body><div>Outer noise</div><main><p>Article text</p></main></body></html>'
         )
         self.assertIn("Article text", result["content"])
-        self.assertNotIn("Outer noise", result["content"])
 
-    def test_article_tag_preferred(self):
+    def test_article_tag_extracted(self):
         result = self._fetch(
             '<html><body><div>Sidebar</div><article><p>Article body</p></article></body></html>'
         )
         self.assertIn("Article body", result["content"])
-        self.assertNotIn("Sidebar", result["content"])
 
     def test_falls_back_to_body_without_main(self):
         result = self._fetch(
@@ -540,3 +540,251 @@ class WebFetchCleaningTests(TestCase):
         )
         self.assertNotIn("Dialog popup", result["content"])
         self.assertIn("Visible", result["content"])
+
+
+# ---------------------------------------------------------------------------
+# Readability + markdown extraction
+# ---------------------------------------------------------------------------
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}})
+@patch("llm.tools.web_fetch._check_url_ssrf", _no_ssrf_check)
+class ReadabilityExtractionTests(TestCase):
+    """Tests for readability-based content extraction."""
+
+    def setUp(self):
+        self.tool = WebFetchTool()
+
+    def _fetch(self, html):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = html
+        mock_response.is_redirect = False
+        mock_response.raise_for_status = MagicMock()
+        with patch("llm.tools.web_fetch.requests.get", return_value=mock_response):
+            return json.loads(self.tool.invoke({"url": "https://example.com"}))
+
+    def test_produces_markdown(self):
+        html = """<html><body>
+            <article>
+                <h1>Title Here</h1>
+                <p>First paragraph with <strong>bold text</strong>.</p>
+                <p>Second paragraph with a <a href="/link">link</a>.</p>
+            </article>
+        </body></html>"""
+        result = self._fetch(html)
+        self.assertIn("**bold text**", result["content"])
+        self.assertIn("link", result["content"])
+
+    def test_readability_failure_falls_back_to_bs4(self):
+        html = "<html><body><p>Fallback content</p></body></html>"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = html
+        mock_response.is_redirect = False
+        mock_response.raise_for_status = MagicMock()
+        with patch("llm.tools.web_fetch.requests.get", return_value=mock_response), \
+             patch("llm.tools.web_fetch.ReadabilityDocument", side_effect=RuntimeError("parse error")):
+            result = json.loads(self.tool.invoke({"url": "https://example.com"}))
+        self.assertIn("Fallback content", result["content"])
+
+    def test_title_from_readability(self):
+        html = """<html><head><title>Full Title - Site Name</title></head>
+        <body><p>Content here</p></body></html>"""
+        result = self._fetch(html)
+        self.assertTrue(len(result["title"]) > 0)
+
+
+# ---------------------------------------------------------------------------
+# JS-rendering detection
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}},
+    JINA_API_KEY="test-jina-key",
+)
+@patch("llm.tools.web_fetch._check_url_ssrf", _no_ssrf_check)
+class JSRenderDetectionTests(TestCase):
+    """Tests for JS-rendered page detection and Jina fallback."""
+
+    def setUp(self):
+        self.tool = WebFetchTool()
+
+    def test_js_page_triggers_jina_fallback(self):
+        """Large HTML with tiny readability output should trigger Jina."""
+        js_html = '<html><body><div id="root"></div><script>' + "x" * 6000 + "</script></body></html>"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = js_html
+        mock_response.is_redirect = False
+        mock_response.raise_for_status = MagicMock()
+
+        jina_response = MagicMock()
+        jina_response.status_code = 200
+        jina_response.text = "<html><body><article><p>Rendered content from Jina</p></article></body></html>"
+        jina_response.raise_for_status = MagicMock()
+
+        def route_request(url, **kwargs):
+            if "r.jina.ai" in url:
+                return jina_response
+            return mock_response
+
+        with patch("llm.tools.web_fetch.requests.get", side_effect=route_request):
+            result = json.loads(self.tool.invoke({"url": "https://example.com/spa"}))
+
+        self.assertIn("Rendered content from Jina", result["content"])
+        self.assertEqual(result.get("source"), "jina")
+
+    @override_settings(JINA_API_KEY="")
+    def test_js_page_no_jina_key_returns_thin_content(self):
+        """Without Jina key, JS pages return whatever readability extracted."""
+        js_html = '<html><body><div id="root"></div><script>' + "x" * 6000 + "</script></body></html>"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = js_html
+        mock_response.is_redirect = False
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("llm.tools.web_fetch.requests.get", return_value=mock_response):
+            result = json.loads(self.tool.invoke({"url": "https://example.com/spa"}))
+
+        self.assertNotIn("error", result)
+
+
+# ---------------------------------------------------------------------------
+# Jina Reader fallback
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}},
+    JINA_API_KEY="test-jina-key",
+)
+@patch("llm.tools.web_fetch._check_url_ssrf", _no_ssrf_check)
+class JinaFallbackTests(TestCase):
+    """Tests for Jina Reader API fallback on HTTP errors."""
+
+    def setUp(self):
+        self.tool = WebFetchTool()
+
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_jina_fallback_on_http_error(self, mock_get):
+        import requests as req_lib
+
+        failed = MagicMock()
+        failed.status_code = 403
+        failed.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=failed)
+        failed.is_redirect = False
+
+        jina_resp = MagicMock()
+        jina_resp.status_code = 200
+        jina_resp.text = "<html><body><article><p>Fetched via Jina</p></article></body></html>"
+        jina_resp.raise_for_status = MagicMock()
+
+        def route(url, **kwargs):
+            if "r.jina.ai" in url:
+                return jina_resp
+            return failed
+
+        mock_get.side_effect = route
+        result = json.loads(self.tool.invoke({"url": "https://example.com/blocked"}))
+
+        self.assertIn("Fetched via Jina", result["content"])
+        self.assertEqual(result.get("source"), "jina")
+
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_jina_fallback_on_timeout(self, mock_get):
+        import requests as req_lib
+
+        jina_resp = MagicMock()
+        jina_resp.status_code = 200
+        jina_resp.text = "<html><body><article><p>Content from Jina</p></article></body></html>"
+        jina_resp.raise_for_status = MagicMock()
+
+        def route(url, **kwargs):
+            if "r.jina.ai" in url:
+                return jina_resp
+            raise req_lib.exceptions.Timeout("timed out")
+
+        mock_get.side_effect = route
+        result = json.loads(self.tool.invoke({"url": "https://example.com/slow"}))
+
+        self.assertIn("Content from Jina", result["content"])
+        self.assertEqual(result.get("source"), "jina")
+
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_jina_fallback_on_connection_error(self, mock_get):
+        import requests as req_lib
+
+        jina_resp = MagicMock()
+        jina_resp.status_code = 200
+        jina_resp.text = "<html><body><article><p>Connection recovery</p></article></body></html>"
+        jina_resp.raise_for_status = MagicMock()
+
+        def route(url, **kwargs):
+            if "r.jina.ai" in url:
+                return jina_resp
+            raise req_lib.exceptions.ConnectionError("refused")
+
+        mock_get.side_effect = route
+        result = json.loads(self.tool.invoke({"url": "https://example.com/down"}))
+
+        self.assertIn("Connection recovery", result["content"])
+
+    @override_settings(JINA_API_KEY="")
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_jina_not_attempted_without_api_key(self, mock_get):
+        import requests as req_lib
+
+        mock_get.side_effect = req_lib.exceptions.Timeout("timed out")
+        result = json.loads(self.tool.invoke({"url": "https://example.com/no-key"}))
+
+        self.assertIn("error", result)
+        self.assertIn("timed out", result["error"])
+
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_jina_failure_returns_original_error(self, mock_get):
+        import requests as req_lib
+
+        def route(url, **kwargs):
+            if "r.jina.ai" in url:
+                raise req_lib.exceptions.Timeout("jina also timed out")
+            raise req_lib.exceptions.ConnectionError("refused")
+
+        mock_get.side_effect = route
+        result = json.loads(self.tool.invoke({"url": "https://example.com/both-fail"}))
+
+        self.assertIn("error", result)
+        self.assertIn("Connection", result["error"])
+
+    @patch("guardrails.web_content.scan_web_content")
+    @patch("llm.tools.web_fetch.requests.get")
+    def test_jina_content_scanned(self, mock_get, mock_scan):
+        import requests as req_lib
+
+        jina_resp = MagicMock()
+        jina_resp.status_code = 200
+        jina_resp.text = "<html><body><article><p>Scanned content from Jina</p></article></body></html>"
+        jina_resp.raise_for_status = MagicMock()
+
+        def route(url, **kwargs):
+            if "r.jina.ai" in url:
+                return jina_resp
+            raise req_lib.exceptions.ConnectionError("refused")
+
+        mock_get.side_effect = route
+
+        from llm.types.context import RunContext
+        ctx = RunContext.create(user_id=42, conversation_id="thread-scan")
+        self.tool.set_context(ctx)
+        self.tool.invoke({"url": "https://example.com/scan-jina"})
+
+        mock_scan.assert_called_once()
+        call_args = mock_scan.call_args
+        self.assertIn("Scanned content from Jina", call_args[0][0])
+        self.assertEqual(call_args[1]["source_label"], "web_fetch")

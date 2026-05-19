@@ -461,6 +461,7 @@ LLM_DEFAULT_MID_MODEL = os.environ.get("LLM_DEFAULT_MID_MODEL", "")
 LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")

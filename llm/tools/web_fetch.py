@@ -1,4 +1,4 @@
-"""Web Fetch tool — fetch and extract clean text from web pages."""
+"""Web Fetch tool — fetch and extract clean markdown from web pages."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ from urllib.parse import urlparse
 import requests
 from django.conf import settings as django_settings
 from bs4 import BeautifulSoup, Comment
+from markdownify import markdownify as html_to_md
 from pydantic import BaseModel, Field
+from readability import Document as ReadabilityDocument
 
 from llm.tools._text_cleaning import normalize_text
 from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
@@ -23,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 _ABSOLUTE_MAX_CHARS = 50_000
 
-# Tags to decompose beyond the standard script/style/nav set.
-_EXTRA_STRIP_TAGS = [
-    "aside", "form", "svg", "canvas", "object", "embed",
+_NOISE_TAGS = [
+    "script", "style", "nav", "footer", "header", "noscript", "iframe",
+    "aside", "svg", "canvas", "object", "embed",
     "meta", "template", "dialog",
 ]
 
@@ -52,8 +54,7 @@ def _strip_hidden_elements(soup: BeautifulSoup) -> None:
     display:none, visibility:hidden, zero font-size, aria-hidden, etc.
     These are invisible in a browser but survive ``get_text()`` extraction.
     """
-    # Decompose extra non-content tags
-    for tag in soup.find_all(_EXTRA_STRIP_TAGS):
+    for tag in soup.find_all(_NOISE_TAGS):
         tag.decompose()
 
     # Remove elements hidden via style, attributes, or input type
@@ -131,12 +132,94 @@ class WebFetchInput(ReasonBaseModel):
     max_chars: int = Field(default=20_000, description="Maximum characters to return (default 20000, max 50000).")
 
 
+_JS_RENDER_MIN_HTML = 5000
+_JS_RENDER_MAX_CONTENT = 200
+
+
+def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
+    """Fetch a page via Jina Reader API and extract content with readability."""
+    api_key = getattr(django_settings, "JINA_API_KEY", "")
+    if not api_key:
+        return None
+    logger.info("web_fetch: falling back to Jina for url=%s reason=%s", url, reason)
+    try:
+        resp = requests.get(
+            f"https://r.jina.ai/{url}",
+            timeout=30,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "text/html",
+                "X-Return-Format": "html",
+            },
+        )
+        resp.raise_for_status()
+    except Exception:
+        logger.info("web_fetch: Jina fallback failed for url=%s", url)
+        return None
+
+    raw_html = resp.text
+    if not raw_html.strip():
+        logger.info("web_fetch: Jina returned empty content for url=%s", url)
+        return None
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+    _strip_hidden_elements(soup)
+    cleaned_html = str(soup)
+
+    title = ""
+    text = ""
+    try:
+        doc = ReadabilityDocument(cleaned_html)
+        title = doc.short_title()
+        text = html_to_md(doc.summary(), strip=["img"])
+        text = normalize_text(text)
+    except Exception:
+        pass
+
+    if len(text) < _JS_RENDER_MAX_CONTENT:
+        logger.debug("web_fetch: readability extracted too little from Jina HTML, using cleaned text")
+        text = normalize_text(soup.get_text(separator="\n", strip=True))
+
+    if not text.strip():
+        logger.info("web_fetch: Jina returned no extractable content for url=%s", url)
+        return None
+
+    logger.info("web_fetch: Jina fallback succeeded for url=%s chars=%d", url, len(text))
+    _run_web_scan(text, context)
+
+    return {
+        "url": url,
+        "title": title,
+        "content": text,
+        "truncated": False,
+        "char_count": len(text),
+        "source": "jina",
+    }
+
+
+def _run_web_scan(text: str, context=None) -> None:
+    """Fire-and-forget prompt-injection scan (never blocks)."""
+    try:
+        if text.strip():
+            from guardrails.web_content import scan_web_content
+
+            scan_web_content(
+                text,
+                user_id=context.user_id if context else None,
+                thread_id=context.conversation_id if context else None,
+                org_id=None,
+                source_label="web_fetch",
+            )
+    except Exception:
+        logger.debug("web_fetch: web content scan failed (non-fatal)")
+
+
 class WebFetchTool(ContextAwareTool):
-    """Fetch a web page and extract clean text content."""
+    """Fetch a web page and extract clean markdown content."""
 
     name: str = "web_fetch"
     description: str = (
-        "Fetch a web page and extract its text content. "
+        "Fetch a web page and extract its content as clean markdown. "
         "Use this to read the content of a specific URL, such as articles, "
         "documentation, or other web pages."
     )
@@ -169,7 +252,6 @@ class WebFetchTool(ContextAwareTool):
             cached = None
         if cached is not None:
             logger.debug("Web fetch cache hit for url=%s", url)
-            # Re-truncate cached content to requested max_chars
             data = json.loads(cached)
             content = data.get("content", "")
             if len(content) > max_chars:
@@ -178,6 +260,7 @@ class WebFetchTool(ContextAwareTool):
                 data["char_count"] = max_chars
             return json.dumps(data)
 
+        # --- Fetch HTML ---
         try:
             response = requests.get(
                 url,
@@ -189,7 +272,6 @@ class WebFetchTool(ContextAwareTool):
                 allow_redirects=False,
             )
 
-            # Follow redirects manually with SSRF check on each hop
             redirect_count = 0
             while response.is_redirect and redirect_count < 5:
                 redirect_url = response.headers.get("Location", "")
@@ -211,12 +293,24 @@ class WebFetchTool(ContextAwareTool):
 
             response.raise_for_status()
         except requests.exceptions.Timeout:
+            jina = _fetch_via_jina(url, self.context, reason="timeout")
+            if jina:
+                return json.dumps(jina)
             return json.dumps({"error": "Request timed out", "url": url})
         except requests.exceptions.ConnectionError:
+            jina = _fetch_via_jina(url, self.context, reason="connection_error")
+            if jina:
+                return json.dumps(jina)
             return json.dumps({"error": "Connection failed", "url": url})
         except requests.exceptions.HTTPError:
+            jina = _fetch_via_jina(url, self.context, reason=f"http_{response.status_code}")
+            if jina:
+                return json.dumps(jina)
             return json.dumps({"error": f"HTTP {response.status_code}", "url": url})
         except requests.exceptions.RequestException:
+            jina = _fetch_via_jina(url, self.context, reason="request_error")
+            if jina:
+                return json.dumps(jina)
             return json.dumps({"error": "Request failed", "url": url})
 
         # Check content type
@@ -227,70 +321,61 @@ class WebFetchTool(ContextAwareTool):
                 "url": url,
             })
 
+        logger.info("web_fetch: fetched url=%s status=%d chars=%d", url, response.status_code, len(response.text))
+        raw_html = response.text
+
+        # --- Security pre-processing: strip hidden elements ---
         try:
-            soup = BeautifulSoup(response.text, "html.parser")
+            soup = BeautifulSoup(raw_html, "html.parser")
         except Exception:
             return json.dumps({"error": "Failed to parse HTML", "url": url})
-
-        # Extract title
-        title_tag = soup.find("title")
-        title = title_tag.get_text(strip=True) if title_tag else ""
-
-        # Remove unwanted tags
-        for tag in soup.find_all(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
-            tag.decompose()
-
-        # Strip hidden/invisible elements (prompt-injection defense)
         _strip_hidden_elements(soup)
+        cleaned_html = str(soup)
 
-        # Prefer main content area if available
-        main = soup.find("main") or soup.find("article") or soup.find(attrs={"role": "main"})
-        source = main if main else soup
-
-        # Extract and normalize text
-        text = source.get_text(separator="\n", strip=True)
-        text = normalize_text(text)
-
-        # Scan for prompt injection (log only, never blocks)
+        # --- Extract content with readability, convert to markdown ---
         try:
-            if text.strip():
-                from guardrails.web_content import scan_web_content
-
-                scan_web_content(
-                    text,
-                    user_id=self.context.user_id if self.context else None,
-                    thread_id=self.context.conversation_id if self.context else None,
-                    org_id=None,
-                    source_label="web_fetch",
-                )
+            doc = ReadabilityDocument(cleaned_html)
+            title = doc.short_title()
+            article_html = doc.summary()
+            text = html_to_md(article_html, strip=["img"])
+            text = normalize_text(text)
         except Exception:
-            logger.debug("web_fetch: web content scan failed (non-fatal)")
+            logger.debug("web_fetch: readability extraction failed, falling back to BS4")
+            title_tag = soup.find("title")
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            text = soup.get_text(separator="\n", strip=True)
+            text = normalize_text(text)
 
-        # Cache full content before truncating for caller
-        full_result = json.dumps({
+        # --- JS-rendered page detection: fall back to Jina ---
+        if len(text) < _JS_RENDER_MAX_CONTENT and len(raw_html) > _JS_RENDER_MIN_HTML:
+            logger.info("web_fetch: suspected JS-rendered page url=%s (html=%d, content=%d)", url, len(raw_html), len(text))
+            jina = _fetch_via_jina(url, self.context, reason="js_rendered")
+            if jina:
+                return self._cache_and_return(cache, cache_key, jina, max_chars)
+
+        _run_web_scan(text, self.context)
+
+        result = {
             "url": url,
             "title": title,
             "content": text,
             "truncated": False,
             "char_count": len(text),
-        })
+        }
+        return self._cache_and_return(cache, cache_key, result, max_chars)
+
+    @staticmethod
+    def _cache_and_return(cache, cache_key: str, result: dict, max_chars: int) -> str:
+        full_result = json.dumps(result)
         try:
             cache.set(cache_key, full_result, timeout=3600)
         except Exception:
             logger.debug("web_fetch: cache write failed, continuing")
 
-        # Truncate for this request
-        truncated = len(text) > max_chars
-        if truncated:
-            text = text[:max_chars]
-
-        return json.dumps({
-            "url": url,
-            "title": title,
-            "content": text,
-            "truncated": truncated,
-            "char_count": len(text),
-        })
+        text = result["content"]
+        if len(text) > max_chars:
+            result = {**result, "content": text[:max_chars], "truncated": True, "char_count": max_chars}
+        return json.dumps(result)
 
 
 __all__ = ["WebFetchTool"]
