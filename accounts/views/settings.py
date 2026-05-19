@@ -110,7 +110,7 @@ def settings_page(request):
 
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
-        "user_models": user_models,
+        "user_models": json.dumps(user_models),
         "allowed_models": prefs.allowed_models,
         "org_max_context_tokens": org_max_context,
         "user_max_context_tokens": user_max_context,

@@ -12,7 +12,7 @@
       <button
         type="button"
         id="theme-btn-light"
-        class="theme-btn px-4 py-2 text-sm font-medium focus:outline-none"
+        class="theme-btn px-4 py-2 text-sm font-medium text-body focus:outline-none"
         data-theme="light"
       >
         <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
@@ -21,7 +21,7 @@
       <button
         type="button"
         id="theme-btn-dark"
-        class="theme-btn px-4 py-2 text-sm font-medium focus:outline-none"
+        class="theme-btn px-4 py-2 text-sm font-medium text-body focus:outline-none"
         data-theme="dark"
       >
         <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
@@ -355,9 +355,14 @@
     });
   }
 
-  // Theme toggle buttons
+})();
+</script>
+
+<script>
+(function() {
+  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
   var activeClasses = 'bg-brand text-white';
-  var inactiveClasses = 'bg-neutral-primary text-body hover:bg-neutral-secondary-soft';
+  var inactiveClasses = 'text-body hover:bg-neutral-secondary-soft';
   function updateThemeButtons(theme) {
     document.querySelectorAll('.theme-btn').forEach(function(btn) {
       var isActive = btn.dataset.theme === theme;
@@ -377,14 +382,12 @@
       }
       localStorage.setItem('color-theme', theme);
       updateThemeButtons(theme);
-      // Sync navbar toggle icons
       var darkIcon = document.getElementById('theme-toggle-dark-icon');
       var lightIcon = document.getElementById('theme-toggle-light-icon');
       if (darkIcon && lightIcon) {
         darkIcon.classList.toggle('hidden', theme === 'dark');
         lightIcon.classList.toggle('hidden', theme === 'light');
       }
-      // Persist to server
       fetch('{% url "accounts:theme_update" %}', {
         method: 'POST',
         headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
