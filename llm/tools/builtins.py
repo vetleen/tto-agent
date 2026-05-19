@@ -10,6 +10,8 @@ registry.register_tool(WebFetchTool())
 
 if getattr(settings, "BRAVE_SEARCH_API_KEY", None):
     from llm.tools.brave_search import BraveSearchTool
+    from llm.tools.web_search_and_read import WebSearchAndReadTool
     registry.register_tool(BraveSearchTool())
+    registry.register_tool(WebSearchAndReadTool())
 
 __all__: list[str] = []
