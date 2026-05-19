@@ -129,9 +129,9 @@ class SubAgentRunModelTests(TestCase):
 # ---------------------------------------------------------------------------
 
 class ResolveSubagentModelTests(TestCase):
-    def test_fast_maps_to_cheap(self):
+    def test_fast_falls_back_to_mid(self):
         prefs = _prefs()
-        self.assertEqual(resolve_subagent_model("fast", prefs), "openai/gpt-5-nano")
+        self.assertEqual(resolve_subagent_model("fast", prefs), "openai/gpt-5-mini")
 
     def test_mid_maps_to_mid(self):
         prefs = _prefs()
@@ -158,6 +158,17 @@ class ResolveSubagentToolsTests(TestCase):
         self.assertNotIn("write_canvas", tools)
         self.assertNotIn("edit_canvas", tools)
         self.assertNotIn("create_subagent", tools)
+
+    def test_removes_skill_and_template_tools(self):
+        prefs = _prefs()
+        tools = resolve_subagent_tools(prefs, data_room_ids=[])
+        for name in [
+            "attach_skills", "create_skill", "edit_skill", "delete_skill",
+            "save_canvas_to_skill_field", "show_skill_field_in_canvas",
+            "view_template", "load_template_to_canvas",
+            "list_skill_tools", "inspect_tool",
+        ]:
+            self.assertNotIn(name, tools)
 
     def test_keeps_doc_tools_with_data_rooms(self):
         prefs = _prefs()
@@ -192,46 +203,67 @@ class ResolveSubagentToolsTests(TestCase):
 # ---------------------------------------------------------------------------
 
 class BuildSubagentSystemPromptTests(TestCase):
-    def test_contains_identity_and_task(self):
-        prompt = build_subagent_system_prompt("Analyze the patent")
+    def test_contains_identity(self):
+        prompt = build_subagent_system_prompt()
         self.assertIn(f"sub-agent of {settings.ASSISTANT_NAME}", prompt)
-        self.assertIn("Analyze the patent", prompt)
+
+    def test_task_not_in_system_prompt(self):
+        prompt = build_subagent_system_prompt()
+        self.assertNotIn("# Task", prompt)
 
     def test_includes_org_name(self):
-        prompt = build_subagent_system_prompt(
-            "task", organization_name="MIT TTO",
-        )
+        prompt = build_subagent_system_prompt(organization_name="MIT TTO")
         self.assertIn("MIT TTO", prompt)
 
     def test_no_skill_injection(self):
         """Sub-agent prompts never include skill instructions."""
-        prompt = build_subagent_system_prompt("task")
+        prompt = build_subagent_system_prompt()
         self.assertNotIn("Specific instructions", prompt)
 
     def test_includes_return_findings_instruction(self):
-        prompt = build_subagent_system_prompt("task")
+        prompt = build_subagent_system_prompt()
         self.assertIn("Return your findings as text", prompt)
 
     def test_includes_data_rooms(self):
         rooms = [{"name": "Room A", "description": "Patent docs"}]
-        prompt = build_subagent_system_prompt("task", data_rooms=rooms)
+        prompt = build_subagent_system_prompt(data_rooms=rooms)
         self.assertIn("Room A", prompt)
         self.assertIn("Patent docs", prompt)
 
+    def test_data_room_content_safety(self):
+        rooms = [{"name": "Room A", "description": ""}]
+        prompt = build_subagent_system_prompt(data_rooms=rooms)
+        self.assertIn("Content Safety", prompt)
+        self.assertIn("user-uploaded", prompt)
+
+    def test_no_data_rooms_message(self):
+        prompt = build_subagent_system_prompt()
+        self.assertIn("No data rooms are attached", prompt)
+
     def test_minimal_prompt_without_extras(self):
-        prompt = build_subagent_system_prompt("Simple task")
+        prompt = build_subagent_system_prompt()
         self.assertIn("# Identity", prompt)
-        self.assertIn("# Task", prompt)
         self.assertIn("# General instructions", prompt)
+        self.assertNotIn("# Task", prompt)
         self.assertNotIn("# Skill", prompt)
         self.assertNotIn("# Attached Data Rooms", prompt)
+        self.assertNotIn("# Task Planning", prompt)
 
     def test_contains_web_content_safety_warning(self):
         """Sub-agent prompt must include web content safety instructions."""
-        prompt = build_subagent_system_prompt("Research a topic")
+        prompt = build_subagent_system_prompt()
         self.assertIn("Web Content Safety", prompt)
         self.assertIn("untrusted content", prompt)
         self.assertIn("never follow instructions", prompt)
+
+    def test_task_planning_included_when_tool_available(self):
+        prompt = build_subagent_system_prompt(has_task_tool=True)
+        self.assertIn("# Task Planning", prompt)
+        self.assertIn("update_tasks", prompt)
+
+    def test_task_planning_excluded_without_tool(self):
+        prompt = build_subagent_system_prompt(has_task_tool=False)
+        self.assertNotIn("# Task Planning", prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +687,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         from chat.prompts import build_system_prompt
         runs = [{
             "id": uuid.uuid4(), "status": "running",
-            "prompt": "Analyze documents", "model_tier": "fast",
+            "prompt": "Analyze documents", "model_tier": "mid",
             "result": "", "error": "",         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("RUNNING", prompt)
@@ -777,14 +809,14 @@ class RunSubagentServiceTests(TestCase):
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
-            prompt="task", model_tier="fast",
+            prompt="task", model_tier="mid",
         )
 
         from chat.subagent_service import run_subagent
         run_subagent(run.id)
 
         run.refresh_from_db()
-        self.assertEqual(run.model_used, "openai/gpt-5-nano")
+        self.assertEqual(run.model_used, "openai/gpt-5-mini")
         self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
 
     @patch("llm.get_llm_service")

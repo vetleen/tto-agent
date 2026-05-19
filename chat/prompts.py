@@ -35,13 +35,13 @@ def build_static_system_prompt(
     identity, general instructions, canvas/diagram/email boilerplate,
     task planning boilerplate, and sub-agent boilerplate.
     """
-    org_line = f" {organization_name}," if organization_name else ""
+    org_part = f" at {organization_name}" if organization_name else ""
     prompt = f"""\
 # {django_settings.ASSISTANT_EMOJI} Identity
-- You are {django_settings.ASSISTANT_NAME}, a helpful assistant at{org_line} a technology transfer office (TTO).
+- You are {django_settings.ASSISTANT_NAME}, a helpful assistant{org_part}.
 
 # General instructions
-- When answering a question, consider planning out your responses into sections for high clarity and exhaustive answers.
+- When answering a question, consider planning out your responses into sections for high clarity.
 - When guiding a work process, be opinionated about the next step and less exhaustive in the answer.
 - Use markdown where appropriate
 - Use emojis where appropriate.
@@ -109,7 +109,7 @@ Use `update_tasks` to create and manage a task plan. Be proactive — create a p
 - If new steps emerge during work, add them to the plan immediately
 - Keep titles short and action-oriented (e.g. "Search data room for prior art", "Compare claim scope across patents", "Draft licensing recommendation")
 - Order tasks in logical sequence of execution
-- Aim for 3–8 tasks; break large tasks into smaller concrete steps
+- Aim for 3-8 tasks, but feel to go over if you need to break large tasks into even smaller concrete steps
 """
 
     if has_subagent_tool:
@@ -132,9 +132,9 @@ You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agent
 - Set `timeout` to control how long to wait for the result:
   - `timeout: 0` (default) — fire-and-forget background task; tell the user you've started the work
   - `timeout: 30-60` — quick tasks like simple lookups or summaries; the result is returned inline
-  - `timeout: 120` — research tasks that need more time; the result is returned inline if it finishes in time
+  - `timeout: 120` — tasks that need more time; the result is returned inline if it finishes in time
   - Maximum timeout is 540 seconds
-- Choose `model_tier` based on task complexity: "fast" for simple lookups, "mid" (default) for most simple tasks (like research or summaries), "top" for deep analysis.
+- Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" for deep analysis.
 - Provide a specific skill_slug if the task aligns with an available skill
 - Write clear, specific task prompts — the sub-agent has no access to our conversation history
 
@@ -228,10 +228,10 @@ def build_semi_static_prompt(
 
 # Relevant skill
 Below is a predefined SKILL explaining in detail how to handle \
-the user's request. Follow it.
+the user's request. Follow it to the best of your ability.
 
 ## {skill.name}
-{f'## Skill description:{chr(10)}{skill.description}{chr(10)}' if skill.description else ''}
+{f'## Skill description:{chr(10)}{skill.description}{chr(10)}' if skill.description else ''} #chr(10) produces a newline character (\n).
 ## Skill instructions:
 {deepened}
 

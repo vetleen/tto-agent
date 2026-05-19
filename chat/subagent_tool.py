@@ -19,7 +19,7 @@ class CreateSubagentInput(ReasonBaseModel):
     prompt: str = Field(description="The task description for the sub-agent.")
     model_tier: str = Field(
         default="mid",
-        description='Model tier: "fast" for simple lookups, "mid" (default) for research, "top" for deep analysis.',
+        description='Model tier: "mid" (default) for research, "top" for deep analysis.',
     )
     timeout: int = Field(
         default=0,
@@ -62,7 +62,7 @@ class CreateSubagentTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "No thread context available."})
 
         # Validate model_tier
-        if model_tier not in ("fast", "mid", "top"):
+        if model_tier not in ("mid", "top"):
             model_tier = "mid"
 
         # Clamp timeout to [0, 540]

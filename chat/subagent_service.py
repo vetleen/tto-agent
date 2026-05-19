@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
     """Map a tier name to the user's configured model for that tier."""
     mapping = {
-        "fast": prefs.cheap_model,
         "mid": prefs.mid_model,
         "top": prefs.top_model,
     }
@@ -33,7 +32,14 @@ def resolve_subagent_tools(
     - Removes sub-agent tools (prevents recursion)
     - Removes document tools if no data rooms attached
     """
-    excluded = {"active_canvas", "write_canvas", "edit_canvas", "create_subagent"}
+    excluded = {
+        "active_canvas", "write_canvas", "edit_canvas",
+        "create_subagent",
+        "attach_skills", "create_skill", "edit_skill", "delete_skill",
+        "save_canvas_to_skill_field", "show_skill_field_in_canvas",
+        "view_template", "load_template_to_canvas",
+        "list_skill_tools", "inspect_tool",
+    }
     tools = [t for t in prefs.allowed_tools if t not in excluded]
 
     if not data_room_ids:
@@ -96,13 +102,12 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             .values("id", "title", "status")
         )
 
-        # Build system prompt — no skill injection; the orchestrator writes
-        # task-specific instructions directly in run.prompt.
+        has_task_tool = "update_tasks" in (tool_list or [])
         system_prompt = build_subagent_system_prompt(
-            run.prompt,
             data_rooms=data_rooms_info,
             organization_name=org_name,
             tasks=thread_tasks if thread_tasks else None,
+            has_task_tool=has_task_tool,
         )
 
         # Build LLM request

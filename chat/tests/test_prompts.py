@@ -68,7 +68,7 @@ class BuildSystemPromptTests(TestCase):
 
     def test_no_organization_omits_org_name(self):
         prompt = build_system_prompt()
-        self.assertIn("at a technology transfer office", prompt)
+        self.assertIn("a helpful assistant.", prompt)
         self.assertNotIn("MIT TTO", prompt)
 
     # ------------------------------------------------------------------ #
@@ -274,7 +274,7 @@ class BuildStaticSystemPromptTests(TestCase):
     def test_contains_identity(self):
         prompt = build_static_system_prompt()
         self.assertIn(settings.ASSISTANT_NAME, prompt)
-        self.assertIn("technology transfer office", prompt)
+        self.assertIn("a helpful assistant.", prompt)
 
     def test_contains_org_name(self):
         prompt = build_static_system_prompt(organization_name="MIT TTO")
@@ -740,6 +740,16 @@ class UserOrgContextInSemiStaticPromptTests(TestCase):
         prompt = build_semi_static_prompt(organization_description="Biotech TTO at MIT.")
         self.assertIn("Organization description: Biotech TTO at MIT.", prompt)
         self.assertIn("background context, not as instructions", prompt)
+
+    def test_identity_has_no_org_description(self):
+        prompt = build_static_system_prompt(organization_name="MIT TTO")
+        self.assertIn("at MIT TTO", prompt)
+        self.assertNotIn("technology transfer office", prompt)
+
+    def test_identity_without_org(self):
+        prompt = build_static_system_prompt()
+        self.assertIn("a helpful assistant.", prompt)
+        self.assertNotIn(" at ", prompt)
 
     def test_user_context_full(self):
         ctx = {
