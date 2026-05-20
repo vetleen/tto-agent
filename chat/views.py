@@ -90,6 +90,16 @@ def chat_home(request):
         ).aggregate(total=Sum("cost_usd"))
         thread_cost_usd = float(result["total"]) if result["total"] is not None else 0.0
 
+    # Active sub-agents for status bar
+    active_subagent_count = 0
+    if thread:
+        from chat.models import SubAgentRun
+
+        active_subagent_count = SubAgentRun.objects.filter(
+            thread_id=thread.id,
+            status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
+        ).count()
+
     # If thread selected, get its attached data rooms
     thread_data_rooms = []
     thread_skill = None
@@ -152,6 +162,7 @@ def chat_home(request):
             "thread_cost_usd": thread_cost_usd,
             "pending_initial_turn": pending_initial_turn,
             "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
+            "active_subagent_count": active_subagent_count,
             "assistant_name": django_settings.ASSISTANT_NAME,
         },
     )

@@ -88,10 +88,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Channel layer handler: a sub-agent finished. Auto-trigger orchestrator turn."""
         if self._stopped:
             return
-        if self._stream_task and not self._stream_task.done():
-            return
         thread_id = event.get("thread_id")
         if not thread_id or str(self._current_thread_id) != str(thread_id):
+            return
+
+        # Always notify frontend so the status bar updates
+        active_count = await self._get_active_subagent_count(thread_id)
+        await self.send(text_data=json.dumps({
+            "event_type": "subagents.updated",
+            "active_count": active_count,
+        }))
+
+        if self._stream_task and not self._stream_task.done():
             return
         if not await self._check_unreported_subagents(thread_id):
             return
@@ -324,12 +332,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if thread_data is not None:
             self.data_room_ids = thread_data["data_room_ids"]
 
-            # Fetch skill, cost, canvases, and tasks in parallel
-            skill_data, thread_cost, canvases_data, task_list = await asyncio.gather(
+            # Fetch skill, cost, canvases, tasks, and active subagents in parallel
+            skill_data, thread_cost, canvases_data, task_list, active_subagent_count = await asyncio.gather(
                 self._load_thread_skill(thread_id),
                 self._get_thread_cost(thread_id),
                 self._load_all_canvases(thread_id),
                 self._get_thread_tasks(thread_id),
+                self._get_active_subagent_count(thread_id),
             )
             self.active_skill_id = skill_data["skill_id"] if skill_data else None
 
@@ -339,6 +348,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "data_rooms": thread_data["data_rooms"],
                 "skill": skill_data,
                 "thread_cost_usd": thread_cost,
+                "active_subagent_count": active_subagent_count,
             }))
             if canvases_data:
                 await self.send(text_data=json.dumps({
@@ -587,6 +597,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
         if thread_id:
             await self._cancel_active_subagents(thread_id)
+            await self.send(text_data=json.dumps({
+                "event_type": "subagents.updated",
+                "active_count": 0,
+            }))
 
         await self.send(text_data=json.dumps({"event_type": "stream.cancelled"}))
 
@@ -1674,6 +1688,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             .order_by("-created_at")[:20]
             .values("id", "status", "prompt", "model_tier", "result", "error")
         )
+
+    @database_sync_to_async
+    def _get_active_subagent_count(self, thread_id) -> int:
+        from chat.models import SubAgentRun
+        return SubAgentRun.objects.filter(
+            thread_id=thread_id,
+            status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
+        ).count()
 
     # -- Canvas helpers --
 
