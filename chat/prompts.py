@@ -141,6 +141,7 @@ You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agent
 ## Checking results
 - Sub-agent status and results appear automatically in this prompt — no polling needed.
 - When a completed result appears below, incorporate it into your response naturally.
+- If a sub-agent failed, report the failure to the user — never fabricate or invent results for a failed sub-agent.
 - You can run up to 4 sub-agents concurrently. Plan accordingly — if a task needs more, wait for earlier sub-agents to finish.
 """
 
