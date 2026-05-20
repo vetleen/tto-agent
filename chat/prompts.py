@@ -115,34 +115,34 @@ Use `update_tasks` to create and manage a task plan. Be proactive — create a p
     if has_subagent_tool:
         prompt += """
 # Sub-agents
-You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agents are independent AI workers that run with their own context and tools.
+You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly. 
 
 ## When to use sub-agents
-- Tasks that require extensive research across multiple documents
-- Work that can run in the background while you continue talking to the user
+- Tasks that require gathering extensive context, but where the orchestrator, only needs the syntesis. Almost any web-searching would fall into this category.
 - Tasks that benefit from a focused, isolated context (e.g., deep analysis of a specific topic)
 - When you need to do multiple independent research tasks in a single response
 
 ## When NOT to use sub-agents
 - Simple questions you can answer directly
-- Tasks that require back-and-forth with the user
-- When a single tool call (search, read, web fetch) would suffice
+- When a single (different) tool call would suffice
 
 ## How to use
-- Set `timeout` to control how long to wait for the result:
-  - `timeout: 0` (default) — fire-and-forget background task; tell the user you've started the work
-  - `timeout: 30-60` — quick tasks like simple lookups or summaries; the result is returned inline
-  - `timeout: 120` — tasks that need more time; the result is returned inline if it finishes in time
+- Set `timeout` to control how many seconds to wait for the result:
+  - `timeout: 0` (default) — fire-and-forget background task, returns immediately with a "started"/"queued" status; \
+the user is then handed back the turn, but as sub-agents return, you are automatically awakened to continue work, so the user doesn't have to \
+do anything. Tell the user you have started the work.
+- `timeout: 1-540` —  polls in a blocking loop until the sub-agent completes or \
+the deadline is reached. During this time you are "holding your turn" waiting for the sub-agent result. If it finishes in time, \
+the result is returned inline and you may incorporate it in the same response. If it times out, it returns a "still running" message \
+and the same async reactivation path as described above kicks in.
   - Maximum timeout is 540 seconds
-- Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" for deep analysis.
-- Provide a specific skill_slug if the task aligns with an available skill
-- Write clear, specific task prompts — the sub-agent has no access to our conversation history
+- Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" for deep analysis (rarely relevant).
+- Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
 
 ## Checking results
-- Sub-agent status and results appear automatically in this prompt — no polling needed.
-- When a completed result appears below, incorporate it into your response naturally.
-- If a sub-agent failed, report the failure to the user — never fabricate or invent results for a failed sub-agent.
-- You can run up to 4 sub-agents concurrently. Plan accordingly — if a task needs more, wait for earlier sub-agents to finish.
+- Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
+- If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
+- You can run up to 2 sub-agents concurrently. Plan accordingly — if a task needs more, wait for earlier sub-agents to finish, or cue up to 2 more. Never try to launch more than 4 concurrent.
 """
 
         if not parallel_subagents:
@@ -409,8 +409,10 @@ def build_dynamic_context(
             task_excerpt = run["prompt"][:120]
             tier = run.get("model_tier", "mid")
             section += f"\n## [{short_id}] {status.upper()} (tier: {tier})\nTask: {task_excerpt}\n"
-            if status == "completed":
+            if status == "completed" and run.get("result"):
                 section += "Result delivered as message in conversation history.\n"
+            elif status == "completed":
+                section += "**Completed but returned no usable result.** Report this failure to the user — do NOT fabricate results.\n"
             elif status in ("pending", "running"):
                 section += "Still in progress...\n"
             elif status == "failed":
