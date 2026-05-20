@@ -542,6 +542,19 @@ class BuildDynamicContextTests(TestCase):
         self.assertNotIn("<subagent_result>", result)
         self.assertIn("delivered as message", result.lower())
 
+    def test_completed_empty_result_shows_failure(self):
+        """Completed sub-agent with empty result tells orchestrator not to fabricate."""
+        runs = [{
+            "id": uuid.uuid4(), "status": "completed",
+            "prompt": "Research topic", "model_tier": "mid",
+            "result": "", "error": "",
+        }]
+        result = build_dynamic_context(subagent_runs=runs)
+        self.assertIn("COMPLETED", result)
+        self.assertNotIn("delivered as message", result.lower())
+        self.assertIn("no usable result", result.lower())
+        self.assertIn("do NOT fabricate", result)
+
     def test_history_meta_rendered(self):
         meta = {
             "total_messages": 100,

@@ -228,6 +228,29 @@ class SimpleChatPipeline(BasePipeline):
             from chat.dedup import deduplicate_tool_results
             new_messages = deduplicate_tool_results(new_messages)
 
+            remaining_iters = effective_max - i - 1
+            time_running_low = (
+                deadline_dt
+                and (deadline_dt - datetime.now(timezone.utc)).total_seconds() <= 90
+            )
+            warnings = []
+            if remaining_iters <= 2:
+                if remaining_iters <= 1:
+                    warnings.append("This is your last tool iteration.")
+                else:
+                    warnings.append("You have 2 tool iterations remaining.")
+            if time_running_low:
+                warnings.append("You are running low on time.")
+            if warnings:
+                new_messages.append(Message(
+                    role="user",
+                    content=(
+                        f"IMPORTANT: {' '.join(warnings)} Wrap up your research "
+                        "and prepare to deliver your comprehensive final response "
+                        "as plain text."
+                    ),
+                ))
+
             req = req.model_copy(update={"messages": new_messages})
         else:
             logger.warning(
@@ -235,7 +258,20 @@ class SimpleChatPipeline(BasePipeline):
                 effective_max,
             )
 
-        final_req = req.model_copy(update={"tool_schemas": None})
+        final_messages = list(req.messages) + [
+            Message(
+                role="user",
+                content=(
+                    "You have reached the tool-use limit. Do NOT call any more tools. "
+                    "Using the information you have gathered so far, provide your "
+                    "comprehensive final response now as plain text."
+                ),
+            )
+        ]
+        final_req = req.model_copy(update={
+            "tool_schemas": None,
+            "messages": final_messages,
+        })
         response = chat_model.generate(final_req)
         _accumulate(response.usage)
         return _with_aggregate(response)
@@ -392,6 +428,29 @@ class SimpleChatPipeline(BasePipeline):
             from chat.dedup import deduplicate_tool_results
             new_messages = deduplicate_tool_results(new_messages)
 
+            remaining_iters = max_iterations - i - 1
+            time_running_low = (
+                deadline_dt
+                and (deadline_dt - datetime.now(timezone.utc)).total_seconds() <= 90
+            )
+            warnings = []
+            if remaining_iters <= 2:
+                if remaining_iters <= 1:
+                    warnings.append("This is your last tool iteration.")
+                else:
+                    warnings.append("You have 2 tool iterations remaining.")
+            if time_running_low:
+                warnings.append("You are running low on time.")
+            if warnings:
+                new_messages.append(Message(
+                    role="user",
+                    content=(
+                        f"IMPORTANT: {' '.join(warnings)} Wrap up your research "
+                        "and prepare to deliver your comprehensive final response "
+                        "as plain text."
+                    ),
+                ))
+
             req = req.model_copy(update={"messages": new_messages})
         else:
             logger.warning(
@@ -399,7 +458,20 @@ class SimpleChatPipeline(BasePipeline):
                 max_iterations,
             )
 
-        final_req = req.model_copy(update={"tool_schemas": None})
+        final_messages = list(req.messages) + [
+            Message(
+                role="user",
+                content=(
+                    "You have reached the tool-use limit. Do NOT call any more tools. "
+                    "Using the information you have gathered so far, provide your "
+                    "comprehensive final response now as plain text."
+                ),
+            )
+        ]
+        final_req = req.model_copy(update={
+            "tool_schemas": None,
+            "messages": final_messages,
+        })
         for item in _do_stream_iteration(final_req, sequence):
             if isinstance(item, StreamEvent):
                 yield item

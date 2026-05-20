@@ -902,8 +902,8 @@ class RunSubagentServiceTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
-    def test_warns_on_unresolved_tool_calls_with_empty_content(self, mock_prefs, mock_svc):
-        """If response has tool_calls but no content, a warning is logged."""
+    def test_empty_result_marks_failed(self, mock_prefs, mock_svc):
+        """If response has no content, run is marked FAILED."""
         mock_prefs.return_value = _prefs()
         mock_response = MagicMock()
         mock_response.message.content = ""
@@ -922,9 +922,10 @@ class RunSubagentServiceTests(TestCase):
             run_subagent(run.id)
 
         run.refresh_from_db()
-        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
         self.assertEqual(run.result, "")
-        self.assertTrue(any("unresolved tool calls" in msg for msg in cm.output))
+        self.assertIn("no text output", run.error)
+        self.assertTrue(any("no content" in msg for msg in cm.output))
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")

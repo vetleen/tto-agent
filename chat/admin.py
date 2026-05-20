@@ -4,7 +4,14 @@ from django.db.models.functions import Cast
 
 from llm.models import LLMCallLog
 
-from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, ThreadChunkUsage, ThreadTask
+from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, SubAgentRun, ThreadChunkUsage, ThreadTask
+
+
+class SubAgentRunInline(admin.TabularInline):
+    model = SubAgentRun
+    extra = 0
+    readonly_fields = ("id", "status", "prompt", "model_tier", "model_used", "tokens_used", "cost_usd", "created_at", "completed_at")
+    fields = ("status", "prompt", "model_tier", "model_used", "tokens_used", "cost_usd", "created_at", "completed_at")
 
 
 class ChatMessageInline(admin.TabularInline):
@@ -41,7 +48,7 @@ class ChatThreadAdmin(admin.ModelAdmin):
     list_filter = ("created_at",)
     search_fields = ("title",)
     readonly_fields = ("id", "created_at", "updated_at")
-    inlines = [ChatThreadDataRoomInline, ThreadTaskInline, ThreadChunkUsageInline, ChatMessageInline]
+    inlines = [ChatThreadDataRoomInline, ThreadTaskInline, SubAgentRunInline, ThreadChunkUsageInline, ChatMessageInline]
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -70,6 +77,31 @@ class CanvasCheckpointInline(admin.TabularInline):
 class ChatCanvasAdmin(admin.ModelAdmin):
     list_display = ("id", "thread", "title", "updated_at")
     inlines = [CanvasCheckpointInline]
+
+
+@admin.register(SubAgentRun)
+class SubAgentRunAdmin(admin.ModelAdmin):
+    list_display = ("short_id", "thread", "user", "status", "model_tier", "model_used", "short_prompt", "tokens_used", "cost_display", "has_result", "created_at")
+    list_filter = ("status", "model_tier", "created_at")
+    search_fields = ("prompt", "result", "id")
+    readonly_fields = ("id", "created_at", "completed_at")
+    list_select_related = ("thread", "user")
+
+    @admin.display(description="ID")
+    def short_id(self, obj):
+        return str(obj.id)[:8]
+
+    @admin.display(description="Prompt")
+    def short_prompt(self, obj):
+        return obj.prompt[:80] if obj.prompt else ""
+
+    @admin.display(description="Cost", ordering="cost_usd")
+    def cost_display(self, obj):
+        return f"${obj.cost_usd:.4f}" if obj.cost_usd else "-"
+
+    @admin.display(description="Result?", boolean=True)
+    def has_result(self, obj):
+        return bool(obj.result)
 
 
 @admin.register(ChatMessage)

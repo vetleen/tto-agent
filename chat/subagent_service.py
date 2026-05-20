@@ -117,6 +117,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             data_room_ids=data_room_ids,
             deadline_seconds=deadline_seconds,
         )
+        context.run_id = str(run_id)
 
         # Cooperative cancellation: check if the run has been marked FAILED
         def _is_cancelled():
@@ -140,18 +141,21 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
 
         # Store result
         run.result = response.message.content or ""
-        if not run.result and response.message.tool_calls:
-            logger.warning(
-                "Sub-agent run %s completed with unresolved tool calls and no content",
-                run_id,
-            )
         if response.usage:
             run.tokens_used = response.usage.total_tokens or 0
             run.cost_usd = response.usage.cost_usd or 0.0
-        run.status = SubAgentRun.Status.COMPLETED
+        if run.result:
+            run.status = SubAgentRun.Status.COMPLETED
+        else:
+            run.status = SubAgentRun.Status.FAILED
+            run.error = "Sub-agent produced no text output despite using tools."
+            logger.warning(
+                "Sub-agent run %s finished with no content (tokens_used=%d); marking FAILED",
+                run_id, run.tokens_used,
+            )
         run.completed_at = timezone.now()
         run.save(update_fields=[
-            "result", "tokens_used", "cost_usd", "status", "completed_at",
+            "result", "tokens_used", "cost_usd", "status", "error", "completed_at",
         ])
 
         # Persist the result as a hidden ChatMessage so it survives
