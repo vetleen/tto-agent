@@ -32,6 +32,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._org_id: int | None = None
         self._org_name: str | None = None
         self._current_thread_id: str | None = None
+        self._stopped: bool = False
+        self._stream_task: asyncio.Task | None = None
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
@@ -66,6 +68,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if self._cancel_event:
             self._cancel_event.set()
 
+        # Cancel the stream lifecycle task
+        if self._stream_task and not self._stream_task.done():
+            self._stream_task.cancel()
+            try:
+                await self._stream_task
+            except asyncio.CancelledError:
+                pass
+
         # Cancel the guardrail pipeline if still running
         if self._guardrail_task and not self._guardrail_task.done():
             self._guardrail_task.cancel()
@@ -76,8 +86,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def subagent_completed(self, event):
         """Channel layer handler: a sub-agent finished. Auto-trigger orchestrator turn."""
+        if self._stopped:
+            return
+        if self._stream_task and not self._stream_task.done():
+            return
         thread_id = event.get("thread_id")
         if not thread_id or str(self._current_thread_id) != str(thread_id):
+            return
+        if not await self._check_unreported_subagents(thread_id):
             return
         await self._handle_chat_message(
             {"thread_id": thread_id, "content": ""},
@@ -553,9 +569,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _handle_stop(self, data):
         """Handle a stop request from the client."""
+        self._stopped = True
+
         # Signal the streaming loop to stop
         if self._cancel_event:
             self._cancel_event.set()
+
+        # Cancel the stream lifecycle task (post-processing, title gen, etc.)
+        if self._stream_task and not self._stream_task.done():
+            self._stream_task.cancel()
 
         # Cancel the guardrail pipeline task if still running
         if self._guardrail_task and not self._guardrail_task.done():
@@ -616,6 +638,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         content = (data.get("content") or "").strip()
         if not seed_mode:
+            self._stopped = False
+            # Cancel any running stream so the new message starts clean
+            if self._stream_task and not self._stream_task.done():
+                if self._cancel_event:
+                    self._cancel_event.set()
+                self._stream_task.cancel()
+                try:
+                    await self._stream_task
+                except asyncio.CancelledError:
+                    pass
             if not content:
                 await self.send(text_data=json.dumps({"error": "Empty message"}))
                 return
@@ -844,15 +876,54 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 data_rooms=data_rooms,
             )
 
-            # Stream LLM response (cancel_event already created above)
+            # Launch streaming + post-processing as a background task so
+            # the dispatch loop stays free for chat.stop and other messages.
+            self._stream_task = asyncio.create_task(
+                self._stream_and_finalize(
+                    thread, static_system, history,
+                    semi_static_system=semi_static_system,
+                    dynamic_context=dynamic_context,
+                    requested_model=requested_model,
+                    thinking_level=thinking_level,
+                    resolved_model=model,
+                    cancel_event=self._cancel_event,
+                    seed_mode=seed_mode,
+                    content=content,
+                    meta=meta,
+                    max_context_tokens=max_context_tokens,
+                )
+            )
+
+        except Exception:
+            logger.exception("Error handling chat message")
+            await self.send(text_data=json.dumps({
+                "event_type": "error",
+                "data": {"message": "An error occurred processing your message."},
+            }))
+
+    async def _stream_and_finalize(
+        self, thread, static_system, history, *,
+        semi_static_system, dynamic_context,
+        requested_model, thinking_level, resolved_model,
+        cancel_event, seed_mode, content, meta, max_context_tokens,
+    ):
+        """Stream LLM response and run post-processing.
+
+        Runs as a background ``asyncio.Task`` so the dispatch loop stays
+        free for ``chat.stop`` and other messages.
+        """
+        try:
             await self._stream_response(
                 thread, static_system, history,
                 semi_static_system=semi_static_system,
                 dynamic_context=dynamic_context,
                 requested_model=requested_model, thinking_level=thinking_level,
-                resolved_model=model,
-                cancel_event=self._cancel_event,
+                resolved_model=resolved_model,
+                cancel_event=cancel_event,
             )
+
+            if self._stopped:
+                return
 
             # Wait for guardrail pipeline to finish
             if self._guardrail_task and not self._guardrail_task.done():
@@ -882,23 +953,36 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "thread_cost_usd": thread_cost,
             }))
 
-            # Auto-generate title for untitled threads (skipped in seed
-            # mode — the seeding view sets a meaningful title up front).
-            # Also covers threads created by file upload (HTTP) before the
-            # first WebSocket message, where ``created`` is False.
-            if not seed_mode and not thread.title:
+            if not self._stopped and not seed_mode and not thread.title:
                 await self._generate_thread_title(thread, content)
 
-            # Trigger summarization if history exceeds budget
             if meta.get("needs_summary"):
-                await self._trigger_summarization(thread, model=model, max_context_tokens=max_context_tokens)
+                await self._trigger_summarization(
+                    thread, model=resolved_model, max_context_tokens=max_context_tokens,
+                )
 
+        except asyncio.CancelledError:
+            pass
         except Exception:
-            logger.exception("Error handling chat message")
-            await self.send(text_data=json.dumps({
-                "event_type": "error",
-                "data": {"message": "An error occurred processing your message."},
-            }))
+            logger.exception("Error in stream lifecycle")
+            try:
+                await self.send(text_data=json.dumps({
+                    "event_type": "error",
+                    "data": {"message": "An error occurred processing your message."},
+                }))
+            except Exception:
+                pass
+        finally:
+            # Check for subagent results that arrived while the stream was running
+            if (
+                not self._stopped
+                and self._has_tool("create_subagent")
+                and await self._check_unreported_subagents(str(thread.id))
+            ):
+                await self._handle_chat_message(
+                    {"thread_id": str(thread.id), "content": ""},
+                    seed_mode=True,
+                )
 
     async def _stream_response(
         self, thread, system_prompt, history,
