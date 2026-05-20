@@ -629,7 +629,7 @@ class JSRenderDetectionTests(TestCase):
         jina_response.raise_for_status = MagicMock()
 
         def route_request(url, **kwargs):
-            if "r.jina.ai" in url:
+            if "eu.r.jina.ai" in url:
                 return jina_response
             return mock_response
 
@@ -687,7 +687,7 @@ class JinaFallbackTests(TestCase):
         jina_resp.raise_for_status = MagicMock()
 
         def route(url, **kwargs):
-            if "r.jina.ai" in url:
+            if "eu.r.jina.ai" in url:
                 return jina_resp
             return failed
 
@@ -707,7 +707,7 @@ class JinaFallbackTests(TestCase):
         jina_resp.raise_for_status = MagicMock()
 
         def route(url, **kwargs):
-            if "r.jina.ai" in url:
+            if "eu.r.jina.ai" in url:
                 return jina_resp
             raise req_lib.exceptions.Timeout("timed out")
 
@@ -727,7 +727,7 @@ class JinaFallbackTests(TestCase):
         jina_resp.raise_for_status = MagicMock()
 
         def route(url, **kwargs):
-            if "r.jina.ai" in url:
+            if "eu.r.jina.ai" in url:
                 return jina_resp
             raise req_lib.exceptions.ConnectionError("refused")
 
@@ -752,7 +752,7 @@ class JinaFallbackTests(TestCase):
         import requests as req_lib
 
         def route(url, **kwargs):
-            if "r.jina.ai" in url:
+            if "eu.r.jina.ai" in url:
                 raise req_lib.exceptions.Timeout("jina also timed out")
             raise req_lib.exceptions.ConnectionError("refused")
 
@@ -773,7 +773,7 @@ class JinaFallbackTests(TestCase):
         jina_resp.raise_for_status = MagicMock()
 
         def route(url, **kwargs):
-            if "r.jina.ai" in url:
+            if "eu.r.jina.ai" in url:
                 return jina_resp
             raise req_lib.exceptions.ConnectionError("refused")
 

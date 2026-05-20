@@ -144,7 +144,7 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
     logger.info("web_fetch: falling back to Jina for url=%s reason=%s", url, reason)
     try:
         resp = requests.get(
-            f"https://r.jina.ai/{url}",
+            f"https://eu.r.jina.ai/{url}",
             timeout=30,
             headers={
                 "Authorization": f"Bearer {api_key}",
