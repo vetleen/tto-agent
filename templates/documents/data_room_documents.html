@@ -47,7 +47,7 @@
         <input class="cursor-pointer bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full shadow-xs placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
         <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file.</p>
       </div>
-      <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+      <button id="upload-btn" type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         Add to data room
       </button>
       <p class="mt-2 text-xs text-body">Added files are processed: text is extracted, split into searchable chunks, and indexed. {{ assistant_name }} can search the indexed content whenever this data room is attached to the chat.</p>
@@ -305,8 +305,15 @@
     var dropOverlay = document.getElementById('drop-overlay');
     var fileInput = document.getElementById('file_input');
     var uploadForm = document.getElementById('upload-form');
+    var uploadBtn = document.getElementById('upload-btn');
     if (!container || !dropOverlay || !fileInput || !uploadForm) return;
+    var submitting = false;
     var dragCounter = 0;
+    uploadForm.addEventListener('submit', function(e) {
+      if (submitting) { e.preventDefault(); return; }
+      submitting = true;
+      if (uploadBtn) { uploadBtn.disabled = true; uploadBtn.textContent = 'Uploading…'; }
+    });
     container.addEventListener('dragenter', function(e) {
       e.preventDefault();
       dragCounter++;
@@ -323,8 +330,11 @@
       e.preventDefault();
       dragCounter = 0;
       dropOverlay.classList.add('hidden');
+      if (submitting) return;
       var files = e.dataTransfer.files;
       if (!files.length) return;
+      submitting = true;
+      if (uploadBtn) { uploadBtn.disabled = true; uploadBtn.textContent = 'Uploading…'; }
       fileInput.files = files;
       uploadForm.submit();
     });
