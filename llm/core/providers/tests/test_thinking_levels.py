@@ -26,11 +26,12 @@ class AnthropicThinkingLevelTests(TestCase):
         client = MagicMock()
         return AnthropicChatModel("anthropic/claude-sonnet-4-6", client)
 
-    def test_off_returns_standard_client(self):
+    def test_off_returns_standard_client_with_cache_control(self):
         model = self._make_model()
         request = _make_request("off")
         client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
+        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
+        self.assertIs(client, model._client.bind.return_value)
 
     @patch("llm.core.providers.anthropic.create_variant_client")
     def test_low_creates_variant_with_4k_budget(self, mock_create):
@@ -68,7 +69,8 @@ class AnthropicThinkingLevelTests(TestCase):
         model = self._make_model()
         request = _make_request("high")
         client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
+        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
+        self.assertIs(client, model._client.bind.return_value)
 
 
 class AnthropicAdaptiveThinkingTests(TestCase):
@@ -77,11 +79,12 @@ class AnthropicAdaptiveThinkingTests(TestCase):
         client = MagicMock()
         return AnthropicChatModel("anthropic/claude-opus-4-7", client)
 
-    def test_off_returns_standard_client(self):
+    def test_off_returns_standard_client_with_cache_control(self):
         model = self._make_model()
         request = _make_request("off")
         client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
+        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
+        self.assertIs(client, model._client.bind.return_value)
 
     @patch("llm.core.providers.anthropic.create_variant_client")
     def test_low_creates_adaptive_variant(self, mock_create):
@@ -128,7 +131,8 @@ class AnthropicAdaptiveThinkingTests(TestCase):
         model = self._make_model()
         request = _make_request("high")
         client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
+        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
+        self.assertIs(client, model._client.bind.return_value)
 
     def test_opus_46_still_uses_extended_thinking(self):
         client = MagicMock()

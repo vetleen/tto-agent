@@ -100,7 +100,12 @@ class AnthropicCacheControlTests(TestCase):
         self.assertEqual(block["text"], "You are helpful")
         self.assertEqual(block["cache_control"], {"type": "ephemeral", "ttl": "1h"})
 
-    def test_second_to_last_gets_cache_control_with_3_plus_messages(self):
+    def test_no_conversation_prefix_breakpoint(self):
+        """Conversation history should NOT get explicit cache_control breakpoints.
+
+        Prefix caching for conversation history is handled automatically via
+        the cache_control kwarg bound in AnthropicChatModel._get_streaming_client.
+        """
         messages = [
             Message(role="system", content="System"),
             Message(role="user", content="First question"),
@@ -108,11 +113,8 @@ class AnthropicCacheControlTests(TestCase):
             Message(role="user", content="Second question"),
         ]
         result = to_langchain_messages(messages, provider="anthropic")
-        # Second-to-last (index 2) should have cache_control in additional_kwargs
-        self.assertIn("cache_control", result[2].additional_kwargs)
-        self.assertEqual(result[2].additional_kwargs["cache_control"], {"type": "ephemeral"})
-        # Last message should NOT have cache_control
-        self.assertNotIn("cache_control", result[3].additional_kwargs)
+        for msg in result[1:]:
+            self.assertNotIn("cache_control", getattr(msg, "additional_kwargs", {}))
 
     def test_no_cache_control_when_provider_is_none(self):
         messages = [
@@ -140,17 +142,15 @@ class AnthropicCacheControlTests(TestCase):
         for msg in result:
             self.assertNotIn("cache_control", getattr(msg, "additional_kwargs", {}))
 
-    def test_short_conversation_only_caches_system(self):
-        """With < 3 messages, only system gets cache_control (no second breakpoint)."""
+    def test_short_conversation_caches_system_only(self):
+        """Even short conversations get system message caching."""
         messages = [
             Message(role="system", content="System"),
             Message(role="user", content="Hello"),
         ]
         result = to_langchain_messages(messages, provider="anthropic")
-        # System gets cache_control
         self.assertIsInstance(result[0].content, list)
         self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
-        # User message should NOT have cache_control
         self.assertNotIn("cache_control", result[1].additional_kwargs)
 
     def test_static_system_always_single_block(self):

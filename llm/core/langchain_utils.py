@@ -36,37 +36,22 @@ def parse_tool_calls_from_ai_message(ai_message: object) -> list[ToolCall] | Non
 
 
 def _apply_anthropic_cache_control(lc_messages: list, system_content: str | None) -> list:
-    """Add cache_control breakpoints for Anthropic prompt caching.
+    """Add an explicit cache_control breakpoint to the system message.
 
-    Places cache_control at two points:
-    1. System message -- always cached (static-only, never changes)
-    2. Second-to-last message -- caches the entire conversation prefix
-
-    Semi-static and dynamic content are injected into the last user message
-    (not the system message), so the system + history prefix is always stable
-    and cacheable.
-
-    Requires 1024+ tokens to activate -- short conversations simply won't
-    cache (no harm).
+    The system message is static and never changes within a conversation,
+    so it gets a long-lived 1h cache. Conversation history caching is
+    handled automatically by langchain-anthropic's cache_control kwarg
+    (bound in AnthropicChatModel._get_streaming_client), which uses
+    Anthropic's lookback window for incremental prefix caching.
     """
-    result = []
-    for i, msg in enumerate(lc_messages):
-        if i == 0 and isinstance(msg, SystemMessage) and system_content is not None:
-            # Convert system message to content-block format with cache_control
-            result.append(SystemMessage(content=[{
-                "type": "text",
-                "text": system_content,
-                "cache_control": {"type": "ephemeral", "ttl": "1h"},
-            }]))
-        elif len(lc_messages) >= 3 and i == len(lc_messages) - 2:
-            # Second-to-last message: add cache_control
-            msg_copy = msg.model_copy()
-            additional = dict(getattr(msg_copy, "additional_kwargs", {}) or {})
-            additional["cache_control"] = {"type": "ephemeral"}
-            msg_copy.additional_kwargs = additional
-            result.append(msg_copy)
-        else:
-            result.append(msg)
+    if not lc_messages or not isinstance(lc_messages[0], SystemMessage) or system_content is None:
+        return lc_messages
+    result = [SystemMessage(content=[{
+        "type": "text",
+        "text": system_content,
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+    }])]
+    result.extend(lc_messages[1:])
     return result
 
 

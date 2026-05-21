@@ -50,6 +50,11 @@ class AnthropicChatModel(BaseLangChainChatModel):
 
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
+
+        # Automatic prefix caching: langchain-anthropic places this on the
+        # last eligible message block; Anthropic's lookback window finds
+        # previous cache entries and only writes new blocks incrementally.
+        client = client.bind(cache_control={"type": "ephemeral"})
         return client
 
     def _get_extended_thinking_client(self, level: str):
