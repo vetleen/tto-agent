@@ -149,6 +149,7 @@ class SearchDocumentsTool(ContextAwareTool):
         doc_rows = DataRoomDocument.objects.filter(pk__in=doc_pks).values(
             "pk", "original_filename", "description", "doc_index",
             "data_room_id", "data_room__name", "data_room__description",
+            "uploaded_at", "file_metadata_date", "document_date",
         )
         doc_meta = {r["pk"]: r for r in doc_rows}
 
@@ -228,6 +229,15 @@ class SearchDocumentsTool(ContextAwareTool):
                 lines.append(f"**Description:** {doc_desc}")
             if room_name:
                 lines.append(f"**Data room:** {room_name}")
+            uploaded_at = dm.get("uploaded_at")
+            if uploaded_at:
+                lines.append(f"**Upload date (added to data room):** {uploaded_at.strftime('%Y-%m-%d')}")
+            file_date = dm.get("file_metadata_date")
+            if file_date:
+                lines.append(f"**File date (from file properties):** {file_date.isoformat()}")
+            doc_date = dm.get("document_date")
+            if doc_date:
+                lines.append(f"**Document date (from content):** {doc_date.isoformat()}")
             if heading:
                 lines.append(f"**Section:** {heading}")
             if chunk_label:
@@ -372,6 +382,12 @@ class ReadDocumentTool(ContextAwareTool):
                 "total_chunks": total_chunk_count,
                 "content": content,
             }
+            if doc.uploaded_at:
+                doc_entry["upload_date"] = doc.uploaded_at.strftime("%Y-%m-%d")
+            if doc.file_metadata_date:
+                doc_entry["file_date"] = doc.file_metadata_date.isoformat()
+            if doc.document_date:
+                doc_entry["document_date"] = doc.document_date.isoformat()
             if use_chunk_range:
                 doc_entry["chunk_range"] = f"{chunk_start}-{chunk_end}"
                 doc_entry["chunks_returned"] = len(chunk_list)

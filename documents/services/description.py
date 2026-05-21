@@ -23,7 +23,10 @@ _STRUCTURED_SYSTEM_PROMPT = (
     "subject matter and entities it concerns, and what questions it could answer.\n"
     '2. "document_type": A concise document type classification (e.g. Agreement, '
     "Patent, License, Report, Correspondence, Policy, Technical Specification, "
-    "Disclosure, Application, Financial, Research Paper, Presentation, or Other)."
+    "Disclosure, Application, Financial, Research Paper, Presentation, or Other).\n"
+    '3. "document_date": If the document has a clearly identifiable primary date '
+    "(e.g. signing date, publication date, effective date, date of correspondence), "
+    "return it as YYYY-MM-DD. Return null if no clear date is present."
 )
 
 
@@ -91,15 +94,24 @@ def generate_description_and_tags_from_text(
     description = parsed.description.strip()
     doc_type = parsed.document_type.strip()
 
+    document_date = None
+    if parsed.document_date:
+        try:
+            from datetime import date
+
+            document_date = date.fromisoformat(parsed.document_date.strip())
+        except (ValueError, AttributeError):
+            pass
+
     tags = {}
     if doc_type:
         tags["document_type"] = doc_type[:255]
 
     logger.info(
-        "generate_description_and_tags_from_text: user_id=%s desc_len=%s tags=%s",
-        user_id, len(description), list(tags.keys()),
+        "generate_description_and_tags_from_text: user_id=%s desc_len=%s tags=%s document_date=%s",
+        user_id, len(description), list(tags.keys()), document_date,
     )
-    return {"description": description, "tags": tags}
+    return {"description": description, "tags": tags, "document_date": document_date}
 
 
 def generate_description_from_text(

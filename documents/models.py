@@ -82,6 +82,8 @@ class DataRoomDocument(models.Model):
     transcription_model = models.CharField(max_length=128, blank=True)
     is_archived = models.BooleanField(default=False)
     doc_index = models.PositiveIntegerField(default=0)
+    file_metadata_date = models.DateField(null=True, blank=True)
+    document_date = models.DateField(null=True, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)

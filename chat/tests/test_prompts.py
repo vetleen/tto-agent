@@ -466,6 +466,44 @@ class BuildDynamicContextTests(TestCase):
         self.assertIn("Patent.pdf", result)
         self.assertIn("(Patent)", result)
 
+    def test_doc_context_includes_dates(self):
+        doc_context = {
+            "total_doc_count": 1,
+            "documents": [{
+                "doc_index": 1,
+                "filename": "Contract.pdf",
+                "description": "A contract",
+                "token_count": 500,
+                "document_type": "Agreement",
+                "uploaded_at": "2025-03-15",
+                "file_metadata_date": "2024-11-02",
+                "document_date": "2024-10-28",
+            }],
+        }
+        result = build_dynamic_context(doc_context=doc_context)
+        self.assertIn("uploaded to data room: 2025-03-15", result)
+        self.assertIn("file date: 2024-11-02", result)
+        self.assertIn("document date: 2024-10-28", result)
+
+    def test_doc_context_omits_missing_dates(self):
+        doc_context = {
+            "total_doc_count": 1,
+            "documents": [{
+                "doc_index": 1,
+                "filename": "Notes.txt",
+                "description": "",
+                "token_count": 100,
+                "document_type": "",
+                "uploaded_at": "2025-01-01",
+                "file_metadata_date": None,
+                "document_date": None,
+            }],
+        }
+        result = build_dynamic_context(doc_context=doc_context)
+        self.assertIn("uploaded to data room: 2025-01-01", result)
+        self.assertNotIn("file date:", result)
+        self.assertNotIn("document date:", result)
+
     def test_no_docs_with_data_rooms(self):
         result = build_dynamic_context(
             data_rooms=[{"id": 1, "name": "Room"}],

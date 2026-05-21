@@ -1,53 +1,49 @@
 """
-Backfill descriptions for DataRoomDocument rows that are READY but have no description.
+Backfill PII category tags for READY documents.
 
 Usage:
-    python manage.py backfill_descriptions
-    python manage.py backfill_descriptions --doc-ids 30 33
+    python manage.py backfill_pii_tags
+    python manage.py backfill_pii_tags --doc-ids 30 33
 """
 from __future__ import annotations
-
-import sys
-from pathlib import Path
 
 from django.core.management.base import BaseCommand
 
 from documents.models import DataRoomDocument, DataRoomDocumentTag
+from documents.services.pii_scan import PII_CATEGORIES
 
 
 class Command(BaseCommand):
-    help = "Generate descriptions for READY documents that are missing them."
+    help = "Run PII category classification on READY documents that have no PII tags."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--doc-ids",
             nargs="*",
             type=int,
-            help="Specific document IDs to process (default: all READY docs without descriptions).",
+            help="Specific document IDs to process (default: all READY docs without PII tags).",
         )
 
     def handle(self, *args, **options):
-        from django.conf import settings
-
-        if not getattr(settings, "LLM_DEFAULT_CHEAP_MODEL", ""):
-            self.stderr.write(self.style.ERROR("LLM_DEFAULT_CHEAP_MODEL is not set. Cannot generate descriptions."))
-            sys.exit(1)
-
         qs = DataRoomDocument.objects.filter(status=DataRoomDocument.Status.READY)
         if options["doc_ids"]:
             qs = qs.filter(pk__in=options["doc_ids"])
         else:
-            qs = qs.filter(description="")
+            already_tagged = DataRoomDocumentTag.objects.filter(
+                key__in=PII_CATEGORIES,
+            ).values_list("document_id", flat=True)
+            qs = qs.exclude(pk__in=already_tagged)
 
         docs = list(qs.order_by("id"))
         if not docs:
-            self.stdout.write(self.style.SUCCESS("No documents need descriptions. Nothing to do."))
+            self.stdout.write(self.style.SUCCESS("No documents need PII scanning. Nothing to do."))
             return
 
-        self.stdout.write(f"Generating descriptions for {len(docs)} document(s)...")
+        self.stdout.write(f"Scanning {len(docs)} document(s) for PII categories...")
 
+        from accounts.models import Membership
         from documents.services.chunking import clean_extracted_text, load_documents
-        from documents.services.description import generate_description_and_tags_from_text
+        from documents.services.pii_scan import scan_pii_categories
         from documents.services.storage_utils import local_copy
 
         success = 0
@@ -71,23 +67,23 @@ class Command(BaseCommand):
                     self.stdout.write(f"  doc {doc.id}: skipped (no text)")
                     continue
 
-                result = generate_description_and_tags_from_text(
-                    text, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id
+                org_id = None
+                if doc.uploaded_by_id:
+                    org_id = Membership.objects.filter(user_id=doc.uploaded_by_id).values_list("org_id", flat=True).first()
+
+                result = scan_pii_categories(
+                    text, user_id=doc.uploaded_by_id,
+                    data_room_id=doc.data_room_id, org_id=org_id,
                 )
-                doc.description = result["description"]
-                update_fields = ["description", "updated_at"]
-                if result.get("document_date"):
-                    doc.document_date = result["document_date"]
-                    update_fields.append("document_date")
-                doc.save(update_fields=update_fields)
-                for tag_key, tag_value in result.get("tags", {}).items():
+                for category in result:
                     DataRoomDocumentTag.objects.update_or_create(
-                        document=doc, key=tag_key,
-                        defaults={"value": tag_value},
+                        document=doc, key=category,
+                        defaults={"value": "true"},
                     )
                 success += 1
-                self.stdout.write(f"  doc {doc.id}: OK (desc_len={len(doc.description)})")
+                detected = list(result.keys())
+                self.stdout.write(f"  doc {doc.id}: OK (detected={detected})")
             except Exception as e:
                 self.stderr.write(f"  doc {doc.id}: FAILED ({e})")
 
-        self.stdout.write(self.style.SUCCESS(f"Done. {success}/{len(docs)} document(s) updated."))
+        self.stdout.write(self.style.SUCCESS(f"Done. {success}/{len(docs)} document(s) scanned."))

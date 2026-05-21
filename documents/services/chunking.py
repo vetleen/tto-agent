@@ -359,6 +359,65 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
     raise ValueError(f"Unsupported file type: {ext}")
 
 
+def extract_file_metadata_date(file_path: str | Path, file_extension: str) -> "datetime.date | None":
+    """Extract the creation/authored date from file metadata. Returns None on failure."""
+    import datetime
+
+    ext = file_extension.lower().lstrip(".")
+    path = Path(file_path)
+
+    try:
+        if ext == "pdf":
+            from pypdf import PdfReader
+
+            reader = PdfReader(str(path))
+            meta = reader.metadata
+            if meta and meta.creation_date:
+                return meta.creation_date.date()
+
+        elif ext == "docx":
+            import xml.etree.ElementTree as ET
+            import zipfile
+
+            with zipfile.ZipFile(str(path)) as z:
+                if "docProps/core.xml" in z.namelist():
+                    tree = ET.parse(z.open("docProps/core.xml"))
+                    ns = {"dcterms": "http://purl.org/dc/terms/"}
+                    created_el = tree.find(".//dcterms:created", ns)
+                    if created_el is not None and created_el.text:
+                        return datetime.date.fromisoformat(created_el.text[:10])
+
+        elif ext == "msg":
+            import extract_msg
+
+            msg = extract_msg.Message(str(path))
+            try:
+                if msg.date:
+                    if isinstance(msg.date, datetime.datetime):
+                        return msg.date.date()
+                    from email.utils import parsedate_to_datetime
+
+                    return parsedate_to_datetime(str(msg.date)).date()
+            finally:
+                msg.close()
+
+        elif ext == "eml":
+            import email
+            import email.policy
+            from email.utils import parsedate_to_datetime
+
+            with open(path, "rb") as f:
+                msg = email.message_from_binary_file(f, policy=email.policy.default)
+            date_str = msg["date"]
+            if date_str:
+                return parsedate_to_datetime(str(date_str)).date()
+
+    except Exception:
+        logger.debug("extract_file_metadata_date: failed for %s (%s)", path.name, ext, exc_info=True)
+
+    return None
+
+
 def _is_list_line(line: str) -> bool:
     """Check if a line starts a list item (-, *, or numbered)."""
     stripped = line.lstrip()

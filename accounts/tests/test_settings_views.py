@@ -649,6 +649,64 @@ class OrgSubagentsUpdateViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class OrgPIIScanToggleTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="piiadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="piimember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="PIIOrg", slug="piiorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_pii_scan_toggle_update")
+
+    def test_requires_admin(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_toggle_off(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"enabled": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["enabled"])
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.preferences["pii_scan_enabled"])
+
+    def test_toggle_on(self):
+        self.org.preferences = {"pii_scan_enabled": False}
+        self.org.save(update_fields=["preferences"])
+
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"enabled": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["enabled"])
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.preferences["pii_scan_enabled"])
+
+
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class OrgMaxContextUpdateTests(TestCase):
     def setUp(self):

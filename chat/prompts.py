@@ -356,7 +356,18 @@ def build_dynamic_context(
                 doc_type = doc.get("document_type", "")
                 token_note = f" (~{tokens:,} tokens)" if tokens else ""
                 type_note = f" ({doc_type})" if doc_type else ""
-                line = f'{idx}. [{idx}] "{fname}"{type_note}{token_note}'
+                dates = []
+                uploaded = doc.get("uploaded_at")
+                if uploaded:
+                    dates.append(f"uploaded to data room: {uploaded}")
+                file_date = doc.get("file_metadata_date")
+                if file_date:
+                    dates.append(f"file date: {file_date}")
+                doc_date = doc.get("document_date")
+                if doc_date:
+                    dates.append(f"document date: {doc_date}")
+                date_note = f" [{', '.join(dates)}]" if dates else ""
+                line = f'{idx}. [{idx}] "{fname}"{type_note}{token_note}{date_note}'
                 if room_name:
                     line += f" (data room: {room_name})"
                 if desc:

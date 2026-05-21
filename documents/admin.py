@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
+from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 
 
 @admin.register(DataRoom)
@@ -9,6 +9,13 @@ class DataRoomAdmin(admin.ModelAdmin):
     search_fields = ("name", "slug")
     raw_id_fields = ("created_by",)
     readonly_fields = ("uuid",)
+
+
+class DataRoomDocumentTagInline(admin.TabularInline):
+    model = DataRoomDocumentTag
+    extra = 0
+    readonly_fields = ("key", "value", "created_at")
+    fields = ("key", "value", "created_at")
 
 
 class DataRoomDocumentChunkInline(admin.TabularInline):
@@ -23,12 +30,20 @@ class DataRoomDocumentChunkInline(admin.TabularInline):
 
 @admin.register(DataRoomDocument)
 class DataRoomDocumentAdmin(admin.ModelAdmin):
-    list_display = ("original_filename", "data_room", "status", "token_count", "uploaded_by", "uploaded_at", "processed_at")
+    list_display = ("original_filename", "data_room", "status", "token_count", "uploaded_by", "uploaded_at", "processed_at", "file_metadata_date", "document_date")
     list_filter = ("status", "uploaded_at")
     search_fields = ("original_filename",)
     raw_id_fields = ("data_room", "uploaded_by")
-    inlines = [DataRoomDocumentChunkInline]
-    readonly_fields = ("uploaded_at", "processed_at", "updated_at", "token_count")
+    inlines = [DataRoomDocumentTagInline, DataRoomDocumentChunkInline]
+    readonly_fields = ("uploaded_at", "processed_at", "updated_at", "token_count", "file_metadata_date", "document_date")
+
+
+@admin.register(DataRoomDocumentTag)
+class DataRoomDocumentTagAdmin(admin.ModelAdmin):
+    list_display = ("document", "key", "value", "created_at")
+    list_filter = ("key",)
+    search_fields = ("key", "value", "document__original_filename")
+    raw_id_fields = ("document",)
 
 
 @admin.register(DataRoomDocumentChunk)

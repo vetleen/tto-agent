@@ -1292,6 +1292,285 @@ class GenerateDescriptionAndTagsTests(TestCase):
         self.assertEqual(result, "A license agreement.")
 
 
+class DocumentDateInDescriptionTests(TestCase):
+    """Tests for document_date extraction in generate_description_and_tags_from_text."""
+
+    def test_empty_text_returns_no_date(self):
+        from documents.services.description import generate_description_and_tags_from_text
+        result = generate_description_and_tags_from_text("   ")
+        self.assertIsNone(result.get("document_date"))
+
+    @patch("llm.get_llm_service")
+    def test_valid_date_parsed(self, mock_get_service):
+        from documents.services.description import generate_description_and_tags_from_text
+        from llm.types.structured import DocumentDescriptionOutput
+        import datetime
+
+        mock_parsed = DocumentDescriptionOutput(
+            description="A contract.", document_type="Agreement",
+            document_date="2024-06-15",
+        )
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (mock_parsed, None)
+        mock_get_service.return_value = mock_service
+
+        result = generate_description_and_tags_from_text("Some contract text", user_id=1)
+        self.assertEqual(result["document_date"], datetime.date(2024, 6, 15))
+
+    @patch("llm.get_llm_service")
+    def test_null_date_returns_none(self, mock_get_service):
+        from documents.services.description import generate_description_and_tags_from_text
+        from llm.types.structured import DocumentDescriptionOutput
+
+        mock_parsed = DocumentDescriptionOutput(
+            description="A doc.", document_type="Report",
+            document_date=None,
+        )
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (mock_parsed, None)
+        mock_get_service.return_value = mock_service
+
+        result = generate_description_and_tags_from_text("Some text", user_id=1)
+        self.assertIsNone(result["document_date"])
+
+    @patch("llm.get_llm_service")
+    def test_invalid_date_returns_none(self, mock_get_service):
+        from documents.services.description import generate_description_and_tags_from_text
+        from llm.types.structured import DocumentDescriptionOutput
+
+        mock_parsed = DocumentDescriptionOutput(
+            description="A doc.", document_type="Report",
+            document_date="not-a-date",
+        )
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (mock_parsed, None)
+        mock_get_service.return_value = mock_service
+
+        result = generate_description_and_tags_from_text("Some text", user_id=1)
+        self.assertIsNone(result["document_date"])
+
+
+class PIIScanServiceTests(TestCase):
+    """Tests for scan_pii_categories."""
+
+    def test_empty_text_returns_empty(self):
+        from documents.services.pii_scan import scan_pii_categories
+        result = scan_pii_categories("   ")
+        self.assertEqual(result, {})
+
+    @patch("llm.get_llm_service")
+    def test_returns_only_true_categories(self, mock_get_service):
+        from documents.services.pii_scan import scan_pii_categories
+        from llm.types.structured import PIICategoryOutput
+
+        mock_parsed = PIICategoryOutput(
+            pii_ordinary_identity=True,
+            pii_ordinary_professional=True,
+            pii_ordinary_communication=False,
+            pii_ordinary_financial=False,
+        )
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (mock_parsed, None)
+        mock_get_service.return_value = mock_service
+
+        result = scan_pii_categories("John Doe, Engineer at ACME Corp", user_id=1)
+        self.assertEqual(result, {
+            "pii_ordinary_identity": True,
+            "pii_ordinary_professional": True,
+        })
+
+    @patch("llm.get_llm_service")
+    def test_all_false_returns_empty(self, mock_get_service):
+        from documents.services.pii_scan import scan_pii_categories
+        from llm.types.structured import PIICategoryOutput
+
+        mock_parsed = PIICategoryOutput()
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (mock_parsed, None)
+        mock_get_service.return_value = mock_service
+
+        result = scan_pii_categories("Generic technical content.", user_id=1)
+        self.assertEqual(result, {})
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.resolve_org_feature_model", return_value="openai/gpt-4o")
+    def test_uses_pii_scan_feature_key(self, mock_resolve, mock_get_service):
+        from documents.services.pii_scan import scan_pii_categories
+        from llm.types.structured import PIICategoryOutput
+
+        mock_parsed = PIICategoryOutput()
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (mock_parsed, None)
+        mock_get_service.return_value = mock_service
+
+        scan_pii_categories("test text", org_id=42)
+        mock_resolve.assert_called_with(42, "pii_scan")
+
+
+class FileMetadataDateTests(TestCase):
+    """Tests for extract_file_metadata_date."""
+
+    def test_txt_returns_none(self):
+        from documents.services.chunking import extract_file_metadata_date
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Hello")
+            f.flush()
+            path = Path(f.name)
+        try:
+            result = extract_file_metadata_date(path, "txt")
+            self.assertIsNone(result)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_unsupported_ext_returns_none(self):
+        from documents.services.chunking import extract_file_metadata_date
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            f.write(b"a,b,c")
+            f.flush()
+            path = Path(f.name)
+        try:
+            result = extract_file_metadata_date(path, "csv")
+            self.assertIsNone(result)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_eml_extracts_date(self):
+        import datetime
+        from documents.services.chunking import extract_file_metadata_date
+
+        eml_content = (
+            b"From: sender@example.com\r\n"
+            b"To: recipient@example.com\r\n"
+            b"Date: Tue, 15 Oct 2024 14:30:00 +0000\r\n"
+            b"Subject: Test\r\n"
+            b"\r\n"
+            b"Body text.\r\n"
+        )
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False) as f:
+            f.write(eml_content)
+            f.flush()
+            path = Path(f.name)
+        try:
+            result = extract_file_metadata_date(path, "eml")
+            self.assertEqual(result, datetime.date(2024, 10, 15))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_corrupt_file_returns_none(self):
+        from documents.services.chunking import extract_file_metadata_date
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"not a pdf")
+            f.flush()
+            path = Path(f.name)
+        try:
+            result = extract_file_metadata_date(path, "pdf")
+            self.assertIsNone(result)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class ProcessDocumentPIIScanTests(TestCase):
+    """Tests for PII scan integration in process_document pipeline."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="pii@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="PIIProject", slug="pii-project", created_by=self.user)
+
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_MID_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_pii_scan_creates_tags(self):
+        from django.core.files.base import ContentFile
+        from documents.models import DataRoomDocumentTag
+        from documents.services.process_document import process_document
+
+        sample_chunks = [{"text": "chunk", "token_count": 5, "chunk_index": 0}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="pii_test.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("pii_test.txt", ContentFile(b"John Doe, CEO"), save=True)
+
+                mock_pii_result = {"pii_ordinary_identity": True, "pii_ordinary_professional": True}
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="John Doe, CEO")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.description.generate_description_and_tags_from_text", return_value={"description": "A doc", "tags": {}, "document_date": None}), \
+                     patch("documents.services.pii_scan.scan_pii_categories", return_value=mock_pii_result):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+                pii_tags = DataRoomDocumentTag.objects.filter(
+                    document=doc, key__startswith="pii_",
+                ).values_list("key", "value")
+                tag_dict = dict(pii_tags)
+                self.assertEqual(tag_dict.get("pii_ordinary_identity"), "true")
+                self.assertEqual(tag_dict.get("pii_ordinary_professional"), "true")
+
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_MID_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_pii_scan_failure_doesnt_fail_doc(self):
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [{"text": "chunk", "token_count": 5, "chunk_index": 0}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="pii_fail.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("pii_fail.txt", ContentFile(b"test"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.description.generate_description_and_tags_from_text", return_value={"description": "A doc", "tags": {}, "document_date": None}), \
+                     patch("documents.services.pii_scan.scan_pii_categories", side_effect=RuntimeError("LLM down")):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+    @override_settings(PGVECTOR_CONNECTION="", LLM_DEFAULT_MID_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+    def test_pii_scan_respects_org_toggle(self):
+        from accounts.models import Organization, Membership
+        from django.core.files.base import ContentFile
+        from documents.models import DataRoomDocumentTag
+        from documents.services.process_document import process_document
+
+        org = Organization.objects.create(name="TestOrg", slug="testorg", preferences={"pii_scan_enabled": False})
+        Membership.objects.create(user=self.user, org=org, role="admin")
+
+        sample_chunks = [{"text": "chunk", "token_count": 5, "chunk_index": 0}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="pii_off.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("pii_off.txt", ContentFile(b"test"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.description.generate_description_and_tags_from_text", return_value={"description": "A doc", "tags": {}, "document_date": None}), \
+                     patch("documents.services.pii_scan.scan_pii_categories") as mock_scan:
+                    process_document(doc.id)
+                    mock_scan.assert_not_called()
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                self.assertFalse(DataRoomDocumentTag.objects.filter(document=doc, key__startswith="pii_").exists())
+
+
 class EmailLoaderTests(TestCase):
     """Tests for .msg and .eml email loading functions."""
 

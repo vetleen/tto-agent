@@ -259,6 +259,27 @@
     </div>
   </section>
 
+  <!-- PII Classification -->
+  <section class="mt-10">
+    <h2 class="text-lg font-medium text-heading">PII Classification</h2>
+    <p class="mt-1 text-sm text-body">Automatically classify documents by GDPR personal data categories during processing.</p>
+
+    <div class="mt-4">
+      <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
+        <div>
+          <span class="text-sm font-medium text-heading">Enable PII category tagging</span>
+          <p class="text-xs text-body mt-0.5">When enabled, newly uploaded documents are scanned for personal data categories (identity, professional, financial, special categories, etc.).</p>
+        </div>
+        <input
+          type="checkbox"
+          id="pii-scan-toggle"
+          class="rounded border-default text-brand focus:ring-brand-medium"
+          {% if pii_scan_enabled %}checked{% endif %}
+        >
+      </label>
+    </div>
+  </section>
+
   <!-- Context Window Limit -->
   <section class="mt-10">
     <h2 class="text-lg font-medium text-heading">Context Window Limit</h2>
@@ -538,6 +559,21 @@
         method: 'POST',
         headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
         body: JSON.stringify({ parallel: this.checked }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  }
+
+  // --- PII Classification section ---
+  var piiToggle = document.getElementById('pii-scan-toggle');
+  if (piiToggle) {
+    piiToggle.addEventListener('change', function() {
+      fetch('{% url "accounts:org_pii_scan_toggle_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: this.checked }),
         credentials: 'same-origin',
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) alert(data.error);

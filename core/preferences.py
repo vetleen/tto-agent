@@ -59,9 +59,10 @@ FEATURE_DEFAULTS: dict[str, tuple[str, str, str]] = {
     "message_summary": ("mid", "mid", "org"),
     "guardrails_classifier": ("cheap", "cheap", "org"),
     "guardrails_reviewer": ("primary", "standard", "org"),
-    "document_description": ("cheap", "cheap", "org"),
+    "document_description": ("mid", "mid", "org"),
     "skill_emoji": ("cheap", "cheap", "org"),
     "guardrail_chunk_scan": ("cheap", "cheap", "org"),
+    "pii_scan": ("mid", "mid", "org"),
 }
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}

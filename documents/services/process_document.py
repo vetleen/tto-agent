@@ -19,7 +19,7 @@ from django.contrib.postgres.search import SearchVector
 STALE_PROCESSING_MINUTES = 15
 
 from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
-from documents.services.chunking import clean_extracted_text, load_documents, semantic_chunk, structure_aware_chunk
+from documents.services.chunking import clean_extracted_text, extract_file_metadata_date, load_documents, semantic_chunk, structure_aware_chunk
 from documents.services.storage_utils import local_copy
 from llm.service.errors import LLMAuthError, LLMConfigurationError, LLMPolicyDenied
 
@@ -96,6 +96,11 @@ def process_document(document_id: int) -> None:
                 combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
                 cleaned = clean_extracted_text(combined)
 
+            # Extract date from file metadata (best-effort, all formats)
+            file_meta_date = extract_file_metadata_date(file_path, ext)
+            if file_meta_date:
+                doc.file_metadata_date = file_meta_date
+
         if not cleaned or not cleaned.strip():
             raise ValueError(
                 "No text could be extracted from this document. "
@@ -156,7 +161,7 @@ def process_document(document_id: int) -> None:
 
         # Persist token_count (and chunking metadata) immediately so they're saved even if vector store fails
         doc.token_count = sum(c.get("token_count", 0) for c in chunks_data)
-        doc.save(update_fields=["parser_type", "chunking_strategy", "token_count", "updated_at"])
+        doc.save(update_fields=["parser_type", "chunking_strategy", "token_count", "file_metadata_date", "updated_at"])
 
         # Embed and index all chunks in vector store
         from documents.services import vector_store as vs
@@ -212,7 +217,11 @@ def process_document(document_id: int) -> None:
                     cleaned, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=desc_org_id
                 )
                 doc.description = result["description"]
-                doc.save(update_fields=["description", "updated_at"])
+                update_fields = ["description", "updated_at"]
+                if result.get("document_date"):
+                    doc.document_date = result["document_date"]
+                    update_fields.append("document_date")
+                doc.save(update_fields=update_fields)
                 for tag_key, tag_value in result.get("tags", {}).items():
                     DataRoomDocumentTag.objects.update_or_create(
                         document=doc, key=tag_key,
@@ -233,6 +242,40 @@ def process_document(document_id: int) -> None:
                 )
             except Exception:
                 logger.exception("process_document: document_id=%s description generation failed (non-critical)", document_id)
+
+        # PII category scan (fire-and-forget, after READY)
+        pii_enabled = True
+        if desc_org_id:
+            try:
+                from accounts.models import Organization
+
+                pii_org = Organization.objects.get(pk=desc_org_id)
+                pii_enabled = (pii_org.preferences or {}).get("pii_scan_enabled", True)
+            except Organization.DoesNotExist:
+                pass
+
+        if pii_enabled:
+            pii_model = resolve_org_feature_model(desc_org_id, "pii_scan")
+            if pii_model:
+                try:
+                    from documents.services.pii_scan import scan_pii_categories
+
+                    pii_result = scan_pii_categories(
+                        cleaned, user_id=doc.uploaded_by_id,
+                        data_room_id=doc.data_room_id, org_id=desc_org_id,
+                    )
+                    for category in pii_result:
+                        DataRoomDocumentTag.objects.update_or_create(
+                            document=doc, key=category,
+                            defaults={"value": "true"},
+                        )
+                except (LLMPolicyDenied, LLMConfigurationError, LLMAuthError):
+                    logger.exception(
+                        "process_document: document_id=%s PII scan blocked by LLM config/policy",
+                        document_id,
+                    )
+                except Exception:
+                    logger.exception("process_document: document_id=%s PII scan failed (non-critical)", document_id)
 
     except ValueError as e:
         duration_seconds = time.perf_counter() - started_at
