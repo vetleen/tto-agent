@@ -22,11 +22,16 @@ def _normalize_model_name(model: str) -> str:
     return model
 
 
-def get_model_pricing(model: str) -> Optional[Tuple[Decimal, Decimal, Decimal]]:
-    """Return ``(input, cached_input, output)`` per-1M-token prices, or *None*."""
+def get_model_pricing(model: str) -> Optional[Tuple[Decimal, Decimal, Decimal, Decimal]]:
+    """Return ``(input, cached_input, cache_write, output)`` per-1M-token prices, or *None*."""
     info = get_model_info(model)
     if info and info.input_price is not None:
-        return (info.input_price, info.cached_input_price or Decimal("0"), info.output_price or Decimal("0"))
+        return (
+            info.input_price,
+            info.cached_input_price or Decimal("0"),
+            info.cache_write_price or info.input_price,
+            info.output_price or Decimal("0"),
+        )
     return None
 
 
@@ -35,6 +40,7 @@ def calculate_cost(
     input_tokens: Optional[int],
     output_tokens: Optional[int],
     cached_input_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
 ) -> Optional[Decimal]:
     """Compute the USD cost of a call, or *None* if pricing is unknown.
 
@@ -44,15 +50,18 @@ def calculate_cost(
     if pricing is None:
         return None
 
-    inp_price, cached_price, out_price = pricing
+    inp_price, cached_price, write_price, out_price = pricing
     inp = Decimal(input_tokens or 0)
     out = Decimal(output_tokens or 0)
     cached = Decimal(cached_input_tokens or 0)
+    written = Decimal(cache_write_tokens or 0)
 
-    # Cached tokens are a subset of input tokens billed at the lower rate.
-    billable_input = inp - cached
+    # Cache reads and writes are subsets of input tokens, each billed at
+    # their own rate.  The remainder is regular input.
+    regular_input = inp - cached - written
     cost = (
-        billable_input * inp_price / _ONE_MILLION
+        regular_input * inp_price / _ONE_MILLION
+        + written * write_price / _ONE_MILLION
         + cached * cached_price / _ONE_MILLION
         + out * out_price / _ONE_MILLION
     )

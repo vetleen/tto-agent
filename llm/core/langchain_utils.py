@@ -56,7 +56,7 @@ def _apply_anthropic_cache_control(lc_messages: list, system_content: str | None
             result.append(SystemMessage(content=[{
                 "type": "text",
                 "text": system_content,
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }]))
         elif len(lc_messages) >= 3 and i == len(lc_messages) - 2:
             # Second-to-last message: add cache_control

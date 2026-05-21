@@ -13,15 +13,15 @@ class GetModelPricingTests(SimpleTestCase):
     def test_known_model_returns_tuple(self):
         pricing = get_model_pricing("claude-sonnet-4-6")
         self.assertIsNotNone(pricing)
-        self.assertEqual(pricing, (Decimal("3.00"), Decimal("0.30"), Decimal("15.00")))
+        self.assertEqual(pricing, (Decimal("3.00"), Decimal("0.30"), Decimal("3.75"), Decimal("15.00")))
 
     def test_openai_model(self):
         pricing = get_model_pricing("gpt-5.4-mini")
-        self.assertEqual(pricing, (Decimal("0.25"), Decimal("0.025"), Decimal("2.00")))
+        self.assertEqual(pricing, (Decimal("0.25"), Decimal("0.025"), Decimal("0.25"), Decimal("2.00")))
 
     def test_gemini_model(self):
         pricing = get_model_pricing("gemini-2.5-flash")
-        self.assertEqual(pricing, (Decimal("0.30"), Decimal("0.03"), Decimal("2.50")))
+        self.assertEqual(pricing, (Decimal("0.30"), Decimal("0.03"), Decimal("0.30"), Decimal("2.50")))
 
     def test_strips_openai_prefix(self):
         pricing = get_model_pricing("openai/gpt-5.4-mini")
@@ -58,6 +58,33 @@ class CalculateCostTests(SimpleTestCase):
             Decimal("700") * Decimal("3.00")  # billable input
             + Decimal("300") * Decimal("0.30")  # cached input
             + Decimal("500") * Decimal("15.00")  # output
+        ) / Decimal("1000000")
+        self.assertEqual(cost, expected)
+
+    def test_cost_with_cache_write_tokens(self):
+        # 1000 input (200 cache write, 300 cache read), 500 output of claude-sonnet-4-6
+        cost = calculate_cost(
+            "claude-sonnet-4-6", 1000, 500,
+            cached_input_tokens=300, cache_write_tokens=200,
+        )
+        expected = (
+            Decimal("500") * Decimal("3.00")   # regular input (1000 - 300 - 200)
+            + Decimal("200") * Decimal("3.75")  # cache write (1.25x)
+            + Decimal("300") * Decimal("0.30")  # cache read
+            + Decimal("500") * Decimal("15.00") # output
+        ) / Decimal("1000000")
+        self.assertEqual(cost, expected)
+
+    def test_cache_write_without_read(self):
+        # First request: everything is a cache write, nothing cached yet
+        cost = calculate_cost(
+            "anthropic/claude-opus-4-7", 1000, 500,
+            cached_input_tokens=0, cache_write_tokens=800,
+        )
+        expected = (
+            Decimal("200") * Decimal("5.00")    # regular input
+            + Decimal("800") * Decimal("6.25")   # cache write
+            + Decimal("500") * Decimal("25.00")  # output
         ) / Decimal("1000000")
         self.assertEqual(cost, expected)
 

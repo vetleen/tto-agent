@@ -33,6 +33,7 @@ class ModelInfo:
     context_window: int = 128_000
     input_price: Decimal | None = None
     cached_input_price: Decimal | None = None
+    cache_write_price: Decimal | None = None
     output_price: Decimal | None = None
 
 
@@ -86,6 +87,7 @@ _MODELS: dict[str, ModelInfo] = {
         context_window=1_000_000,
         input_price=Decimal("5.00"),
         cached_input_price=Decimal("0.50"),
+        cache_write_price=Decimal("6.25"),
         output_price=Decimal("25.00"),
     ),
     "anthropic/claude-opus-4-6": ModelInfo(
@@ -98,6 +100,7 @@ _MODELS: dict[str, ModelInfo] = {
         context_window=1_000_000,
         input_price=Decimal("5.00"),
         cached_input_price=Decimal("0.50"),
+        cache_write_price=Decimal("6.25"),
         output_price=Decimal("25.00"),
     ),
     "anthropic/claude-sonnet-4-6": ModelInfo(
@@ -110,6 +113,7 @@ _MODELS: dict[str, ModelInfo] = {
         context_window=1_000_000,
         input_price=Decimal("3.00"),
         cached_input_price=Decimal("0.30"),
+        cache_write_price=Decimal("3.75"),
         output_price=Decimal("15.00"),
     ),
     "anthropic/claude-haiku-4-5": ModelInfo(
@@ -122,6 +126,7 @@ _MODELS: dict[str, ModelInfo] = {
         context_window=200_000,
         input_price=Decimal("1.00"),
         cached_input_price=Decimal("0.10"),
+        cache_write_price=Decimal("1.25"),
         output_price=Decimal("5.00"),
     ),
     # Google Gemini

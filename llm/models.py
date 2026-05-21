@@ -53,6 +53,7 @@ class LLMCallLog(models.Model):
 
     # Extended usage
     cached_tokens = models.PositiveIntegerField(null=True, blank=True)
+    cache_write_tokens = models.PositiveIntegerField(null=True, blank=True)
     reasoning_tokens = models.PositiveIntegerField(null=True, blank=True)
 
     # Status / errors

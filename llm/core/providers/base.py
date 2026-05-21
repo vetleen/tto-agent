@@ -290,12 +290,14 @@ class BaseLangChainChatModel(ChatModel):
             total_tokens = usage_meta.get("total_tokens")
             details = usage_meta.get("input_token_details") or {}
             cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
+            cache_write_tokens = details.get("cache_creation") if isinstance(details, dict) else None
             reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
-            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens)
+            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens)
             data["input_tokens"] = input_tokens
             data["output_tokens"] = output_tokens
             data["total_tokens"] = total_tokens
             data["cached_tokens"] = cached_tokens
+            data["cache_write_tokens"] = cache_write_tokens
             data["reasoning_tokens"] = reasoning_tokens
             data["cost_usd"] = float(cost) if cost is not None else None
         elif output_text:
@@ -409,13 +411,15 @@ class BaseLangChainChatModel(ChatModel):
             # Extract cached token count from input_token_details
             details = usage_meta.get("input_token_details") or {}
             cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
+            cache_write_tokens = details.get("cache_creation") if isinstance(details, dict) else None
             reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
-            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens)
+            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens)
             usage = Usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 total_tokens=usage_meta.get("total_tokens"),
                 cached_tokens=cached_tokens,
+                cache_write_tokens=cache_write_tokens,
                 reasoning_tokens=reasoning_tokens,
                 cost_usd=float(cost) if cost is not None else None,
             )

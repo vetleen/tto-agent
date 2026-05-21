@@ -98,7 +98,7 @@ class AnthropicCacheControlTests(TestCase):
         block = result[0].content[0]
         self.assertEqual(block["type"], "text")
         self.assertEqual(block["text"], "You are helpful")
-        self.assertEqual(block["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(block["cache_control"], {"type": "ephemeral", "ttl": "1h"})
 
     def test_second_to_last_gets_cache_control_with_3_plus_messages(self):
         messages = [
@@ -149,7 +149,7 @@ class AnthropicCacheControlTests(TestCase):
         result = to_langchain_messages(messages, provider="anthropic")
         # System gets cache_control
         self.assertIsInstance(result[0].content, list)
-        self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
         # User message should NOT have cache_control
         self.assertNotIn("cache_control", result[1].additional_kwargs)
 
@@ -163,4 +163,4 @@ class AnthropicCacheControlTests(TestCase):
         self.assertIsInstance(result[0].content, list)
         self.assertEqual(len(result[0].content), 1)
         self.assertEqual(result[0].content[0]["text"], "Static instructions only")
-        self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral", "ttl": "1h"})

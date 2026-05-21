@@ -133,6 +133,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
                 usage.prompt_tokens,
                 usage.completion_tokens,
                 usage.cached_tokens,
+                usage.cache_write_tokens,
             )
             if computed is not None:
                 cost = computed
@@ -153,6 +154,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             output_tokens=usage.completion_tokens if usage else None,
             total_tokens=usage.total_tokens if usage else None,
             cached_tokens=usage.cached_tokens if usage else None,
+            cache_write_tokens=usage.cache_write_tokens if usage else None,
             reasoning_tokens=usage.reasoning_tokens if usage else None,
             cost_usd=cost,
             duration_ms=duration_ms,
@@ -254,6 +256,7 @@ def log_stream(
         output_tokens = end_data.get("output_tokens")
         total_tokens = end_data.get("total_tokens")
         cached_tokens = end_data.get("cached_tokens")
+        cache_write_tokens = end_data.get("cache_write_tokens")
         reasoning_tokens = end_data.get("reasoning_tokens")
         cost_raw = end_data.get("cost_usd")
         cost = Decimal(str(cost_raw)) if cost_raw is not None else None
@@ -265,6 +268,7 @@ def log_stream(
                 input_tokens,
                 output_tokens,
                 cached_tokens,
+                cache_write_tokens,
             )
             if computed is not None:
                 cost = computed
@@ -289,6 +293,7 @@ def log_stream(
             output_tokens=output_tokens,
             total_tokens=total_tokens,
             cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
             reasoning_tokens=reasoning_tokens,
             cost_usd=cost,
             duration_ms=duration_ms,
