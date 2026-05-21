@@ -129,7 +129,7 @@
           <input id="thinking-low" type="radio" name="thinking-level" value="low" class="thinking-stop cursor-pointer">
           <input id="thinking-medium" type="radio" name="thinking-level" value="medium" class="thinking-stop cursor-pointer">
           <input id="thinking-high" type="radio" name="thinking-level" value="high" class="thinking-stop cursor-pointer">
-          <label for="thinking-high" class="select-none cursor-pointer">High</label>
+          <label id="thinking-high-label" for="thinking-high" class="select-none cursor-pointer">High</label>
           <input id="thinking-max" type="radio" name="thinking-level" value="max" class="thinking-stop thinking-stop-max cursor-pointer" style="display:none">
           <label for="thinking-max" class="select-none cursor-pointer thinking-stop-max" style="display:none">Max</label>
         </div>
@@ -1404,8 +1404,10 @@
       sessionStorage.setItem('chat_thinking_level', 'off');
     }
     var maxStops = document.querySelectorAll('.thinking-stop-max');
+    var highLabel = document.getElementById('thinking-high-label');
     var hasMax = current && current.thinking_levels && current.thinking_levels.indexOf('max') !== -1;
     maxStops.forEach(function(el) { el.style.display = hasMax ? '' : 'none'; });
+    if (highLabel) highLabel.style.display = hasMax ? 'none' : '';
     if (thinkingLevel === 'max' && !hasMax) {
       thinkingLevel = 'high';
       setActiveThinkingStop('high');
