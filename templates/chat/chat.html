@@ -1,6 +1,7 @@
 {% extends "_base.html" %}
 {% load static %}
 {% block body_class %}pt-16 bg-neutral-primary{% endblock %}
+{% block feedback_widget %}{% include "feedback/_widget.html" with hide_mobile_fab=True %}{% endblock %}
 {% block content %}
 
 {# Mobile sidebar toggle #}

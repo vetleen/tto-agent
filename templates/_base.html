@@ -204,7 +204,7 @@
     {% endif %}
     {% if user.is_authenticated %}
     <script src="https://cdn.jsdelivr.net/npm/html2canvas-pro@1/dist/html2canvas-pro.min.js" crossorigin="anonymous"></script>
-    {% include "feedback/_widget.html" %}
+    {% block feedback_widget %}{% include "feedback/_widget.html" %}{% endblock %}
     <script src="{% static 'js/feedback-widget.js' %}"></script>
     {% endif %}
   </body>
