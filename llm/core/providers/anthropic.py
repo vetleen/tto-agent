@@ -14,6 +14,10 @@ _ANTHROPIC_THINKING = {
     "high": {"budget": 32_000, "max_tokens": 40_000},
 }
 
+_ADAPTIVE_THINKING_MODELS = frozenset({
+    "claude-opus-4-7",
+})
+
 
 class AnthropicChatModel(BaseLangChainChatModel):
     """ChatModel backed by LangChain's ChatAnthropic."""
@@ -29,30 +33,58 @@ class AnthropicChatModel(BaseLangChainChatModel):
             api_model = model_name[len(self._API_MODEL_PREFIX):]
         self._api_model = api_model
 
+    def _uses_adaptive_thinking(self) -> bool:
+        return self._api_model in _ADAPTIVE_THINKING_MODELS
+
     # -- Thinking / extended-thinking support --
 
     def _get_streaming_client(self, request: ChatRequest):
         client = self._client
         level = request.params.get("thinking_level", "off")
-        if level != "off" and level in _ANTHROPIC_THINKING:
-            cfg = _ANTHROPIC_THINKING[level]
-            try:
-                client = create_variant_client(
-                    self._api_model,
-                    provider="anthropic",
-                    thinking={"type": "enabled", "budget_tokens": cfg["budget"]},
-                    max_tokens=cfg["max_tokens"],
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to create thinking-enabled Anthropic client; "
-                    "falling back to standard client.",
-                    exc_info=True,
-                )
-                client = self._client
+
+        if level != "off":
+            if self._uses_adaptive_thinking():
+                client = self._get_adaptive_thinking_client(level)
+            elif level in _ANTHROPIC_THINKING:
+                client = self._get_extended_thinking_client(level)
+
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         return client
+
+    def _get_extended_thinking_client(self, level: str):
+        cfg = _ANTHROPIC_THINKING[level]
+        try:
+            return create_variant_client(
+                self._api_model,
+                provider="anthropic",
+                thinking={"type": "enabled", "budget_tokens": cfg["budget"]},
+                max_tokens=cfg["max_tokens"],
+            )
+        except Exception:
+            logger.warning(
+                "Failed to create thinking-enabled Anthropic client; "
+                "falling back to standard client.",
+                exc_info=True,
+            )
+            return self._client
+
+    def _get_adaptive_thinking_client(self, level: str):
+        try:
+            return create_variant_client(
+                self._api_model,
+                provider="anthropic",
+                thinking={"type": "adaptive", "display": "summarized"},
+                effort=level,
+                max_tokens=128_000,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to create adaptive-thinking Anthropic client; "
+                "falling back to standard client.",
+                exc_info=True,
+            )
+            return self._client
 
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         content = getattr(chunk, "content", None)

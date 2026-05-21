@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from llm.display import get_display_name, supports_thinking, supports_vision
+from llm.display import get_display_name, get_thinking_levels, supports_thinking, supports_vision
 
 
 class GetDisplayNameTests(TestCase):
@@ -132,3 +132,30 @@ class SupportsVisionTests(TestCase):
 
     def test_openai_gpt3_no_vision(self):
         self.assertFalse(supports_vision("openai/gpt-3.5-turbo"))
+
+
+class GetThinkingLevelsTests(TestCase):
+
+    def test_opus_47_has_max(self):
+        self.assertEqual(
+            get_thinking_levels("anthropic/claude-opus-4-7"),
+            ["low", "medium", "high", "max"],
+        )
+
+    def test_opus_46_standard_levels(self):
+        self.assertEqual(
+            get_thinking_levels("anthropic/claude-opus-4-6"),
+            ["low", "medium", "high"],
+        )
+
+    def test_sonnet_46_standard_levels(self):
+        self.assertEqual(
+            get_thinking_levels("anthropic/claude-sonnet-4-6"),
+            ["low", "medium", "high"],
+        )
+
+    def test_non_thinking_model_empty(self):
+        self.assertEqual(get_thinking_levels("openai/gpt-5.4-mini"), [])
+
+    def test_unknown_model_empty(self):
+        self.assertEqual(get_thinking_levels("custom/unknown"), [])

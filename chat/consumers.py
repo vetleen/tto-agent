@@ -676,7 +676,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Per-message model and thinking overrides
         requested_model = data.get("model") or None
         thinking_level = data.get("thinking_level", "off")
-        if thinking_level not in ("off", "low", "medium", "high"):
+        if thinking_level not in ("off", "low", "medium", "high", "max"):
             thinking_level = "off"
 
         # Allow payload to specify data_room_ids (e.g. for new threads)
@@ -1537,6 +1537,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             ).select_related("data_room").values(
                 "pk", "doc_index", "original_filename", "description",
                 "token_count", "data_room__name", "data_room_id",
+                "uploaded_at", "file_metadata_date", "document_date",
             )
 
             doc_map = {d["pk"]: d for d in docs}
@@ -1558,6 +1559,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         "description": d["description"] or "",
                         "token_count": d["token_count"],
                         "document_type": doc_type_map.get(doc_id, ""),
+                        "uploaded_at": d["uploaded_at"].strftime("%Y-%m-%d") if d.get("uploaded_at") else None,
+                        "file_metadata_date": d["file_metadata_date"].isoformat() if d.get("file_metadata_date") else None,
+                        "document_date": d["document_date"].isoformat() if d.get("document_date") else None,
                     }
                     if multi_room:
                         entry["data_room_name"] = d["data_room__name"]

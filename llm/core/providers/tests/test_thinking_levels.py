@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from llm.core.providers.anthropic import AnthropicChatModel, _ANTHROPIC_THINKING
+from llm.core.providers.anthropic import AnthropicChatModel, _ADAPTIVE_THINKING_MODELS, _ANTHROPIC_THINKING
 from llm.core.providers.gemini import GeminiChatModel, _GEMINI_THINKING_BUDGETS
 from llm.core.providers.openai import OpenAIChatModel
 from llm.types.requests import ChatRequest
@@ -69,6 +69,76 @@ class AnthropicThinkingLevelTests(TestCase):
         request = _make_request("high")
         client = model._get_streaming_client(request)
         self.assertIs(client, model._client)
+
+
+class AnthropicAdaptiveThinkingTests(TestCase):
+
+    def _make_model(self):
+        client = MagicMock()
+        return AnthropicChatModel("anthropic/claude-opus-4-7", client)
+
+    def test_off_returns_standard_client(self):
+        model = self._make_model()
+        request = _make_request("off")
+        client = model._get_streaming_client(request)
+        self.assertIs(client, model._client)
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_low_creates_adaptive_variant(self, mock_create):
+        mock_create.return_value = MagicMock()
+        model = self._make_model()
+        request = _make_request("low")
+        model._get_streaming_client(request)
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        self.assertEqual(call_kwargs["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(call_kwargs["effort"], "low")
+        self.assertEqual(call_kwargs["max_tokens"], 128_000)
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_medium_creates_adaptive_variant(self, mock_create):
+        mock_create.return_value = MagicMock()
+        model = self._make_model()
+        request = _make_request("medium")
+        model._get_streaming_client(request)
+        call_kwargs = mock_create.call_args[1]
+        self.assertEqual(call_kwargs["effort"], "medium")
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_high_creates_adaptive_variant(self, mock_create):
+        mock_create.return_value = MagicMock()
+        model = self._make_model()
+        request = _make_request("high")
+        model._get_streaming_client(request)
+        call_kwargs = mock_create.call_args[1]
+        self.assertEqual(call_kwargs["effort"], "high")
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_max_creates_adaptive_variant(self, mock_create):
+        mock_create.return_value = MagicMock()
+        model = self._make_model()
+        request = _make_request("max")
+        model._get_streaming_client(request)
+        call_kwargs = mock_create.call_args[1]
+        self.assertEqual(call_kwargs["effort"], "max")
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_fallback_on_create_failure(self, mock_create):
+        mock_create.side_effect = Exception("API error")
+        model = self._make_model()
+        request = _make_request("high")
+        client = model._get_streaming_client(request)
+        self.assertIs(client, model._client)
+
+    def test_opus_46_still_uses_extended_thinking(self):
+        client = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-opus-4-6", client)
+        self.assertFalse(model._uses_adaptive_thinking())
+
+    def test_opus_47_uses_adaptive_thinking(self):
+        client = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-opus-4-7", client)
+        self.assertTrue(model._uses_adaptive_thinking())
 
 
 class OpenAIThinkingLevelTests(TestCase):

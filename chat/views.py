@@ -114,7 +114,7 @@ def chat_home(request):
     from django.conf import settings as django_settings
 
     from core.preferences import get_preferences
-    from llm.display import get_display_name, supports_thinking, supports_vision
+    from llm.display import get_display_name, get_thinking_levels, supports_thinking, supports_vision
 
     prefs = get_preferences(request.user)
 
@@ -135,6 +135,7 @@ def chat_home(request):
             "display_name": get_display_name(m),
             "supports_thinking": supports_thinking(m),
             "supports_vision": supports_vision(m),
+            "thinking_levels": get_thinking_levels(m),
         }
         for m in prefs.allowed_models
     ]

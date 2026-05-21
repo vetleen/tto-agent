@@ -38,6 +38,7 @@ class GetModelInfoTests(TestCase):
 
     def test_anthropic_models_support_thinking(self):
         for model_id in [
+            "anthropic/claude-opus-4-7",
             "anthropic/claude-opus-4-6",
             "anthropic/claude-sonnet-4-6",
             "anthropic/claude-haiku-4-5",
@@ -71,7 +72,7 @@ class GetModelInfoTests(TestCase):
     def test_all_registered_models_have_vision(self):
         for model_id in [
             "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
-            "anthropic/claude-opus-4-6",
+            "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-6",
             "gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview",
         ]:
             info = get_model_info(model_id)
@@ -81,13 +82,22 @@ class GetModelInfoTests(TestCase):
     def test_context_windows(self):
         self.assertEqual(get_model_info("openai/gpt-5.4").context_window, 1_000_000)
         self.assertEqual(get_model_info("openai/gpt-5.4-nano").context_window, 128_000)
-        self.assertEqual(get_model_info("anthropic/claude-sonnet-4-6").context_window, 200_000)
+        self.assertEqual(get_model_info("anthropic/claude-opus-4-7").context_window, 1_000_000)
+        self.assertEqual(get_model_info("anthropic/claude-opus-4-6").context_window, 1_000_000)
+        self.assertEqual(get_model_info("anthropic/claude-sonnet-4-6").context_window, 1_000_000)
 
     def test_pricing(self):
         info = get_model_info("openai/gpt-5.4")
         self.assertEqual(info.input_price, Decimal("1.75"))
         self.assertEqual(info.cached_input_price, Decimal("0.175"))
         self.assertEqual(info.output_price, Decimal("14.00"))
+
+    def test_opus_47_pricing(self):
+        info = get_model_info("anthropic/claude-opus-4-7")
+        self.assertIsNotNone(info)
+        self.assertEqual(info.input_price, Decimal("5.00"))
+        self.assertEqual(info.cached_input_price, Decimal("0.50"))
+        self.assertEqual(info.output_price, Decimal("25.00"))
 
     def test_bare_name_normalisation(self):
         """Bare model names resolve via prefix scanning."""
@@ -98,6 +108,10 @@ class GetModelInfoTests(TestCase):
         info = get_model_info("gemini-3-flash-preview")
         self.assertIsNotNone(info)
         self.assertEqual(info.provider, "google_genai")
+
+        info = get_model_info("claude-opus-4-7")
+        self.assertIsNotNone(info)
+        self.assertEqual(info.provider, "anthropic")
 
 
 class TierClassificationTests(TestCase):
@@ -124,6 +138,7 @@ class TierClassificationTests(TestCase):
     def test_standard_models(self):
         standard = get_models_by_tier(TIER_STANDARD)
         self.assertIn("openai/gpt-5.4", standard)
+        self.assertIn("anthropic/claude-opus-4-7", standard)
         self.assertIn("anthropic/claude-opus-4-6", standard)
         self.assertIn("anthropic/claude-sonnet-4-6", standard)
         self.assertIn("gemini/gemini-2.5-pro", standard)
