@@ -79,7 +79,7 @@ def supports_thinking(model_id: str) -> bool:
     name = lower.split("/", 1)[-1] if "/" in lower else lower
     if re.match(r"^o[134]\b", name):
         return True
-    if name.startswith("gpt-5.4") or name.startswith("gpt-5.2-pro"):
+    if name.startswith("gpt-5.5") or name.startswith("gpt-5.4") or name.startswith("gpt-5.2-pro"):
         return True
 
     # Models with "thinking" in their name

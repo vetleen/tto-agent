@@ -40,6 +40,18 @@ class ModelInfo:
 # Keyed by full model ID (e.g. "openai/gpt-5.4")
 _MODELS: dict[str, ModelInfo] = {
     # OpenAI
+    "openai/gpt-5.5": ModelInfo(
+        display_name="GPT-5.5",
+        provider="openai",
+        api_model="gpt-5.5",
+        tier=TIER_STANDARD,
+        supports_thinking=True,
+        supports_vision=True,
+        context_window=1_000_000,
+        input_price=Decimal("5.00"),
+        cached_input_price=Decimal("0.50"),
+        output_price=Decimal("30.00"),
+    ),
     "openai/gpt-5.4": ModelInfo(
         display_name="GPT-5.4",
         provider="openai",

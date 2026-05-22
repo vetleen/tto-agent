@@ -47,6 +47,10 @@ class GetModelInfoTests(TestCase):
             self.assertIsNotNone(info, f"{model_id} not found")
             self.assertTrue(info.supports_thinking, f"{model_id} should support thinking")
 
+    def test_gpt5_5_supports_thinking(self):
+        info = get_model_info("openai/gpt-5.5")
+        self.assertTrue(info.supports_thinking)
+
     def test_gpt5_4_supports_thinking(self):
         info = get_model_info("openai/gpt-5.4")
         self.assertTrue(info.supports_thinking)
@@ -71,7 +75,7 @@ class GetModelInfoTests(TestCase):
 
     def test_all_registered_models_have_vision(self):
         for model_id in [
-            "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+            "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
             "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-6",
             "gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview",
         ]:
@@ -79,7 +83,19 @@ class GetModelInfoTests(TestCase):
             self.assertIsNotNone(info)
             self.assertTrue(info.supports_vision, f"{model_id} should support vision")
 
+    def test_gpt5_5_lookup_and_pricing(self):
+        info = get_model_info("openai/gpt-5.5")
+        self.assertIsNotNone(info)
+        self.assertEqual(info.display_name, "GPT-5.5")
+        self.assertEqual(info.provider, "openai")
+        self.assertEqual(info.api_model, "gpt-5.5")
+        self.assertEqual(info.context_window, 1_000_000)
+        self.assertEqual(info.input_price, Decimal("5.00"))
+        self.assertEqual(info.cached_input_price, Decimal("0.50"))
+        self.assertEqual(info.output_price, Decimal("30.00"))
+
     def test_context_windows(self):
+        self.assertEqual(get_model_info("openai/gpt-5.5").context_window, 1_000_000)
         self.assertEqual(get_model_info("openai/gpt-5.4").context_window, 1_000_000)
         self.assertEqual(get_model_info("openai/gpt-5.4-nano").context_window, 128_000)
         self.assertEqual(get_model_info("anthropic/claude-opus-4-7").context_window, 1_000_000)
@@ -137,6 +153,7 @@ class TierClassificationTests(TestCase):
 
     def test_standard_models(self):
         standard = get_models_by_tier(TIER_STANDARD)
+        self.assertIn("openai/gpt-5.5", standard)
         self.assertIn("openai/gpt-5.4", standard)
         self.assertIn("anthropic/claude-opus-4-7", standard)
         self.assertIn("anthropic/claude-opus-4-6", standard)

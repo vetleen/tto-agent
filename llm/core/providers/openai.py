@@ -9,10 +9,10 @@ from llm.types.requests import ChatRequest
 
 logger = logging.getLogger(__name__)
 
-_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5.4", "gpt-5.2-pro")
+_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
 
 # Models that require OpenAI's Responses API
-_RESPONSES_API_PREFIXES = ("gpt-5.4", "gpt-5.2-pro")
+_RESPONSES_API_PREFIXES = ("gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
 
 
 class OpenAIChatModel(BaseLangChainChatModel):

@@ -43,7 +43,7 @@ _AUTO_DETECT: dict[str, str] = {
 }
 
 # Models requiring OpenAI's Responses API
-_RESPONSES_API_PREFIXES = ("gpt-5.4", "gpt-5.2-pro")
+_RESPONSES_API_PREFIXES = ("gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
 
 
 def _parse_provider(model_name: str) -> tuple[str, str]:
