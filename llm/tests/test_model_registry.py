@@ -59,19 +59,19 @@ class GetModelInfoTests(TestCase):
         info = get_model_info("openai/gpt-5.4-mini")
         self.assertFalse(info.supports_thinking)
 
-    def test_gemini_3_supports_thinking(self):
+    def test_gemini_models_support_thinking(self):
         for model_id in [
             "gemini/gemini-3.1-pro-preview",
+            "gemini/gemini-3.5-flash",
             "gemini/gemini-3-flash-preview",
-            "gemini/gemini-3.1-flash-lite-preview",
+            "gemini/gemini-3.1-flash-lite",
+            "gemini/gemini-2.5-pro",
+            "gemini/gemini-2.5-flash",
+            "gemini/gemini-2.5-flash-lite",
         ]:
             info = get_model_info(model_id)
             self.assertIsNotNone(info, f"{model_id} not found")
             self.assertTrue(info.supports_thinking, f"{model_id} should support thinking")
-
-    def test_gemini_2_no_thinking(self):
-        info = get_model_info("gemini/gemini-2.5-flash")
-        self.assertFalse(info.supports_thinking)
 
     def test_all_registered_models_have_vision(self):
         for model_id in [
@@ -141,7 +141,7 @@ class TierClassificationTests(TestCase):
         cheap = get_models_by_tier(TIER_CHEAP)
         self.assertIn("openai/gpt-5.4-nano", cheap)
         self.assertIn("gemini/gemini-2.5-flash-lite", cheap)
-        self.assertIn("gemini/gemini-3.1-flash-lite-preview", cheap)
+        self.assertIn("gemini/gemini-3.1-flash-lite", cheap)
         self.assertNotIn("openai/gpt-5.4", cheap)
 
     def test_mid_models(self):
@@ -159,6 +159,7 @@ class TierClassificationTests(TestCase):
         self.assertIn("anthropic/claude-opus-4-6", standard)
         self.assertIn("anthropic/claude-sonnet-4-6", standard)
         self.assertIn("gemini/gemini-2.5-pro", standard)
+        self.assertIn("gemini/gemini-3.5-flash", standard)
         self.assertNotIn("openai/gpt-5.4-mini", standard)
 
     def test_get_model_tier(self):

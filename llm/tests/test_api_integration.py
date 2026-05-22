@@ -185,5 +185,5 @@ class StreamingUsageCostTests(TestCase):
         self._assert_usage_and_cost(end_data, "claude-haiku-4-5")
 
     def test_gemini_streaming_returns_usage_and_cost(self):
-        end_data = self._stream_and_collect("gemini-3.1-flash-lite-preview")
-        self._assert_usage_and_cost(end_data, "gemini-3.1-flash-lite-preview")
+        end_data = self._stream_and_collect("gemini-3.1-flash-lite")
+        self._assert_usage_and_cost(end_data, "gemini-3.1-flash-lite")
