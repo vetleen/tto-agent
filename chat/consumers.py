@@ -400,6 +400,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 has_response = ChatMessage.objects.filter(
                     thread_id=thread_id,
                     role="assistant",
+                    metadata__subagent_response=True,
                     created_at__gt=hidden_msg.created_at,
                 ).exists()
                 if not has_response:
@@ -934,6 +935,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 requested_model=requested_model, thinking_level=thinking_level,
                 resolved_model=resolved_model,
                 cancel_event=cancel_event,
+                seed_mode=seed_mode,
             )
 
             if self._stopped:
@@ -1003,7 +1005,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         semi_static_system="",
         dynamic_context="",
         requested_model=None, thinking_level="off", resolved_model=None,
-        cancel_event=None,
+        cancel_event=None, seed_mode=False,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
@@ -1253,6 +1255,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     metadata = {}
                     if accumulated_thinking:
                         metadata["thinking"] = accumulated_thinking
+                    if seed_mode:
+                        metadata["subagent_response"] = True
                     await self._create_message(
                         thread, "assistant", accumulated_content, metadata=metadata,
                     )
