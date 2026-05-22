@@ -63,11 +63,7 @@ class GetModelInfoTests(TestCase):
         for model_id in [
             "gemini/gemini-3.1-pro-preview",
             "gemini/gemini-3.5-flash",
-            "gemini/gemini-3-flash-preview",
             "gemini/gemini-3.1-flash-lite",
-            "gemini/gemini-2.5-pro",
-            "gemini/gemini-2.5-flash",
-            "gemini/gemini-2.5-flash-lite",
         ]:
             info = get_model_info(model_id)
             self.assertIsNotNone(info, f"{model_id} not found")
@@ -77,7 +73,7 @@ class GetModelInfoTests(TestCase):
         for model_id in [
             "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
             "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-6",
-            "gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview",
+            "gemini/gemini-3.5-flash", "gemini/gemini-3.1-flash-lite",
         ]:
             info = get_model_info(model_id)
             self.assertIsNotNone(info)
@@ -121,7 +117,7 @@ class GetModelInfoTests(TestCase):
         self.assertIsNotNone(info)
         self.assertEqual(info.provider, "openai")
 
-        info = get_model_info("gemini-3-flash-preview")
+        info = get_model_info("gemini-3.5-flash")
         self.assertIsNotNone(info)
         self.assertEqual(info.provider, "google_genai")
 
@@ -140,7 +136,6 @@ class TierClassificationTests(TestCase):
     def test_cheap_models(self):
         cheap = get_models_by_tier(TIER_CHEAP)
         self.assertIn("openai/gpt-5.4-nano", cheap)
-        self.assertIn("gemini/gemini-2.5-flash-lite", cheap)
         self.assertIn("gemini/gemini-3.1-flash-lite", cheap)
         self.assertNotIn("openai/gpt-5.4", cheap)
 
@@ -148,7 +143,6 @@ class TierClassificationTests(TestCase):
         mid = get_models_by_tier(TIER_MID)
         self.assertIn("openai/gpt-5.4-mini", mid)
         self.assertIn("anthropic/claude-haiku-4-5", mid)
-        self.assertIn("gemini/gemini-2.5-flash", mid)
         self.assertNotIn("openai/gpt-5.4-nano", mid)
 
     def test_standard_models(self):
@@ -158,7 +152,7 @@ class TierClassificationTests(TestCase):
         self.assertIn("anthropic/claude-opus-4-7", standard)
         self.assertIn("anthropic/claude-opus-4-6", standard)
         self.assertIn("anthropic/claude-sonnet-4-6", standard)
-        self.assertIn("gemini/gemini-2.5-pro", standard)
+        self.assertIn("gemini/gemini-3.1-pro-preview", standard)
         self.assertIn("gemini/gemini-3.5-flash", standard)
         self.assertNotIn("openai/gpt-5.4-mini", standard)
 
@@ -221,11 +215,11 @@ class GetModelsForSlotTests(TestCase):
 
     def test_empty_allowed_returns_all_for_slot(self):
         models = get_models_for_slot("cheap", [])
-        self.assertTrue(len(models) >= 3)
+        self.assertTrue(len(models) >= 2)
 
     def test_no_allowed_returns_all_for_slot(self):
         models = get_models_for_slot("cheap")
-        self.assertTrue(len(models) >= 3)
+        self.assertTrue(len(models) >= 2)
 
 
 class GetModelsAtOrAboveTierTests(TestCase):

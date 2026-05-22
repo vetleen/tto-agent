@@ -46,8 +46,8 @@ class PoliciesTests(TestCase):
             clear=False,
         ):
             with self.assertRaises(LLMPolicyDenied) as ctx:
-                resolve_model("gemini/gemini-2.5-pro")
-            self.assertIn("gemini/gemini-2.5-pro", str(ctx.exception))
+                resolve_model("gemini/gemini-3.1-pro-preview")
+            self.assertIn("gemini/gemini-3.1-pro-preview", str(ctx.exception))
             self.assertIn("not in LLM_ALLOWED_MODELS", str(ctx.exception))
 
     def test_resolve_model_requested_allowed_returns_requested(self):
@@ -81,7 +81,7 @@ class PoliciesTests(TestCase):
             os.environ,
             {
                 "LLM_ALLOWED_MODELS": "openai/gpt-5.4,anthropic/claude-sonnet-4-6",
-                "DEFAULT_LLM_MODEL": "gemini/gemini-2.5-pro",
+                "DEFAULT_LLM_MODEL": "gemini/gemini-3.1-pro-preview",
             },
             clear=False,
         ):

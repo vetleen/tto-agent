@@ -28,9 +28,9 @@ class ParseProviderTests(SimpleTestCase):
         self.assertEqual(api_model, "claude-sonnet-4-6")
 
     def test_explicit_gemini_prefix(self):
-        provider, api_model = _parse_provider("gemini/gemini-2.5-flash")
+        provider, api_model = _parse_provider("gemini/gemini-3.5-flash")
         self.assertEqual(provider, "google_genai")
-        self.assertEqual(api_model, "gemini-2.5-flash")
+        self.assertEqual(api_model, "gemini-3.5-flash")
 
     def test_auto_detect_gpt(self):
         provider, api_model = _parse_provider("gpt-5-mini")
@@ -58,9 +58,9 @@ class ParseProviderTests(SimpleTestCase):
         self.assertEqual(api_model, "claude-opus-4-6")
 
     def test_auto_detect_gemini(self):
-        provider, api_model = _parse_provider("gemini-2.5-pro")
+        provider, api_model = _parse_provider("gemini-3.1-pro-preview")
         self.assertEqual(provider, "google_genai")
-        self.assertEqual(api_model, "gemini-2.5-pro")
+        self.assertEqual(api_model, "gemini-3.1-pro-preview")
 
     def test_unknown_model_raises(self):
         with self.assertRaises(LLMConfigurationError) as ctx:
@@ -76,7 +76,7 @@ class DetectProviderTests(SimpleTestCase):
     def test_explicit_prefix(self):
         self.assertEqual(detect_provider("anthropic/claude-sonnet-4-6"), "anthropic")
         self.assertEqual(detect_provider("openai/gpt-5-mini"), "openai")
-        self.assertEqual(detect_provider("gemini/gemini-2.5-flash"), "google_genai")
+        self.assertEqual(detect_provider("gemini/gemini-3.5-flash"), "google_genai")
 
     def test_prefix_less_claude(self):
         self.assertEqual(detect_provider("claude-sonnet-4-6"), "anthropic")
@@ -85,7 +85,7 @@ class DetectProviderTests(SimpleTestCase):
         self.assertEqual(detect_provider("gpt-5-mini"), "openai")
 
     def test_prefix_less_gemini(self):
-        self.assertEqual(detect_provider("gemini-2.5-pro"), "google_genai")
+        self.assertEqual(detect_provider("gemini-3.1-pro-preview"), "google_genai")
 
     def test_empty_and_none(self):
         self.assertEqual(detect_provider(""), "")
@@ -137,9 +137,9 @@ class CreateChatModelTests(SimpleTestCase):
         mock_client = MagicMock()
         mock_init.return_value = mock_client
 
-        model = create_chat_model("gemini-2.5-pro")
+        model = create_chat_model("gemini-3.1-pro-preview")
         self.assertIsInstance(model, GeminiChatModel)
-        self.assertEqual(model.name, "gemini-2.5-pro")
+        self.assertEqual(model.name, "gemini-3.1-pro-preview")
         call_kwargs = mock_init.call_args
         self.assertNotIn("stream_usage", call_kwargs[1])
 
@@ -190,7 +190,7 @@ class ProviderKwargsTests(SimpleTestCase):
         self.assertNotIn("store", kwargs)
 
     def test_google_has_no_store_flag(self):
-        kwargs = _get_provider_kwargs("google_genai", "gemini-2.5-pro")
+        kwargs = _get_provider_kwargs("google_genai", "gemini-3.1-pro-preview")
         self.assertNotIn("store", kwargs)
 
 

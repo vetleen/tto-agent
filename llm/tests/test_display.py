@@ -51,8 +51,8 @@ class GetDisplayNameTests(TestCase):
 
     def test_gemini_model(self):
         self.assertEqual(
-            get_display_name("gemini/gemini-2.5-flash"),
-            "Gemini 2.5 Flash",
+            get_display_name("gemini/gemini-3.5-flash"),
+            "Gemini 3.5 Flash",
         )
 
     def test_unknown_provider(self):
@@ -90,12 +90,10 @@ class SupportsThinkingTests(TestCase):
     def test_openai_gpt_no_thinking(self):
         self.assertFalse(supports_thinking("openai/gpt-5-mini"))
 
-    def test_gemini_3_thinking(self):
+    def test_gemini_thinking(self):
         self.assertTrue(supports_thinking("gemini/gemini-3.1-pro-preview"))
-        self.assertTrue(supports_thinking("gemini/gemini-3-flash-preview"))
-
-    def test_gemini_2_no_thinking(self):
-        self.assertFalse(supports_thinking("gemini/gemini-2.5-flash"))
+        self.assertTrue(supports_thinking("gemini/gemini-3.5-flash"))
+        self.assertTrue(supports_thinking("gemini/gemini-3.1-flash-lite"))
 
     def test_thinking_in_name(self):
         self.assertTrue(supports_thinking("moonshot/kimi-k2-thinking"))
@@ -124,8 +122,8 @@ class SupportsVisionTests(TestCase):
         self.assertFalse(supports_vision("openai/o4-mini"))
 
     def test_gemini(self):
-        self.assertTrue(supports_vision("gemini/gemini-2.5-flash"))
-        self.assertTrue(supports_vision("gemini/gemini-2.5-pro"))
+        self.assertTrue(supports_vision("gemini/gemini-3.5-flash"))
+        self.assertTrue(supports_vision("gemini/gemini-3.1-pro-preview"))
 
     def test_unknown_model(self):
         self.assertFalse(supports_vision("custom/my-model"))

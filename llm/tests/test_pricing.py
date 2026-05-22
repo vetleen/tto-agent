@@ -20,8 +20,8 @@ class GetModelPricingTests(SimpleTestCase):
         self.assertEqual(pricing, (Decimal("0.25"), Decimal("0.025"), Decimal("0.25"), Decimal("2.00")))
 
     def test_gemini_model(self):
-        pricing = get_model_pricing("gemini-2.5-flash")
-        self.assertEqual(pricing, (Decimal("0.30"), Decimal("0.03"), Decimal("0.30"), Decimal("2.50")))
+        pricing = get_model_pricing("gemini-3.5-flash")
+        self.assertEqual(pricing, (Decimal("1.50"), Decimal("0.15"), Decimal("1.50"), Decimal("9.00")))
 
     def test_strips_openai_prefix(self):
         pricing = get_model_pricing("openai/gpt-5.4-mini")
@@ -32,8 +32,8 @@ class GetModelPricingTests(SimpleTestCase):
         self.assertEqual(pricing, get_model_pricing("claude-opus-4-6"))
 
     def test_strips_gemini_prefix(self):
-        pricing = get_model_pricing("gemini/gemini-2.5-pro")
-        self.assertEqual(pricing, get_model_pricing("gemini-2.5-pro"))
+        pricing = get_model_pricing("gemini/gemini-3.1-pro-preview")
+        self.assertEqual(pricing, get_model_pricing("gemini-3.1-pro-preview"))
 
     def test_unknown_model_returns_none(self):
         self.assertIsNone(get_model_pricing("unknown-model-xyz"))

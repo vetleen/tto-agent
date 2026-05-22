@@ -755,7 +755,7 @@ class FeatureModelOverrideTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
-        "gemini/gemini-2.5-flash-lite",
+        "gemini/gemini-3.1-flash-lite",
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_user_feature_override(self, mock_registry, mock_allowed):
@@ -763,11 +763,11 @@ class FeatureModelOverrideTest(TestCase):
 
         user = _create_user(email="feat-override@example.com")
         settings = UserSettings.objects.get(user=user)
-        settings.preferences = {"feature_models": {"thread_title": "gemini/gemini-2.5-flash-lite"}}
+        settings.preferences = {"feature_models": {"thread_title": "gemini/gemini-3.1-flash-lite"}}
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.feature_models["thread_title"], "gemini/gemini-2.5-flash-lite")
+        self.assertEqual(prefs.feature_models["thread_title"], "gemini/gemini-3.1-flash-lite")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -831,16 +831,16 @@ class ResolveOrgFeatureModelTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
-        "gemini/gemini-2.5-flash-lite",
+        "gemini/gemini-3.1-flash-lite",
     ])
     def test_org_feature_override(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
 
         org = Organization.objects.create(name="FeatOrg", slug="featorg", preferences={
-            "feature_models": {"document_description": "gemini/gemini-2.5-flash-lite"},
+            "feature_models": {"document_description": "gemini/gemini-3.1-flash-lite"},
         })
         model = resolve_org_feature_model(org.pk, "document_description")
-        self.assertEqual(model, "gemini/gemini-2.5-flash-lite")
+        self.assertEqual(model, "gemini/gemini-3.1-flash-lite")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",

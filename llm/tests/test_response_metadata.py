@@ -36,10 +36,10 @@ class ExtractResponseMetadataTests(TestCase):
 
     def test_generic_model_key(self):
         result = _FakeResult(response_metadata={
-            "model": "gemini-2.5-flash",
+            "model": "gemini-3.5-flash",
         })
         meta = BaseLangChainChatModel._extract_response_metadata(result)
-        self.assertEqual(meta["provider_model_id"], "gemini-2.5-flash")
+        self.assertEqual(meta["provider_model_id"], "gemini-3.5-flash")
         self.assertEqual(meta["stop_reason"], "")
 
     def test_empty_response_metadata(self):

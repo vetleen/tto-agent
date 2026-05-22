@@ -238,12 +238,12 @@
   {# Sub-agent status bar — visible when background sub-agents are active #}
   <div id="subagent-status-bar" class="hidden border-t border-default bg-indigo-50/50 dark:bg-indigo-950/30 w-full">
     <div class="max-w-3xl mx-auto w-full px-4 py-2">
-      <div class="flex items-center gap-2 text-xs text-indigo-700 dark:text-indigo-300">
-        <svg class="w-3.5 h-3.5 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">
+      <div class="flex items-start gap-2 text-xs text-indigo-700 dark:text-indigo-300">
+        <svg class="w-3.5 h-3.5 shrink-0 animate-spin mt-0.5" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
         </svg>
-        <span id="subagent-status-text"></span>
+        <div id="subagent-status-text"></div>
       </div>
     </div>
   </div>
@@ -1534,11 +1534,12 @@
       var pickUp = count === 1
         ? escapeHtml(ASSISTANT_NAME) + " will pick up when it reports back."
         : escapeHtml(ASSISTANT_NAME) + " will pick up when they report back.";
+      text.innerHTML = label + ". " + pickUp;
       if (subagentReasonList.length > 0) {
-        var reasons = subagentReasonList.map(function(r) { return r.charAt(0).toLowerCase() + r.slice(1); }).join("; ");
-        text.innerHTML = label + ' (<span class="italic">' + escapeHtml(reasons) + '</span>). ' + pickUp;
-      } else {
-        text.textContent = label + ". " + pickUp;
+        var items = subagentReasonList.map(function(r) {
+          return '<li>' + escapeHtml(r.charAt(0).toLowerCase() + r.slice(1)) + '</li>';
+        }).join('');
+        text.innerHTML += '<ul class="mt-1 list-disc list-inside italic">' + items + '</ul>';
       }
       bar.classList.remove("hidden");
     } else {

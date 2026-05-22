@@ -13,7 +13,7 @@ def get_display_name(model_id: str) -> str:
     Examples:
         anthropic/claude-sonnet-4-5-20250929 -> Claude Sonnet 4.5
         openai/gpt-5-mini -> GPT-5 Mini
-        gemini/gemini-2.5-flash -> Gemini 2.5 Flash
+        gemini/gemini-3.5-flash -> Gemini 3.5 Flash
     """
     name = model_id
 

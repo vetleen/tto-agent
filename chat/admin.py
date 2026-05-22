@@ -86,6 +86,7 @@ class SubAgentRunAdmin(admin.ModelAdmin):
     search_fields = ("prompt", "result", "id")
     readonly_fields = ("id", "created_at", "completed_at")
     list_select_related = ("thread", "user")
+    ordering = ["-created_at"]
 
     @admin.display(description="ID")
     def short_id(self, obj):

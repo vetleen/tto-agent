@@ -67,15 +67,16 @@
     <p class="mt-1 text-sm text-body">Select which models are available to members of this organization.</p>
 
     <div id="allowed-models-list" class="mt-4 space-y-2">
-      {% for model in system_models %}
+      {% for model in system_models_data %}
       <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
         <input
           type="checkbox"
           class="allowed-model-checkbox rounded border-default text-brand focus:ring-brand-medium"
-          value="{{ model }}"
-          {% if model in org_allowed or not org_allowed %}checked{% endif %}
+          value="{{ model.id }}"
+          {% if model.id in org_allowed or not org_allowed %}checked{% endif %}
         >
-        <span class="text-sm text-body">{{ model }}</span>
+        <span class="text-sm text-body flex-1">{{ model.id }}</span>
+        {% if model.price %}<span class="text-xs text-muted tabular-nums">{{ model.price }}</span>{% endif %}
       </label>
       {% empty %}
       <p class="text-sm text-body italic">No models configured in system allowlist (LLM_ALLOWED_MODELS).</p>

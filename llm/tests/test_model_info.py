@@ -26,7 +26,7 @@ class GetContextWindowTests(TestCase):
         self.assertEqual(get_context_window("gpt-5.4"), 1_000_000)
 
     def test_gemini_model(self):
-        self.assertEqual(get_context_window("gemini-2.5-pro"), 1_000_000)
+        self.assertEqual(get_context_window("gemini-3.1-pro-preview"), 1_000_000)
 
 
 class GetHistoryBudgetTests(TestCase):

@@ -416,7 +416,7 @@ class DescribeImageTests(TestCase):
         from chat.services import describe_image
 
         prefs = MagicMock()
-        prefs.cheap_model = "gemini/gemini-2.5-flash"
+        prefs.cheap_model = "gemini/gemini-3.5-flash"
         prefs.mid_model = "openai/gpt-5-mini"
         prefs.top_model = "anthropic/claude-sonnet-4-5"
         mock_prefs.return_value = prefs

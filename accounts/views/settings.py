@@ -357,6 +357,14 @@ def org_settings_page(request):
     TOOL_NOTES = {}
 
     system_models = get_allowed_models()
+    from llm.model_registry import get_model_info
+    system_models_data = []
+    for mid in system_models:
+        info = get_model_info(mid)
+        price = ""
+        if info and info.input_price is not None and info.output_price is not None:
+            price = f"${info.input_price} / ${info.output_price}"
+        system_models_data.append({"id": mid, "price": price})
     system_defaults = get_system_defaults()
     all_tools = get_tool_registry().list_tools()
 
@@ -471,6 +479,7 @@ def org_settings_page(request):
         "monthly_budget_per_user": org_prefs.get("monthly_budget_per_user", 0),
         "monthly_budget_org": org_prefs.get("monthly_budget_org", 0),
         "system_models": system_models,
+        "system_models_data": system_models_data,
         "org_allowed": org_allowed,
         "org_models": org_models,
         "org_models_json": json.dumps(org_models),
