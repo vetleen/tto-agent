@@ -45,22 +45,38 @@
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
         <input class="cursor-pointer bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full shadow-xs placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
-        <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file.</p>
+        <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file, up to 100 files at a time.</p>
       </div>
       <button id="upload-btn" type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         Add to data room
       </button>
       <p class="mt-2 text-xs text-body">Added files are processed: text is extracted, split into searchable chunks, and indexed. {{ assistant_name }} can search the indexed content whenever this data room is attached to the chat.</p>
     </form>
+    <div id="upload-progress" class="hidden mt-4">
+      <div class="flex items-center gap-3 mb-2">
+        <svg class="w-4 h-4 animate-spin text-brand shrink-0" id="upload-spinner" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+        <span class="text-sm font-medium text-heading" id="upload-progress-text"></span>
+      </div>
+      <div class="w-full bg-neutral-secondary-medium rounded-full h-2 mb-2">
+        <div class="bg-brand h-2 rounded-full transition-all duration-300" id="upload-progress-bar" style="width: 0%"></div>
+      </div>
+      <ul id="upload-error-list" class="space-y-1"></ul>
+    </div>
   </section>
 
   <!-- Config for JS -->
   <div id="doc-list-config" class="hidden"
+       data-upload-url="{% url 'document_upload' data_room_id=data_room.uuid %}"
        data-bulk-delete-url="{% url 'document_bulk_delete' data_room_id=data_room.uuid %}"
        data-bulk-archive-url="{% url 'document_bulk_archive' data_room_id=data_room.uuid %}"
        data-delete-check-url="{% url 'document_delete_check' data_room_id=data_room.uuid %}"
        data-status-url="{% url 'document_status' data_room_id=data_room.uuid %}"
        data-csrf-token="{{ csrf_token }}"></div>
+
+  <div id="processing-banner" class="hidden mt-6 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base flex items-center gap-3">
+    <svg class="w-4 h-4 animate-spin text-brand shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+    <span class="text-sm text-heading" id="processing-banner-text"></span>
+  </div>
 
   <section class="mt-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
     <h2 class="text-lg font-medium text-heading mb-4">Documents</h2>
@@ -306,22 +322,174 @@
     var fileInput = document.getElementById('file_input');
     var uploadForm = document.getElementById('upload-form');
     var uploadBtn = document.getElementById('upload-btn');
-    if (!container || !dropOverlay || !fileInput || !uploadForm) return;
-    var submitting = false;
+    var config = document.getElementById('doc-list-config');
+    if (!container || !dropOverlay || !fileInput || !uploadForm || !config) return;
+
+    var uploadUrl = config.dataset.uploadUrl;
+    var csrf = config.dataset.csrfToken;
+    var uploading = false;
     var dragCounter = 0;
+
+    var MAX_FILES = 100;
+    var MAX_SIZE = 50000000;
+    var ALLOWED_EXTENSIONS = new Set([
+      'pdf','txt','md','html','docx','csv','json','xml','rst','tex',
+      'yaml','yml','log','msg','eml','mp3','mp4','mpeg','mpga','m4a',
+      'wav','webm','flac','ogg'
+    ]);
+
+    var progressDiv = document.getElementById('upload-progress');
+    var progressText = document.getElementById('upload-progress-text');
+    var progressBar = document.getElementById('upload-progress-bar');
+    var progressSpinner = document.getElementById('upload-spinner');
+    var errorList = document.getElementById('upload-error-list');
+
+    function getExtension(name) {
+      var dot = name.lastIndexOf('.');
+      return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+    }
+
+    function addError(msg) {
+      var li = document.createElement('li');
+      li.className = 'text-sm text-fg-danger-strong bg-danger-soft border border-danger-subtle rounded-base px-3 py-2';
+      li.textContent = msg;
+      errorList.appendChild(li);
+    }
+
+    function validateFiles(fileList) {
+      var valid = [];
+      if (fileList.length > MAX_FILES) {
+        addError('Maximum ' + MAX_FILES + ' files per upload. You selected ' + fileList.length + ' — please select fewer files.');
+        return valid;
+      }
+      for (var i = 0; i < fileList.length; i++) {
+        var f = fileList[i];
+        var ext = getExtension(f.name);
+        if (f.size <= 0) {
+          addError(f.name + ': file is empty.');
+        } else if (f.size > MAX_SIZE) {
+          addError(f.name + ': file is too large (max 50 MB).');
+        } else if (!ALLOWED_EXTENSIONS.has(ext)) {
+          addError(f.name + ': unsupported file type.');
+        } else {
+          valid.push(f);
+        }
+      }
+      return valid;
+    }
+
+    function setFormEnabled(enabled) {
+      fileInput.disabled = !enabled;
+      uploadBtn.disabled = !enabled;
+      if (enabled) {
+        uploadBtn.textContent = 'Add to data room';
+        fileInput.value = '';
+      }
+    }
+
+    function addDocumentRow(doc) {
+      var listContainer = document.querySelector('section.mt-6 .w-full.text-sm');
+      if (!listContainer) return;
+      var emptyMsg = listContainer.querySelector('p.text-body');
+      if (emptyMsg) emptyMsg.remove();
+      var row = document.createElement('div');
+      row.className = 'flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group';
+      row.dataset.docId = doc.id;
+      row.dataset.status = doc.status;
+      row.dataset.list = 'active';
+      row.innerHTML =
+        '<input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select ' + doc.filename + '">' +
+        '<span class="doc-status-icon shrink-0 me-2"></span>' +
+        '<span class="flex-1 min-w-0 truncate font-medium text-heading" title="' + doc.filename + '">' + doc.filename + '</span>' +
+        '<span class="shrink-0 ms-3 text-body text-right">Just now</span>';
+      listContainer.appendChild(row);
+      if (typeof window.renderStatusIcons === 'function') window.renderStatusIcons();
+    }
+
+    async function uploadFiles(fileList) {
+      errorList.innerHTML = '';
+      var valid = validateFiles(fileList);
+      if (!valid.length) {
+        if (fileList.length > 0) progressDiv.classList.remove('hidden');
+        return;
+      }
+
+      uploading = true;
+      setFormEnabled(false);
+      progressDiv.classList.remove('hidden');
+      progressSpinner.classList.remove('hidden');
+
+      var uploaded = 0;
+      var failed = 0;
+      var uploadedDocIds = [];
+
+      for (var i = 0; i < valid.length; i++) {
+        progressText.textContent = 'Uploading file ' + (i + 1) + '/' + valid.length + '…';
+        progressBar.style.width = ((i / valid.length) * 100) + '%';
+
+        var formData = new FormData();
+        formData.append('file', valid[i]);
+        formData.append('csrfmiddlewaretoken', csrf);
+
+        try {
+          var resp = await fetch(uploadUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'X-CSRFToken': csrf },
+            body: formData
+          });
+          var data = await resp.json();
+          if (data.status === 'ok' && data.document) {
+            uploaded++;
+            uploadedDocIds.push(data.document.id);
+            addDocumentRow(data.document);
+            if (data.errors && data.errors.length) {
+              data.errors.forEach(function(e) { addError(e); });
+            }
+          } else {
+            failed++;
+            addError(data.error || (valid[i].name + ': upload failed.'));
+          }
+        } catch (err) {
+          failed++;
+          addError(valid[i].name + ': network error — upload stopped.');
+          break;
+        }
+      }
+
+      progressBar.style.width = '100%';
+
+      if (uploaded > 0 && failed === 0) {
+        progressText.textContent = uploaded + ' file' + (uploaded === 1 ? '' : 's') + ' uploaded. Processing…';
+      } else if (uploaded > 0) {
+        progressText.textContent = uploaded + ' uploaded, ' + failed + ' failed. Processing…';
+      } else {
+        progressText.textContent = 'Upload failed.';
+        progressSpinner.classList.add('hidden');
+      }
+
+      if (uploaded > 0 && typeof window.startProcessingTracker === 'function') {
+        window.startProcessingTracker(uploadedDocIds);
+      }
+
+      uploading = false;
+      setFormEnabled(true);
+    }
+
     uploadForm.addEventListener('submit', function(e) {
-      if (submitting) { e.preventDefault(); return; }
-      submitting = true;
-      if (uploadBtn) { uploadBtn.disabled = true; uploadBtn.textContent = 'Uploading…'; }
+      e.preventDefault();
+      if (uploading) return;
+      var files = fileInput.files;
+      if (!files || !files.length) return;
+      uploadFiles(files);
     });
+
     container.addEventListener('dragenter', function(e) {
       e.preventDefault();
       dragCounter++;
       dropOverlay.classList.remove('hidden');
     });
-    container.addEventListener('dragover', function(e) {
-      e.preventDefault();
-    });
+    container.addEventListener('dragover', function(e) { e.preventDefault(); });
     container.addEventListener('dragleave', function(e) {
       dragCounter--;
       if (dragCounter === 0) dropOverlay.classList.add('hidden');
@@ -330,13 +498,10 @@
       e.preventDefault();
       dragCounter = 0;
       dropOverlay.classList.add('hidden');
-      if (submitting) return;
+      if (uploading) return;
       var files = e.dataTransfer.files;
       if (!files.length) return;
-      submitting = true;
-      if (uploadBtn) { uploadBtn.disabled = true; uploadBtn.textContent = 'Uploading…'; }
-      fileInput.files = files;
-      uploadForm.submit();
+      uploadFiles(files);
     });
   })();
   </script>

@@ -27,10 +27,12 @@
   }
 
   renderStatusIcons();
+  window.renderStatusIcons = renderStatusIcons;
 
   // ── Polling ────────────────────────────────────────────────────────
   var TERMINAL = { ready: true, failed: true };
   var pollInterval = null;
+  var trackedDocIds = null;
 
   function hasNonTerminal() {
     var rows = document.querySelectorAll('[data-doc-id]');
@@ -38,6 +40,54 @@
       if (!TERMINAL[rows[i].dataset.status]) return true;
     }
     return false;
+  }
+
+  function updateProcessingBanner(statuses) {
+    var banner = document.getElementById('processing-banner');
+    var bannerText = document.getElementById('processing-banner-text');
+    if (!banner || !bannerText) return;
+
+    if (trackedDocIds && trackedDocIds.length) {
+      var done = 0;
+      var failed = 0;
+      trackedDocIds.forEach(function (id) {
+        var s = statuses[String(id)];
+        if (s === 'ready') done++;
+        else if (s === 'failed') failed++;
+      });
+      var total = trackedDocIds.length;
+      var complete = done + failed;
+      if (complete >= total) {
+        trackedDocIds = null;
+        if (failed > 0) {
+          bannerText.textContent = 'Processing complete: ' + done + ' succeeded, ' + failed + ' failed.';
+        } else {
+          bannerText.textContent = 'All ' + total + ' file' + (total === 1 ? '' : 's') + ' processed successfully.';
+        }
+        banner.querySelector('svg').classList.add('hidden');
+        banner.classList.remove('hidden');
+        setTimeout(function () { banner.classList.add('hidden'); }, 8000);
+        var uploadProgress = document.getElementById('upload-progress');
+        if (uploadProgress) uploadProgress.classList.add('hidden');
+        return;
+      }
+      bannerText.textContent = 'Processing: ' + complete + '/' + total + ' complete…';
+      banner.querySelector('svg').classList.remove('hidden');
+      banner.classList.remove('hidden');
+      return;
+    }
+
+    var pending = 0;
+    document.querySelectorAll('[data-doc-id]').forEach(function (row) {
+      if (!TERMINAL[row.dataset.status]) pending++;
+    });
+    if (pending > 0) {
+      bannerText.textContent = pending + ' document' + (pending === 1 ? '' : 's') + ' processing…';
+      banner.querySelector('svg').classList.remove('hidden');
+      banner.classList.remove('hidden');
+    } else {
+      banner.classList.add('hidden');
+    }
   }
 
   function pollStatuses() {
@@ -54,6 +104,7 @@
           }
         });
         if (changed) renderStatusIcons();
+        updateProcessingBanner(statuses);
         if (!hasNonTerminal() && pollInterval) {
           clearInterval(pollInterval);
           pollInterval = null;
@@ -62,8 +113,21 @@
       .catch(function () { /* silently retry on next interval */ });
   }
 
+  function ensurePolling() {
+    if (!pollInterval && hasNonTerminal()) {
+      pollInterval = setInterval(pollStatuses, 2000);
+    }
+  }
+
+  window.startProcessingTracker = function (docIds) {
+    trackedDocIds = docIds;
+    updateProcessingBanner({});
+    ensurePolling();
+  };
+
   if (hasNonTerminal()) {
     pollInterval = setInterval(pollStatuses, 2000);
+    updateProcessingBanner({});
   }
 
   // ── Checkbox selection + bulk actions ──────────────────────────────

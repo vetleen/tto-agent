@@ -407,6 +407,7 @@ if _aws_bucket:
     }
 
 # Document upload and chunking (MVP)
+DATA_UPLOAD_MAX_NUMBER_FILES = 100
 DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000"))  # 50 MB
 DOCUMENT_ALLOWED_EXTENSIONS = {
     "pdf", "txt", "md", "html", "docx",

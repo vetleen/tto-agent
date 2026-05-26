@@ -230,11 +230,16 @@ def _allowed_mime(mime_type: str) -> bool:
 @login_required
 @require_POST
 def document_upload(request, data_room_id):
+    is_ajax = "application/json" in request.headers.get("Accept", "")
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_modify_data_room(request.user, data_room):
+        if is_ajax:
+            return JsonResponse({"status": "error", "error": "Permission denied."}, status=403)
         return redirect("data_room_list")
     files = request.FILES.getlist("file")
     if not files:
+        if is_ajax:
+            return JsonResponse({"status": "error", "error": "No file selected."}, status=400)
         messages.error(request, "No file selected. Please choose a file to upload.")
         return redirect("data_room_documents", data_room_id=data_room.uuid)
 
@@ -306,6 +311,16 @@ def document_upload(request, data_room_id):
             doc.processing_error = str(exc)[:2000]
             doc.save(update_fields=["status", "processing_error", "updated_at"])
             errors.append(f"{doc.original_filename}: processing could not be started.")
+
+    if is_ajax:
+        if created_docs:
+            doc = created_docs[0]
+            return JsonResponse({
+                "status": "ok",
+                "document": {"id": doc.id, "filename": doc.original_filename, "status": doc.status},
+                "errors": errors,
+            })
+        return JsonResponse({"status": "error", "error": errors[0] if errors else "Upload failed."}, status=400)
 
     if created_docs:
         count = len(created_docs)
