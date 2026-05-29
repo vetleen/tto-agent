@@ -19,13 +19,17 @@ Operational reference for Wilfred (tto-agent). For dev setup see README.md, for 
 **Procfile:**
 ```
 web:     daphne -b 0.0.0.0 -p $PORT config.asgi:application
-worker:  python -m config.celery_gevent worker -A config -l info --pool=gevent --concurrency=${CELERY_WORKER_CONCURRENCY:-8} -B
+worker:  python -m celery_gevent -A config worker -l info --pool=gevent --concurrency=${CELERY_WORKER_CONCURRENCY:-8} -B
 release: python manage.py migrate --noinput && python manage.py collectstatic --noinput
 ```
 
 **Worker pool & concurrency.** The worker runs the **gevent** pool via a small launcher
-(`config/celery_gevent.py`) that monkeypatches gevent + psycopg2 *before* Celery is
-imported. Wilfred's tasks are almost entirely I/O-bound (they wait on LLM / transcription
+(`celery_gevent.py`, at the repo root) that monkeypatches gevent + psycopg2 *before*
+Celery is imported. It lives at the root, not in the `config` package, so importing it
+does not first run `config/__init__.py` (which imports Celery/Django/ssl) — patching has
+to happen before those imports. Note the Celery 5 invocation order: `-A config` is a
+**global** option *before* the `worker` subcommand (`python -m celery_gevent -A config
+worker …`), not after it. Wilfred's tasks are almost entirely I/O-bound (they wait on LLM / transcription
 / embedding APIs), so gevent runs many of them in one process at ~constant RAM. That
 shifts the binding constraint to **database connections, not RAM**: under gevent each
 concurrent greenlet holds its own Postgres connection, so `--concurrency=N` ≈ up to N

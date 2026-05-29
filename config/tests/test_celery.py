@@ -7,11 +7,12 @@ the launcher wires the calls together in the right order.
 """
 
 import sys
+from pathlib import Path
 from unittest import mock
 
 from django.test import SimpleTestCase
 
-import config.celery_gevent as cg
+import celery_gevent as cg
 
 
 class CeleryGeventLauncherTests(SimpleTestCase):
@@ -50,3 +51,39 @@ class CeleryGeventLauncherTests(SimpleTestCase):
             self.assertEqual(sys.argv[0], "celery")
         finally:
             sys.argv[:] = original_argv
+
+
+class ProcfileWorkerCommandTests(SimpleTestCase):
+    """Guard the worker invocation in the Procfile.
+
+    Regression test for a staging crash-loop: Celery 5 removed ``-A`` as an
+    option of the ``worker`` subcommand, so it must be passed as a global
+    option *before* ``worker``. The launcher must also be the root-level
+    ``celery_gevent`` module (not ``config.celery_gevent``, which imports the
+    ``config`` package — and thus ssl — before monkeypatching).
+    """
+
+    def _worker_line(self) -> str:
+        procfile = Path(__file__).resolve().parents[2] / "Procfile"
+        return next(
+            line
+            for line in procfile.read_text().splitlines()
+            if line.startswith("worker:")
+        )
+
+    def test_worker_launches_root_gevent_module(self):
+        line = self._worker_line()
+        self.assertIn("celery_gevent", line)
+        self.assertNotIn("config.celery_gevent", line)
+        self.assertIn("--pool=gevent", line)
+
+    def test_app_option_precedes_worker_subcommand(self):
+        tokens = self._worker_line().split()
+        self.assertIn("-A", tokens)
+        self.assertIn("worker", tokens)
+        self.assertLess(
+            tokens.index("-A"),
+            tokens.index("worker"),
+            "-A must precede the 'worker' subcommand (Celery 5 removed -A as a "
+            "worker-subcommand option)",
+        )
