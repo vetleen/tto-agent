@@ -29,6 +29,10 @@ tiktoken==0.12.0
 celery==5.6.2
 channels==4.3.2
 channels-redis==4.3.0
+# Pin redis-py to the RESP2-default line: redis-py 8.x defaults to RESP3, whose
+# async parser times out channels_redis' blocking BZPOPMIN read (~5s), dropping
+# chat WebSockets. If bumping to 8.x, pass protocol=2 in CHANNEL_LAYERS first.
+redis==7.4.0
 daphne==4.2.1
 whitenoise==6.11.0
 django-anymail==14.0
