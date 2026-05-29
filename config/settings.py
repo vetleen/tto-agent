@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import logging
 import os
 import ssl
+import warnings
 from pathlib import Path
 
 import dj_database_url
@@ -58,6 +59,17 @@ ASSISTANT_EMOJI = _validate_assistant_emoji(os.environ.get("ASSISTANT_EMOJI", "ð
 
 # SECURITY: DEBUG defaults to False. Set DJANGO_DEBUG=True only for local development.
 DEBUG = _get_env_bool(os.environ.get("DJANGO_DEBUG"), False)
+
+# Silence the benign Pydantic "serializer warnings" emitted when Sentry's genai
+# instrumentation re-serializes OpenAI parsed responses: serialization still
+# succeeds and extraction is unaffected, but Django routes the warning to the
+# py.warnings logger (WARNING level) where the LoggingIntegration below would
+# otherwise record it as a Sentry event.
+warnings.filterwarnings(
+    "ignore",
+    message="Pydantic serializer warnings",
+    category=UserWarning,
+)
 
 # ---------------------------------------------------------------------------
 # Sentry â€” error tracking & performance monitoring
