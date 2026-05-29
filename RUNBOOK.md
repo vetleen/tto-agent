@@ -19,9 +19,33 @@ Operational reference for Wilfred (tto-agent). For dev setup see README.md, for 
 **Procfile:**
 ```
 web:     daphne -b 0.0.0.0 -p $PORT config.asgi:application
-worker:  celery -A config worker -l info --concurrency=10
+worker:  python -m config.celery_gevent worker -A config -l info --pool=gevent --concurrency=${CELERY_WORKER_CONCURRENCY:-8} -B
 release: python manage.py migrate --noinput && python manage.py collectstatic --noinput
 ```
+
+**Worker pool & concurrency.** The worker runs the **gevent** pool via a small launcher
+(`config/celery_gevent.py`) that monkeypatches gevent + psycopg2 *before* Celery is
+imported. Wilfred's tasks are almost entirely I/O-bound (they wait on LLM / transcription
+/ embedding APIs), so gevent runs many of them in one process at ~constant RAM. That
+shifts the binding constraint to **database connections, not RAM**: under gevent each
+concurrent greenlet holds its own Postgres connection, so `--concurrency=N` ≈ up to N
+connections from the worker. Size it against the shared connection cap, not memory (see
+the Database section). Concurrency is driven by the `CELERY_WORKER_CONCURRENCY` config
+var (default **8**), sized for the `essential-0` 20-connection cap; raise it to ~16–20
+when moving to a 40-connection Postgres plan — no code change, just `heroku config:set`.
+The pool selection lives in the launcher (worker-only); do **not** set a gevent toggle as
+an app-wide config var — that would risk monkeypatching the web (Daphne) process, which
+must stay on asyncio. Local Windows dev is unaffected: it uses the solo pool
+(`config/celery.py`) and never invokes the launcher.
+
+**`-B` embeds Celery beat in the worker.** Beat is the scheduler for periodic tasks
+(`CELERY_BEAT_SCHEDULE` in `config/settings.py`, e.g. `expire_stale_subagent_runs`
+every 120s) and **must run on exactly one process.** Embedding it here is fine while
+there is a single worker dyno. Before scaling the worker to 2+ dynos of the same type
+— or adding a second worker process type — move beat to its own process
+(`beat: celery -A config beat -l info`) and drop `-B` from the workers, or keep `-B`
+on exactly one process type that never scales past one dyno. Otherwise every scheduled
+task fires once per worker dyno.
 
 **Deploy flow:** `git push heroku main` → release phase runs migrations + collectstatic → web/worker dynos restart.
 
@@ -128,6 +152,20 @@ heroku logs --tail -a wilfred-staging
 
 **Production:** Postgres via `DATABASE_URL` (Heroku add-on). Connection settings: `conn_max_age=600` (reuse connections for 10 min), `conn_health_checks=True`.
 
+**Connection limits (matters when scaling workers).** The `essential-0` plan caps the
+database at **20 connections**, shared across every web and worker dyno. Django holds
+one connection per thread and, with `conn_max_age=600`, keeps each open for 10 minutes
+— so connections linger after a burst. The default Celery *prefork* pool uses roughly
+one connection per child (≈ `--concurrency`), which is why a 2-child worker sits well
+under the cap. A **gevent** pool changes this: gevent makes connections greenlet-local,
+so `--pool=gevent --concurrency=N` can open up to ~N connections from a single dyno.
+Size gevent concurrency against the 20-connection cap (leaving headroom for web), not
+RAM — or raise the ceiling first with a larger Postgres tier or PgBouncer connection
+pooling. Check live usage with `heroku pg:info` (shows current connections and limit).
+Note: our driver is psycopg2 (a blocking C library); under gevent add `psycogreen`
+(`from psycogreen.gevent import patch_psycopg; patch_psycopg()`) so DB calls cooperate
+with the event loop — otherwise a single query stalls every greenlet.
+
 **Local dev:** SQLite when `DATABASE_URL` is unset.
 
 **pgvector:** Used for embedding storage and semantic search. Requires Postgres with the pgvector extension. Configured via `PGVECTOR_CONNECTION` (falls back to `DATABASE_URL`).
@@ -180,6 +218,14 @@ heroku redis:cli                            # interactive shell
 
 Redis is shared across three uses (Celery broker on db 0, Channels on db 0, Django cache on db 1). If Redis hits memory limits, Celery tasks and WebSocket connections will fail.
 
+**Connection limits.** The `mini` plan caps Redis at **20 connections**, shared across
+the broker, Channels (WebSockets), and the cache. The Celery broker pool is bounded by
+`broker_pool_limit` (default 10); Channels and the cache draw from their own pools, so
+raising worker concurrency (prefork or gevent) increases simultaneous Redis usage but
+not 1:1 per task. With ~20 users holding live WebSocket connections this cap is a
+likely early ceiling — watch `heroku redis:info` and move off `mini` if connections
+saturate.
+
 For Heroku Redis with TLS (`rediss://`), SSL cert verification is disabled in Channels config (Heroku uses self-signed certs).
 
 ## Environment Variables
@@ -192,6 +238,7 @@ See `.env.example` for the full list with comments. Key production variables:
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | Yes | Comma-separated origins for CSRF (e.g., `https://app.herokuapp.com`) |
 | `DATABASE_URL` | Auto | Postgres connection (set by Heroku add-on) |
 | `REDIS_URL` | Auto | Redis connection (set by Heroku add-on) |
+| `CELERY_WORKER_CONCURRENCY` | No | gevent worker greenlet count (default 8; ≈ max worker DB connections). Raise to ~16–20 on a 40-connection Postgres plan. |
 | `OPENAI_API_KEY` | Yes | Embeddings + OpenAI LLM provider |
 | `LLM_DEFAULT_MODEL` | Yes | Primary model (e.g., `openai/gpt-5.2`) |
 | `LLM_DEFAULT_MID_MODEL` | Yes | Mid-tier model for sub-agents |
