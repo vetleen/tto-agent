@@ -400,6 +400,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
 
         consumer = MeetingTranscribeConsumer()
         consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
         consumer._realtime_mode = "realtime"
         consumer._realtime_failure_count = 0
         consumer._realtime_permanently_disabled = False

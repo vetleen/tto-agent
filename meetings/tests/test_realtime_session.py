@@ -325,6 +325,53 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(len(errors), 1)
         self.assertTrue(errors[0].fatal)
 
+    def test_commit_empty_error_is_benign_not_surfaced(self):
+        # Under server-VAD the server auto-commits on end-of-speech, so the
+        # defensive commit finalize() sends often hits an already-empty buffer
+        # -> ``input_audio_buffer_commit_empty`` (an ``invalid_request_error``).
+        # That's an expected race, not a failure: it must NOT surface as a
+        # SessionError (which the consumer treats as a reason to tear realtime
+        # down and fall back to chunked). A real transcript queued *after* the
+        # error proves the session stayed alive and the error was swallowed.
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+            {"type": "error", "error": {
+                "type": "invalid_request_error",
+                "code": "input_audio_buffer_commit_empty",
+                "message": "Error committing input audio buffer: buffer is empty.",
+            }},
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item_1",
+                "transcript": "still here.",
+            },
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            seen: list = []
+            async for evt in session.events():
+                seen.append(evt)
+                if isinstance(evt, TranscriptCompleted):
+                    break
+            await session.aclose()
+            return seen
+
+        seen = _run(run())
+        self.assertFalse(
+            any(isinstance(e, SessionError) for e in seen),
+            "commit_empty must not surface as a SessionError",
+        )
+        self.assertTrue(any(
+            isinstance(e, TranscriptCompleted) and e.text == "still here."
+            for e in seen
+        ))
+
     def test_aclose_emits_disconnected_status(self):
         ws = _FakeWebSocket(script=[
             {"type": "session.created", "session": {"id": "sess_1"}},

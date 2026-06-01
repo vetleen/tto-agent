@@ -449,7 +449,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                             }))
                         except Exception:
                             pass
-                        await self._fall_back_to_chunked(reason="realtime_unstable")
+                        await self._fall_back_to_chunked(reason=f"realtime_error:{evt.code}")
                         return
         except asyncio.CancelledError:
             raise
@@ -566,6 +566,15 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 pass
             self._realtime_session = None
         if self._pcm_pipe is not None:
+            stats = getattr(self._pcm_pipe, "stats", None)
+            logger.info(
+                "realtime: teardown (meeting=%s pcm_forwarded=%dB pipe_in=%sB pipe_out=%sB drops=%s)",
+                self.meeting_uuid,
+                self._total_pcm_bytes,
+                getattr(stats, "bytes_in", "?"),
+                getattr(stats, "bytes_out", "?"),
+                getattr(stats, "stdout_drops", "?"),
+            )
             try:
                 await self._pcm_pipe.aclose()
             except Exception:
@@ -601,6 +610,15 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             "realtime_unstable_fallback"
             if self._realtime_permanently_disabled
             else reason
+        )
+        # WARNING so the realtime failure cause is durable in Sentry. The
+        # realtime path previously logged nothing server-side, so a fallback
+        # was invisible except via the downstream chunked symptoms. Bounded by
+        # REALTIME_FAILURE_BUDGET per session, so this can't storm.
+        logger.warning(
+            "realtime: falling back to chunked (reason=%s permanent=%s failures=%d meeting=%s)",
+            effective_reason, self._realtime_permanently_disabled,
+            self._realtime_failure_count, self.meeting_uuid,
         )
         try:
             await self.send(text_data=json.dumps({

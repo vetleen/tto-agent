@@ -81,6 +81,14 @@ class SessionStatus:
 SessionEvent = TranscriptDelta | TranscriptCompleted | SessionError | SessionStatus
 
 
+# Server "error" events that are expected and harmless under server-VAD. The
+# server auto-commits the input buffer when it detects end-of-speech, so the
+# defensive commit we send in finalize() frequently finds an already-empty
+# buffer. That surfaces as an ``invalid_request_error`` but is not a failure —
+# swallowing it keeps a benign race from tearing down the realtime session.
+_BENIGN_ERROR_CODES = frozenset({"input_audio_buffer_commit_empty"})
+
+
 class RealtimeSessionError(RuntimeError):
     """Raised when the session cannot be brought up or recovered."""
 
@@ -314,6 +322,18 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             session = event.get("session") or {}
             if isinstance(session, dict):
                 self._session_id = session.get("id")
+            logger.info("OpenAIRealtimeSession: %s (id=%s)", evt_type, self._session_id)
+            return
+        # VAD lifecycle — low frequency (per utterance) and the clearest signal
+        # of whether the server is actually hearing speech. If these never fire
+        # on real audio, the PCM we're sending is bad; if they fire but no
+        # transcript follows, the problem is downstream. Cheap, decisive.
+        if evt_type in (
+            "input_audio_buffer.speech_started",
+            "input_audio_buffer.speech_stopped",
+            "input_audio_buffer.committed",
+        ):
+            logger.info("OpenAIRealtimeSession: VAD %s", evt_type)
             return
         if evt_type == "conversation.item.input_audio_transcription.delta":
             item_id = event.get("item_id", "") or ""
@@ -339,7 +359,13 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             code = (err.get("code") or "") if isinstance(err, dict) else ""
             err_type = (err.get("type") or "") if isinstance(err, dict) else ""
             message = (err.get("message") or "") if isinstance(err, dict) else ""
-            # Fatal vs recoverable. A request/config rejection
+            # Benign, expected races (e.g. committing an already-auto-committed
+            # buffer under server-VAD) are not failures — log and move on so
+            # they don't surface as a SessionError that tears down realtime.
+            if code in _BENIGN_ERROR_CODES:
+                logger.info("OpenAIRealtimeSession: benign server error %s (%s)", code, message)
+                return
+            # Fatal vs recoverable. A genuine request/config rejection
             # (``error.type == "invalid_request_error"`` — e.g. a bad
             # session.update or an unsupported model) will be rejected
             # identically on reconnect, so treat it as fatal rather than
