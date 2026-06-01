@@ -166,16 +166,20 @@ async def _default_ws_connect(api_key: str, url: str):
     """Open a raw WebSocket to OpenAI's Realtime transcription endpoint.
 
     We talk to ``/v1/realtime?intent=transcription`` directly instead of
-    going through ``client.beta.realtime.connect(model=...)`` because the
-    SDK's wrapper forces a ``?model=`` URL parameter that the transcription
-    path rejects with ``invalid_request_error.invalid_model``. The session
-    model is configured in the session.update event below instead.
+    going through the SDK wrapper, which forces a ``?model=`` URL parameter
+    that the transcription path rejects with
+    ``invalid_request_error.invalid_model``. The transcription model is
+    configured in the ``session.update`` event below instead.
+
+    GA note: the ``OpenAI-Beta: realtime=v1`` header is intentionally absent.
+    OpenAI retired the beta Realtime dialect — sending that header together
+    with the old ``transcription_session.update`` message now closes the
+    socket with ``invalid_request_error.beta_api_shape_disabled``.
     """
     from websockets.asyncio.client import connect
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "OpenAI-Beta": "realtime=v1",
     }
     return await connect(
         url,
@@ -190,7 +194,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
     Connects to ``wss://api.openai.com/v1/realtime?intent=transcription``
     using the process-wide ``OPENAI_API_KEY``. The transcription model
     (``gpt-4o-mini-transcribe`` / ``gpt-4o-transcribe``) is sent inside
-    the ``transcription_session.update`` event, not in the URL.
+    the GA ``session.update`` event, not in the URL.
 
     The ``_ws_connect_factory`` kwarg is a test seam that returns an
     awaitable which yields any websocket-like object. The interface used
@@ -240,11 +244,17 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         self._recv_task = asyncio.create_task(self._receive_loop())
 
     async def _send_session_update(self) -> None:
-        """Configure the session for transcription-only.
+        """Configure the session for transcription-only (GA Realtime shape).
 
         Tells OpenAI which transcription model to use, what audio format
         we'll send (PCM16 @ 24kHz), and how to detect speech boundaries
         (server-side VAD with a ~600ms silence gap for utterance end).
+
+        GA nests everything under ``session.audio.input`` and expects the
+        audio format as an object (``{"type": "audio/pcm", "rate": 24000}``)
+        rather than the old ``"pcm16"`` string. The message ``type`` is the
+        generic ``session.update`` (the beta ``transcription_session.update``
+        is gone), with ``session.type == "transcription"``.
         """
         assert self._ws is not None
         transcription_cfg: dict = {"model": self._api_model}
@@ -255,20 +265,23 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             transcription_cfg["prompt"] = self.prompt[:1024]
         if self.language:
             transcription_cfg["language"] = self.language
-        session_cfg: dict = {
-            "input_audio_format": "pcm16",
-            "input_audio_transcription": transcription_cfg,
+        audio_input_cfg: dict = {
+            "format": {"type": "audio/pcm", "rate": 24000},
+            "transcription": transcription_cfg,
             "turn_detection": {
                 "type": "server_vad",
                 "threshold": 0.5,
                 "prefix_padding_ms": 200,
                 "silence_duration_ms": 600,
             },
-            "input_audio_noise_reduction": {"type": "near_field"},
+            "noise_reduction": {"type": "near_field"},
         }
         payload = json.dumps({
-            "type": "transcription_session.update",
-            "session": session_cfg,
+            "type": "session.update",
+            "session": {
+                "type": "transcription",
+                "audio": {"input": audio_input_cfg},
+            },
         })
         await self._ws.send(payload)
 
@@ -297,7 +310,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                 asyncio.create_task(self._try_reconnect())
 
     async def _dispatch_server_event(self, evt_type: str, event: dict) -> None:
-        if evt_type in ("transcription_session.created", "transcription_session.updated"):
+        if evt_type in ("session.created", "session.updated"):
             session = event.get("session") or {}
             if isinstance(session, dict):
                 self._session_id = session.get("id")
@@ -324,10 +337,21 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         if evt_type == "error":
             err = event.get("error") or {}
             code = (err.get("code") or "") if isinstance(err, dict) else ""
+            err_type = (err.get("type") or "") if isinstance(err, dict) else ""
             message = (err.get("message") or "") if isinstance(err, dict) else ""
-            # Authentication / model errors are fatal; others are recoverable.
-            fatal = code in {"invalid_api_key", "model_not_found", "permission_denied", "invalid_request_error"}
-            await self._events.put(SessionError(code=code or "unknown", message=message, fatal=fatal))
+            # Fatal vs recoverable. A request/config rejection
+            # (``error.type == "invalid_request_error"`` — e.g. a bad
+            # session.update or an unsupported model) will be rejected
+            # identically on reconnect, so treat it as fatal rather than
+            # looping the backoff schedule into the same rejection. Auth and
+            # model codes are likewise fatal.
+            fatal = (
+                err_type == "invalid_request_error"
+                or code in {"invalid_api_key", "model_not_found", "permission_denied"}
+            )
+            await self._events.put(
+                SessionError(code=code or err_type or "unknown", message=message, fatal=fatal)
+            )
             return
         # Other event types (rate_limits.updated etc.) are ignored for now.
 

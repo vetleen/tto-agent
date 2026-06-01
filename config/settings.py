@@ -495,6 +495,12 @@ MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_TRANSCRIPT_UPL
 MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS = {"txt", "md"}
 MEETING_AUDIO_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_AUDIO_UPLOAD_MAX_BYTES", "50000000"))  # 50 MB
 MEETING_CHUNK_MAX_BYTES = int(os.environ.get("MEETING_CHUNK_MAX_BYTES", str(20 * 1024 * 1024)))  # 20 MB per WS chunk
+# Floor for a chunked-mode WS frame. A real ~30s WebM chunk is hundreds of KB;
+# a 250ms streaming-continuation burst (leaked from a mis-torn-down realtime
+# recorder) is a few KB and undecodable. The consumer allows one undersized
+# frame (a legit short final chunk) but drops a *run* of them — see
+# MeetingTranscribeConsumer._handle_binary_frame.
+MEETING_CHUNK_MIN_BYTES = int(os.environ.get("MEETING_CHUNK_MIN_BYTES", str(8 * 1024)))  # 8 KB
 # Audio speed-up factor applied to uploaded meeting audio chunks before sending
 # to OpenAI. 2.0 roughly halves the tokens billed with minimal intelligibility
 # loss; 1.0 disables the speed-up. Clamped to [0.5, 3.0] in code.

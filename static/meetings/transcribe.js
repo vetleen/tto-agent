@@ -1004,14 +1004,23 @@
   }
 
   function restartRecorderForFreshInitSegment() {
-    // Stop the current recorder so its onstop fires with whatever it had
-    // buffered, then start a new recording in the active mode. The new
-    // MediaRecorder's first ondataavailable burst contains a fresh WebM
-    // init segment, which a freshly-opened server-side session needs to
-    // start decoding.
+    // Stop the current recorder, then start a new recording in the active
+    // mode. The new MediaRecorder's first ondataavailable burst contains a
+    // fresh WebM init segment, which a freshly-opened server-side session
+    // needs to start decoding.
+    //
+    // Detach the old recorder's onstop BEFORE stopping it: this is a
+    // deliberate swap, so the explicit startRecorder() below must be the only
+    // thing that starts the next recorder. Otherwise the stopped recorder's
+    // onstop fires asynchronously and races in a second recorder, clobbering
+    // the one we just started — and after a realtime->chunked switch that
+    // resurrects the 250ms streaming flood.
     if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      try { mediaRecorder.stop(); } catch (e) {}
+    if (mediaRecorder) {
+      mediaRecorder.onstop = null;
+      if (mediaRecorder.state === 'recording') {
+        try { mediaRecorder.stop(); } catch (e) {}
+      }
     }
     mediaRecorder = null;
     if (mediaStream && mediaStream.active) {
@@ -1035,8 +1044,9 @@
       );
     }
     if (!sameMode && mediaStream && mediaStream.active) {
-      // Swap recorder strategies cleanly. New mode's startRecorder will
-      // take over once the previous recorder.onstop fires.
+      // Swap recorder strategies cleanly. restartRecorderForFreshInitSegment
+      // detaches the old recorder's onstop and starts the new-mode recorder
+      // directly, so the swap can't race in a second recorder.
       restartRecorderForFreshInitSegment();
     }
   }
@@ -1062,8 +1072,13 @@
     };
     recorder.onstop = function () {
       // If we're still transcribing when this fires (user paused mic, then
-      // resumed via visibility handler) restart a fresh continuous session.
-      if (transcribing && mediaStream && mediaStream.active) {
+      // resumed via visibility handler) restart a fresh continuous session —
+      // but ONLY while the server still has us in a realtime mode. After a
+      // fallback to chunked, this streaming recorder is being torn down on
+      // purpose; resurrecting it here would flood the chunked task queue with
+      // 250ms fragments (one doomed transcription task per burst).
+      if (transcribing && mediaStream && mediaStream.active
+          && (liveMode === 'realtime' || liveMode === 'realtime_with_fallback')) {
         startStreamingRecorder();
       }
     };

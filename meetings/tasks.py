@@ -106,10 +106,20 @@ def transcribe_meeting_chunk_task(
             text = transcribe_audio(local_path, model_id, user, prompt=prompt)
         except Exception as exc:
             err = str(exc)[:1000]
-            logger.exception(
-                "transcribe_meeting_chunk_task: transcription failed for meeting=%s segment=%s",
-                meeting_id, segment_index,
-            )
+            # An undecodable chunk (e.g. a stray short/garbage live fragment) is a
+            # benign breadcrumb, not an error — log it at warning so it doesn't
+            # storm Sentry. Genuine/unexpected failures keep the full stack trace.
+            if isinstance(exc, ValueError) and "corrupted or unreadable" in str(exc):
+                logger.warning(
+                    "transcribe_meeting_chunk_task: skipping undecodable chunk for "
+                    "meeting=%s segment=%s: %s",
+                    meeting_id, segment_index, err,
+                )
+            else:
+                logger.exception(
+                    "transcribe_meeting_chunk_task: transcription failed for meeting=%s segment=%s",
+                    meeting_id, segment_index,
+                )
             MeetingTranscriptSegment.objects.filter(pk=segment.pk).update(
                 status=MeetingTranscriptSegment.Status.FAILED,
                 error=err,

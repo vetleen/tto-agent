@@ -82,6 +82,65 @@ class TranscribeMeetingChunkTaskPromptTests(TestCase):
         self.assertEqual(seg.text, "hello segment")
 
 
+class TranscribeMeetingChunkTaskFailureLoggingTests(TestCase):
+    """The chunk task records every failure on the segment, but an undecodable
+    fragment (a stray short/garbage live burst) must log at WARNING — a Sentry
+    breadcrumb, not an error event — while genuine failures keep the stack
+    trace (logger.exception → ERROR). Guards the Sentry-storm half of the
+    flood fix."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="cf@example.com", password="pw")
+        self.meeting = Meeting.objects.create(
+            name="Live meeting", slug="m-fail-task", created_by=self.user,
+        )
+
+    def _run_task_expecting_failure(self):
+        path = _write_temp_audio()
+        try:
+            transcribe_meeting_chunk_task(
+                meeting_id=self.meeting.pk,
+                segment_index=0,
+                temp_path=path,
+                mime="audio/webm",
+                model_id="openai/gpt-4o-mini-transcribe",
+                user_id=self.user.pk,
+                start_offset_seconds=0.0,
+            )
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    @patch(
+        "documents.services.transcription.transcribe_audio",
+        side_effect=ValueError("Audio file is corrupted or unreadable: x.webm"),
+    )
+    def test_undecodable_fragment_logs_warning_not_error(self, _mock):
+        with self.assertLogs("meetings.tasks", level="WARNING") as cm:
+            self._run_task_expecting_failure()
+        # The undecodable case logs WARNING and emits NO ERROR-level record.
+        self.assertTrue(any(r.levelname == "WARNING" for r in cm.records))
+        self.assertFalse(any(r.levelname == "ERROR" for r in cm.records))
+        seg = MeetingTranscriptSegment.objects.get(meeting=self.meeting, segment_index=0)
+        self.assertEqual(seg.status, MeetingTranscriptSegment.Status.FAILED)
+
+    @patch(
+        "documents.services.transcription.transcribe_audio",
+        side_effect=RuntimeError("OpenAI 500"),
+    )
+    def test_genuine_failure_logs_error_with_traceback(self, _mock):
+        with self.assertLogs("meetings.tasks", level="ERROR") as cm:
+            self._run_task_expecting_failure()
+        # A genuine failure keeps logger.exception (ERROR level, with exc_info).
+        err_records = [r for r in cm.records if r.levelname == "ERROR"]
+        self.assertTrue(err_records)
+        self.assertTrue(any(r.exc_info for r in err_records))
+        seg = MeetingTranscriptSegment.objects.get(meeting=self.meeting, segment_index=0)
+        self.assertEqual(seg.status, MeetingTranscriptSegment.Status.FAILED)
+
+
 @override_settings(MEETING_CHUNK_TEMP_DIR=tempfile.gettempdir())
 class TranscribeUploadedAudioTaskTests(TestCase):
     """Upload-path task should delegate to the orchestrator and clean up."""

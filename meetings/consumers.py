@@ -98,6 +98,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._segment_index_base: int = 0
         self._segments_total: int = 0
         self._segments_failed: int = 0
+        # Counts consecutive undersized chunked frames. A real ~30s chunk is
+        # hundreds of KB; a 250ms streaming-continuation burst leaking in from a
+        # mis-torn-down realtime recorder is a few KB and undecodable. We allow
+        # one undersized frame (a legit short final chunk) but drop a *run* of
+        # them — the flood signature — so garbage never reaches ffprobe/Celery.
+        self._undersized_chunk_streak: int = 0
         self._model_id: str = ""
         # Realtime-mode state. None in the default "chunked" path — filled in
         # by _maybe_start_realtime() when the cascading preference asks for
@@ -279,6 +285,23 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 f"chunk byte_length mismatch: expected {meta['byte_length']}, got {len(raw)}"
             )
             return
+        # Drop a *run* of undersized frames before they can flood ffprobe/Celery.
+        # One undersized frame is fine (a legit short final chunk); a streak is the
+        # signature of streaming-continuation bursts leaking into chunked mode.
+        min_bytes = getattr(settings, "MEETING_CHUNK_MIN_BYTES", 8 * 1024)
+        if len(raw) < min_bytes:
+            self._undersized_chunk_streak += 1
+            if self._undersized_chunk_streak > 1:
+                logger.info(
+                    "meetings: dropping undersized chunked frame "
+                    "(%d < %d bytes, streak=%d) — likely streaming bursts "
+                    "leaking into chunked mode; meeting=%s",
+                    len(raw), min_bytes, self._undersized_chunk_streak,
+                    self.meeting_id,
+                )
+                return
+        else:
+            self._undersized_chunk_streak = 0
         try:
             temp_path = await self._write_chunk(meta, raw)
         except Exception as exc:

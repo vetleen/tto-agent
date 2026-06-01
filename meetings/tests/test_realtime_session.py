@@ -1,11 +1,15 @@
 """Tests for the provider-agnostic RealtimeTranscriptionSession.
 
-``OpenAIRealtimeSession`` now opens a raw WebSocket to
-``wss://api.openai.com/v1/realtime?intent=transcription`` rather than
-going through ``AsyncOpenAI().beta.realtime.connect(...)`` — the SDK's
-wrapper forces a ``?model=`` URL parameter that OpenAI's transcription
-endpoint rejects. The test seam is a factory that returns a fake
-websocket with ``send``, async iteration, and ``close``.
+``OpenAIRealtimeSession`` opens a raw WebSocket to
+``wss://api.openai.com/v1/realtime?intent=transcription`` and speaks
+OpenAI's **GA** Realtime transcription dialect: no ``OpenAI-Beta`` header,
+a ``session.update`` message with config nested under
+``session.audio.input`` (audio ``format`` as an object), and
+``session.created``/``session.updated`` lifecycle events. The retired beta
+shape (``transcription_session.update`` + flat keys) closed every connect
+with ``invalid_request_error.beta_api_shape_disabled``. The test seam is a
+factory that returns a fake websocket with ``send``, async iteration, and
+``close``.
 """
 from __future__ import annotations
 
@@ -111,7 +115,7 @@ class FactoryTests(TestCase):
 class OpenAIRealtimeSessionTests(TestCase):
     def test_connect_hits_transcription_url_and_sends_session_update(self):
         ws = _FakeWebSocket(script=[
-            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {"type": "session.created", "session": {"id": "sess_1"}},
         ])
         captured: dict = {}
         session = OpenAIRealtimeSession(
@@ -135,21 +139,25 @@ class OpenAIRealtimeSessionTests(TestCase):
         )
         self.assertEqual(captured["api_key"], "sk-fake")
 
-        # First (and only) sent frame should be the session.update event.
+        # First (and only) sent frame should be the GA session.update event.
         self.assertEqual(len(ws.sent), 1)
         payload = json.loads(ws.sent[0])
-        self.assertEqual(payload["type"], "transcription_session.update")
+        self.assertEqual(payload["type"], "session.update")
         cfg = payload["session"]
-        self.assertEqual(cfg["input_audio_format"], "pcm16")
-        self.assertEqual(cfg["input_audio_transcription"]["model"], "gpt-4o-mini-transcribe")
-        self.assertEqual(cfg["input_audio_transcription"]["language"], "en")
-        self.assertIn("OncoBio Therapeutics", cfg["input_audio_transcription"]["prompt"])
+        self.assertEqual(cfg["type"], "transcription")
+        audio_input = cfg["audio"]["input"]
+        self.assertEqual(audio_input["format"], {"type": "audio/pcm", "rate": 24000})
+        self.assertEqual(audio_input["transcription"]["model"], "gpt-4o-mini-transcribe")
+        self.assertEqual(audio_input["transcription"]["language"], "en")
+        self.assertIn("OncoBio Therapeutics", audio_input["transcription"]["prompt"])
+        self.assertEqual(audio_input["turn_detection"]["type"], "server_vad")
+        self.assertEqual(audio_input["noise_reduction"], {"type": "near_field"})
 
     def test_long_prompt_is_capped_at_1024(self):
         # OpenAI's Realtime transcription endpoint closes the session with
         # ``string_above_max_length`` if the prompt exceeds 1024 chars.
         ws = _FakeWebSocket(script=[
-            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {"type": "session.created", "session": {"id": "sess_1"}},
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
@@ -165,7 +173,7 @@ class OpenAIRealtimeSessionTests(TestCase):
         _run(run())
 
         payload = json.loads(ws.sent[0])
-        prompt = payload["session"]["input_audio_transcription"]["prompt"]
+        prompt = payload["session"]["audio"]["input"]["transcription"]["prompt"]
         self.assertEqual(len(prompt), 1024)
 
     def test_missing_api_key_raises(self):
@@ -189,7 +197,7 @@ class OpenAIRealtimeSessionTests(TestCase):
 
     def test_deltas_and_completed_surface_as_structured_events(self):
         ws = _FakeWebSocket(script=[
-            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {"type": "session.created", "session": {"id": "sess_1"}},
             {
                 "type": "conversation.item.input_audio_transcription.delta",
                 "item_id": "item_1",
@@ -236,7 +244,7 @@ class OpenAIRealtimeSessionTests(TestCase):
 
     def test_send_pcm_encodes_as_input_audio_buffer_append(self):
         ws = _FakeWebSocket(script=[
-            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {"type": "session.created", "session": {"id": "sess_1"}},
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
@@ -259,7 +267,7 @@ class OpenAIRealtimeSessionTests(TestCase):
 
     def test_fatal_error_event_marks_session_error(self):
         ws = _FakeWebSocket(script=[
-            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {"type": "session.created", "session": {"id": "sess_1"}},
             {"type": "error", "error": {"code": "invalid_api_key", "message": "auth failed"}},
         ])
         session = OpenAIRealtimeSession(
@@ -283,9 +291,43 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(errors[0].code, "invalid_api_key")
         self.assertTrue(errors[0].fatal)
 
+    def test_invalid_request_error_is_fatal_not_reconnected(self):
+        # A config/request rejection (e.g. the retired beta shape, which closed
+        # with invalid_request_error) is identical on reconnect — classifying it
+        # off error.type keeps it fatal so we don't loop the backoff into the same
+        # rejection (the "Reconnecting…" storm). The code field may be absent or
+        # an unrecognised string, so error.type is what makes it fatal here.
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+            {"type": "error", "error": {
+                "type": "invalid_request_error",
+                "code": "beta_api_shape_disabled",
+                "message": "The beta Realtime API shape is no longer supported.",
+            }},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            errors: list[SessionError] = []
+            async for evt in session.events():
+                if isinstance(evt, SessionError):
+                    errors.append(evt)
+                    break
+            await session.aclose()
+            return errors
+
+        errors = _run(run())
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].fatal)
+
     def test_aclose_emits_disconnected_status(self):
         ws = _FakeWebSocket(script=[
-            {"type": "transcription_session.created", "session": {"id": "sess_1"}},
+            {"type": "session.created", "session": {"id": "sess_1"}},
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",

@@ -292,6 +292,101 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertIn("gap_seconds", msg["message"])
         await comm.disconnect()
 
+    async def test_undersized_chunk_burst_is_dropped_after_first(self):
+        """A *run* of tiny frames — 250ms streaming bursts leaking into chunked
+        mode from a mis-torn-down realtime recorder — is the flood signature.
+        We allow the first (it could be a legit short final chunk) and drop the
+        rest before they reach _write_chunk / the Celery queue, so undecodable
+        garbage can't storm ffprobe. Built directly so we can inspect internal
+        state without a working ffmpeg child."""
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
+        consumer._realtime_mode = "chunked"
+        consumer._pending_meta = []
+        consumer._segments_total = 0
+        consumer._undersized_chunk_streak = 0
+
+        sent = []
+
+        async def _fake_send(text_data=None, **kwargs):
+            sent.append(json.loads(text_data))
+        consumer.send = _fake_send
+
+        write_calls: list[int] = []
+
+        async def _fake_write_chunk(meta, raw):
+            write_calls.append(meta["segment_index"])
+            return f"/tmp/seg-{meta['segment_index']}"
+        consumer._write_chunk = _fake_write_chunk
+
+        enqueue_calls: list[int] = []
+
+        async def _fake_enqueue(meta, temp_path):
+            enqueue_calls.append(meta["segment_index"])
+        consumer._enqueue_chunk_task = _fake_enqueue
+
+        tiny = b"\x00" * 100  # well under the 8 KB MEETING_CHUNK_MIN_BYTES default
+        for i in range(4):
+            consumer._pending_meta.append({
+                "segment_index": i,
+                "byte_length": len(tiny),
+                "mime": "audio/webm",
+                "start_offset_seconds": 0.0,
+            })
+            await consumer._handle_binary_frame(tiny)
+
+        # Only the first undersized frame is written/enqueued; frames 2-4 dropped.
+        self.assertEqual(write_calls, [0])
+        self.assertEqual(enqueue_calls, [0])
+        self.assertEqual(consumer._segments_total, 1)
+        queued = [m for m in sent if m["type"] == "segment.queued"]
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(consumer._undersized_chunk_streak, 4)
+
+    async def test_normal_chunk_resets_undersized_streak(self):
+        """A legit full-size chunk clears the streak so a later short final
+        chunk is still accepted — the guard must not drop normal traffic."""
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
+        consumer._realtime_mode = "chunked"
+        consumer._pending_meta = []
+        consumer._segments_total = 0
+        consumer._undersized_chunk_streak = 0
+
+        async def _fake_send(text_data=None, **kwargs):
+            pass
+        consumer.send = _fake_send
+
+        enqueue_calls: list[int] = []
+
+        async def _fake_enqueue(meta, temp_path):
+            enqueue_calls.append(meta["segment_index"])
+        consumer._enqueue_chunk_task = _fake_enqueue
+
+        async def _fake_write_chunk(meta, raw):
+            return f"/tmp/seg-{meta['segment_index']}"
+        consumer._write_chunk = _fake_write_chunk
+
+        big = b"\x00" * (16 * 1024)   # > 8 KB → resets the streak
+        tiny = b"\x00" * 100          # legit short tail
+
+        # tiny (streak=1, allowed) → big (resets to 0) → tiny (streak=1, allowed)
+        for i, frame in enumerate((tiny, big, tiny)):
+            consumer._pending_meta.append({
+                "segment_index": i,
+                "byte_length": len(frame),
+                "mime": "audio/webm",
+                "start_offset_seconds": 0.0,
+            })
+            await consumer._handle_binary_frame(frame)
+
+        # All three are accepted; the big frame reset the streak in between.
+        self.assertEqual(enqueue_calls, [0, 1, 2])
+        self.assertEqual(consumer._segments_total, 3)
+        self.assertEqual(consumer._undersized_chunk_streak, 1)
+
     async def test_fall_back_to_chunked_emits_live_mode_changed(self):
         """First fallback emits live_mode_changed with permanent=False; second
         emits with permanent=True. Bypasses the realtime infra by calling the
