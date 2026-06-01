@@ -14,14 +14,18 @@ Operational reference for Wilfred (tto-agent). For dev setup see README.md, for 
 
 ## Deployment (Heroku)
 
-**Buildpacks:** apt (first, installs ffmpeg) → Node.js (builds Tailwind CSS) → Python.
+**Buildpacks:** apt (first, installs ffmpeg) → Node.js (builds Tailwind CSS) → Python → pgbouncer (`heroku/heroku-buildpack-pgbouncer`, in-dyno connection pooler).
 
 **Procfile:**
 ```
-web:     daphne -b 0.0.0.0 -p $PORT config.asgi:application
-worker:  celery -A config worker -l info --pool=threads --concurrency=${CELERY_WORKER_CONCURRENCY:-8} -B
+web:     bin/start-pgbouncer daphne -b 0.0.0.0 -p $PORT config.asgi:application
+worker:  bin/start-pgbouncer celery -A config worker -l info --pool=threads --concurrency=${CELERY_WORKER_CONCURRENCY:-8} -B
 release: python manage.py migrate --noinput && python manage.py collectstatic --noinput
 ```
+
+**`bin/start-pgbouncer`** (from the pgbouncer buildpack) wraps the `web` and `worker`
+processes so their DB connections go through an in-dyno PgBouncer; `release` stays direct
+so migrations don't run through a transaction pooler. See the Database section.
 
 **Worker pool & concurrency.** The worker runs the **threads** pool
 (`--pool=threads`), Celery's `ThreadPoolExecutor` backend. It needs no monkeypatching
@@ -33,11 +37,11 @@ I/O-bound (they wait on LLM / transcription / embedding APIs), so threads overla
 of them in one process at ~constant RAM while still preempting the partly CPU-bound work
 (PDF parsing, rerank, tokenization). That shifts the binding constraint to **database
 connections, not RAM**: Django holds one connection per thread, so `--concurrency=N` ≈
-up to N Postgres connections from the worker. Size it against the shared connection cap,
-not memory (see the Database section). Concurrency is driven by the
-`CELERY_WORKER_CONCURRENCY` config var (default **8**), sized for the `essential-0`
-20-connection cap; raise it to ~16–20 when moving to a 40-connection Postgres plan — no
-code change, just `heroku config:set`. Local Windows dev is unaffected: it uses the solo
+up to N connections — but the worker runs behind an in-dyno PgBouncer (see Database), so
+those multiplex onto `PGBOUNCER_DEFAULT_POOL_SIZE` real connections rather than counting
+1:1 against the cap. Concurrency is driven by the `CELERY_WORKER_CONCURRENCY` config var
+(default **8**); with PgBouncer fronting Postgres it can be raised for throughput without
+increasing real DB connections — no code change, just `heroku config:set`. Local Windows dev is unaffected: it uses the solo
 pool (`config/celery.py:win32` override).
 
 **`-B` embeds Celery beat in the worker.** Beat is the scheduler for periodic tasks
@@ -152,17 +156,27 @@ heroku logs --tail -a wilfred-staging
 
 ## Database
 
-**Production:** Postgres via `DATABASE_URL` (Heroku add-on). Connection settings: `conn_max_age=600` (reuse connections for 10 min), `conn_health_checks=True`.
+**Production:** Postgres via `DATABASE_URL` (Heroku add-on). `conn_max_age=0` (close each connection at the end of its request/task) and `disable_server_side_cursors=True` (required by PgBouncer transaction mode).
 
-**Connection limits (matters when scaling workers).** The `essential-0` plan caps the
-database at **20 connections**, shared across every web and worker dyno. Django holds
-one connection per thread and, with `conn_max_age=600`, keeps each open for 10 minutes
-— so connections linger after a burst. The worker runs the **threads** pool, where
-Django's per-thread connection model means `--pool=threads --concurrency=N` can open up
-to ~N connections from a single dyno. Size worker concurrency against the 20-connection
-cap (leaving headroom for web), not RAM — or raise the ceiling first with a larger
-Postgres tier or PgBouncer connection pooling. Check live usage with `heroku pg:info`
-(shows current connections and limit).
+**Connection pooling (PgBouncer).** The `essential-0` plan caps the database at **20
+connections**, shared across every web and worker dyno. To decouple app concurrency from
+that cap, the `web` and `worker` processes run behind an **in-dyno PgBouncer**
+(`heroku/heroku-buildpack-pgbouncer`, `transaction` pool mode) via the
+`bin/start-pgbouncer` wrapper in the Procfile; the `release` dyno stays direct. Real
+Postgres connections per dyno are capped by `PGBOUNCER_DEFAULT_POOL_SIZE`, so total real
+connections ≈ `2 × pool_size`:
+
+| DB plan | Conn limit | `PGBOUNCER_DEFAULT_POOL_SIZE` |
+|---------|-----------|-------------------------------|
+| essential-0 | 20 | 5 |
+| essential-2 | 40 | 10 |
+| standard-0 | 120 | 25 |
+
+Config vars (set **per app** — staging and production separately; `pipelines:promote`
+does not copy them): `PGBOUNCER_POOL_MODE=transaction`, `PGBOUNCER_DEFAULT_POOL_SIZE`
+(per table), `PGBOUNCER_MAX_CLIENT_CONN=100`. With PgBouncer in front,
+`CELERY_WORKER_CONCURRENCY` can be raised for throughput without increasing real DB
+connections (the pool size is the real ceiling). Check live usage with `heroku pg:info`.
 
 **Local dev:** SQLite when `DATABASE_URL` is unset.
 

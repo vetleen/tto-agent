@@ -62,7 +62,10 @@ def _get_vector_store():
             connection=conn,
             collection_name=COLLECTION_NAME,
             use_jsonb=True,
-            engine_args={"poolclass": NullPool},
+            # prepare_threshold=None disables psycopg3 prepared statements so this
+            # engine is safe through PgBouncer transaction pooling (Django's own
+            # connection already defaults to this; see config/settings.py DATABASES).
+            engine_args={"poolclass": NullPool, "connect_args": {"prepare_threshold": None}},
         )
         return _vector_store_cache
 

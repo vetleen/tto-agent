@@ -263,9 +263,13 @@ if DATABASE_URL:
     # persistent connections accumulate past that cap at peak. Closing per
     # request keeps the live connection count tracking active work, not idle
     # lingering. (conn_health_checks is moot with no persistent connections.)
+    # disable_server_side_cursors=True is required because the web/worker dynos
+    # route DB connections through an in-dyno PgBouncer in transaction pool mode,
+    # which cannot keep named server-side cursors across statements (see RUNBOOK).
     DATABASES = {
         "default": dj_database_url.config(
             conn_max_age=0,
+            disable_server_side_cursors=True,
         )
     }
 else:
