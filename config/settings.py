@@ -257,10 +257,15 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 if DATABASE_URL:
     # Production / Heroku: use Postgres from DATABASE_URL (SSL and options from URL).
+    # conn_max_age=0 closes the connection at the end of each request/task. The
+    # essential-0 plan caps at 20 connections; under ASGI (Daphne runs sync DB
+    # code in per-thread sync contexts) plus the threaded Celery worker,
+    # persistent connections accumulate past that cap at peak. Closing per
+    # request keeps the live connection count tracking active work, not idle
+    # lingering. (conn_health_checks is moot with no persistent connections.)
     DATABASES = {
         "default": dj_database_url.config(
-            conn_max_age=600,
-            conn_health_checks=True,
+            conn_max_age=0,
         )
     }
 else:
