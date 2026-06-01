@@ -53,11 +53,13 @@ process type — move beat to its own process (`beat: celery -A config beat -l i
 drop `-B` from the workers, or keep `-B` on exactly one process type that never scales
 past one dyno. Otherwise every scheduled task fires once per worker dyno.
 
-**Deploy flow:** `git push heroku main` → release phase runs migrations + collectstatic → web/worker dynos restart.
+**Deploy flow:** push to `main` on GitHub → `wilfred-staging` auto-builds (release phase runs migrations + collectstatic, then web/worker dynos restart) → verify on staging → `heroku pipelines:promote -a wilfred-staging` ships the same slug to `wilfred-production`. Never `git push heroku main` directly to production — it bypasses staging. See CLAUDE.md > Heroku & Environments for the full pipeline.
 
 **Required config vars:** `DJANGO_SECRET_KEY`, `DJANGO_CSRF_TRUSTED_ORIGINS`, `DJANGO_ALLOWED_HOSTS`, at least one LLM API key (`OPENAI_API_KEY`), `LLM_DEFAULT_MODEL`, `LLM_ALLOWED_MODELS`.
 
 **Auto-provisioned by Heroku add-ons:** `DATABASE_URL` (Heroku Postgres), `REDIS_URL` (Heroku Redis).
+
+**Provisioning a fresh app:** `app.json` declares the stack, buildpacks, add-ons, formation, and config-var names, so a new app can be created from the manifest (Heroku "Deploy" button or `heroku` setup) instead of re-running the steps by hand. Buildpacks and config vars are **per-app** — `pipelines:promote` copies only the slug, not these — so each app (staging, production) needs them set once. The pgbouncer buildpack is what provides `bin/start-pgbouncer`; without it the wrapped Procfile lines fail.
 
 ### Rollback
 
@@ -265,6 +267,9 @@ See `.env.example` for the full list with comments. Key production variables:
 | `MAILGUN_API_KEY` | No | Mailgun email provider |
 | `LOG_LEVEL` | No | App log verbosity (default: `INFO`) |
 | `PGVECTOR_CONNECTION` | No | pgvector DB connection (falls back to `DATABASE_URL`) |
+| `PGBOUNCER_POOL_MODE` | Heroku | In-dyno PgBouncer mode; keep `transaction` (see Database) |
+| `PGBOUNCER_DEFAULT_POOL_SIZE` | Heroku | Real PG conns per dyno (5 = essential-0, 10 = essential-2) |
+| `PGBOUNCER_MAX_CLIENT_CONN` | Heroku | Max app→local-pgbouncer conns (default 100) |
 | `DOCUMENT_UPLOAD_MAX_SIZE_BYTES` | No | Max upload size (default: 50 MB) |
 
 ### Production security (automatic when `DEBUG=False`)

@@ -168,10 +168,11 @@ See `.env.example` for more (e.g. Mailgun, chunk tuning, dev superuser).
 
 ## Heroku
 
-- **Buildpacks:** Node then Python.
-- **Add-ons:** Heroku Postgres, Heroku Redis.
-- **Config:** `DJANGO_SECRET_KEY`, `DJANGO_CSRF_TRUSTED_ORIGINS`; Procfile includes `worker: celery -A config worker -l info --concurrency=10` for document processing.
+- **Buildpacks:** apt (ffmpeg) → Node.js (Tailwind) → Python → pgbouncer (in-dyno connection pooler).
+- **Add-ons:** Heroku Postgres, Heroku Redis, Papertrail, Scheduler.
+- **Config:** `DJANGO_SECRET_KEY`, `DJANGO_CSRF_TRUSTED_ORIGINS`, `PGBOUNCER_*`; the `web`/`worker` Procfile entries are wrapped with `bin/start-pgbouncer`. `app.json` declares the full setup for provisioning a fresh app.
 - **Release:** `migrate` and `collectstatic`; Tailwind built in Node build phase.
+- **Ops:** see `RUNBOOK.md` for the staging→production pipeline, connection sizing, and rollback.
 
 ## Other
 

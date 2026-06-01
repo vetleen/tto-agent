@@ -1,0 +1,87 @@
+{
+  "name": "Wilfred (tto-agent)",
+  "description": "AI assistant for technology transfer offices. Django 6 + Channels (WebSocket chat) + Celery, multi-provider LLM, and pgvector RAG over uploaded data rooms.",
+  "repository": "https://github.com/vetleen/tto-agent",
+  "keywords": ["django", "channels", "celery", "pgvector", "llm", "rag"],
+  "success_url": "/",
+  "stack": "heroku-24",
+  "buildpacks": [
+    { "url": "heroku-community/apt" },
+    { "url": "heroku/nodejs" },
+    { "url": "heroku/python" },
+    { "url": "https://github.com/heroku/heroku-buildpack-pgbouncer" }
+  ],
+  "addons": [
+    "heroku-postgresql:essential-0",
+    "heroku-redis:mini",
+    "papertrail:choklad",
+    "scheduler:standard"
+  ],
+  "formation": {
+    "web": { "quantity": 1, "size": "basic" },
+    "worker": { "quantity": 1, "size": "basic" }
+  },
+  "env": {
+    "DJANGO_SECRET_KEY": {
+      "description": "Cryptographic signing key (sessions, CSRF).",
+      "generator": "secret"
+    },
+    "DJANGO_DEBUG": {
+      "description": "Must be False in production.",
+      "value": "False"
+    },
+    "DJANGO_ALLOWED_HOSTS": {
+      "description": "Comma-separated hostnames, e.g. your-app.herokuapp.com."
+    },
+    "DJANGO_CSRF_TRUSTED_ORIGINS": {
+      "description": "Comma-separated origins, e.g. https://your-app.herokuapp.com. Required or form posts return 403."
+    },
+    "OPENAI_API_KEY": {
+      "description": "Required: pgvector embeddings + OpenAI LLM provider."
+    },
+    "ANTHROPIC_API_KEY": {
+      "description": "Optional: Anthropic LLM provider.",
+      "required": false
+    },
+    "GEMINI_API_KEY": {
+      "description": "Optional: Google Gemini LLM provider.",
+      "required": false
+    },
+    "LLM_ALLOWED_MODELS": {
+      "description": "Comma-separated provider/model allowlist."
+    },
+    "LLM_DEFAULT_MODEL": {
+      "description": "Primary model, e.g. openai/gpt-5.4."
+    },
+    "LLM_DEFAULT_MID_MODEL": {
+      "description": "Mid-tier model for sub-agents."
+    },
+    "LLM_DEFAULT_CHEAP_MODEL": {
+      "description": "Fast model for descriptions and classification."
+    },
+    "PGBOUNCER_POOL_MODE": {
+      "description": "In-dyno PgBouncer pool mode. Keep 'transaction' — required by disable_server_side_cursors in settings.py.",
+      "value": "transaction"
+    },
+    "PGBOUNCER_DEFAULT_POOL_SIZE": {
+      "description": "Real Postgres connections PgBouncer opens per dyno (web and worker each ~ this many). 5 for essential-0 (20-conn cap), 10 for essential-2 (40), 25 for standard-0 (120).",
+      "value": "5"
+    },
+    "PGBOUNCER_MAX_CLIENT_CONN": {
+      "description": "Max app-side connections to the in-dyno PgBouncer (cheap; lets app concurrency exceed the real pool size).",
+      "value": "100"
+    },
+    "CELERY_WORKER_CONCURRENCY": {
+      "description": "Celery threads-pool worker thread count.",
+      "value": "8"
+    },
+    "SENTRY_DSN": {
+      "description": "Optional: error tracking. Disabled if unset.",
+      "required": false
+    },
+    "EMAIL_SENDING_ENABLED": {
+      "description": "Optional: enable outbound email (Mailgun backend). Default false.",
+      "required": false
+    }
+  }
+}
