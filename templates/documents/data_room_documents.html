@@ -460,9 +460,9 @@
       progressBar.style.width = '100%';
 
       if (uploaded > 0 && failed === 0) {
-        progressText.textContent = uploaded + ' file' + (uploaded === 1 ? '' : 's') + ' uploaded. Processing…';
+        progressText.textContent = uploaded + ' file' + (uploaded === 1 ? '' : 's') + ' uploaded. Preparing…';
       } else if (uploaded > 0) {
-        progressText.textContent = uploaded + ' uploaded, ' + failed + ' failed. Processing…';
+        progressText.textContent = uploaded + ' uploaded, ' + failed + ' failed. Preparing…';
       } else {
         progressText.textContent = 'Upload failed.';
         progressSpinner.classList.add('hidden');

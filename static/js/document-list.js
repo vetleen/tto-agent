@@ -34,12 +34,19 @@
   var pollInterval = null;
   var trackedDocIds = null;
 
+  // Only count documents in the ACTIVE list. Archived rows are also rendered with
+  // [data-doc-id] and a (possibly non-"ready") status, so without this scope they'd
+  // be counted as "processing" forever and inflate the banner.
   function hasNonTerminal() {
-    var rows = document.querySelectorAll('[data-doc-id]');
+    var rows = document.querySelectorAll('[data-doc-id][data-list="active"]');
     for (var i = 0; i < rows.length; i++) {
       if (!TERMINAL[rows[i].dataset.status]) return true;
     }
     return false;
+  }
+
+  function preparingLabel(n) {
+    return n === 1 ? 'Preparing your document…' : 'Preparing ' + n + ' documents…';
   }
 
   function updateProcessingBanner(statuses) {
@@ -60,9 +67,11 @@
       if (complete >= total) {
         trackedDocIds = null;
         if (failed > 0) {
-          bannerText.textContent = 'Processing complete: ' + done + ' succeeded, ' + failed + ' failed.';
+          bannerText.textContent = done > 0
+            ? done + ' ready, ' + failed + ' failed.'
+            : failed + (failed === 1 ? ' document failed.' : ' documents failed.');
         } else {
-          bannerText.textContent = 'All ' + total + ' file' + (total === 1 ? '' : 's') + ' processed successfully.';
+          bannerText.textContent = total === 1 ? 'Document ready.' : total + ' documents ready.';
         }
         banner.querySelector('svg').classList.add('hidden');
         banner.classList.remove('hidden');
@@ -78,11 +87,11 @@
     }
 
     var pending = 0;
-    document.querySelectorAll('[data-doc-id]').forEach(function (row) {
+    document.querySelectorAll('[data-doc-id][data-list="active"]').forEach(function (row) {
       if (!TERMINAL[row.dataset.status]) pending++;
     });
     if (pending > 0) {
-      bannerText.textContent = pending + ' document' + (pending === 1 ? '' : 's') + ' processing…';
+      bannerText.textContent = preparingLabel(pending);
       banner.querySelector('svg').classList.remove('hidden');
       banner.classList.remove('hidden');
     } else {
