@@ -59,10 +59,13 @@ def finalize_document_metadata(document_id: int) -> None:
     pii_model = resolve_org_feature_model(org_id, "pii_scan")
 
     pii_enabled = True
+    pii_quarantine_enabled = True
     if org_id:
         try:
             pii_org = Organization.objects.get(pk=org_id)
-            pii_enabled = (pii_org.preferences or {}).get("pii_scan_enabled", True)
+            prefs = pii_org.preferences or {}
+            pii_enabled = prefs.get("pii_scan_enabled", True)
+            pii_quarantine_enabled = prefs.get("pii_quarantine_enabled", True)
         except Organization.DoesNotExist:
             pass
 
@@ -107,6 +110,7 @@ def finalize_document_metadata(document_id: int) -> None:
             )
 
     # --- PII category scan (entire document, windowed) ---
+    pii_result: dict[str, bool] = {}
     if pii_enabled and pii_model:
         try:
             pii_result = scan_pii_categories_for_document(
@@ -126,3 +130,30 @@ def finalize_document_metadata(document_id: int) -> None:
                 "finalize_document_metadata: document_id=%s PII scan failed (non-critical)",
                 document_id,
             )
+
+    # --- Quarantine on GDPR Article 9 / 10 detection ---
+    # Special category (Art. 9) and criminal offence (Art. 10) data must never reach
+    # the LLM. Flag the document; read-time filters in documents/services/retrieval.py
+    # keep its chunks out of every retrieval path.
+    if pii_quarantine_enabled:
+        articles = []
+        if pii_result.get("pii_special_category"):
+            articles.append("Article 9 (special category)")
+        if pii_result.get("pii_criminal_offence"):
+            articles.append("Article 10 (criminal offence)")
+        if articles:
+            try:
+                doc.is_quarantined = True
+                doc.quarantine_reason = "Contains GDPR " + " and ".join(articles) + " personal data."
+                doc.save(update_fields=["is_quarantined", "quarantine_reason", "updated_at"])
+                logger.warning(
+                    "finalize_document_metadata: document_id=%s quarantined (%s)",
+                    document_id,
+                    ", ".join(articles),
+                )
+            except DataRoomDocument.NotUpdated:
+                # Document was deleted before quarantine could be applied — expected, not an error.
+                logger.info(
+                    "finalize_document_metadata: document_id=%s deleted before quarantine, skipping",
+                    document_id,
+                )

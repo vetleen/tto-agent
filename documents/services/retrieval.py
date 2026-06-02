@@ -90,10 +90,14 @@ def rerank_chunks(
 
 def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
     """Return chunks for a document in order (from DB)."""
-    chunks = DataRoomDocumentChunk.objects.filter(
-        document_id=document_id,
-        is_quarantined=False,
-    ).order_by("chunk_index")
+    chunks = (
+        DataRoomDocumentChunk.objects.filter(
+            document_id=document_id,
+            is_quarantined=False,
+        )
+        .exclude(document__is_quarantined=True)
+        .order_by("chunk_index")
+    )
     return [
         {
             "id": c.id,
@@ -117,6 +121,7 @@ def get_chunks_by_data_room(data_room_id: int) -> list[dict[str, Any]]:
         )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
+        .exclude(document__is_quarantined=True)
         .select_related("document")
         .order_by("document_id", "chunk_index")
     )
@@ -153,6 +158,7 @@ def fulltext_search_chunks(
         )
         .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
+        .exclude(document__is_quarantined=True)
         .annotate(rank=SearchRank("search_vector", search_query))
         .filter(rank__gt=0)
         .order_by("-rank")
@@ -223,17 +229,20 @@ def hybrid_search_chunks(
         except Exception:
             logger.exception("hybrid_search: fulltext search failed, continuing with semantic only")
 
-    # ---- Exclude archived documents from semantic results ----------------------
+    # ---- Exclude archived / quarantined documents from semantic results --------
     if semantic_results:
-        archived_doc_ids = set(
+        from django.db.models import Q
+
+        excluded_doc_ids = set(
             DataRoomDocument.objects.filter(
-                data_room_id__in=data_room_ids, is_archived=True,
+                Q(is_archived=True) | Q(is_quarantined=True),
+                data_room_id__in=data_room_ids,
             ).values_list("pk", flat=True)
         )
-        if archived_doc_ids:
+        if excluded_doc_ids:
             semantic_results = [
                 doc for doc in semantic_results
-                if (getattr(doc, "metadata", {}) or {}).get("document_id") not in archived_doc_ids
+                if (getattr(doc, "metadata", {}) or {}).get("document_id") not in excluded_doc_ids
             ]
 
     # ---- Fuse with RRF -------------------------------------------------------
@@ -336,8 +345,12 @@ def get_chunk_with_context(
         target_tokens = getattr(django_settings, "RETRIEVAL_CONTEXT_TARGET_TOKENS", 1200)
 
     try:
-        center = DataRoomDocumentChunk.objects.get(pk=chunk_id)
+        center = DataRoomDocumentChunk.objects.select_related("document").get(pk=chunk_id)
     except DataRoomDocumentChunk.DoesNotExist:
+        return {"error": f"Chunk {chunk_id} not found"}
+
+    # A quarantined document never surfaces to the LLM.
+    if center.document.is_quarantined:
         return {"error": f"Chunk {chunk_id} not found"}
 
     # Fetch all non-quarantined chunks for the same document, ordered by chunk_index
@@ -346,6 +359,7 @@ def get_chunk_with_context(
             document_id=center.document_id,
             is_quarantined=False,
         )
+        .exclude(document__is_quarantined=True)
         .order_by("chunk_index")
         .values("id", "chunk_index", "text", "token_count")
     )
@@ -457,12 +471,14 @@ def get_merged_context_windows(
     merged_windows: list[dict[str, Any]] = []
 
     for doc_id, hits in doc_hits.items():
-        # Fetch all non-quarantined chunks for this document, ordered
+        # Fetch all non-quarantined chunks for this document, ordered.
+        # Excludes documents quarantined at the document level (e.g. GDPR Art. 9/10).
         all_chunks = list(
             DataRoomDocumentChunk.objects.filter(
                 document_id=doc_id,
                 is_quarantined=False,
             )
+            .exclude(document__is_quarantined=True)
             .order_by("chunk_index")
             .values("id", "chunk_index", "text", "token_count")
         )

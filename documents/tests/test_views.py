@@ -785,6 +785,58 @@ class DocumentViewsTests(TestCase):
         self.assertIn(failed_doc.id, doc_ids)
 
     # ------------------------------------------------------------------ #
+    # PII pills + quarantine badges                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_data_room_documents_attaches_pii_summary_and_renders_pills(self):
+        self.client.force_login(self.user)
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="pii.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocumentTag.objects.create(document=doc, key="pii_ordinary_identity", value="true")
+        DataRoomDocumentTag.objects.create(document=doc, key="pii_special_category", value="true")
+
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertEqual(response.status_code, 200)
+        ctx_doc = next(d for d in response.context["documents"] if d.id == doc.id)
+        self.assertTrue(ctx_doc.pii_summary["has_ordinary"])
+        self.assertTrue(ctx_doc.pii_summary["special"])
+        # Pills show compact labels so the row does not overflow...
+        self.assertContains(response, "Personal data")
+        self.assertContains(response, "Special category")
+        # ...while the full GDPR article reference lives in the hover tooltip.
+        self.assertContains(response, "GDPR Art. 9")
+
+    def test_data_room_documents_renders_quarantine_badge(self):
+        self.client.force_login(self.user)
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="quar.txt", status=DataRoomDocument.Status.READY,
+            is_quarantined=True,
+            quarantine_reason="Contains GDPR Article 9 (special category) personal data.",
+        )
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertContains(response, "Quarantined")
+        self.assertContains(response, "excluded from all assistant responses")
+
+    def test_data_room_documents_renders_partial_quarantine_badge(self):
+        self.client.force_login(self.user)
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="partial.txt", status=DataRoomDocument.Status.READY,
+            is_partially_quarantined=True,
+        )
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
+        )
+        self.assertContains(response, "Partially quarantined")
+
+    # ------------------------------------------------------------------ #
     # data_room_list POST — description                                    #
     # ------------------------------------------------------------------ #
 

@@ -411,6 +411,7 @@ def org_settings_page(request):
     org_subagent_prefs = org_prefs.get("subagents", {})
     parallel_subagents = org_subagent_prefs.get("parallel", True)
     pii_scan_enabled = org_prefs.get("pii_scan_enabled", True)
+    pii_quarantine_enabled = org_prefs.get("pii_quarantine_enabled", True)
 
     from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS
 
@@ -489,6 +490,7 @@ def org_settings_page(request):
         "skills_data_json": json.dumps(skills_data),
         "parallel_subagents": parallel_subagents,
         "pii_scan_enabled": pii_scan_enabled,
+        "pii_quarantine_enabled": pii_quarantine_enabled,
         "org_max_context_tokens": org_max_context_tokens,
         "system_transcription_models": system_transcription_models,
         "org_allowed_transcription": org_allowed_transcription,
@@ -739,6 +741,29 @@ def org_pii_scan_toggle_update(request):
     org = membership.org
     prefs = org.preferences or {}
     prefs["pii_scan_enabled"] = bool(enabled)
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+
+    return JsonResponse({"ok": True, "enabled": bool(enabled)})
+
+
+@login_required
+@require_POST
+def org_pii_quarantine_toggle_update(request):
+    """Toggle automatic quarantine of documents containing GDPR Art. 9/10 data."""
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    enabled = data.get("enabled", True)
+
+    org = membership.org
+    prefs = org.preferences or {}
+    prefs["pii_quarantine_enabled"] = bool(enabled)
     org.preferences = prefs
     org.save(update_fields=["preferences"])
 

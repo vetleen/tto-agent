@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase, override_settings
 
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk
@@ -601,6 +602,55 @@ class RetrievalServiceTests(TestCase):
         self.assertEqual(results[0].metadata["data_room_id"], self.data_room.pk)
         self.assertEqual(results[0].metadata["doc_index"], self.doc.doc_index)
         self.assertNotIn("document_id", results[0].metadata)
+
+
+class QuarantineRetrievalTests(TestCase):
+    """A document-level quarantine excludes all of a doc's content from retrieval."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="quar@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="QuarProject", slug="quar-project", created_by=self.user)
+        self.clean = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="clean.txt", status=DataRoomDocument.Status.READY,
+        )
+        self.clean_chunk = DataRoomDocumentChunk.objects.create(
+            document=self.clean, chunk_index=0, text="Clean content", token_count=5,
+        )
+        self.quarantined = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="quar.txt", status=DataRoomDocument.Status.READY,
+            is_quarantined=True, quarantine_reason="Contains GDPR Article 9 (special category) personal data.",
+        )
+        self.quar_chunk = DataRoomDocumentChunk.objects.create(
+            document=self.quarantined, chunk_index=0, text="Sensitive content", token_count=5,
+        )
+
+    def test_get_chunks_by_document_excludes_quarantined_doc(self):
+        self.assertEqual(get_chunks_by_document(self.quarantined.id), [])
+        self.assertEqual(len(get_chunks_by_document(self.clean.id)), 1)
+
+    def test_get_chunks_by_data_room_excludes_quarantined_doc(self):
+        result = get_chunks_by_data_room(self.data_room.id)
+        doc_ids = {r["document_id"] for r in result}
+        self.assertEqual(doc_ids, {self.clean.id})
+
+    def test_get_chunk_with_context_short_circuits_quarantined(self):
+        result = get_chunk_with_context(self.quar_chunk.id)
+        self.assertIn("error", result)
+
+    def test_get_merged_context_windows_drops_quarantined_doc(self):
+        windows = get_merged_context_windows([self.quar_chunk.id, self.clean_chunk.id])
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0]["document_id"], self.clean.id)
+
+    @unittest.skipUnless(connection.vendor == "postgresql", "fulltext search requires PostgreSQL")
+    def test_fulltext_search_excludes_quarantined_doc(self):
+        from documents.services.retrieval import fulltext_search_chunks
+
+        results = fulltext_search_chunks([self.data_room.id], "content", k=10)
+        doc_ids = {r["document_id"] for r in results}
+        self.assertNotIn(self.quarantined.id, doc_ids)
 
 
 class DynamicContextTests(TestCase):

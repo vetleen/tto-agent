@@ -5,6 +5,7 @@ import os
 
 from django.conf import settings
 from django.db import IntegrityError
+from django.db.models import Prefetch
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
@@ -14,6 +15,7 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 
 from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
+from .pii_labels import CRIMINAL_TOOLTIP, PILL_LABEL, SPECIAL_TOOLTIP, summarize_pii_keys
 
 
 logger = logging.getLogger(__name__)
@@ -180,7 +182,17 @@ def data_room_documents(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return redirect("data_room_list")
-    all_docs = list(data_room.documents.order_by("-uploaded_at"))
+    all_docs = list(
+        data_room.documents.order_by("-uploaded_at").prefetch_related(
+            Prefetch(
+                "tags",
+                queryset=DataRoomDocumentTag.objects.filter(key__startswith="pii_"),
+                to_attr="pii_tags",
+            )
+        )
+    )
+    for doc in all_docs:
+        doc.pii_summary = summarize_pii_keys([t.key for t in doc.pii_tags])
     documents = _annotate_relative_dates([d for d in all_docs if not d.is_archived])
     archived_documents = _annotate_relative_dates([d for d in all_docs if d.is_archived])
     return render(
@@ -190,6 +202,9 @@ def data_room_documents(request, data_room_id):
             "data_room": data_room,
             "documents": documents,
             "archived_documents": archived_documents,
+            "pii_pill_label": PILL_LABEL,
+            "pii_special_tooltip": SPECIAL_TOOLTIP,
+            "pii_criminal_tooltip": CRIMINAL_TOOLTIP,
         },
     )
 

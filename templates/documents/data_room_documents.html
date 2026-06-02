@@ -99,10 +99,11 @@
       </div>
       {% endif %}
       {% for doc in documents %}
-      <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="active">
+      <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if doc.is_quarantined %}opacity-60{% endif %} {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="active">
         <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
         <span class="doc-status-icon shrink-0 me-2"></span>
         <span class="flex-1 min-w-0 truncate font-medium text-heading" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
+        {% include "documents/_pii_status_pills.html" with doc=doc %}
         <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
         <div class="relative shrink-0 ms-2">
           <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Document options" data-dropdown-toggle="dropdown-doc-{{ doc.id }}">
@@ -173,6 +174,7 @@
           <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
           <span class="doc-status-icon shrink-0 me-2"></span>
           <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
+          {% include "documents/_pii_status_pills.html" with doc=doc %}
           <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
           <div class="relative shrink-0 ms-2">
             <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Document options" data-dropdown-toggle="dropdown-archived-doc-{{ doc.id }}">

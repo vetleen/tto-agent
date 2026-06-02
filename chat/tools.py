@@ -337,6 +337,13 @@ class ReadDocumentTool(ContextAwareTool):
                     })
                     continue
 
+            if doc.is_quarantined:
+                documents.append({
+                    "doc_index": idx,
+                    "error": "This document is quarantined and unavailable.",
+                })
+                continue
+
             chunks_qs = doc.chunks.filter(is_quarantined=False).order_by("chunk_index")
 
             if use_chunk_range:

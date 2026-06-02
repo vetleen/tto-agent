@@ -148,6 +148,75 @@ class FinalizeDocumentMetadataTests(TestCase):
 
         self.assertFalse(DataRoomDocumentTag.objects.filter(document=doc, key__startswith="pii_").exists())
 
+    @override_settings(**_MODELS)
+    def test_quarantine_on_special_category(self):
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._ready_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value={"description": "", "tags": {}, "document_date": None}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   return_value={"pii_ordinary_identity": True, "pii_special_category": True}):
+            finalize_document_metadata(doc.id)
+
+        doc.refresh_from_db()
+        self.assertTrue(doc.is_quarantined)
+        self.assertIn("Article 9", doc.quarantine_reason)
+
+    @override_settings(**_MODELS)
+    def test_quarantine_on_criminal_offence(self):
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._ready_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value={"description": "", "tags": {}, "document_date": None}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   return_value={"pii_criminal_offence": True}):
+            finalize_document_metadata(doc.id)
+
+        doc.refresh_from_db()
+        self.assertTrue(doc.is_quarantined)
+        self.assertIn("Article 10", doc.quarantine_reason)
+
+    @override_settings(**_MODELS)
+    def test_no_quarantine_for_ordinary_only(self):
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._ready_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value={"description": "", "tags": {}, "document_date": None}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   return_value={"pii_ordinary_identity": True}):
+            finalize_document_metadata(doc.id)
+
+        doc.refresh_from_db()
+        self.assertFalse(doc.is_quarantined)
+        self.assertEqual(doc.quarantine_reason, "")
+
+    @override_settings(**_MODELS)
+    def test_quarantine_respects_org_toggle(self):
+        """pii_quarantine_enabled=False leaves Art. 9 docs un-quarantined (tags still written)."""
+        from accounts.models import Membership, Organization
+        from documents.tasks import finalize_document_metadata
+
+        org = Organization.objects.create(
+            name="QuarOffOrg", slug="quar-off-org", preferences={"pii_quarantine_enabled": False},
+        )
+        Membership.objects.create(user=self.user, org=org, role="admin")
+        doc = self._ready_doc()
+
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value={"description": "", "tags": {}, "document_date": None}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   return_value={"pii_special_category": True}):
+            finalize_document_metadata(doc.id)
+
+        doc.refresh_from_db()
+        self.assertFalse(doc.is_quarantined)
+        self.assertTrue(
+            DataRoomDocumentTag.objects.filter(document=doc, key="pii_special_category").exists()
+        )
+
     def test_skips_when_no_models_configured(self):
         from documents.tasks import finalize_document_metadata
 

@@ -101,6 +101,8 @@ def scan_document_chunks(document_id: int) -> None:
 
     cheap_model = resolve_org_feature_model(org_id, "guardrail_chunk_scan")
     if not cheap_model or not remaining_chunks:
+        # Heuristic phase alone may have quarantined chunks — reflect that at the doc level.
+        _refresh_partial_quarantine(document_id)
         logger.info(
             "scan_document_chunks: document_id=%s done heuristic_flagged=%s",
             document_id, len(flagged_chunk_ids),
@@ -117,6 +119,7 @@ def scan_document_chunks(document_id: int) -> None:
                 document_id, batch_start,
             )
 
+    _refresh_partial_quarantine(document_id)
     logger.info(
         "scan_document_chunks: document_id=%s complete",
         document_id,
@@ -203,6 +206,24 @@ def _quarantine_chunk(chunk_id: int, reason: str) -> None:
     DataRoomDocumentChunk.objects.filter(pk=chunk_id).update(
         is_quarantined=True,
         quarantine_reason=reason[:2000],
+    )
+
+
+def _refresh_partial_quarantine(document_id: int) -> None:
+    """Reflect chunk-level quarantine at the document level.
+
+    Sets ``is_partially_quarantined`` to whether any of the document's chunks are
+    quarantined. This is independent of full-document quarantine (GDPR Art. 9/10):
+    a document can have individual chunks quarantined by guardrails without being
+    fully quarantined. Uses ``.update()`` so a deleted document is a silent no-op.
+    """
+    from documents.models import DataRoomDocument, DataRoomDocumentChunk
+
+    has_quarantined = DataRoomDocumentChunk.objects.filter(
+        document_id=document_id, is_quarantined=True
+    ).exists()
+    DataRoomDocument.objects.filter(pk=document_id).update(
+        is_partially_quarantined=has_quarantined
     )
 
 

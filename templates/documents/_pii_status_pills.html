@@ -1,0 +1,59 @@
+{% comment %}
+Renders PII category + quarantine status pills for one document row.
+Expects in context: `doc` (with `.pii_summary`, `.is_quarantined`,
+`.is_partially_quarantined`, `.quarantine_reason`), plus `pii_pill_label`,
+`pii_special_tooltip`, `pii_criminal_tooltip` (provided by the data_room_documents view).
+Tooltips use Flowbite (auto-initialized on page load); IDs are scoped by doc id.
+{% endcomment %}
+{% if doc.is_quarantined or doc.is_partially_quarantined or doc.pii_summary.has_ordinary or doc.pii_summary.special or doc.pii_summary.criminal %}
+<div class="hidden md:flex items-center gap-1.5 shrink-0 ms-3">
+  {% if doc.is_quarantined %}
+  <span tabindex="0" data-tooltip-target="pii-tt-quarantine-{{ doc.id }}" class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700">
+    <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/></svg>
+    Quarantined
+  </span>
+  <div id="pii-tt-quarantine-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-gray-700 max-w-xs">
+    {{ doc.quarantine_reason|default:"This document is quarantined." }} It is excluded from all assistant responses.
+    <div class="tooltip-arrow" data-popper-arrow></div>
+  </div>
+  {% elif doc.is_partially_quarantined %}
+  <span tabindex="0" data-tooltip-target="pii-tt-partial-{{ doc.id }}" class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700">
+    Partially quarantined
+  </span>
+  <div id="pii-tt-partial-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-gray-700 max-w-xs">
+    Some parts of this document were quarantined by content safety checks and are excluded from assistant responses.
+    <div class="tooltip-arrow" data-popper-arrow></div>
+  </div>
+  {% endif %}
+
+  {% if doc.pii_summary.has_ordinary %}
+  <span tabindex="0" data-tooltip-target="pii-tt-ordinary-{{ doc.id }}" class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700">
+    {{ pii_pill_label.ordinary }}
+  </span>
+  <div id="pii-tt-ordinary-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-gray-700 max-w-xs">
+    {{ doc.pii_summary.ordinary_tooltip }}
+    <div class="tooltip-arrow" data-popper-arrow></div>
+  </div>
+  {% endif %}
+
+  {% if doc.pii_summary.special %}
+  <span tabindex="0" data-tooltip-target="pii-tt-special-{{ doc.id }}" class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700">
+    {{ pii_pill_label.special }}
+  </span>
+  <div id="pii-tt-special-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-gray-700 max-w-xs">
+    {{ pii_special_tooltip }}
+    <div class="tooltip-arrow" data-popper-arrow></div>
+  </div>
+  {% endif %}
+
+  {% if doc.pii_summary.criminal %}
+  <span tabindex="0" data-tooltip-target="pii-tt-criminal-{{ doc.id }}" class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700">
+    {{ pii_pill_label.criminal }}
+  </span>
+  <div id="pii-tt-criminal-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-gray-700 max-w-xs">
+    {{ pii_criminal_tooltip }}
+    <div class="tooltip-arrow" data-popper-arrow></div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}

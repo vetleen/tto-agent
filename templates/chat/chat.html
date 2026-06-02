@@ -1662,7 +1662,10 @@
       if (data.command === "/untag" && data.status === "ok") {
         updateThreadEmoji(data.thread_id || activeThreadId, "");
       }
-      if (data.status === "ok") { appendSystemMessage(data.message); }
+      if (data.status === "ok") {
+        if (data.command === "/pii") { appendInfoMarkdown(data.message); }
+        else { appendSystemMessage(data.message); }
+      }
       else { appendError(data.message); }
       enableInput();
       return;
@@ -2005,6 +2008,14 @@
     scrollToBottom();
   }
 
+  function appendInfoMarkdown(msg) {
+    const div = document.createElement("div");
+    div.className = "my-2 px-4 py-3 text-sm text-body bg-neutral-tertiary/40 border border-default rounded-base markdown-content";
+    div.innerHTML = renderMarkdown(msg);
+    messagesContainer.appendChild(div);
+    scrollToBottom();
+  }
+
   form.addEventListener("submit", function(e) {
     e.preventDefault(); if (locked) return;
     const text = (input.value || "").trim(); if (!text) return;
@@ -2072,6 +2083,7 @@
     {name: "/name", desc: "Rename this chat"},
     {name: "/tag", desc: "Tag with emoji"},
     {name: "/untag", desc: "Remove emoji tag"},
+    {name: "/pii", desc: "Show personal data used in this chat"},
   ];
   var slashMenu = null;
   var slashSelectedIdx = -1;

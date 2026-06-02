@@ -2525,6 +2525,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "/tag": self._cmd_tag,
             "/untag": self._cmd_untag,
             "/compact": self._cmd_compact,
+            "/pii": self._cmd_pii,
         }
 
         handler = handlers.get(command)
@@ -2568,6 +2569,47 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             formatted = f"${cost:.2f}"
         await self._send_command_result("/cost", "ok", f"Thread cost: {formatted}")
+
+    async def _cmd_pii(self, args, data):
+        """Handle /pii — summarize GDPR PII categories across the thread's used documents."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        if not thread_id:
+            await self._send_command_result(
+                "/pii", "error", "No active thread. Send a message first, then run /pii.",
+            )
+            return
+
+        keys = await self._get_thread_pii_keys(thread_id)
+        if keys is None:
+            await self._send_command_result("/pii", "error", "Thread not found.")
+            return
+
+        from documents.pii_labels import format_thread_pii_report
+
+        message = format_thread_pii_report(keys)
+        await self._send_command_result("/pii", "ok", message)
+
+    @database_sync_to_async
+    def _get_thread_pii_keys(self, thread_id):
+        """Distinct pii_* tag keys across documents the thread has used.
+
+        Returns ``None`` if the thread doesn't exist or isn't owned by the current
+        user (thread_id arrives from the client), otherwise a list of category keys.
+        """
+        from chat.models import ChatThread
+        from documents.models import DataRoomDocumentTag
+
+        if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
+            return None
+
+        return list(
+            DataRoomDocumentTag.objects.filter(
+                document__thread_usages__thread_id=thread_id,
+                key__startswith="pii_",
+            )
+            .values_list("key", flat=True)
+            .distinct()
+        )
 
     async def _cmd_name(self, args, data):
         """Handle /name — rename the current thread."""

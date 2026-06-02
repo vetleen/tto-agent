@@ -290,6 +290,22 @@ class ReadDocumentToolTests(TestCase):
         self.assertIsNotNone(tool)
         self.assertEqual(tool.name, "read_document")
 
+    def test_quarantined_document_returns_error(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="quar.txt", status=DataRoomDocument.Status.READY,
+            is_quarantined=True,
+            quarantine_reason="Contains GDPR Article 9 (special category) personal data.",
+        )
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="Sensitive", token_count=2)
+
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        self.assertEqual(len(result["documents"]), 1)
+        d = result["documents"][0]
+        self.assertIn("error", d)
+        self.assertIn("quarantined", d["error"].lower())
+        self.assertNotIn("content", d)
+
     def test_full_document_read(self):
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room, uploaded_by=self.user,
