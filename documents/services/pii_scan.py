@@ -162,3 +162,71 @@ def scan_pii_categories(
         list(result.keys()),
     )
     return result
+
+
+def _scan_window(window, detected, user_id, data_room_id, org_id) -> None:
+    """Scan one window of chunks and union any detected PII categories into ``detected``.
+
+    A single window failing (e.g. a transient LLM error) is logged and skipped so it
+    doesn't abort the whole-document scan.
+    """
+    if not window:
+        return
+    parts = []
+    for chunk in window:
+        heading = (chunk.get("heading") or "").strip()
+        text = chunk.get("text") or ""
+        parts.append(f"{heading}\n{text}" if heading else text)
+    window_text = "\n\n".join(parts)
+    try:
+        result = scan_pii_categories(
+            window_text, user_id=user_id, data_room_id=data_room_id, org_id=org_id,
+        )
+    except Exception:
+        logger.exception("scan_pii_categories_for_document: window scan failed (continuing)")
+        return
+    for category, present in result.items():
+        if present:
+            detected[category] = True
+
+
+def scan_pii_categories_for_document(
+    document_id: int,
+    user_id: int | None = None,
+    data_room_id: int | None = None,
+    org_id: int | None = None,
+) -> dict[str, bool]:
+    """Classify an entire document into GDPR PII categories, scanning all of it.
+
+    Reads the document's chunks in memory-safe windows (so a long document never
+    materializes all its text at once) and unions the categories detected in each
+    window. Returns early once every category has been found — further scanning
+    cannot change the result. A document that fits in one window is a single
+    ``scan_pii_categories`` call (the same cost as before, minus the old head/tail
+    truncation that silently skipped the middle of long documents).
+
+    Returns a dict of only the categories detected as ``True``.
+    """
+    from django.conf import settings
+
+    from documents.services.chunk_access import iter_document_chunks
+
+    budget = getattr(settings, "PII_SCAN_WINDOW_TOKENS", 6000)
+    detected: dict[str, bool] = {}
+    window: list[dict] = []
+    window_tokens = 0
+
+    for chunk in iter_document_chunks(
+        document_id, fields=("text", "heading", "token_count", "chunk_index")
+    ):
+        window.append(chunk)
+        window_tokens += chunk.get("token_count") or 0
+        if window_tokens >= budget:
+            _scan_window(window, detected, user_id, data_room_id, org_id)
+            window, window_tokens = [], 0
+            if len(detected) == len(PII_CATEGORIES):  # all categories found — stop early (lossless)
+                return detected
+
+    if window:
+        _scan_window(window, detected, user_id, data_room_id, org_id)
+    return detected

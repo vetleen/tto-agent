@@ -18,10 +18,9 @@ from django.contrib.postgres.search import SearchVector
 # If a document has been PROCESSING longer than this, treat it as stuck and allow reprocessing.
 STALE_PROCESSING_MINUTES = 15
 
-from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
+from documents.models import DataRoomDocument, DataRoomDocumentChunk
 from documents.services.chunking import clean_extracted_text, extract_file_metadata_date, load_documents, semantic_chunk, structure_aware_chunk
 from documents.services.storage_utils import local_copy
-from llm.service.errors import LLMAuthError, LLMConfigurationError, LLMPolicyDenied
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +94,8 @@ def process_document(document_id: int) -> None:
                 docs = load_documents(file_path, ext)
                 combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
                 cleaned = clean_extracted_text(combined)
+                # Free the extraction intermediates now — only `cleaned` is needed downstream.
+                del docs, combined
 
             # Extract date from file metadata (best-effort, all formats)
             file_meta_date = extract_file_metadata_date(file_path, ext)
@@ -116,7 +117,10 @@ def process_document(document_id: int) -> None:
         else:
             chunks_data = semantic_chunk(cleaned)
             doc.chunking_strategy = "semantic"
-        logger.info("process_document: document_id=%s stage=chunked count=%s strategy=%s", document_id, len(chunks_data), doc.chunking_strategy)
+        chunk_count = len(chunks_data)
+        # `cleaned` is no longer needed — description/PII moved to finalize_document_metadata.
+        del cleaned
+        logger.info("process_document: document_id=%s stage=chunked count=%s strategy=%s", document_id, chunk_count, doc.chunking_strategy)
 
         if not chunks_data:
             raise ValueError(
@@ -143,6 +147,7 @@ def process_document(document_id: int) -> None:
             for c in chunks_data
         ]
         DataRoomDocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
+        del chunk_objects  # persisted — drop the in-memory model instances
 
         # Populate full-text search vectors for all chunks.
         # Wrapped in its own savepoint so a failure (e.g. SQLite in dev/test) does
@@ -161,19 +166,23 @@ def process_document(document_id: int) -> None:
 
         # Persist token_count (and chunking metadata) immediately so they're saved even if vector store fails
         doc.token_count = sum(c.get("token_count", 0) for c in chunks_data)
+        del chunks_data  # done with the in-memory chunk dicts
         doc.save(update_fields=["parser_type", "chunking_strategy", "token_count", "file_metadata_date", "updated_at"])
 
-        # Embed and index all chunks in vector store
+        # Embed and index all chunks in vector store. Chunks are streamed from the DB
+        # in keyset pages and embedded in batches, so neither all chunk text nor all
+        # vectors are ever materialized at once.
         from documents.services import vector_store as vs
-        chunk_records = list(
-            doc.chunks.order_by("chunk_index").values("id", "text", "chunk_index")
-        )
-        if chunk_records and getattr(settings, "PGVECTOR_CONNECTION", None):
+        from documents.services.chunk_access import iter_document_chunks
+        if getattr(settings, "PGVECTOR_CONNECTION", None):
             try:
                 logger.info("process_document: document_id=%s stage=vector_delete", document_id)
                 vs.delete_vectors_for_document(doc.id)
                 logger.info("process_document: document_id=%s stage=embedding", document_id)
-                vs.add_chunk_vectors(chunk_records, document_id=doc.id, data_room_id=doc.data_room_id)
+                vs.add_chunk_vectors(
+                    iter_document_chunks(doc.id, fields=("id", "text", "chunk_index")),
+                    document_id=doc.id, data_room_id=doc.data_room_id,
+                )
                 logger.info("process_document: document_id=%s stage=vector_done", document_id)
             except Exception as vec_err:
                 logger.warning(
@@ -191,7 +200,7 @@ def process_document(document_id: int) -> None:
         duration_seconds = time.perf_counter() - started_at
         logger.info(
             "process_document: document_id=%s data_room_id=%s stage=ready chunk_count=%s duration_seconds=%.2f",
-            document_id, doc.data_room_id, len(chunks_data), duration_seconds,
+            document_id, doc.data_room_id, chunk_count, duration_seconds,
         )
 
         # Scan chunks for adversarial content (fire-and-forget, after READY)
@@ -201,81 +210,14 @@ def process_document(document_id: int) -> None:
         except Exception:
             logger.exception("process_document: document_id=%s guardrail scan dispatch failed (non-critical)", document_id)
 
-        # Generate description + tags (fire-and-forget, after READY)
-        from accounts.models import Membership
-        from core.preferences import resolve_org_feature_model
-
-        desc_org_id = None
-        if doc.uploaded_by_id:
-            desc_org_id = Membership.objects.filter(user_id=doc.uploaded_by_id).values_list("org_id", flat=True).first()
-
-        desc_model = resolve_org_feature_model(desc_org_id, "document_description")
-        if desc_model:
-            try:
-                from documents.services.description import generate_description_and_tags_from_text
-                result = generate_description_and_tags_from_text(
-                    cleaned, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=desc_org_id
-                )
-                doc.description = result["description"]
-                update_fields = ["description", "updated_at"]
-                if result.get("document_date"):
-                    doc.document_date = result["document_date"]
-                    update_fields.append("document_date")
-                doc.save(update_fields=update_fields)
-                for tag_key, tag_value in result.get("tags", {}).items():
-                    DataRoomDocumentTag.objects.update_or_create(
-                        document=doc, key=tag_key,
-                        defaults={"value": tag_value},
-                    )
-            except DataRoomDocument.NotUpdated:
-                # Document was deleted during description generation — expected, not an error.
-                logger.info(
-                    "process_document: document_id=%s deleted during description generation, skipping",
-                    document_id,
-                )
-            except (LLMPolicyDenied, LLMConfigurationError, LLMAuthError):
-                # Config/policy errors won't self-heal — surface as a distinct Sentry issue
-                # instead of hiding under the "(non-critical)" bucket.
-                logger.exception(
-                    "process_document: document_id=%s description generation blocked by LLM config/policy",
-                    document_id,
-                )
-            except Exception:
-                logger.exception("process_document: document_id=%s description generation failed (non-critical)", document_id)
-
-        # PII category scan (fire-and-forget, after READY)
-        pii_enabled = True
-        if desc_org_id:
-            try:
-                from accounts.models import Organization
-
-                pii_org = Organization.objects.get(pk=desc_org_id)
-                pii_enabled = (pii_org.preferences or {}).get("pii_scan_enabled", True)
-            except Organization.DoesNotExist:
-                pass
-
-        if pii_enabled:
-            pii_model = resolve_org_feature_model(desc_org_id, "pii_scan")
-            if pii_model:
-                try:
-                    from documents.services.pii_scan import scan_pii_categories
-
-                    pii_result = scan_pii_categories(
-                        cleaned, user_id=doc.uploaded_by_id,
-                        data_room_id=doc.data_room_id, org_id=desc_org_id,
-                    )
-                    for category in pii_result:
-                        DataRoomDocumentTag.objects.update_or_create(
-                            document=doc, key=category,
-                            defaults={"value": "true"},
-                        )
-                except (LLMPolicyDenied, LLMConfigurationError, LLMAuthError):
-                    logger.exception(
-                        "process_document: document_id=%s PII scan blocked by LLM config/policy",
-                        document_id,
-                    )
-                except Exception:
-                    logger.exception("process_document: document_id=%s PII scan failed (non-critical)", document_id)
+        # Generate description + tags and run the full-document PII scan in a separate
+        # task, so this heavy frame returns and frees every copy of the document text
+        # before any LLM work runs. The document is already READY and usable.
+        try:
+            from documents.tasks import finalize_document_metadata
+            finalize_document_metadata.delay(document_id)
+        except Exception:
+            logger.exception("process_document: document_id=%s finalize dispatch failed (non-critical)", document_id)
 
     except ValueError as e:
         duration_seconds = time.perf_counter() - started_at

@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import Any, Iterable
 
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "document_chunks"
+
+# Chunks embedded + inserted per store.add_documents() call. Overridable via the
+# EMBEDDING_BATCH_SIZE setting; bounds peak vector memory during indexing.
+DEFAULT_EMBEDDING_BATCH_SIZE = 256
 
 # Module-level cache for the vector store instance (lazy init). Use reset_vector_store() in tests to clear.
 _vector_store_cache: Any = None
@@ -97,10 +101,19 @@ def delete_vectors_for_document(document_id: int) -> None:
         logger.debug("langchain_pg_embedding table does not exist yet, skipping delete")
 
 
-def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, data_room_id: int) -> None:
+def add_chunk_vectors(
+    chunks: Iterable[dict[str, Any]],
+    document_id: int,
+    data_room_id: int,
+    *,
+    batch_size: int | None = None,
+) -> None:
     """
-    Embed and store chunk vectors. chunks: list of dicts with 'id', 'text', and optional chunk_index.
-    The store's embedding_function is used to embed page_content.
+    Embed and store chunk vectors. ``chunks`` is any iterable of dicts with 'id',
+    'text', and optional 'chunk_index' — consumed in a single pass, so a streaming
+    generator can be passed to bound memory. Documents are embedded and inserted in
+    batches of ``batch_size`` (default ``EMBEDDING_BATCH_SIZE``) so neither all chunk
+    text nor all vectors are ever materialized at once.
     """
     conn = _get_connection_string()
     if not conn:
@@ -110,7 +123,10 @@ def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, data_room_
     store = _get_vector_store()
     if not store:
         return
-    docs = []
+    if batch_size is None:
+        batch_size = getattr(settings, "EMBEDDING_BATCH_SIZE", DEFAULT_EMBEDDING_BATCH_SIZE)
+
+    batch: list[Any] = []
     for i, chunk in enumerate(chunks):
         meta = {
             "chunk_id": chunk["id"],
@@ -118,9 +134,12 @@ def add_chunk_vectors(chunks: list[dict[str, Any]], document_id: int, data_room_
             "data_room_id": data_room_id,
             "chunk_index": chunk.get("chunk_index", i),
         }
-        doc = Document(page_content=chunk["text"], metadata=meta)
-        docs.append(doc)
-    store.add_documents(docs)
+        batch.append(Document(page_content=chunk["text"], metadata=meta))
+        if len(batch) >= batch_size:
+            store.add_documents(batch)
+            batch = []
+    if batch:
+        store.add_documents(batch)
 
 
 def similarity_search(

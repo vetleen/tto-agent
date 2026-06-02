@@ -477,6 +477,12 @@ RETRIEVAL_CONTEXT_TARGET_TOKENS = int(os.environ.get("RETRIEVAL_CONTEXT_TARGET_T
 RERANK_ENABLED = _get_env_bool(os.environ.get("RERANK_ENABLED"), True)
 RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "5"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+# Chunks embedded per store.add_documents() flush in add_chunk_vectors. Caps the
+# peak vector memory held at once on the worker (~batch_size x embedding dims).
+EMBEDDING_BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "256"))
+# Token budget per PII-scan window. The full-document PII scan reads chunks in
+# windows of this size so a long document never materializes all its text at once.
+PII_SCAN_WINDOW_TOKENS = int(os.environ.get("PII_SCAN_WINDOW_TOKENS", "6000"))
 # pgvector: use same DB as Django when DATABASE_URL is Postgres
 PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATABASE_URL", ""))
 
