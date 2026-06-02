@@ -53,6 +53,30 @@ process type — move beat to its own process (`beat: celery -A config beat -l i
 drop `-B` from the workers, or keep `-B` on exactly one process type that never scales
 past one dyno. Otherwise every scheduled task fires once per worker dyno.
 
+**Worker memory (R14) & the rerank lever.** The threads pool is a single long-lived
+process whose RSS **plateaus and never reclaims** (no `max-tasks-per-child` — that's
+prefork-only). On the 512 MB Basic dyno the worker boots at **~250 MB** idle; a document
+upload + processing burst adds only **~13 MB** (not the driver), but the **first subagent
+query loads FlashRank/onnxruntime (~100–150 MB)** plus the query/LLM stack, pushing the
+plateau to **~500 MB** and occasionally over the cap → benign **R14 (Memory quota
+exceeded)** (the process swaps; this is far from the R15 / 300% OOM-kill). Two levers keep
+it under the cap, both free:
+
+- **`MALLOC_ARENA_MAX=2`** (config var on staging + production) caps glibc malloc arenas to
+  fight threads-pool fragmentation; it dropped the plateau from ~535–550 to ~500 MB. It is
+  read once at process start, so a **worker restart** is required to pick it up.
+- **`RERANK_ON_WORKER=false`** (the default) disables FlashRank reranking *on the worker*:
+  subagent searches skip the rerank pass, so the ~100–150 MB FlashRank/onnxruntime chunk
+  never loads there and the plateau drops to ~360–400 MB. Reranking stays **on for
+  main-thread chat**, which runs inline on the web dyno (not memory-constrained). It is
+  wired in the Procfile, which shadows the worker process's `RERANK_ENABLED` from this var
+  (`RERANK_ENABLED=${RERANK_ON_WORKER:-false}`), leaving the app-wide `RERANK_ENABLED` (web)
+  untouched. **Enable `RERANK_ON_WORKER=true` only once the worker has memory headroom**
+  (e.g. after a Standard-2X / 1 GB bump) — it adds ~100–150 MB back to the plateau. Toggling
+  requires a worker restart. Trade-off when off: subagent retrieval returns hybrid-search
+  (RRF) order without the FlashRank re-ranking pass — slightly less precise top-k, but
+  functionally complete; main-chat retrieval is unchanged.
+
 **Deploy flow:** push to `main` on GitHub → `wilfred-staging` auto-builds (release phase runs migrations + collectstatic, then web/worker dynos restart) → verify on staging → `heroku pipelines:promote -a wilfred-staging` ships the same slug to `wilfred-production`. Never `git push heroku main` directly to production — it bypasses staging. See CLAUDE.md > Heroku & Environments for the full pipeline.
 
 **Required config vars:** `DJANGO_SECRET_KEY`, `DJANGO_CSRF_TRUSTED_ORIGINS`, `DJANGO_ALLOWED_HOSTS`, at least one LLM API key (`OPENAI_API_KEY`), `LLM_DEFAULT_MODEL`, `LLM_ALLOWED_MODELS`.
@@ -252,6 +276,8 @@ See `.env.example` for the full list with comments. Key production variables:
 | `DATABASE_URL` | Auto | Postgres connection (set by Heroku add-on) |
 | `REDIS_URL` | Auto | Redis connection (set by Heroku add-on) |
 | `CELERY_WORKER_CONCURRENCY` | No | threads-pool worker thread count (default 8; ≈ max worker DB connections). Raise to ~16–20 on a 40-connection Postgres plan. |
+| `RERANK_ON_WORKER` | No | Enable FlashRank rerank on the Celery worker (default `false`). Off saves ~100–150 MB on the worker (subagent searches skip rerank); enable only when the worker has memory headroom. Main-chat rerank is controlled separately by `RERANK_ENABLED`. Worker restart required to take effect. |
+| `MALLOC_ARENA_MAX` | No | Caps glibc malloc arenas to reduce threads-pool memory fragmentation. Set to `2` on staging + production. Worker restart required to take effect. |
 | `OPENAI_API_KEY` | Yes | Embeddings + OpenAI LLM provider |
 | `LLM_DEFAULT_MODEL` | Yes | Primary model (e.g., `openai/gpt-5.2`) |
 | `LLM_DEFAULT_MID_MODEL` | Yes | Mid-tier model for sub-agents |
@@ -292,6 +318,8 @@ See `.env.example` for the full list with comments. Key production variables:
 **WebSocket connections dropping:** Usually Redis. Check `heroku redis:info` for memory/connection limits. Heroku Redis hobby tier has a 20-connection limit.
 
 **Document processing not starting:** Celery worker not running. Check `heroku ps` for worker dyno. Check `heroku logs --tail --dyno=worker` for errors.
+
+**R14 (Memory quota exceeded) on the worker:** Expected and benign on the 512 MB Basic worker dyno under load — the threads pool plateaus and doesn't reclaim, so it swaps (far from the R15 / 300% kill). Mitigated by `MALLOC_ARENA_MAX=2` and `RERANK_ON_WORKER=false` (see *Worker pool & concurrency*). Only escalate (Standard-2X / 1 GB dyno) if it climbs toward R15 or causes dyno restarts.
 
 **"DB locked" in tests:** Expected — tests use SQLite. Not a real issue.
 

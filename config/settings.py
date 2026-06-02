@@ -470,6 +470,10 @@ CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", "100"))
 CHUNKING_STRATEGY = os.environ.get("CHUNKING_STRATEGY", "structure_aware")
 
 RETRIEVAL_CONTEXT_TARGET_TOKENS = int(os.environ.get("RETRIEVAL_CONTEXT_TARGET_TOKENS", "1200"))
+# On the Heroku worker dyno this is shadowed to RERANK_ON_WORKER (default false)
+# via the Procfile, so subagent searches skip FlashRank to stay under the worker
+# memory cap. Web / main-chat reranking uses this app-wide value. See RUNBOOK
+# "Worker pool & concurrency".
 RERANK_ENABLED = _get_env_bool(os.environ.get("RERANK_ENABLED"), True)
 RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "5"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")

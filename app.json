@@ -75,6 +75,16 @@
       "description": "Celery threads-pool worker thread count.",
       "value": "8"
     },
+    "RERANK_ON_WORKER": {
+      "description": "Enable FlashRank rerank on the Celery worker. Default false to keep the worker under the 512MB dyno cap (FlashRank/onnxruntime ~100-150MB). Main-chat rerank is controlled by RERANK_ENABLED. Enable only when the worker has memory headroom; worker restart required.",
+      "value": "false",
+      "required": false
+    },
+    "MALLOC_ARENA_MAX": {
+      "description": "Caps glibc malloc arenas to reduce Celery threads-pool memory fragmentation. Worker restart required to take effect.",
+      "value": "2",
+      "required": false
+    },
     "SENTRY_DSN": {
       "description": "Optional: error tracking. Disabled if unset.",
       "required": false
