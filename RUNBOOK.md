@@ -64,18 +64,25 @@ but **benign R14 (Memory quota exceeded)** (the process swaps a few MB; ~100% of
 from the R15 / 300% OOM-kill — tasks complete normally). Measured on production 2026-06-02
 with a 116-chunk doc + a multi-turn query: doc-processing + guardrails alone reached **~494 MB
 *before* the query**, which then added only ~12 MB → ~506 RSS / ~516 total, sustained R14.
+Per-component (measured, prod one-off dyno): the plateau is **runtime materialization, not
+code imports** (library imports add only ~24 MB beyond Django boot). The big runtime slice is
+**tiktoken's BPE encoding (~80 MB**, loaded on any LLM call that counts tokens), followed by
+LLM client pools / embeddings / the guardrails classifier over chunks; **FlashRank is only
+~45 MB** (the TinyBERT model + onnxruntime session — *not* the ~100–150 MB earlier estimates
+assumed).
 
 - **`MALLOC_ARENA_MAX=2`** (config var on staging + production) caps glibc malloc arenas to
   fight threads-pool fragmentation; it dropped the plateau from ~535–550 to ~500 MB. It is
   read once at process start, so a **worker restart** is required to pick it up.
 - **`RERANK_ON_WORKER=false`** (the default) stops FlashRank reranking from running *on the
   worker* (verified: the worker process boots with `RERANK_ENABLED=False`), so the
-  ~100–150 MB FlashRank/onnxruntime chunk never loads there. **This does not, on its own, get
+  ~45 MB FlashRank/onnxruntime chunk (a ~3 MB TinyBERT-L-2 model + onnxruntime session) never
+  loads there. **This does not, on its own, get
   a real doc+query workload under 512 MB** — production testing showed the plateau stays
   ~505 MB with rerank off, because the rest of the LLM/ML stack already sums to ~250 MB on top
   of the 250 MB idle. (The earlier "drops to ~360–400" estimate was an artifact of a trivial
   1-chunk test doc that under-loaded those other components.) Its real value is keeping
-  FlashRank from stacking *another* ~100–150 MB on top, which under concurrency would push
+  FlashRank from stacking *another* ~45 MB on top, which under concurrency would push
   toward the R15 kill — so **keep it off** on the Basic worker. Reranking stays **on for
   main-thread chat**, which runs inline on the web dyno (not memory-constrained). Wired in the
   Procfile, which shadows the worker process's `RERANK_ENABLED` from this var
@@ -290,7 +297,7 @@ See `.env.example` for the full list with comments. Key production variables:
 | `DATABASE_URL` | Auto | Postgres connection (set by Heroku add-on) |
 | `REDIS_URL` | Auto | Redis connection (set by Heroku add-on) |
 | `CELERY_WORKER_CONCURRENCY` | No | threads-pool worker thread count (default 8; ≈ max worker DB connections). Raise to ~16–20 on a 40-connection Postgres plan. |
-| `RERANK_ON_WORKER` | No | Enable FlashRank rerank on the Celery worker (default `false`). Off keeps FlashRank/onnxruntime (~100–150 MB) from loading on the worker, but does **not** by itself get a real workload under the 512 MB cap (the LLM/ML stack dominates — see *Worker pool & concurrency*); enable only after a Standard-2X bump. Main-chat rerank is controlled separately by `RERANK_ENABLED`. Worker restart required to take effect. |
+| `RERANK_ON_WORKER` | No | Enable FlashRank rerank on the Celery worker (default `false`). Off keeps FlashRank/onnxruntime (~45 MB) from loading on the worker, but does **not** by itself get a real workload under the 512 MB cap (the LLM/ML stack dominates — see *Worker pool & concurrency*); enable only after a Standard-2X bump. Main-chat rerank is controlled separately by `RERANK_ENABLED`. Worker restart required to take effect. |
 | `MALLOC_ARENA_MAX` | No | Caps glibc malloc arenas to reduce threads-pool memory fragmentation. Set to `2` on staging + production. Worker restart required to take effect. |
 | `OPENAI_API_KEY` | Yes | Embeddings + OpenAI LLM provider |
 | `LLM_DEFAULT_MODEL` | Yes | Primary model (e.g., `openai/gpt-5.2`) |

@@ -76,7 +76,7 @@
       "value": "8"
     },
     "RERANK_ON_WORKER": {
-      "description": "Enable FlashRank rerank on the Celery worker. Default false to keep the worker under the 512MB dyno cap (FlashRank/onnxruntime ~100-150MB). Main-chat rerank is controlled by RERANK_ENABLED. Enable only when the worker has memory headroom; worker restart required.",
+      "description": "Enable FlashRank rerank on the Celery worker. Default false. FlashRank/onnxruntime is ~45MB resident (TinyBERT + onnxruntime session); on its own this flag won't get a real workload under the 512MB cap (the shared LLM/ML stack dominates — tiktoken alone is ~80MB), but keeping it off avoids stacking that extra ~45MB toward the R15 kill under concurrency. Main-chat rerank is controlled by RERANK_ENABLED. Enable only after a Standard-2X bump gives headroom; worker restart required.",
       "value": "false",
       "required": false
     },
