@@ -155,8 +155,30 @@ class Membership(models.Model):
     suspended_reason = models.TextField(blank=True, default="")
 
     class Meta:
-        unique_together = [("user", "org")]
         ordering = ("org", "user")
+        constraints = [
+            models.UniqueConstraint(fields=["user"], name="unique_membership_per_user"),
+        ]
+
+    def validate_unique(self, exclude=None):
+        super().validate_unique(exclude=exclude)
+        if self.user_id is not None:
+            qs = Membership.objects.filter(user_id=self.user_id)
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                from django.core.exceptions import ValidationError
+                raise ValidationError(
+                    {"user": "This user already belongs to an organization."}
+                )
 
     def __str__(self) -> str:
         return f"{self.user} in {self.org} ({self.role})"
+
+
+def get_user_org(user):
+    """Return the user's single Organization, or None."""
+    if not user or not user.is_authenticated:
+        return None
+    m = Membership.objects.filter(user=user).select_related("org").first()
+    return m.org if m else None

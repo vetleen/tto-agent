@@ -131,6 +131,10 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             await self.close(code=4401)
             return
 
+        if await self._is_suspended():
+            await self.close(code=4403)
+            return
+
         url_uuid = self.scope["url_route"]["kwargs"].get("meeting_uuid")
         try:
             uuid_lib.UUID(str(url_uuid))
@@ -779,6 +783,14 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         }))
 
     # ----------------------------------------------------- DB-bound (sync)
+
+    @database_sync_to_async
+    def _is_suspended(self) -> bool:
+        from accounts.models import Membership
+
+        return Membership.objects.filter(
+            user=self.user, is_suspended=True
+        ).exists()
 
     @database_sync_to_async
     def _load_and_lock_meeting(self, meeting_uuid):

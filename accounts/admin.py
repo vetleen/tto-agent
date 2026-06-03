@@ -7,7 +7,7 @@ from .models import EmailVerificationToken, Membership, Organization, Scope, Use
 
 class MembershipInline(admin.TabularInline):
     model = Membership
-    extra = 1
+    extra = 0
     autocomplete_fields = ("org",)
     fields = ("org", "role", "is_suspended", "suspended_at", "suspended_reason")
     readonly_fields = ("suspended_at",)

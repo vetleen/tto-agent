@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView as BaseLoginView
 from django.contrib.auth.views import PasswordResetView as BasePasswordResetView
 from django.shortcuts import redirect, render
@@ -38,6 +39,19 @@ def index(request):
     if request.user.is_authenticated:
         return redirect(settings.LOGIN_REDIRECT_URL)
     return render(request, "index.html", {"landing_page": True})
+
+
+@login_required
+def suspended(request):
+    from ..models import get_user_org
+
+    org = get_user_org(request.user)
+    return render(
+        request,
+        "registration/suspended.html",
+        {"org_name": org.name if org else None},
+        status=403,
+    )
 
 
 def signup(request):

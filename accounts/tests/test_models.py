@@ -1,5 +1,6 @@
 """Tests for Organization, Scope, and Membership models."""
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 
@@ -91,10 +92,25 @@ class MembershipModelTests(TestCase):
         self.assertIn("Acme", str(m))
         self.assertIn("viewer", str(m))
 
-    def test_unique_user_org(self) -> None:
+    def test_unique_membership_per_user(self) -> None:
         Membership.objects.create(user=self.user, org=self.org)
+        other = Organization.objects.create(name="Other", slug="other")
         with self.assertRaises(IntegrityError):
-            Membership.objects.create(user=self.user, org=self.org)
+            Membership.objects.create(user=self.user, org=other)
+
+    def test_validate_unique_rejects_second_org(self) -> None:
+        Membership.objects.create(user=self.user, org=self.org)
+        other = Organization.objects.create(name="Other", slug="other")
+        with self.assertRaises(ValidationError) as ctx:
+            Membership(user=self.user, org=other).full_clean()
+        self.assertIn("user", ctx.exception.message_dict)
+
+    def test_get_user_org(self) -> None:
+        from accounts.models import get_user_org
+
+        self.assertIsNone(get_user_org(self.user))
+        Membership.objects.create(user=self.user, org=self.org)
+        self.assertEqual(get_user_org(self.user), self.org)
 
     def test_user_organization_memberships_reverse(self) -> None:
         m = Membership.objects.create(user=self.user, org=self.org)
