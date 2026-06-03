@@ -375,8 +375,7 @@
     After the meeting is over the pane defaults to expanded.
   {% endcomment %}
   <section class="mb-3">
-    <details id="transcript-details" class="bg-neutral-primary-soft border border-default rounded-base group"
-             {% if meeting.status != "live_transcribing" %}open{% endif %}>
+    <details id="transcript-details" class="bg-neutral-primary-soft border border-default rounded-base group" open>
       <summary class="flex items-center justify-between gap-3 px-4 py-3 cursor-pointer list-none select-none">
         <div class="flex items-center gap-2">
           <h2 class="text-sm font-medium text-heading">Transcript</h2>
@@ -549,5 +548,5 @@
   });
 })();
 </script>
-<script src="{% static 'meetings/transcribe.js' %}?v=rt8" defer></script>
+<script src="{% static 'meetings/transcribe.js' %}?v=rt9" defer></script>
 {% endblock %}

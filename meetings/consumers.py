@@ -126,6 +126,16 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         # produce inline "[Transcription was interrupted for N seconds]"
         # markers in the transcript.
         self._interruption_started_at = None
+        # Set True the moment _start_realtime_session succeeds. Never reset to
+        # False within a connection. Used by _handle_binary_frame to server-
+        # allocate chunked segment indices after realtime has been active so a
+        # leaked streaming burst (client-counted index ~hundreds) cannot poison
+        # the realtime utterance allocator (max+1).
+        self._realtime_was_active_this_conn: bool = False
+        # Armed by _fall_back_to_chunked so the first post-fallback chunk
+        # (which may be a leaked streaming burst) is also dropped. Disarmed on
+        # the first full-size (≥ MEETING_CHUNK_MIN_BYTES) chunk.
+        self._post_fallback_drop_armed: bool = False
 
         if not self.user or self.user.is_anonymous:
             await self.close(code=4401)
@@ -289,23 +299,41 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 f"chunk byte_length mismatch: expected {meta['byte_length']}, got {len(raw)}"
             )
             return
-        # Drop a *run* of undersized frames before they can flood ffprobe/Celery.
-        # One undersized frame is fine (a legit short final chunk); a streak is the
-        # signature of streaming-continuation bursts leaking into chunked mode.
+        # Drop undersized frames before they can flood ffprobe/Celery.
+        # Normally we allow the first one (a legit short final chunk) but drop
+        # a *run* — the signature of 250ms streaming bursts leaking into
+        # chunked mode. When we just fell back from realtime (_post_fallback_
+        # drop_armed), leaked bursts are expected immediately, so we tighten
+        # the threshold to drop from the first one.
         min_bytes = getattr(settings, "MEETING_CHUNK_MIN_BYTES", 8 * 1024)
         if len(raw) < min_bytes:
             self._undersized_chunk_streak += 1
-            if self._undersized_chunk_streak > 1:
+            drop_threshold = 1 if self._post_fallback_drop_armed else 2
+            if self._undersized_chunk_streak >= drop_threshold:
                 logger.info(
                     "meetings: dropping undersized chunked frame "
-                    "(%d < %d bytes, streak=%d) — likely streaming bursts "
+                    "(%d < %d bytes, streak=%d post_fallback=%s) — likely streaming bursts "
                     "leaking into chunked mode; meeting=%s",
                     len(raw), min_bytes, self._undersized_chunk_streak,
+                    self._post_fallback_drop_armed,
                     self.meeting_id,
                 )
                 return
         else:
             self._undersized_chunk_streak = 0
+            # First full-size chunk disarms the post-fallback drop window.
+            self._post_fallback_drop_armed = False
+
+        # If realtime was active in this connection, ignore the client-supplied
+        # segment_index (which is a per-burst counter that can reach the
+        # hundreds) and server-allocate a monotonic index instead. This
+        # prevents a leaked streaming burst from poisoning the realtime
+        # utterance allocator (max+1 query).
+        if self._realtime_was_active_this_conn:
+            server_idx = await self._allocate_chunked_segment_index()
+            meta = dict(meta)  # shallow copy so we don't mutate the pending list
+            meta["segment_index"] = server_idx
+
         try:
             temp_path = await self._write_chunk(meta, raw)
         except Exception as exc:
@@ -395,6 +423,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             asyncio.create_task(self._consume_realtime_events()),
         ]
         self._realtime_started = True
+        self._realtime_was_active_this_conn = True
         logger.info(
             "realtime: session started (meeting=%s model=%s mime=%s)",
             self.meeting_uuid, self._model_id, mime,
@@ -609,6 +638,11 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         # be preceded by an inline marker telling the reader audio was lost.
         if self._interruption_started_at is None:
             self._interruption_started_at = timezone.now()
+        # Arm the post-fallback drop window: leaked 250ms streaming bursts
+        # from the still-running old MediaRecorder will arrive immediately
+        # after the fallback. Drop all undersized frames (not just streaks)
+        # until the first full-size chunk arrives.
+        self._post_fallback_drop_armed = True
 
         effective_reason = (
             "realtime_unstable_fallback"
@@ -707,6 +741,20 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             .first()
         )
         return (max_existing + 1) if max_existing is not None else 0
+
+    @database_sync_to_async
+    def _allocate_chunked_segment_index(self) -> int:
+        """Server-allocate a segment index for a post-realtime chunked frame.
+
+        Called from ``_handle_binary_frame`` when ``_realtime_was_active_this_conn``
+        is True so the client-supplied (per-burst, potentially high-valued)
+        index is never used. Runs in its own transaction so it doesn't race
+        with concurrent realtime utterance or marker allocations.
+        """
+        from django.db import transaction
+
+        with transaction.atomic():
+            return self._allocate_next_segment_index_locked()
 
     async def _handle_set_model(self, payload: dict) -> None:
         """Switch the transcription model used for *future* chunks.

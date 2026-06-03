@@ -29,8 +29,18 @@
   // arrived in this long while we're still actively transcribing, we assume
   // an upstream stall (e.g. server-side flipped to chunked silently, OpenAI
   // session went silent) and trigger an auto-recovery cycle.
+  // In realtime mode the MediaRecorder streams 250ms bursts even during silence,
+  // so "no transcript for 30s" is a false positive during any quiet stretch.
+  // We gate the stall on recent mic activity (see lastMicActivityAt) so only
+  // "user was speaking but nothing came back" triggers a recovery.
+  // Chunked mode legitimately takes >30s (30s chunk + batch transcription
+  // latency), so we give it a 3× multiplier.
   const TRANSCRIPT_STALL_MS = 30000;
+  const TRANSCRIPT_STALL_CHUNKED_MS = SEGMENT_DURATION_MS * 3; // 90s
   const AUTO_RECOVER_MAX = 3;
+  // RMS threshold for "someone is talking". The level meter maps rms*200 to a
+  // percentage bar; 0.02 RMS ≈ 4% bar, well above idle noise floor.
+  const MIC_SPEECH_RMS_THRESHOLD = 0.02;
 
   const root = document.querySelector('[data-meeting-uuid]');
   if (!root) return;
@@ -292,8 +302,11 @@
   // Transcript-activity watchdog state. lastTranscriptActivityAt is bumped
   // whenever a segment.ready / transcript.delta arrives. autoRecoverAttempts
   // counts how many consecutive recoveries we've launched without seeing
-  // healthy text in between.
+  // healthy text in between. lastMicActivityAt is bumped whenever the level
+  // meter RMS exceeds MIC_SPEECH_RMS_THRESHOLD — used to avoid false-positive
+  // stall detection during genuine silence.
   let lastTranscriptActivityAt = 0;
+  let lastMicActivityAt = 0;
   let autoRecoverAttempts = 0;
   let autoRecoverInFlight = false;
   let autoRecoverStartedAt = 0;
@@ -366,6 +379,9 @@
           sumSq += v * v;
         }
         const rms = Math.sqrt(sumSq / buf.length);
+        if (rms >= MIC_SPEECH_RMS_THRESHOLD) {
+          lastMicActivityAt = Date.now();
+        }
         const pct = Math.min(100, Math.round(rms * 200));
         levelBar.style.width = pct + '%';
         levelLoop = requestAnimationFrame(tick);
@@ -449,14 +465,24 @@
       console.warn('recorder appears stalled (' + silenceMs + 'ms), restarting');
       attemptRecorderRestart();
     }
-    // Transcript-activity watchdog (new): bytes are still flowing to the
-    // server, but no transcript text has arrived in a while. Almost always
-    // means the server has silently fallen out of a working state — flip the
-    // socket and let the recorder restart on reconnect feed a fresh init
-    // segment to the new session.
+    // Transcript-activity watchdog: bytes are still flowing to the server but
+    // no transcript text has arrived in a while. Almost always means the server
+    // has silently fallen out of a working state.
+    //
+    // Guard: only fire if the user was actually speaking recently. In realtime
+    // mode the MediaRecorder streams 250ms bursts even during silence, so
+    // "no transcript for 30s" is a false positive during any quiet stretch.
+    // We require that the mic RMS exceeded MIC_SPEECH_RMS_THRESHOLD within the
+    // stall window (tracked by the level meter tick).
+    //
+    // Threshold is mode-aware: chunked legitimately takes >30s (30s chunk
+    // recording + batch transcription latency) so we use a 3× multiplier.
+    const stallThreshold = (liveMode === 'chunked') ? TRANSCRIPT_STALL_CHUNKED_MS : TRANSCRIPT_STALL_MS;
     const transcriptSilenceMs = Date.now() - lastTranscriptActivityAt;
+    const micSilenceMs = Date.now() - lastMicActivityAt;
     if (
-      transcriptSilenceMs >= TRANSCRIPT_STALL_MS
+      transcriptSilenceMs >= stallThreshold
+      && micSilenceMs <= stallThreshold
       && !autoRecoverInFlight
       && !reconnecting
     ) {
@@ -501,6 +527,7 @@
     if (watchdogTimer) return;
     lastChunkSentAt = Date.now();
     lastTranscriptActivityAt = Date.now();
+    lastMicActivityAt = 0; // 0 = "never heard speech yet" — stall won't fire until mic speaks
     autoRecoverAttempts = 0;
     autoRecoverInFlight = false;
     watchdogRestartAttempted = false;

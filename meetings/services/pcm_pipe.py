@@ -59,6 +59,11 @@ _STDOUT_QUEUE_MAX_FRAMES = 125
 
 _EOF = b""  # sentinel marking stdout EOF
 
+# Matroska/WebM EBML header magic bytes. The first write to a fresh WebM stream
+# always starts with these four bytes; a mid-stream continuation (e.g. from a
+# reconnect where the MediaRecorder was not restarted) does not. We gate ffmpeg
+# input on seeing this magic so a header-less burst can never corrupt the pipe.
+_EBML_MAGIC = b"\x1a\x45\xdf\xa3"
 
 # Mime → ffmpeg input-format flag. ffmpeg's Matroska demuxer handles the
 # Chrome/Edge WebM family; Safari serves MP4/AAC; Firefox occasionally
@@ -120,6 +125,17 @@ class PcmPipe:
         self._closed = False
         self._stdin_lock = threading.Lock()
         self.stats = PcmPipeStats()
+        # EBML header gate (WebM/Matroska only). A reconnect may feed the new
+        # pipe a header-less mid-stream continuation before the client's fresh
+        # init segment arrives, which kills ffmpeg with "EBML header parsing
+        # failed". We buffer up to 3 carry bytes across write() boundaries and
+        # skip every incoming byte until the 4-byte EBML magic is found, at
+        # which point we lock open and become a pure pass-through forever.
+        # For non-Matroska mimes (Ogg, MP4, …) we set _header_seen=True at
+        # construction so write() is always a pure pass-through.
+        self._header_gate_enabled: bool = (_demuxer_for_mime(mime) == "matroska")
+        self._header_seen: bool = not self._header_gate_enabled
+        self._header_carry: bytes = b""
 
     async def start(self) -> None:
         if self._proc is not None:
@@ -236,23 +252,53 @@ class PcmPipe:
         Offloads the blocking write to the default executor so the event
         loop stays responsive. A lock serialises writes from multiple
         concurrent tasks (shouldn't happen in normal flow, but defence).
+
+        For WebM/Matroska streams the EBML header gate is active until the
+        first valid init segment is observed (4-byte magic 1A 45 DF A3).
+        Any bytes that arrive before the magic — i.e. a header-less
+        mid-stream continuation from a reconnect — are silently discarded
+        rather than passed to ffmpeg. Once the magic is found it is
+        forwarded together with everything that follows, and all subsequent
+        writes bypass the check entirely (``_header_seen`` stays True).
         """
         if self._closed or self._proc is None or self._proc.stdin is None:
             raise PcmPipeError("pipe is not running")
         if not data:
             return
 
+        # Always account for bytes received regardless of whether we forward them.
+        self.stats.bytes_in += len(data)
+
+        # Fast path: gate already open or disabled (non-webm mime).
+        if self._header_seen:
+            forward = data
+        else:
+            # Combine carry bytes from the previous write with the new data so
+            # the EBML magic is detectable even if it spans a write() boundary.
+            scan = self._header_carry + data
+            idx = scan.find(_EBML_MAGIC)
+            if idx == -1:
+                # Magic not found yet — keep the last 3 bytes as carry so we
+                # can detect a split across the next write().
+                self._header_carry = scan[-3:] if len(scan) >= 3 else scan
+                return  # nothing to forward
+            # Magic found: forward from the magic onwards, clear carry.
+            self._header_seen = True
+            self._header_carry = b""
+            forward = scan[idx:]
+            if not forward:
+                return
+
         def _do_write():
             with self._stdin_lock:
                 try:
                     assert self._proc is not None and self._proc.stdin is not None
-                    self._proc.stdin.write(data)
+                    self._proc.stdin.write(forward)
                     self._proc.stdin.flush()
                 except (BrokenPipeError, ValueError, OSError) as exc:
                     raise PcmPipeError(f"ffmpeg stdin closed: {exc}") from exc
 
         await asyncio.to_thread(_do_write)
-        self.stats.bytes_in += len(data)
 
     async def read_frames(self) -> AsyncIterator[bytes]:
         """Yield PCM frames until ffmpeg's stdout closes."""

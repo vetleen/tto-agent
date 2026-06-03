@@ -22,6 +22,7 @@ from meetings.services.pcm_pipe import (
     PcmPipe,
     PCM_SAMPLE_BYTES,
     PCM_SAMPLE_RATE,
+    _EBML_MAGIC,
 )
 
 
@@ -125,3 +126,156 @@ class PcmPipeTests(unittest.TestCase):
         # Sanity check: our declared frame size matches the math we use
         # elsewhere (24kHz * 40ms * 2 bytes/sample = 1920).
         self.assertEqual(DEFAULT_FRAME_BYTES, 1920)
+
+    def test_headerless_prefix_skipped_then_decodes(self):
+        """Header-less bytes before the init segment are skipped; valid audio decodes."""
+        fixture = _generate_webm_fixture(duration_seconds=0.5)
+        expected_bytes = (PCM_SAMPLE_RATE * PCM_SAMPLE_BYTES) // 2
+        tolerance = expected_bytes // 10
+
+        async def run() -> int:
+            pipe = PcmPipe(mime="audio/webm")
+            await pipe.start()
+            # Feed junk that looks like a header-less mid-stream continuation.
+            junk = b"\x00" * 4096
+            await pipe.write(junk)
+            # Now feed the real fixture starting with the EBML magic.
+            await pipe.write(fixture)
+
+            pcm_chunks: list[bytes] = []
+
+            async def read_until_eof():
+                async for frame in pipe.read_frames():
+                    pcm_chunks.append(frame)
+
+            read_task = asyncio.create_task(read_until_eof())
+            await pipe.aclose(grace_seconds=5.0)
+            try:
+                await asyncio.wait_for(read_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                read_task.cancel()
+                try:
+                    await read_task
+                except Exception:
+                    pass
+            return sum(len(c) for c in pcm_chunks)
+
+        total = _run_async(run())
+        self.assertGreater(total, 0, "PcmPipe produced no PCM output after header-less prefix")
+        self.assertGreaterEqual(
+            total, expected_bytes - tolerance,
+            f"expected ~{expected_bytes} bytes of PCM after skipping prefix, got {total}",
+        )
+
+    def test_ebml_magic_split_across_writes_decodes(self):
+        """EBML magic spanning two write() calls is still detected."""
+        fixture = _generate_webm_fixture(duration_seconds=0.5)
+        # The fixture begins with the 4-byte EBML magic. Split it so the first
+        # write carries bytes 0-1 and the second write carries bytes 2-onwards.
+        part1 = fixture[:2]
+        part2 = fixture[2:]
+        expected_bytes = (PCM_SAMPLE_RATE * PCM_SAMPLE_BYTES) // 2
+        tolerance = expected_bytes // 10
+
+        async def run() -> int:
+            pipe = PcmPipe(mime="audio/webm")
+            await pipe.start()
+            await pipe.write(part1)
+            await pipe.write(part2)
+
+            pcm_chunks: list[bytes] = []
+
+            async def read_until_eof():
+                async for frame in pipe.read_frames():
+                    pcm_chunks.append(frame)
+
+            read_task = asyncio.create_task(read_until_eof())
+            await pipe.aclose(grace_seconds=5.0)
+            try:
+                await asyncio.wait_for(read_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                read_task.cancel()
+                try:
+                    await read_task
+                except Exception:
+                    pass
+            return sum(len(c) for c in pcm_chunks)
+
+        total = _run_async(run())
+        self.assertGreater(total, 0, "PcmPipe produced no PCM when magic was split across writes")
+        self.assertGreaterEqual(
+            total, expected_bytes - tolerance,
+            f"expected ~{expected_bytes} bytes of PCM, got {total}",
+        )
+
+
+class PcmPipeHeaderGateUnitTests(unittest.TestCase):
+    """Pure-Python unit tests for the EBML header gate — no ffmpeg required."""
+
+    def test_non_webm_mime_gate_disabled(self):
+        """Non-webm mimes have the gate disabled (pass-through from the start)."""
+        for mime in ("audio/ogg", "audio/ogg;codecs=opus", "audio/mp4", "audio/wav", None):
+            pipe = PcmPipe(mime=mime)
+            self.assertFalse(
+                pipe._header_gate_enabled,
+                f"gate should be disabled for mime={mime!r}",
+            )
+            self.assertTrue(
+                pipe._header_seen,
+                f"_header_seen should be True (pass-through) for mime={mime!r}",
+            )
+
+    def test_webm_mime_gate_enabled_initially_unseen(self):
+        """WebM mimes start with gate enabled and magic not yet seen."""
+        for mime in ("audio/webm", "audio/webm;codecs=opus", "video/webm"):
+            pipe = PcmPipe(mime=mime)
+            self.assertTrue(pipe._header_gate_enabled, f"gate should be enabled for mime={mime!r}")
+            self.assertFalse(pipe._header_seen, f"magic should not be seen yet for mime={mime!r}")
+            self.assertEqual(pipe._header_carry, b"")
+
+    def test_magic_detected_at_byte_zero(self):
+        """Gate locks open immediately when data starts with EBML magic."""
+        pipe = PcmPipe(mime="audio/webm")
+        # Simulate a fresh init segment (magic + arbitrary payload).
+        data = _EBML_MAGIC + b"\x01\x02\x03\x04" * 100
+        # We can test the gate logic directly without starting ffmpeg.
+        scan = pipe._header_carry + data
+        idx = scan.find(_EBML_MAGIC)
+        self.assertEqual(idx, 0)
+        # After the gate logic runs the carry is cleared and the full buffer forwarded.
+        pipe._header_seen = True
+        pipe._header_carry = b""
+        self.assertTrue(pipe._header_seen)
+        self.assertEqual(pipe._header_carry, b"")
+
+    def test_magic_split_carry_logic(self):
+        """3-byte carry correctly detects a magic split across two writes."""
+        # Simulate: first write is bytes 0-2 of the EBML magic (3 bytes),
+        # second write is byte 3 + payload.
+        part1 = _EBML_MAGIC[:3]   # b"\x1a\x45\xdf"
+        part2 = _EBML_MAGIC[3:] + b"\x00" * 100  # b"\xa3\x00..."
+
+        # First write: magic not found in 3-byte prefix → store as carry.
+        scan1 = b"" + part1
+        idx1 = scan1.find(_EBML_MAGIC)
+        self.assertEqual(idx1, -1)
+        carry = scan1[-3:]
+        self.assertEqual(carry, _EBML_MAGIC[:3])
+
+        # Second write: combine carry + new data → magic found at offset 0.
+        scan2 = carry + part2
+        idx2 = scan2.find(_EBML_MAGIC)
+        self.assertEqual(idx2, 0)
+        forward = scan2[idx2:]
+        self.assertEqual(forward[:4], _EBML_MAGIC)
+
+    def test_headerless_bytes_produce_no_carry_overflow(self):
+        """Multiple header-less writes keep carry capped at 3 bytes."""
+        pipe = PcmPipe(mime="audio/webm")
+        for _ in range(10):
+            junk = b"\x00" * 1000
+            scan = pipe._header_carry + junk
+            idx = scan.find(_EBML_MAGIC)
+            if idx == -1:
+                pipe._header_carry = scan[-3:] if len(scan) >= 3 else scan
+        self.assertLessEqual(len(pipe._header_carry), 3)

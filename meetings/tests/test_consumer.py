@@ -318,6 +318,8 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         consumer.meeting_id = self.meeting.id
         consumer.meeting_uuid = str(self.meeting.uuid)
         consumer._realtime_mode = "chunked"
+        consumer._realtime_was_active_this_conn = False
+        consumer._post_fallback_drop_armed = False
         consumer._pending_meta = []
         consumer._segments_total = 0
         consumer._undersized_chunk_streak = 0
@@ -366,6 +368,8 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         consumer.meeting_id = self.meeting.id
         consumer.meeting_uuid = str(self.meeting.uuid)
         consumer._realtime_mode = "chunked"
+        consumer._realtime_was_active_this_conn = False
+        consumer._post_fallback_drop_armed = False
         consumer._pending_meta = []
         consumer._segments_total = 0
         consumer._undersized_chunk_streak = 0
@@ -402,6 +406,152 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertEqual(consumer._segments_total, 3)
         self.assertEqual(consumer._undersized_chunk_streak, 1)
 
+    async def test_post_fallback_drop_armed_drops_undersized_from_first(self):
+        """With _post_fallback_drop_armed=True ALL undersized frames are dropped,
+        including the first one.  This prevents a leaked streaming burst (the
+        very first burst after a realtime→chunked fallback) from reaching Celery
+        and creating an undecodable segment."""
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
+        consumer._realtime_mode = "chunked"
+        consumer._realtime_was_active_this_conn = True
+        consumer._post_fallback_drop_armed = True
+        consumer._pending_meta = []
+        consumer._segments_total = 0
+        consumer._undersized_chunk_streak = 0
+
+        async def _fake_send(text_data=None, **kwargs):
+            pass
+        consumer.send = _fake_send
+
+        write_calls: list[int] = []
+
+        async def _fake_write_chunk(meta, raw):
+            write_calls.append(meta["segment_index"])
+            return "/tmp/fake"
+        consumer._write_chunk = _fake_write_chunk
+
+        enqueue_calls: list[int] = []
+
+        async def _fake_enqueue(meta, temp_path):
+            enqueue_calls.append(meta["segment_index"])
+        consumer._enqueue_chunk_task = _fake_enqueue
+
+        tiny = b"\x00" * 100  # well under 8 KB
+
+        # Send two tiny (leaked) frames — both should be dropped.
+        for i in range(2):
+            consumer._pending_meta.append({
+                "segment_index": i + 500,  # inflated client-counted index
+                "byte_length": len(tiny),
+                "mime": "audio/webm",
+                "start_offset_seconds": 0.0,
+            })
+            await consumer._handle_binary_frame(tiny)
+
+        self.assertEqual(write_calls, [], "no writes expected: both frames should be dropped")
+        self.assertEqual(enqueue_calls, [], "no enqueues expected")
+        self.assertEqual(consumer._segments_total, 0)
+
+    async def test_post_fallback_chunk_uses_server_allocated_index(self):
+        """After realtime was active, chunked frames get a server-allocated index
+        rather than trusting the (potentially inflated) client-supplied one.
+        This prevents a leaked streaming burst from poisoning the max+1 allocator."""
+        # Pre-create two ready segments so the allocator returns 2 next.
+        await database_sync_to_async(MeetingTranscriptSegment.objects.create)(
+            meeting=self.meeting,
+            segment_index=0,
+            text="Hello.",
+            status=MeetingTranscriptSegment.Status.READY,
+        )
+        await database_sync_to_async(MeetingTranscriptSegment.objects.create)(
+            meeting=self.meeting,
+            segment_index=1,
+            text="World.",
+            status=MeetingTranscriptSegment.Status.READY,
+        )
+
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
+        consumer._realtime_mode = "chunked"
+        consumer._realtime_was_active_this_conn = True
+        consumer._post_fallback_drop_armed = False
+        consumer._pending_meta = []
+        consumer._segments_total = 0
+        consumer._undersized_chunk_streak = 0
+
+        async def _fake_send(text_data=None, **kwargs):
+            pass
+        consumer.send = _fake_send
+
+        write_calls: list[int] = []
+
+        async def _fake_write_chunk(meta, raw):
+            write_calls.append(meta["segment_index"])
+            return "/tmp/fake"
+        consumer._write_chunk = _fake_write_chunk
+
+        enqueue_calls: list[int] = []
+
+        async def _fake_enqueue(meta, temp_path):
+            enqueue_calls.append(meta["segment_index"])
+        consumer._enqueue_chunk_task = _fake_enqueue
+
+        # Client sends an inflated index (271) — server should allocate 2 instead.
+        big = b"\x00" * (16 * 1024)
+        consumer._pending_meta.append({
+            "segment_index": 271,
+            "byte_length": len(big),
+            "mime": "audio/webm",
+            "start_offset_seconds": 0.0,
+        })
+        await consumer._handle_binary_frame(big)
+
+        self.assertEqual(write_calls, [2], "write should use server-allocated index 2, not 271")
+        self.assertEqual(enqueue_calls, [2], "enqueue should use server-allocated index 2, not 271")
+
+    async def test_pure_chunked_session_uses_client_index_unchanged(self):
+        """A pure chunked session (_realtime_was_active_this_conn=False) keeps the
+        existing behaviour: client-supplied index is used, first undersized allowed."""
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
+        consumer._realtime_mode = "chunked"
+        consumer._realtime_was_active_this_conn = False
+        consumer._post_fallback_drop_armed = False
+        consumer._pending_meta = []
+        consumer._segments_total = 0
+        consumer._undersized_chunk_streak = 0
+
+        async def _fake_send(text_data=None, **kwargs):
+            pass
+        consumer.send = _fake_send
+
+        enqueue_calls: list[int] = []
+
+        async def _fake_enqueue(meta, temp_path):
+            enqueue_calls.append(meta["segment_index"])
+        consumer._enqueue_chunk_task = _fake_enqueue
+
+        async def _fake_write_chunk(meta, raw):
+            return "/tmp/fake"
+        consumer._write_chunk = _fake_write_chunk
+
+        tiny = b"\x00" * 100  # undersized — should be allowed as first
+        consumer._pending_meta.append({
+            "segment_index": 7,  # arbitrary client index
+            "byte_length": len(tiny),
+            "mime": "audio/webm",
+            "start_offset_seconds": 0.0,
+        })
+        await consumer._handle_binary_frame(tiny)
+
+        # First undersized frame is allowed in pure chunked mode (original behaviour).
+        self.assertEqual(enqueue_calls, [7], "first undersized frame should pass with client index 7")
+        self.assertEqual(consumer._undersized_chunk_streak, 1)
+
     async def test_fall_back_to_chunked_emits_live_mode_changed(self):
         """First fallback emits live_mode_changed with permanent=False; second
         emits with permanent=True. Bypasses the realtime infra by calling the
@@ -419,6 +569,8 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         consumer._realtime_mode = "realtime"
         consumer._realtime_failure_count = 0
         consumer._realtime_permanently_disabled = False
+        consumer._realtime_was_active_this_conn = False
+        consumer._post_fallback_drop_armed = False
         consumer._interruption_started_at = None
 
         async def _fake_send(text_data=None, **kwargs):

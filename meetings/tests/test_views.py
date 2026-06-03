@@ -476,6 +476,53 @@ class MeetingUnifiedUploadTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class MeetingTranscriptPanelTests(TestCase):
+    """Verify that the transcript <details> panel is always rendered open.
+
+    Regression guard for: panel was collapsed during live_transcribing, hiding
+    live transcript segments from the user until the page reloaded on stop.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="panel@example.com", password="pw")
+        self.client.force_login(self.user)
+
+    def _get_detail(self, meeting):
+        return self.client.get(reverse("meeting_detail", args=[meeting.uuid]))
+
+    def test_panel_open_during_live_transcribing(self):
+        meeting = Meeting.objects.create(
+            name="Live", slug="m-panel-live", created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+        )
+        response = self._get_detail(meeting)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            '<details id="transcript-details"',
+        )
+        # The panel must carry the `open` attribute so the transcript is visible.
+        content = response.content.decode()
+        import re
+        match = re.search(r'<details id="transcript-details"[^>]*>', content)
+        self.assertIsNotNone(match, "transcript-details element not found in response")
+        self.assertIn("open", match.group(), "transcript-details must have `open` during LIVE_TRANSCRIBING")
+
+    def test_panel_open_after_ready(self):
+        meeting = Meeting.objects.create(
+            name="Done", slug="m-panel-ready", created_by=self.user,
+            status=Meeting.Status.READY,
+        )
+        response = self._get_detail(meeting)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        import re
+        match = re.search(r'<details id="transcript-details"[^>]*>', content)
+        self.assertIsNotNone(match)
+        self.assertIn("open", match.group(), "transcript-details must have `open` after meeting is ready")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingSaveToDataRoomTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="save@example.com", password="pw")
