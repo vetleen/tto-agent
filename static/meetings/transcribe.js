@@ -62,7 +62,7 @@
   const micSelect = document.getElementById('mic-select');
   const autoStopInput = document.getElementById('auto-stop-input');
   const levelBar = document.getElementById('mic-level-bar');
-  const transcriptPane = document.getElementById('transcript-pane');
+  let transcriptPane = document.getElementById('transcript-pane');
   const transcribingIndicator = document.getElementById('transcribing-indicator');
   const transcribingIndicatorLabel = document.getElementById('transcribing-indicator-label');
   const unsupportedBanner = document.getElementById('transcribe-unsupported');
@@ -369,6 +369,12 @@
       analyserNode.fftSize = 1024;
       source.connect(analyserNode);
       const buf = new Uint8Array(analyserNode.fftSize);
+      // Track LOW→HIGH mic transitions to reset the transcript stall timer
+      // each time the user starts speaking, so the stall window starts fresh
+      // from when speech begins rather than from the last transcript event.
+      // Without this, a session-start silence of ≥30s followed by speech fires
+      // the stall immediately because transcriptSilenceMs was already at 30s.
+      let prevMicAboveThreshold = false;
       const tick = function () {
         if (!analyserNode || !levelBar) return;
         analyserNode.getByteTimeDomainData(buf);
@@ -379,9 +385,16 @@
           sumSq += v * v;
         }
         const rms = Math.sqrt(sumSq / buf.length);
-        if (rms >= MIC_SPEECH_RMS_THRESHOLD) {
+        const micAboveThreshold = rms >= MIC_SPEECH_RMS_THRESHOLD;
+        if (micAboveThreshold) {
+          if (!prevMicAboveThreshold) {
+            // Speech just started (LOW→HIGH): reset the transcript stall timer
+            // so the 30s window begins fresh from this utterance.
+            lastTranscriptActivityAt = Date.now();
+          }
           lastMicActivityAt = Date.now();
         }
+        prevMicAboveThreshold = micAboveThreshold;
         const pct = Math.min(100, Math.round(rms * 200));
         levelBar.style.width = pct + '%';
         levelLoop = requestAnimationFrame(tick);
@@ -465,24 +478,25 @@
       console.warn('recorder appears stalled (' + silenceMs + 'ms), restarting');
       attemptRecorderRestart();
     }
-    // Transcript-activity watchdog: bytes are still flowing to the server but
-    // no transcript text has arrived in a while. Almost always means the server
-    // has silently fallen out of a working state.
+    // Transcript-activity watchdog: no transcript has arrived for a while.
+    // Almost always means the server has silently fallen out of working state.
     //
-    // Guard: only fire if the user was actually speaking recently. In realtime
-    // mode the MediaRecorder streams 250ms bursts even during silence, so
-    // "no transcript for 30s" is a false positive during any quiet stretch.
-    // We require that the mic RMS exceeded MIC_SPEECH_RMS_THRESHOLD within the
-    // stall window (tracked by the level meter tick).
+    // The stall timer (lastTranscriptActivityAt) is reset both when a real
+    // transcript arrives AND when the mic goes from silent→active (LOW→HIGH in
+    // the level meter tick). This means transcriptSilenceMs measures "time
+    // since user last started speaking OR last got a transcript", whichever is
+    // more recent — avoiding false positives during silence.
     //
-    // Threshold is mode-aware: chunked legitimately takes >30s (30s chunk
-    // recording + batch transcription latency) so we use a 3× multiplier.
+    // Guard: lastMicActivityAt > 0 ensures the stall never fires on sessions
+    // where the user never spoke at all (e.g. opened page and left it).
+    //
+    // Threshold is mode-aware: chunked legitimately takes >30s (30s chunk +
+    // batch transcription latency) so we use a 3× multiplier.
     const stallThreshold = (liveMode === 'chunked') ? TRANSCRIPT_STALL_CHUNKED_MS : TRANSCRIPT_STALL_MS;
     const transcriptSilenceMs = Date.now() - lastTranscriptActivityAt;
-    const micSilenceMs = Date.now() - lastMicActivityAt;
     if (
       transcriptSilenceMs >= stallThreshold
-      && micSilenceMs <= stallThreshold
+      && lastMicActivityAt > 0
       && !autoRecoverInFlight
       && !reconnecting
     ) {
@@ -883,6 +897,24 @@
           // Activity timestamp resets on a healthy started event so the
           // stall watchdog gives the new session a fresh window.
           lastTranscriptActivityAt = Date.now();
+          // If the page was loaded while the meeting was not live (e.g.
+          // status=ready), #transcript-pane is a <textarea>. Appending <p>
+          // children to a textarea is silently inert — segments arrive but
+          // never render. Swap to a plain div so live segments are visible.
+          if (transcriptPane && transcriptPane.tagName === 'TEXTAREA') {
+            const div = document.createElement('div');
+            div.id = 'transcript-pane';
+            div.className = 'whitespace-pre-wrap pt-4';
+            // Preserve any existing transcript text as a starting point.
+            if (transcriptPane.value) {
+              div.textContent = transcriptPane.value;
+            }
+            transcriptPane.parentNode.replaceChild(div, transcriptPane);
+            transcriptPane = div;
+            // Hide save controls — they belong to the non-live view only.
+            if (transcriptSaveBtn) transcriptSaveBtn.parentNode && transcriptSaveBtn.parentNode.classList.add('hidden');
+            if (transcriptSavedEl) transcriptSavedEl.classList.add('hidden');
+          }
           if (!resolved) { resolved = true; resolve(); }
         } else if (msg.type === 'segment.queued') {
           inFlightSegments.add(msg.segment_index);
