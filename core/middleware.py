@@ -37,6 +37,41 @@ class RequestIDMiddleware:
         return response
 
 
+class SuspensionMiddleware:
+    """Redirect suspended non-staff users to the suspended page.
+
+    Runs once per HTTP request. Django ``is_staff``/superusers (platform
+    operators) are exempt; org-level admins are not. Anonymous users pass
+    through (handled by the normal login flow). Only the suspended page and
+    logout are reachable while suspended, so the user can still leave.
+    """
+
+    # Only what a suspended user must still reach. NOT the whole /accounts/
+    # prefix — settings/profile/org/usage live under /accounts/ and must be gated.
+    EXEMPT_PATHS = ("/accounts/suspended/", "/accounts/logout/")
+    EXEMPT_PREFIXES = ("/static/", "/media/")
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        user = getattr(request, "user", None)
+        if (
+            user is not None
+            and user.is_authenticated
+            and not user.is_staff
+            and request.path not in self.EXEMPT_PATHS
+            and not request.path.startswith(self.EXEMPT_PREFIXES)
+        ):
+            from accounts.models import Membership
+
+            if Membership.objects.filter(user=user, is_suspended=True).exists():
+                from django.shortcuts import redirect
+
+                return redirect("accounts:suspended")
+        return self.get_response(request)
+
+
 class RequestIDFilter(logging.Filter):
     """Inject request_id into every log record."""
 

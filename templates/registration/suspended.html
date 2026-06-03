@@ -1,0 +1,31 @@
+{% extends "_base.html" %}
+
+{% block navbar %}
+<nav class="bg-neutral-primary fixed w-full z-50 top-0 start-0 border-b border-default backdrop-blur-md">
+  <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex flex-wrap items-center justify-between h-16">
+      <span class="flex items-center shrink-0">
+        {% if assistant_emoji %}<span class="text-2xl" aria-hidden="true">{{ assistant_emoji }}</span>{% endif %}
+        <span class="{% if assistant_emoji %}ml-2 {% endif %}self-center text-3xl text-heading font-semibold whitespace-nowrap font-handrawn">{{ assistant_name }}</span>
+      </span>
+      <form action="{% url 'accounts:logout' %}" method="post">
+        {% csrf_token %}
+        <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
+          Log out
+        </button>
+      </form>
+    </div>
+  </div>
+</nav>
+{% endblock navbar %}
+
+{% block content %}
+<main class="mx-auto max-w-lg px-6 py-24 text-center">
+  <h1 class="mt-4 text-3xl font-semibold tracking-tight text-heading">Your account has been suspended</h1>
+  <p class="mt-4 text-body">
+    {% if org_name %}Please contact {{ org_name }}'s administrator.{% else %}Please contact your administrator.{% endif %}
+  </p>
+</main>
+{% endblock content %}
+
+{% block feedback_widget %}{% endblock %}

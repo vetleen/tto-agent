@@ -10,6 +10,7 @@ from .forms import (
 from .views.auth import (
     LoginView,
     PasswordResetView,
+    suspended,
 )
 from .views.settings import (
     org_allowed_models_update,
@@ -98,5 +99,6 @@ urlpatterns = [
         ),
         name="password_reset_confirm",
     ),
+    path("suspended/", suspended, name="suspended"),
     path("", include("django.contrib.auth.urls")),
 ]

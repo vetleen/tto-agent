@@ -94,6 +94,21 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertFalse(connected)
         await comm.disconnect()
 
+    async def test_suspended_user_is_rejected(self):
+        from accounts.models import Membership, Organization
+
+        org = await database_sync_to_async(Organization.objects.create)(
+            name="Acme", slug="acme-cons",
+        )
+        await database_sync_to_async(Membership.objects.create)(
+            user=self.user, org=org, is_suspended=True,
+        )
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        connected, code = await comm.connect()
+        self.assertFalse(connected)
+        self.assertEqual(code, 4403)
+        await comm.disconnect()
+
     @patch("meetings.tasks.transcribe_meeting_chunk_task")
     async def test_chunk_meta_plus_binary_enqueues_task(self, mock_task):
         comm = _make_communicator(self.meeting.uuid, self.user)

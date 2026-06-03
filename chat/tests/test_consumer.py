@@ -58,6 +58,23 @@ class ConsumerConnectTests(TransactionTestCase):
         self.assertTrue(connected)
         await communicator.disconnect()
 
+    async def test_suspended_user_rejected(self):
+        from accounts.models import Membership, Organization
+
+        org = await database_sync_to_async(Organization.objects.create)(
+            name="Acme", slug="acme-chat",
+        )
+        await database_sync_to_async(Membership.objects.create)(
+            user=self.user, org=org, is_suspended=True,
+        )
+        communicator = await self._communicator(self.user)
+        connected, _ = await communicator.connect()
+        # The consumer accepts, emits a suspended event, then closes.
+        self.assertTrue(connected)
+        msg = json.loads(await communicator.receive_from())
+        self.assertEqual(msg["event_type"], "guardrail.suspended")
+        await communicator.disconnect()
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
