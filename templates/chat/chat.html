@@ -104,7 +104,7 @@
     <span class="text-brand font-medium text-lg">Drop files to attach</span>
   </div>
   {# Model selector dropdown #}
-  <div class="relative px-4 pt-2 pb-0 max-w-3xl mx-auto w-full flex items-center justify-between">
+  <div class="relative px-4 pt-2 pb-0 max-w-4xl mx-auto w-full flex items-center justify-between">
     <div class="flex items-center">
       <div class="relative">
         <button type="button" id="model-selector-btn" class="inline-flex items-center gap-1.5 px-2.5 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors">
@@ -144,7 +144,7 @@
   </div>
   {# Messages area — scrollable #}
   <div class="{% if messages %}flex-1{% endif %} overflow-y-auto" id="messages-scroll-container">
-    <div class="max-w-3xl mx-auto w-full px-4 {% if messages %}py-6{% endif %}">
+    <div class="max-w-4xl mx-auto w-full px-4 {% if messages %}py-6{% endif %}">
       <div id="chat-messages" class="space-y-6">
         {% for m in messages %}
           {% if m.is_redacted and m.role == "tool" %}
@@ -223,7 +223,7 @@
 
   {# Task plan card — collapsible, above input #}
   <div id="task-plan-card" class="{% if thread_tasks_json == "[]" or not thread_tasks_json %}hidden {% endif %}border-t border-default bg-neutral-primary w-full">
-    <div class="max-w-3xl mx-auto w-full px-4 pt-2 pb-1">
+    <div class="max-w-4xl mx-auto w-full px-4 pt-2 pb-1">
       <button id="task-plan-toggle" type="button" class="flex items-center gap-1.5 text-xs font-medium text-heading hover:text-brand transition-colors w-full text-left py-1">
         <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
         <span id="task-plan-badge">Task Plan</span>
@@ -237,7 +237,7 @@
 
   {# Sub-agent status bar — visible when background sub-agents are active #}
   <div id="subagent-status-bar" class="hidden border-t border-default bg-indigo-50/50 dark:bg-indigo-950/30 w-full">
-    <div class="max-w-3xl mx-auto w-full px-4 py-2">
+    <div class="max-w-4xl mx-auto w-full px-4 py-2">
       <div class="flex items-start gap-2 text-xs text-indigo-700 dark:text-indigo-300">
         <svg class="w-3.5 h-3.5 shrink-0 animate-spin mt-0.5" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -250,7 +250,7 @@
 
   {# Input area — sticky bottom, moves up when chat is empty #}
   <div id="chat-input-area" class="{% if messages %}border-t border-default{% endif %} bg-neutral-primary w-full">
-    <div class="max-w-3xl mx-auto w-full px-4 py-3">
+    <div class="max-w-4xl mx-auto w-full px-4 py-3">
       {# Attached data room pills #}
       <div id="attached-data-rooms" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
         {% for dr in thread_data_rooms %}
