@@ -101,7 +101,11 @@ class SimpleChatPipeline(BasePipeline):
         for name in tool_names:
             t = registry.get_tool(name)
             if t is None:
-                raise ValueError(f"Unknown tool name: {name!r}")
+                # A skill may carry a tool name that no longer exists (e.g. an
+                # imported/older skill). Skip it rather than crashing the turn —
+                # the request just proceeds without that tool.
+                logger.warning("Skipping unknown tool name in request: %r", name)
+                continue
             # Copy to avoid shared state across concurrent requests
             copy = t.model_copy()
             if context:

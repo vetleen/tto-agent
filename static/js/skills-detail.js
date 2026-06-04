@@ -289,6 +289,26 @@
     });
   }
 
+  // Promote: move this personal skill up to the organization (changes its type).
+  var promoteBtn = document.getElementById("promote-btn");
+  if (promoteBtn) {
+    promoteBtn.addEventListener("click", function () {
+      if (!confirm("Promote this to an organization skill? Your whole organization will be able to use it, and it will no longer be one of your personal skills.")) return;
+      actionInput.value = "promote";
+      form.submit();
+    });
+  }
+
+  // Demote: move this org skill down to your personal skills (changes its type).
+  var demoteBtn = document.getElementById("demote-btn");
+  if (demoteBtn) {
+    demoteBtn.addEventListener("click", function () {
+      if (!confirm("Demote this to a personal skill? It will be removed from your organization and only you will have it. There is no undo.")) return;
+      actionInput.value = "demote";
+      form.submit();
+    });
+  }
+
   // Block <Enter> on text inputs from triggering an accidental submit.
   form.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && e.target.tagName === "INPUT") {

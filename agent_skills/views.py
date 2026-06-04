@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponseForbidden, JsonResponse
+from django.http import FileResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods, require_POST
@@ -21,10 +22,16 @@ from agent_skills.services import (
     can_edit_skill,
     create_org_skill,
     create_user_skill,
+    dump_skills_json,
     fork_skill,
     get_skill_for_user,
+    import_skill,
+    move_skill_to_org,
+    move_skill_to_personal,
+    parse_skill_export,
     promote_skill_to_org,
     set_user_skill_selection,
+    SkillImportError,
 )
 
 logger = logging.getLogger(__name__)
@@ -454,6 +461,46 @@ def skills_save(request, skill_id):
         messages.success(request, f"Saved as organization skill '{promoted.name}'.")
         return redirect("agent_skills_list")
 
+    if action == "promote":
+        # Save any edits in the form, then change the skill's type (move it up).
+        org = _user_org(request.user)
+        if not _is_org_admin(request.user, org):
+            return HttpResponseForbidden("Org admin required.")
+        if not can_edit_skill(request.user, skill):
+            return HttpResponseForbidden("Cannot edit this skill.")
+        try:
+            _apply_skill_form(skill, request)
+        except SkillFormValidationError as exc:
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
+        try:
+            move_skill_to_org(request.user, skill, org)
+        except (PermissionError, ValueError) as exc:
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
+        messages.success(request, f"Promoted '{skill.name}' to an organization skill.")
+        return redirect("agent_skills_detail", skill_id=skill.id)
+
+    if action == "demote":
+        # Save any edits in the form, then change the skill's type (move it down).
+        if skill.level != "org":
+            messages.error(request, "Only organization skills can be demoted.")
+            return redirect("agent_skills_detail", skill_id=skill.id)
+        if not _is_org_admin(request.user, skill.organization):
+            return HttpResponseForbidden("Org admin required.")
+        try:
+            _apply_skill_form(skill, request)
+        except SkillFormValidationError as exc:
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
+        try:
+            move_skill_to_personal(request.user, skill)
+        except (PermissionError, ValueError) as exc:
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
+        messages.success(request, f"Demoted '{skill.name}' to a personal skill.")
+        return redirect("agent_skills_detail", skill_id=skill.id)
+
     return redirect("agent_skills_detail", skill_id=skill.id)
 
 
@@ -474,6 +521,10 @@ def skills_copy(request, skill_id):
 @login_required
 @require_POST
 def skills_promote(request, skill_id):
+    """Promote a personal skill to an org skill by moving it (changing its type).
+
+    The skill itself changes level — no copy is left at the personal tier.
+    """
     skill = get_skill_for_user(request.user, str(skill_id))
     if skill is None:
         return redirect("agent_skills_list")
@@ -481,11 +532,131 @@ def skills_promote(request, skill_id):
     if not _is_org_admin(request.user, org):
         return HttpResponseForbidden("Org admin required.")
     try:
-        promoted = promote_skill_to_org(request.user, skill, org)
+        move_skill_to_org(request.user, skill, org)
     except PermissionError:
         return HttpResponseForbidden("Org admin required.")
-    messages.success(request, f"Promoted to organization skill '{promoted.name}'.")
-    return redirect("agent_skills_detail", skill_id=promoted.id)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("agent_skills_detail", skill_id=skill.id)
+    messages.success(request, f"Promoted '{skill.name}' to an organization skill.")
+    return redirect("agent_skills_detail", skill_id=skill.id)
+
+
+@login_required
+@require_POST
+def skills_demote(request, skill_id):
+    """Demote an org skill to the acting admin's personal skills (changes type).
+
+    The skill changes level in place and is removed from the organization.
+    """
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+    if skill.level != "org":
+        messages.error(request, "Only organization skills can be demoted.")
+        return redirect("agent_skills_detail", skill_id=skill.id)
+    if not _is_org_admin(request.user, skill.organization):
+        return HttpResponseForbidden("Org admin required.")
+    try:
+        move_skill_to_personal(request.user, skill)
+    except PermissionError:
+        return HttpResponseForbidden("Org admin required.")
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("agent_skills_detail", skill_id=skill.id)
+    messages.success(request, f"Demoted '{skill.name}' to a personal skill.")
+    return redirect("agent_skills_detail", skill_id=skill.id)
+
+
+@login_required
+@require_POST
+def skills_copy_to_org(request, skill_id):
+    """Copy a skill (e.g. a built-in) into the org as a new org skill."""
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+    org = _user_org(request.user)
+    if not _is_org_admin(request.user, org):
+        return HttpResponseForbidden("Org admin required.")
+    try:
+        copied = promote_skill_to_org(request.user, skill, org)
+    except PermissionError:
+        return HttpResponseForbidden("Org admin required.")
+    messages.success(request, f"Copied '{copied.name}' as an organization skill.")
+    return redirect("agent_skills_detail", skill_id=copied.id)
+
+
+# ----- Export / import ---------------------------------------------------
+
+
+@login_required
+@require_http_methods(["GET"])
+def skills_download(request, skill_id):
+    """Download any accessible skill (user/org/system) as a JSON file.
+
+    Access is governed by ``get_skill_for_user`` — system skills are always
+    downloadable, org skills only by members, user skills only by the owner.
+    """
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+
+    buf = io.BytesIO(dump_skills_json([skill]).encode("utf-8"))
+    filename = f"{skill.slug or 'skill'}.json"
+    return FileResponse(
+        buf,
+        as_attachment=True,
+        filename=filename,
+        content_type="application/json",
+    )
+
+
+@login_required
+@require_POST
+def skills_import(request):
+    """Import skills from an uploaded JSON file as personal (user-level) skills.
+
+    A single imported skill lands on its detail page (the review surface, where
+    the user can inspect and edit it). Multiple skills redirect to the list with
+    a count. Imported skills are personal and inert until the user enables them.
+    """
+    upload = request.FILES.get("file")
+    if upload is None:
+        messages.error(request, "No file was selected.")
+        return redirect("agent_skills_list")
+
+    if upload.size > 2_000_000:
+        messages.error(request, "That file is too large (max 2 MB).")
+        return redirect("agent_skills_list")
+
+    try:
+        payloads = parse_skill_export(upload.read())
+    except SkillImportError as exc:
+        messages.error(request, f"Could not import skill: {exc}")
+        return redirect("agent_skills_list")
+
+    created = []
+    failed = 0
+    for payload in payloads:
+        try:
+            created.append(import_skill(request.user, payload))
+        except Exception:
+            logger.exception("Failed to import a skill for user %s", request.user.pk)
+            failed += 1
+
+    if not created:
+        messages.error(request, "No skills could be imported from that file.")
+        return redirect("agent_skills_list")
+
+    if len(created) == 1 and failed == 0:
+        messages.success(request, f"Imported '{created[0].name}'.")
+        return redirect("agent_skills_detail", skill_id=created[0].id)
+
+    msg = f"Imported {len(created)} skill{'s' if len(created) != 1 else ''}."
+    if failed:
+        msg += f" Skipped {failed} that could not be read."
+    messages.success(request, msg)
+    return redirect("agent_skills_list")
 
 
 @login_required

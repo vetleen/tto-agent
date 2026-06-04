@@ -436,11 +436,15 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         copy = AgentSkill.objects.get(level="user", created_by=self.user)
         self.assertEqual(copy.templates.count(), 2)
 
-    def test_standalone_promote_url_preserves_templates(self):
-        """The dropdown-menu Promote URL must also preserve templates."""
+    def test_standalone_copy_to_org_url_preserves_templates(self):
+        """The dropdown Copy-as-org URL (shown for built-in skills) preserves templates.
+
+        A system skill can't be *moved* into the org (promote), so its dropdown
+        offers a copy-to-org instead — which must carry templates across.
+        """
         self.client.force_login(self.user)
         response = self.client.post(
-            reverse("agent_skills_promote", kwargs={"skill_id": self.source.id})
+            reverse("agent_skills_copy_to_org", kwargs={"skill_id": self.source.id})
         )
         self.assertEqual(response.status_code, 302)
 
@@ -549,10 +553,14 @@ class SkillsPromoteViewTests(TestCase):
             reverse("agent_skills_promote", kwargs={"skill_id": self.user_skill.id})
         )
         self.assertEqual(response.status_code, 302)
-        self.assertTrue(
-            AgentSkill.objects.filter(
-                level="org", organization=self.org, name="Great"
-            ).exists()
+        # Promote moves the skill (changes its type) — same row, now org-level,
+        # with nothing left behind at the personal tier.
+        self.user_skill.refresh_from_db()
+        self.assertEqual(self.user_skill.level, "org")
+        self.assertEqual(self.user_skill.organization, self.org)
+        self.assertIsNone(self.user_skill.created_by)
+        self.assertFalse(
+            AgentSkill.objects.filter(level="user", name="Great").exists()
         )
 
     def test_member_cannot_promote(self):

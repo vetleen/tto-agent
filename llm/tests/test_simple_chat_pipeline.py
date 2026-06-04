@@ -246,7 +246,22 @@ class SimpleChatPipelineTests(TestCase):
         self.assertIsNone(last_call.tool_schemas)
         self.assertEqual(response.message.content, "Done.")
 
-    def test_run_unknown_tool_name_raises_value_error(self):
+    def test_resolve_tools_skips_unknown_names(self):
+        """Unknown tool names are skipped, not raised — a stale skill tool must
+        never crash a turn."""
+        resolved = SimpleChatPipeline()._resolve_tools(["nonexistent_tool"])
+        self.assertEqual(resolved, [])
+
+    def test_resolve_tools_keeps_known_drops_unknown(self):
+        mock_tool = self._make_mock_tool("search_documents")
+        with self._patch_tool_registry(mock_tool):
+            resolved = SimpleChatPipeline()._resolve_tools(
+                ["search_documents", "nonexistent_tool"]
+            )
+        self.assertEqual([t.name for t in resolved], ["search_documents"])
+
+    def test_run_with_only_unknown_tool_completes(self):
+        """A skill whose only declared tool no longer exists still completes."""
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=False,
@@ -254,9 +269,18 @@ class SimpleChatPipelineTests(TestCase):
             tools=["nonexistent_tool"],
             context=RunContext.create(),
         )
-        with self.assertRaises(ValueError) as ctx:
-            SimpleChatPipeline().run(request)
-        self.assertIn("nonexistent_tool", str(ctx.exception))
+        fake_response = ChatResponse(
+            message=Message(role="assistant", content="Hello"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.return_value = fake_response
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create:
+            mock_create.return_value = fake_model
+            response = SimpleChatPipeline().run(request)
+        self.assertEqual(response.message.content, "Hello")
 
     def test_run_tool_error_sent_back_to_llm(self):
         """When tool._run() raises, error JSON is appended as tool message and LLM gets another turn."""

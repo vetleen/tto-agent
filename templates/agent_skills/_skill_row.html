@@ -35,26 +35,48 @@ opacity propagates to all descendants and cannot be undone on a child.
       <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
-          Edit in chat
+          Edit with {{ assistant_name }}
         </button>
       </form>
       <button type="button" class="skill-toggle-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
         {% if row.is_enabled %}Disable{% else %}Enable{% endif %}
       </button>
+      {# Copy as personal skill — for admins on an org skill this is replaced by Demote. #}
+      {% if not is_org_admin or row.skill.level != "org" %}
       <form method="post" action="{% url 'agent_skills_copy' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
           Copy as personal skill
         </button>
       </form>
-      {% if is_org_admin and row.skill.level != "org" %}
-      <form method="post" action="{% url 'agent_skills_promote' skill_id=row.skill.id %}" class="p-0">
-        {% csrf_token %}
-        <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
-          Copy as organization skill
-        </button>
-      </form>
       {% endif %}
+      {% if is_org_admin %}
+        {% if row.skill.level == "user" %}
+        <form method="post" action="{% url 'agent_skills_promote' skill_id=row.skill.id %}" class="p-0">
+          {% csrf_token %}
+          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+            Promote to organization skill
+          </button>
+        </form>
+        {% elif row.skill.level == "system" %}
+        <form method="post" action="{% url 'agent_skills_copy_to_org' skill_id=row.skill.id %}" class="p-0">
+          {% csrf_token %}
+          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+            Copy as organization skill
+          </button>
+        </form>
+        {% elif row.skill.level == "org" %}
+        <form method="post" action="{% url 'agent_skills_demote' skill_id=row.skill.id %}" class="p-0">
+          {% csrf_token %}
+          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Demote this to a personal skill? It will be removed from your organization and only you will have it. There is no undo.');">
+            Demote to personal skill
+          </button>
+        </form>
+        {% endif %}
+      {% endif %}
+      <a href="{% url 'agent_skills_download' skill_id=row.skill.id %}" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+        Export
+      </a>
       {% if row.can_edit %}
       <form method="post" action="{% url 'agent_skills_delete' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}

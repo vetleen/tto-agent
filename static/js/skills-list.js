@@ -120,4 +120,20 @@
     checkbox.checked = !checkbox.checked;
     postToggle(row, checkbox.checked);
   });
+
+  // Import skill: the visible button proxies to a hidden file input, which
+  // auto-submits its (multipart) form once the user picks a file.
+  var importBtn = document.getElementById("import-skill-btn");
+  var importInput = document.getElementById("import-skill-input");
+  var importForm = document.getElementById("import-skill-form");
+  if (importBtn && importInput && importForm) {
+    importBtn.addEventListener("click", function () {
+      importInput.click();
+    });
+    importInput.addEventListener("change", function () {
+      if (importInput.files && importInput.files.length > 0) {
+        importForm.submit();
+      }
+    });
+  }
 })();

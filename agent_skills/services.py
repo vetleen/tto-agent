@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING
 
@@ -472,3 +473,300 @@ def promote_skill_to_org(
             )
 
     return new_skill
+
+
+def move_skill_to_org(user, skill: AgentSkill, organization) -> AgentSkill:
+    """Promote a personal skill to org level **in place** (no copy).
+
+    Unlike :func:`promote_skill_to_org` (which duplicates), this changes the
+    level of the same row: the personal skill *becomes* the org skill, so
+    templates, ``parent``, and the id are all preserved and nothing is left
+    behind at the user tier. Caller must be an admin of ``organization``.
+
+    Raises ``PermissionError`` if the user is not an admin, or ``ValueError``
+    if the skill is not a personal (user-level) skill.
+    """
+    from accounts.models import Membership
+
+    is_admin = Membership.objects.filter(
+        user=user, org=organization, role=Membership.Role.ADMIN
+    ).exists()
+    if not is_admin:
+        raise PermissionError("Only org admins can promote skills.")
+    if skill.level != "user":
+        raise ValueError("Only personal skills can be promoted to the organization.")
+
+    base_slug = skill.slug
+    slug = base_slug
+    counter = 1
+    while AgentSkill.objects.filter(
+        slug=slug, level="org", organization=organization
+    ).exclude(pk=skill.pk).exists():
+        suffix = f"-{counter}"
+        slug = base_slug[: 64 - len(suffix)] + suffix
+        counter += 1
+
+    skill.slug = slug
+    skill.level = "org"
+    skill.organization = organization
+    skill.created_by = None
+    skill.save(
+        update_fields=["slug", "level", "organization", "created_by", "updated_at"]
+    )
+    return skill
+
+
+def move_skill_to_personal(user, skill: AgentSkill) -> AgentSkill:
+    """Demote an org skill to the acting admin's personal skills **in place**.
+
+    Changes the level of the same row from org to user, assigning ownership to
+    ``user``. This **removes the skill from the organization** — other members
+    lose access. Caller must be an admin of the skill's organization.
+
+    Raises ``PermissionError`` if the user is not an admin, or ``ValueError``
+    if the skill is not an org-level skill.
+    """
+    from accounts.models import Membership
+
+    if skill.level != "org":
+        raise ValueError("Only organization skills can be demoted.")
+    is_admin = Membership.objects.filter(
+        user=user, org_id=skill.organization_id, role=Membership.Role.ADMIN
+    ).exists()
+    if not is_admin:
+        raise PermissionError("Only org admins can demote skills.")
+
+    base_slug = skill.slug
+    slug = base_slug
+    counter = 1
+    while AgentSkill.objects.filter(
+        slug=slug, level="user", created_by=user
+    ).exclude(pk=skill.pk).exists():
+        suffix = f"-{counter}"
+        slug = base_slug[: 64 - len(suffix)] + suffix
+        counter += 1
+
+    skill.slug = slug
+    skill.level = "user"
+    skill.created_by = user
+    skill.organization = None
+    skill.save(
+        update_fields=["slug", "level", "created_by", "organization", "updated_at"]
+    )
+    return skill
+
+
+# ----- Export / import --------------------------------------------------
+
+# Bump when the export format changes incompatibly. Importers reject files
+# carrying a higher version than they understand.
+EXPORT_VERSION = 1
+
+
+class SkillImportError(Exception):
+    """Raised when an uploaded skill export file is malformed or unsupported.
+
+    The view catches this and surfaces ``args[0]`` to the user via the Django
+    messages framework, so the message must be human-readable.
+    """
+
+
+def _lines(text: str) -> list[str]:
+    """Split a text field into a list of lines for human-readable JSON.
+
+    Multi-line fields (instructions, template content) would otherwise become
+    one giant ``\\n``-escaped string under ``json.dumps``. Splitting puts each
+    line on its own row when pretty-printed. Round-trips exactly via
+    ``"\\n".join`` — ``""`` -> ``[""]`` -> ``""``.
+    """
+    return (text or "").split("\n")
+
+
+def _join_lines(value) -> str:
+    """Inverse of :func:`_lines`, lenient about the input shape.
+
+    Accepts a list of lines (the export form) or a plain string (so a
+    hand-author can collapse a field back to a single string and still import).
+    Anything else normalizes to an empty string.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(str(x) for x in value)
+    return ""
+
+
+def export_skill(skill: AgentSkill) -> dict:
+    """Serialize a skill's portable fields.
+
+    Environment-specific columns (id, level, organization, created_by, parent,
+    is_active, timestamps) are intentionally omitted — an export describes the
+    skill, not where it lived.
+    """
+    return {
+        "slug": skill.slug,
+        "name": skill.name,
+        "emoji": skill.emoji,
+        "description": _lines(skill.description),
+        "instructions": _lines(skill.instructions),
+        "tool_names": list(skill.tool_names or []),
+        "templates": [
+            {"name": t.name, "content": _lines(t.content)}
+            for t in skill.templates.order_by("name")
+        ],
+    }
+
+
+def serialize_skills(skills) -> dict:
+    """Wrap one or more exported skills in the versioned envelope."""
+    return {
+        "wilfred_skill_export": EXPORT_VERSION,
+        "skills": [export_skill(s) for s in skills],
+    }
+
+
+def dump_skills_json(skills) -> str:
+    """Render skills as pretty-printed JSON suitable for download.
+
+    ``ensure_ascii=False`` keeps emoji and Norwegian characters literal instead
+    of ``\\uXXXX`` escapes, which matters for readability.
+    """
+    return json.dumps(serialize_skills(skills), indent=2, ensure_ascii=False)
+
+
+def _normalize_skill_payload(entry: dict) -> dict:
+    """Normalize one exported skill dict into create-ready fields.
+
+    Total (never raises): missing fields get sensible defaults, text fields
+    accept string-or-list, lengths are capped to match the edit form, and
+    duplicate template names are de-duplicated keep-first to avoid tripping the
+    ``unique_template_per_skill`` constraint. ``tool_names`` are kept verbatim
+    (resolution is graceful at use time).
+    """
+    name = (str(entry.get("name") or "").strip() or "Imported skill")[:255]
+    emoji = str(entry.get("emoji") or "")[:16]
+    description = _join_lines(entry.get("description"))[:1024]
+    instructions = _join_lines(entry.get("instructions"))
+
+    raw_slug = str(entry.get("slug") or "").strip()
+    slug = slugify(raw_slug)[:64] if raw_slug else ""
+
+    raw_tools = entry.get("tool_names")
+    tool_names = (
+        [str(t) for t in raw_tools if isinstance(t, (str, int))]
+        if isinstance(raw_tools, list)
+        else []
+    )
+
+    templates: list[dict] = []
+    seen_names: set[str] = set()
+    raw_templates = entry.get("templates")
+    if isinstance(raw_templates, list):
+        for t in raw_templates:
+            if not isinstance(t, dict):
+                continue
+            tname = str(t.get("name") or "").strip()[:255]
+            if not tname or tname in seen_names:
+                continue
+            seen_names.add(tname)
+            templates.append({"name": tname, "content": _join_lines(t.get("content"))})
+
+    return {
+        "slug": slug,
+        "name": name,
+        "emoji": emoji,
+        "description": description,
+        "instructions": instructions,
+        "tool_names": tool_names,
+        "templates": templates,
+    }
+
+
+def parse_skill_export(raw) -> list[dict]:
+    """Parse + validate an uploaded export into normalized skill payloads.
+
+    Accepts either the ``{"wilfred_skill_export": N, "skills": [...]}`` envelope
+    or a single bare skill dict (hand-authored). Raises :class:`SkillImportError`
+    with a user-facing message on any file-level problem. Per-skill creation is
+    left to :func:`import_skill` so the caller can isolate individual failures.
+    """
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SkillImportError("File is not valid UTF-8 text.") from exc
+    else:
+        text = raw or ""
+
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise SkillImportError("File is not valid JSON.") from exc
+
+    if not isinstance(data, dict):
+        raise SkillImportError("Unexpected file structure — expected a skill object.")
+
+    version = data.get("wilfred_skill_export")
+    if version is not None:
+        try:
+            version_num = int(version)
+        except (TypeError, ValueError) as exc:
+            raise SkillImportError("Unrecognized export version.") from exc
+        if version_num > EXPORT_VERSION:
+            raise SkillImportError(
+                "This skill was exported from a newer version of Wilfred."
+            )
+
+    if "skills" in data:
+        entries = data.get("skills")
+        if not isinstance(entries, list):
+            raise SkillImportError("The 'skills' field must be a list.")
+    else:
+        # Tolerate a single bare skill dict.
+        entries = [data]
+
+    payloads = [
+        _normalize_skill_payload(e) for e in entries if isinstance(e, dict)
+    ]
+    if not payloads:
+        raise SkillImportError("The file contains no skills.")
+    return payloads
+
+
+def import_skill(user, payload: dict) -> AgentSkill:
+    """Create a personal (user-level) skill from a normalized payload.
+
+    Mirrors :func:`fork_skill` but sourced from a dict: ``parent=None`` and no
+    lineage, so an imported skill is indistinguishable from one created from
+    scratch. Reuses the per-user slug de-duplication convention.
+    """
+    base_slug = (
+        payload.get("slug")
+        or slugify(payload.get("name") or "")[:64]
+        or "skill"
+    )
+    slug = base_slug
+    counter = 1
+    while AgentSkill.objects.filter(slug=slug, level="user", created_by=user).exists():
+        suffix = f"-{counter}"
+        slug = base_slug[: 64 - len(suffix)] + suffix
+        counter += 1
+
+    skill = AgentSkill.objects.create(
+        slug=slug,
+        name=payload["name"],
+        emoji=payload.get("emoji", ""),
+        description=payload.get("description", ""),
+        instructions=payload.get("instructions", ""),
+        tool_names=list(payload.get("tool_names") or []),
+        level="user",
+        created_by=user,
+        parent=None,
+    )
+
+    for tmpl in payload.get("templates", []):
+        SkillTemplate.objects.create(
+            skill=skill, name=tmpl["name"], content=tmpl.get("content", ""),
+        )
+
+    return skill
