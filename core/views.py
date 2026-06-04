@@ -49,6 +49,9 @@ def error_500(request):
 INBOX_WINDOW = timedelta(days=30)
 INBOX_PAGE_SIZE = 50
 
+# Date-sort options for the `sort` query param ("soonest" = ascending retain_until).
+INBOX_SORTS = ("soonest", "latest")
+
 # Registry driving both the listing query and the renew action so the three
 # user-facing models are handled uniformly. id_field is the lookup column whose
 # value is embedded in each row's composite "type:id" key (all three are UUIDs).
@@ -59,6 +62,7 @@ INBOX_TYPES = {
         "id_field": "id",
         "name_field": "title",
         "label": "Chat",
+        "label_plural": "Chats",
     },
     "dataroom": {
         "model": DataRoom,
@@ -66,6 +70,7 @@ INBOX_TYPES = {
         "id_field": "uuid",
         "name_field": "name",
         "label": "Data Room",
+        "label_plural": "Data Rooms",
     },
     "meeting": {
         "model": Meeting,
@@ -73,6 +78,7 @@ INBOX_TYPES = {
         "id_field": "uuid",
         "name_field": "name",
         "label": "Meeting",
+        "label_plural": "Meetings",
     },
 }
 
@@ -94,7 +100,7 @@ def _relative_future(retain_until, now):
     # Avoid %-d (not portable to Windows); build the date string explicitly.
     absolute = f"{local.strftime('%b')} {local.day}, {local.year}"
     if retain_until <= now:
-        return "Due now", absolute, True
+        return "Today", absolute, True
     days = (local.date() - timezone.localtime(now).date()).days
     if days == 0:
         return "Today", absolute, False
@@ -106,13 +112,20 @@ def _relative_future(retain_until, now):
 @login_required
 @require_http_methods(["GET"])
 def inbox(request):
-    """List the user's items closest to deletion, soonest first."""
+    """List the user's items closest to deletion, filtered/sorted per query params."""
     now = timezone.now()
     cutoff = now + INBOX_WINDOW
     show_archived = request.GET.get("show_archived") == "1"
 
-    items = []
-    for type_key, cfg in INBOX_TYPES.items():
+    type_filter = request.GET.get("type", "all")
+    if type_filter not in INBOX_TYPES:
+        type_filter = "all"
+
+    sort = request.GET.get("sort", "soonest")
+    if sort not in INBOX_SORTS:
+        sort = "soonest"
+
+    def _base_qs(cfg):
         qs = cfg["model"].objects.filter(
             created_by=request.user,
             retain_until__isnull=False,
@@ -120,7 +133,20 @@ def inbox(request):
         )
         if not show_archived:
             qs = qs.filter(is_archived=False)
-        qs = qs.only(cfg["id_field"], cfg["name_field"], "retain_until", "is_archived")
+        return qs
+
+    # Per-type counts power the filter tabs; computed for every type regardless
+    # of the active filter so each tab shows its own count.
+    type_counts = {key: _base_qs(cfg).count() for key, cfg in INBOX_TYPES.items()}
+    active_types = (
+        INBOX_TYPES if type_filter == "all" else {type_filter: INBOX_TYPES[type_filter]}
+    )
+
+    items = []
+    for type_key, cfg in active_types.items():
+        qs = _base_qs(cfg).only(
+            cfg["id_field"], cfg["name_field"], "retain_until", "is_archived"
+        )
         for obj in qs:
             obj_id = str(getattr(obj, cfg["id_field"]))
             label, absolute, overdue = _relative_future(obj.retain_until, now)
@@ -136,12 +162,33 @@ def inbox(request):
                 "open_url": _open_url(type_key, obj_id),
             })
 
-    items.sort(key=lambda d: d["retain_until"])  # ascending; overdue floats to top
+    # Ascending = soonest first (overdue floats to top); "latest" reverses it.
+    items.sort(key=lambda d: d["retain_until"], reverse=(sort == "latest"))
     page_obj = Paginator(items, INBOX_PAGE_SIZE).get_page(request.GET.get("page"))
+
+    # Company name for the retention-policy subtitle. A user has at most one
+    # membership (unique constraint), so .first() is unambiguous.
+    membership = request.user.organization_memberships.select_related("org").first()
+    org_name = membership.org.name if membership else ""
+
+    type_tabs = [{"key": "all", "label": "All", "count": sum(type_counts.values())}]
+    type_tabs += [
+        {"key": key, "label": cfg["label_plural"], "count": type_counts[key]}
+        for key, cfg in INBOX_TYPES.items()
+    ]
+
     return render(
         request,
         "core/inbox.html",
-        {"page_obj": page_obj, "show_archived": show_archived},
+        {
+            "page_obj": page_obj,
+            "show_archived": show_archived,
+            "org_name": org_name,
+            "type_filter": type_filter,
+            "sort": sort,
+            "next_sort": "latest" if sort == "soonest" else "soonest",
+            "type_tabs": type_tabs,
+        },
     )
 
 

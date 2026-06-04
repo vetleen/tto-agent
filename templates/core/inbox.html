@@ -11,17 +11,26 @@
   </ul>
   {% endif %}
 
-  <h1 class="text-2xl font-semibold text-heading mb-2">Inbox</h1>
-  <p class="text-sm text-body mb-8">Items scheduled for deletion, soonest first. Renew anything you want to keep.</p>
+  <h1 class="text-2xl font-semibold text-heading mb-2">Up for deletion</h1>
+  <p class="text-sm text-body mb-8">Chats and data rooms are retained for one year by default, while meetings are retained for 90 days. This is per {% if org_name %}{{ org_name }}&rsquo;s{% else %}your organization&rsquo;s{% endif %} data retention policy. On this page you will find your items that are scheduled for deletion. You may click renew to keep items longer.</p>
 
   <!-- Config for JS -->
   <div id="inbox-config" class="hidden"
        data-renew-url="{% url 'inbox_renew' %}"
        data-csrf-token="{{ csrf_token }}"></div>
 
-  <!-- Section header: label + show-archived toggle -->
-  <div class="flex items-center justify-between gap-3 mb-3">
-    <h2 class="text-sm font-medium text-heading">Up for deletion</h2>
+  <!-- Controls: type filter + show-archived toggle -->
+  <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+    <div class="inline-flex rounded-base border border-default overflow-hidden text-sm" role="group" aria-label="Filter by type">
+      {% for tab in type_tabs %}
+      <a href="{% querystring type=tab.key page=None %}"
+         class="inline-flex items-center gap-1.5 px-3 py-1.5 font-medium border-e border-default last:border-e-0 focus:outline-none {% if type_filter == tab.key %}bg-brand text-white{% else %}text-body hover:bg-neutral-secondary-medium{% endif %}"
+         {% if type_filter == tab.key %}aria-current="true"{% endif %}>
+        {{ tab.label }}
+        <span class="text-xs {% if type_filter == tab.key %}text-white/80{% else %}opacity-60{% endif %}">{{ tab.count }}</span>
+      </a>
+      {% endfor %}
+    </div>
     <label class="inline-flex items-center text-sm text-body cursor-pointer select-none">
       <input type="checkbox" id="show-archived-toggle" {% if show_archived %}checked{% endif %} class="w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-2 shrink-0">
       Show archived
@@ -32,13 +41,13 @@
   {% if page_obj.paginator.num_pages > 1 %}
   <div class="flex items-center justify-end gap-2 text-sm mb-3">
     {% if page_obj.has_previous %}
-    <a href="?page={{ page_obj.previous_page_number }}{% if show_archived %}&show_archived=1{% endif %}" class="px-2.5 py-1 text-body hover:text-heading border border-default rounded-base">Previous</a>
+    <a href="{% querystring page=page_obj.previous_page_number %}" class="px-2.5 py-1 text-body hover:text-heading border border-default rounded-base">Previous</a>
     {% else %}
     <span class="px-2.5 py-1 text-body opacity-40 border border-default rounded-base cursor-default">Previous</span>
     {% endif %}
     <span class="text-body">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
     {% if page_obj.has_next %}
-    <a href="?page={{ page_obj.next_page_number }}{% if show_archived %}&show_archived=1{% endif %}" class="px-2.5 py-1 text-body hover:text-heading border border-default rounded-base">Next</a>
+    <a href="{% querystring page=page_obj.next_page_number %}" class="px-2.5 py-1 text-body hover:text-heading border border-default rounded-base">Next</a>
     {% else %}
     <span class="px-2.5 py-1 text-body opacity-40 border border-default rounded-base cursor-default">Next</span>
     {% endif %}
@@ -47,10 +56,11 @@
 
   {% if page_obj.paginator.count == 0 %}
   <div class="w-full bg-neutral-primary-soft border border-default rounded-base">
-    <p class="px-4 py-6 text-body text-sm">Nothing up for deletion in the next 30 days. You're all caught up.</p>
+    <p class="px-4 py-6 text-body text-sm">{% if type_filter == 'all' %}Nothing up for deletion in the next 30 days. You're all caught up.{% else %}No items of this type are up for deletion in the next 30 days.{% endif %}</p>
   </div>
   {% else %}
   <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+    <!-- Toolbar: select-all + bulk actions -->
     <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-medium/40" id="inbox-toolbar">
       <input type="checkbox" id="select-all-inbox" class="w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select all items">
       <span class="text-sm text-body">Select all</span>
@@ -62,14 +72,24 @@
         </button>
       </div>
     </div>
+    <!-- Column header -->
+    <div class="grid grid-cols-[1rem_5.5rem_minmax(0,1fr)_5.5rem_6.5rem] items-center gap-x-3 w-full px-4 py-2 border-b border-default text-xs font-semibold uppercase tracking-wide text-body">
+      <span aria-hidden="true"></span>
+      <span>Type</span>
+      <span>Name</span>
+      <a href="{% querystring sort=next_sort page=None %}" class="justify-self-end inline-flex items-center gap-0.5 hover:text-heading focus:outline-none" title="Sort by deletion date">Due{% if sort == 'soonest' %}<svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M9.47 6.47a.75.75 0 011.06 0l4.25 4.25a.75.75 0 11-1.06 1.06L10 8.06l-3.72 3.72a.75.75 0 01-1.06-1.06l4.25-4.25z" clip-rule="evenodd"/></svg>{% else %}<svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z" clip-rule="evenodd"/></svg>{% endif %}</a>
+      <span aria-hidden="true"></span>
+    </div>
     {% for item in page_obj %}
-    <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.last %}rounded-b-base{% endif %}" data-item-key="{{ item.key }}" data-list="inbox">
-      <input type="checkbox" class="inbox-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ item.name }}">
-      <span class="shrink-0 me-2 px-1.5 py-0.5 text-xs font-medium rounded bg-neutral-secondary-medium text-body whitespace-nowrap">{{ item.type_label }}</span>
-      <a href="{{ item.open_url }}" class="flex-1 min-w-0 truncate font-medium text-heading hover:text-fg-brand {% if item.is_archived %}opacity-70{% endif %}" title="{{ item.name }}">{{ item.name }}</a>
-      {% if item.is_archived %}<span class="shrink-0 ms-2 px-1.5 py-0.5 text-xs rounded bg-neutral-tertiary text-body whitespace-nowrap">Archived</span>{% endif %}
-      <span class="shrink-0 ms-3 text-right text-xs font-medium whitespace-nowrap {% if item.is_overdue %}text-fg-danger{% elif item.countdown == 'Today' or item.countdown == 'Tomorrow' %}text-fg-warning{% else %}text-body{% endif %}" title="Deletes {{ item.absolute }}">{{ item.countdown }}</span>
-      <button type="button" class="inbox-renew-btn shrink-0 ms-3 inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base" data-item-key="{{ item.key }}" title="Renew">
+    <div class="grid grid-cols-[1rem_5.5rem_minmax(0,1fr)_5.5rem_6.5rem] items-center gap-x-3 w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.last %}rounded-b-base{% endif %}" data-item-key="{{ item.key }}" data-list="inbox">
+      <input type="checkbox" class="inbox-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 shrink-0" aria-label="Select {{ item.name }}">
+      <span class="justify-self-start px-1.5 py-0.5 text-xs font-medium rounded bg-neutral-secondary-medium text-body whitespace-nowrap">{{ item.type_label }}</span>
+      <div class="min-w-0 flex items-center gap-2">
+        <a href="{{ item.open_url }}" class="truncate font-medium text-heading hover:text-fg-brand {% if item.is_archived %}opacity-70{% endif %}" title="{{ item.name }}">{{ item.name }}</a>
+        {% if item.is_archived %}<span class="shrink-0 px-1.5 py-0.5 text-xs rounded bg-neutral-tertiary text-body whitespace-nowrap">Archived</span>{% endif %}
+      </div>
+      <span class="justify-self-end text-right text-xs font-medium whitespace-nowrap {% if item.is_overdue or item.countdown == 'Today' %}text-fg-danger{% elif item.countdown == 'Tomorrow' %}text-fg-warning{% else %}text-body{% endif %}" title="Deletes {{ item.absolute }}">{{ item.countdown }}</span>
+      <button type="button" class="inbox-renew-btn justify-self-end inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base whitespace-nowrap" data-item-key="{{ item.key }}" title="Renew">
         <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
         Renew
       </button>

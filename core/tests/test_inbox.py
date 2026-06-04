@@ -89,11 +89,11 @@ class InboxListingTests(InboxTestBase):
             [f"chat:{overdue.id}", f"dataroom:{soon.uuid}", f"meeting:{later.uuid}"],
         )
 
-    def test_overdue_renders_due_now(self):
+    def test_overdue_renders_today(self):
         self._chat(days=-1)
         items = list(self.client.get(reverse("inbox")).context["page_obj"])
         self.assertTrue(items[0]["is_overdue"])
-        self.assertEqual(items[0]["countdown"], "Due now")
+        self.assertEqual(items[0]["countdown"], "Today")
 
     def test_only_own_items(self):
         mine = self._chat(days=5)
@@ -151,7 +151,9 @@ class InboxPaginationTests(InboxTestBase):
     def test_pager_preserves_show_archived(self):
         self._make_many(51)
         resp = self.client.get(reverse("inbox"), {"show_archived": "1"})
-        self.assertContains(resp, "page=2&show_archived=1")
+        # {% querystring %} output is HTML-escaped and param order may vary; assert both.
+        self.assertContains(resp, "page=2")
+        self.assertContains(resp, "show_archived=1")
 
 
 class InboxRenewTests(InboxTestBase):
@@ -264,6 +266,65 @@ class InboxAccessTests(InboxTestBase):
         self.assertContains(resp, 'aria-label="Inbox"')
 
 
+class InboxSubtitleTests(InboxTestBase):
+    def test_subtitle_shows_org_name(self):
+        from accounts.models import Membership, Organization
+
+        org = Organization.objects.create(name="Acme TTO", slug="acme-tto")
+        Membership.objects.create(user=self.user, org=org)
+        resp = self.client.get(reverse("inbox"))
+        self.assertContains(resp, "Acme TTO")
+        self.assertContains(resp, "data retention policy")
+
+    def test_subtitle_fallback_without_org(self):
+        resp = self.client.get(reverse("inbox"))
+        self.assertContains(resp, "your organization")
+
+    def test_retention_periods_shown(self):
+        resp = self.client.get(reverse("inbox"))
+        self.assertContains(resp, "retained for one year")
+        self.assertContains(resp, "90 days")
+        self.assertContains(resp, "data retention policy")
+
+
+class InboxFilterSortTests(InboxTestBase):
+    def test_type_filter_limits_to_selected_type(self):
+        c = self._chat(days=3)
+        self._dataroom(days=3)
+        self._meeting(days=3)
+        keys = set(self._keys(self.client.get(reverse("inbox"), {"type": "chat"})))
+        self.assertEqual(keys, {f"chat:{c.id}"})
+
+    def test_invalid_type_falls_back_to_all(self):
+        c = self._chat(days=3)
+        d = self._dataroom(days=3)
+        keys = set(self._keys(self.client.get(reverse("inbox"), {"type": "bogus"})))
+        self.assertEqual(keys, {f"chat:{c.id}", f"dataroom:{d.uuid}"})
+
+    def test_sort_default_soonest_first(self):
+        soon = self._chat(days=2, title="soon")
+        later = self._chat(days=20, title="later")
+        keys = self._keys(self.client.get(reverse("inbox")))
+        self.assertEqual(keys, [f"chat:{soon.id}", f"chat:{later.id}"])
+
+    def test_sort_latest_reverses_order(self):
+        soon = self._chat(days=2, title="soon")
+        later = self._chat(days=20, title="later")
+        keys = self._keys(self.client.get(reverse("inbox"), {"sort": "latest"}))
+        self.assertEqual(keys, [f"chat:{later.id}", f"chat:{soon.id}"])
+
+    def test_tabs_show_per_type_counts(self):
+        self._chat(days=3)
+        self._chat(days=4)
+        self._meeting(days=3)
+        resp = self.client.get(reverse("inbox"))
+        counts = {t["key"]: t["count"] for t in resp.context["type_tabs"]}
+        self.assertEqual(counts["all"], 3)
+        self.assertEqual(counts["chat"], 2)
+        self.assertEqual(counts["meeting"], 1)
+        self.assertEqual(counts["dataroom"], 0)
+
+
 class RelativeFutureUnitTests(TestCase):
     def setUp(self):
         # Anchor at a fixed midday so local-date boundaries don't make this flaky.
@@ -271,7 +332,7 @@ class RelativeFutureUnitTests(TestCase):
 
     def test_overdue(self):
         label, _abs, overdue = _relative_future(self.now - timedelta(days=1), self.now)
-        self.assertEqual(label, "Due now")
+        self.assertEqual(label, "Today")
         self.assertTrue(overdue)
 
     def test_today(self):
