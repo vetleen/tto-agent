@@ -659,6 +659,17 @@
 
   // ---------------- transcribing indicator + upload visibility ----------------
 
+  // Steady-state indicator text, tuned to set the right expectation for when
+  // transcribed text shows up. Realtime transcribes per-utterance (after a
+  // pause, when the server VAD commits); chunked transcribes ~30s WebM files
+  // in batches. Both can leave the transcript blank for a stretch, so we say so.
+  function transcribingBaseLabel() {
+    if (liveMode === 'chunked') {
+      return 'Transcribing… text will appear in roughly ~30-second batches';
+    }
+    return 'Transcribing… text will appear when there is a pause';
+  }
+
   function updateIndicator() {
     if (!transcribingIndicator) return;
     const pendingCount = inFlightSegments.size;
@@ -673,7 +684,7 @@
       } else if (pendingCount > 0) {
         label = 'Transcribing… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' in flight)';
       } else {
-        label = 'Transcribing…';
+        label = transcribingBaseLabel();
       }
       if (transcribingIndicatorLabel) transcribingIndicatorLabel.textContent = label;
     } else {
@@ -838,7 +849,7 @@
     if (state === 'reconnecting') {
       transcribingIndicatorLabel.textContent = 'Reconnecting to transcription…';
     } else if (state === 'connected') {
-      transcribingIndicatorLabel.textContent = 'Transcribing…';
+      transcribingIndicatorLabel.textContent = transcribingBaseLabel();
     }
   }
 
@@ -1108,6 +1119,9 @@
       // directly, so the swap can't race in a second recorder.
       restartRecorderForFreshInitSegment();
     }
+    // Refresh the indicator so the steady-state hint matches the new mode
+    // (e.g. realtime→chunked fallback now says "~30-second batches").
+    if (!sameMode) updateIndicator();
   }
 
   function startStreamingRecorder() {
