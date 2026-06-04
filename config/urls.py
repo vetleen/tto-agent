@@ -28,6 +28,7 @@ urlpatterns = [
     path("skills/", include("agent_skills.urls")),
     path("data-rooms/", include("documents.urls")),
     path("meetings/", include("meetings.urls")),
+    path("inbox/", include("core.urls")),
     path("admin/", admin.site.urls),
     path("api/feedback/", include("feedback.urls")),
 ]
