@@ -1,14 +1,26 @@
 {
   "name": "tto-agent",
   "scripts": {
-    "build": "npm run build:css",
-    "build:css": "npx @tailwindcss/cli -i ./static/src/input.css -o ./static/src/output.css --minify"
+    "build": "npm run build:css && npm run build:js",
+    "build:css": "npx @tailwindcss/cli -i ./static/src/input.css -o ./static/src/output.css --minify",
+    "build:js": "esbuild static/src/editor/index.js --bundle --minify --format=iife --outfile=static/js/editor.bundle.js"
+  },
+  "engines": {
+    "node": "24.x"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.1.18",
+    "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.18"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.0.0",
+    "@codemirror/lang-markdown": "^6.0.0",
+    "@codemirror/language": "^6.0.0",
+    "@codemirror/merge": "^6.0.0",
+    "@codemirror/state": "^6.0.0",
+    "@codemirror/view": "^6.0.0",
+    "@lezer/highlight": "^1.0.0",
     "flowbite": "^4.0.1"
   }
 }

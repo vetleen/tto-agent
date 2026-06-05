@@ -36,6 +36,7 @@ local_settings.py
 
 # Django static build
 static/src/output.css
+static/js/editor.bundle.js
 
 # Env
 .env

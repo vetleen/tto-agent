@@ -46,6 +46,10 @@
    python manage.py migrate
    npm run build
    ```
+   `npm run build` builds both the Tailwind CSS (`static/src/output.css`) and the
+   CodeMirror editor bundle (`static/js/editor.bundle.js`). Both are gitignored, so
+   re-run it after a fresh clone or after editing `static/src/editor/`. There is no
+   JS watcher — rebuild manually when you change the editor source.
 
 5. **Environment:** Copy `.env.example` to `.env` and set required keys. See [Environment variables](#environment-variables).
 
