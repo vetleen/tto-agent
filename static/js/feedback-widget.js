@@ -172,6 +172,18 @@
     submitBtn.textContent = 'Send Feedback';
   }
 
+  // Resolve to the parsed JSON body, or null when the response is not JSON
+  // (e.g. an HTML error or login page). Never rejects on a parse failure.
+  function parseJsonSafe(res) {
+    var contentType = res.headers.get('content-type') || '';
+    if (contentType.indexOf('application/json') === -1) {
+      return Promise.resolve(null);
+    }
+    return res.json().catch(function () {
+      return null;
+    });
+  }
+
   function onSubmit() {
     var text = textArea.value.trim();
     if (!text) {
@@ -208,11 +220,28 @@
       credentials: 'same-origin',
     })
       .then(function (res) {
-        if (!res.ok)
-          return res.json().then(function (d) {
-            throw new Error(d.error || 'Submit failed');
-          });
-        return res.json();
+        // A lost session makes @login_required redirect the POST to the login
+        // page; fetch follows it and we arrive at a 200 HTML page that is not
+        // JSON. Detect the redirect rather than trying to parse the page.
+        if (res.redirected) {
+          throw new Error(
+            'Your session has expired. Please refresh the page and sign in again.'
+          );
+        }
+        if (res.ok) return null;
+        if (res.status === 502 || res.status === 503 || res.status === 504) {
+          throw new Error(
+            'The server is temporarily unavailable. Please try again in a moment.'
+          );
+        }
+        // Non-OK: the body may be our JSON error payload or an HTML error page.
+        // Only treat it as JSON when the server says so.
+        return parseJsonSafe(res).then(function (data) {
+          throw new Error(
+            (data && data.error) ||
+              'Could not send feedback (error ' + res.status + ').'
+          );
+        });
       })
       .then(function () {
         closeModal();
@@ -222,7 +251,18 @@
         isSubmitting = false;
         submitBtn.disabled = false;
         submitBtn.textContent = 'Send Feedback';
-        showToast('Failed to send feedback: ' + err.message);
+        var msg = (err && err.message) || 'Please try again.';
+        // Network failures (and any stray parse error) read as technical noise;
+        // show something actionable instead of leaking it to the user.
+        if (
+          /JSON|Unexpected token|Failed to fetch|NetworkError|Load failed/i.test(
+            msg
+          )
+        ) {
+          msg =
+            'Could not reach the server. Please check your connection and try again.';
+        }
+        showToast('Failed to send feedback: ' + msg);
       });
   }
 
