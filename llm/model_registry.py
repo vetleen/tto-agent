@@ -89,6 +89,19 @@ _MODELS: dict[str, ModelInfo] = {
         output_price=Decimal("0.40"),
     ),
     # Anthropic
+    "anthropic/claude-opus-4-8": ModelInfo(
+        display_name="Claude Opus 4.8",
+        provider="anthropic",
+        api_model="claude-opus-4-8",
+        tier=TIER_STANDARD,
+        supports_thinking=True,
+        supports_vision=True,
+        context_window=1_000_000,
+        input_price=Decimal("5.00"),
+        cached_input_price=Decimal("0.50"),
+        cache_write_price=Decimal("6.25"),
+        output_price=Decimal("25.00"),
+    ),
     "anthropic/claude-opus-4-7": ModelInfo(
         display_name="Claude Opus 4.7",
         provider="anthropic",

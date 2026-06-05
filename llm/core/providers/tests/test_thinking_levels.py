@@ -144,6 +144,11 @@ class AnthropicAdaptiveThinkingTests(TestCase):
         model = AnthropicChatModel("anthropic/claude-opus-4-7", client)
         self.assertTrue(model._uses_adaptive_thinking())
 
+    def test_opus_48_uses_adaptive_thinking(self):
+        client = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-opus-4-8", client)
+        self.assertTrue(model._uses_adaptive_thinking())
+
 
 class OpenAIThinkingLevelTests(TestCase):
 

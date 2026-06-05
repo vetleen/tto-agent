@@ -38,6 +38,7 @@ class GetModelInfoTests(TestCase):
 
     def test_anthropic_models_support_thinking(self):
         for model_id in [
+            "anthropic/claude-opus-4-8",
             "anthropic/claude-opus-4-7",
             "anthropic/claude-opus-4-6",
             "anthropic/claude-sonnet-4-6",
@@ -111,6 +112,18 @@ class GetModelInfoTests(TestCase):
         self.assertEqual(info.cached_input_price, Decimal("0.50"))
         self.assertEqual(info.output_price, Decimal("25.00"))
 
+    def test_opus_48_lookup_and_pricing(self):
+        info = get_model_info("anthropic/claude-opus-4-8")
+        self.assertIsNotNone(info)
+        self.assertEqual(info.display_name, "Claude Opus 4.8")
+        self.assertEqual(info.provider, "anthropic")
+        self.assertEqual(info.api_model, "claude-opus-4-8")
+        self.assertEqual(info.context_window, 1_000_000)
+        self.assertEqual(info.input_price, Decimal("5.00"))
+        self.assertEqual(info.cached_input_price, Decimal("0.50"))
+        self.assertEqual(info.cache_write_price, Decimal("6.25"))
+        self.assertEqual(info.output_price, Decimal("25.00"))
+
     def test_bare_name_normalisation(self):
         """Bare model names resolve via prefix scanning."""
         info = get_model_info("gpt-5.4")
@@ -149,6 +162,7 @@ class TierClassificationTests(TestCase):
         standard = get_models_by_tier(TIER_STANDARD)
         self.assertIn("openai/gpt-5.5", standard)
         self.assertIn("openai/gpt-5.4", standard)
+        self.assertIn("anthropic/claude-opus-4-8", standard)
         self.assertIn("anthropic/claude-opus-4-7", standard)
         self.assertIn("anthropic/claude-opus-4-6", standard)
         self.assertIn("anthropic/claude-sonnet-4-6", standard)

@@ -89,7 +89,7 @@ def supports_thinking(model_id: str) -> bool:
     return False
 
 
-_MAX_EFFORT_MODELS = {"claude-opus-4-7"}
+_MAX_EFFORT_MODELS = {"claude-opus-4-7", "claude-opus-4-8"}
 
 
 def get_thinking_levels(model_id: str) -> list[str]:

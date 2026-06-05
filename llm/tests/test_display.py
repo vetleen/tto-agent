@@ -140,6 +140,12 @@ class GetThinkingLevelsTests(TestCase):
             ["low", "medium", "high", "max"],
         )
 
+    def test_opus_48_has_max(self):
+        self.assertEqual(
+            get_thinking_levels("anthropic/claude-opus-4-8"),
+            ["low", "medium", "high", "max"],
+        )
+
     def test_opus_46_standard_levels(self):
         self.assertEqual(
             get_thinking_levels("anthropic/claude-opus-4-6"),

@@ -16,6 +16,7 @@ _ANTHROPIC_THINKING = {
 
 _ADAPTIVE_THINKING_MODELS = frozenset({
     "claude-opus-4-7",
+    "claude-opus-4-8",
 })
 
 
