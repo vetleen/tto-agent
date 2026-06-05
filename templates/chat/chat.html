@@ -1734,6 +1734,8 @@
       return;
     }
     if (et === "canvas.reverted") {
+      canvasDisableMerge();
+      canvasAiUpdatePending = false;
       canvasAcceptedContent = data.content;
       if (data.canvas_id && canvasStates[data.canvas_id]) { canvasStates[data.canvas_id].acceptedContent = data.content; canvasStates[data.canvas_id].content = data.content; canvasStates[data.canvas_id].title = data.title; }
       openCanvas(data.title, data.content);
@@ -1752,6 +1754,8 @@
       return;
     }
     if (et === "canvas.restored") {
+      canvasDisableMerge();
+      canvasAiUpdatePending = false;
       canvasAcceptedContent = data.content;
       if (data.canvas_id && canvasStates[data.canvas_id]) { canvasStates[data.canvas_id].acceptedContent = data.content; canvasStates[data.canvas_id].content = data.content; canvasStates[data.canvas_id].title = data.title; }
       openCanvas(data.title, data.content);
@@ -2407,6 +2411,8 @@
   var canvasLastTyped = 0;
   var canvasPendingUpdate = null;
   var canvasAcceptedContent = null;
+  var canvasMergeActive = false;     // inline @codemirror/merge diff currently shown
+  var canvasAiUpdatePending = false; // an applied AI update is awaiting accept/reject
 
   // Multi-canvas state
   var canvasStates = {};     // { canvasId: { title, content, acceptedContent, pendingUpdate } }
@@ -2529,6 +2535,7 @@
     canvasStates[activeCanvasId].content = canvasTextarea.value;
     canvasStates[activeCanvasId].acceptedContent = canvasAcceptedContent;
     canvasStates[activeCanvasId].pendingUpdate = canvasPendingUpdate;
+    canvasStates[activeCanvasId].aiUpdatePending = canvasAiUpdatePending;
   }
 
   function loadCanvasStateIntoUI(canvasId) {
@@ -2538,13 +2545,18 @@
     canvasTextarea.value = s.content || "";
     canvasAcceptedContent = s.acceptedContent;
     canvasPendingUpdate = s.pendingUpdate;
+    canvasAiUpdatePending = s.aiUpdatePending || false;
     updateWordCount();
     canvasShowBannerIfNeeded();
     if (canvasPreviewMode) canvasRenderPreview();
+    else canvasEnableMergeIfNeeded();
   }
 
   function switchCanvas(canvasId) {
     if (canvasId === activeCanvasId) return;
+    // Tear down the merge view before persisting/swapping state; the target
+    // canvas re-enables its own in loadCanvasStateIntoUI if it has a pending AI update.
+    canvasDisableMerge();
     // Save current canvas state
     saveCanvasNow();
     storeActiveCanvasState();
@@ -2731,6 +2743,8 @@
       canvasUpdateBanner.classList.remove("hidden");
     } else {
       openCanvas(title, content);
+      canvasAiUpdatePending = true;
+      canvasEnableMergeIfNeeded();
     }
   }
 
@@ -2819,6 +2833,8 @@
         ws.send(JSON.stringify(clearMsg));
       }
       // Clear canvas
+      canvasDisableMerge();
+      canvasAiUpdatePending = false;
       canvasTitleInput.value = "Untitled document";
       canvasTextarea.value = "";
       canvasAcceptedContent = null;
@@ -2841,22 +2857,42 @@
     renderEmailBlocks(canvasPreview);
   }
 
+  // Inline per-hunk diff of an applied AI update against the accepted baseline.
+  // Edit-mode only; preview mode uses the rendered renderDiffPreview instead.
+  function canvasEnableMergeIfNeeded() {
+    if (!canvasEditor || canvasPreviewMode) return;
+    if (!canvasAiUpdatePending || canvasAcceptedContent === null) return;
+    if (!canvasHasPendingChanges()) return;
+    canvasEditor.enableMerge(canvasAcceptedContent);
+    canvasMergeActive = true;
+  }
+  function canvasDisableMerge() {
+    if (!canvasEditor || !canvasMergeActive) return;
+    canvasEditor.disableMerge();
+    canvasMergeActive = false;
+  }
+
   if (canvasPreviewBtn) {
     canvasPreviewBtn.addEventListener("click", function() {
       canvasPreviewMode = !canvasPreviewMode;
       if (canvasPreviewMode) {
+        canvasDisableMerge();
         canvasRenderPreview();
         canvasPreview.classList.remove("hidden");
         canvasTextarea.classList.add("hidden");
       } else {
         canvasPreview.classList.add("hidden");
         canvasTextarea.classList.remove("hidden");
+        canvasEnableMergeIfNeeded();
       }
     });
   }
 
   if (canvasAcceptBtn) {
     canvasAcceptBtn.addEventListener("click", function() {
+      // Resolve any unresolved merge hunks by keeping the current doc as-is.
+      canvasDisableMerge();
+      canvasAiUpdatePending = false;
       // Apply any queued AI update first
       if (canvasPendingUpdate) {
         if (canvasPendingUpdate.content && canvasPendingUpdate.content.length > CANVAS_MAX_CHARS) {
@@ -2880,6 +2916,8 @@
   if (canvasRevertBtn) {
     canvasRevertBtn.addEventListener("click", function() {
       if (canvasAcceptedContent !== null) {
+        canvasDisableMerge();
+        canvasAiUpdatePending = false;
         canvasTextarea.value = canvasAcceptedContent;
         canvasPendingUpdate = null;
         updateWordCount();
@@ -3028,6 +3066,8 @@
       } else {
         flashCanvasBtnError(canvasSaveVersionBtn);
       }
+      canvasDisableMerge();
+      canvasAiUpdatePending = false;
       canvasAcceptedContent = content;
       canvasShowBannerIfNeeded();
       if (canvasSaveStatus) { canvasSaveStatus.textContent = "Version saved"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 2000); }
@@ -3179,6 +3219,8 @@
       var autoSvMsg = { type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content };
       if (activeCanvasId) autoSvMsg.canvas_id = activeCanvasId;
       ws.send(JSON.stringify(autoSvMsg));
+      canvasDisableMerge();
+      canvasAiUpdatePending = false;
       canvasAcceptedContent = content;
       canvasShowBannerIfNeeded();
     }
