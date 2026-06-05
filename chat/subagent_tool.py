@@ -111,7 +111,9 @@ class CreateSubagentTool(ContextAwareTool):
             queue = get_queue_depth()
             # Don't count the run we just created as "ahead"
             others_ahead = max(0, queue["pending"] - 1)
-            is_queued = others_ahead > 0 or queue["running"] >= queue["worker_slots"]
+            # Queued only when every worker slot is taken by runs ahead of this
+            # one (already running + pending ahead). With free slots it starts now.
+            is_queued = (others_ahead + queue["running"]) >= queue["worker_slots"]
             result = {
                 "status": "queued" if is_queued else "started",
                 "run_id": str(run.id),

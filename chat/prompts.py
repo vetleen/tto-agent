@@ -147,7 +147,7 @@ and the same async reactivation path as described above kicks in.
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
 - If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
-- You can run up to 2 sub-agents concurrently. Plan accordingly — if a task needs more, wait for earlier sub-agents to finish, or cue up to 2 more. Never try to launch more than 4 concurrent.
+- You can run up to 4 sub-agents concurrently. Plan accordingly — if a task needs more, wait for earlier sub-agents to finish before launching more.
 """
 
         if not parallel_subagents:

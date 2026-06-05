@@ -11,7 +11,7 @@ from django.utils import timezone
 
 SUBAGENT_MAX_PER_USER = int(os.environ.get("SUBAGENT_MAX_PER_USER", "4"))
 SUBAGENT_MAX_SYSTEM = int(os.environ.get("SUBAGENT_MAX_SYSTEM", "8"))
-SUBAGENT_WORKER_SLOTS = int(os.environ.get("SUBAGENT_WORKER_SLOTS", "2"))
+SUBAGENT_WORKER_SLOTS = int(os.environ.get("SUBAGENT_WORKER_SLOTS", "4"))
 
 STALE_PENDING_MINUTES = 7
 STALE_RUNNING_MINUTES = 10
