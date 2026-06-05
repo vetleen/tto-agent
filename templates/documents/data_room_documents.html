@@ -399,11 +399,29 @@
       row.dataset.docId = doc.id;
       row.dataset.status = doc.status;
       row.dataset.list = 'active';
-      row.innerHTML =
-        '<input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select ' + doc.filename + '">' +
-        '<span class="doc-status-icon shrink-0 me-2"></span>' +
-        '<span class="flex-1 min-w-0 truncate font-medium text-heading" title="' + doc.filename + '">' + doc.filename + '</span>' +
-        '<span class="shrink-0 ms-3 text-body text-right">Just now</span>';
+
+      // Build the row with DOM APIs (textContent / setAttribute) instead of an
+      // innerHTML string: doc.filename is user-controlled and lands in both
+      // attribute (aria-label/title) and text contexts. setAttribute and
+      // textContent are injection-safe for any value, including quotes.
+      var checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0';
+      checkbox.setAttribute('aria-label', 'Select ' + doc.filename);
+
+      var statusIcon = document.createElement('span');
+      statusIcon.className = 'doc-status-icon shrink-0 me-2';
+
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'flex-1 min-w-0 truncate font-medium text-heading';
+      nameSpan.title = doc.filename;
+      nameSpan.textContent = doc.filename;
+
+      var dateSpan = document.createElement('span');
+      dateSpan.className = 'shrink-0 ms-3 text-body text-right';
+      dateSpan.textContent = 'Just now';
+
+      row.append(checkbox, statusIcon, nameSpan, dateSpan);
       listContainer.appendChild(row);
       if (typeof window.renderStatusIcons === 'function') window.renderStatusIcons();
     }

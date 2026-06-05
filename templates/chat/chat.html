@@ -842,8 +842,9 @@
       if (parsed.subject) headerHtml += '<div class="email-subject">' + escapeHtml(parsed.subject) + '</div>';
       var html = '<div class="email-card">';
       if (headerHtml) html += '<div class="email-header">' + headerHtml + '</div>';
-      var bodyHtml = escapeHtml(parsed.body);
-      try { bodyHtml = marked.parse(parsed.body); } catch(e) {}
+      // Route the body through renderMarkdown so it is DOMPurify-sanitized like
+      // every other markdown path; a bare marked.parse() passes raw HTML through.
+      var bodyHtml = renderMarkdown(parsed.body);
       html += '<div class="email-body">' + bodyHtml + '</div>';
       html += '<a class="email-action-btn" title="Open in default mail app"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg> Open in Mail</a>';
       html += '</div>';

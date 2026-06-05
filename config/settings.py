@@ -526,6 +526,14 @@ MEETING_CHUNK_MIN_BYTES = int(os.environ.get("MEETING_CHUNK_MIN_BYTES", str(8 * 
 # loss; 1.0 disables the speed-up. Clamped to [0.5, 3.0] in code.
 MEETING_UPLOAD_SPEED_UP_FACTOR = float(os.environ.get("MEETING_UPLOAD_SPEED_UP_FACTOR", "2.0"))
 
+# --- Redis connections: Celery broker, Channels layer, and cache ---
+# Heroku Data for Redis serves a self-signed cert chain that fails default TLS
+# verification, so every rediss:// connection below sets ssl_cert_reqs=CERT_NONE.
+# This disables certificate *verification* only — traffic is still TLS-encrypted
+# and stays within Heroku's private network. This is Heroku's documented guidance
+# for redis-py / Celery / channels_redis. Revisit (CERT_REQUIRED + CA bundle) if
+# we move off Heroku Redis or a verifiable CA becomes available. See RUNBOOK.md.
+
 # Celery (use Redis as broker)
 _celery_broker_url = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
 if _celery_broker_url.startswith("rediss://"):
@@ -542,8 +550,8 @@ CELERY_BEAT_SCHEDULE = {
 
 # Channels / Redis
 _redis_url = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")
-# Heroku Redis (rediss://) uses TLS with a cert that fails default verification; skip for channel layer.
-if _redis_url.startswith("rediss://"):
+_redis_is_tls = _redis_url.startswith("rediss://")  # CERT_NONE rationale: see Redis TLS note above
+if _redis_is_tls:
     _channel_hosts = [{"address": _redis_url, "ssl_cert_reqs": ssl.CERT_NONE}]
 else:
     _channel_hosts = [_redis_url]
@@ -560,7 +568,7 @@ _cache_config: dict = {
     "BACKEND": "django.core.cache.backends.redis.RedisCache",
     "LOCATION": f"{_cache_redis_base}/1",
 }
-if _redis_url.startswith("rediss://"):
+if _redis_is_tls:
     _cache_config["OPTIONS"] = {"ssl_cert_reqs": ssl.CERT_NONE}
 CACHES = {"default": _cache_config}
 

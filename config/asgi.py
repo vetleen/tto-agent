@@ -13,6 +13,7 @@ import sys
 
 from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter, URLRouter
+from channels.security.websocket import AllowedHostsOriginValidator
 from django.core.asgi import get_asgi_application
 
 # Windows Python 3.10+ defaults to SelectorEventLoop for asyncio, which does
@@ -39,8 +40,12 @@ websocket_urlpatterns = chat_ws + meetings_ws
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
-        "websocket": AuthMiddlewareStack(
-            URLRouter(websocket_urlpatterns),
+        # AllowedHostsOriginValidator rejects WebSocket handshakes whose Origin is
+        # not in ALLOWED_HOSTS, defending against cross-site WebSocket hijacking.
+        "websocket": AllowedHostsOriginValidator(
+            AuthMiddlewareStack(
+                URLRouter(websocket_urlpatterns),
+            )
         ),
     }
 )

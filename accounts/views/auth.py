@@ -54,6 +54,19 @@ def suspended(request):
     )
 
 
+# SECURITY — the signup / email-verification flow below is intentionally DISABLED
+# (no routes in accounts/urls.py). Before re-enabling public signup, add a login
+# gate so unverified / inactive users cannot authenticate:
+#   1. Override CustomAuthenticationForm.confirm_login_allowed() (accounts/forms.py)
+#      to reject users when settings.EMAIL_VERIFICATION_REQUIRED and not
+#      user.email_verified. (Django's base form already rejects is_active=False.)
+#   2. Route verify_required / verify_email / resend_verification / signup.
+#   3. Add a data migration backfilling email_verified=True for existing accounts
+#      so the new gate does not lock anyone out (the field defaults to False).
+#   4. Un-skip accounts/tests/test_verification.py (esp.
+#      test_login_blocked_when_not_verified_redirects_to_verify_required).
+# Note: verify_email() below calls login() directly, bypassing the form gate — it
+# must perform the same email_verified / is_active check once routed.
 def signup(request):
     if request.method == "POST":
         form = SignUpForm(request.POST)

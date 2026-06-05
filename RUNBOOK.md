@@ -284,7 +284,7 @@ raising worker concurrency increases simultaneous Redis usage but not 1:1 per ta
 likely early ceiling — watch `heroku redis:info` and move off `mini` if connections
 saturate.
 
-For Heroku Redis with TLS (`rediss://`), SSL cert verification is disabled in Channels config (Heroku uses self-signed certs).
+**TLS cert verification (`rediss://`).** Heroku Data for Redis serves a self-signed cert chain that fails default verification, so all three Redis consumers — Celery broker, Channels layer, and Django cache — set `ssl_cert_reqs=CERT_NONE` (`config/settings.py`, gated on `_redis_is_tls`). This disables certificate *verification* only; the connection is still TLS-encrypted and stays within Heroku's private network. Accepted risk, consistent with Heroku's documented guidance for redis-py / Celery / channels_redis. Revisit (move to `CERT_REQUIRED` with a CA bundle) only if we migrate off Heroku Redis or a verifiable CA becomes available.
 
 ## Environment Variables
 
