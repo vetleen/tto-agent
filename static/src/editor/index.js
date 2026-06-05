@@ -64,7 +64,6 @@ function buildTheme(v, dark) {
   return EditorView.theme(
     {
       "&": {
-        height: "100%",
         backgroundColor: "transparent",
         color: v.text,
         fontSize: "0.875rem",
@@ -190,6 +189,18 @@ function create(parent, opts) {
 
   if (lineWrapping) extensions.push(EditorView.lineWrapping);
   if (opts.placeholder) extensions.push(placeholderExt(opts.placeholder));
+
+  // Height: either fill an absolutely-sized parent (canvas) or grow with content
+  // between min/max (skill fields).
+  if (opts.fillParent) {
+    extensions.push(EditorView.theme({ "&": { height: "100%" } }));
+  }
+  if (opts.minHeight || opts.maxHeight) {
+    const sizing = {};
+    if (opts.minHeight) sizing[".cm-content"] = { minHeight: opts.minHeight };
+    if (opts.maxHeight) sizing[".cm-scroller"] = { maxHeight: opts.maxHeight, overflow: "auto" };
+    extensions.push(EditorView.theme(sizing));
+  }
   if (maxLength != null) {
     extensions.push(
       // Reject any (non-programmatic) transaction that would push past the cap.

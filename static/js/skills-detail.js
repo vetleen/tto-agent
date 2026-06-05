@@ -54,37 +54,56 @@
     }
   }
 
-  // Wires a toggle button (or none, for read-only) to swap between a textarea
-  // and a rendered markdown preview div. If `btn` is null, the field is locked
-  // to preview mode (textarea hidden, no toggle).
-  function setupMarkdownToggle(btn, textarea, preview, startInPreview) {
-    if (!textarea || !preview) return;
-    var mode = !!startInPreview;
-    function apply() {
-      if (mode) {
-        preview.innerHTML = renderMarkdown(textarea.value);
-        preview.classList.remove("hidden");
-        textarea.classList.add("hidden");
-        if (btn) {
-          btn.innerHTML = "<span>Edit</span>" + PEN_ICON;
-          btn.title = "Toggle editing";
+  // Mounts a CodeMirror markdown editor over a textarea, keeping the (hidden)
+  // textarea synced so the Django form POST still submits its value. Returns the
+  // editor adapter (or null if the bundle failed to load — in which case the
+  // plain textarea is left visible as a graceful fallback). An optional preview
+  // button toggles between the editor and a rendered-markdown div.
+  function mountMarkdownEditor(o) {
+    var textarea = o.textarea;
+    if (!textarea) return null;
+    if (!window.WilfredEditor) return null; // fallback: leave the textarea visible
+
+    var preview = o.preview;
+    var wrapper = document.createElement("div");
+    wrapper.className =
+      "cm-field bg-neutral-secondary-medium border border-default-medium rounded-base shadow-xs overflow-hidden";
+    textarea.classList.add("hidden");
+    textarea.parentNode.insertBefore(wrapper, textarea.nextSibling);
+
+    var ed = window.WilfredEditor.create(wrapper, {
+      value: textarea.value,
+      readOnly: !!o.readOnly,
+      maxLength: o.maxLength || null,
+      minHeight: o.minHeight,
+      maxHeight: o.maxHeight,
+      placeholder: textarea.getAttribute("placeholder") || "",
+      onChange: function () {
+        var val = ed.getValue();
+        textarea.value = val; // keep the named form field in sync
+        if (o.onChange) o.onChange(val);
+      },
+    });
+
+    if (o.previewBtn && preview) {
+      var inPreview = false;
+      o.previewBtn.addEventListener("click", function () {
+        inPreview = !inPreview;
+        if (inPreview) {
+          preview.innerHTML = renderMarkdown(ed.getValue());
+          preview.classList.remove("hidden");
+          wrapper.classList.add("hidden");
+          o.previewBtn.innerHTML = "<span>Edit</span>" + PEN_ICON;
+          o.previewBtn.title = "Toggle editing";
+        } else {
+          preview.classList.add("hidden");
+          wrapper.classList.remove("hidden");
+          o.previewBtn.innerHTML = "<span>Preview</span>" + EYE_ICON;
+          o.previewBtn.title = "Toggle preview";
         }
-      } else {
-        preview.classList.add("hidden");
-        textarea.classList.remove("hidden");
-        if (btn) {
-          btn.innerHTML = "<span>Preview</span>" + EYE_ICON;
-          btn.title = "Toggle preview";
-        }
-      }
-    }
-    if (btn) {
-      btn.addEventListener("click", function () {
-        mode = !mode;
-        apply();
       });
     }
-    apply();
+    return ed;
   }
 
   // ----- Tools UI -----
@@ -176,7 +195,14 @@
   }
 
   // ----- Templates UI -----
+  var templateEditors = [];
+
   function renderTemplates() {
+    // Tear down CM instances from the previous render before clearing the DOM.
+    templateEditors.forEach(function (ed) {
+      if (ed) ed.destroy();
+    });
+    templateEditors = [];
     templateListEl.innerHTML = "";
     if (!templates.length) {
       var empty = document.createElement("p");
@@ -198,16 +224,11 @@
       contentInput.value = entry.content || "";
       if (!editable) {
         nameInput.setAttribute("readonly", "");
-        contentInput.setAttribute("readonly", "");
         removeBtn.remove();
         if (previewToggleBtn) previewToggleBtn.remove();
       } else {
         nameInput.addEventListener("input", function () {
           templates[idx].name = nameInput.value;
-          syncTemplatesInput();
-        });
-        contentInput.addEventListener("input", function () {
-          templates[idx].content = contentInput.value;
           syncTemplatesInput();
         });
         removeBtn.addEventListener("click", function () {
@@ -217,12 +238,26 @@
         });
       }
       templateListEl.appendChild(node);
-      setupMarkdownToggle(
-        editable ? previewToggleBtn : null,
-        contentInput,
-        contentPreview,
-        !editable
-      );
+      var ed = mountMarkdownEditor({
+        textarea: contentInput,
+        preview: contentPreview,
+        previewBtn: editable ? previewToggleBtn : null,
+        readOnly: !editable,
+        minHeight: "9rem",
+        maxHeight: "24rem",
+        onChange: function (val) {
+          templates[idx].content = val;
+          syncTemplatesInput();
+        },
+      });
+      if (!ed && editable) {
+        // Fallback (no editor bundle): keep the plain textarea wired up.
+        contentInput.addEventListener("input", function () {
+          templates[idx].content = contentInput.value;
+          syncTemplatesInput();
+        });
+      }
+      templateEditors.push(ed);
     });
   }
 
@@ -357,18 +392,24 @@
   renderToolChips();
   renderTemplates();
 
-  // Set up markdown toggles for the static instructions/description fields
-  // (Template rows are wired up inside renderTemplates so they re-attach on add/remove.)
-  setupMarkdownToggle(
-    document.getElementById("instructions-preview-btn"),
-    document.getElementById("skill-instructions"),
-    document.getElementById("instructions-preview"),
-    !editable
-  );
-  setupMarkdownToggle(
-    document.getElementById("description-preview-btn"),
-    document.getElementById("skill-description"),
-    document.getElementById("description-preview"),
-    !editable
-  );
+  // Mount CM editors over the instructions/description fields. Template rows are
+  // mounted inside renderTemplates so they re-attach on add/remove. These two
+  // textareas are named form fields, so mountMarkdownEditor keeps them synced.
+  mountMarkdownEditor({
+    textarea: document.getElementById("skill-instructions"),
+    preview: document.getElementById("instructions-preview"),
+    previewBtn: document.getElementById("instructions-preview-btn"),
+    readOnly: !editable,
+    minHeight: "14rem",
+    maxHeight: "32rem",
+  });
+  mountMarkdownEditor({
+    textarea: document.getElementById("skill-description"),
+    preview: document.getElementById("description-preview"),
+    previewBtn: document.getElementById("description-preview-btn"),
+    readOnly: !editable,
+    maxLength: 1024,
+    minHeight: "5rem",
+    maxHeight: "20rem",
+  });
 })();
