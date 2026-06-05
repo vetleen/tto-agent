@@ -298,7 +298,10 @@
           </div>
           <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-gray-400 dark:bg-gray-500"></span>
           <span id="connection-text" class="text-xs text-body">Connecting...</span>
-          <button type="button" id="reconnect-btn" class="hidden text-xs text-fg-brand hover:underline ml-1">Reconnect</button>
+          <button type="button" id="reconnect-btn" class="hidden inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-xs px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-brand">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992V4.356m0 4.992l-3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99h-4.99M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7"/></svg>
+            Reconnect
+          </button>
         </div>
         <div class="flex-1 flex items-end">
           <div class="flex w-full shadow-xs rounded-base ring-offset-0 focus-within:ring-2 focus-within:ring-brand focus-within:rounded-base">
@@ -1612,16 +1615,20 @@
       text.textContent = ""; if (!currentStreamingElement) { input.disabled = false; button.disabled = false; }
     } else {
       if (statusContainer) statusContainer.classList.remove("hidden");
-      if (spinner) spinner.classList.add("hidden"); if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-danger"; }
+      if (spinner) spinner.classList.add("hidden");
       const exhausted = reconnectAttempts >= maxReconnectAttempts;
       if (exhausted) {
-        text.textContent = "Disconnected";
+        // Auto-reconnect gave up: show only the Reconnect button —
+        // no status dot, no "Disconnected" label (the button says it all).
+        if (indicator) indicator.classList.add("hidden");
+        text.textContent = ""; text.className = "text-xs text-body";
         if (reconnectBtn) reconnectBtn.classList.remove("hidden");
       } else {
+        if (indicator) { indicator.classList.remove("hidden"); indicator.className = "flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-danger"; }
         text.textContent = reconnectAttempts > 0 ? `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})` : "Disconnected";
+        text.className = "text-xs text-body" + (reconnectAttempts === 0 ? " text-danger" : "");
         if (reconnectBtn) reconnectBtn.classList.add("hidden");
       }
-      text.className = "text-xs text-body" + (reconnectAttempts === 0 ? " text-danger" : "");
       input.disabled = true; button.disabled = true;
     }
   }
