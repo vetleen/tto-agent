@@ -439,6 +439,36 @@ class StaleRunExpirationTests(TestCase):
         allowed, msg = check_subagent_limits(self.user)
         self.assertTrue(allowed)
 
+    def test_task_swallows_transient_db_error(self):
+        """A transient DB outage (e.g. Postgres restarting during maintenance)
+        should be logged and skipped, not surface as an unhandled error so the
+        beat task stops generating Sentry noise (WILFRED-5K)."""
+        from django.db.utils import OperationalError
+
+        from chat.tasks import expire_stale_subagent_runs
+
+        with patch(
+            "chat.subagent_limits._expire_stale_runs",
+            side_effect=OperationalError("the database system is starting up"),
+        ):
+            result = expire_stale_subagent_runs()
+
+        self.assertEqual(result, 0)
+
+    def test_task_propagates_non_transient_db_error(self):
+        """Real query/data bugs must still surface — only transient connection
+        errors are swallowed, not the whole django.db.Error hierarchy."""
+        from django.db.utils import ProgrammingError
+
+        from chat.tasks import expire_stale_subagent_runs
+
+        with patch(
+            "chat.subagent_limits._expire_stale_runs",
+            side_effect=ProgrammingError("column does not exist"),
+        ):
+            with self.assertRaises(ProgrammingError):
+                expire_stale_subagent_runs()
+
 
 # ---------------------------------------------------------------------------
 # CreateSubagentTool tests — timeout polling

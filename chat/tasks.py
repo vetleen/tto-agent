@@ -81,7 +81,23 @@ def run_subagent_task(self, run_id: str) -> None:
 
 @shared_task(time_limit=30)
 def expire_stale_subagent_runs() -> int:
-    """Periodic cleanup of stuck subagent runs."""
+    """Periodic cleanup of stuck subagent runs.
+
+    Tolerates transient database unavailability (e.g. a Postgres restart or
+    maintenance window). The cleanup is best-effort and idempotent, so when the
+    DB is briefly unreachable we log and skip this tick rather than raising an
+    unhandled error; the next beat tick retries once the DB is back. Logged at
+    INFO so routine maintenance blips don't surface as Sentry errors (WILFRED-5K).
+    """
+    from django.db.utils import InterfaceError, OperationalError
     from chat.subagent_limits import _expire_stale_runs
 
-    return _expire_stale_runs()
+    try:
+        return _expire_stale_runs()
+    except (OperationalError, InterfaceError):
+        logger.info(
+            "Skipping stale sub-agent cleanup: database temporarily unavailable; "
+            "will retry on next beat tick.",
+            exc_info=True,
+        )
+        return 0
