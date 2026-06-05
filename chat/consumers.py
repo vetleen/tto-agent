@@ -31,6 +31,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._guardrail_warn_verdict: object | None = None  # stored for post-stream delivery
         self._org_id: int | None = None
         self._org_name: str | None = None
+        self._soul: str | None = None
         self._current_thread_id: str | None = None
         self._stopped: bool = False
         self._stream_task: asyncio.Task | None = None
@@ -115,28 +116,29 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _load_membership(self) -> bool:
-        """Load membership once, cache org info, and return whether user is suspended."""
+        """Load membership once, cache effective agent customization, and return
+        whether the user is suspended."""
+        from accounts.agent_customization import resolve_agent_customization
         from accounts.models import Membership
+
         membership = (
             Membership.objects
             .filter(user=self.user)
             .select_related("org")
             .first()
         )
-        if membership:
-            self._org_id = membership.org_id
-            self._org_name = membership.org.name if membership.org else None
-            self._org_description = membership.org.description if membership.org else None
-            self._user_context = {
-                "first_name": self.user.first_name,
-                "last_name": self.user.last_name,
-                "title": self.user.title,
-                "description": self.user.description,
-            }
-            return membership.is_suspended
-        self._org_description = None
-        self._user_context = None
-        return False
+
+        cust = resolve_agent_customization(self.user)
+        self._org_id = membership.org_id if membership else None
+        self._soul = cust.soul
+        self._org_name = cust.org_name
+        self._org_description = cust.org_description or None
+        self._user_context = {
+            "name": cust.user_name,
+            "title": cust.user_title,
+            "description": cust.user_description,
+        }
+        return bool(membership and membership.is_suspended)
 
     @database_sync_to_async
     def _check_suspension(self) -> bool:
@@ -878,6 +880,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 data_rooms=data_rooms,
                 canvases=canvases_info["canvases"] if canvases_info else None,
                 skill=skill_obj,
+                soul=self._soul,
+                organization_name=org_name,
                 organization_description=self._org_description or None,
                 user_context=self._user_context,
                 available_skills=available_skills_for_prompt,

@@ -45,7 +45,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     first_name = models.CharField(max_length=150, blank=True, default="")
     last_name = models.CharField(max_length=150, blank=True, default="")
     title = models.CharField(max_length=150, blank=True, default="")
-    description = models.TextField(blank=True, default="", max_length=600)
+    description = models.TextField(blank=True, default="", max_length=5000)
+    # Personal personality override for the assistant ("SOUL"). Blank = inherit
+    # the org-wide soul, then the system default. See accounts.agent_customization.
+    soul = models.TextField(blank=True, default="", max_length=5000)
 
     # Email verification
     email_verified = models.BooleanField(default=False)
@@ -100,7 +103,11 @@ class UserSettings(models.Model):
 class Organization(models.Model):
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=100, unique=True)
-    description = models.TextField(blank=True, default="", max_length=600)
+    description = models.TextField(blank=True, default="", max_length=5000)
+    # Org-wide personality baseline for the assistant ("SOUL"). Blank = inherit
+    # the system default. Members may override it with their own User.soul when
+    # the org allows it (preferences["allow_user_soul"]).
+    soul = models.TextField(blank=True, default="", max_length=5000)
     preferences = models.JSONField(default=dict, blank=True)
 
     class Meta:

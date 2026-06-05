@@ -1,0 +1,420 @@
+{% extends "_base.html" %}
+
+{% block content %}
+<main class="mx-auto max-w-4xl px-6 py-16">
+  <h1 class="text-2xl font-semibold text-heading">My {{ assistant_name }}</h1>
+  <p class="mt-2 text-sm text-body">Shape how {{ assistant_name }} works and what it knows about you. Personality (SOUL) guides tone and style; the About sections give {{ assistant_name }} context. {{ assistant_name }}'s name and core identity can't be changed here.</p>
+
+  {% with has_org=cust.has_org is_admin=cust.is_org_admin can_edit_soul=cust.allow_user_soul %}
+  <!-- Tabs -->
+  <div class="mt-8 border-b border-default">
+    <ul class="flex flex-wrap -mb-px text-sm font-medium" id="agent-tabs"
+        data-tabs-toggle="#agent-tab-content"
+        data-tabs-active-classes="text-fg-brand border-brand"
+        data-tabs-inactive-classes="border-transparent text-body hover:text-heading hover:border-default-medium"
+        role="tablist">
+      {% if has_org %}
+      <li class="me-2" role="presentation">
+        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg text-fg-brand border-brand" id="tab-org" data-tabs-target="#panel-org" type="button" role="tab" aria-controls="panel-org" aria-selected="true">Organization</button>
+      </li>
+      {% endif %}
+      <li class="me-2" role="presentation">
+        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg {% if has_org %}border-transparent text-body hover:text-heading hover:border-default-medium{% else %}text-fg-brand border-brand{% endif %}" id="tab-user" data-tabs-target="#panel-user" type="button" role="tab" aria-controls="panel-user" aria-selected="{% if has_org %}false{% else %}true{% endif %}">About you</button>
+      </li>
+      {% if is_admin %}
+      <li class="me-2" role="presentation">
+        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg border-transparent text-body hover:text-heading hover:border-default-medium" id="tab-org-soul" data-tabs-target="#panel-org-soul" type="button" role="tab" aria-controls="panel-org-soul" aria-selected="false">Organization SOUL</button>
+      </li>
+      {% endif %}
+      <li role="presentation">
+        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg border-transparent text-body hover:text-heading hover:border-default-medium" id="tab-soul" data-tabs-target="#panel-soul" type="button" role="tab" aria-controls="panel-soul" aria-selected="false">SOUL</button>
+      </li>
+    </ul>
+  </div>
+
+  <div id="agent-tab-content">
+    {% if has_org %}
+    <!-- Organization -->
+    <div class="{% if not has_org %}hidden{% endif %} pt-8" id="panel-org" role="tabpanel" aria-labelledby="tab-org">
+      <h2 class="text-lg font-medium text-heading">Organization</h2>
+      <p class="mt-1 text-sm text-body">Context about your organization that {{ assistant_name }} treats as background information.{% if not is_admin %} Only organization admins can edit this.{% endif %}</p>
+
+      {% if is_admin %}
+      <div class="mt-4 space-y-4">
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <label class="block text-sm font-medium text-heading" for="org-name">Name</label>
+          <input type="text" id="org-name" maxlength="255" value="{{ cust.org_name }}"
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+          <p id="org-name-error" class="text-xs text-red-600 dark:text-red-400 hidden mt-1.5"></p>
+        </div>
+
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <label class="block text-sm font-medium text-heading" for="org-description">Description</label>
+          <textarea id="org-description" maxlength="5000" rows="3"
+            placeholder="{{ cust.org_description }}"
+            style="min-height: 4.75rem; max-height: 15rem;"
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ org_description_raw }}</textarea>
+          <div class="flex items-center justify-between mt-1.5">
+            <p id="org-desc-error" class="text-xs text-red-600 dark:text-red-400 hidden"></p>
+            <p class="text-xs text-body ml-auto"><span id="org-desc-count">{{ org_description_raw|length }}</span> / 5000</p>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="mt-4 space-y-4">
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <span class="block text-sm font-medium text-heading">Name</span>
+          <p class="mt-1 text-sm text-body">{{ cust.org_name }}</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <span class="block text-sm font-medium text-heading">Description</span>
+          <p class="mt-1 text-sm text-body whitespace-pre-wrap">{{ cust.org_description }}</p>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- About you -->
+    <div class="{% if has_org %}hidden{% endif %} pt-8" id="panel-user" role="tabpanel" aria-labelledby="tab-user">
+      <h2 class="text-lg font-medium text-heading">About you</h2>
+      <p class="mt-1 text-sm text-body">Help {{ assistant_name }} address you properly and tailor responses to your role.</p>
+
+      <div class="mt-4 space-y-4">
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <label class="block text-sm font-medium text-heading" for="profile-first-name">First name</label>
+          <input type="text" id="profile-first-name" maxlength="150" value="{{ user.first_name }}"
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+        </div>
+
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <label class="block text-sm font-medium text-heading" for="profile-last-name">Last name</label>
+          <input type="text" id="profile-last-name" maxlength="150" value="{{ user.last_name }}"
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+        </div>
+
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <label class="block text-sm font-medium text-heading" for="profile-title">Title</label>
+          <p class="text-xs text-body mt-0.5">Your role or job title, e.g. "Patent Attorney" or "Licensing Manager".</p>
+          <input type="text" id="profile-title" maxlength="150" value="{{ user.title }}" placeholder="Knowledge Worker"
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+        </div>
+
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <label class="block text-sm font-medium text-heading" for="profile-description">Description</label>
+          <p class="text-xs text-body mt-0.5">Tell {{ assistant_name }} about your responsibilities so responses can be tailored to you.</p>
+          <textarea id="profile-description" maxlength="5000" rows="3"
+            placeholder="e.g. I focus on licensing biotech innovations from the chemistry department, with particular expertise in CRISPR-related IP."
+            style="min-height: 4.75rem; max-height: 15rem;"
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ user.description }}</textarea>
+          <div class="flex items-center justify-between mt-1.5">
+            <p id="profile-desc-error" class="text-xs text-red-600 dark:text-red-400 hidden"></p>
+            <p class="text-xs text-body ml-auto"><span id="profile-desc-count">{{ user.description|length }}</span> / 5000</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% if is_admin %}
+    <!-- Organization SOUL -->
+    <div class="hidden pt-8" id="panel-org-soul" role="tabpanel" aria-labelledby="tab-org-soul">
+      <h2 class="text-lg font-medium text-heading">Organization SOUL</h2>
+      <p class="mt-1 text-sm text-body">The personality {{ assistant_name }} uses for everyone in your organization. It guides tone, voice and style only — it can't change {{ assistant_name }}'s identity or capabilities. Reset to fall back to the system default.</p>
+
+      <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
+        <textarea id="org-soul" maxlength="5000" rows="6"
+          style="min-height: 8.5rem; max-height: 24rem;"
+          class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.org_soul }}</textarea>
+        <div class="flex items-center justify-between mt-1.5">
+          <p id="org-soul-status" class="text-xs hidden"></p>
+          <p class="text-xs text-body ml-auto"><span id="org-soul-count">{{ cust.org_soul|length }}</span> / 5000</p>
+        </div>
+        <div class="mt-3 flex items-center gap-2">
+          <button type="button" id="org-soul-save" disabled
+            class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
+          <button type="button" id="org-soul-reset"
+            class="border border-default text-body hover:bg-neutral-secondary-soft hover:text-heading font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Reset to default</button>
+        </div>
+      </div>
+
+      <div class="mt-6">
+        <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
+          <div>
+            <span class="text-sm font-medium text-heading">Allow custom SOUL for organization members</span>
+            <p class="text-xs text-body mt-0.5">Allow members of your organization to override the SOUL with their own custom instructions. If disabled, everyone will use the organization SOUL above.</p>
+          </div>
+          <input type="checkbox" id="allow-user-soul-toggle"
+            class="rounded border-default text-brand focus:ring-brand-medium"
+            {% if cust.allow_user_soul %}checked{% endif %}>
+        </label>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- SOUL -->
+    <div class="hidden pt-8" id="panel-soul" role="tabpanel" aria-labelledby="tab-soul">
+      <h2 class="text-lg font-medium text-heading">SOUL</h2>
+      {% if can_edit_soul %}
+      <p class="mt-1 text-sm text-body">Your personal personality for {{ assistant_name }}. It guides tone, voice and style only — it can't change {{ assistant_name }}'s identity or capabilities. Reset to fall back to {% if has_org %}your organization's SOUL{% else %}the system default{% endif %}.</p>
+
+      <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
+        <textarea id="user-soul" maxlength="5000" rows="6"
+          style="min-height: 8.5rem; max-height: 24rem;"
+          class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.soul }}</textarea>
+        <div class="flex items-center justify-between mt-1.5">
+          <p id="user-soul-status" class="text-xs hidden"></p>
+          <p class="text-xs text-body ml-auto"><span id="user-soul-count">{{ cust.soul|length }}</span> / 5000</p>
+        </div>
+        <div class="mt-3 flex items-center gap-2">
+          <button type="button" id="user-soul-save" disabled
+            class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
+          <button type="button" id="user-soul-reset"
+            class="border border-default text-body hover:bg-neutral-secondary-soft hover:text-heading font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Reset to default</button>
+        </div>
+      </div>
+      {% else %}
+      <p class="mt-1 text-sm text-body">Your organization does not allow a custom SOUL setting for {{ assistant_name }}, and the organization default will be used in all chats. Below is the SOUL currently in effect for you.</p>
+      <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
+        <p class="text-sm text-body whitespace-pre-wrap">{{ cust.soul }}</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endwith %}
+</main>
+
+<script>
+(function() {
+  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+
+  function autosize(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    var max = parseFloat(getComputedStyle(el).maxHeight);
+    if (max && el.scrollHeight > max) {
+      el.style.height = max + 'px';
+      el.style.overflowY = 'auto';
+    } else {
+      el.style.height = el.scrollHeight + 'px';
+      el.style.overflowY = 'hidden';
+    }
+  }
+
+  function showStatus(el, msg, isError) {
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove('hidden', 'text-red-600', 'dark:text-red-400', 'text-body');
+    if (isError) {
+      el.classList.add('text-red-600', 'dark:text-red-400');
+    } else {
+      el.classList.add('text-body');
+    }
+  }
+
+  // --- About you (auto-save on blur, mirrors the profile page) ---
+  var saveTimer = null;
+  var descError = document.getElementById('profile-desc-error');
+  var descCount = document.getElementById('profile-desc-count');
+  var descTextarea = document.getElementById('profile-description');
+
+  if (descTextarea) {
+    descTextarea.addEventListener('input', function() {
+      descCount.textContent = this.value.length;
+      autosize(descTextarea);
+    });
+    autosize(descTextarea);
+  }
+
+  function saveProfile() {
+    if (descError) descError.classList.add('hidden');
+    var body = {
+      first_name: document.getElementById('profile-first-name').value,
+      last_name: document.getElementById('profile-last-name').value,
+      title: document.getElementById('profile-title').value,
+      description: descTextarea.value,
+    };
+    fetch('{% url "accounts:profile_update" %}', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      credentials: 'same-origin',
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data.error && descError) {
+        descError.textContent = data.error;
+        descError.classList.remove('hidden');
+      }
+    });
+  }
+
+  ['profile-first-name', 'profile-last-name', 'profile-title', 'profile-description'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
+  });
+  if (descTextarea) {
+    descTextarea.addEventListener('input', function() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveProfile, 1500);
+    });
+  }
+
+  // --- Organization (admin auto-save) ---
+  {% if cust.is_org_admin %}
+  var orgNameInput = document.getElementById('org-name');
+  var orgNameError = document.getElementById('org-name-error');
+  if (orgNameInput) {
+    var orgNameTimer = null;
+    function saveOrgName() {
+      if (orgNameError) orgNameError.classList.add('hidden');
+      fetch('{% url "accounts:org_name_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: orgNameInput.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error && orgNameError) {
+          orgNameError.textContent = data.error;
+          orgNameError.classList.remove('hidden');
+        }
+      });
+    }
+    orgNameInput.addEventListener('blur', function() { clearTimeout(orgNameTimer); saveOrgName(); });
+    orgNameInput.addEventListener('input', function() {
+      clearTimeout(orgNameTimer);
+      orgNameTimer = setTimeout(saveOrgName, 1500);
+    });
+  }
+
+  var orgDescTextarea = document.getElementById('org-description');
+  var orgDescCount = document.getElementById('org-desc-count');
+  var orgDescError = document.getElementById('org-desc-error');
+  if (orgDescTextarea) {
+    var orgDescTimer = null;
+    orgDescTextarea.addEventListener('input', function() {
+      orgDescCount.textContent = this.value.length;
+      autosize(orgDescTextarea);
+    });
+    autosize(orgDescTextarea);
+    function saveOrgDescription() {
+      if (orgDescError) orgDescError.classList.add('hidden');
+      fetch('{% url "accounts:org_description_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: orgDescTextarea.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error && orgDescError) {
+          orgDescError.textContent = data.error;
+          orgDescError.classList.remove('hidden');
+        }
+      });
+    }
+    orgDescTextarea.addEventListener('blur', function() { clearTimeout(orgDescTimer); saveOrgDescription(); });
+    orgDescTextarea.addEventListener('input', function() {
+      clearTimeout(orgDescTimer);
+      orgDescTimer = setTimeout(saveOrgDescription, 1500);
+    });
+  }
+
+  var allowToggle = document.getElementById('allow-user-soul-toggle');
+  if (allowToggle) {
+    allowToggle.addEventListener('change', function() {
+      fetch('{% url "accounts:org_allow_user_soul_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allow_user_soul: this.checked }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  }
+  {% endif %}
+
+  // --- SOUL editors (explicit save + reset, change-detected) ---
+  function setupSoulEditor(opts) {
+    var ta = document.getElementById(opts.textarea);
+    if (!ta) return;
+    var saveBtn = document.getElementById(opts.save);
+    var resetBtn = document.getElementById(opts.reset);
+    var count = document.getElementById(opts.count);
+    var status = document.getElementById(opts.status);
+    var initial = ta.value;
+
+    function refresh() {
+      if (count) count.textContent = ta.value.length;
+      if (saveBtn) saveBtn.disabled = (ta.value === initial);
+    }
+    ta.addEventListener('input', function() {
+      autosize(ta);
+      refresh();
+      if (status) status.classList.add('hidden');
+    });
+    autosize(ta);
+    refresh();
+
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function() {
+        if (ta.value === initial) return;
+        saveBtn.disabled = true;
+        fetch(opts.saveUrl, {
+          method: 'POST',
+          headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ soul: ta.value }),
+          credentials: 'same-origin',
+        }).then(function(r) { return r.json(); }).then(function(data) {
+          if (data.error) {
+            showStatus(status, data.error, true);
+          } else {
+            initial = ta.value;
+            showStatus(status, 'Saved', false);
+          }
+          refresh();
+        }).catch(function() {
+          showStatus(status, 'Could not save. Please try again.', true);
+          refresh();
+        });
+      });
+    }
+
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function() {
+        resetBtn.disabled = true;
+        fetch(opts.resetUrl, {
+          method: 'POST',
+          headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+          body: '{}',
+          credentials: 'same-origin',
+        }).then(function(r) { return r.json(); }).then(function(data) {
+          resetBtn.disabled = false;
+          if (data.error) {
+            showStatus(status, data.error, true);
+            return;
+          }
+          ta.value = data.soul || '';
+          initial = ta.value;
+          autosize(ta);
+          refresh();
+          showStatus(status, 'Reset to default.', false);
+        }).catch(function() {
+          resetBtn.disabled = false;
+          showStatus(status, 'Could not reset. Please try again.', true);
+        });
+      });
+    }
+  }
+
+  setupSoulEditor({
+    textarea: 'user-soul', save: 'user-soul-save', reset: 'user-soul-reset',
+    count: 'user-soul-count', status: 'user-soul-status',
+    saveUrl: '{% url "accounts:soul_update" %}', resetUrl: '{% url "accounts:soul_reset" %}',
+  });
+  {% if cust.is_org_admin %}
+  setupSoulEditor({
+    textarea: 'org-soul', save: 'org-soul-save', reset: 'org-soul-reset',
+    count: 'org-soul-count', status: 'org-soul-status',
+    saveUrl: '{% url "accounts:org_soul_update" %}', resetUrl: '{% url "accounts:org_soul_reset" %}',
+  });
+  {% endif %}
+})();
+</script>
+{% endblock content %}

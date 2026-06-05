@@ -5,7 +5,7 @@ from decimal import Decimal
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Sum
 from django.http import HttpResponseForbidden, JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
@@ -1161,14 +1161,16 @@ def org_usage_page(request):
 
 # ---- User Profile ----
 
-MAX_DESCRIPTION_LENGTH = 600
+MAX_DESCRIPTION_LENGTH = 5000
 MAX_NAME_LENGTH = 150
+MAX_ORG_NAME_LENGTH = 255
 
 
 @login_required
 @require_GET
 def profile_page(request):
-    return render(request, "accounts/profile.html")
+    # Superseded by the "My Agent" page; keep the old URL working.
+    return redirect("accounts:agent")
 
 
 @login_required
@@ -1274,3 +1276,228 @@ def org_description_update(request):
     org.description = desc
     org.save(update_fields=["description"])
     return JsonResponse({"ok": True})
+
+
+# ---- My Agent (SOUL / USER / ORG identity) ----
+
+
+@login_required
+@require_GET
+def agent_page(request):
+    from accounts.agent_customization import resolve_agent_customization
+    from accounts.models import get_user_org
+
+    cust = resolve_agent_customization(request.user)
+    org = get_user_org(request.user)
+    # Raw (stored) org description so the editor doesn't auto-save the injected
+    # boilerplate back as a real value when the admin merely opens the page.
+    org_description_raw = org.description if org else ""
+    return render(
+        request,
+        "accounts/agent.html",
+        {"cust": cust, "org_description_raw": org_description_raw},
+    )
+
+
+@login_required
+@require_POST
+def soul_update(request):
+    """Save the user's personal SOUL override (gated by the org's allow_user_soul)."""
+    import logging
+
+    from accounts.agent_customization import MAX_SOUL_LENGTH, org_allows_user_soul
+    from accounts.models import get_user_org
+    from guardrails.classifier import classify_soul_sync
+
+    logger = logging.getLogger(__name__)
+
+    org = get_user_org(request.user)
+    if not org_allows_user_soul(org):
+        return HttpResponseForbidden("Personal SOUL editing is disabled by your organization.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    soul = str(data.get("soul", "")).strip()
+    if len(soul) > MAX_SOUL_LENGTH:
+        return JsonResponse(
+            {"error": f"SOUL must be {MAX_SOUL_LENGTH} characters or fewer."},
+            status=400,
+        )
+
+    if soul:
+        try:
+            result = classify_soul_sync(soul, request.user.pk, org.pk if org else None)
+            if result.is_suspicious:
+                logger.warning("Personal SOUL blocked for user %s: %s", request.user.pk, result.reasoning)
+                return JsonResponse(
+                    {"error": "SOUL could not be saved. Please revise and try again."},
+                    status=400,
+                )
+        except Exception:
+            logger.exception("SOUL classifier failed for user %s", request.user.pk)
+            return JsonResponse(
+                {"error": "Unable to verify SOUL right now. Please try again later."},
+                status=503,
+            )
+
+    request.user.soul = soul
+    request.user.save(update_fields=["soul"])
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_POST
+def soul_reset(request):
+    """Clear the user's personal SOUL; effective value falls back to org, then system."""
+    from accounts.agent_customization import org_allows_user_soul, resolve_agent_customization
+    from accounts.models import get_user_org
+
+    if not org_allows_user_soul(get_user_org(request.user)):
+        return HttpResponseForbidden("Personal SOUL editing is disabled by your organization.")
+
+    request.user.soul = ""
+    request.user.save(update_fields=["soul"])
+    cust = resolve_agent_customization(request.user)
+    return JsonResponse({"ok": True, "soul": cust.soul})
+
+
+@login_required
+@require_POST
+def org_soul_update(request):
+    """Admin: set the org-wide SOUL baseline."""
+    import logging
+
+    from accounts.agent_customization import MAX_SOUL_LENGTH
+    from guardrails.classifier import classify_soul_sync
+
+    logger = logging.getLogger(__name__)
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    soul = str(data.get("soul", "")).strip()
+    if len(soul) > MAX_SOUL_LENGTH:
+        return JsonResponse(
+            {"error": f"SOUL must be {MAX_SOUL_LENGTH} characters or fewer."},
+            status=400,
+        )
+
+    if soul:
+        try:
+            result = classify_soul_sync(soul, request.user.pk, membership.org_id)
+            if result.is_suspicious:
+                logger.warning(
+                    "Org SOUL blocked for org %s by user %s: %s",
+                    membership.org_id, request.user.pk, result.reasoning,
+                )
+                return JsonResponse(
+                    {"error": "SOUL could not be saved. Please revise and try again."},
+                    status=400,
+                )
+        except Exception:
+            logger.exception("SOUL classifier failed for org %s", membership.org_id)
+            return JsonResponse(
+                {"error": "Unable to verify SOUL right now. Please try again later."},
+                status=503,
+            )
+
+    org = membership.org
+    org.soul = soul
+    org.save(update_fields=["soul"])
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_POST
+def org_soul_reset(request):
+    """Admin: clear the org-wide SOUL; effective value falls back to the system default."""
+    from accounts.agent_customization import DEFAULT_SOUL
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    org = membership.org
+    org.soul = ""
+    org.save(update_fields=["soul"])
+    return JsonResponse({"ok": True, "soul": DEFAULT_SOUL})
+
+
+@login_required
+@require_POST
+def org_name_update(request):
+    """Admin: rename the organization (leaves the slug untouched)."""
+    import logging
+
+    from guardrails.classifier import classify_description_sync
+
+    logger = logging.getLogger(__name__)
+
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    # Collapse whitespace/newlines — the name reaches the assistant's identity line.
+    name = " ".join(str(data.get("name", "")).split())
+    if not name:
+        return JsonResponse({"error": "Organization name is required."}, status=400)
+    if len(name) > MAX_ORG_NAME_LENGTH:
+        return JsonResponse(
+            {"error": f"Organization name must be {MAX_ORG_NAME_LENGTH} characters or fewer."},
+            status=400,
+        )
+
+    try:
+        result = classify_description_sync(name, request.user.pk, membership.org_id)
+        if result.is_suspicious:
+            logger.warning(
+                "Org name blocked for org %s by user %s: %s",
+                membership.org_id, request.user.pk, result.reasoning,
+            )
+            return JsonResponse(
+                {"error": "Name could not be saved. Please revise and try again."},
+                status=400,
+            )
+    except Exception:
+        logger.exception("Name classifier failed for org %s", membership.org_id)
+        return JsonResponse(
+            {"error": "Unable to verify name right now. Please try again later."},
+            status=503,
+        )
+
+    org = membership.org
+    org.name = name
+    org.save(update_fields=["name"])
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_POST
+def org_allow_user_soul_update(request):
+    """Admin: toggle whether members may set a personal SOUL override."""
+    membership = _get_admin_membership(request.user)
+    if not membership:
+        return HttpResponseForbidden("Admin access required.")
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    allow = bool(data.get("allow_user_soul", False))
+    org = membership.org
+    prefs = org.preferences or {}
+    prefs["allow_user_soul"] = allow
+    org.preferences = prefs
+    org.save(update_fields=["preferences"])
+    return JsonResponse({"ok": True, "allow_user_soul": allow})
