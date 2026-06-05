@@ -459,10 +459,7 @@
   </div>
   {# Canvas body #}
   <div class="flex-1 overflow-hidden relative">
-    <textarea id="canvas-textarea"
-      class="absolute inset-0 w-full h-full px-4 py-3 text-sm text-heading bg-transparent border-0 focus:outline-none focus:ring-0 resize-none font-mono"
-      maxlength="75000"
-      placeholder="Start writing..."></textarea>
+    <div id="canvas-editor" class="absolute inset-0 overflow-hidden"></div>
     <div id="canvas-preview"
       class="hidden absolute inset-0 overflow-y-auto px-4 py-3 text-sm text-body markdown-content"></div>
   </div>
@@ -2344,7 +2341,7 @@
   // -- Canvas --
   var canvasPanel = document.getElementById("canvas-panel");
   var canvasTitleInput = document.getElementById("canvas-title-input");
-  var canvasTextarea = document.getElementById("canvas-textarea");
+  var canvasEditorEl = document.getElementById("canvas-editor");
   var canvasPreview = document.getElementById("canvas-preview");
   var canvasCloseBtn = document.getElementById("canvas-close-btn");
   var canvasPreviewBtn = document.getElementById("canvas-preview-btn");
@@ -2772,15 +2769,31 @@
     canvasSaveTimer = setTimeout(saveCanvasNow, 1000);
   }
 
-  if (canvasTextarea) {
-    canvasTextarea.addEventListener("input", function() {
-      if (canvasTextarea.value.length > CANVAS_MAX_CHARS) {
-        canvasTextarea.value = canvasTextarea.value.slice(0, CANVAS_MAX_CHARS);
+  // Mount the CodeMirror editor and expose a textarea-like shim so the existing
+  // canvas code keeps working unchanged: `.value` get/set routes through the
+  // editor (set is silent — it won't fire onChange or autosave, matching how a
+  // textarea's programmatic value assignment never fired `input`), and
+  // `.classList` proxies the editor DOM (used by the preview toggle). The
+  // maxLength filter replaces the old slice-on-input truncation.
+  var canvasEditor = null;
+  var canvasTextarea = null;
+  if (canvasEditorEl && window.WilfredEditor) {
+    canvasEditor = window.WilfredEditor.create(canvasEditorEl, {
+      value: "",
+      maxLength: CANVAS_MAX_CHARS,
+      fillParent: true,
+      placeholder: "Start writing...",
+      onChange: function() {
+        canvasLastTyped = Date.now();
+        updateWordCount();
+        debouncedSave();
       }
-      canvasLastTyped = Date.now();
-      updateWordCount();
-      debouncedSave();
     });
+    canvasTextarea = {
+      get value() { return canvasEditor.getValue(); },
+      set value(v) { canvasEditor.setValue(v); },
+      classList: canvasEditor.dom.classList
+    };
   }
   if (canvasTitleInput) {
     canvasTitleInput.addEventListener("input", debouncedSave);
