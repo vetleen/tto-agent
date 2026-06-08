@@ -375,13 +375,17 @@
 </div>
 
 {# Canvas panel #}
-<div id="canvas-panel" class="hidden flex-col border-l-0 border-default border-t-[3px] border-t-blue-500 bg-amber-50/50 dark:bg-neutral-800 min-w-0 transition-all duration-200 w-full sm:w-1/2">
-  {# Canvas header #}
-  <div class="flex items-center gap-2 px-4 py-2 border-b border-default bg-neutral-primary-soft shrink-0">
+<div id="canvas-panel" class="hidden flex-col border-l-0 border-default bg-amber-50/50 dark:bg-neutral-800 min-w-0 transition-all duration-200 w-full sm:w-1/2">
+  {# Canvas header: title only #}
+  <div class="flex items-center px-4 py-2 bg-neutral-primary-soft shrink-0">
     <input id="canvas-title-input" type="text" value="Untitled document"
       class="flex-1 text-sm font-semibold text-heading bg-transparent border-0 focus:outline-none focus:ring-0 min-w-0"
       placeholder="Document title" />
-    <div class="flex items-center gap-1 shrink-0">
+  </div>
+  {# Canvas toolbar row: formatting buttons (left) + document actions (right) #}
+  <div class="flex flex-wrap items-center gap-2 px-4 py-1 border-t-[3px] border-t-blue-500 border-b border-default bg-neutral-primary-soft shrink-0">
+    <div id="canvas-format-toolbar" class="flex items-center gap-0.5 shrink-0"></div>
+    <div class="flex items-center gap-1 shrink-0 ml-auto">
       {# 1. Save version (floppy disk) #}
       <button id="canvas-save-version-btn" title="Save version" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
         <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-8H7v8M7 3v5h8"/></svg>
@@ -2346,6 +2350,7 @@
   var canvasPanel = document.getElementById("canvas-panel");
   var canvasTitleInput = document.getElementById("canvas-title-input");
   var canvasEditorEl = document.getElementById("canvas-editor");
+  var canvasFormatToolbar = document.getElementById("canvas-format-toolbar");
   var canvasPreview = document.getElementById("canvas-preview");
   var canvasCloseBtn = document.getElementById("canvas-close-btn");
   var canvasPreviewBtn = document.getElementById("canvas-preview-btn");
@@ -2796,7 +2801,7 @@
       value: "",
       maxLength: CANVAS_MAX_CHARS,
       fillParent: true,
-      toolbar: true,
+      toolbarTarget: canvasFormatToolbar,
       placeholder: "Start writing...",
       onChange: function() {
         canvasLastTyped = Date.now();
@@ -2883,9 +2888,11 @@
         canvasRenderPreview();
         canvasPreview.classList.remove("hidden");
         canvasTextarea.classList.add("hidden");
+        if (canvasFormatToolbar) canvasFormatToolbar.classList.add("hidden");
       } else {
         canvasPreview.classList.add("hidden");
         canvasTextarea.classList.remove("hidden");
+        if (canvasFormatToolbar) canvasFormatToolbar.classList.remove("hidden");
         canvasEnableMergeIfNeeded();
       }
     });

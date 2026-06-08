@@ -539,7 +539,12 @@ function create(parent, opts) {
   // template-proven Tailwind classes for theming.
   let mountTarget = parent;
   let toolbarEl = null;
-  if (opts.toolbar) {
+  if (opts.toolbarTarget) {
+    // Render the formatting buttons into a caller-provided element (e.g. the canvas
+    // header row, alongside its document-action icons); the editor mounts directly
+    // into `parent`, with no internal frame.
+    toolbarEl = opts.toolbarTarget;
+  } else if (opts.toolbar) {
     const frame = document.createElement("div");
     frame.className = "border-t-[3px] border-t-blue-500"; // recognizable accent
     frame.style.cssText =
