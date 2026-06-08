@@ -2806,7 +2806,9 @@
     canvasTextarea = {
       get value() { return canvasEditor.getValue(); },
       set value(v) { canvasEditor.setValue(v); },
-      classList: canvasEditor.dom.classList
+      // Hide via the mount container, not the .cm-editor element: CodeMirror's own
+      // `.cm-editor { display: flex }` rule would otherwise beat Tailwind's `.hidden`.
+      classList: canvasEditorEl.classList
     };
   }
   if (canvasTitleInput) {

@@ -21,7 +21,7 @@ import {
   placeholder as placeholderExt,
 } from "@codemirror/view";
 import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
-import { syntaxHighlighting, HighlightStyle, bracketMatching } from "@codemirror/language";
+import { bracketMatching } from "@codemirror/language";
 import {
   markdown,
   markdownLanguage,
@@ -29,36 +29,18 @@ import {
   deleteMarkupBackward,
 } from "@codemirror/lang-markdown";
 import { unifiedMergeView } from "@codemirror/merge";
-import { tags as t } from "@lezer/highlight";
 
 // Marks a transaction as a programmatic (non-user) document change.
 const External = Annotation.define();
 
-// ---------------------------------------------------------------------------
-// Live-styled markdown highlighting. Structural styling (size/weight/family)
-// is fixed; colors reference CSS vars set per-theme below, so one HighlightStyle
-// works for both light and dark.
-// ---------------------------------------------------------------------------
+// The edit view shows plain, unstyled markdown *source* (uniform monospace, no
+// rendered formatting) — rendered output lives only in the preview. So there is
+// deliberately no HighlightStyle; the markdown() language is kept solely for
+// editing affordances (list/quote continuation on Enter).
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
-const wilfredHighlight = HighlightStyle.define([
-  { tag: t.heading1, fontSize: "1.5em", fontWeight: "700", color: "var(--md-head)" },
-  { tag: t.heading2, fontSize: "1.3em", fontWeight: "700", color: "var(--md-head)" },
-  { tag: t.heading3, fontSize: "1.15em", fontWeight: "700", color: "var(--md-head)" },
-  { tag: [t.heading4, t.heading5, t.heading6], fontWeight: "700", color: "var(--md-head)" },
-  { tag: t.strong, fontWeight: "700" },
-  { tag: t.emphasis, fontStyle: "italic" },
-  { tag: t.strikethrough, textDecoration: "line-through" },
-  { tag: t.monospace, fontFamily: MONO, color: "var(--md-code)" },
-  { tag: [t.link, t.url], color: "var(--md-link)", textDecoration: "underline" },
-  { tag: t.quote, color: "var(--md-quote)", fontStyle: "italic" },
-  { tag: t.list, color: "var(--md-head)" },
-  { tag: [t.processingInstruction, t.contentSeparator], color: "var(--md-muted)" },
-]);
-
 // ---------------------------------------------------------------------------
-// Themes. Colors live in CSS vars on the editor root so the HighlightStyle can
-// reference them; switching theme just reconfigures these.
+// Themes (plain text + selection/caret/merge tints for light and dark).
 // ---------------------------------------------------------------------------
 function buildTheme(v, dark) {
   return EditorView.theme(
@@ -67,14 +49,9 @@ function buildTheme(v, dark) {
         backgroundColor: "transparent",
         color: v.text,
         fontSize: "0.875rem",
-        "--md-head": v.head,
-        "--md-link": v.link,
-        "--md-code": v.code,
-        "--md-quote": v.quote,
-        "--md-muted": v.muted,
       },
       "&.cm-focused": { outline: "none" },
-      ".cm-scroller": { fontFamily: "inherit", lineHeight: "1.6", overflow: "auto" },
+      ".cm-scroller": { fontFamily: MONO, lineHeight: "1.6", overflow: "auto" },
       ".cm-content": { padding: "12px 16px", caretColor: v.caret },
       ".cm-cursor, .cm-dropCursor": { borderLeftColor: v.caret },
       ".cm-selectionBackground, .cm-content ::selection": { backgroundColor: v.selection },
@@ -95,10 +72,6 @@ const LIGHT = buildTheme(
     text: "#1f2937",
     caret: "#111827",
     selection: "rgba(37, 99, 235, 0.15)",
-    head: "#111827",
-    link: "#2563eb",
-    code: "#be185d",
-    quote: "#6b7280",
     muted: "#9ca3af",
     addBg: "rgba(34, 197, 94, 0.12)",
     delBg: "rgba(239, 68, 68, 0.12)",
@@ -111,10 +84,6 @@ const DARK = buildTheme(
     text: "#e5e7eb",
     caret: "#f9fafb",
     selection: "rgba(96, 165, 250, 0.28)",
-    head: "#f3f4f6",
-    link: "#60a5fa",
-    code: "#f0abfc",
-    quote: "#9ca3af",
     muted: "#6b7280",
     addBg: "rgba(34, 197, 94, 0.18)",
     delBg: "rgba(239, 68, 68, 0.18)",
@@ -174,7 +143,6 @@ function create(parent, opts) {
       ...historyKeymap,
     ]),
     markdown({ base: markdownLanguage }),
-    syntaxHighlighting(wilfredHighlight),
     bracketMatching(),
     drawSelection(),
     themeCompartment.of(themeExt(currentTheme)),
