@@ -163,10 +163,37 @@ function headingCmd(view) {
   return true;
 }
 
+// Fenced code block ("Plain block"): wraps the selection in ``` fences on their own
+// lines, or — with no selection — drops an empty fenced block with the cursor inside.
+function cmdPlainBlock(view) {
+  const { state } = view;
+  const sel = state.selection.main;
+  if (sel.empty) {
+    const pos = sel.from;
+    const line = state.doc.lineAt(pos);
+    const lead = pos === line.from ? "" : "\n";
+    const tail = pos === line.to ? "" : "\n";
+    view.dispatch({
+      changes: { from: pos, insert: lead + "```\n\n```" + tail },
+      selection: { anchor: pos + lead.length + 4 }, // the empty line between the fences
+    });
+    return true;
+  }
+  const from = sel.from, to = sel.to;
+  const selected = state.sliceDoc(from, to);
+  const lead = from === state.doc.lineAt(from).from ? "" : "\n";
+  const tail = to === state.doc.lineAt(to).to ? "" : "\n";
+  const innerStart = from + lead.length + 4; // after lead + "```\n"
+  view.dispatch({
+    changes: { from, to, insert: lead + "```\n" + selected + "\n```" + tail },
+    selection: { anchor: innerStart, head: innerStart + selected.length },
+  });
+  return true;
+}
+
 const cmdBold = wrapCmd("**", "**");
 const cmdItalic = wrapCmd("*", "*");
 const cmdStrike = wrapCmd("~~", "~~");
-const cmdCode = wrapCmd("`", "`");
 const cmdLink = linkCmd;
 const cmdHeading = headingCmd;
 const cmdUl = prefixCmd("- ");
@@ -187,6 +214,8 @@ const SVG_LINK =
   '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.658 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>';
 const SVG_UL =
   '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>';
+const SVG_PLAINBLOCK =
+  '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M7 9.5h7M7 12.5h10M7 15.5h5"/></svg>';
 
 const TB = [
   { title: "Bold", mod: "b", run: cmdBold, html: glyph("B", "font-weight:700") },
@@ -198,7 +227,7 @@ const TB = [
   { title: "Bulleted list", run: cmdUl, html: SVG_UL },
   { title: "Numbered list", run: cmdOl, html: glyph("1.", "font-weight:600;font-size:11px") },
   { title: "Quote", run: cmdQuote, html: glyph("”", "font-weight:700;font-size:16px") },
-  { title: "Inline code", run: cmdCode, html: glyph("&lt;/&gt;", "font-family:" + MONO + ";font-size:10px") },
+  { title: "Plain block", run: cmdPlainBlock, html: SVG_PLAINBLOCK },
 ];
 
 function populateToolbar(toolbar, view) {
