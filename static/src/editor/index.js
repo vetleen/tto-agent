@@ -59,9 +59,24 @@ function buildTheme(v, dark) {
       ".cm-activeLine": { backgroundColor: "transparent" },
       ".cm-gutters": { backgroundColor: "transparent", border: "none", color: v.muted },
       ".cm-placeholder": { color: v.muted },
-      // Merge view (Phase 2) tints.
-      ".cm-deletedChunk": { backgroundColor: v.delBg },
+      // Inline merge view (Phase 2): subtle tints, per-hunk controls on their own
+      // line above the change (not overlapping the text), struck-through deletions.
       ".cm-changedLine": { backgroundColor: v.addBg },
+      ".cm-deletedChunk": { backgroundColor: v.delBg },
+      ".cm-deletedChunk .cm-deletedLine del": { textDecoration: "line-through" },
+      ".cm-deletedChunk .cm-chunkButtons": {
+        position: "static",
+        display: "flex",
+        gap: "6px",
+        justifyContent: "flex-end",
+        margin: "2px 0 6px",
+      },
+      ".cm-deletedChunk .cm-chunkButtons button": {
+        fontSize: "0.75rem",
+        lineHeight: "1.3",
+        padding: "1px 10px",
+        borderRadius: "4px",
+      },
     },
     { dark: dark }
   );
