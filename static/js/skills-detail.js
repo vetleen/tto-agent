@@ -66,14 +66,17 @@
 
     var preview = o.preview;
     var wrapper = document.createElement("div");
-    wrapper.className =
-      "cm-field bg-neutral-secondary-medium border border-default-medium rounded-base shadow-xs overflow-hidden";
+    // Slim wrapper: the editor component renders its own toolbar/accent chrome, so
+    // we drop the redundant border/shadow and just provide the field background and
+    // rounded clipping. (The section card around it already supplies a border.)
+    wrapper.className = "cm-field bg-neutral-secondary-medium rounded-base overflow-hidden";
     textarea.classList.add("hidden");
     textarea.parentNode.insertBefore(wrapper, textarea.nextSibling);
 
     var ed = window.WilfredEditor.create(wrapper, {
       value: textarea.value,
       readOnly: !!o.readOnly,
+      toolbar: !o.readOnly,
       maxLength: o.maxLength || null,
       minHeight: o.minHeight,
       maxHeight: o.maxHeight,
