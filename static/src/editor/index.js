@@ -87,10 +87,27 @@ function wrapCmd(before, after) {
       });
       return true;
     }
-    // Wrap.
+    // Wrap — but hug the trimmed core so any leading/trailing whitespace in the
+    // selection stays OUTSIDE the markers. Otherwise `** text **` is invalid
+    // markdown and the literal stars leak into the rendered output.
+    const lead = inner.length - inner.trimStart().length;
+    const trail = inner.length - inner.trimEnd().length;
+    if (to > from && inner.length - lead - trail > 0) {
+      const coreFrom = from + lead;
+      const coreTo = to - trail;
+      view.dispatch({
+        changes: [
+          { from: coreFrom, insert: before },
+          { from: coreTo, insert: after },
+        ],
+        selection: { anchor: coreFrom + bl, head: coreTo + bl },
+      });
+      return true;
+    }
+    // Empty (or all-whitespace) selection: insert markers, cursor between.
     view.dispatch({
-      changes: { from, to, insert: before + inner + after },
-      selection: to > from ? { anchor: from + bl, head: to + bl } : { anchor: from + bl },
+      changes: { from, insert: before + after },
+      selection: { anchor: from + bl },
     });
     return true;
   };
