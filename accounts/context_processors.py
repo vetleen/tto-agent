@@ -7,7 +7,6 @@ def theme(request):
     """Add current user theme and org admin flag to context."""
     context = {
         "assistant_name": django_settings.ASSISTANT_NAME,
-        "assistant_emoji": django_settings.ASSISTANT_EMOJI,
     }
     if request.user.is_authenticated:
         settings, _ = UserSettings.objects.get_or_create(user=request.user)

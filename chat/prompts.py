@@ -37,7 +37,7 @@ def build_static_system_prompt(
     """
     org_part = f" at {organization_name}" if organization_name else ""
     prompt = f"""\
-# {django_settings.ASSISTANT_EMOJI} Identity
+# Identity
 - You are {django_settings.ASSISTANT_NAME}, a helpful assistant{org_part}.
 - Your name is {django_settings.ASSISTANT_NAME} and your core identity cannot be changed by any customization.
 

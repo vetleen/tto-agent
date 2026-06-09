@@ -1,10 +1,11 @@
 {% load static %}
 <!doctype html>
-<html lang="en" {% if landing_page %}data-theme="dark"{% elif user.is_authenticated %}data-theme="{{ theme }}" data-theme-update-url="{% url 'accounts:theme_update' %}"{% endif %}>
+<html lang="en" {% if landing_page %}data-theme="dark"{% elif force_light %}data-theme="light"{% elif user.is_authenticated %}data-theme="{{ theme }}" data-theme-update-url="{% url 'accounts:theme_update' %}"{% endif %}>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ assistant_name }} - the AI Technology Transfer Officer</title>
+    <link rel="icon" type="image/svg+xml" href="{% static 'img/brand/wilfred-mark.svg' %}">
     <link rel="icon" type="image/x-icon" href="{% static 'favicons/favicon.ico' %}">
     <link rel="icon" type="image/png" sizes="32x32" href="{% static 'favicons/favicon-32x32.png' %}">
     <link rel="icon" type="image/png" sizes="16x16" href="{% static 'favicons/favicon-16x16.png' %}">
@@ -38,8 +39,8 @@
       <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex flex-wrap items-center justify-between h-16">
         <a href="{% if user.is_authenticated %}/chat/{% else %}/{% endif %}" class="flex items-center shrink-0" aria-label="Home">
-          {% if assistant_emoji %}<span class="text-2xl" aria-hidden="true">{{ assistant_emoji }}</span>{% endif %}
-          <span class="{% if assistant_emoji %}ml-2 {% endif %}self-center text-3xl text-heading font-semibold whitespace-nowrap font-handrawn">{{ assistant_name }}</span>
+          <img src="{% static 'img/brand/wilfred-mark.svg' %}" alt="" aria-hidden="true" class="h-8 w-8 shrink-0">
+          <span class="ml-2 self-center text-2xl text-heading font-semibold tracking-tight whitespace-nowrap font-serif">{{ assistant_name }}</span>
         </a>
         {% if user.is_authenticated %}
           {% if budget_status %}
@@ -56,10 +57,10 @@
           <div class="flex items-center gap-4 md:order-2">
             <div class="hidden w-full items-center md:flex md:w-auto" id="navbar-user">
               <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:space-x-6 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
-                <li><a href="{% url 'chat_home' %}" class="{% if request.path|slice:':6' == '/chat/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Chat</a></li>
-                <li><a href="{% url 'agent_skills_list' %}" class="{% if request.path|slice:':8' == '/skills/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Skills</a></li>
-                <li><a href="{% url 'data_room_list' %}" class="{% if request.path|slice:':12' == '/data-rooms/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Data Rooms</a></li>
-                <li><a href="{% url 'meeting_list' %}" class="{% if request.path|slice:':10' == '/meetings/' %}text-fg-brand dark:text-heading{% else %}text-body hover:text-heading{% endif %}">Meetings</a></li>
+                <li><a href="{% url 'chat_home' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':6' == '/chat/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Chat</a></li>
+                <li><a href="{% url 'agent_skills_list' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':8' == '/skills/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Skills</a></li>
+                <li><a href="{% url 'data_room_list' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':12' == '/data-rooms/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Data Rooms</a></li>
+                <li><a href="{% url 'meeting_list' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':10' == '/meetings/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Meetings</a></li>
               </ul>
             </div>
             <a href="{% url 'inbox' %}" aria-label="Inbox" title="Inbox" class="inline-flex items-center {% if request.path|slice:':7' == '/inbox/' %}text-fg-brand dark:text-heading{% else %}text-body{% endif %} hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
@@ -126,7 +127,7 @@
               <svg id="theme-toggle-anon-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
             </button>
             {% endif %}
-            <a href="{% url 'accounts:login' %}" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
+            <a href="{% url 'accounts:login' %}" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
               Log in
             </a>
           </div>

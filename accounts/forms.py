@@ -10,11 +10,25 @@ from django.contrib.auth import get_user_model
 
 
 class CustomAuthenticationForm(AuthenticationForm):
+    remember_me = forms.BooleanField(
+        required=False,
+        initial=True,
+        widget=forms.CheckboxInput(
+            attrs={
+                "class": (
+                    "h-4 w-4 rounded-sm border-default-medium text-brand "
+                    "focus:ring-brand focus:ring-2"
+                )
+            }
+        ),
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        base_classes = _input_classes()
-        self.fields["username"].widget = forms.EmailInput(attrs={"class": base_classes})
-        self.fields["password"].widget = forms.PasswordInput(attrs={"class": base_classes})
+        # Login form gets an extra left inset (pl-10) for the inline field icons.
+        icon_classes = _input_classes() + " pl-10"
+        self.fields["username"].widget = forms.EmailInput(attrs={"class": icon_classes})
+        self.fields["password"].widget = forms.PasswordInput(attrs={"class": icon_classes})
 
 
 class CustomPasswordChangeForm(PasswordChangeForm):
@@ -42,8 +56,9 @@ class CustomSetPasswordForm(SetPasswordForm):
 
 def _input_classes() -> str:
     return (
-        "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 "
-        "focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        "mt-1 w-full rounded-base border border-default-medium bg-neutral-secondary-soft "
+        "px-3 py-2 text-heading shadow-xs placeholder:text-body "
+        "focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
     )
 
 

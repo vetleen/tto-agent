@@ -1,41 +1,293 @@
 {% extends "_base.html" %}
 {% load static %}
 
-{% block body_class %}min-h-screen{% endblock %}
+{% block body_class %}min-h-screen bg-paper-0{% endblock %}
 
 {% block navbar %}
-<nav class="bg-neutral-primary fixed w-full z-20 top-0 start-0 border-b border-default backdrop-blur-md">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-    <div class="flex items-center justify-between h-16">
-      <a href="/" class="flex items-center shrink-0" aria-label="Home"></a>
-      <a href="{% url 'accounts:login' %}" class="text-sm font-medium text-body hover:text-heading transition-colors inline-flex items-center gap-1 shrink-0">
-        Log in
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
-      </a>
+<header class="sticky top-0 z-50 bg-paper-50/85 backdrop-blur border-b border-paper-200">
+  <nav class="max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)] h-[68px] flex items-center gap-8">
+    <a href="#top" class="flex items-center gap-2 shrink-0" aria-label="Wilfred — home">
+      <img src="{% static 'img/brand/wilfred-mark.svg' %}" alt="" aria-hidden="true" class="w-[30px] h-[30px]">
+      <span class="font-serif font-semibold text-[22px] text-forest-900">Wilfred</span>
+    </a>
+    <div class="ml-auto flex items-center gap-4">
+      <a href="{% url 'accounts:login' %}" class="hidden sm:inline text-[14.5px] text-[#525C72] hover:text-forest-900 transition-colors">Log in</a>
+      <a href="{% url 'accounts:login' %}" class="inline-flex items-center justify-center rounded-base bg-forest-800 px-4 py-2 text-sm font-medium text-[#F2F7F4] hover:bg-forest-700 transition-colors">Log in</a>
     </div>
-  </div>
-</nav>
+  </nav>
+</header>
 {% endblock navbar %}
 
 {% block content %}
-<section class="relative min-h-screen flex items-center justify-center overflow-hidden">
-  <div class="absolute inset-0 bg-zinc-900">
-    <div class="absolute inset-0 bg-cover bg-center bg-no-repeat" style="background-image: url('{% static 'images/hero/hero.jpg' %}');"></div>
-    <div class="absolute inset-0 bg-gradient-to-b from-zinc-900/80 via-zinc-900/60 to-zinc-900"></div>
-    <div class="absolute inset-0 bg-gradient-to-t from-zinc-900 via-transparent to-transparent"></div>
-  </div>
-  <div class="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-    <h1 class="font-handrawn text-7xl sm:text-8xl lg:text-9xl text-white drop-shadow-lg">
-      {{ assistant_name }}
-    </h1>
-    <p class="mt-6 text-lg sm:text-xl text-zinc-400 max-w-2xl mx-auto leading-relaxed">
-      Your AI colleague at the tech transfer office.
-    </p>
-    <div class="mt-10 flex flex-wrap items-center justify-center gap-4">
-      <a href="{% url 'accounts:login' %}" class="inline-flex items-center justify-center rounded-lg bg-white px-6 py-3 text-base font-semibold text-zinc-900 shadow-sm hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-zinc-900 transition-colors">
-        Log in
-      </a>
+{# ============================================================ Hero #}
+<section id="top" class="relative bg-forest-950 overflow-hidden">
+  <div class="absolute inset-0 bg-cover" style="background-image:url('{% static 'images/hero/landing_page_03.png' %}'); background-position:60% center; filter:saturate(.9) brightness(.82);" aria-hidden="true"></div>
+  <div class="absolute inset-0" style="background:linear-gradient(90deg, rgba(6,21,14,.97) 0%, rgba(6,21,14,.86) 38%, rgba(6,21,14,.5) 70%, rgba(6,21,14,.25) 100%);" aria-hidden="true"></div>
+  <div class="absolute inset-0" style="background:linear-gradient(0deg, rgba(6,21,14,.92) 0%, rgba(6,21,14,.3) 45%, rgba(6,21,14,0) 80%);" aria-hidden="true"></div>
+  <div class="absolute inset-0" style="background:radial-gradient(70% 55% at 85% 12%, rgba(190,130,66,.18) 0%, rgba(190,130,66,0) 60%);" aria-hidden="true"></div>
+  <div class="relative max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)]">
+    <div class="max-w-[760px] py-[clamp(96px,14vw,184px)]">
+      <div class="mb-7">
+        <span class="text-copper-300 text-xs font-semibold uppercase tracking-[0.16em]">AI for business development</span>
+      </div>
+      <h1 class="font-serif font-semibold text-[clamp(44px,6.2vw,82px)] leading-[1.02] tracking-[-0.028em] text-[#F4F7F4]">
+        Spend more time on deals, not <em class="italic text-copper-300">paperwork</em>.
+      </h1>
+      <p class="mt-7 text-[clamp(17px,1.5vw,21px)] leading-[1.6] text-[#E7EFE9]/80 max-w-[580px]">
+        Wilfred is an AI colleague for technology-transfer offices. It works only on data you allow, builds business documents from your own and your organization's playbooks, takes meeting minutes, and drafts the memos, so your team can spend its time making deals, not documents.
+      </p>
+      <div class="mt-9 flex flex-wrap items-center gap-3">
+        <a href="{% url 'accounts:login' %}" class="inline-flex items-center justify-center rounded-base bg-copper-500 px-6 py-3 text-base font-medium text-[#1A1206] hover:bg-copper-600 transition-colors">Log in</a>
+        <a href="#capabilities" class="inline-flex items-center justify-center rounded-base border border-white/20 px-6 py-3 text-base font-medium text-[#E7EFE9] hover:bg-white/5 transition-colors">See what Wilfred does</a>
+      </div>
+      <div class="mt-10 flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-[12.5px] text-[#E7EFE9]/60">
+        <span class="inline-flex items-center gap-2">
+          <svg class="w-4 h-4 text-copper-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+          Confidential by design
+        </span>
+        <span class="w-1 h-1 rounded-full bg-[#E7EFE9]/30"></span>
+        <span class="inline-flex items-center gap-2">
+          <svg class="w-4 h-4 text-copper-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M4.268 21a2 2 0 0 0 1.727 1H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v3"/><path d="m9 18-1.5-1.5"/><circle cx="5" cy="14" r="3"/></svg>
+          Built on your documents
+        </span>
+        <span class="w-1 h-1 rounded-full bg-[#E7EFE9]/30"></span>
+        <span class="inline-flex items-center gap-2">
+          <svg class="w-4 h-4 text-copper-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Controlled document access
+        </span>
+      </div>
     </div>
   </div>
 </section>
+
+{# ============================================================ Trust strip #}
+<section class="bg-paper-0 border-y border-paper-200">
+  <div class="max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)] py-8 flex flex-col items-center justify-center gap-2 text-center">
+    <div class="text-[11px] font-semibold uppercase tracking-[0.14em] text-paper-500 leading-snug">NTNU Technology Transfer's own AI tool</div>
+    <a href="https://www.ntnutto.no/" target="_blank" rel="noopener" class="font-serif text-[clamp(16px,1.4vw,20px)] text-[#283044] hover:text-copper-700 transition-colors">NTNU Technology Transfer AS</a>
+  </div>
+</section>
+
+{# ============================================================ Problem statement #}
+<section class="bg-paper-50">
+  <div class="max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)] py-[clamp(72px,9vw,132px)] grid md:grid-cols-[0.8fr_1.4fr] gap-[clamp(28px,5vw,72px)]">
+    <div>
+      <div class="flex items-center gap-3 mb-4">
+        <span class="w-[26px] h-px bg-copper-500"></span>
+        <span class="text-[11px] font-semibold uppercase tracking-[0.14em] text-copper-700">The problem</span>
+      </div>
+      <h2 class="font-serif font-semibold text-[clamp(28px,3.5vw,44px)] leading-[1.1] tracking-[-0.022em] text-forest-900">
+        The work that creates value is buried under the work that records it.
+      </h2>
+    </div>
+    <div class="space-y-5 text-[clamp(16px,1.1vw,18px)] leading-[1.62] text-[#283044] max-w-[640px]">
+      <p>The work that creates value can't be automated. Judgement calls about direction, the structure of a deal, earning an inventor's trust — these take creativity, non-linear thinking, and human relationships. That's our job.</p>
+      <p>The work that documents the process can be automated. Researching and reading through documents, writing reports and recommendations, writing up meetings, keeping the record straight. Wilfred does it for you — while you control the input and the output. This way, the work only a person can do no longer waits in line behind the work that AI can do.</p>
+    </div>
+  </div>
+</section>
+
+{# ============================================================ Capabilities #}
+<section id="capabilities" class="bg-paper-0 border-t border-paper-200">
+  <div class="max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)] py-[clamp(72px,9vw,132px)]">
+    <div class="max-w-[680px] mx-auto text-center">
+      <h2 class="font-serif font-semibold text-[clamp(28px,3.5vw,44px)] leading-[1.1] tracking-[-0.022em] text-forest-900">
+        Everything you normally do, but with an assistant.
+      </h2>
+      <p class="mt-5 text-[clamp(16px,1.1vw,18px)] leading-[1.6] text-[#525C72]">
+        Your own junior colleague that reads through your files, does the research, and drafts documents and reports.
+      </p>
+    </div>
+
+    <div class="mt-[clamp(48px,7vw,96px)] space-y-[clamp(56px,8vw,104px)]">
+      {# Feature 1 — Data rooms (text left, photo right) #}
+      <article class="grid md:grid-cols-2 gap-[clamp(32px,5vw,80px)] items-center">
+        <div>
+          <div class="flex items-center gap-3 mb-4">
+            <span class="w-[26px] h-px bg-copper-500"></span>
+            <span class="text-[11px] font-semibold uppercase tracking-[0.14em] text-copper-700">Data rooms</span>
+          </div>
+          <h3 class="font-serif font-semibold text-[clamp(24px,2.6vw,33px)] leading-[1.12] tracking-[-0.02em] text-forest-900">Secure rooms that contain project documentation</h3>
+          <p class="mt-4 text-[clamp(16px,1.1vw,17px)] leading-[1.62] text-[#283044] max-w-[480px]">Upload disclosures, patents, and diligence packs as PDF, DOCX, or text. Wilfred chunks and indexes every file for hybrid semantic and full-text search, and notifies you when a document contains personal data.</p>
+          <ul class="mt-6 space-y-3">
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Hybrid retrieval across thousands of pages in seconds</span></li>
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Per-document confidentiality and personal-data status</span></li>
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Answers link straight back to the source</span></li>
+          </ul>
+        </div>
+        <div class="relative rounded-base overflow-hidden border border-paper-200 shadow-lg aspect-[16/11]">
+          <img src="{% static 'images/hero/landing_page_hero.png' %}" alt="A researcher's desk with a notebook, disclosure documents, and a microfluidic chip" class="w-full h-full object-cover">
+          <span class="absolute left-4 bottom-4 inline-flex items-center gap-2 rounded-full bg-forest-950/75 backdrop-blur px-3 py-1.5 font-mono text-[12px] text-[#E7EFE9]">
+            <svg class="w-[14px] h-[14px] text-copper-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="5" x="14" y="17" rx="1"/><path d="M10 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v2"/><path d="M20 17v-2a2 2 0 1 0-4 0v2"/></svg>
+            12 documents · 412 chunks indexed
+          </span>
+        </div>
+      </article>
+
+      {# Feature 2 — Chat that drafts (chat mock left, text right) #}
+      <article class="grid md:grid-cols-2 gap-[clamp(32px,5vw,80px)] items-center">
+        <div>
+          <div class="flex items-center gap-3 mb-4">
+            <span class="w-[26px] h-px bg-copper-500"></span>
+            <span class="text-[11px] font-semibold uppercase tracking-[0.14em] text-copper-700">Create drafts in chat</span>
+          </div>
+          <h3 class="font-serif font-semibold text-[clamp(24px,2.6vw,33px)] leading-[1.12] tracking-[-0.02em] text-forest-900">Ask across the room. Get a memo back.</h3>
+          <p class="mt-4 text-[clamp(16px,1.1vw,17px)] leading-[1.62] text-[#283044] max-w-[480px]">Attach one or more data rooms to a thread and ask in plain language. Wilfred drafts summaries, term sheets, and prior-art memos into an editable canvas — every claim traceable to its source.</p>
+          <ul class="mt-6 space-y-3">
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Drafts into an editable, multi-canvas document</span></li>
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Citations on every factual claim</span></li>
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Delegates research to sub-agents when a question is broad</span></li>
+          </ul>
+        </div>
+        <div id="workspace" class="rounded-base border border-forest-700 bg-forest-900 shadow-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-white/10">
+            <span class="w-2.5 h-2.5 rounded-full bg-white/15"></span>
+            <span class="w-2.5 h-2.5 rounded-full bg-white/15"></span>
+            <span class="w-2.5 h-2.5 rounded-full bg-white/15"></span>
+            <span class="ml-3 font-mono text-[12px] text-[#E7EFE9]/70">Chat · Idea evaluation</span>
+          </div>
+          <div class="p-4 sm:p-5 space-y-4">
+            <div class="flex flex-wrap gap-2">
+              <span class="inline-flex items-center gap-1.5 rounded-base border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[11px] text-[#E7EFE9]/80">
+                <svg class="w-[13px] h-[13px] text-copper-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="5" x="14" y="17" rx="1"/><path d="M10 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v2"/><path d="M20 17v-2a2 2 0 1 0-4 0v2"/></svg>
+                CIRCLE DOFI project files
+              </span>
+            </div>
+            <div class="flex gap-3">
+              <div class="shrink-0 w-8 h-8 rounded-base bg-forest-700 text-[#E7EFE9] text-[11px] font-semibold inline-flex items-center justify-center">DO</div>
+              <div class="text-[14px] leading-[1.55] text-[#E7EFE9]/90 pt-1">What was the competing solution we found in the market analysis?</div>
+            </div>
+            <div class="flex gap-3">
+              <div class="shrink-0 w-8 h-8 rounded-base bg-copper-500 text-[#1A1206] text-[11px] font-semibold inline-flex items-center justify-center">W</div>
+              <div class="pt-1 min-w-0">
+                <div class="space-y-1.5 mb-3">
+                  <div class="flex items-center gap-1.5 font-mono text-[11px] text-[#E7EFE9]/55">
+                    <svg class="w-[13px] h-[13px] text-copper-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                    Searched CIRCLE DOFI project files
+                  </div>
+                  <div class="flex items-center gap-1.5 font-mono text-[11px] text-[#E7EFE9]/55">
+                    <svg class="w-[13px] h-[13px] text-copper-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+                    Read market-analysis.docx
+                  </div>
+                </div>
+                <div class="text-[14px] leading-[1.55] text-[#E7EFE9]/90">
+                  Found it — it's in market-analysis.docx from yesterday. We logged six competing products there; the closest was Cordis Bioseal, since it uses the same enzymatic PET-recycling step — but only for single-stream waste, not the mixed feedstock CIRCLE targets.
+                  <span class="mt-3 inline-flex items-center gap-1.5 rounded-base border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[11px] text-[#E7EFE9]/80 align-middle">
+                    <svg class="w-[13px] h-[13px] text-copper-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+                    market-analysis.docx · yesterday
+                  </span><span class="wf-caret"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      {# Feature 3 — Meetings (text left, photo right) #}
+      <article class="grid md:grid-cols-2 gap-[clamp(32px,5vw,80px)] items-center">
+        <div>
+          <div class="flex items-center gap-3 mb-4">
+            <span class="w-[26px] h-px bg-copper-500"></span>
+            <span class="text-[11px] font-semibold uppercase tracking-[0.14em] text-copper-700">Meetings, on the record</span>
+          </div>
+          <h3 class="font-serif font-semibold text-[clamp(24px,2.6vw,33px)] leading-[1.12] tracking-[-0.02em] text-forest-900">Inventor intakes that minute themselves</h3>
+          <p class="mt-4 text-[clamp(16px,1.1vw,17px)] leading-[1.62] text-[#283044] max-w-[480px]">Start a meeting and Wilfred transcribes live, or upload the audio after. Then ask it to write the minutes, pull out the action items, and file everything back to the right data room — searchable in your next chat.</p>
+          <ul class="mt-6 space-y-3">
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Live transcription and post-hoc audio upload</span></li>
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Minutes and action items, written for you</span></li>
+            <li class="flex items-start gap-3"><svg class="w-[18px] h-[18px] text-forest-500 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="text-[15px] leading-[1.5] text-[#283044]">Filed straight back into the linked data room</span></li>
+          </ul>
+        </div>
+        <div class="relative rounded-base overflow-hidden border border-paper-200 shadow-lg aspect-[16/11]">
+          <img src="{% static 'images/hero/landing_page_illustration.png' %}" alt="A quiet research library corridor" class="w-full h-full object-cover">
+          <span class="absolute left-4 bottom-4 inline-flex items-center gap-2 rounded-full bg-forest-950/75 backdrop-blur px-3 py-1.5 font-mono text-[12px] text-[#E7EFE9]">
+            <svg class="w-[14px] h-[14px] text-copper-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+            Minutes with Wilfred · saved
+          </span>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+{# ============================================================ Security band #}
+<section id="security" class="relative bg-forest-950 overflow-hidden">
+  <div class="absolute inset-0" style="background:radial-gradient(60% 50% at 12% 0%, rgba(190,130,66,.14) 0%, rgba(190,130,66,0) 60%);" aria-hidden="true"></div>
+  <div class="relative max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)] py-[clamp(72px,9vw,132px)]">
+    <div class="flex flex-col sm:flex-row sm:items-center gap-6">
+      <img src="{% static 'img/brand/wilfred-seal.svg' %}" alt="" aria-hidden="true" class="w-[88px] h-[88px] shrink-0">
+      <div>
+        <div class="text-copper-300 text-xs font-semibold uppercase tracking-[0.16em] mb-3">Trust</div>
+        <h2 class="font-serif font-semibold text-[clamp(28px,3.5vw,46px)] leading-[1.1] tracking-[-0.022em] text-[#F4F7F4] max-w-[760px]">Built for the most confidential work in the building.</h2>
+      </div>
+    </div>
+    <div class="mt-[clamp(40px,6vw,72px)] grid md:grid-cols-3 border border-white/10 rounded-base overflow-hidden divide-y md:divide-y-0 md:divide-x divide-white/10">
+      <div class="p-7">
+        <span class="text-copper-400 inline-block mb-5">
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+        </span>
+        <h4 class="font-serif text-[20px] text-[#F4F7F4] mb-3">Confidential by design</h4>
+        <p class="text-[15px] leading-[1.6] text-[#E7EFE9]/65">Pre-publication research and sensitive IP stay inside their data room. Wilfred never trains on your documents and treats confidentiality as a default, not a setting.</p>
+      </div>
+      <div class="p-7">
+        <span class="text-copper-400 inline-block mb-5">
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v1a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/><path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v1a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/></svg>
+        </span>
+        <h4 class="font-serif text-[20px] text-[#F4F7F4] mb-3">Cited, not improvised</h4>
+        <p class="text-[15px] leading-[1.6] text-[#E7EFE9]/65">Every factual claim links to the source it came from. If Wilfred can't find a source, it tells you — rather than guessing.</p>
+      </div>
+      <div class="p-7">
+        <span class="text-copper-400 inline-block mb-5">
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="1"/><path d="M18.944 12.33a1 1 0 0 0 0-.66 7.5 7.5 0 0 0-13.888 0 1 1 0 0 0 0 .66 7.5 7.5 0 0 0 13.888 0"/></svg>
+        </span>
+        <h4 class="font-serif text-[20px] text-[#F4F7F4] mb-3">Personal data, surfaced</h4>
+        <p class="text-[15px] leading-[1.6] text-[#E7EFE9]/65">Each document carries its personal-data status, so you know what's sensitive before it ever reaches a chat.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ============================================================ Testimonial #}
+<section class="bg-paper-0 border-b border-paper-200">
+  <div class="max-w-[920px] mx-auto px-[clamp(20px,6vw,88px)] py-[clamp(72px,9vw,132px)]">
+    <div class="flex items-center gap-3 mb-7">
+      <span class="w-[26px] h-px bg-copper-500"></span>
+      <span class="text-[11px] font-semibold uppercase tracking-[0.14em] text-copper-700">From the office</span>
+    </div>
+    <blockquote class="font-serif text-[clamp(24px,3vw,38px)] leading-[1.28] tracking-[-0.018em] text-forest-900">
+      <span class="text-copper-500">“</span>Wilfred is meant to help users work effectively and safely with confidential information.<span class="text-copper-500">”</span>
+    </blockquote>
+    <div class="mt-10 flex items-center gap-4">
+      <div class="w-12 h-12 rounded-base bg-forest-900 text-[#F4F7F4] text-sm font-semibold inline-flex items-center justify-center shrink-0">VE</div>
+      <div>
+        <div class="font-semibold text-forest-900">Vetle Engesbak</div>
+        <div class="text-sm text-[#525C72]">Director of Projects, NTNU Technology Transfer AS</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ============================================================ Final CTA #}
+<section class="relative bg-forest-900 overflow-hidden">
+  <div class="absolute inset-0" style="background:radial-gradient(60% 70% at 50% 120%, rgba(190,130,66,.22) 0%, rgba(190,130,66,0) 60%);" aria-hidden="true"></div>
+  <div class="relative max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)] py-[clamp(72px,9vw,132px)] text-center">
+    <h2 class="font-serif font-semibold text-[clamp(34px,4.6vw,60px)] leading-[1.05] tracking-[-0.026em] text-[#F4F7F4] max-w-[760px] mx-auto">Meet your office's newest colleague.</h2>
+    <p class="mt-5 text-[clamp(16px,1.3vw,19px)] text-[#E7EFE9]/75 max-w-[560px] mx-auto">Log in to your workspace and put Wilfred to work on the next disclosure.</p>
+    <div class="mt-9 flex justify-center">
+      <a href="{% url 'accounts:login' %}" class="inline-flex items-center justify-center rounded-base bg-copper-500 px-7 py-3.5 text-base font-medium text-[#1A1206] hover:bg-copper-600 transition-colors">Log in</a>
+    </div>
+    <div class="mt-7 font-mono text-[12.5px] text-[#E7EFE9]/55">An AI colleague for technology transfer</div>
+  </div>
+</section>
+
+{# ============================================================ Footer #}
+<footer class="bg-forest-950">
+  <div class="max-w-[1240px] mx-auto px-[clamp(20px,6vw,88px)] py-10 flex flex-col sm:flex-row items-center gap-4">
+    <div class="flex items-center gap-2">
+      <img src="{% static 'img/brand/wilfred-mark.svg' %}" alt="" aria-hidden="true" class="w-6 h-6">
+      <span class="font-serif text-lg text-[#F4F7F4]">Wilfred</span>
+    </div>
+    <div class="sm:ml-auto font-mono text-[12px] text-[#E7EFE9]/55">Wilfred · AI workflows for technology transfer</div>
+  </div>
+</footer>
 {% endblock content %}

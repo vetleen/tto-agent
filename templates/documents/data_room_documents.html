@@ -23,16 +23,16 @@
     <h2 class="text-lg font-medium text-heading mb-3">Description</h2>
     <textarea id="data-room-description" rows="6" maxlength="1000"
               placeholder="Describe the purpose of this data room..."
-              class="mb-1 bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body">{{ data_room.description }}</textarea>
+              class="mb-1 bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body">{{ data_room.description }}</textarea>
     <p class="text-xs text-body text-right" id="description-char-count"></p>
     <div class="flex items-center gap-2 mt-3">
       <button type="button" id="generate-description-btn" title="Ask {{ assistant_name }} to generate a description"
-              class="inline-flex items-center gap-1.5 text-white bg-gradient-to-r from-purple-500 via-purple-600 to-purple-700 hover:bg-gradient-to-br border border-transparent font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-purple-300 dark:focus:ring-purple-800">
-        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+              class="inline-flex items-center gap-1.5 text-on-brand bg-brand hover:bg-brand-strong border border-transparent font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-brand-medium">
+        <svg class="w-4 h-4 text-accent dark:text-on-brand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
         <span id="generate-description-text">Ask {{ assistant_name }}</span>
       </button>
       <button type="button" id="save-description-btn" disabled
-              class="bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand disabled:opacity-50 disabled:cursor-not-allowed">
+              class="bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand disabled:opacity-50 disabled:cursor-not-allowed">
         Save
       </button>
     </div>
@@ -44,10 +44,10 @@
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
-        <input class="cursor-pointer bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full shadow-xs placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
+        <input class="cursor-pointer bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full shadow-xs placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
         <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file, up to 100 files at a time.</p>
       </div>
-      <button id="upload-btn" type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+      <button id="upload-btn" type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         Add to data room
       </button>
       <p class="mt-2 text-xs text-body">Added files are processed: text is extracted, split into searchable chunks, and indexed. {{ assistant_name }} can search the indexed content whenever this data room is attached to the chat.</p>
@@ -57,7 +57,7 @@
         <svg class="w-4 h-4 animate-spin text-brand shrink-0" id="upload-spinner" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
         <span class="text-sm font-medium text-heading" id="upload-progress-text"></span>
       </div>
-      <div class="w-full bg-neutral-secondary-medium rounded-full h-2 mb-2">
+      <div class="w-full bg-neutral-secondary-soft rounded-full h-2 mb-2">
         <div class="bg-brand h-2 rounded-full transition-all duration-300" id="upload-progress-bar" style="width: 0%"></div>
       </div>
       <ul id="upload-error-list" class="space-y-1"></ul>
@@ -82,8 +82,8 @@
     <h2 class="text-lg font-medium text-heading mb-4">Documents</h2>
     <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
       {% if documents %}
-      <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-medium/40" id="active-toolbar">
-        <input type="checkbox" id="select-all-active" class="w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select all documents">
+      <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-soft/60" id="active-toolbar">
+        <input type="checkbox" id="select-all-active" class="w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select all documents">
         <span class="text-sm text-body">Select all</span>
         <span id="active-selection-count" class="text-sm text-body hidden ms-1.5">&mdash; <span class="count">0</span> selected</span>
         <div id="active-bulk-actions" class="hidden items-center gap-2 ms-auto">
@@ -99,8 +99,8 @@
       </div>
       {% endif %}
       {% for doc in documents %}
-      <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if doc.is_quarantined %}opacity-60{% endif %} {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="active">
-        <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
+      <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if doc.is_quarantined %}opacity-60{% endif %} {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="active">
+        <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
         <span class="doc-status-icon shrink-0 me-2"></span>
         <span class="flex-1 min-w-0 truncate font-medium text-heading" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
         {% include "documents/_pii_status_pills.html" with doc=doc %}
@@ -131,7 +131,7 @@
               </button>
             </form>
             <button type="button"
-                    class="delete-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left"
+                    class="delete-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left"
                     data-doc-id="{{ doc.id }}"
                     data-delete-url="{% url 'document_delete' data_room_id=data_room.uuid document_id=doc.id %}"
                     data-doc-name="{{ doc.original_filename }}">
@@ -154,8 +154,8 @@
     </button>
     <div class="hidden">
       <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
-        <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-medium/40" id="archived-toolbar">
-          <input type="checkbox" id="select-all-archived" class="w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select all archived documents">
+        <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-soft/60" id="archived-toolbar">
+          <input type="checkbox" id="select-all-archived" class="w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select all archived documents">
           <span class="text-sm text-body">Select all</span>
           <span id="archived-selection-count" class="text-sm text-body hidden ms-1.5">&mdash; <span class="count">0</span> selected</span>
           <div id="archived-bulk-actions" class="hidden items-center gap-2 ms-auto">
@@ -170,12 +170,12 @@
           </div>
         </div>
         {% for doc in archived_documents %}
-        <div class="flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="archived">
-          <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
+        <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="archived">
+          <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
           <span class="doc-status-icon shrink-0 me-2"></span>
           <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
           {% include "documents/_pii_status_pills.html" with doc=doc %}
-          <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
+          <span class="shrink-0 ms-3 wf-mono text-xs text-body-subtle text-right">{{ doc.relative_upload_display }}</span>
           <div class="relative shrink-0 ms-2">
             <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Document options" data-dropdown-toggle="dropdown-archived-doc-{{ doc.id }}">
               <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
@@ -202,7 +202,7 @@
                 </button>
               </form>
               <button type="button"
-                      class="delete-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-neutral-tertiary rounded-base text-left"
+                      class="delete-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left"
                       data-doc-id="{{ doc.id }}"
                       data-delete-url="{% url 'document_delete' data_room_id=data_room.uuid document_id=doc.id %}"
                       data-doc-name="{{ doc.original_filename }}">
@@ -231,14 +231,14 @@
           <div class="p-6 space-y-4">
             <label for="rename-document-name" class="block text-sm font-medium text-heading">Name</label>
             <input type="text" name="name" id="rename-document-name" required
-                   class="bg-neutral-secondary-medium border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs"
+                   class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs"
                    maxlength="75" placeholder="Document name">
           </div>
           <div class="flex gap-3 px-6 py-4 border-t border-default">
-            <button type="submit" class="bg-brand text-white hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 dark:focus:ring-zinc-300 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+            <button type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
               Save
             </button>
-            <button type="button" data-modal-hide="rename-document-modal" class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+            <button type="button" data-modal-hide="rename-document-modal" class="text-heading bg-neutral-primary-soft hover:bg-neutral-secondary border border-default shadow-xs focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
               Cancel
             </button>
           </div>
@@ -261,15 +261,15 @@
         </div>
         <div class="flex flex-wrap gap-3 px-6 py-4 border-t border-default">
           <button type="button" id="delete-confirm-doc-only"
-                  class="bg-brand text-white hover:bg-brand-strong font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
+                  class="bg-brand text-on-brand hover:bg-brand-strong font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
             Delete document only
           </button>
           <button type="button" id="delete-confirm-doc-and-threads"
-                  class="bg-red-600 text-white hover:bg-red-700 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-red-300">
+                  class="bg-fg-danger text-white hover:opacity-90 font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-neutral-tertiary">
             Delete document and related chats
           </button>
           <button type="button" data-modal-hide="delete-confirm-modal"
-                  class="text-body bg-neutral-secondary-medium hover:bg-neutral-tertiary focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+                  class="text-heading bg-neutral-primary-soft hover:bg-neutral-secondary border border-default shadow-xs focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
             Cancel
           </button>
         </div>
@@ -395,7 +395,7 @@
       var emptyMsg = listContainer.querySelector('p.text-body');
       if (emptyMsg) emptyMsg.remove();
       var row = document.createElement('div');
-      row.className = 'flex items-center w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-medium group';
+      row.className = 'flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group';
       row.dataset.docId = doc.id;
       row.dataset.status = doc.status;
       row.dataset.list = 'active';
@@ -406,7 +406,7 @@
       // textContent are injection-safe for any value, including quotes.
       var checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
-      checkbox.className = 'doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0';
+      checkbox.className = 'doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0';
       checkbox.setAttribute('aria-label', 'Select ' + doc.filename);
 
       var statusIcon = document.createElement('span');

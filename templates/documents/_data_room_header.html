@@ -1,13 +1,21 @@
 {% load document_filters %}
 <header class="sticky top-16 z-10 bg-neutral-primary border-b border-default">
-  <nav class="bg-neutral-secondary-soft border-y border-default">
+  <nav class="bg-neutral-secondary-soft border-y border-default" aria-label="Breadcrumb">
     <div class="max-w-screen-xl px-4 py-2.5 mx-auto">
-      <div class="flex items-center gap-4">
-        <a href="{% url 'data_room_list' %}" class="inline-flex items-center gap-1.5 text-sm font-medium text-body hover:text-heading">
-          <svg class="w-4 h-4 shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12l4-4M5 12l4 4"/></svg>
-          <span>Back to my data rooms</span>
-        </a>
-      </div>
+      <ol class="flex items-center gap-2 text-sm text-body min-w-0">
+        <li class="shrink-0">
+          <a href="{% url 'data_room_list' %}" class="inline-flex items-center gap-1.5 hover:text-heading">
+            <svg class="w-4 h-4 shrink-0 text-body-subtle" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76V12a2.25 2.25 0 012.25-2.25h15A2.25 2.25 0 0121.75 12v.76M4.5 9.75V6A2.25 2.25 0 016.75 3.75h3.879a1.5 1.5 0 011.06.44l1.122 1.12a1.5 1.5 0 001.06.44H17.25A2.25 2.25 0 0119.5 8v1.75"/></svg>
+            <span>Data Rooms</span>
+          </a>
+        </li>
+        <li class="shrink-0" aria-hidden="true">
+          <svg class="w-3.5 h-3.5 text-body-subtle" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+        </li>
+        <li class="min-w-0">
+          <span class="font-medium text-heading truncate block" title="{{ data_room.name }}">{{ data_room.name }}</span>
+        </li>
+      </ol>
     </div>
   </nav>
 </header>

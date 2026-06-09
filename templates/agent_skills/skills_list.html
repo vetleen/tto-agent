@@ -22,7 +22,7 @@
         <form method="post" action="{% url 'agent_skills_import' %}" enctype="multipart/form-data" class="m-0" id="import-skill-form">
           {% csrf_token %}
           <input type="file" name="file" accept=".json,application/json" id="import-skill-input" class="hidden">
-          <button type="button" id="import-skill-btn" class="inline-flex items-center gap-1.5 bg-neutral-secondary-medium hover:bg-neutral-tertiary border border-default text-heading font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+          <button type="button" id="import-skill-btn" class="inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
             <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
             Import skill
           </button>
@@ -30,7 +30,7 @@
         <form method="post" action="{% url 'agent_skills_create' %}" class="m-0">
           {% csrf_token %}
           <input type="hidden" name="name" value="Untitled skill">
-          <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+          <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
             <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
             New
           </button>
@@ -55,7 +55,7 @@
       <form method="post" action="{% url 'agent_skills_create_org' %}" class="m-0">
         {% csrf_token %}
         <input type="hidden" name="name" value="Untitled organization skill">
-        <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+        <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
           <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
           New
         </button>

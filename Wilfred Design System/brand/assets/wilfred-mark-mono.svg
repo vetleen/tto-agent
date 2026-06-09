@@ -1,0 +1,6 @@
+<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wilfred">
+  <rect x="1" y="1" width="70" height="70" rx="16" fill="none" stroke="currentColor" stroke-opacity="0.28"></rect>
+  <path d="M20 47 Q36 17 52 47" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" fill="none"></path>
+  <circle cx="20" cy="47" r="4.2" fill="currentColor"></circle>
+  <circle cx="52" cy="47" r="4.2" fill="none" stroke="currentColor" stroke-width="2.2"></circle>
+</svg>

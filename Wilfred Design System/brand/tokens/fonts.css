@@ -1,0 +1,39 @@
+/* ============================================================
+   Wilfred — Webfonts
+   Editorial serif for authority, grotesque for dense UI,
+   mono for the reference IDs that fill IP & TTO work.
+   Serif + grotesque from Google Fonts; Maple Mono (SIL Open
+   Font License 1.1) self-hosted via the Fontsource CDN.
+   The original brand's Inter + Delicious Handrawn were both
+   intentionally retired in this redesign.
+   ============================================================ */
+
+/* Source Serif 4 — display & headlines (transitional serif, trustworthy) */
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap');
+
+/* Hanken Grotesk — UI, labels & body (authoritative neo-grotesque) */
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&display=swap');
+
+/* Maple Mono — identifiers, metadata, code, tabular figures.
+   A warm, rounded monospace (OFL 1.1). Served from Fontsource. */
+@font-face {
+  font-family: 'Maple Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/npm/@fontsource/maple-mono@latest/files/maple-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Maple Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/npm/@fontsource/maple-mono@latest/files/maple-mono-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Maple Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/npm/@fontsource/maple-mono@latest/files/maple-mono-latin-600-normal.woff2') format('woff2');
+}

@@ -43,7 +43,7 @@ const External = Annotation.define();
 
 // The edit view shows plain, unstyled markdown *source* (uniform monospace, no
 // rendered formatting) — rendered output lives only in the preview.
-const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+const MONO = "'Maple Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 const IS_MAC =
   typeof navigator !== "undefined" &&
@@ -416,30 +416,30 @@ function buildTheme(v, dark) {
 
 const LIGHT = buildTheme(
   {
-    text: "#1f2937",
-    caret: "#111827",
-    selection: "rgba(37, 99, 235, 0.15)",
-    muted: "#9ca3af",
-    addBg: "rgba(34, 197, 94, 0.12)",
-    delBg: "rgba(239, 68, 68, 0.12)",
-    tipBg: "#ffffff",
-    tipBorder: "#e5e7eb",
-    link: "#2563eb",
+    text: "#283044",                       // slate-800
+    caret: "#0B2418",                      // forest-900
+    selection: "rgba(190, 130, 66, 0.20)", // copper
+    muted: "#939BAE",                      // slate-400
+    addBg: "rgba(26, 146, 85, 0.12)",      // success
+    delBg: "rgba(178, 59, 54, 0.12)",      // danger
+    tipBg: "#FFFFFF",                      // paper-0
+    tipBorder: "#D5CEBE",                  // paper-300
+    link: "#16432C",                       // forest-700
   },
   false
 );
 
 const DARK = buildTheme(
   {
-    text: "#e5e7eb",
-    caret: "#f9fafb",
-    selection: "rgba(96, 165, 250, 0.28)",
-    muted: "#6b7280",
-    addBg: "rgba(34, 197, 94, 0.18)",
-    delBg: "rgba(239, 68, 68, 0.18)",
-    tipBg: "#1f2937",
-    tipBorder: "#374151",
-    link: "#60a5fa",
+    text: "#C4D6CB",
+    caret: "#EFF5F1",
+    selection: "rgba(210, 156, 99, 0.28)", // copper-400
+    muted: "#8AA395",
+    addBg: "rgba(70, 199, 126, 0.18)",     // success (dark)
+    delBg: "rgba(224, 129, 123, 0.18)",    // danger (dark)
+    tipBg: "#0E2719",                      // surface-card (dark)
+    tipBorder: "rgba(255, 255, 255, 0.12)",
+    link: "#E2BC93",                       // copper-300
   },
   true
 );

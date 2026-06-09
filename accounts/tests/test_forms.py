@@ -17,8 +17,8 @@ User = get_user_model()
 class InputClassesTests(TestCase):
     def test_returns_tailwind_classes(self) -> None:
         classes = _input_classes()
-        self.assertIn("rounded-lg", classes)
-        self.assertIn("focus:border-indigo-500", classes)
+        self.assertIn("rounded-base", classes)
+        self.assertIn("focus:border-brand", classes)
 
     def test_returns_string(self) -> None:
         self.assertIsInstance(_input_classes(), str)
@@ -35,8 +35,8 @@ class CustomAuthenticationFormTests(TestCase):
 
     def test_widgets_have_tailwind_classes(self) -> None:
         form = CustomAuthenticationForm()
-        self.assertIn("rounded-lg", form.fields["username"].widget.attrs.get("class", ""))
-        self.assertIn("rounded-lg", form.fields["password"].widget.attrs.get("class", ""))
+        self.assertIn("rounded-base", form.fields["username"].widget.attrs.get("class", ""))
+        self.assertIn("rounded-base", form.fields["password"].widget.attrs.get("class", ""))
 
 
 class CustomPasswordChangeFormTests(TestCase):
@@ -55,7 +55,7 @@ class CustomPasswordChangeFormTests(TestCase):
     def test_widgets_have_tailwind_classes(self) -> None:
         form = CustomPasswordChangeForm(user=self.user)
         for field_name in ("old_password", "new_password1", "new_password2"):
-            self.assertIn("rounded-lg", form.fields[field_name].widget.attrs.get("class", ""))
+            self.assertIn("rounded-base", form.fields[field_name].widget.attrs.get("class", ""))
 
 
 class CustomPasswordResetFormTests(TestCase):
@@ -65,7 +65,7 @@ class CustomPasswordResetFormTests(TestCase):
 
     def test_email_widget_has_tailwind_classes(self) -> None:
         form = CustomPasswordResetForm()
-        self.assertIn("rounded-lg", form.fields["email"].widget.attrs.get("class", ""))
+        self.assertIn("rounded-base", form.fields["email"].widget.attrs.get("class", ""))
 
 
 class CustomSetPasswordFormTests(TestCase):
@@ -128,9 +128,9 @@ class SignUpFormTests(TestCase):
 
     def test_email_widget_has_tailwind_classes(self) -> None:
         form = SignUpForm()
-        self.assertIn("rounded-lg", form.fields["email"].widget.attrs.get("class", ""))
+        self.assertIn("rounded-base", form.fields["email"].widget.attrs.get("class", ""))
 
     def test_password_widgets_have_tailwind_classes(self) -> None:
         form = SignUpForm()
-        self.assertIn("rounded-lg", form.fields["password1"].widget.attrs.get("class", ""))
-        self.assertIn("rounded-lg", form.fields["password2"].widget.attrs.get("class", ""))
+        self.assertIn("rounded-base", form.fields["password1"].widget.attrs.get("class", ""))
+        self.assertIn("rounded-base", form.fields["password2"].widget.attrs.get("class", ""))

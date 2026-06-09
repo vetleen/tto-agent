@@ -20,10 +20,23 @@ User = get_user_model()
 
 @method_decorator(ratelimit(key="ip", rate="5/m", method="POST", block=True), name="post")
 class LoginView(BaseLoginView):
+    # The login page is a fixed light/paper composition; force the light theme
+    # so the shared form/semantic tokens resolve to their light values.
+    extra_context = {"force_light": True}
+
     def dispatch(self, request, *args, **kwargs):
         if request.user.is_authenticated:
             return redirect(settings.LOGIN_REDIRECT_URL)
         return super().dispatch(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        # "Keep me signed in": persistent session when checked, otherwise the
+        # session expires when the browser closes.
+        if not form.cleaned_data.get("remember_me"):
+            self.request.session.set_expiry(0)
+        else:
+            self.request.session.set_expiry(None)
+        return super().form_valid(form)
 
 
 @method_decorator(ratelimit(key="ip", rate="3/h", method="POST", block=True), name="post")

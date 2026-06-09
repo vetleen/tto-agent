@@ -34,7 +34,7 @@
   {% if preference_warnings %}
   <section class="mt-8">
     {% for warning in preference_warnings %}
-    <div class="mb-3 rounded-base border border-yellow-300 bg-yellow-50 dark:border-yellow-600 dark:bg-yellow-900/20 p-3 text-sm text-yellow-800 dark:text-yellow-200">
+    <div class="mb-3 rounded-base border border-warning-subtle bg-warning-soft p-3 text-sm text-fg-warning">
       {{ warning }}
     </div>
     {% endfor %}
@@ -175,7 +175,7 @@
         </div>
         <label class="relative inline-flex items-center cursor-pointer shrink-0">
           <input type="checkbox" id="allow-agent-attach-skills" class="sr-only peer" {% if allow_agent_attach_skills %}checked{% endif %}>
-          <div class="w-11 h-6 bg-gray-200 peer-focus:ring-2 peer-focus:ring-brand-medium rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand"></div>
+          <div class="w-11 h-6 bg-neutral-quaternary-medium peer-focus:ring-2 peer-focus:ring-brand-medium rounded-full peer transition-colors peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:shadow-sm after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fg-success"></div>
         </label>
       </div>
     </div>
@@ -361,7 +361,7 @@
 <script>
 (function() {
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-  var activeClasses = 'bg-brand text-white';
+  var activeClasses = 'bg-brand text-on-brand';
   var inactiveClasses = 'text-body hover:bg-neutral-secondary-soft';
   function updateThemeButtons(theme) {
     document.querySelectorAll('.theme-btn').forEach(function(btn) {

@@ -1,0 +1,9 @@
+<svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wilfred seal">
+  <circle cx="60" cy="60" r="55" fill="#0B2418"></circle>
+  <circle cx="60" cy="60" r="55" stroke="#1E5638" stroke-width="0.75"></circle>
+  <circle cx="60" cy="60" r="47.5" fill="none" stroke="#BE8242" stroke-width="0.75" stroke-opacity="0.7"></circle>
+  <circle cx="60" cy="60" r="46" fill="none" stroke="#BE8242" stroke-width="0.4" stroke-dasharray="0.5 4.5" stroke-opacity="0.85"></circle>
+  <path d="M40 70 Q60 38 80 70" stroke="#D29C63" stroke-width="4" stroke-linecap="round" fill="none"></path>
+  <circle cx="40" cy="70" r="6" fill="#D29C63"></circle>
+  <circle cx="80" cy="70" r="6" fill="#0B2418" stroke="#D29C63" stroke-width="3"></circle>
+</svg>

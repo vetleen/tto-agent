@@ -36,6 +36,31 @@ class AuthViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.wsgi_request.user.is_authenticated)
 
+    def test_login_page_renders_split_layout(self) -> None:
+        response = self.client.get(reverse("accounts:login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Log in to your workspace")
+        self.assertContains(response, 'name="remember_me"')
+        self.assertContains(response, "Keep me signed in")
+
+    def test_remember_me_checked_keeps_session_persistent(self) -> None:
+        self.client.post(
+            reverse("accounts:login"),
+            {"username": self.user.email, "password": self.password, "remember_me": "on"},
+            follow=True,
+        )
+        self.assertTrue(self.client.session.session_key)
+        self.assertFalse(self.client.session.get_expire_at_browser_close())
+
+    def test_remember_me_unchecked_expires_at_browser_close(self) -> None:
+        self.client.post(
+            reverse("accounts:login"),
+            {"username": self.user.email, "password": self.password},
+            follow=True,
+        )
+        self.assertTrue(self.client.session.session_key)
+        self.assertTrue(self.client.session.get_expire_at_browser_close())
+
     def test_signup_like_flow_creates_user(self) -> None:
         user = get_user_model().objects.create_user(
             email="newuser@example.com",

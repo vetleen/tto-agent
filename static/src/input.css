@@ -1,42 +1,375 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Delicious+Handrawn&display=swap');
+/* ============================================================
+   Wilfred — theme entry point
+   ------------------------------------------------------------
+   Brand: deep FOREST GREEN primary, COPPER/BRASS accent (used
+   sparingly), warm PAPER neutrals, cool SLATE text. Source
+   Serif 4 headings · Hanken Grotesk UI/body · Maple Mono IDs.
+   We PORT the brand values into Flowbite's variable namespace:
+   our @theme (light) and .dark{} come AFTER the Flowbite theme
+   import, so they win by source order. See "Wilfred Design
+   System/brand/" for the source of truth.
+   ============================================================ */
+
+/* ---- @import block (must precede all other rules) ---------- */
+/* Source Serif 4 — display & headings (transitional serif) */
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap');
+/* Hanken Grotesk — UI, labels & body (neo-grotesque) */
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&display=swap');
 @import "flowbite/src/themes/default";
-
-@theme {
-  --font-handrawn: 'Delicious Handrawn', cursive;
-}
-
-/* MINIMAL THEME
-@import url('https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap');
-@import "flowbite/src/themes/minimal";
-*/
-
-/* ENTERPRISE THEME
-@import url('https://fonts.googleapis.com/css2?family=Shantell+Sans:ital,wght@0,300..800;1,300..800&display=swap');
-@import "flowbite/src/themes/enterprise";
-*/
-
-/* PLAYFUL THEME
-@import url('https://fonts.googleapis.com/css2?family=Google+Sans+Code:ital,wght@0,300..800;1,300..800&display=swap');
-@import "flowbite/src/themes/playful";
-*/
-
-/* MONO THEME
-@import "flowbite/src/themes/mono";
-*/
-
 @import "tailwindcss";
 
-/* Flowbite dark mode: use class on html, not media query */
+/* ---- Tailwind directives ----------------------------------- */
+/* Flowbite dark mode: class on html, not media query */
 @custom-variant dark (&:where(.dark, .dark *));
-
 @plugin "flowbite/plugin";
 @source "../../node_modules/flowbite";
 
+/* ---- Maple Mono — identifiers, metadata, code (OFL 1.1) ----- */
+@font-face {
+  font-family: 'Maple Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/npm/@fontsource/maple-mono@latest/files/maple-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Maple Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/npm/@fontsource/maple-mono@latest/files/maple-mono-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Maple Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/npm/@fontsource/maple-mono@latest/files/maple-mono-latin-600-normal.woff2') format('woff2');
+}
+
+/* ============================================================
+   BRAND OVERRIDE — light (paper) theme, the default.
+   Redeclares Flowbite's @theme vars; last-write-wins by order.
+   ============================================================ */
+@theme {
+  /* ---- Fonts ------------------------------------------------ */
+  --font-sans:  'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-body:  'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-serif: 'Source Serif 4', 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+  --font-mono:  'Maple Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+  --font-handrawn: var(--font-serif);   /* legacy wordmark → serif */
+
+  /* ---- Brand ramps (registered as palette colors) ----------- */
+  /* NOTE: deliberately NOT registering --color-slate-* — it would
+     collide with Tailwind's built-in slate/zinc palette. */
+  --color-forest-50:  #EEF4F0;
+  --color-forest-100: #DDEAE2;
+  --color-forest-200: #BFD8CB;
+  --color-forest-300: #8FBBA4;
+  --color-forest-400: #589A77;
+  --color-forest-500: #2C6E4A;
+  --color-forest-600: #1E5638;
+  --color-forest-700: #16432C;
+  --color-forest-800: #103120;
+  --color-forest-900: #0B2418;
+  --color-forest-950: #06150E;
+
+  --color-copper-50:  #FAF1E7;
+  --color-copper-100: #F4E6D5;
+  --color-copper-200: #EDD4B7;
+  --color-copper-300: #E2BC93;
+  --color-copper-400: #D29C63;
+  --color-copper-500: #BE8242;
+  --color-copper-600: #A66E34;
+  --color-copper-700: #8A5A2B;
+  --color-copper-800: #6E461F;
+
+  --color-paper-0:   #FFFFFF;
+  --color-paper-50:  #FAF8F4;
+  --color-paper-100: #F4F1EA;
+  --color-paper-150: #ECE8DF;
+  --color-paper-200: #E4DFD3;
+  --color-paper-300: #D5CEBE;
+  --color-paper-400: #B6AD99;
+  --color-paper-500: #908872;
+
+  /* ---- Radii — restrained, institutional -------------------- */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  /* --radius (8), --radius-base (12), --radius-lg (16) kept as-is */
+
+  /* ---- Shadows — cool, forest-tinted, low ------------------- */
+  --shadow-2xs: 0 1px 1px rgba(8, 28, 18, 0.05);
+  --shadow-xs:  0 1px 2px rgba(8, 28, 18, 0.06);
+  --shadow-sm:  0 1px 3px rgba(8, 28, 18, 0.09), 0 1px 2px rgba(8, 28, 18, 0.05);
+  --shadow-md:  0 4px 12px rgba(8, 28, 18, 0.09), 0 2px 4px rgba(8, 28, 18, 0.05);
+  --shadow-lg:  0 14px 34px rgba(8, 28, 18, 0.13), 0 5px 10px rgba(8, 28, 18, 0.06);
+  --shadow-xl:  0 28px 60px rgba(8, 28, 18, 0.18), 0 10px 18px rgba(8, 28, 18, 0.08);
+  --shadow-2xl: 0 28px 60px rgba(8, 28, 18, 0.22);
+
+  /* ---- Copper accent role (new; Flowbite has no slot) ------- */
+  --color-accent:         #BE8242;
+  --color-accent-hover:   #A66E34;
+  --color-accent-active:  #8A5A2B;
+  --color-accent-soft:    #FAF1E7;
+  --color-accent-subtle:  #EDD4B7;
+  --color-fg-accent:      #8A5A2B;
+  --color-on-brand:       #F2F7F4;   /* text on brand fill */
+
+  /* ---- Text colors ------------------------------------------ */
+  --color-body:             #283044;
+  --color-body-subtle:      #525C72;
+  --color-heading:          #0B2418;
+  --color-fg-brand-subtle:  #8FBBA4;
+  --color-fg-brand:         #16432C;
+  --color-fg-brand-strong:  #0B2418;
+  --color-fg-success:        #1A9255;
+  --color-fg-success-strong: #157A47;
+  --color-fg-danger:         #B23B36;
+  --color-fg-danger-strong:  #962F2B;
+  --color-fg-warning-subtle: #C98A2E;
+  --color-fg-warning:        #B07B23;
+
+  /* ---- Surfaces (page → card → sunken) ---------------------- */
+  --color-neutral-primary-soft:       #FFFFFF;
+  --color-neutral-primary:            #FAF8F4;
+  --color-neutral-primary-medium:     #FFFFFF;
+  --color-neutral-primary-strong:     #FFFFFF;
+  --color-neutral-secondary-soft:     #F4F1EA;
+  --color-neutral-secondary:          #F4F1EA;
+  --color-neutral-secondary-medium:   #ECE8DF;
+  --color-neutral-secondary-strong:   #E4DFD3;
+  --color-neutral-secondary-strongest:#D5CEBE;
+  --color-neutral-tertiary-soft:      #F4F1EA;
+  --color-neutral-tertiary:           #ECE8DF;
+  --color-neutral-tertiary-medium:    #E4DFD3;
+  --color-neutral-quaternary:         #E4DFD3;
+  --color-neutral-quaternary-medium:  #D5CEBE;
+  --color-gray:                       #D5CEBE;
+
+  /* ---- Brand fills (forest) --------------------------------- */
+  --color-brand-softer:  #EEF4F0;
+  --color-brand-soft:    #DDEAE2;
+  --color-brand:         #16432C;   /* forest-700 — lightened from 800 */
+  --color-brand-medium:  #BFD8CB;
+  --color-brand-strong:  #1E5638;   /* hover → forest-600 */
+  --color-brand-subtle:  #8FBBA4;
+  --color-brand-light:   #1E5638;
+
+  /* ---- Status fills ----------------------------------------- */
+  --color-success-soft:    #ECF9F1;
+  --color-success:         #1A9255;
+  --color-success-medium:  #D3F1DE;
+  --color-success-strong:  #157A47;
+  --color-success-subtle:  #A9E0BE;
+  --color-danger-soft:     #FBECEA;
+  --color-danger:          #B23B36;
+  --color-danger-medium:   #F4DAD7;
+  --color-danger-strong:   #962F2B;
+  --color-danger-subtle:   #E9C4C0;
+  --color-warning-soft:    #FBF3E1;
+  --color-warning:         #C98A2E;
+  --color-warning-medium:  #F6E7C9;
+  --color-warning-strong:  #B07B23;
+  --color-warning-subtle:  #F6E7C9;
+
+  /* ---- Borders ---------------------------------------------- */
+  --color-buffer:          #FFFFFF;
+  --color-buffer-medium:   #FAF8F4;
+  --color-buffer-strong:   #F4F1EA;
+  --color-muted:           #FAF8F4;
+  --color-light-subtle:    #F4F1EA;
+  --color-light:           #ECE8DF;
+  --color-light-medium:    #E4DFD3;
+  --color-default-subtle:  #E4DFD3;
+  --color-default:         #D5CEBE;
+  --color-default-medium:  #D5CEBE;
+  --color-default-strong:  #B6AD99;
+
+  /* ---- Misc / dark refs / functional ------------------------ */
+  --color-dark-soft:       #283044;
+  --color-dark:            #1B2233;
+  --color-dark-strong:     #06150E;
+  --color-dark-subtle:     #283044;
+  --color-dark-backdrop:   rgba(6, 21, 14, 0.45);
+  --color-disabled:        #ECE8DF;
+  --color-fg-disabled:     #939BAE;
+  --color-orange:          #C98A2E;   /* stray orange → brand amber */
+  --color-shiki-fg-brand:         #16432C;
+  --color-shiki-fg-brand-subtle:  #8FBBA4;
+}
+
+/* ============================================================
+   BRAND OVERRIDE — dark ("forest nocturne").
+   Literal rule (NOT @theme) so it scopes to .dark only and
+   wins over Flowbite's .dark by source order. In dark, brand
+   flips to COPPER (forest-on-forest would disappear).
+   ============================================================ */
+.dark {
+  /* ---- Text ------------------------------------------------- */
+  --color-body:             #C4D6CB;
+  --color-body-subtle:      #8AA395;
+  --color-heading:          #EFF5F1;
+  --color-fg-brand-subtle:  #D29C63;
+  --color-fg-brand:         #E2BC93;
+  --color-fg-brand-strong:  #EDD4B7;
+  --color-fg-success:        #46C77E;
+  --color-fg-success-strong: #7FD6A2;
+  --color-fg-danger:         #E0817B;
+  --color-fg-danger-strong:  #F0A8A3;
+  --color-fg-warning-subtle: #E0AE5A;
+  --color-fg-warning:        #E0AE5A;
+
+  /* ---- Surfaces --------------------------------------------- */
+  --color-neutral-primary-soft:       #123020;
+  --color-neutral-primary:            #0E2719;
+  --color-neutral-primary-medium:     #123020;
+  --color-neutral-primary-strong:     #16402A;
+  --color-neutral-secondary-soft:     #123020;
+  --color-neutral-secondary:          #0E2719;
+  --color-neutral-secondary-medium:   #16402A;
+  --color-neutral-secondary-strong:   #1C4C32;
+  --color-neutral-secondary-strongest:#235139;
+  --color-neutral-tertiary-soft:      #16402A;
+  --color-neutral-tertiary:           #16402A;
+  --color-neutral-tertiary-medium:    #1C4C32;
+  --color-neutral-quaternary:         #1C4C32;
+  --color-neutral-quaternary-medium:  #235139;
+  --color-gray:                       #5E7567;
+
+  /* ---- Brand fills → COPPER --------------------------------- */
+  --color-brand-softer:  #2A2014;
+  --color-brand-soft:    #3A2A18;
+  --color-brand:         #BE8242;
+  --color-brand-medium:  #A66E34;
+  --color-brand-strong:  #D29C63;
+  --color-brand-subtle:  #A66E34;
+  --color-brand-light:   #D29C63;
+
+  /* ---- Accent role (dark) ----------------------------------- */
+  --color-accent:         #D29C63;
+  --color-accent-hover:   #E2BC93;
+  --color-accent-active:  #BE8242;
+  --color-accent-soft:    #2A2014;
+  --color-accent-subtle:  #3A2A18;
+  --color-fg-accent:      #D29C63;
+  --color-on-brand:       #06150E;
+
+  /* ---- Status fills ----------------------------------------- */
+  --color-success-soft:    #112B1D;
+  --color-success:         #46C77E;
+  --color-success-medium:  #16402A;
+  --color-success-strong:  #23AB66;
+  --color-success-subtle:  #235139;
+  --color-danger-soft:     #2C1715;
+  --color-danger:          #C24A44;
+  --color-danger-medium:   #5A2A27;
+  --color-danger-strong:   #B23B36;
+  --color-danger-subtle:   #5A2A27;
+  --color-warning-soft:    #2A2212;
+  --color-warning:         #E0AE5A;
+  --color-warning-medium:  #4A3C1C;
+  --color-warning-strong:  #C98A2E;
+  --color-warning-subtle:  #4A3C1C;
+
+  /* ---- Borders ---------------------------------------------- */
+  --color-buffer:          #0E2719;
+  --color-buffer-medium:   #123020;
+  --color-buffer-strong:   #16402A;
+  --color-muted:           rgba(255, 255, 255, 0.04);
+  --color-light-subtle:    rgba(255, 255, 255, 0.06);
+  --color-light:           rgba(255, 255, 255, 0.06);
+  --color-light-medium:    rgba(255, 255, 255, 0.10);
+  --color-default-subtle:  rgba(255, 255, 255, 0.06);
+  --color-default:         rgba(255, 255, 255, 0.12);
+  --color-default-medium:  rgba(255, 255, 255, 0.16);
+  --color-default-strong:  rgba(255, 255, 255, 0.22);
+
+  /* ---- Misc ------------------------------------------------- */
+  --color-dark-soft:       #16402A;
+  --color-dark:            #0E2719;
+  --color-dark-strong:     #081C12;
+  --color-dark-subtle:     #123020;
+  --color-dark-backdrop:   rgba(3, 11, 7, 0.6);
+  --color-disabled:        #16402A;
+  --color-fg-disabled:     #5E7567;
+  --color-orange:          #C98A2E;
+  --color-shiki-fg-brand:         #D29C63;
+  --color-shiki-fg-brand-subtle:  #E2BC93;
+
+  /* ---- Shadows — deeper/near-black so elevation reads ------- */
+  --shadow-2xs: 0 1px 1px rgba(0, 0, 0, 0.40);
+  --shadow-xs:  0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-sm:  0 1px 3px rgba(0, 0, 0, 0.50), 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-md:  0 4px 12px rgba(0, 0, 0, 0.50), 0 2px 4px rgba(0, 0, 0, 0.40);
+  --shadow-lg:  0 14px 34px rgba(0, 0, 0, 0.55), 0 5px 10px rgba(0, 0, 0, 0.40);
+  --shadow-xl:  0 28px 60px rgba(0, 0, 0, 0.60), 0 10px 18px rgba(0, 0, 0, 0.45);
+  --shadow-2xl: 0 28px 60px rgba(0, 0, 0, 0.65);
+}
+
+/* ============================================================
+   BASE LAYER — element defaults + brand helper classes
+   ============================================================ */
 @layer base {
+  body {
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Headlines carry the serif voice; explicit font-* utilities
+     still win (utilities layer > base). */
+  h1, h2, h3, h4 {
+    font-family: var(--font-serif);
+    letter-spacing: -0.014em;
+    line-height: 1.14;
+  }
+
+  code, kbd, samp, pre {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+  }
+
+  ::selection { background: #F4E6D5; color: #0B2418; }
+  .dark ::selection { background: #8A5A2B; color: #EFF5F1; }
+
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]) {
     cursor: pointer;
   }
-}
 
+  /* Brand helper classes */
+  .wf-eyebrow {
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-fg-accent);
+  }
+  .wf-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-variant-ligatures: none;
+  }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* Landing chat-mock typing caret (CSS effect, no JS) */
+  .wf-caret {
+    display: inline-block;
+    width: 7px;
+    height: 1.05em;
+    margin-left: 2px;
+    vertical-align: -2px;
+    background: var(--color-copper-400);
+    animation: wf-blink 1.1s steps(1) infinite;
+  }
+  @keyframes wf-blink { 50% { opacity: 0; } }
+
+  /* Smooth in-page anchor scrolling (landing nav). Disabled for reduced motion. */
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    .wf-caret { animation: none; }
+    html { scroll-behavior: auto; }
+  }
+}

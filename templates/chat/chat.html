@@ -1,17 +1,18 @@
 {% extends "_base.html" %}
 {% load static %}
+{% load branding %}
 {% block body_class %}pt-16 bg-neutral-primary{% endblock %}
 {% block feedback_widget %}{% include "feedback/_widget.html" with hide_mobile_fab=True %}{% endblock %}
 {% block content %}
 
 {# Mobile sidebar toggle #}
-<button data-drawer-target="chat-sidebar" data-drawer-toggle="chat-sidebar" aria-controls="chat-sidebar" type="button" class="text-heading bg-transparent box-border border border-transparent hover:bg-neutral-secondary-medium focus:ring-4 focus:ring-neutral-tertiary font-medium leading-5 rounded-base ms-3 mt-3 text-sm p-2 focus:outline-none inline-flex sm:hidden">
+<button data-drawer-target="chat-sidebar" data-drawer-toggle="chat-sidebar" aria-controls="chat-sidebar" type="button" class="text-heading bg-transparent box-border border border-transparent hover:bg-neutral-secondary-soft focus:ring-4 focus:ring-neutral-tertiary font-medium leading-5 rounded-base ms-3 mt-3 text-sm p-2 focus:outline-none inline-flex sm:hidden">
   <span class="sr-only">Open sidebar</span>
   <svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-width="2" d="M5 7h14M5 12h14M5 17h10"/></svg>
 </button>
 
 {# Mobile canvas toggle #}
-<button id="canvas-toggle-btn-mobile" type="button" class="fixed top-[4.25rem] right-0 z-40 me-3 mt-3 text-heading bg-transparent box-border border border-transparent hover:bg-neutral-secondary-medium focus:ring-4 focus:ring-neutral-tertiary font-medium leading-5 rounded-base text-sm p-2 focus:outline-none inline-flex sm:hidden">
+<button id="canvas-toggle-btn-mobile" type="button" class="fixed top-[4.25rem] right-0 z-40 me-3 mt-3 text-heading bg-transparent box-border border border-transparent hover:bg-neutral-secondary-soft focus:ring-4 focus:ring-neutral-tertiary font-medium leading-5 rounded-base text-sm p-2 focus:outline-none inline-flex sm:hidden">
   <span class="sr-only">Toggle canvas</span>
   <svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
 </button>
@@ -34,14 +35,14 @@
       {% for t in threads %}
       <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
         <a href="{% url 'chat_home' %}?thread={{ t.id }}"
-           class="flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium{% endif %}"
+           class="relative flex items-center px-2 py-1.5 pe-8 text-sm rounded-base group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-accent{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}"
            data-thread-id="{{ t.id }}"
            title="{{ t.title|default:t }}">
           {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
           <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
         </a>
         <button type="button"
-                class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium {% if thread and t.id == thread.id %}flex{% else %}hidden group-hover:flex{% endif %} items-center justify-center"
+                class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft {% if thread and t.id == thread.id %}flex{% else %}hidden group-hover:flex{% endif %} items-center justify-center"
                 data-thread-id="{{ t.id }}" data-archived="false">
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
         </button>
@@ -60,14 +61,14 @@
         {% for t in archived_threads %}
         <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
           <a href="{% url 'chat_home' %}?thread={{ t.id }}"
-             class="flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"
+             class="relative flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-secondary-soft hover:text-heading group"
              data-thread-id="{{ t.id }}"
              title="{{ t.title|default:t }}">
             {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
             <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
           </a>
           <button type="button"
-                  class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium hidden group-hover:flex items-center justify-center"
+                  class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center"
                   data-thread-id="{{ t.id }}" data-archived="true">
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
           </button>
@@ -82,16 +83,16 @@
     <button type="button" data-action="rename" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Rename</button>
     <button type="button" data-action="star" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Star</button>
     <button type="button" data-action="archive" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Archive</button>
-    <button type="button" data-action="delete" class="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-neutral-tertiary">Delete</button>
+    <button type="button" data-action="delete" class="w-full text-left px-3 py-1.5 text-sm text-fg-danger hover:bg-danger-soft">Delete</button>
   </div>
 </aside>
 
 {# Sidebar resize handle (desktop only) #}
 <div id="sidebar-resize-handle"
-     class="hidden sm:flex fixed top-16 bottom-0 z-40 w-1.5 cursor-col-resize bg-transparent hover:bg-blue-400/30 active:bg-blue-500/40 transition-colors items-center justify-center group"
+     class="hidden sm:flex fixed top-16 bottom-0 z-40 w-1.5 cursor-col-resize bg-transparent hover:bg-brand/20 active:bg-brand/30 transition-colors items-center justify-center group"
      style="left: 256px;"
      title="Drag to resize sidebar">
-  <div class="w-0.5 h-8 rounded-full bg-neutral-quaternary group-hover:bg-blue-400 group-active:bg-blue-500 transition-colors"></div>
+  <div class="w-0.5 h-8 rounded-full bg-neutral-quaternary group-hover:bg-brand group-active:bg-brand-strong transition-colors"></div>
 </div>
 
 {# Full-height content area: chat pane + canvas panel side by side #}
@@ -152,7 +153,7 @@
           {% elif m.is_redacted and m.role == "user" %}
             <div class="flex justify-end opacity-60" data-role="user">
               <div class="flex items-start gap-2.5 flex-row-reverse">
-                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">{{ user.email|first|upper }}</span>
+                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
                 <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
                   <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
                     <span class="text-sm font-semibold text-heading">You</span>
@@ -175,7 +176,7 @@
           {% elif m.role == "user" %}
             <div class="flex justify-end" data-role="user">
               <div class="flex items-start gap-2.5 flex-row-reverse">
-                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">{{ user.email|first|upper }}</span>
+                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
                 <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
                   <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
                     <span class="text-sm font-semibold text-heading">You</span>
@@ -236,9 +237,9 @@
   </div>
 
   {# Sub-agent status bar — visible when background sub-agents are active #}
-  <div id="subagent-status-bar" class="hidden border-t border-default bg-indigo-50/50 dark:bg-indigo-950/30 w-full">
+  <div id="subagent-status-bar" class="hidden border-t border-default bg-brand-softer w-full">
     <div class="max-w-4xl mx-auto w-full px-4 py-2">
-      <div class="flex items-start gap-2 text-xs text-indigo-700 dark:text-indigo-300">
+      <div class="flex items-start gap-2 text-xs text-fg-brand">
         <svg class="w-3.5 h-3.5 shrink-0 animate-spin mt-0.5" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -254,11 +255,11 @@
       {# Attached data room pills #}
       <div id="attached-data-rooms" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
         {% for dr in thread_data_rooms %}
-        <span class="data-room-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full" data-room-id="{{ dr.pk }}">
-          <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
+        <span class="data-room-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-body bg-neutral-primary-soft border border-default rounded-full" data-room-id="{{ dr.pk }}">
+          <svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76V12a2.25 2.25 0 012.25-2.25h15A2.25 2.25 0 0121.75 12v.76M4.5 9.75V6A2.25 2.25 0 016.75 3.75h3.879a1.5 1.5 0 011.06.44l1.122 1.12a1.5 1.5 0 001.06.44H17.25A2.25 2.25 0 0119.5 8v1.75"/></svg>
           {{ dr.name }}
-          <button type="button" class="detach-room-btn hover:text-fg-danger" data-room-id="{{ dr.pk }}" aria-label="Detach {{ dr.name }}">
-            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          <button type="button" class="detach-room-btn ml-0.5 p-0.5 rounded-full text-body-subtle hover:text-heading hover:bg-neutral-tertiary" data-room-id="{{ dr.pk }}" aria-label="Detach {{ dr.name }}">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </span>
         {% endfor %}
@@ -271,17 +272,17 @@
       {# Attached skill pill #}
       <div id="attached-skill" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
         {% if thread_skill %}
-        <span class="skill-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 rounded-full" data-skill-id="{{ thread_skill.id }}">
-          {% if thread_skill.emoji %}<span>{{ thread_skill.emoji }}</span>{% else %}<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>{% endif %}
+        <span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="{{ thread_skill.id }}">
+          {% if thread_skill.emoji %}<span>{{ thread_skill.emoji }}</span>{% else %}<svg class="w-3.5 h-3.5 shrink-0 text-fg-accent" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg>{% endif %}
           {{ thread_skill.name }}
-          <button type="button" class="detach-skill-btn hover:text-fg-danger" aria-label="Detach skill">
-            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          <button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </span>
         {% endif %}
       </div>
       {% if budget_status and budget_status.exceeded %}
-      <div class="flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 mb-2" id="budget-exceeded-banner">
+      <div class="flex items-start gap-2 text-sm text-fg-warning bg-warning-soft border border-warning-subtle rounded-lg p-3 mb-2" id="budget-exceeded-banner">
         <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         <span>Your monthly usage budget has been reached. Usage resets on {{ budget_status.reset_date }}.</span>
       </div>
@@ -296,9 +297,9 @@
             </svg>
             <span class="sr-only">Connecting...</span>
           </div>
-          <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-gray-400 dark:bg-gray-500"></span>
+          <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-paper-400 dark:bg-paper-500"></span>
           <span id="connection-text" class="text-xs text-body">Connecting...</span>
-          <button type="button" id="reconnect-btn" class="hidden inline-flex items-center gap-1.5 bg-brand text-white hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-xs px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-brand">
+          <button type="button" id="reconnect-btn" class="hidden inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-xs px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-brand">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992V4.356m0 4.992l-3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99h-4.99M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7"/></svg>
             Reconnect
           </button>
@@ -307,7 +308,7 @@
           <div class="flex w-full shadow-xs rounded-base ring-offset-0 focus-within:ring-2 focus-within:ring-brand focus-within:rounded-base">
             {# "+" addon button for data room attachment #}
             <div class="relative">
-              <button type="button" id="attach-btn" class="inline-flex items-center px-3 h-full text-sm text-body bg-neutral-tertiary border border-default-medium border-e-0 rounded-s-base hover:text-heading hover:bg-neutral-secondary-medium focus:outline-none" aria-label="Attach data room">
+              <button type="button" id="attach-btn" class="inline-flex items-center px-3 h-full text-sm text-body bg-neutral-tertiary border border-default-medium border-e-0 rounded-s-base hover:text-heading hover:bg-neutral-secondary-soft focus:outline-none" aria-label="Attach data room">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
               </button>
               <div id="attach-dropdown" class="absolute bottom-full left-0 mb-1 z-50 hidden bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1 w-52">
@@ -330,10 +331,10 @@
                 <div class="border-t border-default-medium my-1"></div>
                 <label class="flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base gap-2 whitespace-nowrap cursor-pointer">
                   <input type="checkbox" id="allow-agent-attach-skills-toggle" class="sr-only peer" {% if allow_agent_attach_skills %}checked{% endif %}>
-                  <svg class="w-4 h-4 shrink-0 text-neutral-500 peer-checked:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5" stroke-width="2"/><circle cx="8" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg>
-                  <svg class="w-4 h-4 shrink-0 text-brand hidden peer-checked:inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5" stroke-width="2"/><circle cx="16" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg>
+                  <svg class="w-4 h-4 shrink-0 text-body-subtle peer-checked:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5" stroke-width="2"/><circle cx="8" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg>
+                  <svg class="w-4 h-4 shrink-0 text-fg-success hidden peer-checked:inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5" stroke-width="2"/><circle cx="16" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg>
                   <span class="flex-1 text-left">Let {{ assistant_name }} attach skills</span>
-                  <span class="relative inline-block w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-brand after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></span>
+                  <span class="relative inline-block w-9 h-5 shrink-0 bg-neutral-quaternary-medium rounded-full peer-checked:bg-fg-success transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:shadow-sm after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></span>
                 </label>
               </div>
             </div>
@@ -342,7 +343,7 @@
               placeholder="Type your message..."
               id="message-input"
               rows="1"
-              class="rounded-none rounded-e-base block w-full px-3 py-2.5 bg-neutral-secondary-medium border border-default-medium text-heading text-sm focus:outline-none focus:ring-0 focus:border-default-medium placeholder:text-body resize-none overflow-hidden"
+              class="rounded-none rounded-e-base block w-full px-3 py-2.5 bg-neutral-secondary-soft border border-default-medium text-heading text-sm focus:outline-none focus:ring-0 focus:border-default-medium placeholder:text-body resize-none overflow-hidden"
               style="min-height: 2.5rem; max-height: 12.5rem;"
             ></textarea>
           </div>
@@ -350,16 +351,16 @@
         <button
           type="submit"
           id="send-button"
-          class="inline-flex items-center gap-2 text-white bg-gradient-to-r from-purple-500 via-purple-600 to-purple-700 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-purple-300 dark:focus:ring-purple-800 font-medium rounded-base text-sm px-4 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed self-end ml-auto sm:ml-0"
+          class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed self-end ml-auto sm:ml-0"
           style="height: 2.5rem;"
         >
-          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+          <svg class="w-4 h-4 text-accent dark:text-on-brand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
           Send
         </button>
         <button
           type="button"
           id="stop-button"
-          class="text-white bg-gradient-to-r from-purple-500 via-purple-600 to-purple-700 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-purple-300 dark:focus:ring-purple-800 font-medium rounded-base text-sm px-4 py-2.5 hidden self-end ml-auto sm:ml-0"
+          class="text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 hidden self-end ml-auto sm:ml-0"
           style="height: 2.5rem;"
         >
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
@@ -370,12 +371,12 @@
 </div>{# end #chat-pane #}
 
 {# Resize handle between chat and canvas #}
-<div id="canvas-resize-handle" class="hidden sm:hidden flex-col items-center justify-center w-1.5 cursor-col-resize bg-transparent hover:bg-blue-400/30 active:bg-blue-500/40 transition-colors shrink-0 group" title="Drag to resize">
-  <div class="w-0.5 h-8 rounded-full bg-neutral-quaternary group-hover:bg-blue-400 group-active:bg-blue-500 transition-colors"></div>
+<div id="canvas-resize-handle" class="hidden sm:hidden flex-col items-center justify-center w-1.5 cursor-col-resize bg-transparent hover:bg-brand/20 active:bg-brand/30 transition-colors shrink-0 group" title="Drag to resize">
+  <div class="w-0.5 h-8 rounded-full bg-neutral-quaternary group-hover:bg-brand group-active:bg-brand-strong transition-colors"></div>
 </div>
 
 {# Canvas panel #}
-<div id="canvas-panel" class="hidden flex-col border-l-0 border-default bg-amber-50/50 dark:bg-neutral-800 min-w-0 transition-all duration-200 w-full sm:w-1/2">
+<div id="canvas-panel" class="hidden flex-col border-l-0 border-default bg-neutral-secondary-soft min-w-0 transition-all duration-200 w-full sm:w-1/2">
   {# Canvas header: title only #}
   <div class="flex items-center px-4 py-2 bg-neutral-primary-soft shrink-0">
     <input id="canvas-title-input" type="text" value="Untitled document"
@@ -383,23 +384,23 @@
       placeholder="Document title" />
   </div>
   {# Canvas toolbar row: formatting buttons (left) + document actions (right) #}
-  <div class="flex flex-wrap items-center gap-2 px-4 py-1 border-t-[3px] border-t-blue-500 border-b border-default bg-neutral-primary-soft shrink-0">
+  <div class="flex flex-wrap items-center gap-2 px-4 py-1 border-t-[3px] border-t-brand border-b border-default bg-neutral-primary-soft shrink-0">
     <div id="canvas-format-toolbar" class="flex items-center gap-0.5 shrink-0"></div>
     <div class="flex items-center gap-1 shrink-0 ml-auto">
       {# 1. Save version (floppy disk) #}
       <button id="canvas-save-version-btn" title="Save version" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
         <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-8H7v8M7 3v5h8"/></svg>
         <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-        <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-        <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+        <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+        <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
       {# 2. Save to data room (bookmark) #}
       <div class="relative">
         <button id="canvas-save-to-dr-btn" title="Save to data room" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
           <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/></svg>
           <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-          <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-          <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+          <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+          <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
         <div id="canvas-save-to-dr-dropdown" class="hidden absolute right-0 top-full mt-1 z-50 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg w-64 max-h-72 overflow-y-auto">
           <div class="px-3 py-2 border-b border-default text-xs font-semibold text-heading">Save to data room</div>
@@ -412,8 +413,8 @@
       <button id="canvas-export-link" title="Export as .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
         <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
         <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-        <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-        <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+        <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+        <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
       {# 4. Version history #}
       <div class="relative">
@@ -435,8 +436,8 @@
       <label id="canvas-import-label" title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg id="canvas-import-icon" class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
         <svg id="canvas-import-spinner" class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-        <svg class="canvas-btn-check w-4 h-4 hidden text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-        <svg class="canvas-btn-error w-4 h-4 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+        <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+        <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
         <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
       </label>
       {# 7. Clear canvas (trash) #}
@@ -542,32 +543,23 @@
   .thinking-block .thinking-chevron { transform: rotate(90deg); }
   .thinking-block.collapsed .thinking-chevron { transform: rotate(0deg); }
   .thinking-block.collapsed .thinking-content { display: none; }
-  .thinking-content { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; scrollbar-width: thin; }
-  .diff-add { background-color: rgb(187 247 208); }
-  .diff-del { background-color: rgb(254 202 202); text-decoration: line-through; }
-  .dark .diff-add { background-color: rgb(20 83 45 / 0.4); }
-  .dark .diff-del { background-color: rgb(127 29 29 / 0.4); text-decoration: line-through; }
+  .thinking-content { font-family: var(--font-mono); white-space: pre-wrap; word-break: break-word; scrollbar-width: thin; }
+  .diff-add { background-color: var(--color-success-medium); }
+  .diff-del { background-color: var(--color-danger-medium); text-decoration: line-through; }
   .mermaid-placeholder { margin: 0.75rem 0; }
   .mermaid-placeholder svg { max-width: 100%; height: auto; }
   .mermaid-wrapper { position: relative; }
-  .mermaid-download-btn { position: absolute; top: 0.5rem; right: 0.5rem; opacity: 0; background: rgba(255,255,255,0.9); border: 1px solid rgb(209 213 219); border-radius: 0.375rem; padding: 0.25rem 0.5rem; font-size: 0.75rem; cursor: pointer; transition: opacity 0.15s; z-index: 10; }
+  .mermaid-download-btn { position: absolute; top: 0.5rem; right: 0.5rem; opacity: 0; background: var(--color-neutral-primary-soft); color: var(--color-body); border: 1px solid var(--color-default); border-radius: 0.375rem; padding: 0.25rem 0.5rem; font-size: 0.75rem; cursor: pointer; transition: opacity 0.15s; z-index: 10; }
   .mermaid-wrapper:hover .mermaid-download-btn { opacity: 1; }
-  .dark .mermaid-download-btn { background: rgba(55,65,81,0.9); border-color: rgb(75 85 99); color: rgb(209 213 219); }
   .email-placeholder { margin: 0.75rem 0; }
-  .email-card { position: relative; border: 1px solid rgb(209 213 219); border-radius: 0.5rem; overflow: hidden; }
-  .dark .email-card { border-color: rgb(75 85 99); }
-  .email-header { background: rgb(249 250 251); padding: 0.75rem 1rem; border-bottom: 1px solid rgb(229 231 235); font-size: 0.875rem; line-height: 1.5; }
-  .dark .email-header { background: rgb(31 41 55); border-bottom-color: rgb(55 65 81); color: rgb(209 213 219); }
-  .email-header-field { color: rgb(107 114 128); }
-  .dark .email-header-field { color: rgb(156 163 175); }
-  .email-header-value { color: rgb(17 24 39); }
-  .dark .email-header-value { color: rgb(243 244 246); }
-  .email-subject { font-weight: 600; color: rgb(17 24 39); font-size: 1rem; }
-  .dark .email-subject { color: rgb(243 244 246); }
-  .email-body { padding: 0.75rem 1rem; word-break: break-word; font-size: 0.875rem; color: rgb(55 65 81); line-height: 1.6; }
-  .dark .email-body { color: rgb(209 213 219); }
-  .email-action-btn { position: absolute; top: 0.5rem; right: 0.5rem; background: rgb(37 99 235); color: white !important; border: none; border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-size: 0.75rem; cursor: pointer; z-index: 10; display: flex; align-items: center; gap: 0.25rem; text-decoration: none !important; font-weight: 500; }
-  .email-action-btn:hover { background: rgb(29 78 216); color: white !important; }
+  .email-card { position: relative; border: 1px solid var(--color-default); border-radius: 0.5rem; overflow: hidden; }
+  .email-header { background: var(--color-neutral-secondary); padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-default); font-size: 0.875rem; line-height: 1.5; }
+  .email-header-field { color: var(--color-body-subtle); }
+  .email-header-value { color: var(--color-heading); }
+  .email-subject { font-weight: 600; color: var(--color-heading); font-size: 1rem; }
+  .email-body { padding: 0.75rem 1rem; word-break: break-word; font-size: 0.875rem; color: var(--color-body); line-height: 1.6; }
+  .email-action-btn { position: absolute; top: 0.5rem; right: 0.5rem; background: var(--color-brand); color: var(--color-on-brand) !important; border: none; border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-size: 0.75rem; cursor: pointer; z-index: 10; display: flex; align-items: center; gap: 0.25rem; text-decoration: none !important; font-weight: 500; }
+  .email-action-btn:hover { background: var(--color-brand-strong); color: var(--color-on-brand) !important; }
   .email-body p { margin: 0 0 0.5em 0; }
   .email-body p:last-child { margin-bottom: 0; }
   .email-body strong { font-weight: 600; }
@@ -581,6 +573,7 @@
 (function () {
   const THREAD_ID = "{{ thread.id|default:'' }}";
   const USER_INITIAL = "{{ user.email|first|upper }}";
+  const USER_AVATAR_STYLE = "{{ user.email|avatar_style }}";
   const ASSISTANT_NAME = "{{ assistant_name|escapejs }}";
   const STREAM_TIMEOUT_MS = 660000;
   const CHAT_HOME = "{% url 'chat_home' %}";
@@ -729,12 +722,12 @@
         }).catch(function(err) {
           var tmp = document.getElementById('d' + id);
           if (tmp) tmp.remove();
-          el.innerHTML = '<pre style="color:rgb(239 68 68);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
+          el.innerHTML = '<pre style="color:var(--color-fg-danger);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
         });
       } catch (err) {
         var tmp = document.getElementById('d' + id);
         if (tmp) tmp.remove();
-        el.innerHTML = '<pre style="color:rgb(239 68 68);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
+        el.innerHTML = '<pre style="color:var(--color-fg-danger);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
       }
     });
   }
@@ -901,16 +894,16 @@
     if (threadList.querySelector('[data-thread-id="' + threadId + '"]')) return;
     var li = document.createElement("li"); li.className = "relative group"; li.setAttribute("data-thread-li", threadId);
     var a = document.createElement("a"); a.href = CHAT_HOME + "?thread=" + threadId;
-    a.className = "flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group bg-neutral-secondary-soft text-heading font-medium";
+    a.className = "relative flex items-center px-2 py-1.5 pe-8 text-sm rounded-base group bg-neutral-secondary-soft text-heading font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-accent";
     a.setAttribute("data-thread-id", threadId); a.title = title || "New chat";
     a.innerHTML = '<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><span class="ms-3 truncate">' + escapeHtml(title || "New chat") + "</span>";
     li.appendChild(a);
     var menuBtn = document.createElement("button"); menuBtn.type = "button";
-    menuBtn.className = "thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-medium flex items-center justify-center";
+    menuBtn.className = "thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft flex items-center justify-center";
     menuBtn.setAttribute("data-thread-id", threadId); menuBtn.setAttribute("data-archived", "false");
     menuBtn.innerHTML = '<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>';
     li.appendChild(menuBtn);
-    threadList.querySelectorAll("a").forEach(function(el) { el.className = "flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group"; });
+    threadList.querySelectorAll("a").forEach(function(el) { el.className = "relative flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-secondary-soft hover:text-heading group"; });
     threadList.insertBefore(li, threadList.firstChild);
   }
 
@@ -918,9 +911,9 @@
   function addDataRoomPill(roomId, roomName) {
     if (attachedRoomsContainer.querySelector('[data-room-id="' + roomId + '"]')) return;
     var pill = document.createElement("span");
-    pill.className = "data-room-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full";
+    pill.className = "data-room-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-body bg-neutral-primary-soft border border-default rounded-full";
     pill.setAttribute("data-room-id", roomId);
-    pill.innerHTML = '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>' + escapeHtml(roomName) + '<button type="button" class="detach-room-btn hover:text-fg-danger" data-room-id="' + roomId + '"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>';
+    pill.innerHTML = '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76V12a2.25 2.25 0 012.25-2.25h15A2.25 2.25 0 0121.75 12v.76M4.5 9.75V6A2.25 2.25 0 016.75 3.75h3.879a1.5 1.5 0 011.06.44l1.122 1.12a1.5 1.5 0 001.06.44H17.25A2.25 2.25 0 0119.5 8v1.75"/></svg>' + escapeHtml(roomName) + '<button type="button" class="detach-room-btn ml-0.5 p-0.5 rounded-full text-body-subtle hover:text-heading hover:bg-neutral-tertiary" data-room-id="' + roomId + '"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></button>';
     attachedRoomsContainer.appendChild(pill);
     if (!attachedDataRoomIds.includes(roomId)) attachedDataRoomIds.push(roomId);
     updateModalChecks();
@@ -949,11 +942,11 @@
     activeSkillName = name;
     var iconHtml = emoji
       ? '<span>' + escapeHtml(emoji) + '</span>'
-      : '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>';
-    attachedSkillContainer.innerHTML = '<span class="skill-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 rounded-full" data-skill-id="' + escapeHtml(id) + '">' +
+      : '<svg class="w-3.5 h-3.5 shrink-0 text-fg-accent" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg>';
+    attachedSkillContainer.innerHTML = '<span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="' + escapeHtml(id) + '">' +
       iconHtml +
       escapeHtml(name) +
-      '<button type="button" class="detach-skill-btn hover:text-fg-danger" aria-label="Detach skill"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></span>';
+      '<button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></button></span>';
     updateSkillModalChecks();
   }
 
@@ -1089,7 +1082,7 @@
       if (s.description) btn.title = s.description;
       var iconHtml = s.emoji
         ? '<span class="shrink-0">' + escapeHtml(s.emoji) + '</span>'
-        : '<svg class="w-4 h-4 shrink-0 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>';
+        : '<svg class="w-4 h-4 shrink-0 text-fg-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>';
       btn.innerHTML = '<span class="flex items-center gap-2">' + iconHtml + escapeHtml(s.name) + '</span>' +
         '<svg class="w-4 h-4 text-success skill-attached-check ' + (activeSkillId === s.id ? '' : 'hidden') + '" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
       btn.addEventListener('click', function() {
@@ -1142,9 +1135,9 @@
 
   function getAttachmentIcon(contentType) {
     if (contentType && contentType.indexOf('image/') === 0) {
-      return '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>';
+      return '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>';
     }
-    return '<svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>';
+    return '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.62a3.38 3.38 0 00-.99-2.39l-4.24-4.24a3.38 3.38 0 00-2.39-.99H6.75A2.25 2.25 0 004.5 6.34v11.41a2.25 2.25 0 002.25 2.25h10.5a2.25 2.25 0 002.25-2.25z"/></svg>';
   }
 
   if (attachImagesBtn) {
@@ -1157,11 +1150,11 @@
 
   function addAttachmentPill(id, filename, contentType) {
     var pill = document.createElement('span');
-    pill.className = 'image-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full';
+    pill.className = 'image-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-body bg-neutral-primary-soft border border-default rounded-full';
     pill.setAttribute('data-attachment-id', id);
     pill.innerHTML = getAttachmentIcon(contentType) +
       escapeHtml(filename) +
-      '<button type="button" class="remove-image-btn hover:text-fg-danger" aria-label="Remove ' + escapeHtml(filename) + '"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>';
+      '<button type="button" class="remove-image-btn ml-0.5 p-0.5 rounded-full text-body-subtle hover:text-heading hover:bg-neutral-tertiary" aria-label="Remove ' + escapeHtml(filename) + '"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></button>';
     attachedImagesContainer.appendChild(pill);
   }
 
@@ -1170,7 +1163,7 @@
     var batchId = ++uploadBatchCounter;
     files.forEach(function(f) {
       var pill = document.createElement('span');
-      pill.className = 'uploading-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-body bg-neutral-secondary-soft border border-default rounded-full opacity-70';
+      pill.className = 'uploading-pill inline-flex items-center gap-1.5 pl-2 pr-2.5 py-1 text-xs font-medium text-body bg-neutral-primary-soft border border-default rounded-full opacity-70';
       pill.setAttribute('data-upload-batch', batchId);
       pill.innerHTML =
         '<svg class="w-3 h-3 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>' +
@@ -1927,7 +1920,7 @@
           else if (toolName === "attach_skills") doneLabel = "Updated attached skill"; }
           var isSubagentActive = toolName === "create_subagent" && (doneLabel === "Sub-agent queued" || doneLabel === "Sub-agent dispatched");
           var iconSvg = isSubagentActive
-            ? '<svg class="w-3 h-3 shrink-0 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'
+            ? '<svg class="w-3 h-3 shrink-0 text-fg-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'
             : '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
           var reasonSuffix = "";
           if (isSubagentActive && subagentReasons[toolId]) { var rr = subagentReasons[toolId]; reasonSuffix = ' <span class="italic">(' + escapeHtml(rr.charAt(0).toLowerCase() + rr.slice(1)) + ')</span>'; }
@@ -1939,7 +1932,7 @@
     if (et === "guardrail.warning") {
       const msg = (data.data && data.data.message) || "Content warning: please be mindful of acceptable use.";
       const div = document.createElement("div");
-      div.className = "flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 my-2";
+      div.className = "flex items-start gap-2 text-sm text-fg-warning bg-warning-soft border border-warning-subtle rounded-lg p-3 my-2";
       div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>' + escapeHtml(msg) + '</span>';
       messagesContainer.appendChild(div);
       scrollToBottom(); return;
@@ -1948,7 +1941,7 @@
       finishStreaming(null);
       var budgetMsg = (data.data && data.data.message) || "Monthly budget exceeded.";
       var budgetDiv = document.createElement("div");
-      budgetDiv.className = "flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 my-2";
+      budgetDiv.className = "flex items-start gap-2 text-sm text-fg-warning bg-warning-soft border border-warning-subtle rounded-lg p-3 my-2";
       budgetDiv.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>' + escapeHtml(budgetMsg) + '</span>';
       messagesContainer.appendChild(budgetDiv);
       input.disabled = true; button.disabled = true;
@@ -1977,7 +1970,7 @@
       }
       var msg = (data.data && data.data.message) || (et === "guardrail.suspended" ? "Your account has been suspended. Please contact your system administrator." : "Your message was blocked by the content safety system.");
       var bannerDiv = document.createElement("div");
-      bannerDiv.className = "flex items-start gap-2 text-sm text-danger bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 my-2";
+      bannerDiv.className = "flex items-start gap-2 text-sm text-fg-danger bg-danger-soft border border-danger-subtle rounded-lg p-3 my-2";
       bannerDiv.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';
       messagesContainer.appendChild(bannerDiv);
       if (et === "guardrail.suspended") { input.disabled = true; button.disabled = true; } else { enableInput(); }
@@ -2061,7 +2054,7 @@
       });
       attBadges += '</div>';
     }
-    userDiv.innerHTML = `<div class="flex items-start gap-2.5 flex-row-reverse"><span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/60 text-sm font-semibold text-blue-900 dark:text-blue-100">${escapeHtml(USER_INITIAL)}</span><div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base"><div class="flex items-center space-x-1.5 rtl:space-x-reverse"><span class="text-sm font-semibold text-heading">You</span><span class="text-sm text-body">${ts}</span></div><p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p>${attBadges}${COPY_BTN_HTML}</div></div>`;
+    userDiv.innerHTML = `<div class="flex items-start gap-2.5 flex-row-reverse"><span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span><div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base"><div class="flex items-center space-x-1.5 rtl:space-x-reverse"><span class="text-sm font-semibold text-heading">You</span><span class="text-sm text-body">${ts}</span></div><p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p>${attBadges}${COPY_BTN_HTML}</div></div>`;
     const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
     // Switch from empty layout to normal chat layout
     scrollContainer.classList.add('flex-1');
@@ -2263,7 +2256,7 @@
   function showToast(msg) {
     var el = document.createElement("div");
     el.textContent = msg;
-    el.className = "fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-neutral-800 text-white text-sm shadow-lg transition-opacity duration-300";
+    el.className = "fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-forest-900 text-paper-50 text-sm shadow-lg transition-opacity duration-300";
     document.body.appendChild(el);
     setTimeout(function() { el.style.opacity = "0"; setTimeout(function() { el.remove(); }, 300); }, 4000);
   }
@@ -2527,7 +2520,7 @@
       btn.title = s.title || "Untitled";
       btn.className = "px-3 py-1 text-xs rounded-t-md whitespace-nowrap transition-colors " +
         (cid === activeCanvasId
-          ? "bg-amber-50/50 dark:bg-neutral-800 text-heading font-semibold border border-b-0 border-default -mb-px"
+          ? "bg-neutral-secondary-soft text-heading font-semibold border border-b-0 border-default -mb-px"
           : "text-body hover:text-heading hover:bg-neutral-tertiary");
       btn.addEventListener("click", function() { switchCanvas(cid); });
       canvasTabsEl.appendChild(btn);
@@ -2762,10 +2755,10 @@
     if (canvasWordCount) {
       canvasWordCount.textContent = wordCount + " word" + (wordCount !== 1 ? "s" : "") + " \u00b7 " + charCount.toLocaleString() + " / " + CANVAS_MAX_CHARS.toLocaleString() + " chars";
       if (charCount > 70000) {
-        canvasWordCount.classList.add("text-red-500");
+        canvasWordCount.classList.add("text-fg-danger");
         canvasWordCount.classList.remove("text-body");
       } else {
-        canvasWordCount.classList.remove("text-red-500");
+        canvasWordCount.classList.remove("text-fg-danger");
         canvasWordCount.classList.add("text-body");
       }
     }
