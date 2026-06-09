@@ -1,6 +1,6 @@
 Hi,
 
-Please verify your email address by clicking the link below:
+Confirm your email address to finish setting up your account:
 
 {{ link }}
 

@@ -251,7 +251,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data.affected_thread_count === 0) {
-          if (confirm('Are you sure you want to delete this data room and all its documents?')) {
+          if (confirm('Delete this data room and all its documents? This can\'t be undone.')) {
             doDelete(false);
           }
         } else {
@@ -271,7 +271,7 @@
         }
       })
       .catch(function () {
-        if (confirm('Could not check for related chats. Delete anyway?')) {
+        if (confirm('{{ assistant_name|escapejs }} couldn\'t check for related chats. Delete anyway?')) {
           doDelete(false);
         }
       });

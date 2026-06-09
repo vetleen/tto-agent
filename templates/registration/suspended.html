@@ -22,9 +22,9 @@
 
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-24 text-center">
-  <h1 class="mt-4 text-3xl font-semibold tracking-tight text-heading">Your account has been suspended</h1>
+  <h1 class="mt-4 text-3xl font-semibold tracking-tight text-heading">Your account is suspended</h1>
   <p class="mt-4 text-body">
-    {% if org_name %}Please contact {{ org_name }}'s administrator.{% else %}Please contact your administrator.{% endif %}
+    {% if org_name %}To restore access, reach out to {{ org_name }}'s administrator.{% else %}To restore access, reach out to your administrator.{% endif %}
   </p>
 </main>
 {% endblock content %}

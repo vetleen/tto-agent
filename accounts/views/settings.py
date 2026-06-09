@@ -533,7 +533,7 @@ def org_allowed_models_update(request):
     system_models = get_allowed_models()
     invalid = [m for m in models if m not in system_models]
     if invalid:
-        return JsonResponse({"error": f"Models not in system allowlist: {invalid}"}, status=400)
+        return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
 
     org = membership.org
     prefs = org.preferences or {}
@@ -566,7 +566,7 @@ def org_allowed_transcription_models_update(request):
     system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
     invalid = [m for m in models if m not in system_models]
     if invalid:
-        return JsonResponse({"error": f"Models not in system allowlist: {invalid}"}, status=400)
+        return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
 
     org = membership.org
     prefs = org.preferences or {}

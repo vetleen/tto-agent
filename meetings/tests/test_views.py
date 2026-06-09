@@ -657,10 +657,10 @@ class MeetingSaveToDataRoomTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self.my_room.name)
         self.assertContains(response, "Saved ✓ — Save again")
-        self.assertNotContains(response, "not up to date")
+        self.assertNotContains(response, "out of date")
         # Now bump transcript_updated_at to *after* the saved doc — staleness.
         self.meeting.transcript_updated_at = timezone.now() + timezone.timedelta(seconds=5)
         self.meeting.save(update_fields=["transcript_updated_at", "updated_at"])
         response = self.client.get(reverse("meeting_detail", args=[self.meeting.uuid]))
-        self.assertContains(response, "not up to date")
+        self.assertContains(response, "out of date")
         self.assertContains(response, "Save raw transcript to data room")

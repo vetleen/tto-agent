@@ -13,7 +13,7 @@ Tooltips use Flowbite (auto-initialized on page load); IDs are scoped by doc id.
     Quarantined
   </span>
   <div id="pii-tt-quarantine-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-paper-50 bg-forest-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-forest-700 max-w-xs">
-    {{ doc.quarantine_reason|default:"This document is quarantined." }} It is excluded from all assistant responses.
+    {{ doc.quarantine_reason|default:"This document is quarantined." }} {{ assistant_name }} won't use it in any answer.
     <div class="tooltip-arrow" data-popper-arrow></div>
   </div>
   {% elif doc.is_partially_quarantined %}
@@ -21,7 +21,7 @@ Tooltips use Flowbite (auto-initialized on page load); IDs are scoped by doc id.
     Partially quarantined
   </span>
   <div id="pii-tt-partial-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-paper-50 bg-forest-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-forest-700 max-w-xs">
-    Some parts of this document were quarantined by content safety checks and are excluded from assistant responses.
+    Content safety checks quarantined parts of this document, so {{ assistant_name }} won't use them in answers.
     <div class="tooltip-arrow" data-popper-arrow></div>
   </div>
   {% endif %}

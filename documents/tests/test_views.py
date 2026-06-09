@@ -530,7 +530,7 @@ class DocumentViewsTests(TestCase):
             DataRoomDocument.objects.filter(data_room=self.data_room).values_list("original_filename", flat=True)
         )
         self.assertEqual(filenames, {"a.txt", "b.txt"})
-        self.assertContains(response, "2 files uploaded successfully")
+        self.assertContains(response, "2 files uploaded")
 
     def test_multi_file_upload_partial_rejection(self):
         self.client.force_login(self.user)
@@ -551,7 +551,7 @@ class DocumentViewsTests(TestCase):
         )
         self.assertContains(response, "bad.xyz")
         self.assertContains(response, "unsupported file type")
-        self.assertContains(response, "1 file uploaded successfully")
+        self.assertContains(response, "1 file uploaded")
 
     def test_multi_file_upload_all_rejected(self):
         self.client.force_login(self.user)
@@ -822,7 +822,7 @@ class DocumentViewsTests(TestCase):
             reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertContains(response, "Quarantined")
-        self.assertContains(response, "excluded from all assistant responses")
+        self.assertContains(response, "won't use it in any answer")
 
     def test_data_room_documents_renders_partial_quarantine_badge(self):
         self.client.force_login(self.user)

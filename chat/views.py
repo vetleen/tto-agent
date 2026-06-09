@@ -202,7 +202,7 @@ def thread_rename(request, thread_id):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
     title = body.get("title", "").strip()[:255]
     if not title:
-        return JsonResponse({"error": "Title is required"}, status=400)
+        return JsonResponse({"error": "Please enter a title."}, status=400)
     thread.title = title
     thread.save(update_fields=["title"])
     return JsonResponse({"ok": True, "title": thread.title})
@@ -324,7 +324,7 @@ def canvas_import(request, thread_id, canvas_id=None):
     # Validate file size
     if uploaded.size > MAX_ATTACHMENT_SIZE:
         return JsonResponse(
-            {"error": f"File too large ({uploaded.size} bytes, max {MAX_ATTACHMENT_SIZE})."},
+            {"error": f"That file is too large (max {MAX_ATTACHMENT_SIZE // (1024 * 1024)} MB)."},
             status=400,
         )
 
@@ -510,7 +510,7 @@ def upload_attachments(request, thread_id):
         max_size = max_size_for_content_type(ct)
         if f.size > max_size:
             return JsonResponse(
-                {"error": f"File too large: {f.name} ({f.size} bytes, max {max_size})"},
+                {"error": f"{f.name} is too large (max {max_size // (1024 * 1024)} MB)."},
                 status=400,
             )
 

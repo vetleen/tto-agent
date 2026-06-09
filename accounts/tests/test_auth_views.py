@@ -112,7 +112,7 @@ class AuthViewsTests(TestCase):
 
         #time.sleep(5)
 
-        reset_url = mail.outbox[0].body.strip().splitlines()[-1]
+        reset_url = next(line.strip() for line in mail.outbox[0].body.splitlines() if "://" in line)
         reset_path = urlparse(reset_url).path
 
         response = self.client.get(reset_path, follow=True)
@@ -138,4 +138,4 @@ class AuthViewsTests(TestCase):
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Reset link is invalid")
+        self.assertContains(response, "This reset link didn't work")

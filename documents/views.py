@@ -350,7 +350,7 @@ def document_upload(request, data_room_id):
 
     if created_docs:
         count = len(created_docs)
-        messages.success(request, f"{count} file{'s' if count != 1 else ''} uploaded successfully.")
+        messages.success(request, f"{count} file{'s' if count != 1 else ''} uploaded.")
     for err in errors:
         messages.error(request, err)
     return redirect("data_room_documents", data_room_id=data_room.uuid)
@@ -540,7 +540,7 @@ def data_room_generate_description(request, data_room_id):
         return JsonResponse({"description": description})
     except Exception:
         logger.exception("data_room_generate_description failed for %s", data_room_id)
-        return JsonResponse({"error": "Failed to generate description"}, status=500)
+        return JsonResponse({"error": f"{settings.ASSISTANT_NAME} couldn't generate a description right now. Please try again."}, status=500)
 
 
 @login_required

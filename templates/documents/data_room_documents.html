@@ -298,7 +298,7 @@
           </div>
           <!-- Error message -->
           <div id="view-document-error" class="hidden text-center py-12">
-            <p class="text-body text-sm mb-3">Failed to load document content.</p>
+            <p class="text-body text-sm mb-3">{{ assistant_name }} couldn't load this document.</p>
             <button type="button" id="view-document-retry" class="text-sm text-brand hover:text-brand-strong font-medium">Retry</button>
           </div>
           <!-- Plain text view -->
@@ -361,7 +361,7 @@
     function validateFiles(fileList) {
       var valid = [];
       if (fileList.length > MAX_FILES) {
-        addError('Maximum ' + MAX_FILES + ' files per upload. You selected ' + fileList.length + ' — please select fewer files.');
+        addError('You can upload up to ' + MAX_FILES + ' files at once. You selected ' + fileList.length + ' — please choose fewer.');
         return valid;
       }
       for (var i = 0; i < fileList.length; i++) {
@@ -372,7 +372,7 @@
         } else if (f.size > MAX_SIZE) {
           addError(f.name + ': file is too large (max 50 MB).');
         } else if (!ALLOWED_EXTENSIONS.has(ext)) {
-          addError(f.name + ': unsupported file type.');
+          addError(f.name + ": {{ assistant_name|escapejs }} can't read this file type yet.");
         } else {
           valid.push(f);
         }
@@ -468,7 +468,7 @@
             }
           } else {
             failed++;
-            addError(data.error || (valid[i].name + ': upload failed.'));
+            addError(data.error || (valid[i].name + ": upload didn't go through. Try again."));
           }
         } catch (err) {
           failed++;
@@ -484,7 +484,7 @@
       } else if (uploaded > 0) {
         progressText.textContent = uploaded + ' uploaded, ' + failed + ' failed. Preparing…';
       } else {
-        progressText.textContent = 'Upload failed.';
+        progressText.textContent = "Upload didn't go through.";
         progressSpinner.classList.add('hidden');
       }
 

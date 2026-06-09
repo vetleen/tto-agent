@@ -22,7 +22,7 @@ def submit_feedback(request):
     if not text:
         return JsonResponse({"error": "Feedback text is required."}, status=400)
     if len(text) > MAX_TEXT_LENGTH:
-        return JsonResponse({"error": "Feedback text too long."}, status=400)
+        return JsonResponse({"error": "That's a bit long — please keep your feedback under 5,000 characters."}, status=400)
 
     url = (request.POST.get("url") or "")[:2000]
     user_agent = (request.POST.get("user_agent") or "")[:1000]
@@ -46,17 +46,21 @@ def submit_feedback(request):
         console_errors=console_errors,
     )
 
+    # The screenshot is captured automatically on the client, so a too-large or
+    # unsupported image isn't the user's fault. Drop it quietly and still save the
+    # feedback rather than blocking the submission over it.
     screenshot_file = request.FILES.get("screenshot")
     if screenshot_file:
-        if screenshot_file.size > MAX_SCREENSHOT_SIZE:
-            return JsonResponse({"error": "Screenshot too large."}, status=400)
-        if screenshot_file.content_type not in (
-            "image/jpeg",
-            "image/png",
-            "image/webp",
-        ):
-            return JsonResponse({"error": "Invalid screenshot format."}, status=400)
-        feedback.screenshot = screenshot_file
+        valid_type = screenshot_file.content_type in ("image/jpeg", "image/png", "image/webp")
+        if screenshot_file.size <= MAX_SCREENSHOT_SIZE and valid_type:
+            feedback.screenshot = screenshot_file
+        else:
+            logger.info(
+                "Dropping feedback screenshot from user %d (size=%d, type=%s)",
+                request.user.pk,
+                screenshot_file.size,
+                screenshot_file.content_type,
+            )
 
     feedback.save()
     logger.info("Feedback #%d submitted by user %d", feedback.pk, request.user.pk)

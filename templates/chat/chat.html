@@ -159,7 +159,7 @@
                     <span class="text-sm font-semibold text-heading">You</span>
                     <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
                   </div>
-                  <div class="text-sm py-2.5 text-body/50 italic">This message was removed by the content safety system.</div>
+                  <div class="text-sm py-2.5 text-body/50 italic">{{ assistant_name }} set this message aside for safety.</div>
                 </div>
               </div>
             </div>
@@ -170,7 +170,7 @@
                   <span class="text-sm font-semibold text-heading">{{ assistant_name }}</span>
                   <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
                 </div>
-                <div class="text-sm text-body/50 italic mt-2">This message was removed by the content safety system.</div>
+                <div class="text-sm text-body/50 italic mt-2">{{ assistant_name }} set this message aside for safety.</div>
               </div>
             </div>
           {% elif m.role == "user" %}
@@ -340,7 +340,7 @@
             </div>
             <textarea
               name="message"
-              placeholder="Type your message..."
+              placeholder="Ask {{ assistant_name }}..."
               id="message-input"
               rows="1"
               class="rounded-none rounded-e-base block w-full px-3 py-2.5 bg-neutral-primary-soft border border-default-medium text-heading text-sm focus:outline-none focus:ring-0 focus:border-default-medium placeholder:text-body resize-none overflow-hidden"
@@ -746,7 +746,7 @@
       })
       .catch(function(err) {
         console.error('PNG export failed:', err);
-        alert('Failed to export diagram as PNG.');
+        alert('Couldn\'t save the diagram as a PNG.');
       });
   }
 
@@ -1211,7 +1211,7 @@
         if (files[i].name && files[i].name.toLowerCase().endsWith('.docx')) {
           ft = SUPPORTED_DOCX_TYPES[0];
         } else {
-          showToast('Unsupported file type: ' + files[i].name);
+          showToast("{{ assistant_name|escapejs }} can't read that file type yet: " + files[i].name);
           return;
         }
       }
@@ -1227,7 +1227,7 @@
     if (hasImages) {
       var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
       if (current && !current.supports_vision) {
-        showToast('The selected model does not support image inputs. Please select a vision-capable model.');
+        showToast("This model can't read images. Pick one that can to attach pictures.");
       }
     }
 
@@ -1241,7 +1241,7 @@
         headers: { 'X-CSRFToken': getCSRFToken() },
         body: fd,
       }).then(function(r) {
-        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Upload failed'); });
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || "Couldn't upload that file."); });
         return r.json();
       }).then(function(data) {
         removeUploadingPills(batchId);
@@ -1253,7 +1253,7 @@
         });
       }).catch(function(err) {
         removeUploadingPills(batchId);
-        showToast('Upload failed: ' + err.message);
+        showToast("Couldn't upload that file. " + err.message);
       });
     }
 
@@ -1264,7 +1264,7 @@
         method: 'POST',
         headers: { 'X-CSRFToken': getCSRFToken() },
       }).then(function(r) {
-        if (!r.ok) throw new Error('Could not create thread');
+        if (!r.ok) throw new Error("Couldn't start a new chat.");
         return r.json();
       }).then(function(data) {
         activeThreadId = data.thread_id;
@@ -1272,7 +1272,7 @@
         doUpload(data.thread_id);
       }).catch(function(err) {
         removeUploadingPills(batchId);
-        showToast('Failed to create conversation: ' + err.message);
+        showToast("Couldn't start a new chat. " + err.message);
       });
     }
   }
@@ -1580,7 +1580,7 @@
       ws.onerror = function() { updateConnectionStatus(false, false); };
       ws.onclose = function(event) {
         updateConnectionStatus(false, false);
-        if (currentStreamingElement) { finishStreaming("[Connection lost]"); }
+        if (currentStreamingElement) { finishStreaming("Lost the connection — please try again."); }
         clearTimeout(streamingTimeout);
         if (event.code !== 1000 && event.code !== 4403 && reconnectAttempts < maxReconnectAttempts) {
           const delay = 1000 * Math.pow(2, reconnectAttempts); reconnectAttempts++;
@@ -1673,7 +1673,7 @@
       return;
     }
     if (et === "subagents.updated") { updateSubagentStatusBar(data.active_count || 0); return; }
-    if (et === "stream.cancelled") { finishStreaming("[Stopped]"); updateSubagentStatusBar(0); enableInput(); return; }
+    if (et === "stream.cancelled") { finishStreaming("Stopped."); updateSubagentStatusBar(0); enableInput(); return; }
     if (et === "tasks.updated" || et === "tasks.loaded") { renderTaskPlan(data.tasks || []); return; }
     if (et === "canvases.loaded") {
       canvasStates = {};
@@ -1791,9 +1791,9 @@
     if (et === "data_room.attached") { addDataRoomPill(data.data_room_id, data.data_room_name); return; }
     if (et === "data_room.detached") { removeDataRoomPill(data.data_room_id); return; }
     if (et === "error") {
-      const msg = (data.data && data.data.message) || "An error occurred";
+      const msg = (data.data && data.data.message) || "Something went wrong. Please try again.";
       const errorCode = (data.data && data.data.error_code) || null;
-      if (currentStreamingElement) { finishStreaming("[Error: " + escapeHtml(msg) + "]"); } else { appendError(msg); }
+      if (currentStreamingElement) { finishStreaming(escapeHtml(msg)); } else { appendError(msg); }
       enableInput(); return;
     }
     if (et === "message_start") {
@@ -1930,7 +1930,7 @@
       scrollToBottom(); return;
     }
     if (et === "guardrail.warning") {
-      const msg = (data.data && data.data.message) || "Content warning: please be mindful of acceptable use.";
+      const msg = (data.data && data.data.message) || "A heads-up: let's keep this within acceptable use.";
       const div = document.createElement("div");
       div.className = "flex items-start gap-2 text-sm text-fg-warning bg-warning-soft border border-warning-subtle rounded-lg p-3 my-2";
       div.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>' + escapeHtml(msg) + '</span>';
@@ -1939,7 +1939,7 @@
     }
     if (et === "budget.exceeded") {
       finishStreaming(null);
-      var budgetMsg = (data.data && data.data.message) || "Monthly budget exceeded.";
+      var budgetMsg = (data.data && data.data.message) || "You've reached your monthly usage limit.";
       var budgetDiv = document.createElement("div");
       budgetDiv.className = "flex items-start gap-2 text-sm text-fg-warning bg-warning-soft border border-warning-subtle rounded-lg p-3 my-2";
       budgetDiv.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>' + escapeHtml(budgetMsg) + '</span>';
@@ -1949,7 +1949,7 @@
     }
     if (et === "guardrail.blocked" || et === "guardrail.suspended") {
       finishStreaming(null);
-      var redactNotice = '<span class="text-body/50 italic">This message was removed by the content safety system.</span>';
+      var redactNotice = '<span class="text-body/50 italic">{{ assistant_name|escapejs }} set this message aside for safety.</span>';
       // Redact the last assistant bubble
       var lastAssistant = messagesContainer.querySelector("[data-role='assistant']:last-of-type");
       if (lastAssistant) {
@@ -1968,7 +1968,7 @@
           lastUser.classList.add("opacity-60");
         }
       }
-      var msg = (data.data && data.data.message) || (et === "guardrail.suspended" ? "Your account has been suspended. Please contact your system administrator." : "Your message was blocked by the content safety system.");
+      var msg = (data.data && data.data.message) || (et === "guardrail.suspended" ? "Your account is suspended. Please reach out to your administrator." : "{{ assistant_name|escapejs }} couldn't send that message — it fell outside acceptable use.");
       var bannerDiv = document.createElement("div");
       bannerDiv.className = "flex items-start gap-2 text-sm text-fg-danger bg-danger-soft border border-danger-subtle rounded-lg p-3 my-2";
       bannerDiv.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg><span>' + escapeHtml(msg) + '</span>';
@@ -1994,7 +1994,7 @@
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = "Send"; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } renderTaskPlan(); }
-  function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("[Timed out]"); enableInput(); }, STREAM_TIMEOUT_MS); }
+  function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("{{ assistant_name|escapejs }} took too long to respond. Please try again."); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   function createAssistantBubble() {
     const now = new Date();
@@ -2168,7 +2168,7 @@
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "chat.stop", thread_id: activeThreadId || "" }));
     }
-    finishStreaming("[Stopped]");
+    finishStreaming("Stopped.");
     enableInput();
   });
 
@@ -2237,7 +2237,7 @@
       });
     }
     if (action === "delete") {
-      if (!confirm("Delete this chat? This cannot be undone.")) return;
+      if (!confirm("Delete this chat? This can't be undone.")) return;
       fetch(`/chat/threads/${menuThreadId}/delete/`, { method: "POST", headers: {"X-CSRFToken": getCSRFToken()} }).then(function(res) {
         if (!res.ok) return; removeThreadLi(menuThreadId);
         if (activeThreadId === menuThreadId) window.location.href = CHAT_HOME;
@@ -2480,7 +2480,7 @@
           headers: { "Content-Type": "application/json", "X-CSRFToken": getCSRFToken() },
           body: JSON.stringify({ content: content })
         });
-        if (!resp.ok) throw new Error("Export failed");
+        if (!resp.ok) throw new Error("Couldn't export the document.");
         var cd = resp.headers.get("Content-Disposition") || "";
         var fnMatch = cd.match(/filename="?([^"]+)"?/);
         var filename = fnMatch ? fnMatch[1] : "document.docx";
@@ -2494,7 +2494,7 @@
         flashCanvasBtnSuccess(canvasExportLink);
       } catch (err) {
         flashCanvasBtnError(canvasExportLink);
-        alert("Export failed: " + err.message);
+        alert("Couldn't export the document. " + err.message);
       } finally {
         canvasExportLink.title = "Export as .docx";
       }
@@ -3194,12 +3194,12 @@
                     if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved to " + data.data_room_name; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
                   } else {
                     flashCanvasBtnError(canvasSaveToDrBtn);
-                    if (canvasSaveStatus) { canvasSaveStatus.textContent = data.error || "Save failed"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                    if (canvasSaveStatus) { canvasSaveStatus.textContent = data.error || "Couldn't save"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
                   }
                 })
                 .catch(function() {
                   flashCanvasBtnError(canvasSaveToDrBtn);
-                  if (canvasSaveStatus) { canvasSaveStatus.textContent = "Save failed"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                  if (canvasSaveStatus) { canvasSaveStatus.textContent = "Couldn't save"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
                 });
               });
             });
@@ -3247,7 +3247,7 @@
           headers: { "X-CSRFToken": getCSRFToken() },
           body: fd,
         }).then(function(r) {
-          if (!r.ok) throw new Error("Import failed (status " + r.status + ")");
+          if (!r.ok) throw new Error("Couldn't import the document.");
           return r.json();
         }).then(function(data) {
           if (data.title !== undefined) openCanvas(data.title, data.content);
@@ -3268,7 +3268,7 @@
         }).catch(function(err) {
           flashCanvasBtnError(importLabel);
           if (importLabel) importLabel.title = "Import .docx";
-          alert("Failed to import document: " + err.message);
+          alert("Couldn't import the document. " + err.message);
         });
       }
 
@@ -3280,7 +3280,7 @@
           method: "POST",
           headers: { "X-CSRFToken": getCSRFToken() },
         }).then(function(r) {
-          if (!r.ok) throw new Error("Could not create thread");
+          if (!r.ok) throw new Error("Couldn't start a new chat.");
           return r.json();
         }).then(function(data) {
           activeThreadId = data.thread_id;
@@ -3288,7 +3288,7 @@
           canvasUpdateExportLink();
           doImport(data.thread_id);
         }).catch(function(err) {
-          alert("Failed to create conversation: " + err.message);
+          alert("Couldn't start a new chat. " + err.message);
         });
       }
     });

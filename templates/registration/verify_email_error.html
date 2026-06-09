@@ -2,17 +2,16 @@
 
 {% block content %}
   <main class="mx-auto max-w-md px-6 py-16 text-body">
-    <h1 class="text-2xl font-semibold text-heading">Verification link invalid</h1>
+    <h1 class="text-2xl font-semibold text-heading">This link didn't work</h1>
     <p class="mt-3 text-body">
       {% if error == "expired" %}
-        This verification link has expired. Please request a new one from the sign-up or log-in page.
+        This verification link has expired. Log in to get a fresh one.
       {% else %}
-        This verification link is invalid or has already been used. Please request a new one.
+        This verification link is invalid or has already been used. Log in to get a fresh one.
       {% endif %}
     </p>
     <p class="mt-6">
       <a class="inline-flex rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong" href="{% url 'accounts:login' %}">Log in</a>
-      <a class="ml-3 text-sm font-medium text-fg-brand hover:text-fg-brand-strong" href="{% url 'accounts:signup' %}">Sign up</a>
     </p>
   </main>
 {% endblock content %}

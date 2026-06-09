@@ -105,21 +105,20 @@ class SubmitFeedbackTests(TestCase):
         self.assertTrue(fb.screenshot)
         self.assertIn("feedback/", fb.screenshot.name)
 
-    def test_screenshot_wrong_content_type_rejected(self):
+    def test_screenshot_wrong_content_type_dropped_but_feedback_saved(self):
         self.client.login(email=self.user.email, password=self.password)
         fake = io.BytesIO(b"not an image")
         fake.name = "file.txt"
         response = self.client.post(self.url, {
             "text": "Bad file",
             "screenshot": fake,
-        }, content_type="multipart/form-data; boundary=----test")
-        # The content_type on the file itself is what matters
-        # Django test client infers content_type from file extension
-        # A .txt file will have text/plain, which should be rejected
-        # But we need to test the actual validation, so let's just check
-        # that Feedback was not created with an invalid file
-        if response.status_code == 400:
-            self.assertEqual(Feedback.objects.count(), 0)
+        })
+        # The screenshot is captured client-side, so an invalid one isn't the
+        # user's fault: it's dropped quietly and the feedback is still saved.
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertEqual(fb.text, "Bad file")
+        self.assertFalse(fb.screenshot)
 
     def test_invalid_console_errors_json_handled(self):
         self.client.login(email=self.user.email, password=self.password)

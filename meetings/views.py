@@ -492,8 +492,8 @@ def meeting_upload(request, meeting_uuid):
         return meeting_upload_transcript(request, meeting_uuid)
     messages.error(
         request,
-        f"Unsupported file type. Upload audio ({sorted(AUDIO_EXTENSIONS)}) "
-        f"or text transcript ({sorted(transcript_exts)}).",
+        f"That file type isn't supported. Upload an audio file ({', '.join(sorted(AUDIO_EXTENSIONS))}) "
+        f"or a text transcript ({', '.join(sorted(transcript_exts))}).",
     )
     return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
@@ -608,7 +608,7 @@ def meeting_upload_transcript(request, meeting_uuid):
     ext = (safe_name.rsplit(".", 1)[-1].lower()) if "." in safe_name else ""
     allowed = getattr(settings, "MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS", {"txt", "md"})
     if ext not in allowed:
-        messages.error(request, f"Unsupported transcript format. Use one of: {sorted(allowed)}.")
+        messages.error(request, f"That transcript format isn't supported. Use one of: {', '.join(sorted(allowed))}.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
     max_bytes = getattr(settings, "MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES", 2_000_000)
@@ -659,7 +659,7 @@ def meeting_upload_audio(request, meeting_uuid):
     safe_name = _safe_filename(file_obj.name, max_length=180)
     ext = (safe_name.rsplit(".", 1)[-1].lower()) if "." in safe_name else ""
     if ext not in AUDIO_EXTENSIONS:
-        messages.error(request, f"Unsupported audio format. Use one of: {sorted(AUDIO_EXTENSIONS)}.")
+        messages.error(request, f"That audio format isn't supported. Use one of: {', '.join(sorted(AUDIO_EXTENSIONS))}.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
     max_bytes = getattr(settings, "MEETING_AUDIO_UPLOAD_MAX_BYTES", 50_000_000)

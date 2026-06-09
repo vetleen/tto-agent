@@ -327,7 +327,7 @@
               {% endif %}
               <span class="text-body">· {{ doc.uploaded_at|date:"Y-m-d H:i" }}</span>
               {% if doc.is_stale %}
-                <span class="text-fg-warning font-medium">(not up to date)</span>
+                <span class="text-fg-warning font-medium">(out of date)</span>
               {% endif %}
             </li>
             {% endfor %}

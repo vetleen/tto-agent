@@ -41,7 +41,7 @@ class LoginView(BaseLoginView):
 
 @method_decorator(ratelimit(key="ip", rate="3/h", method="POST", block=True), name="post")
 class PasswordResetView(BasePasswordResetView):
-    pass
+    extra_email_context = {"assistant_name": settings.ASSISTANT_NAME}
 
 
 def rate_limited(request, exception=None):

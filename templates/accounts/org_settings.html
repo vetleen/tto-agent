@@ -60,7 +60,7 @@
         {% if model.price %}<span class="text-xs text-muted tabular-nums">{{ model.price }}</span>{% endif %}
       </label>
       {% empty %}
-      <p class="text-sm text-body italic">No models configured in system allowlist (LLM_ALLOWED_MODELS).</p>
+      <p class="text-sm text-body italic">No models are configured yet. Set the system allow-list to make models available here.</p>
       {% endfor %}
     </div>
   </section>
@@ -160,7 +160,7 @@
           {% endfor %}
         </select>
         {% if not live_capable_transcription_models %}
-        <p class="mt-2 text-xs text-fg-warning">No live-streaming-capable models in the allow-list above.</p>
+        <p class="mt-2 text-xs text-fg-warning">None of the models above support live streaming. Allow a streaming-capable model to enable live transcription.</p>
         {% endif %}
       </div>
 
@@ -216,7 +216,7 @@
       </div>
     </div>
     {% empty %}
-    <p class="mt-4 text-sm text-body italic">No tools registered.</p>
+    <p class="mt-4 text-sm text-body italic">No tools available yet.</p>
     {% endfor %}
   </section>
 
