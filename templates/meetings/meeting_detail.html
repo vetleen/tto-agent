@@ -27,7 +27,7 @@
   <div class="mb-6">
     <label for="meeting-name-input" class="block text-xs font-medium text-body mb-1">Meeting title</label>
     <input type="text" id="meeting-name-input" value="{{ meeting.name }}" maxlength="255"
-           class="w-full text-2xl font-semibold text-heading bg-neutral-secondary-soft border border-default-medium rounded-base px-3 py-2 focus:ring-brand focus:border-brand focus:outline-none" />
+      class="w-full text-2xl font-semibold text-heading wf-input rounded-base px-3 py-2 focus:outline-none" />
   </div>
 
   {% if meeting.transcription_error %}
@@ -150,12 +150,12 @@
     <div class="grid gap-4 md:grid-cols-2">
       <div>
         <label for="mic-select" class="block text-xs font-medium text-body mb-1">Microphone</label>
-        <select id="mic-select" class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2"></select>
+    <select id="mic-select" class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2"></select>
       </div>
       <div>
         <label for="auto-stop-input" class="block text-xs font-medium text-body mb-1">Auto-stop after (minutes)</label>
         <input type="number" id="auto-stop-input" min="1" max="240" value="60"
-               class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2">
+        class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2">
       </div>
     </div>
 
@@ -186,22 +186,22 @@
       <div>
         <label for="meeting-agenda" class="block text-xs font-medium text-body mb-1">Agenda</label>
         <textarea id="meeting-agenda" name="agenda" rows="3"
-                  class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.agenda }}</textarea>
+         class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5">{{ meeting.agenda }}</textarea>
       </div>
       <div>
         <label for="meeting-participants" class="block text-xs font-medium text-body mb-1">Participants</label>
         <textarea id="meeting-participants" name="participants" rows="2"
-                  class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.participants }}</textarea>
+         class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5">{{ meeting.participants }}</textarea>
       </div>
       <div>
         <label for="meeting-description" class="block text-xs font-medium text-body mb-1">Description</label>
         <textarea id="meeting-description" name="description" rows="2"
-                  class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">{{ meeting.description }}</textarea>
+         class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5">{{ meeting.description }}</textarea>
       </div>
       <div>
         <label for="meeting-forced-language" class="block text-xs font-medium text-body mb-1">Spoken language</label>
         <select id="meeting-forced-language" name="forced_language"
-                class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5">
+        class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5">
           <option value="" {% if not forced_language %}selected{% endif %}>Auto-detect</option>
           <option value="en" {% if forced_language == "en" %}selected{% endif %}>English</option>
           <option value="no" {% if forced_language == "no" %}selected{% endif %}>Norwegian</option>
@@ -351,7 +351,7 @@
           <div class="p-6 space-y-4">
             <label for="save-to-dataroom-select" class="block text-sm font-medium text-heading">Choose a data room</label>
             <select name="data_room_id" id="save-to-dataroom-select" required
-                    class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs">
+          class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5">
               <option value="">Select…</option>
               {% for dr in user_data_rooms %}
                 <option value="{{ dr.uuid }}">{{ dr.name }}</option>

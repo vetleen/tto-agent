@@ -27,7 +27,8 @@ Tooltips use Flowbite (auto-initialized on page load); IDs are scoped by doc id.
   {% endif %}
 
   {% if doc.pii_summary.has_ordinary %}
-  <span tabindex="0" data-tooltip-target="pii-tt-ordinary-{{ doc.id }}" class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-fg-success bg-success-soft border border-success-subtle">
+  {# Sensitivity flag, not a success state — neutral so green/red stay reserved for genuinely good/bad. #}
+  <span tabindex="0" data-tooltip-target="pii-tt-ordinary-{{ doc.id }}" class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-body bg-neutral-secondary-soft border border-default">
     {{ pii_pill_label.ordinary }}
   </span>
   <div id="pii-tt-ordinary-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-paper-50 bg-forest-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-forest-700 max-w-xs">

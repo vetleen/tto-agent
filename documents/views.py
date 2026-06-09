@@ -5,7 +5,7 @@ import os
 
 from django.conf import settings
 from django.db import IntegrityError
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch, Q
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
@@ -95,7 +95,18 @@ def data_room_list(request):
             if data_room:
                 return redirect("data_room_documents", data_room_id=data_room.uuid)
         return redirect("data_room_list")
-    all_rooms = DataRoom.objects.filter(created_by=request.user).order_by("-updated_at")
+    active_doc = Q(documents__is_archived=False)
+    all_rooms = (
+        DataRoom.objects.filter(created_by=request.user)
+        .annotate(
+            document_count=Count("documents", filter=active_doc),
+            processing_count=Count(
+                "documents",
+                filter=active_doc & Q(documents__status__in=["uploaded", "processing"]),
+            ),
+        )
+        .order_by("-updated_at")
+    )
     data_rooms = [r for r in all_rooms if not r.is_archived]
     archived_data_rooms = [r for r in all_rooms if r.is_archived]
     return render(request, "documents/data_room_list.html", {

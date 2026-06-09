@@ -55,11 +55,8 @@ class CustomSetPasswordForm(SetPasswordForm):
 
 
 def _input_classes() -> str:
-    return (
-        "mt-1 w-full rounded-base border border-default-medium bg-neutral-secondary-soft "
-        "px-3 py-2 text-heading shadow-xs placeholder:text-body "
-        "focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-    )
+    # White-inset field (.wf-input owns background, hairline, inset shadow and focus).
+    return "wf-input mt-1 w-full rounded-base px-3 py-2 text-heading placeholder:text-body"
 
 
 class SignUpForm(UserCreationForm):

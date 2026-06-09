@@ -9,27 +9,18 @@
     {% endfor %}
   </ul>
   {% endif %}
-  <h1 class="text-2xl font-semibold text-heading mb-8">Data Rooms</h1>
-
-  <form method="post" action="{% url 'data_room_list' %}" class="max-w-xl mb-16">
-    {% csrf_token %}
-    <div class="mb-5">
-      <label for="data-room-name" class="block mb-2.5 text-sm font-medium text-heading">New data room</label>
-      <input type="text" name="name" id="data-room-name" placeholder="e.g. Patent Portfolio Q1" required
-             class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body">
+  <div class="flex items-start justify-between gap-4 mb-10">
+    <div>
+      <p class="wf-eyebrow mb-2">Workspaces</p>
+      <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Data rooms</h1>
+      <p class="mt-2 text-sm text-body">Secure document workspaces {{ assistant_name }} can search.</p>
     </div>
-    <div class="mb-5">
-      <label for="data-room-description" class="block mb-2.5 text-sm font-medium text-body">Description <span class="text-body/60">(optional)</span></label>
-      <textarea name="description" id="data-room-description" rows="3" maxlength="1000"
-                placeholder="Describe the purpose of this data room..."
-                class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body"></textarea>
-    </div>
-    <button type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
-      Create data room
+    <button type="button" data-modal-target="create-dr-modal" data-modal-show="create-dr-modal"
+            class="shrink-0 inline-flex items-center gap-2 bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+      <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      New data room
     </button>
-  </form>
-
-  <h2 class="text-sm font-medium text-heading mb-3">Your data rooms</h2>
+  </div>
   <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
     {% for dr in data_rooms %}
     <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.first %}rounded-t-base{% endif %} {% if forloop.last %}rounded-b-base{% endif %}">
@@ -37,6 +28,10 @@
         <svg class="w-4 h-4 me-2 shrink-0 text-body" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
         <span class="truncate" title="{{ dr.name }}">{{ dr.name|truncatechars:60 }}</span>
       </a>
+      <div class="flex items-center gap-3 shrink-0 ms-3">
+        <span class="wf-mono text-xs text-body-subtle whitespace-nowrap">{{ dr.document_count }} doc{{ dr.document_count|pluralize }}</span>
+        {% if dr.processing_count %}{% include "components/_status_badge.html" with label="Processing" tone="warning" %}{% elif dr.document_count %}{% include "components/_status_badge.html" with label="Indexed" tone="success" %}{% endif %}
+      </div>
       <div class="relative shrink-0 ms-2">
         <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Data room options" data-dropdown-toggle="dropdown-dr-{{ dr.uuid }}">
           <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
@@ -65,7 +60,14 @@
       </div>
     </div>
     {% empty %}
-    <p class="px-4 py-6 text-body text-sm">No data rooms yet. Create one above.</p>
+    <div class="px-4 py-10 text-center">
+      <p class="text-heading font-medium">No data rooms yet</p>
+      <p class="mt-1 text-sm text-body">Create one to give {{ assistant_name }} something to work with.</p>
+      <button type="button" data-modal-target="create-dr-modal" data-modal-show="create-dr-modal"
+              class="mt-4 inline-flex items-center gap-2 bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+        Create data room
+      </button>
+    </div>
     {% endfor %}
   </div>
 
@@ -115,6 +117,40 @@
   {% endif %}
 </div>
 
+<!-- Create data room modal -->
+<div id="create-dr-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+  <div class="relative w-full max-w-md max-h-full">
+    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+      <div class="px-6 py-4 border-b border-default">
+        <h3 class="text-lg font-semibold text-heading">New data room</h3>
+      </div>
+      <form method="post" action="{% url 'data_room_list' %}">
+        {% csrf_token %}
+        <div class="p-6 space-y-4">
+          <div>
+            <label for="data-room-name" class="block mb-2 text-sm font-medium text-heading">Name</label>
+            <input type="text" name="name" id="data-room-name" placeholder="e.g. Patent Portfolio Q1" required
+                   class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 placeholder:text-body">
+          </div>
+          <div>
+            <label for="data-room-description" class="block mb-2 text-sm font-medium text-body">Description <span class="text-body/60">(optional)</span></label>
+            <textarea name="description" id="data-room-description" rows="3" maxlength="1000"
+                      placeholder="Describe the purpose of this data room..."
+                      class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 placeholder:text-body"></textarea>
+          </div>
+        </div>
+        <div class="flex gap-3 px-6 py-4 border-t border-default">
+          <button type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+            Create data room
+          </button>
+          <button type="button" data-modal-hide="create-dr-modal" class="text-heading bg-neutral-primary-soft hover:bg-neutral-secondary border border-default shadow-xs focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 <button type="button" id="rename-dr-modal-trigger" class="hidden" data-modal-target="rename-dr-modal" data-modal-show="rename-dr-modal" aria-label="Open rename modal"></button>
 <div id="rename-dr-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
   <div class="relative w-full max-w-md max-h-full">
@@ -127,7 +163,7 @@
         <div class="p-6 space-y-4">
           <label for="rename-dr-name" class="block text-sm font-medium text-heading">Name</label>
           <input type="text" name="name" id="rename-dr-name" required
-                 class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs"
+         class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5"
                  maxlength="255" placeholder="Data room name">
         </div>
         <div class="flex gap-3 px-6 py-4 border-t border-default">

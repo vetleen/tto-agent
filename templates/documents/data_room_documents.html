@@ -23,7 +23,7 @@
     <h2 class="text-lg font-medium text-heading mb-3">Description</h2>
     <textarea id="data-room-description" rows="6" maxlength="1000"
               placeholder="Describe the purpose of this data room..."
-              class="mb-1 bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs placeholder:text-body">{{ data_room.description }}</textarea>
+       class="mb-1 wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 placeholder:text-body">{{ data_room.description }}</textarea>
     <p class="text-xs text-body text-right" id="description-char-count"></p>
     <div class="flex items-center gap-2 mt-3">
       <button type="button" id="generate-description-btn" title="Ask {{ assistant_name }} to generate a description"
@@ -44,7 +44,7 @@
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
-        <input class="cursor-pointer bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full shadow-xs placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
+    <input class="cursor-pointer wf-input text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
         <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file, up to 100 files at a time.</p>
       </div>
       <button id="upload-btn" type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
@@ -231,7 +231,7 @@
           <div class="p-6 space-y-4">
             <label for="rename-document-name" class="block text-sm font-medium text-heading">Name</label>
             <input type="text" name="name" id="rename-document-name" required
-                   class="bg-neutral-secondary-soft border border-default-medium text-heading text-sm rounded-base focus:ring-brand focus:border-brand block w-full px-3 py-2.5 shadow-xs"
+          class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5"
                    maxlength="75" placeholder="Document name">
           </div>
           <div class="flex gap-3 px-6 py-4 border-t border-default">

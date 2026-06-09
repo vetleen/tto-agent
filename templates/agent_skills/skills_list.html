@@ -11,8 +11,11 @@
   </ul>
   {% endif %}
 
-  <h1 class="text-2xl font-semibold text-heading mb-2">Skills</h1>
-  <p class="text-sm text-body mb-8">Manage which skills are available to {{ assistant_name }}. Toggle versions on and off, copy a skill to make your own variant, or edit your own skills directly.</p>
+  <div class="mb-10">
+    <p class="wf-eyebrow mb-2">Capabilities</p>
+    <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Skills</h1>
+    <p class="mt-2 text-sm text-body">Manage which skills are available to {{ assistant_name }}. Toggle versions on and off, copy a skill to make your own variant, or edit your own skills directly.</p>
+  </div>
 
   {# ---------- Your skills ---------- #}
   <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
@@ -41,7 +44,7 @@
       {% for row in user_rows %}
         {% include "agent_skills/_skill_row.html" with row=row section="user" %}
       {% empty %}
-      <p class="px-4 py-6 text-body text-sm">No personal skills yet. Use <strong>New</strong> above to add one.</p>
+      <p class="px-4 py-6 text-body text-sm">No skills of your own yet. Use <strong>New</strong> to teach {{ assistant_name }} something.</p>
       {% endfor %}
     </div>
   </section>

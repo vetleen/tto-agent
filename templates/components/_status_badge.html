@@ -1,0 +1,8 @@
+{% comment %}
+Status badge — a colored dot + a single word (the system's one badge language).
+Params:
+  label  : the word to show (e.g. "Ready")
+  tone   : success | warning | danger | neutral   (defaults to neutral)
+  pulse  : truthy to animate the dot (e.g. live transcribing)
+Tones are spelled out with literal classes so Tailwind keeps them in the build.
+{% endcomment %}<span class="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap {% if tone == 'success' %}bg-success-soft text-fg-success border border-success-subtle{% elif tone == 'danger' %}bg-danger-soft text-fg-danger border border-danger-subtle{% elif tone == 'warning' %}bg-warning-soft text-fg-warning border border-warning-subtle{% else %}bg-neutral-secondary-soft text-body border border-default{% endif %}"><span class="w-1.5 h-1.5 rounded-full shrink-0 {% if tone == 'success' %}bg-fg-success{% elif tone == 'danger' %}bg-fg-danger{% elif tone == 'warning' %}bg-fg-warning{% else %}bg-body-subtle{% endif %}{% if pulse %} animate-pulse{% endif %}"></span>{{ label }}</span>
