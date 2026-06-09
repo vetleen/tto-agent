@@ -371,6 +371,12 @@
     border-color: var(--color-brand);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent);
   }
+  /* Editor wrappers (CodeMirror) carry .wf-input; the field itself can't take :focus,
+     so mirror the focus treatment on :focus-within. */
+  .cm-field:focus-within {
+    border-color: var(--color-brand);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent);
+  }
 
   /* Landing chat-mock typing caret (CSS effect, no JS) */
   .wf-caret {

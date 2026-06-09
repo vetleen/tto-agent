@@ -66,10 +66,9 @@
 
     var preview = o.preview;
     var wrapper = document.createElement("div");
-    // Slim wrapper: the editor component renders its own toolbar/accent chrome, so
-    // we drop the redundant border/shadow and just provide the field background and
-    // rounded clipping. (The section card around it already supplies a border.)
-    wrapper.className = "cm-field bg-neutral-secondary-medium rounded-base overflow-hidden";
+    // White-inset field: .wf-input supplies the white background, forest hairline and
+    // inset shadow so the editor reads as a clean field cut into the section card.
+    wrapper.className = "cm-field wf-input rounded-base overflow-hidden";
     textarea.classList.add("hidden");
     textarea.parentNode.insertBefore(wrapper, textarea.nextSibling);
 
