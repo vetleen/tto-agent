@@ -579,3 +579,99 @@ def data_rooms_for_user(request):
     for r in rooms:
         r["uuid"] = str(r["uuid"])
     return JsonResponse({"data_rooms": rooms})
+
+
+# Sidebar search: caps keep the response small and bound the icontains scan.
+SEARCH_TITLE_LIMIT = 10
+SEARCH_CONTENT_LIMIT = 10
+SEARCH_CONTENT_MIN_QUERY = 3
+SEARCH_CONTENT_SCAN_CAP = 500
+
+
+def _search_snippet(content, query, before=45, after=65):
+    """Short window of ``content`` around the first case-insensitive match of
+    ``query``, whitespace-collapsed, with ellipses marking truncation."""
+    idx = content.lower().find(query.lower())
+    if idx == -1:
+        idx = 0
+    start = max(0, idx - before)
+    end = min(len(content), idx + len(query) + after)
+    snippet = " ".join(content[start:end].split())
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(content):
+        snippet = snippet + "…"
+    return snippet
+
+
+@login_required
+@require_http_methods(["GET"])
+def search_threads(request):
+    """JSON API for the sidebar chat search.
+
+    Returns one merged list: threads whose title matches first, then threads
+    with a matching user/assistant message (deduped, with a snippet of the
+    most recent matching message). Archived threads are included and flagged.
+    """
+    from chat.models import ChatMessage
+
+    query = request.GET.get("q", "").strip()
+    if not query:
+        return JsonResponse({"results": []})
+
+    results = []
+
+    title_threads = list(
+        ChatThread.objects.filter(created_by=request.user, title__icontains=query)
+        .order_by("-updated_at")[:SEARCH_TITLE_LIMIT]
+    )
+    for t in title_threads:
+        results.append({
+            "id": str(t.id),
+            "title": str(t),
+            "emoji": t.emoji,
+            "is_archived": t.is_archived,
+            "snippet": None,
+        })
+
+    # Content matches: skip very short queries (they match everything) and
+    # threads already found by title. Hidden messages aren't shown in the UI,
+    # so they shouldn't be searchable either.
+    if len(query) >= SEARCH_CONTENT_MIN_QUERY:
+        title_ids = {t.id for t in title_threads}
+        matched = {}  # thread_id -> snippet of most recent matching message
+        message_rows = (
+            ChatMessage.objects.filter(
+                thread__created_by=request.user,
+                role__in=[ChatMessage.Role.USER, ChatMessage.Role.ASSISTANT],
+                is_hidden_from_user=False,
+                content__icontains=query,
+            )
+            .exclude(thread_id__in=title_ids)
+            .order_by("-created_at")
+            .values_list("thread_id", "content")[:SEARCH_CONTENT_SCAN_CAP]
+        )
+        for thread_id, content in message_rows:
+            if thread_id in matched:
+                continue
+            matched[thread_id] = _search_snippet(content, query)
+            if len(matched) >= SEARCH_CONTENT_LIMIT:
+                break
+
+        if matched:
+            content_threads = ChatThread.objects.filter(id__in=matched)
+            threads_by_id = {t.id: t for t in content_threads}
+            # Preserve message-recency order from the scan above.
+            for thread_id, snippet in matched.items():
+                t = threads_by_id.get(thread_id)
+                if t is None:
+                    continue
+                results.append({
+                    "id": str(t.id),
+                    "title": str(t),
+                    "emoji": t.emoji,
+                    "is_archived": t.is_archived,
+                    "snippet": snippet,
+                })
+
+    return JsonResponse({"results": results})
