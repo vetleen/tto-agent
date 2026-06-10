@@ -537,9 +537,208 @@ class ProcessDocumentDispatchTests(TestCase):
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hi")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
                      patch("guardrails.tasks.scan_document_chunks.delay"), \
+                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False), \
                      patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
                     process_document(doc.id)
 
                 mock_delay.assert_called_once_with(doc.id)
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+
+class ProcessDocumentGateTests(TestCase):
+    """process_document holds gated documents in SCANNING until the PII scan clears them."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="procgate@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="ProcGate", slug="proc-gate", created_by=self.user)
+
+    def _run_process(self, mock_finalize_delay):
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [{"text": "chunk", "token_count": 5, "chunk_index": 0}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="gate.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("gate.txt", ContentFile(b"hi"), save=True)
+
+                with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hi")]), \
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("guardrails.tasks.scan_document_chunks.delay"), \
+                     patch("documents.services.pii_scan.pii_gate_applies", return_value=True), \
+                     patch("documents.tasks.finalize_document_metadata.delay", mock_finalize_delay):
+                    process_document(doc.id)
+                doc.refresh_from_db()
+                return doc
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
+    def test_gated_doc_held_in_scanning(self):
+        doc = self._run_process(MagicMock())
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+        self.assertIsNone(doc.processing_error)
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
+    def test_gated_dispatch_failure_marks_scan_failed(self):
+        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+
+        doc = self._run_process(MagicMock(side_effect=RuntimeError("broker down")))
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(doc.processing_error, SCAN_FAILED_MESSAGE)
+
+
+class ScanGateTransitionTests(TestCase):
+    """finalize_document_metadata releases SCANNING documents to READY or SCAN_FAILED."""
+
+    _DESC = {"description": "A description", "tags": {}, "document_date": None}
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="scangate@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="ScanGate", slug="scan-gate", created_by=self.user)
+
+    def _scanning_doc(self, description=""):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="scan.txt",
+            status=DataRoomDocument.Status.SCANNING,
+            description=description,
+            token_count=10,
+        )
+        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="text", token_count=10)
+        return doc
+
+    @override_settings(**_MODELS)
+    def test_clean_scan_releases_to_ready(self):
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._scanning_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value=self._DESC), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document", return_value={}):
+            finalize_document_metadata(doc.id)
+
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+        self.assertFalse(doc.is_quarantined)
+
+    @override_settings(**_MODELS)
+    def test_quarantined_doc_still_released_to_ready(self):
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._scanning_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value=self._DESC), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   return_value={"pii_special_category": True}):
+            finalize_document_metadata(doc.id)
+
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+        self.assertTrue(doc.is_quarantined)
+        self.assertIn("Article 9", doc.quarantine_reason)
+
+    @override_settings(**_MODELS)
+    def test_config_error_marks_scan_failed_without_retry(self):
+        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+        from documents.tasks import finalize_document_metadata
+        from llm.service.errors import LLMConfigurationError
+
+        doc = self._scanning_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value=self._DESC), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   side_effect=LLMConfigurationError("no api key")), \
+             patch.object(finalize_document_metadata, "retry") as mock_retry:
+            finalize_document_metadata(doc.id)
+
+        mock_retry.assert_not_called()
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(doc.processing_error, SCAN_FAILED_MESSAGE)
+
+    @override_settings(**_MODELS)
+    def test_transient_failure_retries_and_stays_scanning(self):
+        from celery.exceptions import Retry
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._scanning_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value=self._DESC), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   side_effect=RuntimeError("LLM hiccup")), \
+             patch.object(finalize_document_metadata, "retry", side_effect=Retry("will retry")) as mock_retry:
+            with self.assertRaises(Retry):
+                finalize_document_metadata(doc.id)
+
+        mock_retry.assert_called_once()
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+
+    @override_settings(**_MODELS)
+    def test_retries_exhausted_marks_scan_failed(self):
+        from celery.exceptions import MaxRetriesExceededError
+        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._scanning_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value=self._DESC), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   side_effect=RuntimeError("LLM down")), \
+             patch.object(finalize_document_metadata, "retry", side_effect=MaxRetriesExceededError()):
+            finalize_document_metadata(doc.id)  # must not raise
+
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(doc.processing_error, SCAN_FAILED_MESSAGE)
+
+    @override_settings(**_MODELS)
+    def test_ungated_failure_leaves_ready_doc_alone(self):
+        """A READY (ungated) doc with a failing scan keeps today's best-effort behavior."""
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._scanning_doc()
+        doc.status = DataRoomDocument.Status.READY
+        doc.save(update_fields=["status"])
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value=self._DESC), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+                   side_effect=RuntimeError("boom")), \
+             patch.object(finalize_document_metadata, "retry") as mock_retry:
+            finalize_document_metadata(doc.id)  # must not raise
+
+        mock_retry.assert_not_called()
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+    def test_gate_disabled_after_processing_still_releases(self):
+        """If the org disabled the scan between processing and finalize, release the doc."""
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._scanning_doc()
+        with patch("core.preferences.resolve_org_feature_model", return_value=""):
+            finalize_document_metadata(doc.id)
+
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+
+    @override_settings(**_MODELS)
+    def test_description_skipped_when_already_set(self):
+        """Scan retries must not regenerate an existing description (burns LLM calls)."""
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._scanning_doc(description="Already described")
+        with patch("documents.services.description.generate_description_and_tags_from_text") as mock_desc, \
+             patch("documents.services.pii_scan.scan_pii_categories_for_document", return_value={}):
+            finalize_document_metadata(doc.id)
+
+        mock_desc.assert_not_called()
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+        self.assertEqual(doc.description, "Already described")

@@ -379,7 +379,8 @@ class ProcessDocumentServiceTests(TestCase):
                 doc.original_file.save("test.txt", ContentFile(b"hello world"), save=True)
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
-                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks):
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
@@ -526,7 +527,8 @@ class ProcessDocumentSemanticTests(TestCase):
                 doc.original_file.save("flat.txt", ContentFile(b"test content"), save=True)
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test content")]), \
-                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks):
+                     patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
+                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
@@ -2045,7 +2047,8 @@ class ProcessDocumentAudioTests(TestCase):
 
                 with patch("core.preferences.get_preferences", return_value=mock_prefs), \
                      patch("documents.services.transcription.transcribe_audio", return_value="This is a transcript.") as mock_transcribe, \
-                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks) as mock_chunk:
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks) as mock_chunk, \
+                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 mock_transcribe.assert_called_once()

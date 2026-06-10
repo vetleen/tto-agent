@@ -98,6 +98,9 @@ convictions, charges, or offences.
 - When in doubt, err on the side of `false`.
 """
 
+# Shown as processing_error when a gated document's PII scan can't run/complete.
+SCAN_FAILED_MESSAGE = "Couldn't check this document for sensitive data — retry the scan."
+
 # All category field names, in schema order
 PII_CATEGORIES = [
     "pii_ordinary_identity",

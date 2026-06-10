@@ -1023,6 +1023,84 @@ class DocumentViewsTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class DocumentRescanTests(TestCase):
+    """POST document_rescan re-runs the PII scan for SCANNING/SCAN_FAILED documents."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="rescan@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="Rescan", slug="rescan", created_by=self.user)
+        self.other = User.objects.create_user(email="rescan-other@example.com", password="testpass")
+
+    def _make_doc(self, status):
+        return DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="doc.txt",
+            status=status,
+            processing_error="old error",
+        )
+
+    def _url(self, doc):
+        return reverse("document_rescan", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.pk})
+
+    def test_requires_login(self):
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        response = self.client.post(self._url(doc))
+        self.assertEqual(response.status_code, 302)
+
+    def test_non_owner_forbidden(self):
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        self.client.force_login(self.other)
+        response = self.client.post(self._url(doc))
+        self.assertEqual(response.status_code, 403)
+
+    def test_rescan_scan_failed_doc_dispatches_finalize(self):
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        self.client.force_login(self.user)
+        with patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
+            response = self.client.post(self._url(doc))
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(doc.pk)
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+        self.assertIsNone(doc.processing_error)
+
+    def test_rescan_allowed_for_stuck_scanning_doc(self):
+        doc = self._make_doc(DataRoomDocument.Status.SCANNING)
+        self.client.force_login(self.user)
+        with patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
+            response = self.client.post(self._url(doc))
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(doc.pk)
+
+    def test_rescan_rejected_for_ready_doc(self):
+        doc = self._make_doc(DataRoomDocument.Status.READY)
+        self.client.force_login(self.user)
+        with patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
+            response = self.client.post(self._url(doc))
+        self.assertEqual(response.status_code, 409)
+        mock_delay.assert_not_called()
+
+    def test_dispatch_failure_marks_scan_failed(self):
+        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        self.client.force_login(self.user)
+        with patch("documents.tasks.finalize_document_metadata.delay", side_effect=RuntimeError("broker down")):
+            response = self.client.post(self._url(doc))
+        self.assertEqual(response.status_code, 500)
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(doc.processing_error, SCAN_FAILED_MESSAGE)
+
+    def test_get_method_not_allowed(self):
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        self.client.force_login(self.user)
+        response = self.client.get(self._url(doc))
+        self.assertEqual(response.status_code, 405)
+
+
 class DocumentDeleteCheckTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="delcheck@example.com", password="testpass")

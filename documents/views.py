@@ -102,7 +102,7 @@ def data_room_list(request):
             document_count=Count("documents", filter=active_doc),
             processing_count=Count(
                 "documents",
-                filter=active_doc & Q(documents__status__in=["uploaded", "processing"]),
+                filter=active_doc & Q(documents__status__in=["uploaded", "processing", "scanning"]),
             ),
         )
         .order_by("-updated_at")
@@ -449,6 +449,34 @@ def document_archive(request, data_room_id, document_id):
     label = "archived" if doc.is_archived else "restored"
     messages.success(request, f"Document {label}.")
     return redirect("data_room_documents", data_room_id=data_room.uuid)
+
+
+@login_required
+@require_POST
+def document_rescan(request, data_room_id, document_id):
+    """Re-run the PII scan for a document stuck in SCANNING or marked SCAN_FAILED."""
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_modify_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
+    if doc.status not in (DataRoomDocument.Status.SCANNING, DataRoomDocument.Status.SCAN_FAILED):
+        return JsonResponse({"error": "This document is not waiting on a scan."}, status=409)
+    doc.status = DataRoomDocument.Status.SCANNING
+    doc.processing_error = None
+    doc.save(update_fields=["status", "processing_error", "updated_at"])
+    try:
+        from documents.tasks import finalize_document_metadata
+
+        finalize_document_metadata.delay(doc.id)
+    except Exception:
+        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+
+        logger.exception("document_rescan: failed to enqueue scan for document_id=%s", doc.id)
+        doc.status = DataRoomDocument.Status.SCAN_FAILED
+        doc.processing_error = SCAN_FAILED_MESSAGE
+        doc.save(update_fields=["status", "processing_error", "updated_at"])
+        return JsonResponse({"error": "The scan couldn't be started. Please try again."}, status=500)
+    return JsonResponse({"status": "ok", "document": {"id": doc.id, "status": doc.status}})
 
 
 @login_required
