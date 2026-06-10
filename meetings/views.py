@@ -570,20 +570,19 @@ def meeting_save_to_data_room(request, meeting_uuid):
     )
     DataRoomDocumentTag.objects.create(document=doc, key="source", value="meeting_export")
     DataRoomDocumentTag.objects.create(document=doc, key="meeting_uuid", value=str(meeting.uuid))
+    # No synchronous fallback (same rationale as document_upload): if the broker
+    # is down, fail the document with a clear message instead of processing
+    # inline on the web dyno.
     try:
         from documents.tasks import process_document_task
         process_document_task.delay(doc.id)
-    except Exception:
-        try:
-            from documents.services.process_document import process_document
-            process_document(doc.id)
-        except Exception as exc:
-            logger.exception("meeting_save_to_data_room: processing failed for doc %s", doc.id)
-            doc.status = DataRoomDocument.Status.FAILED
-            doc.processing_error = str(exc)[:2000]
-            doc.save(update_fields=["status", "processing_error", "updated_at"])
-            messages.error(request, "Could not start processing the saved document.")
-            return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+    except Exception as exc:
+        logger.exception("meeting_save_to_data_room: failed to enqueue processing for doc %s", doc.id)
+        doc.status = DataRoomDocument.Status.FAILED
+        doc.processing_error = str(exc)[:2000]
+        doc.save(update_fields=["status", "processing_error", "updated_at"])
+        messages.error(request, "Could not start processing the saved document.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
     if existing_pks:
         messages.success(request, f"Resaved to data room: {data_room.name}.")

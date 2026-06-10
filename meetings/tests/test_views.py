@@ -545,6 +545,21 @@ class MeetingSaveToDataRoomTests(TestCase):
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.my_room).count(), 1)
         mock_delay.assert_called_once()
 
+    @patch("documents.services.process_document.process_document")
+    @patch("documents.tasks.process_document_task.delay", side_effect=RuntimeError("broker down"))
+    def test_save_marks_failed_when_delay_fails(self, mock_delay, mock_sync):
+        """No synchronous fallback: a failed enqueue marks the export FAILED."""
+        from documents.models import DataRoomDocument
+        response = self.client.post(
+            reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
+            {"data_room_id": str(self.my_room.uuid)},
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_sync.assert_not_called()
+        doc = DataRoomDocument.objects.get(data_room=self.my_room)
+        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+        self.assertIn("broker down", doc.processing_error)
+
     @patch("documents.tasks.process_document_task.delay")
     def test_save_saves_raw_transcript(self, mock_delay):
         """The button saves the raw transcript content."""
