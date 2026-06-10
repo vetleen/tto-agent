@@ -1,4 +1,5 @@
 {% load static %}
+{% load branding %}
 <!doctype html>
 <html lang="en" {% if landing_page %}data-theme="dark"{% elif force_light %}data-theme="light"{% elif user.is_authenticated %}data-theme="{{ theme }}" data-theme-update-url="{% url 'accounts:theme_update' %}"{% endif %}>
   <head>
@@ -37,32 +38,34 @@
     {% block navbar %}
     <nav class="bg-neutral-primary fixed w-full z-50 top-0 start-0 border-b border-default backdrop-blur-md">
       <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex flex-wrap items-center justify-between h-16">
-        <a href="{% if user.is_authenticated %}/chat/{% else %}/{% endif %}" class="flex items-center shrink-0" aria-label="Home">
+        <div class="flex flex-wrap items-center h-16">
+        <a href="{% if user.is_authenticated %}/chat/{% else %}/{% endif %}" class="flex items-center shrink-0 me-2 md:me-6" aria-label="Home">
           <img src="{% static 'img/brand/wilfred-mark.svg' %}" alt="" aria-hidden="true" class="h-8 w-8 shrink-0">
           <span class="ml-2 self-center text-2xl text-heading font-semibold tracking-tight whitespace-nowrap font-serif">{{ assistant_name }}</span>
         </a>
         {% if user.is_authenticated %}
-          {% if budget_status %}
-          <div class="hidden md:flex items-center md:order-1 mx-4 flex-1 justify-center">
-            <a href="{% url 'accounts:usage' %}" class="flex items-center gap-2 group" title="${{ budget_status.effective_spend|floatformat:2 }} / ${{ budget_status.effective_budget|floatformat:2 }}">
-              <span class="text-xs text-body group-hover:text-heading whitespace-nowrap">{{ budget_status.month_name }} usage</span>
+          {# Primary nav — left of the bar, collapses into the mobile menu #}
+          <div class="hidden order-last w-full md:order-none md:flex md:w-auto" id="navbar-user">
+            <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:items-center md:gap-0.5 md:space-x-0 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
+              <li><a href="{% url 'chat_home' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':6' == '/chat/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Chat</a></li>
+              <li><a href="{% url 'agent_skills_list' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':8' == '/skills/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Skills</a></li>
+              <li><a href="{% url 'data_room_list' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':12' == '/data-rooms/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Data Rooms</a></li>
+              <li><a href="{% url 'meeting_list' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':10' == '/meetings/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Meetings</a></li>
+            </ul>
+          </div>
+          <div class="flex-1"></div>
+          {# Right cluster — usage meter, divider, icons #}
+          <div class="flex items-center gap-1.5 sm:gap-2">
+            {% if budget_status %}
+            <a href="{% url 'accounts:usage' %}" class="hidden md:flex items-center gap-2 group" title="${{ budget_status.effective_spend|floatformat:2 }} / ${{ budget_status.effective_budget|floatformat:2 }}">
+              <span class="wf-mono text-xs text-body group-hover:text-heading whitespace-nowrap">{{ budget_status.month_name }} usage</span>
               <div class="w-24 bg-neutral-tertiary rounded-full h-2">
                 <div class="h-2 rounded-full {% if budget_status.percentage >= 90 %}bg-danger{% elif budget_status.percentage >= 75 %}bg-warning{% else %}bg-brand{% endif %}" style="width: {{ budget_status.percentage }}%"></div>
               </div>
               <span class="wf-mono text-xs text-body group-hover:text-heading whitespace-nowrap">${{ budget_status.effective_budget|floatformat:0 }}</span>
             </a>
-          </div>
-          {% endif %}
-          <div class="flex items-center gap-4 md:order-2">
-            <div class="hidden w-full items-center md:flex md:w-auto" id="navbar-user">
-              <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:space-x-6 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
-                <li><a href="{% url 'chat_home' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':6' == '/chat/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Chat</a></li>
-                <li><a href="{% url 'agent_skills_list' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':8' == '/skills/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Skills</a></li>
-                <li><a href="{% url 'data_room_list' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':12' == '/data-rooms/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Data Rooms</a></li>
-                <li><a href="{% url 'meeting_list' %}" class="md:py-0.5 md:border-b-2 {% if request.path|slice:':10' == '/meetings/' %}md:border-accent text-fg-brand dark:text-heading{% else %}md:border-transparent text-body hover:text-heading{% endif %}">Meetings</a></li>
-              </ul>
-            </div>
+            <div class="hidden md:block h-6 border-l border-default mx-1"></div>
+            {% endif %}
             <a href="{% url 'inbox' %}" aria-label="Inbox" title="Inbox" class="inline-flex items-center {% if request.path|slice:':7' == '/inbox/' %}text-fg-brand dark:text-heading{% else %}text-body{% endif %} hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
             </a>
@@ -70,10 +73,8 @@
               <svg id="theme-toggle-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
               <svg id="theme-toggle-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
             </button>
-            <button type="button" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5 md:me-0" id="user-menu-button" aria-expanded="false" data-dropdown-toggle="user-dropdown" data-dropdown-placement="bottom" aria-label="Open user menu">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>
-              </svg>
+            <button type="button" class="flex items-center rounded-full focus:outline-none focus:ring-4 focus:ring-neutral-tertiary md:me-0" id="user-menu-button" aria-expanded="false" data-dropdown-toggle="user-dropdown" data-dropdown-placement="bottom" aria-label="Open user menu">
+              <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
             </button>
             <div class="z-50 hidden bg-neutral-primary-medium border border-default-medium rounded-base shadow-lg w-56" id="user-dropdown">
               <div class="px-4 py-3 text-sm border-b border-default">
@@ -120,7 +121,8 @@
             </button>
           </div>
         {% else %}
-          <div class="flex items-center gap-4 md:order-2">
+          <div class="flex-1"></div>
+          <div class="flex items-center gap-4">
             {% if not landing_page %}
             <button type="button" id="theme-toggle-anon" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
               <svg id="theme-toggle-anon-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>

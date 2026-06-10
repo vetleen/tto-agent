@@ -22,6 +22,42 @@ def _get_accessible_data_rooms(user):
     )
 
 
+def _group_threads_by_time(threads):
+    """Bucket threads (already ordered by ``-updated_at``) into Today / Yesterday /
+    Earlier by their ``updated_at`` in the active local timezone.
+
+    Returns a list of ``{"label", "threads"}`` dicts, omitting empty groups. The
+    sidebar always presents the Today group first; JS recreates it when a new or
+    just-touched thread needs to land there.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    today = timezone.localdate()
+    yesterday = today - timedelta(days=1)
+    today_items, yesterday_items, earlier_items = [], [], []
+    for t in threads:
+        dt = t.updated_at
+        if timezone.is_aware(dt):
+            dt = timezone.localtime(dt)
+        d = dt.date()
+        if d >= today:
+            today_items.append(t)
+        elif d == yesterday:
+            yesterday_items.append(t)
+        else:
+            earlier_items.append(t)
+    groups = []
+    if today_items:
+        groups.append({"label": "Today", "threads": today_items})
+    if yesterday_items:
+        groups.append({"label": "Yesterday", "threads": yesterday_items})
+    if earlier_items:
+        groups.append({"label": "Earlier", "threads": earlier_items})
+    return groups
+
+
 @login_required
 @require_http_methods(["GET"])
 def chat_home(request):
@@ -60,6 +96,7 @@ def chat_home(request):
     all_threads = ChatThread.objects.filter(created_by=request.user).order_by("-updated_at")
     threads = [t for t in all_threads if not t.is_archived]
     archived_threads = [t for t in all_threads if t.is_archived]
+    thread_groups = _group_threads_by_time(threads)
 
     # User's data rooms (owned + shared) for the attach modal
     data_rooms = _get_accessible_data_rooms(request.user)
@@ -150,6 +187,7 @@ def chat_home(request):
         {
             "thread": thread,
             "threads": threads,
+            "thread_groups": thread_groups,
             "archived_threads": archived_threads,
             "messages": chat_messages,
             "data_rooms": data_rooms,

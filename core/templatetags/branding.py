@@ -24,3 +24,33 @@ def avatar_style(seed):
     idx = sum(ord(ch) for ch in s) % len(_AVATAR_TONES)
     bg, fg = _AVATAR_TONES[idx]
     return f"background:{bg};color:{fg}"
+
+
+@register.filter
+def compact_timesince(value):
+    """Compact relative timestamp for the chat ledger sidebar.
+
+    ``now`` under a minute, ``5m`` / ``3h`` within the day, a weekday
+    abbreviation (``Tue``) within the last week, else ``Apr 30``.
+    """
+    if not value:
+        return ""
+    from django.utils import timezone
+
+    now = timezone.now()
+    try:
+        delta = now - value
+    except TypeError:
+        return ""
+    secs = delta.total_seconds()
+    if secs < 60:
+        return "now"
+    if secs < 3600:
+        return f"{int(secs // 60)}m"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h"
+    local = timezone.localtime(value) if timezone.is_aware(value) else value
+    if delta.days < 7:
+        return local.strftime("%a")
+    # Portable across platforms (avoid %-d which fails on Windows).
+    return f"{local.strftime('%b')} {local.day}"

@@ -14,69 +14,71 @@
 {# Mobile canvas toggle #}
 <button id="canvas-toggle-btn-mobile" type="button" class="fixed top-[4.25rem] right-0 z-40 me-3 mt-3 text-heading bg-transparent box-border border border-transparent hover:bg-neutral-secondary-soft focus:ring-4 focus:ring-neutral-tertiary font-medium leading-5 rounded-base text-sm p-2 focus:outline-none inline-flex sm:hidden">
   <span class="sr-only">Toggle canvas</span>
-  <svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+  <svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
 </button>
 
 {# Sidebar — directly below navbar (4rem) #}
 <aside id="chat-sidebar" class="fixed top-16 left-0 z-40 w-64 bottom-0 transition-transform -translate-x-full sm:translate-x-0" aria-label="Chat sidebar">
-  <div class="h-full px-3 py-4 overflow-y-auto bg-neutral-primary-soft border-e border-default">
-    <ul class="space-y-2 font-medium">
-      <li>
-        <a href="{% url 'chat_home' %}" class="flex items-center px-2 py-1.5 text-sm text-body rounded-base hover:bg-neutral-tertiary hover:text-fg-brand group">
-          <svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          <span class="ms-3">New chat</span>
-        </a>
-      </li>
-    </ul>
-    <ul class="space-y-2 font-medium border-t border-default pt-4 mt-4">
-      <li class="px-2 py-1.5 text-xs text-body uppercase tracking-wider">Your chats</li>
-    </ul>
-    <ul id="thread-list" class="space-y-2 font-medium pb-4">
-      {% for t in threads %}
-      <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
-        <a href="{% url 'chat_home' %}?thread={{ t.id }}"
-           class="relative flex items-center px-2 py-1.5 pe-8 text-sm rounded-base group {% if thread and t.id == thread.id %}bg-neutral-secondary-soft text-heading font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-accent{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}"
-           data-thread-id="{{ t.id }}"
-           title="{{ t.title|default:t }}">
-          {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
-          <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
-        </a>
-        <button type="button"
-                class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft {% if thread and t.id == thread.id %}flex{% else %}hidden group-hover:flex{% endif %} items-center justify-center"
-                data-thread-id="{{ t.id }}" data-archived="false">
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
-        </button>
-      </li>
-      {% empty %}
-      <li class="px-2 py-1.5 text-sm text-body" data-empty="true">No conversations yet.</li>
-      {% endfor %}
-    </ul>
-    {% if archived_threads %}
-    <div id="archived-section" class="border-t border-default pt-2 mt-2">
-      <button id="archived-toggle" type="button" class="flex items-center w-full px-2 py-1.5 text-xs text-body hover:text-heading">
-        <svg id="archived-chevron" class="w-3 h-3 me-1.5 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-        Archived (<span id="archived-count">{{ archived_threads|length }}</span>)
-      </button>
-      <ul id="archived-thread-list" class="hidden space-y-2 font-medium mt-2">
-        {% for t in archived_threads %}
-        <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
-          <a href="{% url 'chat_home' %}?thread={{ t.id }}"
-             class="relative flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-secondary-soft hover:text-heading group"
-             data-thread-id="{{ t.id }}"
-             title="{{ t.title|default:t }}">
-            {% if t.emoji %}<span class="shrink-0 text-sm" data-thread-emoji>{{ t.emoji }}</span>{% else %}<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>{% endif %}
-            <span class="ms-3 truncate">{{ t.title|default:t|truncatechars:30 }}</span>
-          </a>
-          <button type="button"
-                  class="thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center"
-                  data-thread-id="{{ t.id }}" data-archived="true">
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
-          </button>
-        </li>
-        {% endfor %}
-      </ul>
+  <div class="h-full flex flex-col bg-neutral-primary border-e border-default">
+    {# Top: New chat + search (fixed) #}
+    <div class="px-3.5 pt-3.5 pb-2 flex flex-col gap-2.5 shrink-0">
+      <a href="{% url 'chat_home' %}" class="aside__new">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        New chat
+      </a>
+      <div class="aside__search">
+        <span class="si"><svg class="w-[15px] h-[15px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="M21 21l-4.35-4.35"/></svg></span>
+        <input id="chat-search-input" type="text" class="fake" placeholder="Search chats" autocomplete="off" aria-label="Search chats">
+      </div>
     </div>
-    {% endif %}
+    {# Scrollable, time-grouped thread list #}
+    <div class="flex-1 overflow-y-auto px-2 pb-3">
+      <div id="thread-groups">
+        {% for g in thread_groups %}
+        <div class="thread-group" data-group="{{ g.label }}">
+          <div class="aside__group">{{ g.label }}</div>
+          <ul {% if g.label == 'Today' %}id="thread-list" {% endif %}class="thread-group-list">
+            {% for t in g.threads %}
+            <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
+              <a href="{% url 'chat_home' %}?thread={{ t.id }}" class="row{% if thread and t.id == thread.id %} active{% endif %}" data-thread-id="{{ t.id }}" title="{{ t.title|default:t }}">
+                {% if t.emoji %}<span class="row__ic" data-thread-emoji>{{ t.emoji }}</span>{% endif %}
+                <span class="row__t">{{ t.title|default:t|truncatechars:34 }}</span>
+                <span class="row__time">{{ t.updated_at|compact_timesince }}</span>
+              </a>
+              <button type="button" class="thread-menu-btn absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center" data-thread-id="{{ t.id }}" data-archived="false">
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+              </button>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% empty %}
+        <div class="px-3 py-2 text-sm text-body-subtle" data-empty="true">No conversations yet.</div>
+        {% endfor %}
+      </div>
+      {% if archived_threads %}
+      <div id="archived-section" class="border-t border-default pt-2 mt-2 px-1">
+        <button id="archived-toggle" type="button" class="flex items-center w-full px-2 py-1.5 text-xs text-body hover:text-heading">
+          <svg id="archived-chevron" class="w-3 h-3 me-1.5 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          Archived (<span id="archived-count">{{ archived_threads|length }}</span>)
+        </button>
+        <ul id="archived-thread-list" class="hidden mt-1">
+          {% for t in archived_threads %}
+          <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
+            <a href="{% url 'chat_home' %}?thread={{ t.id }}" class="row" data-thread-id="{{ t.id }}" title="{{ t.title|default:t }}">
+              {% if t.emoji %}<span class="row__ic" data-thread-emoji>{{ t.emoji }}</span>{% endif %}
+              <span class="row__t">{{ t.title|default:t|truncatechars:34 }}</span>
+              <span class="row__time">{{ t.updated_at|compact_timesince }}</span>
+            </a>
+            <button type="button" class="thread-menu-btn absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center" data-thread-id="{{ t.id }}" data-archived="true">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+            </button>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
   </div>
   {# Shared thread action dropdown menu #}
   <div id="thread-menu" class="hidden absolute z-50 w-32 bg-neutral-primary border border-default rounded-base shadow-lg py-1" style="top:0;left:0;">
@@ -99,7 +101,7 @@
 <div id="content-area" class="flex sm:ml-64" style="height: calc(100vh - 4rem);">
 
 {# Chat pane #}
-<div id="chat-pane" class="flex flex-col flex-1 min-w-0 transition-all duration-200 relative">
+<div id="chat-pane" class="flex flex-col flex-1 min-w-0 transition-all duration-200 relative bg-neutral-primary-soft">
   {# Drop overlay for drag-and-drop file upload #}
   <div id="drop-overlay" class="hidden absolute inset-0 z-50 bg-brand/10 border-2 border-dashed border-brand rounded-lg flex items-center justify-center pointer-events-none">
     <span class="text-brand font-medium text-lg">Drop files to attach</span>
@@ -138,84 +140,68 @@
     </div>
     <div class="flex items-center gap-2">
       <button id="canvas-toggle-btn" type="button" class="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle canvas">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
         <svg id="canvas-toggle-arrow" class="w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
       </button>
     </div>
   </div>
+  {# Body: messages + composer. When empty, this group centers vertically (mock empty state). #}
+  <div id="chat-body" class="flex flex-col flex-1 min-h-0 justify-center">
   {# Messages area — scrollable #}
-  <div class="{% if messages %}flex-1{% endif %} overflow-y-auto" id="messages-scroll-container">
+  <div class="{% if messages %}flex-1 {% endif %}min-h-0 overflow-y-auto" id="messages-scroll-container">
     <div class="max-w-4xl mx-auto w-full px-4 {% if messages %}py-6{% endif %}">
       <div id="chat-messages" class="space-y-6">
         {% for m in messages %}
           {% if m.is_redacted and m.role == "tool" %}
             {# Skip redacted tool messages entirely #}
           {% elif m.is_redacted and m.role == "user" %}
-            <div class="flex justify-end opacity-60" data-role="user">
-              <div class="flex items-start gap-2.5 flex-row-reverse">
-                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
-                <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
-                  <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
-                    <span class="text-sm font-semibold text-heading">You</span>
-                    <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
-                  </div>
-                  <div class="text-sm py-2.5 text-body/50 italic">{{ assistant_name }} set this message aside for safety.</div>
-                </div>
+            <div class="umsg opacity-60" data-role="user">
+              <div class="umsg__bubble">
+                <div class="umsg__txt whitespace-pre-wrap text-body/50 italic">{{ assistant_name }} set this message aside for safety.</div>
               </div>
+              <span class="wf-avatar" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
             </div>
           {% elif m.is_redacted and m.role == "assistant" %}
-            <div class="flex items-start gap-2.5 opacity-60" data-role="assistant">
-              <div class="flex flex-col w-full">
-                <div class="flex items-center space-x-2">
-                  <span class="text-sm font-semibold text-heading">{{ assistant_name }}</span>
-                  <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
-                </div>
-                <div class="text-sm text-body/50 italic mt-2">{{ assistant_name }} set this message aside for safety.</div>
+            <div class="wmsg opacity-60" data-role="assistant">
+              <span class="wmsg__av">{{ assistant_name|first|upper }}</span>
+              <div class="wmsg__body">
+                <div class="text-sm text-body/50 italic">{{ assistant_name }} set this message aside for safety.</div>
               </div>
             </div>
           {% elif m.role == "user" %}
-            <div class="flex justify-end" data-role="user">
-              <div class="flex items-start gap-2.5 flex-row-reverse">
-                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
-                <div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base">
-                  <div class="flex items-center space-x-1.5 rtl:space-x-reverse">
-                    <span class="text-sm font-semibold text-heading">You</span>
-                    <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
-                  </div>
-                  <div class="text-sm py-2.5 text-body whitespace-pre-wrap">{{ m.content }}</div>
-                  {% if m.attachment_names %}
-                  <div class="flex flex-wrap gap-1 mt-1">
-                    {% for att_tuple in m.attachment_names %}
-                    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full">
-                      {% if att_tuple.1|slice:":6" == "image/" %}
-                      <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                      {% else %}
-                      <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
-                      {% endif %}
-                      {{ att_tuple.0 }}
-                    </span>
-                    {% endfor %}
-                  </div>
-                  {% endif %}
-                  <button type="button" onclick="copyMessage(this)" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
+            <div class="umsg" data-role="user">
+              <div class="umsg__bubble">
+                <div class="umsg__txt whitespace-pre-wrap">{{ m.content }}</div>
+                {% if m.attachment_names %}
+                <div class="flex flex-wrap gap-1 mt-2">
+                  {% for att_tuple in m.attachment_names %}
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full">
+                    {% if att_tuple.1|slice:":6" == "image/" %}
+                    <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    {% else %}
+                    <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                    {% endif %}
+                    {{ att_tuple.0 }}
+                  </span>
+                  {% endfor %}
                 </div>
+                {% endif %}
+                <button type="button" onclick="copyMessage(this)" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
               </div>
+              <span class="wf-avatar" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
             </div>
           {% elif m.role == "assistant" %}
-            <div class="flex items-start gap-2.5" data-role="assistant">
-              <div class="flex flex-col w-full">
-                <div class="flex items-center space-x-2">
-                  <span class="text-sm font-semibold text-heading">{{ assistant_name }}</span>
-                  <span class="text-sm text-body">{{ m.created_at|date:"H:i" }}</span>
-                </div>
-                <div class="text-sm text-body mt-2 markdown-content">{{ m.content }}</div>
+            <div class="wmsg" data-role="assistant">
+              <span class="wmsg__av">{{ assistant_name|first|upper }}</span>
+              <div class="wmsg__body">
+                <div class="text-sm text-body markdown-content">{{ m.content }}</div>
                 <button type="button" onclick="copyMessage(this)" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
               </div>
             </div>
           {% endif %}
         {% empty %}
-          <div class="flex flex-col items-center justify-center" style="padding-top: 30vh;" data-placeholder="true">
-            <h2 class="text-xl text-heading">What are we working on today?</h2>
+          <div class="flex flex-col items-center text-center pb-2" data-placeholder="true">
+            <h2 class="empty__h">What are we working on today?</h2>
           </div>
         {% endfor %}
       </div>
@@ -223,15 +209,17 @@
   </div>
 
   {# Task plan card — collapsible, above input #}
-  <div id="task-plan-card" class="{% if thread_tasks_json == "[]" or not thread_tasks_json %}hidden {% endif %}border-t border-default bg-neutral-primary w-full">
+  <div id="task-plan-card" class="{% if thread_tasks_json == "[]" or not thread_tasks_json %}hidden {% endif %}w-full">
     <div class="max-w-4xl mx-auto w-full px-4 pt-2 pb-1">
-      <button id="task-plan-toggle" type="button" class="flex items-center gap-1.5 text-xs font-medium text-heading hover:text-brand transition-colors w-full text-left py-1">
-        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
-        <span id="task-plan-badge">Task Plan</span>
-        <svg id="task-plan-chevron" class="w-3 h-3 ml-auto transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-      </button>
-      <div id="task-plan-list" class="hidden pb-1 pt-0.5">
-        {# Task items rendered by JS #}
+      <div class="task">
+        <button id="task-plan-toggle" type="button" class="task__bar w-full px-3.5 py-2.5 text-left hover:bg-neutral-secondary-soft transition-colors">
+          <svg class="w-4 h-4 shrink-0 text-body-subtle" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+          <b class="flex-1" id="task-plan-badge">Task plan</b>
+          <svg id="task-plan-chevron" class="w-3.5 h-3.5 shrink-0 text-body-subtle transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div id="task-plan-list" class="hidden flex flex-col gap-2.5 px-3.5 pb-3 pt-2.5 border-t border-default-subtle">
+          {# Task items rendered by JS #}
+        </div>
       </div>
     </div>
   </div>
@@ -249,37 +237,40 @@
     </div>
   </div>
 
-  {# Input area — sticky bottom, moves up when chat is empty #}
-  <div id="chat-input-area" class="{% if messages %}border-t border-default{% endif %} bg-neutral-primary w-full">
+  {# Input area — sticky bottom, centered with the heading when chat is empty #}
+  <div id="chat-input-area" class="bg-neutral-primary-soft w-full">
     <div class="max-w-4xl mx-auto w-full px-4 py-3">
-      {# Attached data room pills #}
-      <div id="attached-data-rooms" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
-        {% for dr in thread_data_rooms %}
-        <span class="data-room-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-body bg-neutral-primary-soft border border-default rounded-full" data-room-id="{{ dr.pk }}">
-          <svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76V12a2.25 2.25 0 012.25-2.25h15A2.25 2.25 0 0121.75 12v.76M4.5 9.75V6A2.25 2.25 0 016.75 3.75h3.879a1.5 1.5 0 011.06.44l1.122 1.12a1.5 1.5 0 001.06.44H17.25A2.25 2.25 0 0119.5 8v1.75"/></svg>
-          {{ dr.name }}
-          <button type="button" class="detach-room-btn ml-0.5 p-0.5 rounded-full text-body-subtle hover:text-heading hover:bg-neutral-tertiary" data-room-id="{{ dr.pk }}" aria-label="Detach {{ dr.name }}">
-            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-          </button>
-        </span>
-        {% endfor %}
-      </div>
-      {# Hidden file input for image attachments #}
+      {# Hidden file input for attachments #}
       <input type="file" id="image-upload-input" class="hidden"
              accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.pdf,text/plain,.txt,text/markdown,.md,text/csv,.csv,text/html,.html,application/json,.json,text/xml,.xml,application/xml,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" multiple />
-      {# Attached image pills #}
-      <div id="attached-images" class="flex flex-wrap gap-2 mb-2 empty:mb-0"></div>
-      {# Attached skill pill #}
-      <div id="attached-skill" class="flex flex-wrap gap-2 mb-2 empty:mb-0">
-        {% if thread_skill %}
-        <span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="{{ thread_skill.id }}">
-          {% if thread_skill.emoji %}<span>{{ thread_skill.emoji }}</span>{% else %}<svg class="w-3.5 h-3.5 shrink-0 text-fg-accent" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg>{% endif %}
-          {{ thread_skill.name }}
-          <button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill">
-            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-          </button>
-        </span>
-        {% endif %}
+      {# Attached items — skills, then data rooms, then files; all on one wrapping row #}
+      <div class="flex flex-wrap gap-2 mb-0 has-[span]:mb-2">
+        {# Attached skill pill #}
+        <div id="attached-skill" class="contents">
+          {% if thread_skill %}
+          <span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="{{ thread_skill.id }}">
+            {% if thread_skill.emoji %}<span>{{ thread_skill.emoji }}</span>{% else %}<svg class="w-3.5 h-3.5 shrink-0 text-fg-accent" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg>{% endif %}
+            {{ thread_skill.name }}
+            <button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </span>
+          {% endif %}
+        </div>
+        {# Attached data room pills #}
+        <div id="attached-data-rooms" class="contents">
+          {% for dr in thread_data_rooms %}
+          <span class="data-room-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-body bg-neutral-primary-soft border border-default rounded-full" data-room-id="{{ dr.pk }}">
+            <svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76V12a2.25 2.25 0 012.25-2.25h15A2.25 2.25 0 0121.75 12v.76M4.5 9.75V6A2.25 2.25 0 016.75 3.75h3.879a1.5 1.5 0 011.06.44l1.122 1.12a1.5 1.5 0 001.06.44H17.25A2.25 2.25 0 0119.5 8v1.75"/></svg>
+            {{ dr.name }}
+            <button type="button" class="detach-room-btn ml-0.5 p-0.5 rounded-full text-body-subtle hover:text-heading hover:bg-neutral-tertiary" data-room-id="{{ dr.pk }}" aria-label="Detach {{ dr.name }}">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </span>
+          {% endfor %}
+        </div>
+        {# Individual file pills (added by JS) #}
+        <div id="attached-images" class="contents"></div>
       </div>
       {% if budget_status and budget_status.exceeded %}
       <div class="flex items-start gap-2 text-sm text-fg-warning bg-warning-soft border border-warning-subtle rounded-lg p-3 mb-2" id="budget-exceeded-banner">
@@ -287,9 +278,9 @@
         <span>Your monthly usage budget has been reached. Usage resets on {{ budget_status.reset_date }}.</span>
       </div>
       {% endif %}
-      <form class="flex flex-wrap sm:flex-nowrap gap-2 items-end" id="chat-form">
-        {# Connection status — left of input #}
-        <div id="connection-status" class="hidden flex items-center gap-1.5 shrink-0 self-center" title="Connection status">
+      <form id="chat-form">
+        {# Connection status — above the composer #}
+        <div id="connection-status" class="hidden flex items-center gap-1.5 mb-2" title="Connection status">
           <div id="connection-spinner" class="hidden" role="status">
             <svg aria-hidden="true" class="w-4 h-4 text-neutral-quaternary animate-spin fill-brand" viewBox="0 0 100 101" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M100 50.5908C100 78.2051 77.6142 100.591 50 100.591C22.3858 100.591 0 78.2051 0 50.5908C0 22.9766 22.3858 0.59082 50 0.59082C77.6142 0.59082 100 22.9766 100 50.5908ZM9.08144 50.5908C9.08144 73.1895 27.4013 91.5094 50 91.5094C72.5987 91.5094 90.9186 73.1895 90.9186 50.5908C90.9186 27.9921 72.5987 9.67226 50 9.67226C27.4013 9.67226 9.08144 27.9921 9.08144 50.5908Z" fill="currentColor"/>
@@ -304,29 +295,38 @@
             Reconnect
           </button>
         </div>
-        <div class="flex-1 flex items-end">
-          <div class="flex w-full shadow-xs rounded-base ring-offset-0 focus-within:ring-2 focus-within:ring-brand focus-within:rounded-base">
-            {# "+" addon button for data room attachment #}
+        {# Vertical composer box: textarea on top, controls in the footer #}
+        <div class="composer-box">
+          <textarea
+            name="message"
+            placeholder="How can {{ assistant_name }} help you today?"
+            id="message-input"
+            rows="1"
+            class="block w-full bg-transparent border-0 text-heading text-sm focus:outline-none focus:ring-0 placeholder:text-body resize-none overflow-hidden px-1"
+            style="min-height: 2.5rem; max-height: 12.5rem;"
+          ></textarea>
+          <div class="composer-box__foot">
+            {# "+" attach menu #}
             <div class="relative">
-              <button type="button" id="attach-btn" class="inline-flex items-center px-3 h-full text-sm text-body bg-neutral-primary-soft border border-default-medium border-e-0 rounded-s-base hover:text-heading hover:bg-neutral-secondary-soft focus:outline-none" aria-label="Attach data room">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+              <button type="button" id="attach-btn" class="wf-iconbtn" aria-label="Attach">
+                <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
               </button>
-              <div id="attach-dropdown" class="absolute bottom-full left-0 mb-1 z-50 hidden bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1 w-52">
+              <div id="attach-dropdown" class="absolute bottom-full left-0 mb-2 z-50 hidden bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1 w-56">
                 <button type="button" id="open-data-room-modal-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
                   <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg>
                   Attach data room
                 </button>
-                <button type="button" id="open-canvas-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
-                  <svg id="open-canvas-btn-icon" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                  <span id="open-canvas-btn-label">Open canvas</span>
-                </button>
                 <button type="button" id="open-skill-modal-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
-                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                  Use skill
+                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg>
+                  Attach skill
                 </button>
                 <button type="button" id="attach-images-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
                   <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                  Add photos &amp; files
+                  Attach files
+                </button>
+                <button type="button" id="open-canvas-btn" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left gap-2 whitespace-nowrap">
+                  <svg id="open-canvas-btn-icon" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  <span id="open-canvas-btn-label">Open canvas</span>
                 </button>
                 <div class="border-t border-default-medium my-1"></div>
                 <label class="flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base gap-2 whitespace-nowrap cursor-pointer">
@@ -338,36 +338,36 @@
                 </label>
               </div>
             </div>
-            <textarea
-              name="message"
-              placeholder="Ask {{ assistant_name }}..."
-              id="message-input"
-              rows="1"
-              class="rounded-none rounded-e-base block w-full px-3 py-2.5 bg-neutral-primary-soft border border-default-medium text-heading text-sm focus:outline-none focus:ring-0 focus:border-default-medium placeholder:text-body resize-none overflow-hidden"
-              style="min-height: 2.5rem; max-height: 12.5rem;"
-            ></textarea>
+            <div class="flex-1"></div>
+            <button type="submit" id="send-button" class="wf-send" aria-label="Send" title="Send">
+              <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+            <button type="button" id="stop-button" class="wf-send hidden" aria-label="Stop" title="Stop">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            </button>
           </div>
         </div>
-        <button
-          type="submit"
-          id="send-button"
-          class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed self-end ml-auto sm:ml-0"
-          style="height: 2.5rem;"
-        >
-          <svg class="w-4 h-4 text-accent dark:text-on-brand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
-          Send
-        </button>
-        <button
-          type="button"
-          id="stop-button"
-          class="text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium rounded-base text-sm px-4 py-2.5 hidden self-end ml-auto sm:ml-0"
-          style="height: 2.5rem;"
-        >
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-        </button>
+        {% if not messages %}
+        {# Empty-state quick actions — mirror the "+" attach menu #}
+        <div id="quick-actions" class="quickrow">
+          <button type="button" class="quick" onclick="document.getElementById('open-data-room-modal-btn').click()">
+            <span class="ic"><svg class="w-[15px] h-[15px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg></span>
+            Attach data room
+          </button>
+          <button type="button" class="quick" onclick="document.getElementById('open-skill-modal-btn').click()">
+            <span class="ic"><svg class="w-[15px] h-[15px]" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg></span>
+            Attach skill
+          </button>
+          <button type="button" class="quick" onclick="document.getElementById('attach-images-btn').click()">
+            <span class="ic"><svg class="w-[15px] h-[15px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span>
+            Attach files
+          </button>
+        </div>
+        {% endif %}
       </form>
     </div>
   </div>
+  </div>{# end #chat-body #}
 </div>{# end #chat-pane #}
 
 {# Resize handle between chat and canvas #}
@@ -566,6 +566,104 @@
   .email-body em { font-style: italic; }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
+
+  /* ===== Chat redesign v2 (ledger) — token aliases + components ===== */
+  /* Aliases point at project color tokens so dark mode flips automatically.
+     Names are prefixed with wf- to avoid colliding with Tailwind theme namespaces. */
+  :root {
+    --wf-card: var(--color-neutral-primary-soft);
+    --wf-page: var(--color-neutral-primary);
+    --wf-sunken: var(--color-neutral-secondary-soft);
+    --wf-inset: var(--color-neutral-tertiary);
+    --wf-brand-soft: var(--color-brand-softer);
+    --wf-text: var(--color-body);
+    --wf-heading: var(--color-heading);
+    --wf-muted: var(--color-body-subtle);
+    --wf-faint: var(--color-fg-disabled);
+    --wf-accent: var(--color-fg-accent);
+    --wf-on-brand: var(--color-on-brand);
+    --wf-border: var(--color-default);
+    --wf-border-subtle: var(--color-default-subtle);
+    --wf-border-strong: var(--color-brand-subtle);
+    --wf-brand: var(--color-brand);
+    --wf-copper: var(--color-accent);
+    --wf-copper-light: var(--color-copper-400, #D29C63);
+    --wf-forest-700: var(--color-forest-700, #16432C);
+    --wf-forest-900: var(--color-forest-900, #0B2418);
+    --wf-green-bg: var(--color-success-medium);
+    --wf-green-fg: var(--color-success);
+    --wf-radius: var(--radius);
+    --wf-shadow: 0 1px 2px rgba(8, 28, 18, .06);
+  }
+
+  /* --- Sidebar --- */
+  .aside__new { height: 38px; border-radius: var(--wf-radius); background: var(--wf-brand); color: var(--wf-on-brand); display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background .12s; }
+  .aside__new:hover { background: var(--color-brand-strong); }
+  .aside__search { position: relative; display: flex; align-items: center; }
+  .aside__search .si { position: absolute; left: 11px; display: inline-flex; color: var(--wf-faint); pointer-events: none; }
+  .aside__search .fake { width: 100%; height: 34px; border-radius: var(--wf-radius); background: var(--wf-card); border: 1px solid var(--wf-border); color: var(--wf-faint); font-size: 13px; padding: 0 10px 0 33px; display: flex; align-items: center; cursor: text; }
+  .aside__group { font-size: 10px; letter-spacing: .11em; text-transform: uppercase; font-weight: 600; color: var(--wf-faint); padding: 13px 8px 4px; }
+  .aside__group:first-child { padding-top: 4px; }
+  .row { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: var(--wf-radius); cursor: pointer; position: relative; color: var(--wf-text); }
+  .row:hover { background: var(--wf-sunken); }
+  .row__ic { flex-shrink: 0; display: inline-flex; font-size: 13px; line-height: 1; }
+  .row__t { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
+  .row__time { font-family: var(--font-mono); font-size: 11px; color: var(--wf-faint); flex-shrink: 0; transition: opacity .12s; }
+  .row:hover .row__time { opacity: 0; }
+  .row.active { background: var(--wf-brand-soft); }
+  .row.active .row__t { color: var(--wf-heading); font-weight: 600; }
+  .row.active::before { content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 0 2px 2px 0; background: var(--wf-copper); }
+
+  /* --- Messages --- */
+  .umsg { display: flex; justify-content: flex-end; gap: 11px; align-items: flex-start; }
+  .umsg__bubble { display: flex; flex-direction: column; max-width: 460px; min-width: 0; background: var(--wf-sunken); border: 1px solid var(--wf-border-subtle); border-radius: 14px 14px 4px 14px; padding: 11px 15px; }
+  .umsg__txt { font-size: 14.5px; line-height: 1.6; color: var(--wf-heading); white-space: pre-wrap; word-break: break-word; }
+  .wf-avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; }
+  .wmsg { display: flex; gap: 11px; align-items: flex-start; }
+  .wmsg__av { width: 28px; height: 28px; flex-shrink: 0; border-radius: 9999px; background: var(--wf-forest-900); color: var(--wf-copper-light); border: 1px solid var(--wf-forest-700); display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-serif); font-size: 14px; font-weight: 600; }
+  .wmsg__body { flex: 1; min-width: 0; padding-top: 3px; display: flex; flex-direction: column; }
+  .idref { font-family: var(--font-mono); font-size: 0.92em; color: var(--wf-accent); }
+
+  /* --- Tool-call chips --- */
+  .tool-cards { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .tool { display: inline-flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--wf-muted); background: var(--wf-sunken); border: 1px solid var(--wf-border-subtle); border-radius: 9999px; padding: 6px 13px; }
+  .tool b { color: var(--wf-heading); font-weight: 600; }
+  .tool .ic { color: var(--wf-accent); display: inline-flex; }
+  .tool .det { font-family: var(--font-mono); font-size: 11px; color: var(--wf-faint); }
+
+  /* --- Composer --- */
+  .composer-box { border: 1px solid var(--wf-border-strong); border-radius: 14px; background: var(--wf-card); box-shadow: var(--wf-shadow); padding: 11px 11px 9px; display: flex; flex-direction: column; gap: 9px; }
+  .composer-box:focus-within { box-shadow: var(--wf-shadow), 0 0 0 3px rgba(30, 86, 56, .18); }
+  .composer-box__foot { display: flex; align-items: center; gap: 8px; }
+  .wf-iconbtn { width: 32px; height: 32px; border-radius: var(--wf-radius); border: 1px solid transparent; background: transparent; color: var(--wf-muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .wf-iconbtn:hover { background: var(--wf-sunken); color: var(--wf-heading); }
+  .wf-send { width: 36px; height: 36px; border-radius: var(--wf-radius); background: var(--wf-brand); color: var(--wf-on-brand); align-items: center; justify-content: center; border: 0; cursor: pointer; transition: background .12s; }
+  .wf-send:not(.hidden) { display: inline-flex; }
+  .wf-send:hover { background: var(--color-brand-strong); }
+  .wf-send:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* --- Empty state + quick actions --- */
+  .empty__h { font-family: var(--font-serif); font-size: 31px; font-weight: 600; color: var(--wf-heading); letter-spacing: -0.02em; line-height: 1.15; text-align: center; margin: 0; text-wrap: balance; }
+  .quickrow { display: flex; flex-wrap: wrap; gap: 9px; justify-content: center; margin-top: 14px; }
+  .quick { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--wf-text); border: 1px solid var(--wf-border); border-radius: var(--wf-radius); padding: 8px 13px; background: var(--wf-card); cursor: pointer; white-space: nowrap; }
+  .quick:hover { background: var(--wf-sunken); border-color: var(--wf-border-strong); }
+  .quick .ic { color: var(--wf-muted); display: inline-flex; }
+
+  /* --- Task plan card --- */
+  .task { border: 1px solid var(--wf-border); border-radius: var(--wf-radius); background: var(--wf-card); box-shadow: var(--wf-shadow); overflow: hidden; }
+  .task__bar { display: flex; align-items: center; gap: 9px; }
+  .task__bar b { font-size: 13px; color: var(--wf-heading); font-weight: 600; }
+  .task__bar .ct { font-family: var(--font-mono); font-size: 12px; color: var(--wf-muted); }
+  .tk { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--wf-text); }
+  .tk .tick { width: 16px; height: 16px; flex-shrink: 0; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; }
+  .tk.done { color: var(--wf-faint); }
+  .tk.done .tick { background: var(--wf-green-bg); color: var(--wf-green-fg); }
+  .tk.active { color: var(--wf-heading); font-weight: 600; }
+  .tk.active .tick { border: 2px solid var(--wf-brand); }
+  .tk.todo { color: var(--wf-faint); }
+  .tk.todo .tick { border: 2px solid var(--wf-border-strong); }
+  .tk__spin { width: 9px; height: 9px; border-radius: 9999px; background: var(--wf-brand); animation: wf-pulse 1.4s ease infinite; }
+  @keyframes wf-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 </style>
 
@@ -853,8 +951,28 @@
   const stopButton = document.getElementById("stop-button");
   const messagesContainer = document.getElementById("chat-messages");
   const scrollContainer = document.getElementById("messages-scroll-container");
-  const threadList = document.getElementById("thread-list");
+  const threadGroups = document.getElementById("thread-groups");
   const attachedRoomsContainer = document.getElementById("attached-data-rooms");
+
+  // Time-grouped sidebar: new/just-touched threads always belong to "Today".
+  function getTodayList() {
+    var list = document.getElementById("thread-list");
+    if (list) { var tg0 = list.closest(".thread-group"); if (tg0) tg0.style.display = ""; return list; }
+    var wrap = document.createElement("div"); wrap.className = "thread-group"; wrap.setAttribute("data-group", "Today");
+    wrap.innerHTML = '<div class="aside__group">Today</div><ul id="thread-list" class="thread-group-list"></ul>';
+    threadGroups.insertBefore(wrap, threadGroups.firstChild);
+    return wrap.querySelector("#thread-list");
+  }
+  // Hide an empty "Today" group; remove other emptied groups entirely.
+  function pruneEmptyGroups() {
+    threadGroups.querySelectorAll(".thread-group").forEach(function (g) {
+      var hasRows = g.querySelector("[data-thread-li]");
+      var isToday = !!g.querySelector("#thread-list");
+      if (!hasRows && !isToday) { g.remove(); }
+      else if (!hasRows && isToday) { g.style.display = "none"; }
+      else { g.style.display = ""; }
+    });
+  }
 
   function renderServerMarkdown() {
     const els = messagesContainer.querySelectorAll('.markdown-content');
@@ -889,22 +1007,23 @@
   }
 
   function addThreadToSidebar(threadId, title) {
-    var emptyEl = threadList.querySelector('[data-empty="true"]');
+    var emptyEl = threadGroups.querySelector('[data-empty="true"]');
     if (emptyEl) emptyEl.remove();
-    if (threadList.querySelector('[data-thread-id="' + threadId + '"]')) return;
-    var li = document.createElement("li"); li.className = "relative group"; li.setAttribute("data-thread-li", threadId);
+    if (threadGroups.querySelector('[data-thread-id="' + threadId + '"]')) return;
+    var list = getTodayList();
+    // Demote any currently-active row.
+    threadGroups.querySelectorAll("a.row.active").forEach(function (el) { el.classList.remove("active"); });
+    var li = document.createElement("li"); li.className = "relative group"; li.setAttribute("data-thread-li", threadId); li.setAttribute("data-emoji", "");
     var a = document.createElement("a"); a.href = CHAT_HOME + "?thread=" + threadId;
-    a.className = "relative flex items-center px-2 py-1.5 pe-8 text-sm rounded-base group bg-neutral-secondary-soft text-heading font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-accent";
-    a.setAttribute("data-thread-id", threadId); a.title = title || "New chat";
-    a.innerHTML = '<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><span class="ms-3 truncate">' + escapeHtml(title || "New chat") + "</span>";
+    a.className = "row active"; a.setAttribute("data-thread-id", threadId); a.title = title || "New chat";
+    a.innerHTML = '<span class="row__t">' + escapeHtml(title || "New chat") + '</span><span class="row__time">now</span>';
     li.appendChild(a);
     var menuBtn = document.createElement("button"); menuBtn.type = "button";
-    menuBtn.className = "thread-menu-btn absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft flex items-center justify-center";
+    menuBtn.className = "thread-menu-btn absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center";
     menuBtn.setAttribute("data-thread-id", threadId); menuBtn.setAttribute("data-archived", "false");
     menuBtn.innerHTML = '<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>';
     li.appendChild(menuBtn);
-    threadList.querySelectorAll("a").forEach(function(el) { el.className = "relative flex items-center px-2 py-1.5 pe-8 text-sm text-body rounded-base hover:bg-neutral-secondary-soft hover:text-heading group"; });
-    threadList.insertBefore(li, threadList.firstChild);
+    list.insertBefore(li, list.firstChild);
   }
 
   // -- Data room pill helpers --
@@ -1490,23 +1609,23 @@
       return;
     }
     var completed = latestTasks.filter(function(t) { return t.status === "completed"; }).length;
-    taskPlanBadge.textContent = "Task Plan (" + completed + "/" + latestTasks.length + ")";
+    taskPlanBadge.textContent = "Task plan (" + completed + "/" + latestTasks.length + ")";
     var html = "";
     latestTasks.forEach(function(t) {
-      var icon = "";
+      var cls, tick;
       if (t.status === "completed") {
-        icon = '<svg class="w-3.5 h-3.5 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+        cls = "tk done";
+        tick = '<span class="tick"><svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></span>';
       } else if (t.status === "in_progress") {
-        if (locked) {
-          icon = '<svg class="w-3.5 h-3.5 shrink-0 animate-spin text-brand" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
-        } else {
-          icon = '<svg class="w-3.5 h-3.5 shrink-0 text-body" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 12h14"/></svg>';
-        }
+        cls = "tk active";
+        tick = locked
+          ? '<span class="tick"><span class="tk__spin"></span></span>'
+          : '<span class="tick"><span class="tk__spin" style="animation:none"></span></span>';
       } else {
-        icon = '<svg class="w-3.5 h-3.5 shrink-0 text-body/40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-width="2"/></svg>';
+        cls = "tk todo";
+        tick = '<span class="tick"></span>';
       }
-      var textClass = t.status === "completed" ? "text-body/50 line-through" : "text-heading";
-      html += '<div class="flex items-center gap-2 py-0.5 text-xs">' + icon + '<span class="' + textClass + '">' + escapeHtml(t.title) + '</span></div>';
+      html += '<div class="' + cls + '">' + tick + '<span>' + escapeHtml(t.title) + '</span></div>';
     });
     taskPlanList.innerHTML = html;
     taskPlanCard.classList.remove("hidden");
@@ -1764,7 +1883,7 @@
     if (et === "thread.cost_updated") { updateThreadCost(data.thread_cost_usd); return; }
     if (et === "thread.title_updated") {
       var tid = data.thread_id, title = data.title || "";
-      if (tid && title) { var link = threadList.querySelector('a[data-thread-id="' + tid + '"]'); if (link) { link.title = title; var span = link.querySelector("span"); if (span) span.textContent = title.length > 30 ? title.substring(0, 27) + "..." : title; } }
+      if (tid && title) { var link = threadGroups.querySelector('a[data-thread-id="' + tid + '"]'); if (link) { link.title = title; var span = link.querySelector(".row__t"); if (span) span.textContent = title.length > 34 ? title.substring(0, 31) + "..." : title; } }
       return;
     }
     if (et === "thread.loaded") {
@@ -1854,7 +1973,7 @@
       ensureBubble();
       const container = currentStreamingElement.querySelector(".tool-cards");
       if (container) {
-        const card = document.createElement("div"); card.className = "tool-card flex items-center gap-1.5 text-xs text-body/70 py-1"; card.setAttribute("data-tool-id", toolId);
+        const card = document.createElement("div"); card.className = "tool-card tool"; card.setAttribute("data-tool-id", toolId);
         let displayText = "Working...";
         if (toolName === "search_documents") displayText = "Searching documents...";
         else if (toolName === "read_document") displayText = "Reading document...";
@@ -1997,10 +2116,8 @@
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("{{ assistant_name|escapejs }} took too long to respond. Please try again."); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   function createAssistantBubble() {
-    const now = new Date();
-    const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
-    const div = document.createElement("div"); div.className = "flex items-start gap-2.5"; div.setAttribute("data-role", "assistant");
-    div.innerHTML = `<div class="flex flex-col w-full"><div class="flex items-center space-x-2"><span class="text-sm font-semibold text-heading">${ASSISTANT_NAME}</span><span class="text-sm text-body">${ts}</span></div><div class="tool-cards mt-1 space-y-1"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-2"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-2 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
+    const div = document.createElement("div"); div.className = "wmsg"; div.setAttribute("data-role", "assistant");
+    div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="tool-cards"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-1 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
     return div;
   }
 
@@ -2041,9 +2158,7 @@
       }
       return;
     }
-    const now = new Date();
-    const ts = now.getHours().toString().padStart(2,"0") + ":" + now.getMinutes().toString().padStart(2,"0");
-    const userDiv = document.createElement("div"); userDiv.className = "flex justify-end"; userDiv.setAttribute("data-role", "user");
+    const userDiv = document.createElement("div"); userDiv.className = "umsg"; userDiv.setAttribute("data-role", "user");
     // Build attachment badges HTML if any
     var attBadges = "";
     if (pendingAttachmentNames.length > 0) {
@@ -2054,13 +2169,13 @@
       });
       attBadges += '</div>';
     }
-    userDiv.innerHTML = `<div class="flex items-start gap-2.5 flex-row-reverse"><span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span><div class="flex flex-col w-full max-w-[420px] leading-1.5 p-4 bg-neutral-secondary-soft rounded-e-base rounded-es-base"><div class="flex items-center space-x-1.5 rtl:space-x-reverse"><span class="text-sm font-semibold text-heading">You</span><span class="text-sm text-body">${ts}</span></div><p class="text-sm py-2.5 text-body whitespace-pre-wrap">${escapeHtml(text)}</p>${attBadges}${COPY_BTN_HTML}</div></div>`;
+    userDiv.innerHTML = `<div class="umsg__bubble"><div class="umsg__txt whitespace-pre-wrap">${escapeHtml(text)}</div>${attBadges}${COPY_BTN_HTML}</div><span class="wf-avatar" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span>`;
     const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
-    // Switch from empty layout to normal chat layout
+    // Switch from empty (centered) layout to normal chat layout
     scrollContainer.classList.add('flex-1');
     scrollContainer.firstElementChild.classList.add('py-6');
-    var inputArea = document.getElementById('chat-input-area');
-    if (inputArea) { inputArea.classList.add('border-t', 'border-default'); }
+    var quickActions = document.getElementById('quick-actions');
+    if (quickActions) quickActions.remove();
     messagesContainer.appendChild(userDiv);
     // Capture attachment IDs before clearing
     var sendAttachmentIds = pendingAttachmentIds.slice();
@@ -2260,13 +2375,13 @@
     document.body.appendChild(el);
     setTimeout(function() { el.style.opacity = "0"; setTimeout(function() { el.remove(); }, 300); }, 4000);
   }
-  function removeThreadLi(threadId) { const li = document.querySelector('[data-thread-li="' + threadId + '"]'); if (li) li.remove(); updateArchivedCount(); showEmptyIfNeeded(); }
+  function removeThreadLi(threadId) { const li = document.querySelector('[data-thread-li="' + threadId + '"]'); if (li) li.remove(); updateArchivedCount(); pruneEmptyGroups(); showEmptyIfNeeded(); }
   function moveThread(threadId, toArchived) {
     const li = document.querySelector('[data-thread-li="' + threadId + '"]'); if (!li) return;
     const menuBtn = li.querySelector(".thread-menu-btn");
     if (toArchived) { if (menuBtn) menuBtn.setAttribute("data-archived", "true"); ensureArchivedSection(); document.getElementById("archived-thread-list").appendChild(li); }
-    else { if (menuBtn) menuBtn.setAttribute("data-archived", "false"); threadList.insertBefore(li, threadList.firstChild); }
-    updateArchivedCount(); showEmptyIfNeeded();
+    else { if (menuBtn) menuBtn.setAttribute("data-archived", "false"); var list = getTodayList(); list.insertBefore(li, list.firstChild); }
+    updateArchivedCount(); pruneEmptyGroups(); showEmptyIfNeeded();
   }
   function ensureArchivedSection() {
     if (document.getElementById("archived-section")) return;
@@ -2283,8 +2398,8 @@
     if (section && count === 0) section.classList.add("hidden"); else if (section) section.classList.remove("hidden");
   }
   function showEmptyIfNeeded() {
-    const hasThreads = threadList.querySelector("[data-thread-li]"); const emptyEl = threadList.querySelector('[data-empty="true"]');
-    if (!hasThreads && !emptyEl) { const li = document.createElement("li"); li.className = "px-2 py-1.5 text-sm text-body"; li.setAttribute("data-empty", "true"); li.textContent = "No conversations yet."; threadList.appendChild(li); }
+    const hasThreads = threadGroups.querySelector("[data-thread-li]"); const emptyEl = threadGroups.querySelector('[data-empty="true"]');
+    if (!hasThreads && !emptyEl) { const d = document.createElement("div"); d.className = "px-3 py-2 text-sm text-body-subtle"; d.setAttribute("data-empty", "true"); d.textContent = "No conversations yet."; threadGroups.appendChild(d); }
     else if (hasThreads && emptyEl) emptyEl.remove();
   }
   var chatIconSvg = '<svg class="w-5 h-5 transition duration-75 group-hover:text-fg-brand shrink-0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
@@ -2295,12 +2410,11 @@
     var link = li.querySelector("a[data-thread-id]");
     if (!link) return;
     var iconEl = link.querySelector("[data-thread-emoji]");
-    var svgEl = link.querySelector("svg");
     if (emoji) {
       if (iconEl) { iconEl.textContent = emoji; }
-      else if (svgEl) { var span = document.createElement("span"); span.className = "shrink-0 text-sm"; span.setAttribute("data-thread-emoji", ""); span.textContent = emoji; svgEl.replaceWith(span); }
+      else { var span = document.createElement("span"); span.className = "row__ic"; span.setAttribute("data-thread-emoji", ""); span.textContent = emoji; link.insertBefore(span, link.firstChild); }
     } else {
-      if (iconEl) { var temp = document.createElement("div"); temp.innerHTML = chatIconSvg; iconEl.replaceWith(temp.firstChild); }
+      if (iconEl) iconEl.remove();
     }
   }
 
@@ -2324,8 +2438,8 @@
   if (PENDING_INITIAL_TURN) {
     scrollContainer.classList.add('flex-1');
     if (scrollContainer.firstElementChild) scrollContainer.firstElementChild.classList.add('py-6');
-    var inputArea0 = document.getElementById('chat-input-area');
-    if (inputArea0) inputArea0.classList.add('border-t', 'border-default');
+    var quickActions0 = document.getElementById('quick-actions');
+    if (quickActions0) quickActions0.remove();
     var ph0 = messagesContainer.querySelector('[data-placeholder="true"]');
     if (ph0) ph0.remove();
     currentStreamingElement = createAssistantBubble();
@@ -2702,7 +2816,7 @@
       if (canvasIsOpen) {
         canvasToggleBtnMobile.innerHTML = '<span class="sr-only">Close canvas</span><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
       } else {
-        canvasToggleBtnMobile.innerHTML = '<span class="sr-only">Toggle canvas</span><svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>';
+        canvasToggleBtnMobile.innerHTML = '<span class="sr-only">Toggle canvas</span><svg class="w-6 h-6" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>';
       }
     }
     // "+" menu button label and icon
@@ -3252,12 +3366,12 @@
         }).then(function(data) {
           if (data.title !== undefined) openCanvas(data.title, data.content);
           if (data.thread_title && activeThreadId) {
-            var link = threadList.querySelector('a[data-thread-id="' + activeThreadId + '"]');
+            var link = threadGroups.querySelector('a[data-thread-id="' + activeThreadId + '"]');
             if (link) {
               link.title = data.thread_title;
-              var span = link.querySelector("span");
-              if (span) span.textContent = data.thread_title.length > 30
-                ? data.thread_title.substring(0, 27) + "..." : data.thread_title;
+              var span = link.querySelector(".row__t");
+              if (span) span.textContent = data.thread_title.length > 34
+                ? data.thread_title.substring(0, 31) + "..." : data.thread_title;
             }
           }
           if (data.truncated) {
