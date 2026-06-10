@@ -43,8 +43,11 @@ class _WebFetchTestBase(TestCase):
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "text/html; charset=utf-8"}
         mock_response.text = html
+        mock_response.is_redirect = False
         mock_response.raise_for_status = MagicMock()
-        with patch("llm.tools.web_fetch.requests.get", return_value=mock_response):
+        # _run fetches via _pinned_get (resolve + validate + IP-pin); patch that
+        # seam so these tests exercise the extraction/cleaning pipeline directly.
+        with patch("llm.tools.web_fetch._pinned_get", return_value=mock_response):
             return json.loads(self.tool.invoke({"url": "https://example.com"}))
 
 

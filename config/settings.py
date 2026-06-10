@@ -428,6 +428,10 @@ if _aws_bucket:
         },
     }
 
+# Web fetch: hard ceiling on bytes downloaded from a (user/LLM-supplied) URL,
+# enforced while streaming so a malicious/huge response can't exhaust worker memory.
+WEB_FETCH_MAX_RESPONSE_BYTES = int(os.environ.get("WEB_FETCH_MAX_RESPONSE_BYTES", "10000000"))  # 10 MB
+
 # Document upload and chunking (MVP)
 DATA_UPLOAD_MAX_NUMBER_FILES = 100
 DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000"))  # 50 MB

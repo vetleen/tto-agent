@@ -24,6 +24,7 @@ SEARCH_RESULTS = {
 @override_settings(
     CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}},
     BRAVE_SEARCH_API_KEY="test-key",
+    JINA_API_KEY="",  # disable the Jina fallback so fetch-error tests make no real network call
 )
 @patch("llm.tools.web_fetch._check_url_ssrf", _no_ssrf_check)
 class WebSearchAndReadTests(TestCase):
@@ -31,7 +32,7 @@ class WebSearchAndReadTests(TestCase):
     def setUp(self):
         self.tool = WebSearchAndReadTool()
 
-    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
     @patch("llm.tools.brave_search.BraveSearchTool._run")
     def test_search_and_fetch(self, mock_search, mock_fetch_get):
         mock_search.return_value = json.dumps(SEARCH_RESULTS)
@@ -65,7 +66,7 @@ class WebSearchAndReadTests(TestCase):
         result = json.loads(self.tool.invoke({"query": "test"}))
         self.assertIn("error", result)
 
-    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
     @patch("llm.tools.brave_search.BraveSearchTool._run")
     def test_fetch_error_included_per_result(self, mock_search, mock_fetch_get):
         mock_search.return_value = json.dumps(SEARCH_RESULTS)
@@ -89,14 +90,14 @@ class WebSearchAndReadTests(TestCase):
 
     def test_count_capped_at_10(self):
         with patch("llm.tools.brave_search.BraveSearchTool._run") as mock_search, \
-             patch("llm.tools.web_fetch.requests.get"):
+             patch("llm.tools.web_fetch._pinned_get"):
             mock_search.return_value = json.dumps({"results": [], "count": 0})
             self.tool.invoke({"query": "test", "count": 20})
             call_args = json.loads(mock_search.call_args[0][0]) if mock_search.call_args[0] else {}
             called_count = mock_search.call_args[1].get("count", mock_search.call_args[0][1] if len(mock_search.call_args[0]) > 1 else 5)
             self.assertLessEqual(called_count, 10)
 
-    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
     @patch("llm.tools.brave_search.BraveSearchTool._run")
     def test_preserves_search_metadata(self, mock_search, mock_fetch_get):
         mock_search.return_value = json.dumps(SEARCH_RESULTS)

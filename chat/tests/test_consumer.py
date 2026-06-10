@@ -190,6 +190,54 @@ class ConsumerMessageTests(TransactionTestCase):
         await communicator.disconnect()
 
     @patch("llm.get_llm_service")
+    async def test_error_event_strips_raw_details(self, mock_get_service):
+        """The raw provider exception (`details`) must not reach the client; the
+        curated `message` and `error_code` are kept."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(
+                event_type="error",
+                data={
+                    "message": "Anthropic is rate limiting requests. Please wait a moment and try again.",
+                    "error_code": "rate_limited",
+                    "details": "RateLimitError: secret-internal-detail at https://api.internal/...",
+                },
+                sequence=1,
+                run_id="r1",
+            ),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+        })
+
+        # thread.created, then message_start, then the error event
+        await communicator.receive_json_from(timeout=5)  # thread.created
+        await communicator.receive_json_from(timeout=5)  # message_start
+        err = await communicator.receive_json_from(timeout=5)
+
+        self.assertEqual(err["event_type"], "error")
+        self.assertEqual(err["data"]["message"],
+                         "Anthropic is rate limiting requests. Please wait a moment and try again.")
+        self.assertEqual(err["data"]["error_code"], "rate_limited")
+        self.assertNotIn("details", err["data"])
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
     async def test_tool_messages_persisted(self, mock_get_service):
         """Tool call and tool result messages are persisted during streaming."""
         from llm.types.streaming import StreamEvent

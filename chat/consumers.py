@@ -1146,6 +1146,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             async for event in service.astream("simple_chat", request, cancel_event=self._cancel_event):
                 event_data = event.model_dump()
+                # Never leak the raw provider exception string to the client. The
+                # user-facing `message` (curated by classify_api_error) and
+                # `error_code` are kept; `details` stays server-side only (it's
+                # still recorded in LLMCallLog.error_message via log_stream).
+                if event_data.get("event_type") == "error":
+                    event_data.get("data", {}).pop("details", None)
                 await self.send(text_data=json.dumps(event_data))
 
                 # Accumulate assistant text from token events

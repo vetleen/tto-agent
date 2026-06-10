@@ -141,6 +141,25 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
     )
 
 
+def _highlight_if_unmapped(classified: ClassifiedError, exc: Exception, model: str, provider_label: str, run_id: str) -> None:
+    """Emit a distinct, Sentry-actionable line when an error hits the ``unknown``
+    catch-all in :func:`classify_api_error`.
+
+    These are failures we have no curated user-facing message for yet. The
+    dedicated message (grouped in Sentry by ``exc_type``) flags each new failure
+    mode so we can add a branch to ``classify_api_error`` with a friendly message
+    and resolve the Sentry issue — incrementally growing the mapping.
+    """
+    if classified.error_code != "unknown":
+        return
+    logger.error(
+        "Unmapped LLM provider error — add a branch to classify_api_error so the "
+        "user gets a specific message. exc_type=%s model=%s provider=%s run_id=%s",
+        type(exc).__name__, model, provider_label, run_id,
+        exc_info=True,
+    )
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Check whether an exception is a 429 rate-limit error.
 
@@ -342,6 +361,7 @@ class BaseLangChainChatModel(ChatModel):
                         self.name, self._provider_label, classified.error_code, run_id,
                         exc_info=True,
                     )
+                    _highlight_if_unmapped(classified, exc, self.name, self._provider_label, run_id)
                     exc_cls = _ERROR_CODE_TO_EXCEPTION.get(classified.error_code, LLMProviderError)
                     raise exc_cls(
                         classified.user_message,
@@ -529,6 +549,7 @@ class BaseLangChainChatModel(ChatModel):
                         self.name, self._provider_label, classified.error_code, run_id,
                         exc_info=True,
                     )
+                    _highlight_if_unmapped(classified, exc, self.name, self._provider_label, run_id)
                     yield StreamEvent(
                         event_type="error",
                         data={

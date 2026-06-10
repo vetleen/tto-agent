@@ -12,6 +12,7 @@ import socket
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
 from django.conf import settings as django_settings
 from bs4 import BeautifulSoup, Comment
 from markdownify import markdownify as html_to_md
@@ -24,6 +25,30 @@ from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
 logger = logging.getLogger(__name__)
 
 _ABSOLUTE_MAX_CHARS = 50_000
+
+# Default hard ceiling on bytes downloaded from a (user/LLM-supplied) URL.
+# Overridable via settings.WEB_FETCH_MAX_RESPONSE_BYTES.
+_DEFAULT_MAX_RESPONSE_BYTES = 10_000_000  # 10 MB
+
+
+def _max_response_bytes() -> int:
+    return getattr(django_settings, "WEB_FETCH_MAX_RESPONSE_BYTES", _DEFAULT_MAX_RESPONSE_BYTES)
+
+
+class _SSRFBlocked(Exception):
+    """Raised when a URL resolves to a private/reserved address."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+class _ResponseTooLarge(Exception):
+    """Raised when a response body exceeds the configured size cap."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
 
 _NOISE_TAGS = [
     "script", "style", "nav", "footer", "header", "noscript", "iframe",
@@ -110,21 +135,131 @@ def _is_private_ip(ip_str: str) -> bool:
     )
 
 
-def _check_url_ssrf(url: str) -> str | None:
-    """Return an error message if the URL targets a private/internal host, else None."""
+def _resolve_and_validate(url: str) -> tuple[str | None, str | None]:
+    """Resolve a URL's host ONCE and validate every resolved IP is public.
+
+    Returns ``(validated_ip, None)`` on success or ``(None, error_message)``.
+    The returned IP is the address the caller MUST connect to — pinning to it
+    closes the DNS-rebinding (TOCTOU) gap where a second, independent DNS
+    lookup by ``requests`` could land on a private address after the check
+    passed.
+    """
     parsed = urlparse(url)
     hostname = parsed.hostname
     if not hostname:
-        return "No hostname in URL"
+        return None, "No hostname in URL"
     try:
         addr_infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except socket.gaierror:
-        return f"DNS resolution failed for {hostname}"
-    for family, _, _, _, sockaddr in addr_infos:
+        return None, f"DNS resolution failed for {hostname}"
+    if not addr_infos:
+        return None, f"DNS resolution failed for {hostname}"
+    validated_ip: str | None = None
+    for _family, _type, _proto, _canon, sockaddr in addr_infos:
         ip_str = sockaddr[0]
         if _is_private_ip(ip_str):
-            return "URL resolves to a private or reserved IP address"
-    return None
+            return None, "URL resolves to a private or reserved IP address"
+        if validated_ip is None:
+            validated_ip = ip_str
+    return validated_ip, None
+
+
+def _check_url_ssrf(url: str) -> str | None:
+    """Return an error message if the URL targets a private/internal host, else None.
+
+    Thin wrapper over :func:`_resolve_and_validate` kept for callers/tests that
+    only need the boolean-ish verdict.
+    """
+    return _resolve_and_validate(url)[1]
+
+
+class _PinnedIPAdapter(HTTPAdapter):
+    """Routes the TCP connection to a pre-validated IP while keeping TLS SNI and
+    certificate verification bound to the original hostname.
+
+    One instance is mounted on a fresh per-request ``Session`` (see
+    :func:`_pinned_get`), so there is no shared/global state — safe under the
+    ThreadPoolExecutor that runs tools concurrently. The request URL is left
+    untouched, so the ``Host`` header and redirect/``Location`` logic keep
+    seeing the real hostname; only the socket target is swapped to the IP.
+    """
+
+    def __init__(self, validated_ip: str, hostname: str, *args, **kwargs):
+        self._validated_ip = validated_ip
+        self._hostname = hostname
+        super().__init__(*args, **kwargs)
+
+    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+        # No proxy handling: this tool sets no proxies. If proxy support is ever
+        # added, the base class's proxy branch must be reinstated here.
+        host_params, pool_kwargs = self.build_connection_pool_key_attributes(request, verify, cert)
+        host_params["host"] = self._validated_ip  # connect to the validated IP
+        if str(request.url).lower().startswith("https"):
+            # Verify the cert against the real hostname, and send it as SNI,
+            # even though the socket points at the IP.
+            pool_kwargs["server_hostname"] = self._hostname
+            pool_kwargs["assert_hostname"] = self._hostname
+        return self.poolmanager.connection_from_host(**host_params, pool_kwargs=pool_kwargs)
+
+
+def _enforce_size_and_buffer(resp: requests.Response, max_bytes: int) -> None:
+    """Enforce a hard byte ceiling while reading, then buffer the body.
+
+    Fast-rejects when ``Content-Length`` already exceeds the cap, but does not
+    trust it (chunked / lying servers): the limit is also enforced while
+    streaming. On success the full body is stored on ``resp._content`` so
+    ``resp.text`` / ``resp.content`` (and their charset detection) behave
+    exactly as a non-streamed response would. Raises ``_ResponseTooLarge`` and
+    closes the response when the cap is exceeded.
+    """
+    content_length = resp.headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                resp.close()
+                raise _ResponseTooLarge(
+                    f"Response too large (Content-Length {content_length} > {max_bytes} bytes)"
+                )
+        except ValueError:
+            pass  # malformed header — fall through to streaming enforcement
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in resp.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            resp.close()
+            raise _ResponseTooLarge(f"Response exceeded {max_bytes} bytes during download")
+        chunks.append(chunk)
+    resp._content = b"".join(chunks)
+    resp._content_consumed = True
+
+
+def _pinned_get(url: str, *, timeout: int, headers: dict, max_bytes: int) -> requests.Response:
+    """Fetch a single URL (no redirect following) pinned to a validated public IP.
+
+    Resolves + validates the host once, mounts a :class:`_PinnedIPAdapter` on a
+    fresh ``Session``, streams the body under a size cap, and returns a response
+    whose body is fully buffered. Raises ``_SSRFBlocked`` or ``_ResponseTooLarge``.
+    """
+    validated_ip, error = _resolve_and_validate(url)
+    if error:
+        raise _SSRFBlocked(error)
+    hostname = urlparse(url).hostname
+    session = requests.Session()
+    adapter = _PinnedIPAdapter(validated_ip, hostname)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    try:
+        resp = session.get(
+            url, timeout=timeout, headers=headers, allow_redirects=False, stream=True,
+        )
+        _enforce_size_and_buffer(resp, max_bytes)
+        return resp
+    finally:
+        session.close()
 
 
 class WebFetchInput(ReasonBaseModel):
@@ -151,8 +286,13 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
                 "Accept": "text/html",
                 "X-Return-Format": "html",
             },
+            stream=True,
         )
         resp.raise_for_status()
+        # Trusted host (eu.r.jina.ai) — no SSRF pinning needed, but still cap
+        # the body so a huge page can't OOM the worker. _ResponseTooLarge is an
+        # Exception, so it's caught here and the fallback declines gracefully.
+        _enforce_size_and_buffer(resp, _max_response_bytes())
     except Exception:
         logger.info("web_fetch: Jina fallback failed for url=%s", url)
         return None
@@ -237,10 +377,10 @@ class WebFetchTool(ContextAwareTool):
         if parsed.scheme not in ("http", "https"):
             return json.dumps({"error": f"Invalid URL scheme: {parsed.scheme!r}. Only http/https allowed."})
 
-        # SSRF protection: block requests to private/internal IPs
-        ssrf_error = _check_url_ssrf(url)
-        if ssrf_error:
-            return json.dumps({"error": ssrf_error, "url": url})
+        # Note: SSRF protection (resolve + validate + connection pinning) happens
+        # inside _pinned_get, per hop. We don't pre-check here so the host is
+        # resolved exactly once per fetch and the validated IP is the one we
+        # actually connect to (closes the DNS-rebinding gap).
 
         max_chars = max(1, min(max_chars, _ABSOLUTE_MAX_CHARS))
 
@@ -261,37 +401,42 @@ class WebFetchTool(ContextAwareTool):
             return json.dumps(data)
 
         # --- Fetch HTML ---
+        headers = {
+            "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        max_bytes = _max_response_bytes()
+        current_url = url
         try:
-            response = requests.get(
-                url,
-                timeout=15,
-                headers={
-                    "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                allow_redirects=False,
-            )
+            # Each hop is resolved + SSRF-validated + IP-pinned independently
+            # (allow_redirects=False), and the body is streamed under a size cap.
+            response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
 
             redirect_count = 0
             while response.is_redirect and redirect_count < 5:
                 redirect_url = response.headers.get("Location", "")
                 if not redirect_url:
                     break
-                ssrf_error = _check_url_ssrf(redirect_url)
-                if ssrf_error:
-                    return json.dumps({"error": ssrf_error, "url": redirect_url})
-                response = requests.get(
-                    redirect_url,
-                    timeout=15,
-                    headers={
-                        "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    },
-                    allow_redirects=False,
-                )
+                # Re-validate the redirect target's scheme. Relative/schemeless
+                # Locations fall here (no scheme) and are rejected; even if they
+                # slipped through, _resolve_and_validate fails closed on the
+                # missing hostname.
+                redirect_parsed = urlparse(redirect_url)
+                if redirect_parsed.scheme not in ("http", "https"):
+                    return json.dumps({
+                        "error": f"Invalid redirect scheme: {redirect_parsed.scheme!r}. Only http/https allowed.",
+                        "url": redirect_url,
+                    })
+                response.close()  # release the streamed socket before the next hop
+                current_url = redirect_url
+                response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
                 redirect_count += 1
 
             response.raise_for_status()
+        except _SSRFBlocked as exc:
+            return json.dumps({"error": exc.message, "url": current_url})
+        except _ResponseTooLarge as exc:
+            return json.dumps({"error": exc.message, "url": current_url})
         except requests.exceptions.Timeout:
             jina = _fetch_via_jina(url, self.context, reason="timeout")
             if jina:
