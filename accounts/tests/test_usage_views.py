@@ -42,7 +42,7 @@ class UsagePageTests(TestCase):
     def test_requires_login(self):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     def test_rejects_post(self):
         self.client.login(email=self.user.email, password=self.password)

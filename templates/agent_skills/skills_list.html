@@ -12,16 +12,18 @@
   {% endif %}
 
   <div class="mb-10">
-    <p class="wf-eyebrow mb-2">Capabilities</p>
     <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Skills</h1>
     <p class="mt-2 text-sm text-body">Manage which skills are available to {{ assistant_name }}. Toggle versions on and off, copy a skill to make your own variant, or edit your own skills directly.</p>
   </div>
 
   {# ---------- Your skills ---------- #}
-  <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-medium text-heading">Your skills</h2>
-      <div class="flex items-center gap-2">
+  <section class="mb-8">
+    <div class="flex items-center justify-between gap-4 mb-3">
+      <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
+        Your skills
+        <span class="wf-mono text-xs font-normal text-body-subtle">{{ user_rows|length }}</span>
+      </h2>
+      <div class="flex items-center gap-2 shrink-0">
         <form method="post" action="{% url 'agent_skills_import' %}" enctype="multipart/form-data" class="m-0" id="import-skill-form">
           {% csrf_token %}
           <input type="file" name="file" accept=".json,application/json" id="import-skill-input" class="hidden">
@@ -40,22 +42,25 @@
         </form>
       </div>
     </div>
-    <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden text-sm font-medium text-heading">
       {% for row in user_rows %}
         {% include "agent_skills/_skill_row.html" with row=row section="user" %}
       {% empty %}
-      <p class="px-4 py-6 text-body text-sm">No skills of your own yet. Use <strong>New</strong> to teach {{ assistant_name }} something.</p>
+      <p class="px-5 py-6 text-body text-sm">No skills of your own yet. Use <strong>New</strong> to teach {{ assistant_name }} something.</p>
       {% endfor %}
     </div>
   </section>
 
   {# ---------- Organization skills ---------- #}
   {% if user_org %}
-  <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-medium text-heading">{{ user_org.name }}'s skills</h2>
+  <section class="mb-8">
+    <div class="flex items-center justify-between gap-4 mb-3">
+      <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
+        {{ user_org.name }}'s skills
+        <span class="wf-mono text-xs font-normal text-body-subtle">{{ org_rows|length }}</span>
+      </h2>
       {% if is_org_admin %}
-      <form method="post" action="{% url 'agent_skills_create_org' %}" class="m-0">
+      <form method="post" action="{% url 'agent_skills_create_org' %}" class="m-0 shrink-0">
         {% csrf_token %}
         <input type="hidden" name="name" value="Untitled organization skill">
         <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
@@ -65,24 +70,29 @@
       </form>
       {% endif %}
     </div>
-    <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden text-sm font-medium text-heading">
       {% for row in org_rows %}
         {% include "agent_skills/_skill_row.html" with row=row section="org" %}
       {% empty %}
-      <p class="px-4 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New</strong> above to add one.{% endif %}</p>
+      <p class="px-5 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New</strong> above to add one.{% endif %}</p>
       {% endfor %}
     </div>
   </section>
   {% endif %}
 
   {# ---------- System skills ---------- #}
-  <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
-    <h2 class="text-lg font-medium text-heading mb-4">Built-in skills</h2>
-    <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+  <section class="mb-8">
+    <div class="flex items-center justify-between gap-4 mb-3">
+      <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
+        Built-in skills
+        <span class="wf-mono text-xs font-normal text-body-subtle">{{ system_rows|length }}</span>
+      </h2>
+    </div>
+    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden text-sm font-medium text-heading">
       {% for row in system_rows %}
         {% include "agent_skills/_skill_row.html" with row=row section="system" %}
       {% empty %}
-      <p class="px-4 py-6 text-body text-sm">No built-in skills available.</p>
+      <p class="px-5 py-6 text-body text-sm">No built-in skills available.</p>
       {% endfor %}
     </div>
   </section>

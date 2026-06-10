@@ -1,5 +1,6 @@
 from django.contrib.auth import views as auth_views
 from django.urls import include, path, reverse_lazy
+from django.views.generic import TemplateView
 
 from .forms import (
     CustomAuthenticationForm,
@@ -114,5 +115,10 @@ urlpatterns = [
         name="password_reset_confirm",
     ),
     path("suspended/", suspended, name="suspended"),
+    path(
+        "logged-out/",
+        TemplateView.as_view(template_name="registration/logged_out.html"),
+        name="logged_out",
+    ),
     path("", include("django.contrib.auth.urls")),
 ]

@@ -1,215 +1,259 @@
 {% extends "_base.html" %}
+{% load humanize %}
 
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-16">
-  <h1 class="text-2xl font-semibold text-heading">Settings</h1>
+  <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Settings</h1>
+  <p class="mt-2 text-sm text-body">Manage your workspace preferences and models.</p>
 
-  <!-- Appearance -->
-  <section class="mt-8">
-    <h2 class="text-lg font-medium text-heading">Appearance</h2>
-    <p class="mt-1 text-sm text-body">Choose your preferred color theme.</p>
-    <div class="mt-3 inline-flex rounded-base border border-default overflow-hidden">
-      <button
-        type="button"
-        id="theme-btn-light"
-        class="theme-btn px-4 py-2 text-sm font-medium text-body focus:outline-none"
-        data-theme="light"
-      >
-        <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
-        Light
-      </button>
-      <button
-        type="button"
-        id="theme-btn-dark"
-        class="theme-btn px-4 py-2 text-sm font-medium text-body focus:outline-none"
-        data-theme="dark"
-      >
-        <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
-        Dark
-      </button>
-    </div>
-  </section>
-
-  <!-- Warnings -->
   {% if preference_warnings %}
-  <section class="mt-8">
+  <div class="mt-8 space-y-3">
     {% for warning in preference_warnings %}
-    <div class="mb-3 rounded-base border border-warning-subtle bg-warning-soft p-3 text-sm text-fg-warning">
-      {{ warning }}
-    </div>
+    <div class="rounded-base border border-warning-subtle bg-warning-soft p-3 text-sm text-fg-warning">{{ warning }}</div>
     {% endfor %}
-  </section>
+  </div>
   {% endif %}
 
-  <!-- AI Models -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">AI Models</h2>
-    <p class="mt-1 text-sm text-body">Choose your preferred model for each tier. "Default" uses your organization or system default.</p>
+  <div class="mt-10 grid lg:grid-cols-[170px_minmax(0,1fr)] gap-8 lg:gap-10 items-start">
+    <!-- Section index -->
+    <nav class="hidden lg:block sticky top-24" aria-label="Settings sections">
+      <ul class="space-y-0.5 text-sm">
+        <li><a href="#appearance" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Appearance</a></li>
+        <li><a href="#models" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">AI models</a></li>
+        {% if user_features %}<li><a href="#features" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Feature overrides</a></li>{% endif %}
+        {% if allowed_transcription_models %}<li><a href="#transcription" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Transcription</a></li>{% endif %}
+        <li><a href="#autonomy" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Autonomy</a></li>
+        <li><a href="#context" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
+        <li><a href="#account" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Account</a></li>
+      </ul>
+    </nav>
 
-    <div class="mt-4 space-y-4">
-      {% for tier in tiers %}
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="model-{{ tier.key }}">
-          {{ tier.label }}
-        </label>
-        <p class="text-xs text-body mt-0.5">{{ tier.desc }}</p>
-        <select
-          id="model-{{ tier.key }}"
-          data-tier="{{ tier.key }}"
-          class="model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">Default ({{ tier.default_model }})</option>
-          {% for model in tier.slot_models %}
-          <option value="{{ model }}">{{ model }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
+    <!-- Section cards -->
+    <div class="space-y-8 min-w-0">
 
-  <!-- Feature Model Overrides -->
-  {% if user_features %}
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Feature Model Overrides</h2>
-    <p class="mt-1 text-sm text-body">Override the model used for specific features. "Default" uses the tier model selected above.</p>
-
-    <div class="mt-4 space-y-4">
-      {% for feature in user_features %}
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="feature-model-{{ feature.key }}">
-          {{ feature.label }}
-        </label>
-        {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
-        <select
-          id="feature-model-{{ feature.key }}"
-          data-feature="{{ feature.key }}"
-          class="feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">Use my default {{ feature.default_slot }} model (recommended)</option>
-          {% for model in feature.eligible_models %}
-          <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
-
-  <!-- Transcription -->
-  {% if allowed_transcription_models %}
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Transcription</h2>
-    <p class="mt-1 text-sm text-body">Choose your preferred models for audio transcription. Live and file-upload paths can use different models — e.g. a streaming model for live meetings and a diarization model for uploads.</p>
-
-    <div class="mt-4 grid gap-4 md:grid-cols-2">
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="transcription-model-live">
-          Live transcription model
-        </label>
-        <p class="text-xs text-body mt-0.5">Used when you click Start transcription on a meeting.</p>
-        <select
-          id="transcription-model-live"
-          data-kind="live"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">Default ({{ resolved_transcription_model_live }})</option>
-          {% for model in live_capable_transcription_models %}
-          <option value="{{ model }}" {% if user_transcription_model_live == model %}selected{% endif %}>{{ model }}</option>
-          {% endfor %}
-        </select>
-        {% if not live_capable_transcription_models %}
-        <p class="mt-2 text-xs text-fg-warning">None of your allowed models support live streaming, so live transcription is unavailable. Ask an admin to enable a streaming-capable model.</p>
-        {% endif %}
-      </div>
-
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="transcription-model-upload">
-          File-upload transcription model
-        </label>
-        <p class="text-xs text-body mt-0.5">Used when you upload an audio file to a meeting or data room.</p>
-        <select
-          id="transcription-model-upload"
-          data-kind="upload"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">Default ({{ resolved_transcription_model_upload }})</option>
-          {% for model in upload_capable_transcription_models %}
-          <option value="{{ model }}" {% if user_transcription_model_upload == model %}selected{% endif %}>{{ model }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </div>
-
-    <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
-      <label class="block text-sm font-medium text-heading" for="live-transcription-mode">
-        Live transcription path
-      </label>
-      <p class="text-xs text-body mt-0.5">The Realtime path streams audio continuously for ~1s latency. Default is "Try realtime, fall back" — uses realtime when it works, drops to the legacy chunked path otherwise. Most users can leave this alone.</p>
-      <select
-        id="live-transcription-mode"
-        class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-      >
-        <option value="" {% if not user_live_transcription_mode %}selected{% endif %}>Default (try realtime, fall back to chunked)</option>
-        <option value="realtime_with_fallback" {% if user_live_transcription_mode == "realtime_with_fallback" %}selected{% endif %}>Try realtime, fall back to chunked</option>
-        <option value="realtime" {% if user_live_transcription_mode == "realtime" %}selected{% endif %}>Realtime only</option>
-        <option value="chunked" {% if user_live_transcription_mode == "chunked" %}selected{% endif %}>Chunked (legacy)</option>
-      </select>
-    </div>
-  </section>
-  {% endif %}
-
-  <!-- Assistant autonomy -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">{{ assistant_name }}'s autonomy</h2>
-    <p class="mt-1 text-sm text-body">Control what {{ assistant_name }} is allowed to do on its own during a conversation.</p>
-
-    <div class="mt-4">
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4 flex items-start justify-between gap-4">
-        <div class="flex-1">
-          <label class="block text-sm font-medium text-heading" for="allow-agent-attach-skills">
-            Allow {{ assistant_name }} to attach skills
-          </label>
-          <p class="text-xs text-body mt-0.5">When enabled, {{ assistant_name }} can autonomously attach a skill to this chat when one fits your request. When off, you attach skills manually.</p>
+      <!-- Appearance -->
+      <section id="appearance" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Appearance</h2>
+          <p class="mt-0.5 text-sm text-body">Choose your preferred color theme.</p>
         </div>
-        <label class="relative inline-flex items-center cursor-pointer shrink-0">
-          <input type="checkbox" id="allow-agent-attach-skills" class="sr-only peer" {% if allow_agent_attach_skills %}checked{% endif %}>
-          <div class="w-11 h-6 bg-neutral-quaternary-medium peer-focus:ring-2 peer-focus:ring-brand-medium rounded-full peer transition-colors peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:shadow-sm after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fg-success"></div>
-        </label>
-      </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="p-5">
+            <div class="inline-flex rounded-base border border-default overflow-hidden">
+              <button
+                type="button"
+                id="theme-btn-light"
+                class="theme-btn px-4 py-2 text-sm font-medium text-body focus:outline-none"
+                data-theme="light"
+              >
+                <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
+                Light
+              </button>
+              <button
+                type="button"
+                id="theme-btn-dark"
+                class="theme-btn px-4 py-2 text-sm font-medium text-body focus:outline-none"
+                data-theme="dark"
+              >
+                <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+                Dark
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI Models -->
+      <section id="models" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">AI models</h2>
+          <p class="mt-0.5 text-sm text-body">Choose your preferred model for each tier. "Default" uses your organization or system default.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            {% for tier in tiers %}
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="model-{{ tier.key }}">
+                {{ tier.label }}
+              </label>
+              <p class="text-xs text-body mt-0.5">{{ tier.desc }}</p>
+              <select
+                id="model-{{ tier.key }}"
+                data-tier="{{ tier.key }}"
+                class="model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Default ({{ tier.default_model }})</option>
+                {% for model in tier.slot_models %}
+                <option value="{{ model }}">{{ model }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
+      <!-- Feature Model Overrides -->
+      {% if user_features %}
+      <section id="features" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Feature model overrides</h2>
+          <p class="mt-0.5 text-sm text-body">Override the model used for specific features. "Default" uses the tier model selected above.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            {% for feature in user_features %}
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="feature-model-{{ feature.key }}">
+                {{ feature.label }}
+              </label>
+              {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
+              <select
+                id="feature-model-{{ feature.key }}"
+                data-feature="{{ feature.key }}"
+                class="feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Use my default {{ feature.default_slot }} model (recommended)</option>
+                {% for model in feature.eligible_models %}
+                <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <!-- Transcription -->
+      {% if allowed_transcription_models %}
+      <section id="transcription" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Transcription</h2>
+          <p class="mt-0.5 text-sm text-body">Choose your preferred models for audio transcription. Live and file-upload paths can use different models — e.g. a streaming model for live meetings and a diarization model for uploads.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="transcription-model-live">
+                Live transcription model
+              </label>
+              <p class="text-xs text-body mt-0.5">Used when you click Start transcription on a meeting.</p>
+              <select
+                id="transcription-model-live"
+                data-kind="live"
+                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Default ({{ resolved_transcription_model_live }})</option>
+                {% for model in live_capable_transcription_models %}
+                <option value="{{ model }}" {% if user_transcription_model_live == model %}selected{% endif %}>{{ model }}</option>
+                {% endfor %}
+              </select>
+              {% if not live_capable_transcription_models %}
+              <p class="mt-2 text-xs text-fg-warning">None of your allowed models support live streaming, so live transcription is unavailable. Ask an admin to enable a streaming-capable model.</p>
+              {% endif %}
+            </div>
+
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="transcription-model-upload">
+                File-upload transcription model
+              </label>
+              <p class="text-xs text-body mt-0.5">Used when you upload an audio file to a meeting or data room.</p>
+              <select
+                id="transcription-model-upload"
+                data-kind="upload"
+                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Default ({{ resolved_transcription_model_upload }})</option>
+                {% for model in upload_capable_transcription_models %}
+                <option value="{{ model }}" {% if user_transcription_model_upload == model %}selected{% endif %}>{{ model }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="live-transcription-mode">
+                Live transcription path
+              </label>
+              <p class="text-xs text-body mt-0.5">The Realtime path streams audio continuously for ~1s latency. Default is "Try realtime, fall back" — uses realtime when it works, drops to the legacy chunked path otherwise. Most users can leave this alone.</p>
+              <select
+                id="live-transcription-mode"
+                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="" {% if not user_live_transcription_mode %}selected{% endif %}>Default (try realtime, fall back to chunked)</option>
+                <option value="realtime_with_fallback" {% if user_live_transcription_mode == "realtime_with_fallback" %}selected{% endif %}>Try realtime, fall back to chunked</option>
+                <option value="realtime" {% if user_live_transcription_mode == "realtime" %}selected{% endif %}>Realtime only</option>
+                <option value="chunked" {% if user_live_transcription_mode == "chunked" %}selected{% endif %}>Chunked (legacy)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <!-- Assistant autonomy -->
+      <section id="autonomy" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">{{ assistant_name }}'s autonomy</h2>
+          <p class="mt-0.5 text-sm text-body">Control what {{ assistant_name }} is allowed to do on its own during a conversation.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="px-5 py-4 flex items-start justify-between gap-4">
+            <div class="flex-1">
+              <label class="block text-sm font-medium text-heading" for="allow-agent-attach-skills">
+                Allow {{ assistant_name }} to attach skills
+              </label>
+              <p class="text-xs text-body mt-0.5">When enabled, {{ assistant_name }} can autonomously attach a skill to this chat when one fits your request. When off, you attach skills manually.</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer shrink-0">
+              <input type="checkbox" id="allow-agent-attach-skills" class="sr-only peer" {% if allow_agent_attach_skills %}checked{% endif %}>
+              <div class="w-11 h-6 bg-neutral-quaternary-medium peer-focus:ring-2 peer-focus:ring-brand-medium rounded-full peer transition-colors peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:shadow-sm after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fg-success"></div>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Context Window -->
+      <section id="context" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Context window</h2>
+          <p class="mt-0.5 text-sm text-body">Limit the context window for your conversations. Organization limit: {{ org_max_context_tokens|intcomma }} tokens.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="px-5 py-4">
+            <label class="block text-sm font-medium text-heading" for="user-max-context-tokens">Maximum context tokens</label>
+            <p class="text-xs text-body mt-0.5">Set a personal limit (cannot exceed org limit). Leave empty to use the organization default.</p>
+            <input
+              type="number"
+              id="user-max-context-tokens"
+              min="10000"
+              step="10000"
+              placeholder="{{ org_max_context_tokens }}"
+              {% if user_max_context_tokens %}value="{{ user_max_context_tokens }}"{% endif %}
+              class="wf-mono mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+            >
+          </div>
+        </div>
+      </section>
+
+      <!-- Account -->
+      <section id="account" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Account</h2>
+          <p class="mt-0.5 text-sm text-body">Manage your login credentials.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="px-5 py-4">
+            <a href="{% url 'accounts:password_change' %}" class="inline-flex items-center gap-1.5 rounded-base border border-default bg-neutral-primary-soft px-4 py-2 text-sm font-medium text-heading hover:bg-neutral-secondary-soft focus:outline-none focus:ring-4 focus:ring-neutral-tertiary transition-colors">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              Change password
+            </a>
+          </div>
+        </div>
+      </section>
+
     </div>
-  </section>
-
-  <!-- Context Window -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Context Window</h2>
-    <p class="mt-1 text-sm text-body">Limit the context window for your conversations. Organization limit: {{ org_max_context_tokens|floatformat:"0" }} tokens.</p>
-
-    <div class="mt-4">
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="user-max-context-tokens">Maximum context tokens</label>
-        <p class="text-xs text-body mt-0.5">Set a personal limit (cannot exceed org limit). Leave empty to use the organization default.</p>
-        <input
-          type="number"
-          id="user-max-context-tokens"
-          min="10000"
-          step="10000"
-          placeholder="{{ org_max_context_tokens }}"
-          {% if user_max_context_tokens %}value="{{ user_max_context_tokens }}"{% endif %}
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-      </div>
-    </div>
-  </section>
-
-  <!-- Account -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Account</h2>
-    <ul class="mt-3 space-y-2 text-sm">
-      <li><a href="{% url 'accounts:password_change' %}" class="text-fg-brand hover:underline">Change password</a></li>
-    </ul>
-  </section>
+  </div>
 </main>
 
 <script>
@@ -396,6 +440,31 @@
       });
     });
   });
+})();
+</script>
+
+<script>
+(function() {
+  // Section-index scrollspy — highlights the current section in the left nav.
+  var links = Array.prototype.slice.call(document.querySelectorAll('.settings-nav'));
+  if (!links.length || !('IntersectionObserver' in window)) return;
+  var map = {};
+  links.forEach(function(l) { map[l.getAttribute('href').slice(1)] = l; });
+  function setActive(id) {
+    links.forEach(function(l) {
+      var on = l === map[id];
+      l.classList.toggle('bg-brand-softer', on);
+      l.classList.toggle('border-accent', on);
+      l.classList.toggle('text-heading', on);
+      l.classList.toggle('font-medium', on);
+      l.classList.toggle('border-transparent', !on);
+      l.classList.toggle('text-body', !on);
+    });
+  }
+  var obs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) { if (e.isIntersecting) setActive(e.target.id); });
+  }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+  document.querySelectorAll('main section[id]').forEach(function(s) { obs.observe(s); });
 })();
 </script>
 {% endblock content %}

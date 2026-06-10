@@ -23,8 +23,8 @@
     <input type="hidden" name="templates_json" id="templates-json" value="{{ templates_json }}">
 
     {# ----- Header card ----- #}
-    <section class="p-6 bg-neutral-primary-soft border border-default rounded-base">
-      <div class="flex items-start justify-between gap-4 mb-4">
+    <section class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+      <div class="p-5 flex items-start justify-between gap-4">
         <div class="shrink-0">
           <label for="skill-emoji" class="block mb-2 text-xs font-medium uppercase tracking-wide text-body">Emoji</label>
           <input type="text" name="emoji" id="skill-emoji" value="{{ skill.emoji }}" maxlength="16"
@@ -37,14 +37,14 @@
                  {% if not editable %}readonly{% endif %}
          class="wf-input text-heading text-lg font-semibold rounded-base block w-full px-3 py-2 {% if not editable %}cursor-not-allowed{% endif %}">
           <p class="mt-2 text-xs text-body flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span class="inline-block px-2 py-0.5 rounded-base bg-neutral-tertiary text-heading">{{ level_label }}</span>
+            <span class="wf-mono inline-block px-2 py-0.5 rounded-base bg-neutral-secondary-soft border border-default text-body">{{ level_label }}</span>
             {% if editable and skill.level == "user" %}
             <span class="inline-flex items-center gap-1">slug:
               <input type="text" name="slug" id="skill-slug" value="{{ skill.slug }}" maxlength="64"
-           class="wf-input text-heading text-xs rounded-base px-2 py-0.5 w-48 font-mono">
+           class="wf-input wf-mono text-heading text-xs rounded-base px-2 py-0.5 w-48">
             </span>
             {% else %}
-            <span>slug: <code>{{ skill.slug }}</code></span>
+            <span>slug: <code class="wf-mono">{{ skill.slug }}</code></span>
             {% endif %}
             {% if skill.parent %}<span>copied from <em>{{ skill.parent.name }}</em></span>{% endif %}
           </p>
@@ -57,9 +57,9 @@
     </section>
 
     {# ----- Description ----- #}
-    <section class="p-6 bg-neutral-primary-soft border border-default rounded-base">
-      <div class="flex items-center justify-between mb-2">
-        <label for="skill-description" class="text-sm font-medium text-heading">Description</label>
+    <section>
+      <div class="flex items-center justify-between gap-3 mb-2">
+        <label for="skill-description" class="text-base font-semibold text-heading font-serif">Description</label>
         {% if editable %}
         <button type="button" id="description-preview-btn" title="Toggle preview" class="inline-flex items-center gap-1 cursor-pointer px-2 py-1 rounded-base text-xs text-body hover:text-heading hover:bg-neutral-tertiary">
           <span>Preview</span>
@@ -75,17 +75,19 @@
     </section>
 
     {# ----- Instructions ----- #}
-    <section class="p-6 bg-neutral-primary-soft border border-default rounded-base">
-      <div class="flex items-center justify-between mb-2">
-        <label for="skill-instructions" class="text-sm font-medium text-heading">Instructions</label>
+    <section>
+      <div class="flex items-center justify-between gap-3 mb-2">
+        <div class="min-w-0">
+          <label for="skill-instructions" class="text-base font-semibold text-heading font-serif">Instructions</label>
+          <p class="mt-0.5 text-sm text-body">The system prompt {{ assistant_name }} follows when this skill is active. Markdown is supported.</p>
+        </div>
         {% if editable %}
-        <button type="button" id="instructions-preview-btn" title="Toggle preview" class="inline-flex items-center gap-1 cursor-pointer px-2 py-1 rounded-base text-xs text-body hover:text-heading hover:bg-neutral-tertiary">
+        <button type="button" id="instructions-preview-btn" title="Toggle preview" class="shrink-0 inline-flex items-center gap-1 cursor-pointer px-2 py-1 rounded-base text-xs text-body hover:text-heading hover:bg-neutral-tertiary">
           <span>Preview</span>
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
         </button>
         {% endif %}
       </div>
-      <p class="text-xs text-body mb-2">The system prompt {{ assistant_name }} follows when this skill is active. Markdown is supported.</p>
       <textarea name="instructions" id="skill-instructions" rows="14"
                 placeholder="You are an AI colleague for..."
                 {% if not editable %}readonly{% endif %}
@@ -94,36 +96,44 @@
     </section>
 
     {# ----- Tools ----- #}
-    <section class="p-6 bg-neutral-primary-soft border border-default rounded-base" id="tools-section">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-sm font-medium text-heading">Tools</h2>
+    <section id="tools-section">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="min-w-0">
+          <h2 class="text-base font-semibold text-heading">Tools</h2>
+          <p class="mt-0.5 text-sm text-body">Tools {{ assistant_name }} can call when this skill is active.</p>
+        </div>
         {% if editable %}
-        <button type="button" id="open-tool-picker" data-modal-target="tool-picker-modal" data-modal-show="tool-picker-modal" class="inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
+        <button type="button" id="open-tool-picker" data-modal-target="tool-picker-modal" data-modal-show="tool-picker-modal" class="shrink-0 inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
           <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
           Add tool
         </button>
         {% endif %}
       </div>
-      <p class="text-xs text-body mb-3">Tools {{ assistant_name }} can call when this skill is active.</p>
-      <div id="tool-chips" class="flex flex-wrap gap-2 min-h-[2rem]">
-        {# Populated by JS from tool-names-json #}
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-5">
+        <div id="tool-chips" class="flex flex-wrap gap-2 min-h-[2rem]">
+          {# Populated by JS from tool-names-json #}
+        </div>
       </div>
     </section>
 
     {# ----- Templates ----- #}
-    <section class="p-6 bg-neutral-primary-soft border border-default rounded-base" id="templates-section">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-sm font-medium text-heading">Templates</h2>
+    <section id="templates-section">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="min-w-0">
+          <h2 class="text-base font-semibold text-heading">Templates</h2>
+          <p class="mt-0.5 text-sm text-body">Reusable text snippets the skill can load — for example a standard reply structure or a checklist.</p>
+        </div>
         {% if editable %}
-        <button type="button" id="add-template-btn" class="inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
+        <button type="button" id="add-template-btn" class="shrink-0 inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
           <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
           Add template
         </button>
         {% endif %}
       </div>
-      <p class="text-xs text-body mb-3">Reusable text snippets the skill can load — for example a standard reply structure or a checklist.</p>
-      <div id="template-list" class="space-y-3">
-        {# Populated by JS from templates-json #}
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-5">
+        <div id="template-list" class="space-y-3">
+          {# Populated by JS from templates-json #}
+        </div>
       </div>
     </section>
   </form>
@@ -141,8 +151,8 @@
       {% endif %}
       <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=skill.id %}" class="m-0">
         {% csrf_token %}
-        <button type="submit" class="inline-flex items-center gap-1.5 text-on-brand bg-brand hover:bg-brand-strong border border-transparent font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-brand-medium">
-          <svg class="w-4 h-4 text-accent dark:text-on-brand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+        <button type="submit" class="inline-flex items-center gap-1.5 text-white bg-accent hover:bg-accent-hover border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-accent-subtle">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
           Edit with {{ assistant_name }}
         </button>
       </form>
@@ -174,7 +184,8 @@
       {% if editable %}
       <form method="post" action="{% url 'agent_skills_delete' skill_id=skill.id %}" class="m-0 ms-auto">
         {% csrf_token %}
-        <button type="submit" class="text-fg-danger hover:bg-danger-soft border border-default rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand" onclick="return confirm('Delete this skill? This can\'t be undone.');">
+        <button type="submit" class="inline-flex items-center gap-1.5 text-fg-danger hover:bg-danger-soft border border-default rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand" onclick="return confirm('Delete this skill? This can\'t be undone.');">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
           Delete
         </button>
       </form>

@@ -1,373 +1,440 @@
 {% extends "_base.html" %}
+{% load humanize %}
 
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-16">
-  <h1 class="text-2xl font-semibold text-heading">{{ org.name }} &mdash; Settings</h1>
+  <h1 class="text-3xl sm:text-4xl font-semibold text-heading">{{ org.name }} &mdash; Settings</h1>
+  <p class="mt-2 text-sm text-body">Manage spending limits, models, tools, and skills for everyone in this organization.</p>
 
-  <!-- Monthly Budgets -->
-  <section class="mt-8">
-    <h2 class="text-lg font-medium text-heading">Monthly Budgets</h2>
-    <p class="mt-1 text-sm text-body">Set spending limits for this organization. Use 0 for unlimited.</p>
+  <div class="mt-10 grid lg:grid-cols-[170px_minmax(0,1fr)] gap-8 lg:gap-10 items-start">
+    <!-- Section index -->
+    <nav class="hidden lg:block sticky top-24" aria-label="Organization settings sections">
+      <ul class="space-y-0.5 text-sm">
+        <li><a href="#budgets" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Monthly budgets</a></li>
+        <li><a href="#allowed-models" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Allowed models</a></li>
+        <li><a href="#model-defaults" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Model defaults</a></li>
+        {% if org_features %}<li><a href="#features" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Feature overrides</a></li>{% endif %}
+        <li><a href="#transcription" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Transcription</a></li>
+        <li><a href="#tools" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Tools</a></li>
+        <li><a href="#subagents" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Sub-agents</a></li>
+        <li><a href="#pii" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">PII classification</a></li>
+        <li><a href="#context" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
+        <li><a href="#skills" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Skills</a></li>
+      </ul>
+    </nav>
 
-    <div class="mt-4 space-y-4">
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="monthly-budget-per-user">
-          Monthly budget per user (USD)
-        </label>
-        <p class="text-xs text-body mt-0.5">Maximum amount each member can spend per calendar month. 0 = unlimited.</p>
-        <input
-          type="number"
-          id="monthly-budget-per-user"
-          min="0"
-          step="1"
-          value="{{ monthly_budget_per_user }}"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-      </div>
+    <!-- Section cards -->
+    <div class="space-y-8 min-w-0">
 
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="monthly-budget-org">
-          Monthly organization budget (USD)
-        </label>
-        <p class="text-xs text-body mt-0.5">Maximum total spend across all members per calendar month. 0 = unlimited.</p>
-        <input
-          type="number"
-          id="monthly-budget-org"
-          min="0"
-          step="1"
-          value="{{ monthly_budget_org }}"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-      </div>
-    </div>
-  </section>
-
-  <!-- Allowed Models -->
-  <section class="mt-8">
-    <h2 class="text-lg font-medium text-heading">Allowed Models</h2>
-    <p class="mt-1 text-sm text-body">Select which models are available to members of this organization.</p>
-
-    <div id="allowed-models-list" class="mt-4 space-y-2">
-      {% for model in system_models_data %}
-      <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
-        <input
-          type="checkbox"
-          class="allowed-model-checkbox rounded border-default text-brand focus:ring-brand-medium"
-          value="{{ model.id }}"
-          {% if model.id in org_allowed or not org_allowed %}checked{% endif %}
-        >
-        <span class="text-sm text-body flex-1">{{ model.id }}</span>
-        {% if model.price %}<span class="text-xs text-muted tabular-nums">{{ model.price }}</span>{% endif %}
-      </label>
-      {% empty %}
-      <p class="text-sm text-body italic">No models are configured yet. Set the system allow-list to make models available here.</p>
-      {% endfor %}
-    </div>
-  </section>
-
-  <!-- Model Defaults -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Model Defaults</h2>
-    <p class="mt-1 text-sm text-body">Choose the default model for each tier. Members can override these in their personal settings.</p>
-
-    <div class="mt-4 space-y-4">
-      {% for tier in tiers %}
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="org-model-{{ tier.key }}">
-          {{ tier.label }}
-        </label>
-        <p class="text-xs text-body mt-0.5">{{ tier.desc }}</p>
-        <select
-          id="org-model-{{ tier.key }}"
-          data-tier="{{ tier.key }}"
-          class="org-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">System default ({{ tier.default_model }})</option>
-          {% for model in tier.slot_models %}
-          <option value="{{ model }}">{{ model }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-
-  <!-- Feature Model Overrides -->
-  {% if org_features %}
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Feature Model Overrides</h2>
-    <p class="mt-1 text-sm text-body">Override the model used for specific background features. "Default" uses the tier model selected above.</p>
-
-    <div class="mt-4 space-y-4">
-      {% for feature in org_features %}
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="org-feature-model-{{ feature.key }}">
-          {{ feature.label }}
-        </label>
-        {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
-        <select
-          id="org-feature-model-{{ feature.key }}"
-          data-feature="{{ feature.key }}"
-          class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">Use organization default {{ feature.default_slot }} model (recommended)</option>
-          {% for model in feature.eligible_models %}
-          <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
-
-  <!-- Transcription Models -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Transcription Models</h2>
-    <p class="mt-1 text-sm text-body">Control which transcription models are available for audio file processing. Unchecking all disables audio uploads.</p>
-
-    <div id="allowed-transcription-models-list" class="mt-4 space-y-2">
-      {% for model in system_transcription_models %}
-      <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
-        <input
-          type="checkbox"
-          class="allowed-transcription-model-checkbox rounded border-default text-brand focus:ring-brand-medium"
-          value="{{ model }}"
-          {% if org_allowed_transcription == None or model in org_allowed_transcription %}checked{% endif %}
-        >
-        <span class="text-sm text-body">{% if model in transcription_model_display %}{{ transcription_model_display|dictsort:"0" }}{% endif %}{{ model }}</span>
-      </label>
-      {% empty %}
-      <p class="text-sm text-body italic">No transcription models configured.</p>
-      {% endfor %}
-    </div>
-
-    {% if system_transcription_models %}
-    <div class="mt-4 grid gap-4 md:grid-cols-2">
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="org-transcription-model-live">
-          Live transcription model
-        </label>
-        <p class="text-xs text-body mt-0.5">Used when a member clicks Start transcription on a meeting and hasn't set their own preference.</p>
-        <select
-          id="org-transcription-model-live"
-          data-kind="live"
-          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">Default ({{ system_transcription_default_live }})</option>
-          {% for model in live_capable_transcription_models %}
-          <option value="{{ model }}" {% if org_transcription_default_live == model %}selected{% endif %}>{{ model }}</option>
-          {% endfor %}
-        </select>
-        {% if not live_capable_transcription_models %}
-        <p class="mt-2 text-xs text-fg-warning">None of the models above support live streaming. Allow a streaming-capable model to enable live transcription.</p>
-        {% endif %}
-      </div>
-
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="org-transcription-model-upload">
-          File-upload transcription model
-        </label>
-        <p class="text-xs text-body mt-0.5">Used when a member uploads an audio file and hasn't set their own preference.</p>
-        <select
-          id="org-transcription-model-upload"
-          data-kind="upload"
-          class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-          <option value="">Default ({{ system_transcription_default_upload }})</option>
-          {% for model in upload_capable_transcription_models %}
-          <option value="{{ model }}" {% if org_transcription_default_upload == model %}selected{% endif %}>{{ model }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </div>
-    {% endif %}
-  </section>
-
-  <!-- Tools -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Tools</h2>
-    <p class="mt-1 text-sm text-body">Enable or disable tools for all members.</p>
-
-    {% for section_key, section in tool_sections.items %}
-    <div class="mt-6">
-      <h3 class="text-base font-medium text-heading">{{ section.label }}</h3>
-      <p class="mt-1 text-sm text-body">{{ section.description }}</p>
-      <div class="mt-3 space-y-2">
-        {% for tool in section.tools %}
-        <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
-          <div>
-            <span class="text-sm font-medium text-heading">{{ tool.name }}</span>
-            {% if tool.description %}
-            <p class="text-xs text-body mt-0.5">{{ tool.description }}</p>
-            {% endif %}
-            {% if tool.note %}
-            <p class="text-xs text-fg-warning mt-0.5">{{ tool.note }}</p>
-            {% endif %}
-          </div>
-          <input
-            type="checkbox"
-            class="tool-toggle rounded border-default text-brand focus:ring-brand-medium"
-            data-tool="{{ tool.name }}"
-            {% if tool.enabled %}checked{% endif %}
-          >
-        </label>
-        {% endfor %}
-      </div>
-    </div>
-    {% empty %}
-    <p class="mt-4 text-sm text-body italic">No tools available yet.</p>
-    {% endfor %}
-  </section>
-
-  <!-- Sub-agents -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Sub-agents</h2>
-    <p class="mt-1 text-sm text-body">Configure how sub-agents run for all members.</p>
-
-    <div class="mt-4">
-      <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
-        <div>
-          <span class="text-sm font-medium text-heading">Allow parallel sub-agents</span>
-          <p class="text-xs text-body mt-0.5">When disabled, sub-agents must run one at a time.</p>
+      <!-- Monthly Budgets -->
+      <section id="budgets" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Monthly budgets</h2>
+          <p class="mt-0.5 text-sm text-body">Set spending limits for this organization. Use 0 for unlimited.</p>
         </div>
-        <input
-          type="checkbox"
-          id="parallel-subagents-toggle"
-          class="rounded border-default text-brand focus:ring-brand-medium"
-          {% if parallel_subagents %}checked{% endif %}
-        >
-      </label>
-    </div>
-  </section>
-
-  <!-- PII Classification -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">PII Classification</h2>
-    <p class="mt-1 text-sm text-body">Automatically classify documents by GDPR personal data categories during processing.</p>
-
-    <div class="mt-4">
-      <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
-        <div>
-          <span class="text-sm font-medium text-heading">Enable PII category tagging</span>
-          <p class="text-xs text-body mt-0.5">When enabled, newly uploaded documents are scanned for personal data categories (identity, professional, financial, special categories, etc.).</p>
-        </div>
-        <input
-          type="checkbox"
-          id="pii-scan-toggle"
-          class="rounded border-default text-brand focus:ring-brand-medium"
-          {% if pii_scan_enabled %}checked{% endif %}
-        >
-      </label>
-    </div>
-
-    <div class="mt-3">
-      <label class="flex items-center justify-between rounded-base border border-default bg-neutral-primary-soft p-3 cursor-pointer hover:bg-neutral-secondary-soft">
-        <div>
-          <span class="text-sm font-medium text-heading">Quarantine special category &amp; criminal offence data</span>
-          <p class="text-xs text-body mt-0.5">When enabled, documents found to contain GDPR Article 9 (special category) or Article 10 (criminal offence) data are quarantined and never sent to {{ assistant_name|default:"the assistant" }}. Disable only if you have a lawful basis for processing this data.</p>
-        </div>
-        <input
-          type="checkbox"
-          id="pii-quarantine-toggle"
-          class="rounded border-default text-brand focus:ring-brand-medium"
-          {% if pii_quarantine_enabled %}checked{% endif %}
-        >
-      </label>
-    </div>
-  </section>
-
-  <!-- Context Window Limit -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Context Window Limit</h2>
-    <p class="mt-1 text-sm text-body">Set the maximum context tokens for conversations. Members can set a lower limit in their personal settings.</p>
-
-    <div class="mt-4">
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="block text-sm font-medium text-heading" for="max-context-tokens">Maximum context tokens</label>
-        <p class="text-xs text-body mt-0.5">Controls the effective context window used for history budget calculations. Minimum 10,000.</p>
-        <input
-          type="number"
-          id="max-context-tokens"
-          min="10000"
-          step="10000"
-          value="{{ org_max_context_tokens }}"
-          class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-        >
-      </div>
-    </div>
-  </section>
-
-  <!-- Skills -->
-  <section class="mt-10">
-    <h2 class="text-lg font-medium text-heading">Skills</h2>
-    <p class="mt-1 text-sm text-body">Enable or disable skills and their tools for all members.</p>
-
-    <div class="mt-4 space-y-4">
-      {% for skill in skills_data %}
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
-        <label class="flex items-center justify-between cursor-pointer">
-          <div>
-            <span class="text-sm font-medium text-heading">{% if skill.emoji %}{{ skill.emoji }} {% endif %}{{ skill.name }}</span>
-            {% if skill.description %}
-            <p class="text-xs text-body mt-0.5 max-w-lg truncate">{{ skill.description|truncatechars:120 }}</p>
-            {% endif %}
-          </div>
-          <input
-            type="checkbox"
-            class="skill-toggle rounded border-default text-brand focus:ring-brand-medium"
-            data-skill="{{ skill.slug }}"
-            {% if skill.enabled %}checked{% endif %}
-          >
-        </label>
-
-        {% if skill.tool_names %}
-        <div class="mt-3 ml-4 space-y-1 skill-tools" data-parent-skill="{{ skill.slug }}">
-          {% for tool_name in skill.tool_names %}
-          <div class="skill-tool-row rounded-base border border-default bg-neutral-primary p-2" data-skill="{{ skill.slug }}" data-tool="{{ tool_name }}">
-            <!-- Normal state: checkbox -->
-            <label class="skill-tool-normal flex items-center justify-between cursor-pointer text-xs">
-              <span class="text-body">{{ tool_name }}</span>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="monthly-budget-per-user">
+                Monthly budget per user (USD)
+              </label>
+              <p class="text-xs text-body mt-0.5">Maximum amount each member can spend per calendar month. 0 = unlimited.</p>
               <input
-                type="checkbox"
-                class="skill-tool-toggle rounded border-default text-brand focus:ring-brand-medium"
-                data-skill="{{ skill.slug }}"
-                data-tool="{{ tool_name }}"
-                {% if not skill.enabled %}disabled{% endif %}
+                type="number"
+                id="monthly-budget-per-user"
+                min="0"
+                step="1"
+                value="{{ monthly_budget_per_user|floatformat:0 }}"
+                class="wf-mono mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
               >
-            </label>
+            </div>
 
-            <!-- Scope choice (hidden by default) -->
-            <div class="skill-tool-scope hidden text-xs mt-1">
-              <p class="text-body mb-1">Disable <strong>{{ tool_name }}</strong> for:</p>
-              <div class="flex items-center gap-4">
-                <label class="flex items-center gap-1 cursor-pointer text-body">
-                  <input type="radio" name="scope-{{ skill.slug }}-{{ tool_name }}" value="skill" class="scope-radio text-brand focus:ring-brand-medium">
-                  This skill only
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="monthly-budget-org">
+                Monthly organization budget (USD)
+              </label>
+              <p class="text-xs text-body mt-0.5">Maximum total spend across all members per calendar month. 0 = unlimited.</p>
+              <input
+                type="number"
+                id="monthly-budget-org"
+                min="0"
+                step="1"
+                value="{{ monthly_budget_org|floatformat:0 }}"
+                class="wf-mono mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Allowed Models -->
+      <section id="allowed-models" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Allowed models</h2>
+          <p class="mt-0.5 text-sm text-body">Select which models are available to members of this organization.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="p-5">
+            <div id="allowed-models-list" class="space-y-2">
+              {% for model in system_models_data %}
+              <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
+                <input
+                  type="checkbox"
+                  class="allowed-model-checkbox rounded border-default text-brand focus:ring-brand-medium"
+                  value="{{ model.id }}"
+                  {% if model.id in org_allowed or not org_allowed %}checked{% endif %}
+                >
+                <span class="text-sm text-body flex-1">{{ model.id }}</span>
+                {% if model.price %}<span class="wf-mono text-xs text-body-subtle">{{ model.price }}</span>{% endif %}
+              </label>
+              {% empty %}
+              <p class="text-sm text-body italic">No models are configured yet. Set the system allow-list to make models available here.</p>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Model Defaults -->
+      <section id="model-defaults" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Model defaults</h2>
+          <p class="mt-0.5 text-sm text-body">Choose the default model for each tier. Members can override these in their personal settings.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            {% for tier in tiers %}
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="org-model-{{ tier.key }}">
+                {{ tier.label }}
+              </label>
+              <p class="text-xs text-body mt-0.5">{{ tier.desc }}</p>
+              <select
+                id="org-model-{{ tier.key }}"
+                data-tier="{{ tier.key }}"
+                class="org-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">System default ({{ tier.default_model }})</option>
+                {% for model in tier.slot_models %}
+                <option value="{{ model }}">{{ model }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
+      <!-- Feature Model Overrides -->
+      {% if org_features %}
+      <section id="features" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Feature model overrides</h2>
+          <p class="mt-0.5 text-sm text-body">Override the model used for specific background features. "Default" uses the tier model selected above.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            {% for feature in org_features %}
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="org-feature-model-{{ feature.key }}">
+                {{ feature.label }}
+              </label>
+              {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
+              <select
+                id="org-feature-model-{{ feature.key }}"
+                data-feature="{{ feature.key }}"
+                class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Use organization default {{ feature.default_slot }} model (recommended)</option>
+                {% for model in feature.eligible_models %}
+                <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <!-- Transcription Models -->
+      <section id="transcription" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Transcription models</h2>
+          <p class="mt-0.5 text-sm text-body">Control which transcription models are available for audio file processing. Unchecking all disables audio uploads.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            <div class="px-5 py-4">
+              <div id="allowed-transcription-models-list" class="space-y-2">
+                {% for model in system_transcription_models %}
+                <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
+                  <input
+                    type="checkbox"
+                    class="allowed-transcription-model-checkbox rounded border-default text-brand focus:ring-brand-medium"
+                    value="{{ model }}"
+                    {% if org_allowed_transcription == None or model in org_allowed_transcription %}checked{% endif %}
+                  >
+                  <span class="text-sm text-body">{% if model in transcription_model_display %}{{ transcription_model_display|dictsort:"0" }}{% endif %}{{ model }}</span>
                 </label>
-                <label class="flex items-center gap-1 cursor-pointer text-body">
-                  <input type="radio" name="scope-{{ skill.slug }}-{{ tool_name }}" value="all" class="scope-radio text-brand focus:ring-brand-medium">
-                  All skills
-                </label>
-                <button type="button" class="scope-cancel text-brand hover:underline ml-2">Cancel</button>
+                {% empty %}
+                <p class="text-sm text-body italic">No transcription models configured.</p>
+                {% endfor %}
               </div>
             </div>
 
-            <!-- Globally disabled state (hidden by default) -->
-            <div class="skill-tool-disabled hidden text-xs mt-1 flex items-center justify-between">
-              <span class="text-body italic">Disabled for all skills</span>
-              <button type="button" class="re-enable-btn text-brand hover:underline">Re-enable</button>
+            {% if system_transcription_models %}
+            <div class="px-5 py-4 grid gap-4 md:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium text-heading" for="org-transcription-model-live">
+                  Live transcription model
+                </label>
+                <p class="text-xs text-body mt-0.5">Used when a member clicks Start transcription on a meeting and hasn't set their own preference.</p>
+                <select
+                  id="org-transcription-model-live"
+                  data-kind="live"
+                  class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                >
+                  <option value="">Default ({{ system_transcription_default_live }})</option>
+                  {% for model in live_capable_transcription_models %}
+                  <option value="{{ model }}" {% if org_transcription_default_live == model %}selected{% endif %}>{{ model }}</option>
+                  {% endfor %}
+                </select>
+                {% if not live_capable_transcription_models %}
+                <p class="mt-2 text-xs text-fg-warning">None of the models above support live streaming. Allow a streaming-capable model to enable live transcription.</p>
+                {% endif %}
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-heading" for="org-transcription-model-upload">
+                  File-upload transcription model
+                </label>
+                <p class="text-xs text-body mt-0.5">Used when a member uploads an audio file and hasn't set their own preference.</p>
+                <select
+                  id="org-transcription-model-upload"
+                  data-kind="upload"
+                  class="org-transcription-kind-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                >
+                  <option value="">Default ({{ system_transcription_default_upload }})</option>
+                  {% for model in upload_capable_transcription_models %}
+                  <option value="{{ model }}" {% if org_transcription_default_upload == model %}selected{% endif %}>{{ model }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </section>
+
+      <!-- Tools -->
+      <section id="tools" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Tools</h2>
+          <p class="mt-0.5 text-sm text-body">Enable or disable tools for all members.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            {% for section_key, section in tool_sections.items %}
+            <div class="px-5 py-4">
+              <h3 class="text-sm font-semibold text-heading">{{ section.label }}</h3>
+              <p class="mt-0.5 text-sm text-body">{{ section.description }}</p>
+              <div class="mt-3 space-y-2">
+                {% for tool in section.tools %}
+                <label class="flex items-center justify-between gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
+                  <div>
+                    <span class="text-sm font-medium text-heading">{{ tool.name }}</span>
+                    {% if tool.description %}
+                    <p class="text-xs text-body mt-0.5">{{ tool.description }}</p>
+                    {% endif %}
+                    {% if tool.note %}
+                    <p class="text-xs text-fg-warning mt-0.5">{{ tool.note }}</p>
+                    {% endif %}
+                  </div>
+                  <input
+                    type="checkbox"
+                    class="tool-toggle rounded border-default text-brand focus:ring-brand-medium"
+                    data-tool="{{ tool.name }}"
+                    {% if tool.enabled %}checked{% endif %}
+                  >
+                </label>
+                {% endfor %}
+              </div>
+            </div>
+            {% empty %}
+            <div class="px-5 py-4">
+              <p class="text-sm text-body italic">No tools available yet.</p>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
+      <!-- Sub-agents -->
+      <section id="subagents" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Sub-agents</h2>
+          <p class="mt-0.5 text-sm text-body">Configure how sub-agents run for all members.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="px-5 py-4">
+            <label class="flex items-center justify-between gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
+              <div>
+                <span class="text-sm font-medium text-heading">Allow parallel sub-agents</span>
+                <p class="text-xs text-body mt-0.5">When disabled, sub-agents must run one at a time.</p>
+              </div>
+              <input
+                type="checkbox"
+                id="parallel-subagents-toggle"
+                class="rounded border-default text-brand focus:ring-brand-medium"
+                {% if parallel_subagents %}checked{% endif %}
+              >
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- PII Classification -->
+      <section id="pii" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">PII classification</h2>
+          <p class="mt-0.5 text-sm text-body">Automatically classify documents by GDPR personal data categories during processing.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            <div class="px-5 py-4">
+              <label class="flex items-center justify-between gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
+                <div>
+                  <span class="text-sm font-medium text-heading">Enable PII category tagging</span>
+                  <p class="text-xs text-body mt-0.5">When enabled, newly uploaded documents are scanned for personal data categories (identity, professional, financial, special categories, etc.).</p>
+                </div>
+                <input
+                  type="checkbox"
+                  id="pii-scan-toggle"
+                  class="rounded border-default text-brand focus:ring-brand-medium"
+                  {% if pii_scan_enabled %}checked{% endif %}
+                >
+              </label>
+            </div>
+
+            <div class="px-5 py-4">
+              <label class="flex items-center justify-between gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
+                <div>
+                  <span class="text-sm font-medium text-heading">Quarantine special category &amp; criminal offence data</span>
+                  <p class="text-xs text-body mt-0.5">When enabled, documents found to contain GDPR Article 9 (special category) or Article 10 (criminal offence) data are quarantined and never sent to {{ assistant_name|default:"the assistant" }}. Disable only if you have a lawful basis for processing this data.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  id="pii-quarantine-toggle"
+                  class="rounded border-default text-brand focus:ring-brand-medium"
+                  {% if pii_quarantine_enabled %}checked{% endif %}
+                >
+              </label>
             </div>
           </div>
-          {% endfor %}
         </div>
-        {% endif %}
-      </div>
-      {% empty %}
-      <p class="text-sm text-body italic">No skills available.</p>
-      {% endfor %}
+      </section>
+
+      <!-- Context Window Limit -->
+      <section id="context" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Context window limit</h2>
+          <p class="mt-0.5 text-sm text-body">Set the maximum context tokens for conversations. Members can set a lower limit in their personal settings.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="px-5 py-4">
+            <label class="block text-sm font-medium text-heading" for="max-context-tokens">Maximum context tokens</label>
+            <p class="text-xs text-body mt-0.5">Controls the effective context window used for history budget calculations. Minimum 10,000.</p>
+            <input
+              type="number"
+              id="max-context-tokens"
+              min="10000"
+              step="10000"
+              value="{{ org_max_context_tokens }}"
+              class="wf-mono mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+            >
+          </div>
+        </div>
+      </section>
+
+      <!-- Skills -->
+      <section id="skills" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Skills</h2>
+          <p class="mt-0.5 text-sm text-body">Enable or disable skills and their tools for all members.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            {% for skill in skills_data %}
+            <div class="px-5 py-4">
+              <label class="flex items-center justify-between cursor-pointer">
+                <div>
+                  <span class="text-sm font-medium text-heading">{% if skill.emoji %}{{ skill.emoji }} {% endif %}{{ skill.name }}</span>
+                  {% if skill.description %}
+                  <p class="text-xs text-body mt-0.5 max-w-lg truncate">{{ skill.description|truncatechars:120 }}</p>
+                  {% endif %}
+                </div>
+                <input
+                  type="checkbox"
+                  class="skill-toggle rounded border-default text-brand focus:ring-brand-medium"
+                  data-skill="{{ skill.slug }}"
+                  {% if skill.enabled %}checked{% endif %}
+                >
+              </label>
+
+              {% if skill.tool_names %}
+              <div class="mt-3 ml-4 space-y-1 skill-tools" data-parent-skill="{{ skill.slug }}">
+                {% for tool_name in skill.tool_names %}
+                <div class="skill-tool-row rounded-base border border-default bg-neutral-primary p-2" data-skill="{{ skill.slug }}" data-tool="{{ tool_name }}">
+                  <!-- Normal state: checkbox -->
+                  <label class="skill-tool-normal flex items-center justify-between cursor-pointer text-xs">
+                    <span class="text-body">{{ tool_name }}</span>
+                    <input
+                      type="checkbox"
+                      class="skill-tool-toggle rounded border-default text-brand focus:ring-brand-medium"
+                      data-skill="{{ skill.slug }}"
+                      data-tool="{{ tool_name }}"
+                      {% if not skill.enabled %}disabled{% endif %}
+                    >
+                  </label>
+
+                  <!-- Scope choice (hidden by default) -->
+                  <div class="skill-tool-scope hidden text-xs mt-1">
+                    <p class="text-body mb-1">Disable <strong>{{ tool_name }}</strong> for:</p>
+                    <div class="flex items-center gap-4">
+                      <label class="flex items-center gap-1 cursor-pointer text-body">
+                        <input type="radio" name="scope-{{ skill.slug }}-{{ tool_name }}" value="skill" class="scope-radio text-brand focus:ring-brand-medium">
+                        This skill only
+                      </label>
+                      <label class="flex items-center gap-1 cursor-pointer text-body">
+                        <input type="radio" name="scope-{{ skill.slug }}-{{ tool_name }}" value="all" class="scope-radio text-brand focus:ring-brand-medium">
+                        All skills
+                      </label>
+                      <button type="button" class="scope-cancel text-fg-accent hover:underline ml-2">Cancel</button>
+                    </div>
+                  </div>
+
+                  <!-- Globally disabled state (hidden by default) -->
+                  <div class="skill-tool-disabled hidden text-xs mt-1 flex items-center justify-between">
+                    <span class="text-body italic">Disabled for all skills</span>
+                    <button type="button" class="re-enable-btn text-fg-accent hover:underline">Re-enable</button>
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </div>
+            {% empty %}
+            <div class="px-5 py-4">
+              <p class="text-sm text-body italic">No skills available.</p>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
     </div>
-  </section>
+  </div>
 </main>
 
 <script>
@@ -748,6 +815,31 @@
       });
     });
   });
+})();
+</script>
+
+<script>
+(function() {
+  // Section-index scrollspy — highlights the current section in the left nav.
+  var links = Array.prototype.slice.call(document.querySelectorAll('.settings-nav'));
+  if (!links.length || !('IntersectionObserver' in window)) return;
+  var map = {};
+  links.forEach(function(l) { map[l.getAttribute('href').slice(1)] = l; });
+  function setActive(id) {
+    links.forEach(function(l) {
+      var on = l === map[id];
+      l.classList.toggle('bg-brand-softer', on);
+      l.classList.toggle('border-accent', on);
+      l.classList.toggle('text-heading', on);
+      l.classList.toggle('font-medium', on);
+      l.classList.toggle('border-transparent', !on);
+      l.classList.toggle('text-body', !on);
+    });
+  }
+  var obs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) { if (e.isIntersecting) setActive(e.target.id); });
+  }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+  document.querySelectorAll('main section[id]').forEach(function(s) { obs.observe(s); });
 })();
 </script>
 {% endblock content %}

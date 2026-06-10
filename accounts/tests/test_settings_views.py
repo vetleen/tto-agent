@@ -28,7 +28,7 @@ class ThemeUpdateViewTests(TestCase):
     def test_requires_login(self) -> None:
         response = self.client.post(self.url, {"theme": "dark"})
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     def test_rejects_get_request(self) -> None:
         self.client.login(email=self.user.email, password=self.password)
@@ -114,7 +114,7 @@ class SettingsPageTests(TestCase):
     def test_requires_login(self):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     @patch("core.preferences.get_preferences")
     def test_renders_settings_page(self, mock_prefs):
@@ -616,7 +616,7 @@ class OrgSubagentsUpdateViewTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     def test_requires_admin(self):
         self.client.login(email=self.member_user.email, password=self.password)
@@ -749,7 +749,7 @@ class OrgMaxContextUpdateTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     def test_requires_admin(self):
         self.client.login(email=self.member_user.email, password=self.password)
@@ -1439,7 +1439,7 @@ class AgentPageTests(TestCase):
     def test_requires_login(self):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     def test_admin_sees_four_tabs(self):
         self.client.login(email=self.admin_user.email, password=self.password)

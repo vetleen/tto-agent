@@ -1,17 +1,6 @@
-{% extends "_base.html" %}
+{% extends "errors/_error_base.html" %}
 
-{% block content %}
-<main class="mx-auto max-w-4xl px-6 py-24 text-center">
-  <p class="text-6xl font-bold text-fg-danger">403</p>
-  <h1 class="mt-4 text-3xl font-semibold tracking-tight text-heading">Access denied</h1>
-  <p class="mt-4 text-body">You don't have permission to view this page. If that seems wrong, get in touch and we'll take a look.</p>
-  <div class="mt-8 flex items-center justify-center gap-4">
-    <a href="/" class="rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong">
-      Go home
-    </a>
-    <a href="javascript:history.back()" class="text-sm font-medium text-fg-brand hover:text-fg-brand-strong">
-      Go back
-    </a>
-  </div>
-</main>
-{% endblock content %}
+{% block error_code %}403{% endblock %}
+{% block error_code_color %}text-fg-danger{% endblock %}
+{% block error_title %}Access denied{% endblock %}
+{% block error_body %}You don't have permission to view this page. If that seems wrong, get in touch and we'll take a look.{% endblock %}

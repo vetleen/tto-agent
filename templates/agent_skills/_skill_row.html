@@ -4,26 +4,33 @@ Opacity is applied to individual content elements (not the row) so the
 dropdown menu stays fully opaque even when the skill is disabled. CSS
 opacity propagates to all descendants and cannot be undone on a child.
 {% endcomment %}
-<div class="skill-row flex items-start w-full px-4 py-3 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group"
+<div class="skill-row flex items-center w-full px-5 py-3.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group"
      data-skill-id="{{ row.skill.id }}"
      data-skill-slug="{{ row.skill.slug }}"
      data-toggle-url="{% url 'agent_skills_toggle' skill_id=row.skill.id %}">
-  <input type="checkbox"
-         class="skill-toggle mt-1 w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0 {% if not row.is_enabled %}opacity-50{% endif %}"
-         {% if row.is_enabled %}checked{% endif %}
-         aria-label="Enable {{ row.skill.name }}">
-  <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="flex-1 min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand rounded-base {% if not row.is_enabled %}opacity-50{% endif %}">
-    <div class="flex items-center min-w-0">
-      <span class="truncate font-medium text-heading" title="{{ row.skill.name }}">{% if row.skill.emoji %}<span class="me-1">{{ row.skill.emoji }}</span>{% endif %}{{ row.skill.name|truncatechars:80 }}</span>
-    </div>
-    {% if row.skill.description %}
-    <p class="text-xs text-body truncate mt-0.5">{{ row.skill.description|truncatechars:140 }}</p>
+  <label class="relative inline-flex items-center shrink-0 me-4 cursor-pointer" title="Enable {{ row.skill.name }}">
+    <input type="checkbox"
+           class="skill-toggle sr-only peer"
+           {% if row.is_enabled %}checked{% endif %}
+           aria-label="Enable {{ row.skill.name }}">
+    <span class="w-9 h-5 rounded-full bg-neutral-tertiary border border-default-medium transition-colors peer-checked:bg-brand peer-checked:border-transparent peer-focus:ring-2 peer-focus:ring-brand"></span>
+    <span class="absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-neutral-primary-soft shadow-xs transition-transform peer-checked:translate-x-4"></span>
+  </label>
+  <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand rounded-base {% if not row.is_enabled %}opacity-50{% endif %}">
+    {% if row.skill.emoji %}
+    <span class="flex items-center justify-center shrink-0 w-9 h-9 rounded-base bg-neutral-secondary-soft border border-default-subtle text-lg" aria-hidden="true">{{ row.skill.emoji }}</span>
     {% endif %}
-    {% if row.conflict_label %}
-    <p class="text-xs italic text-body mt-0.5 conflict-label">{{ row.conflict_label }}</p>
-    {% endif %}
+    <span class="min-w-0">
+      <span class="block truncate font-medium text-heading" title="{{ row.skill.name }}">{{ row.skill.name|truncatechars:80 }}</span>
+      {% if row.skill.description %}
+      <span class="block text-xs text-body truncate mt-0.5">{{ row.skill.description|truncatechars:140 }}</span>
+      {% endif %}
+      {% if row.conflict_label %}
+      <span class="block text-xs italic text-body-subtle mt-1 conflict-label">{{ row.conflict_label }}</span>
+      {% endif %}
+    </span>
   </a>
-  <span class="shrink-0 ms-3 text-xs text-body text-right whitespace-nowrap mt-0.5 {% if not row.is_enabled %}opacity-50{% endif %}">{{ row.relative_date }}</span>
+  <span class="wf-mono shrink-0 ms-4 text-xs text-body-subtle text-right whitespace-nowrap {% if not row.is_enabled %}opacity-50{% endif %}">{{ row.relative_date }}</span>
   <div class="relative shrink-0 ms-2">
     <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Skill options" data-dropdown-toggle="dropdown-skill-{{ row.skill.id }}">
       <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>

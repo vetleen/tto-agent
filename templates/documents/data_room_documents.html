@@ -17,34 +17,37 @@
   </ul>
   {% endif %}
 
-  <section class="mb-6 p-6 bg-neutral-primary-soft border border-default rounded-base" id="description-section"
+  <section class="mb-8" id="description-section"
            data-generate-url="{% url 'data_room_generate_description' data_room_id=data_room.uuid %}"
            data-update-url="{% url 'data_room_update_description' data_room_id=data_room.uuid %}">
-    <h2 class="text-lg font-medium text-heading mb-3">Description</h2>
-    <textarea id="data-room-description" rows="6" maxlength="1000"
-              placeholder="Describe the purpose of this data room..."
-       class="mb-1 wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 placeholder:text-body">{{ data_room.description }}</textarea>
-    <p class="text-xs text-body text-right" id="description-char-count"></p>
-    <div class="flex items-center gap-2 mt-3">
-      <button type="button" id="generate-description-btn" title="Ask {{ assistant_name }} to generate a description"
-              class="inline-flex items-center gap-1.5 text-on-brand bg-brand hover:bg-brand-strong border border-transparent font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-brand-medium">
-        <svg class="w-4 h-4 text-accent dark:text-on-brand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
-        <span id="generate-description-text">Ask {{ assistant_name }}</span>
-      </button>
-      <button type="button" id="save-description-btn" disabled
-              class="bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand disabled:opacity-50 disabled:cursor-not-allowed">
-        Save
-      </button>
+    <h2 class="text-base font-semibold text-heading mb-3">Description</h2>
+    <div class="p-6 bg-neutral-primary-soft border border-default rounded-base">
+      <textarea id="data-room-description" rows="6" maxlength="1000"
+                placeholder="Describe the purpose of this data room..."
+         class="mb-1 border border-default bg-neutral-primary-soft text-heading text-sm rounded-base block w-full px-3 py-2.5 placeholder:text-body focus:outline-none focus:ring-2 focus:ring-brand-medium">{{ data_room.description }}</textarea>
+      <p class="text-xs text-body text-right" id="description-char-count"></p>
+      <div class="flex items-center gap-2 mt-3">
+        <button type="button" id="generate-description-btn" title="Ask {{ assistant_name }} to generate a description"
+                class="inline-flex items-center gap-1.5 text-white bg-accent hover:bg-accent-hover border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-accent-subtle">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+          <span id="generate-description-text">Ask {{ assistant_name }}</span>
+        </button>
+        <button type="button" id="save-description-btn" disabled
+                class="bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand disabled:opacity-50 disabled:cursor-not-allowed">
+          Save
+        </button>
+      </div>
     </div>
   </section>
 
-  <section class="mb-10 p-6 bg-neutral-primary-soft border border-default rounded-base">
-    <h2 class="text-lg font-medium text-heading mb-4">Upload documents</h2>
+  <section class="mb-10">
+    <h2 class="text-base font-semibold text-heading mb-3">Upload documents</h2>
+    <div class="p-6 bg-neutral-primary-soft border border-default rounded-base">
     <form id="upload-form" method="post" action="{% url 'document_upload' data_room_id=data_room.uuid %}" enctype="multipart/form-data">
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
-    <input class="cursor-pointer wf-input text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
+    <input class="cursor-pointer border border-default bg-neutral-primary-soft text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
         <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file, up to 100 files at a time.</p>
       </div>
       <button id="upload-btn" type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
@@ -61,6 +64,7 @@
         <div class="bg-brand h-2 rounded-full transition-all duration-300" id="upload-progress-bar" style="width: 0%"></div>
       </div>
       <ul id="upload-error-list" class="space-y-1"></ul>
+    </div>
     </div>
   </section>
 
@@ -80,8 +84,11 @@
     <span class="text-sm text-heading" id="processing-banner-text"></span>
   </div>
 
-  <section class="mt-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
-    <h2 class="text-lg font-medium text-heading mb-4">Documents</h2>
+  <section class="mt-6">
+    <div class="flex items-center justify-between gap-3 mb-3">
+      <h2 class="text-base font-semibold text-heading">Documents</h2>
+      {% if documents %}<span class="wf-mono text-xs text-body-subtle">{{ documents|length }} document{{ documents|length|pluralize }}</span>{% endif %}
+    </div>
     <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
       {% if documents %}
       <div class="flex items-center w-full px-4 py-2.5 border-b border-default rounded-t-base bg-neutral-secondary-soft/60" id="active-toolbar">
@@ -106,7 +113,7 @@
         <span class="doc-status-icon shrink-0 me-2"></span>
         <span class="flex-1 min-w-0 truncate font-medium text-heading" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
         {% include "documents/_pii_status_pills.html" with doc=doc %}
-        <span class="shrink-0 ms-3 text-body text-right">{{ doc.relative_upload_display }}</span>
+        <span class="shrink-0 ms-3 wf-mono text-xs text-body-subtle text-right">{{ doc.relative_upload_display }}</span>
         <div class="relative shrink-0 ms-2">
           <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Document options" data-dropdown-toggle="dropdown-doc-{{ doc.id }}">
             <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
@@ -149,10 +156,10 @@
   </section>
 
   {% if archived_documents %}
-  <section class="mt-6 p-6 bg-neutral-primary-soft border border-default rounded-base">
-    <button type="button" class="flex items-center text-lg font-medium text-body hover:text-heading mb-4" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-90');">
+  <section class="mt-6">
+    <button type="button" class="flex items-center text-base font-semibold text-body hover:text-heading mb-3" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-90');">
       <svg class="w-4 h-4 me-1.5 shrink-0 transition-transform" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
-      Archived documents ({{ archived_documents|length }})
+      Archived documents (<span class="wf-mono">{{ archived_documents|length }}</span>)
     </button>
     <div class="hidden">
       <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
@@ -420,7 +427,7 @@
       nameSpan.textContent = doc.filename;
 
       var dateSpan = document.createElement('span');
-      dateSpan.className = 'shrink-0 ms-3 text-body text-right';
+      dateSpan.className = 'shrink-0 ms-3 wf-mono text-xs text-body-subtle text-right';
       dateSpan.textContent = 'Just now';
 
       row.append(checkbox, statusIcon, nameSpan, dateSpan);

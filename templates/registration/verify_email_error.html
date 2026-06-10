@@ -1,17 +1,13 @@
-{% extends "_base.html" %}
+{% extends "registration/_auth_base.html" %}
 
-{% block content %}
-  <main class="mx-auto max-w-md px-6 py-16 text-body">
-    <h1 class="text-2xl font-semibold text-heading">This link didn't work</h1>
-    <p class="mt-3 text-body">
-      {% if error == "expired" %}
-        This verification link has expired. Log in to get a fresh one.
-      {% else %}
-        This verification link is invalid or has already been used. Log in to get a fresh one.
-      {% endif %}
-    </p>
-    <p class="mt-6">
-      <a class="inline-flex rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong" href="{% url 'accounts:login' %}">Log in</a>
-    </p>
-  </main>
-{% endblock content %}
+{% block auth_form %}
+<h1 class="font-serif font-semibold text-[clamp(28px,3vw,36px)] leading-[1.1] tracking-[-0.02em] text-heading">This link didn't work</h1>
+<p class="mt-3 text-[15px] leading-[1.6] text-body-subtle">
+  {% if error == "expired" %}
+    This verification link has expired. Log in to get a fresh one.
+  {% else %}
+    This verification link is invalid or has already been used. Log in to get a fresh one.
+  {% endif %}
+</p>
+<a class="mt-8 inline-flex items-center rounded-base bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong focus:outline-none focus:ring-4 focus:ring-brand-medium transition-colors" href="{% url 'accounts:login' %}">Log in</a>
+{% endblock auth_form %}

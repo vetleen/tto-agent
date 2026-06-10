@@ -2,7 +2,7 @@
 
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-16">
-  <h1 class="text-2xl font-semibold text-heading">My {{ assistant_name }}</h1>
+  <h1 class="text-3xl sm:text-4xl font-semibold text-heading">My {{ assistant_name }}</h1>
   <p class="mt-2 text-sm text-body">Shape how {{ assistant_name }} works and what it knows about you. Personality (SOUL) guides tone and style; the About sections give {{ assistant_name }} context. {{ assistant_name }}'s name and core identity can't be changed here.</p>
 
   {% with has_org=cust.has_org is_admin=cust.is_org_admin can_edit_soul=cust.allow_user_soul %}
@@ -10,16 +10,16 @@
   <div class="mt-8 border-b border-default">
     <ul class="flex flex-wrap -mb-px text-sm font-medium" id="agent-tabs"
         data-tabs-toggle="#agent-tab-content"
-        data-tabs-active-classes="text-fg-brand border-brand"
+        data-tabs-active-classes="text-fg-accent border-accent"
         data-tabs-inactive-classes="border-transparent text-body hover:text-heading hover:border-default-medium"
         role="tablist">
       {% if has_org %}
       <li class="me-2" role="presentation">
-        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg text-fg-brand border-brand" id="tab-org" data-tabs-target="#panel-org" type="button" role="tab" aria-controls="panel-org" aria-selected="true">Organization</button>
+        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg text-fg-accent border-accent" id="tab-org" data-tabs-target="#panel-org" type="button" role="tab" aria-controls="panel-org" aria-selected="true">Organization</button>
       </li>
       {% endif %}
       <li class="me-2" role="presentation">
-        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg {% if has_org %}border-transparent text-body hover:text-heading hover:border-default-medium{% else %}text-fg-brand border-brand{% endif %}" id="tab-user" data-tabs-target="#panel-user" type="button" role="tab" aria-controls="panel-user" aria-selected="{% if has_org %}false{% else %}true{% endif %}">About you</button>
+        <button class="inline-block py-3 px-4 border-b-2 rounded-t-lg {% if has_org %}border-transparent text-body hover:text-heading hover:border-default-medium{% else %}text-fg-accent border-accent{% endif %}" id="tab-user" data-tabs-target="#panel-user" type="button" role="tab" aria-controls="panel-user" aria-selected="{% if has_org %}false{% else %}true{% endif %}">About you</button>
       </li>
       {% if is_admin %}
       <li class="me-2" role="presentation">
@@ -36,7 +36,7 @@
     {% if has_org %}
     <!-- Organization -->
     <div class="{% if not has_org %}hidden{% endif %} pt-8" id="panel-org" role="tabpanel" aria-labelledby="tab-org">
-      <h2 class="text-lg font-medium text-heading">Organization</h2>
+      <h2 class="text-base font-semibold text-heading">Organization</h2>
       <p class="mt-1 text-sm text-body">Context about your organization that {{ assistant_name }} treats as background information.{% if not is_admin %} Only organization admins can edit this.{% endif %}</p>
 
       {% if is_admin %}
@@ -44,7 +44,7 @@
         <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
           <label class="block text-sm font-medium text-heading" for="org-name">Name</label>
           <input type="text" id="org-name" maxlength="255" value="{{ cust.org_name }}"
-            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
           <p id="org-name-error" class="text-xs text-fg-danger hidden mt-1.5"></p>
         </div>
 
@@ -53,7 +53,7 @@
           <textarea id="org-description" maxlength="5000" rows="3"
             placeholder="{{ cust.org_description }}"
             style="min-height: 4.75rem; max-height: 15rem;"
-            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ org_description_raw }}</textarea>
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ org_description_raw }}</textarea>
           <div class="flex items-center justify-between mt-1.5">
             <p id="org-desc-error" class="text-xs text-fg-danger hidden"></p>
             <p class="text-xs text-body ml-auto"><span id="org-desc-count">{{ org_description_raw|length }}</span> / 5000</p>
@@ -77,27 +77,27 @@
 
     <!-- About you -->
     <div class="{% if has_org %}hidden{% endif %} pt-8" id="panel-user" role="tabpanel" aria-labelledby="tab-user">
-      <h2 class="text-lg font-medium text-heading">About you</h2>
+      <h2 class="text-base font-semibold text-heading">About you</h2>
       <p class="mt-1 text-sm text-body">Help {{ assistant_name }} address you properly and tailor responses to your role.</p>
 
       <div class="mt-4 space-y-4">
         <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
           <label class="block text-sm font-medium text-heading" for="profile-first-name">First name</label>
           <input type="text" id="profile-first-name" maxlength="150" value="{{ user.first_name }}"
-            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
         </div>
 
         <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
           <label class="block text-sm font-medium text-heading" for="profile-last-name">Last name</label>
           <input type="text" id="profile-last-name" maxlength="150" value="{{ user.last_name }}"
-            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
         </div>
 
         <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
           <label class="block text-sm font-medium text-heading" for="profile-title">Title</label>
           <p class="text-xs text-body mt-0.5">Your role or job title, e.g. "Patent Attorney" or "Licensing Manager".</p>
           <input type="text" id="profile-title" maxlength="150" value="{{ user.title }}" placeholder="Knowledge Worker"
-            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
         </div>
 
         <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
@@ -106,7 +106,7 @@
           <textarea id="profile-description" maxlength="5000" rows="3"
             placeholder="e.g. I focus on licensing biotech innovations from the chemistry department, with particular expertise in CRISPR-related IP."
             style="min-height: 4.75rem; max-height: 15rem;"
-            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ user.description }}</textarea>
+            class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ user.description }}</textarea>
           <div class="flex items-center justify-between mt-1.5">
             <p id="profile-desc-error" class="text-xs text-fg-danger hidden"></p>
             <p class="text-xs text-body ml-auto"><span id="profile-desc-count">{{ user.description|length }}</span> / 5000</p>
@@ -118,16 +118,16 @@
     {% if is_admin %}
     <!-- Organization SOUL -->
     <div class="hidden pt-8" id="panel-org-soul" role="tabpanel" aria-labelledby="tab-org-soul">
-      <h2 class="text-lg font-medium text-heading">Organization SOUL</h2>
+      <h2 class="text-base font-semibold text-heading">Organization SOUL</h2>
       <p class="mt-1 text-sm text-body">The personality {{ assistant_name }} uses for everyone in your organization. It guides tone, voice and style only — it can't change {{ assistant_name }}'s identity or capabilities. Reset to fall back to the system default.</p>
 
       <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
         <textarea id="org-soul" maxlength="5000" rows="6"
           style="min-height: 8.5rem; max-height: 24rem;"
-          class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.org_soul }}</textarea>
+          class="block w-full font-mono rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.org_soul }}</textarea>
         <div class="flex items-center justify-between mt-1.5">
           <p id="org-soul-status" class="text-xs hidden"></p>
-          <p class="text-xs text-body ml-auto"><span id="org-soul-count">{{ cust.org_soul|length }}</span> / 5000</p>
+          <p class="text-xs text-body ml-auto wf-mono"><span id="org-soul-count">{{ cust.org_soul|length }}</span> / 5000</p>
         </div>
         <div class="mt-3 flex items-center gap-2">
           <button type="button" id="org-soul-save" disabled
@@ -153,17 +153,17 @@
 
     <!-- SOUL -->
     <div class="hidden pt-8" id="panel-soul" role="tabpanel" aria-labelledby="tab-soul">
-      <h2 class="text-lg font-medium text-heading">SOUL</h2>
+      <h2 class="text-base font-semibold text-heading">SOUL</h2>
       {% if can_edit_soul %}
       <p class="mt-1 text-sm text-body">Your personal personality for {{ assistant_name }}. It guides tone, voice and style only — it can't change {{ assistant_name }}'s identity or capabilities. Reset to fall back to {% if has_org %}your organization's SOUL{% else %}the system default{% endif %}.</p>
 
       <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
         <textarea id="user-soul" maxlength="5000" rows="6"
           style="min-height: 8.5rem; max-height: 24rem;"
-          class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.soul }}</textarea>
+          class="block w-full font-mono rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.soul }}</textarea>
         <div class="flex items-center justify-between mt-1.5">
           <p id="user-soul-status" class="text-xs hidden"></p>
-          <p class="text-xs text-body ml-auto"><span id="user-soul-count">{{ cust.soul|length }}</span> / 5000</p>
+          <p class="text-xs text-body ml-auto wf-mono"><span id="user-soul-count">{{ cust.soul|length }}</span> / 5000</p>
         </div>
         <div class="mt-3 flex items-center gap-2">
           <button type="button" id="user-soul-save" disabled
@@ -187,43 +187,45 @@
 (function() {
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
 
-  function autosize(el) {
-    if (!el) return;
-    el.style.height = 'auto';
-    var max = parseFloat(getComputedStyle(el).maxHeight);
-    if (max && el.scrollHeight > max) {
-      el.style.height = max + 'px';
-      el.style.overflowY = 'auto';
-    } else {
-      el.style.height = el.scrollHeight + 'px';
-      el.style.overflowY = 'hidden';
-    }
-  }
-
   function showStatus(el, msg, isError) {
     if (!el) return;
     el.textContent = msg;
     el.classList.remove('hidden', 'text-fg-danger', 'text-body');
-    if (isError) {
-      el.classList.add('text-fg-danger');
-    } else {
-      el.classList.add('text-body');
-    }
+    el.classList.add(isError ? 'text-fg-danger' : 'text-body');
   }
 
-  // --- About you (auto-save on blur, mirrors the profile page) ---
+  // Mount the shared CodeMirror markdown editor (WilfredEditor, as used on the
+  // skill editor) over a textarea: hide the textarea but keep it value-synced so
+  // the existing save logic and any form posts still read textarea.value.
+  // Returns the editor adapter, or null if the bundle isn't loaded (in which case
+  // the plain textarea stays visible as a graceful fallback).
+  function mountEditor(textarea, opts) {
+    opts = opts || {};
+    if (!textarea || !window.WilfredEditor) return null;
+    var wrapper = document.createElement('div');
+    wrapper.className = 'cm-field wf-input rounded-base overflow-hidden';
+    textarea.classList.add('hidden');
+    textarea.parentNode.insertBefore(wrapper, textarea.nextSibling);
+    var ed = window.WilfredEditor.create(wrapper, {
+      value: textarea.value,
+      toolbar: true,
+      maxLength: opts.maxLength || null,
+      minHeight: opts.minHeight,
+      maxHeight: opts.maxHeight,
+      placeholder: textarea.getAttribute('placeholder') || '',
+      onChange: function() {
+        textarea.value = ed.getValue();
+        if (opts.onChange) opts.onChange(ed.getValue());
+      },
+    });
+    return ed;
+  }
+
+  // --- About you ---
   var saveTimer = null;
   var descError = document.getElementById('profile-desc-error');
   var descCount = document.getElementById('profile-desc-count');
   var descTextarea = document.getElementById('profile-description');
-
-  if (descTextarea) {
-    descTextarea.addEventListener('input', function() {
-      descCount.textContent = this.value.length;
-      autosize(descTextarea);
-    });
-    autosize(descTextarea);
-  }
 
   function saveProfile() {
     if (descError) descError.classList.add('hidden');
@@ -231,7 +233,7 @@
       first_name: document.getElementById('profile-first-name').value,
       last_name: document.getElementById('profile-last-name').value,
       title: document.getElementById('profile-title').value,
-      description: descTextarea.value,
+      description: descTextarea ? descTextarea.value : '',
     };
     fetch('{% url "accounts:profile_update" %}', {
       method: 'POST',
@@ -246,15 +248,30 @@
     });
   }
 
-  ['profile-first-name', 'profile-last-name', 'profile-title', 'profile-description'].forEach(function(id) {
+  // One-line fields save on blur.
+  ['profile-first-name', 'profile-last-name', 'profile-title'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
   });
-  if (descTextarea) {
-    descTextarea.addEventListener('input', function() {
+
+  // Description uses the rich editor: update count + debounced save on change,
+  // and save when the editor loses focus.
+  var descEd = mountEditor(descTextarea, {
+    maxLength: 5000, minHeight: '10rem', maxHeight: '24rem',
+    onChange: function(val) {
+      if (descCount) descCount.textContent = val.length;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(saveProfile, 1500);
+    },
+  });
+  if (descEd) {
+    descEd.view.contentDOM.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
+  } else if (descTextarea) {
+    descTextarea.addEventListener('input', function() {
+      if (descCount) descCount.textContent = this.value.length;
+      clearTimeout(saveTimer); saveTimer = setTimeout(saveProfile, 1500);
     });
+    descTextarea.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
   }
 
   // --- Organization (admin auto-save) ---
@@ -287,32 +304,37 @@
   var orgDescTextarea = document.getElementById('org-description');
   var orgDescCount = document.getElementById('org-desc-count');
   var orgDescError = document.getElementById('org-desc-error');
-  if (orgDescTextarea) {
-    var orgDescTimer = null;
-    orgDescTextarea.addEventListener('input', function() {
-      orgDescCount.textContent = this.value.length;
-      autosize(orgDescTextarea);
+  var orgDescTimer = null;
+  function saveOrgDescription() {
+    if (!orgDescTextarea) return;
+    if (orgDescError) orgDescError.classList.add('hidden');
+    fetch('{% url "accounts:org_description_update" %}', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: orgDescTextarea.value }),
+      credentials: 'same-origin',
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data.error && orgDescError) {
+        orgDescError.textContent = data.error;
+        orgDescError.classList.remove('hidden');
+      }
     });
-    autosize(orgDescTextarea);
-    function saveOrgDescription() {
-      if (orgDescError) orgDescError.classList.add('hidden');
-      fetch('{% url "accounts:org_description_update" %}', {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: orgDescTextarea.value }),
-        credentials: 'same-origin',
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error && orgDescError) {
-          orgDescError.textContent = data.error;
-          orgDescError.classList.remove('hidden');
-        }
-      });
-    }
+  }
+  var orgDescEd = mountEditor(orgDescTextarea, {
+    maxLength: 5000, minHeight: '10rem', maxHeight: '24rem',
+    onChange: function(val) {
+      if (orgDescCount) orgDescCount.textContent = val.length;
+      clearTimeout(orgDescTimer); orgDescTimer = setTimeout(saveOrgDescription, 1500);
+    },
+  });
+  if (orgDescEd) {
+    orgDescEd.view.contentDOM.addEventListener('blur', function() { clearTimeout(orgDescTimer); saveOrgDescription(); });
+  } else if (orgDescTextarea) {
+    orgDescTextarea.addEventListener('input', function() {
+      if (orgDescCount) orgDescCount.textContent = this.value.length;
+      clearTimeout(orgDescTimer); orgDescTimer = setTimeout(saveOrgDescription, 1500);
+    });
     orgDescTextarea.addEventListener('blur', function() { clearTimeout(orgDescTimer); saveOrgDescription(); });
-    orgDescTextarea.addEventListener('input', function() {
-      clearTimeout(orgDescTimer);
-      orgDescTimer = setTimeout(saveOrgDescription, 1500);
-    });
   }
 
   var allowToggle = document.getElementById('allow-user-soul-toggle');
@@ -330,7 +352,7 @@
   }
   {% endif %}
 
-  // --- SOUL editors (explicit save + reset, change-detected) ---
+  // --- SOUL editors (rich editor, explicit save + reset, change-detected) ---
   function setupSoulEditor(opts) {
     var ta = document.getElementById(opts.textarea);
     if (!ta) return;
@@ -340,32 +362,38 @@
     var status = document.getElementById(opts.status);
     var initial = ta.value;
 
-    function refresh() {
-      if (count) count.textContent = ta.value.length;
-      if (saveBtn) saveBtn.disabled = (ta.value === initial);
-    }
-    ta.addEventListener('input', function() {
-      autosize(ta);
-      refresh();
-      if (status) status.classList.add('hidden');
+    var ed = mountEditor(ta, {
+      maxLength: 5000, minHeight: '12rem', maxHeight: '28rem',
+      onChange: function(val) {
+        if (count) count.textContent = val.length;
+        if (saveBtn) saveBtn.disabled = (val === initial);
+        if (status) status.classList.add('hidden');
+      },
     });
-    autosize(ta);
+    function curVal() { return ed ? ed.getValue() : ta.value; }
+    function refresh() {
+      if (count) count.textContent = curVal().length;
+      if (saveBtn) saveBtn.disabled = (curVal() === initial);
+    }
+    if (!ed) {
+      ta.addEventListener('input', function() { refresh(); if (status) status.classList.add('hidden'); });
+    }
     refresh();
 
     if (saveBtn) {
       saveBtn.addEventListener('click', function() {
-        if (ta.value === initial) return;
+        if (curVal() === initial) return;
         saveBtn.disabled = true;
         fetch(opts.saveUrl, {
           method: 'POST',
           headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ soul: ta.value }),
+          body: JSON.stringify({ soul: curVal() }),
           credentials: 'same-origin',
         }).then(function(r) { return r.json(); }).then(function(data) {
           if (data.error) {
             showStatus(status, data.error, true);
           } else {
-            initial = ta.value;
+            initial = curVal();
             showStatus(status, 'Saved', false);
           }
           refresh();
@@ -390,9 +418,10 @@
             showStatus(status, data.error, true);
             return;
           }
-          ta.value = data.soul || '';
-          initial = ta.value;
-          autosize(ta);
+          var v = data.soul || '';
+          if (ed) ed.setValue(v);
+          ta.value = v;
+          initial = v;
           refresh();
           showStatus(status, 'Reset to default.', false);
         }).catch(function() {

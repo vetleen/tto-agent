@@ -1,0 +1,46 @@
+{% extends "_base.html" %}
+{% load static %}
+
+{% comment %}
+  Shared split-screen auth layout. Every auth page extends this and fills the
+  auth_form block with its heading, copy and form. The right-side marketing
+  panel lives in registration/_auth_aside.html.
+
+  Blocks:
+    auth_topbar_action  - top-right link in the left column (default: Back to
+                          home). suspended.html swaps in its Log out form.
+    auth_form           - the centered form column body.
+{% endcomment %}
+
+{% block body_class %}min-h-screen bg-neutral-primary{% endblock %}
+
+{% block navbar %}{% endblock %}
+
+{% block content %}
+<div class="grid lg:grid-cols-2 min-h-screen">
+  {# ---------------------------------------------- Left: form panel #}
+  <div class="bg-neutral-primary flex flex-col px-6 sm:px-10 lg:px-16 py-8">
+    <div class="flex items-center justify-between gap-4">
+      <a href="/" class="flex items-center gap-2" aria-label="{{ assistant_name }} — home">
+        <img src="{% static 'img/brand/wilfred-mark.svg' %}" alt="" aria-hidden="true" class="w-8 h-8">
+        <span class="font-serif font-semibold text-xl text-heading">{{ assistant_name }}</span>
+      </a>
+      {% block auth_topbar_action %}
+      <a href="/" class="inline-flex items-center gap-1.5 text-sm font-medium text-fg-accent hover:opacity-80 transition-opacity">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+        Back to home
+      </a>
+      {% endblock auth_topbar_action %}
+    </div>
+
+    <div class="flex-1 flex flex-col justify-center">
+      <div class="w-full max-w-[400px] mx-auto py-12">
+        {% block auth_form %}{% endblock auth_form %}
+      </div>
+    </div>
+  </div>
+
+  {# ---------------------------------------------- Right: quote panel #}
+  {% include "registration/_auth_aside.html" %}
+</div>
+{% endblock content %}

@@ -11,7 +11,7 @@
   </ul>
   {% endif %}
 
-  <h1 class="text-2xl font-semibold text-heading mb-2">Up for deletion</h1>
+  <h1 class="text-3xl sm:text-4xl font-semibold text-heading mb-3">Up for deletion</h1>
   <p class="text-sm text-body mb-8">Chats and data rooms are retained for one year by default, while meetings are retained for 90 days. This is per {% if org_name %}{{ org_name }}&rsquo;s{% else %}your organization&rsquo;s{% endif %} data retention policy. On this page you will find your items that are scheduled for deletion. You may click <span class="whitespace-nowrap"><svg class="inline-block w-3.5 h-3.5 align-middle" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg> Renew</span> to keep items longer.</p>
 
   <!-- Config for JS -->
@@ -31,9 +31,13 @@
       </a>
       {% endfor %}
     </div>
-    <label class="inline-flex items-center text-sm text-body cursor-pointer select-none">
-      <input type="checkbox" id="show-archived-toggle" {% if show_archived %}checked{% endif %} class="w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-2 shrink-0">
-      Show archived
+    <label class="inline-flex items-center gap-2 text-sm text-body cursor-pointer select-none">
+      <span class="relative inline-flex items-center shrink-0">
+        <input type="checkbox" id="show-archived-toggle" {% if show_archived %}checked{% endif %} class="sr-only peer">
+        <span class="w-9 h-5 rounded-full bg-neutral-tertiary border border-default-medium transition-colors peer-checked:bg-brand peer-checked:border-transparent peer-focus:ring-2 peer-focus:ring-brand"></span>
+        <span class="absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-neutral-primary-soft shadow-xs transition-transform peer-checked:translate-x-4"></span>
+      </span>
+      Include archived
     </label>
   </div>
 
@@ -83,12 +87,12 @@
     {% for item in page_obj %}
     <div class="grid grid-cols-[1rem_5.5rem_minmax(0,1fr)_5.5rem_6.5rem] items-center gap-x-3 w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.last %}rounded-b-base{% endif %}" data-item-key="{{ item.key }}" data-list="inbox">
       <input type="checkbox" class="inbox-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 shrink-0" aria-label="Select {{ item.name }}">
-      <span class="justify-self-start px-1.5 py-0.5 text-xs font-medium rounded bg-neutral-secondary-soft text-body whitespace-nowrap">{{ item.type_label }}</span>
+      <span class="justify-self-start px-2 py-0.5 text-xs font-medium rounded-full border border-default bg-neutral-secondary-soft text-body whitespace-nowrap">{{ item.type_label }}</span>
       <div class="min-w-0 flex items-center gap-2">
         <a href="{{ item.open_url }}" class="truncate font-medium text-heading hover:text-fg-brand {% if item.is_archived %}opacity-70{% endif %}" title="{{ item.name }}">{{ item.name }}</a>
         {% if item.is_archived %}<span class="shrink-0 px-1.5 py-0.5 text-xs rounded bg-neutral-tertiary text-body whitespace-nowrap">Archived</span>{% endif %}
       </div>
-      <span class="justify-self-end text-right text-xs font-medium whitespace-nowrap {% if item.is_overdue or item.countdown == 'Today' %}text-fg-danger{% elif item.countdown == 'Tomorrow' %}text-fg-warning{% else %}text-body{% endif %}" title="Deletes {{ item.absolute }}">{{ item.countdown }}</span>
+      <span class="justify-self-end text-right text-xs font-medium wf-mono whitespace-nowrap {% if item.is_overdue or item.countdown == 'Today' %}text-fg-danger{% elif item.countdown == 'Tomorrow' %}text-fg-warning{% else %}text-body{% endif %}" title="Deletes {{ item.absolute }}">{{ item.countdown }}</span>
       <button type="button" class="inbox-renew-btn justify-self-end inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base whitespace-nowrap" data-item-key="{{ item.key }}" title="Renew">
         <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
         Renew

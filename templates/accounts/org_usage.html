@@ -3,7 +3,7 @@
 
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-16">
-  <h1 class="text-2xl font-semibold text-heading">Organization usage</h1>
+  <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Organization usage</h1>
   <p class="mt-1 text-sm text-body">{{ org.name }}</p>
 
   {% if not custom_range %}
@@ -29,17 +29,17 @@
     <div>
       <label for="range-start" class="block text-xs text-body mb-1">Start</label>
       <input type="date" id="range-start" name="start" value="{{ start_date|date:'Y-m-d' }}"
-             class="rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+             class="rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
     </div>
     <div>
       <label for="range-end" class="block text-xs text-body mb-1">End</label>
       <input type="date" id="range-end" name="end" value="{{ end_date|date:'Y-m-d' }}"
-             class="rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+             class="rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
     </div>
     <button type="submit" class="rounded-base bg-brand text-on-brand text-sm px-4 py-2 hover:bg-brand-strong focus:outline-none focus:ring-2 focus:ring-brand-medium">Apply</button>
-    <a href="?start={{ today|date:'Y-m-d' }}&end={{ today|date:'Y-m-d' }}" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">Today</a>
-    <a href="?start={{ current_year }}-01-01&end={{ current_year }}-12-31" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">{{ current_year }}</a>
-    <a href="{% url 'accounts:org_usage' %}" class="rounded-base border border-default bg-neutral-primary text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">This month</a>
+    <a href="?start={{ today|date:'Y-m-d' }}&end={{ today|date:'Y-m-d' }}" class="rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">Today</a>
+    <a href="?start={{ current_year }}-01-01&end={{ current_year }}-12-31" class="rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">{{ current_year }}</a>
+    <a href="{% url 'accounts:org_usage' %}" class="rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-4 py-2 hover:bg-neutral-secondary-soft focus:outline-none focus:ring-2 focus:ring-brand-medium">This month</a>
   </form>
 
   <!-- Totals summary -->
@@ -47,6 +47,17 @@
     <p class="wf-eyebrow mb-2">{% if custom_range %}{{ start_date|date:'M j' }} &ndash; {{ end_date|date:'M j, Y' }}{% else %}{{ display_month|date:'F Y' }}{% endif %}</p>
     <p class="wf-mono text-4xl font-semibold text-heading">${{ totals.total_cost|floatformat:2|intcomma }}</p>
     <p class="text-sm text-body mt-1">Total cost</p>
+    {% if budget_status.org_budget %}
+    <div class="mt-5">
+      <div class="flex items-baseline justify-between text-xs text-body mb-1.5">
+        <span class="wf-mono">${{ budget_status.org_spend|floatformat:2|intcomma }} of ${{ budget_status.org_budget|floatformat:2|intcomma }}</span>
+        <span>monthly budget</span>
+      </div>
+      <div class="w-full bg-neutral-secondary rounded-full h-2 overflow-hidden">
+        <div class="h-2 rounded-full max-w-full bg-brand" style="width: {% widthratio budget_status.org_spend budget_status.org_budget 100 %}%"></div>
+      </div>
+    </div>
+    {% endif %}
     <dl class="mt-6 grid grid-cols-3 gap-4 border-t border-default pt-5 text-sm">
       <div>
         <dt class="text-body">Calls</dt>
@@ -65,7 +76,7 @@
 
   <!-- Per-member breakdown -->
   <section class="mt-8">
-    <h2 class="text-lg font-medium text-heading">By member</h2>
+    <h2 class="text-base font-semibold text-heading">By member</h2>
     {% if user_breakdown %}
     <div class="mt-3 overflow-x-auto rounded-base border border-default">
       <table class="w-full text-sm text-left">
@@ -78,7 +89,7 @@
             <th class="px-4 py-3 text-right">Cost</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-default">
+        <tbody class="divide-y divide-default bg-neutral-primary-soft">
           {% for row in user_breakdown %}
           <tr>
             <td class="px-4 py-3">

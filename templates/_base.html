@@ -57,14 +57,14 @@
           {# Right cluster — usage meter, divider, icons #}
           <div class="flex items-center gap-1.5 sm:gap-2">
             {% if budget_status %}
-            <a href="{% url 'accounts:usage' %}" class="hidden md:flex items-center gap-2 group" title="${{ budget_status.effective_spend|floatformat:2 }} / ${{ budget_status.effective_budget|floatformat:2 }}">
+            <a href="{% url 'accounts:usage' %}" class="hidden lg:flex items-center gap-2 group" title="${{ budget_status.effective_spend|floatformat:2 }} / ${{ budget_status.effective_budget|floatformat:2 }}">
               <span class="wf-mono text-xs text-body group-hover:text-heading whitespace-nowrap">{{ budget_status.month_name }} usage</span>
               <div class="w-24 bg-neutral-tertiary rounded-full h-2">
                 <div class="h-2 rounded-full {% if budget_status.percentage >= 90 %}bg-danger{% elif budget_status.percentage >= 75 %}bg-warning{% else %}bg-brand{% endif %}" style="width: {{ budget_status.percentage }}%"></div>
               </div>
               <span class="wf-mono text-xs text-body group-hover:text-heading whitespace-nowrap">${{ budget_status.effective_budget|floatformat:0 }}</span>
             </a>
-            <div class="hidden md:block h-6 border-l border-default mx-1"></div>
+            <div class="hidden lg:block h-6 border-l border-default mx-1"></div>
             {% endif %}
             <a href="{% url 'inbox' %}" aria-label="Inbox" title="Inbox" class="inline-flex items-center {% if request.path|slice:':7' == '/inbox/' %}text-fg-brand dark:text-heading{% else %}text-body{% endif %} hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
@@ -97,7 +97,7 @@
                   <a href="{% url 'accounts:agent' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">My {{ assistant_name }}</a>
                 </li>
                 <li>
-                  <a href="{% url 'accounts:settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">User settings</a>
+                  <a href="{% url 'accounts:settings' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">My settings</a>
                 </li>
                 <li>
                   <a href="{% url 'accounts:usage' %}" class="inline-flex items-center w-full p-2 hover:bg-neutral-tertiary-medium hover:text-heading rounded">My usage</a>

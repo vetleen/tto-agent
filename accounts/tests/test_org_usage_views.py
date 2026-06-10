@@ -48,7 +48,7 @@ class OrgUsagePageTests(TestCase):
     def test_requires_login(self):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     def test_non_admin_gets_403(self):
         self.client.login(email=self.member.email, password=self.password)

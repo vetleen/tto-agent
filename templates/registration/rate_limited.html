@@ -1,13 +1,13 @@
-{% extends "_base.html" %}
+{% extends "registration/_auth_base.html" %}
 
-{% block content %}
-  <main class="mx-auto max-w-md px-6 py-16 text-body">
-    <h1 class="text-3xl font-semibold tracking-tight text-heading">Let's slow down for a moment</h1>
-    <p class="mt-4 text-sm text-body">
-      There have been a few too many attempts. Wait a few minutes, then try again.
-    </p>
-    <a class="mt-6 inline-flex items-center text-sm font-medium text-fg-brand hover:text-fg-brand-strong" href="{% url 'accounts:login' %}">
-      Back to log in
-    </a>
-  </main>
-{% endblock content %}
+{% block auth_form %}
+<h1 class="font-serif font-semibold text-[clamp(28px,3vw,36px)] leading-[1.1] tracking-[-0.02em] text-heading">Let's slow down for a moment</h1>
+<p class="mt-3 text-[15px] leading-[1.6] text-body-subtle">There have been a few too many attempts. Wait a few minutes, then try again.</p>
+
+<div class="mt-6 flex items-start gap-2.5 rounded-base border border-warning-subtle bg-warning-soft px-4 py-3 text-sm text-fg-warning">
+  <svg class="w-[18px] h-[18px] shrink-0 mt-px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+  <span>Try again in a few minutes.</span>
+</div>
+
+<a class="mt-8 inline-flex items-center gap-1.5 text-sm font-medium text-fg-brand hover:text-heading transition-colors" href="{% url 'accounts:login' %}">Back to log in</a>
+{% endblock auth_form %}

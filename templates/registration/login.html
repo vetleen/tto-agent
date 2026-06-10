@@ -1,84 +1,44 @@
-{% extends "_base.html" %}
-{% load static %}
+{% extends "registration/_auth_base.html" %}
 
-{% block body_class %}min-h-screen bg-neutral-primary{% endblock %}
+{% block auth_form %}
+<h1 class="font-serif font-semibold text-[clamp(28px,3vw,36px)] leading-[1.1] tracking-[-0.02em] text-heading">Log in to your workspace</h1>
+<p class="mt-3 text-[15px] leading-[1.6] text-body-subtle">{{ assistant_name }} is ready when you are.</p>
 
-{% block navbar %}{% endblock %}
-
-{% block content %}
-<div class="grid lg:grid-cols-2 min-h-screen">
-  {# ---------------------------------------------- Left: form panel #}
-  <div class="bg-neutral-primary flex flex-col px-6 sm:px-10 lg:px-16 py-8">
-    <div class="flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2" aria-label="Wilfred — home">
-        <img src="{% static 'img/brand/wilfred-mark.svg' %}" alt="" aria-hidden="true" class="w-8 h-8">
-        <span class="font-serif font-semibold text-xl text-heading">Wilfred</span>
-      </a>
-      <a href="/" class="inline-flex items-center gap-1.5 text-sm font-medium text-fg-accent hover:opacity-80 transition-opacity">
-        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
-        Back to home
-      </a>
+<form class="mt-8 space-y-5" method="post">
+  {% csrf_token %}
+  {% if form.non_field_errors %}
+    <div class="rounded-base border border-danger-subtle bg-danger-soft px-4 py-3 text-sm text-fg-danger">
+      {{ form.non_field_errors }}
     </div>
+  {% endif %}
 
-    <div class="flex-1 flex flex-col justify-center">
-      <div class="w-full max-w-[400px] mx-auto py-12">
-        <div class="wf-eyebrow mb-3">Welcome back</div>
-        <h1 class="font-serif font-semibold text-[clamp(28px,3vw,36px)] leading-[1.1] tracking-[-0.02em] text-heading">Log in to your workspace</h1>
-        <p class="mt-3 text-[15px] leading-[1.6] text-body-subtle">{{ assistant_name }} is ready when you are.</p>
-
-        <form class="mt-8 space-y-5" method="post">
-          {% csrf_token %}
-          {% if form.non_field_errors %}
-            <div class="rounded-base border border-danger-subtle bg-danger-soft px-4 py-3 text-sm text-fg-danger">
-              {{ form.non_field_errors }}
-            </div>
-          {% endif %}
-
-          <div>
-            <label class="block text-sm font-medium text-heading mb-1" for="{{ form.username.id_for_label }}">Work email</label>
-            <div class="relative">
-              <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-body-subtle">
-                <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-              </span>
-              {{ form.username }}
-            </div>
-            {% if form.username.errors %}<p class="mt-1 text-sm text-fg-danger">{{ form.username.errors }}</p>{% endif %}
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-heading mb-1" for="{{ form.password.id_for_label }}">Password</label>
-            <div class="relative">
-              <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-body-subtle">
-                <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              </span>
-              {{ form.password }}
-            </div>
-            {% if form.password.errors %}<p class="mt-1 text-sm text-fg-danger">{{ form.password.errors }}</p>{% endif %}
-          </div>
-
-          <label class="flex items-center gap-2 text-sm text-body cursor-pointer">
-            {{ form.remember_me }}
-            <span>Keep me signed in</span>
-          </label>
-
-          <button type="submit" class="w-full rounded-base bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong focus:outline-none focus:ring-4 focus:ring-brand-medium transition-colors">Log in</button>
-        </form>
-
-      </div>
+  <div>
+    <label class="block text-sm font-medium text-heading mb-1" for="{{ form.username.id_for_label }}">Work email</label>
+    <div class="relative">
+      <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-body-subtle">
+        <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+      </span>
+      {{ form.username }}
     </div>
+    {% if form.username.errors %}<p class="mt-1 text-sm text-fg-danger">{{ form.username.errors }}</p>{% endif %}
   </div>
 
-  {# ---------------------------------------------- Right: quote panel #}
-  <div class="relative hidden lg:block bg-forest-950 overflow-hidden">
-    <div class="absolute inset-0 bg-cover" style="background-image:url('{% static 'images/hero/landing_page_03.png' %}'); background-position:50% center; filter:saturate(.9) brightness(.8);" aria-hidden="true"></div>
-    <div class="absolute inset-0" style="background:linear-gradient(180deg, rgba(6,21,14,.5) 0%, rgba(6,21,14,.5) 40%, rgba(6,21,14,.92) 100%);" aria-hidden="true"></div>
-    <div class="absolute inset-0" style="background:radial-gradient(60% 40% at 30% 28%, rgba(190,130,66,.12) 0%, rgba(190,130,66,0) 60%);" aria-hidden="true"></div>
-    <div class="relative h-full flex flex-col justify-end p-12 xl:p-16">
-      <img src="{% static 'img/brand/wilfred-seal.svg' %}" alt="" aria-hidden="true" class="w-16 h-16 mb-8">
-      <blockquote class="font-serif text-[clamp(24px,2.2vw,30px)] leading-[1.32] tracking-[-0.018em] text-[#F4F7F4] max-w-[460px]">
-        <span class="text-copper-400">“</span>An AI colleague for the technology transfer office — on the record, cited, and built for trust.<span class="text-copper-400">”</span>
-      </blockquote>
+  <div>
+    <label class="block text-sm font-medium text-heading mb-1" for="{{ form.password.id_for_label }}">Password</label>
+    <div class="relative">
+      <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-body-subtle">
+        <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </span>
+      {{ form.password }}
     </div>
+    {% if form.password.errors %}<p class="mt-1 text-sm text-fg-danger">{{ form.password.errors }}</p>{% endif %}
   </div>
-</div>
-{% endblock content %}
+
+  <label class="flex items-center gap-2 text-sm text-body cursor-pointer">
+    {{ form.remember_me }}
+    <span>Keep me signed in</span>
+  </label>
+
+  <button type="submit" class="w-full rounded-base bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong focus:outline-none focus:ring-4 focus:ring-brand-medium transition-colors">Log in</button>
+</form>
+{% endblock auth_form %}

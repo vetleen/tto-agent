@@ -32,13 +32,14 @@ class ProfilePageTests(TestCase):
     def test_requires_login(self):
         r = self.client.get(self.url)
         self.assertEqual(r.status_code, 302)
-        self.assertIn("/accounts/login/", r.url)
+        self.assertIn("/accounts/logged-out/", r.url)
 
-    def test_returns_200(self):
+    def test_redirects_to_agent(self):
+        # The Profile page is superseded by "My Wilfred"; the old URL redirects.
         self.client.login(email="u@example.com", password="pw123456")
         r = self.client.get(self.url)
-        self.assertEqual(r.status_code, 200)
-        self.assertContains(r, "Profile")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/accounts/agent/", r.url)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

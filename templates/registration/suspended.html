@@ -1,32 +1,19 @@
-{% extends "_base.html" %}
-{% load static %}
+{% extends "registration/_auth_base.html" %}
 
-{% block navbar %}
-<nav class="bg-neutral-primary fixed w-full z-50 top-0 start-0 border-b border-default backdrop-blur-md">
-  <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
-    <div class="flex flex-wrap items-center justify-between h-16">
-      <span class="flex items-center shrink-0">
-        <img src="{% static 'img/brand/wilfred-mark.svg' %}" alt="" aria-hidden="true" class="h-8 w-8 shrink-0">
-        <span class="ml-2 self-center text-2xl text-heading font-semibold tracking-tight whitespace-nowrap font-serif">{{ assistant_name }}</span>
-      </span>
-      <form action="{% url 'accounts:logout' %}" method="post">
-        {% csrf_token %}
-        <button type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
-          Log out
-        </button>
-      </form>
-    </div>
-  </div>
-</nav>
-{% endblock navbar %}
+{% block auth_topbar_action %}
+<form action="{% url 'accounts:logout' %}" method="post">
+  {% csrf_token %}
+  <button type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
+    Log out
+  </button>
+</form>
+{% endblock auth_topbar_action %}
 
-{% block content %}
-<main class="mx-auto max-w-4xl px-6 py-24 text-center">
-  <h1 class="mt-4 text-3xl font-semibold tracking-tight text-heading">Your account is suspended</h1>
-  <p class="mt-4 text-body">
-    {% if org_name %}To restore access, reach out to {{ org_name }}'s administrator.{% else %}To restore access, reach out to your administrator.{% endif %}
-  </p>
-</main>
-{% endblock content %}
+{% block auth_form %}
+<h1 class="font-serif font-semibold text-[clamp(28px,3vw,36px)] leading-[1.1] tracking-[-0.02em] text-heading">Your account is suspended</h1>
+<p class="mt-3 text-[15px] leading-[1.6] text-body-subtle">
+  {% if org_name %}To restore access, reach out to {{ org_name }}'s administrator.{% else %}To restore access, reach out to your administrator.{% endif %}
+</p>
+{% endblock auth_form %}
 
 {% block feedback_widget %}{% endblock %}

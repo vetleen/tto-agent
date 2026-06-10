@@ -180,7 +180,7 @@
 
   {# ----- Editable metadata ----- #}
   <section class="mb-8">
-    <h2 class="text-sm font-medium text-heading mb-3">Meeting details</h2>
+    <h2 class="text-base font-semibold text-heading mb-3">Meeting details</h2>
     <form id="meeting-metadata-form" method="post" action="{% url 'meeting_update_metadata' meeting_uuid=meeting.uuid %}" class="space-y-4">
       {% csrf_token %}
       <div>
@@ -211,7 +211,7 @@
           <option value="fr" {% if forced_language == "fr" %}selected{% endif %}>French</option>
           <option value="es" {% if forced_language == "es" %}selected{% endif %}>Spanish</option>
         </select>
-        <p class="mt-1 text-xs text-body">Leave on Auto-detect unless the model keeps guessing the wrong language.</p>
+        <p class="mt-1 text-xs text-body">Transcription of languages other than English is more accurate when you set the language, so the model doesn't have to guess.</p>
       </div>
       <div class="flex flex-wrap items-center gap-3 min-h-5">
         <span id="meeting-metadata-saved" class="hidden text-xs text-fg-success">Saved.</span>
@@ -221,7 +221,7 @@
 
   {# ----- Attachments ----- #}
   <section class="mb-8">
-    <h2 class="text-sm font-medium text-heading mb-3">Attachments</h2>
+    <h2 class="text-base font-semibold text-heading mb-3">Attachments</h2>
     {% if attachments %}
       <ul class="bg-neutral-primary-soft border border-default rounded-base divide-y divide-default mb-3">
         {% for a in attachments %}
@@ -254,15 +254,15 @@
         <input type="hidden" name="skill_id" id="summarize-skill-id" value="{{ effective_summarizer_id }}">
         <div class="inline-flex rounded-base" role="group">
           <button type="submit" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
-                  class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium {% if summarizer_skills|length > 1 %}rounded-s-base{% else %}rounded-base{% endif %} text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="inline-flex items-center gap-2 text-white bg-accent hover:bg-accent-hover focus:ring-4 focus:outline-none focus:ring-accent-subtle font-medium {% if summarizer_skills|length > 1 %}rounded-s-base{% else %}rounded-base{% endif %} text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="{% if not meeting.transcript %}Add a transcript first.{% else %}Summarize with {{ effective_summarizer_name }}{% endif %}">
-            <svg class="w-4 h-4 text-accent dark:text-on-brand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
             Summarize meeting in chat
           </button>
           {% if summarizer_skills|length > 1 %}
           <button type="button" {% if not meeting.transcript %}disabled{% endif %}
                   data-dropdown-toggle="summarizer-skill-dropdown"
-                  class="inline-flex items-center text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium rounded-e-base text-sm px-2 py-2 border-l border-on-brand/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="inline-flex items-center text-white bg-accent hover:bg-accent-hover focus:ring-4 focus:outline-none focus:ring-accent-subtle font-medium rounded-e-base text-sm px-2 py-2 border-l border-white/25 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Choose summarizer skill">
             <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>
           </button>
@@ -379,9 +379,9 @@
     <details id="transcript-details" class="group" open>
       <summary class="flex items-center justify-between gap-3 mb-2 cursor-pointer list-none select-none">
         <div class="flex items-center gap-2">
-          <h2 class="text-sm font-medium text-heading">Transcript</h2>
+          <h2 class="text-base font-semibold text-heading">Transcript</h2>
           <span class="text-xs text-body-subtle">·</span>
-          <span id="transcript-line-count" class="text-xs text-body-subtle">0 lines</span>
+          <span id="transcript-line-count" class="text-xs text-body-subtle wf-mono">0 lines</span>
         </div>
         <span class="flex items-center gap-1 text-xs text-body hover:text-heading">
           <span class="group-open:hidden">Show</span>

@@ -32,4 +32,4 @@ class SuspendedViewTests(TestCase):
     def test_requires_login(self) -> None:
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 302)
-        self.assertIn("/accounts/login/", resp.headers["Location"])
+        self.assertIn("/accounts/logged-out/", resp.headers["Location"])

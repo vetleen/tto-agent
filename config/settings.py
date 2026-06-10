@@ -323,8 +323,8 @@ STATICFILES_FINDERS = (
 )
 
 LOGIN_REDIRECT_URL = "/chat/"
-LOGOUT_REDIRECT_URL = '/'
-LOGIN_URL = '/accounts/login/'
+LOGOUT_REDIRECT_URL = '/accounts/logged-out/'
+LOGIN_URL = '/accounts/logged-out/'
 
 # Email: safe defaults and optional prefix/admins
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "webmaster@localhost")

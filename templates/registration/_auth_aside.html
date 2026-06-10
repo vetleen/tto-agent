@@ -1,0 +1,18 @@
+{% load static %}
+{% comment %}
+  Shared auth right-side quote panel. Single source of truth - included by
+  registration/_auth_base.html and reused across every auth page. Hidden below
+  lg. Tweak the marketing panel here once for all auth screens.
+{% endcomment %}
+<div class="relative hidden lg:block bg-forest-950 overflow-hidden">
+  <div class="absolute inset-0 bg-cover" style="background-image:url('{% static 'images/hero/landing_page_03.png' %}'); background-position:50% center; filter:saturate(.9) brightness(.8);" aria-hidden="true"></div>
+  <div class="absolute inset-0" style="background:linear-gradient(180deg, rgba(6,21,14,.5) 0%, rgba(6,21,14,.5) 40%, rgba(6,21,14,.92) 100%);" aria-hidden="true"></div>
+  <div class="absolute inset-0" style="background:radial-gradient(60% 40% at 30% 28%, rgba(190,130,66,.12) 0%, rgba(190,130,66,0) 60%);" aria-hidden="true"></div>
+  <div class="relative h-full flex flex-col justify-end p-12 xl:p-16">
+    <img src="{% static 'img/brand/wilfred-seal.svg' %}" alt="" aria-hidden="true" class="w-16 h-16 mb-8">
+    <blockquote class="font-serif text-[clamp(24px,2.2vw,30px)] leading-[1.32] tracking-[-0.018em] text-[#F4F7F4] max-w-[460px]">
+      <span class="text-copper-400">“</span>An AI colleague for the technology transfer office — on the record, cited, and built for trust.<span class="text-copper-400">”</span>
+    </blockquote>
+    <p class="wf-mono mt-6 text-xs tracking-wide text-[#F4F7F4]/55">{{ assistant_name }} · trusted AI assistance</p>
+  </div>
+</div>
