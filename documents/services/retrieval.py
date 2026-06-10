@@ -89,11 +89,14 @@ def rerank_chunks(
 
 
 def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
-    """Return chunks for a document in order (from DB)."""
+    """Return chunks for a READY document in order (from DB)."""
     chunks = (
         DataRoomDocumentChunk.objects.filter(
             document_id=document_id,
             is_quarantined=False,
+            # READY means processed AND cleared by the PII scan when the org's
+            # quarantine gate is active — never surface earlier statuses.
+            document__status=DataRoomDocument.Status.READY,
         )
         .exclude(document__is_quarantined=True)
         .order_by("chunk_index")
@@ -113,13 +116,17 @@ def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
 
 
 def get_chunks_by_data_room(data_room_id: int) -> list[dict[str, Any]]:
-    """Return chunks for a data room, grouped by document (order preserved). Excludes failed/quarantined."""
+    """Return chunks for a data room, grouped by document (order preserved).
+
+    Only READY documents are included — anything still scanning, failed, archived,
+    or quarantined never surfaces.
+    """
     chunks = (
         DataRoomDocumentChunk.objects.filter(
             document__data_room_id=data_room_id,
             is_quarantined=False,
+            document__status=DataRoomDocument.Status.READY,
         )
-        .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
         .exclude(document__is_quarantined=True)
         .select_related("document")
@@ -155,8 +162,8 @@ def fulltext_search_chunks(
             document__data_room_id__in=data_room_ids,
             search_vector__isnull=False,
             is_quarantined=False,
+            document__status=DataRoomDocument.Status.READY,
         )
-        .exclude(document__status=DataRoomDocument.Status.FAILED)
         .exclude(document__is_archived=True)
         .exclude(document__is_quarantined=True)
         .annotate(rank=SearchRank("search_vector", search_query))
@@ -229,21 +236,30 @@ def hybrid_search_chunks(
         except Exception:
             logger.exception("hybrid_search: fulltext search failed, continuing with semantic only")
 
-    # ---- Exclude archived / quarantined documents from semantic results --------
+    # ---- Drop semantic hits that fail read-time filters -----------------------
+    # The vector store knows nothing about quarantine, archive, or scan status,
+    # so the semantic side must enforce the same filters the FTS query applies
+    # in SQL: chunk-level quarantine, document-level quarantine/archive, and
+    # READY status (documents still scanning or failed never surface).
     if semantic_results:
-        from django.db.models import Q
-
-        excluded_doc_ids = set(
-            DataRoomDocument.objects.filter(
-                Q(is_archived=True) | Q(is_quarantined=True),
-                data_room_id__in=data_room_ids,
+        candidate_ids = {
+            (getattr(doc, "metadata", {}) or {}).get("chunk_id")
+            for doc in semantic_results
+        }
+        candidate_ids.discard(None)
+        allowed_chunk_ids = set(
+            DataRoomDocumentChunk.objects.filter(
+                pk__in=candidate_ids,
+                is_quarantined=False,
+                document__is_archived=False,
+                document__is_quarantined=False,
+                document__status=DataRoomDocument.Status.READY,
             ).values_list("pk", flat=True)
         )
-        if excluded_doc_ids:
-            semantic_results = [
-                doc for doc in semantic_results
-                if (getattr(doc, "metadata", {}) or {}).get("document_id") not in excluded_doc_ids
-            ]
+        semantic_results = [
+            doc for doc in semantic_results
+            if (getattr(doc, "metadata", {}) or {}).get("chunk_id") in allowed_chunk_ids
+        ]
 
     # ---- Fuse with RRF -------------------------------------------------------
     # Keyed by chunk DB id
@@ -349,8 +365,13 @@ def get_chunk_with_context(
     except DataRoomDocumentChunk.DoesNotExist:
         return {"error": f"Chunk {chunk_id} not found"}
 
-    # A quarantined document never surfaces to the LLM.
-    if center.document.is_quarantined:
+    # Quarantined chunks/documents and documents not yet released by the PII
+    # scan never surface to the LLM. Same "not found" shape — don't leak state.
+    if (
+        center.is_quarantined
+        or center.document.is_quarantined
+        or center.document.status != DataRoomDocument.Status.READY
+    ):
         return {"error": f"Chunk {chunk_id} not found"}
 
     # Fetch all non-quarantined chunks for the same document, ordered by chunk_index
@@ -471,14 +492,17 @@ def get_merged_context_windows(
     merged_windows: list[dict[str, Any]] = []
 
     for doc_id, hits in doc_hits.items():
-        # Fetch all non-quarantined chunks for this document, ordered.
-        # Excludes documents quarantined at the document level (e.g. GDPR Art. 9/10).
+        # Fetch all non-quarantined chunks for this document, ordered. Excludes
+        # documents quarantined at the document level (e.g. GDPR Art. 9/10) and
+        # documents not yet released by the PII scan (or failed/archived).
         all_chunks = list(
             DataRoomDocumentChunk.objects.filter(
                 document_id=doc_id,
                 is_quarantined=False,
+                document__status=DataRoomDocument.Status.READY,
             )
             .exclude(document__is_quarantined=True)
+            .exclude(document__is_archived=True)
             .order_by("chunk_index")
             .values("id", "chunk_index", "text", "token_count")
         )

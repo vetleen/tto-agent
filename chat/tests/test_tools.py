@@ -306,6 +306,22 @@ class ReadDocumentToolTests(TestCase):
         self.assertIn("quarantined", d["error"].lower())
         self.assertNotIn("content", d)
 
+    def test_scanning_document_returns_not_found(self):
+        """A document still awaiting its PII scan must not be readable (and the
+        error must not leak the scan state)."""
+        for status in (DataRoomDocument.Status.SCANNING, DataRoomDocument.Status.SCAN_FAILED):
+            doc = DataRoomDocument.objects.create(
+                data_room=self.data_room, uploaded_by=self.user,
+                original_filename=f"{status}.txt", status=status,
+            )
+            DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="Unscanned", token_count=2)
+
+            result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+            d = result["documents"][0]
+            self.assertIn("error", d)
+            self.assertIn("No document with index", d["error"])
+            self.assertNotIn("content", d)
+
     def test_full_document_read(self):
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room, uploaded_by=self.user,

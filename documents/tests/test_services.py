@@ -208,6 +208,25 @@ class RRFScoreTests(TestCase):
 class HybridSearchTests(TestCase):
     """Tests for hybrid_search_chunks RRF fusion logic."""
 
+    def setUp(self):
+        # Semantic hits are now validated against the DB (quarantine/status
+        # filters), so every semantic chunk_id used in a test must exist as a
+        # real READY-document chunk.
+        self.user = User.objects.create_user(email="hybrid@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="HybridProject", slug="hybrid-project", created_by=self.user)
+        self.document = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="hybrid.txt", status=DataRoomDocument.Status.READY,
+        )
+        self._next_chunk_index = 0
+
+    def _make_chunk(self, chunk_id, text="chunk text"):
+        self._next_chunk_index += 1
+        return DataRoomDocumentChunk.objects.create(
+            id=chunk_id, document=self.document,
+            chunk_index=self._next_chunk_index, text=text, token_count=5,
+        )
+
     def _make_semantic_doc(self, chunk_id, text, document_id=1, chunk_index=0):
         """Create a mock LangChain Document as returned by pgvector."""
         doc = MagicMock()
@@ -239,6 +258,7 @@ class HybridSearchTests(TestCase):
     @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
     @patch("documents.services.retrieval.vs.similarity_search")
     def test_hybrid_semantic_only_when_fts_empty(self, mock_sem, _mock_fts):
+        self._make_chunk(10)
         mock_sem.return_value = [
             self._make_semantic_doc(10, "semantic result"),
         ]
@@ -267,6 +287,8 @@ class HybridSearchTests(TestCase):
         shared_id = 100
         only_semantic_id = 200
         only_fts_id = 300
+        self._make_chunk(shared_id)
+        self._make_chunk(only_semantic_id)
 
         mock_sem.return_value = [
             self._make_semantic_doc(shared_id, "shared chunk"),
@@ -296,8 +318,10 @@ class HybridSearchTests(TestCase):
     @patch("documents.services.retrieval.fulltext_search_chunks")
     @patch("documents.services.retrieval.vs.similarity_search")
     def test_hybrid_respects_k_limit(self, mock_sem, mock_fts):
+        for i in range(1, 11):
+            self._make_chunk(i)
         mock_sem.return_value = [
-            self._make_semantic_doc(i, f"sem {i}") for i in range(10)
+            self._make_semantic_doc(i, f"sem {i}") for i in range(1, 11)
         ]
         mock_fts.return_value = [
             self._make_fts_hit(i + 100, f"fts {i}") for i in range(10)
@@ -318,6 +342,7 @@ class HybridSearchTests(TestCase):
     @patch("documents.services.retrieval.fulltext_search_chunks", side_effect=Exception("FTS down"))
     @patch("documents.services.retrieval.vs.similarity_search")
     def test_hybrid_degrades_gracefully_when_fts_fails(self, mock_sem, _mock_fts):
+        self._make_chunk(60)
         mock_sem.return_value = [
             self._make_semantic_doc(60, "fallback semantic"),
         ]
@@ -329,6 +354,7 @@ class HybridSearchTests(TestCase):
     @patch("documents.services.retrieval.vs.similarity_search")
     def test_hybrid_prefers_fts_heading_over_semantic(self, mock_sem, mock_fts):
         """When same chunk appears in both, heading from FTS result should be kept."""
+        self._make_chunk(1)
         mock_sem.return_value = [
             self._make_semantic_doc(1, "some text"),
         ]
@@ -653,6 +679,101 @@ class QuarantineRetrievalTests(TestCase):
         results = fulltext_search_chunks([self.data_room.id], "content", k=10)
         doc_ids = {r["document_id"] for r in results}
         self.assertNotIn(self.quarantined.id, doc_ids)
+
+    def test_get_chunk_with_context_rejects_quarantined_center_chunk(self):
+        """A chunk-level quarantine (guardrails) blocks that chunk even when its document is clean."""
+        bad_chunk = DataRoomDocumentChunk.objects.create(
+            document=self.clean, chunk_index=1, text="Injected content", token_count=5,
+            is_quarantined=True, quarantine_reason="Adversarial content",
+        )
+        result = get_chunk_with_context(bad_chunk.id)
+        self.assertIn("error", result)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_semantic_path_drops_quarantined_chunk(self, mock_sem, _mock_fts):
+        """The semantic side must enforce chunk-level quarantine like the FTS side does in SQL."""
+        bad_chunk = DataRoomDocumentChunk.objects.create(
+            document=self.clean, chunk_index=1, text="Injected content", token_count=5,
+            is_quarantined=True, quarantine_reason="Adversarial content",
+        )
+
+        def _sem_doc(chunk):
+            doc = MagicMock()
+            doc.page_content = chunk.text
+            doc.metadata = {"chunk_id": chunk.id, "document_id": chunk.document_id,
+                            "data_room_id": self.data_room.id, "chunk_index": chunk.chunk_index}
+            return doc
+
+        mock_sem.return_value = [_sem_doc(bad_chunk), _sem_doc(self.clean_chunk)]
+        results = hybrid_search_chunks(data_room_ids=[self.data_room.id], query="content", k=5)
+        ids = {r["id"] for r in results}
+        self.assertNotIn(bad_chunk.id, ids)
+        self.assertIn(self.clean_chunk.id, ids)
+
+
+class ScanningStatusRetrievalTests(TestCase):
+    """Documents not yet READY (scanning / scan_failed / failed) never surface in retrieval."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="scanret@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="ScanRet", slug="scan-ret", created_by=self.user)
+        self.ready = self._doc("ready.txt", DataRoomDocument.Status.READY)
+        self.ready_chunk = self._chunk(self.ready, "Ready content")
+        self.scanning = self._doc("scanning.txt", DataRoomDocument.Status.SCANNING)
+        self.scanning_chunk = self._chunk(self.scanning, "Unscanned content")
+        self.scan_failed = self._doc("scanfailed.txt", DataRoomDocument.Status.SCAN_FAILED)
+        self.scan_failed_chunk = self._chunk(self.scan_failed, "Unscannable content")
+
+    def _doc(self, name, status):
+        return DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename=name, status=status,
+        )
+
+    def _chunk(self, doc, text):
+        return DataRoomDocumentChunk.objects.create(
+            document=doc, chunk_index=0, text=text, token_count=5,
+        )
+
+    def test_get_chunks_by_document_requires_ready(self):
+        self.assertEqual(get_chunks_by_document(self.scanning.id), [])
+        self.assertEqual(get_chunks_by_document(self.scan_failed.id), [])
+        self.assertEqual(len(get_chunks_by_document(self.ready.id)), 1)
+
+    def test_get_chunks_by_data_room_requires_ready(self):
+        result = get_chunks_by_data_room(self.data_room.id)
+        doc_ids = {r["document_id"] for r in result}
+        self.assertEqual(doc_ids, {self.ready.id})
+
+    def test_get_chunk_with_context_requires_ready(self):
+        self.assertIn("error", get_chunk_with_context(self.scanning_chunk.id))
+        self.assertIn("error", get_chunk_with_context(self.scan_failed_chunk.id))
+        self.assertNotIn("error", get_chunk_with_context(self.ready_chunk.id))
+
+    def test_get_merged_context_windows_requires_ready(self):
+        windows = get_merged_context_windows(
+            [self.scanning_chunk.id, self.scan_failed_chunk.id, self.ready_chunk.id]
+        )
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0]["document_id"], self.ready.id)
+
+    @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
+    @patch("documents.services.retrieval.vs.similarity_search")
+    def test_hybrid_semantic_path_requires_ready(self, mock_sem, _mock_fts):
+        def _sem_doc(chunk):
+            doc = MagicMock()
+            doc.page_content = chunk.text
+            doc.metadata = {"chunk_id": chunk.id, "document_id": chunk.document_id,
+                            "data_room_id": self.data_room.id, "chunk_index": 0}
+            return doc
+
+        mock_sem.return_value = [
+            _sem_doc(self.scanning_chunk), _sem_doc(self.scan_failed_chunk), _sem_doc(self.ready_chunk),
+        ]
+        results = hybrid_search_chunks(data_room_ids=[self.data_room.id], query="content", k=5)
+        ids = {r["id"] for r in results}
+        self.assertEqual(ids, {self.ready_chunk.id})
 
 
 class DynamicContextTests(TestCase):
@@ -1972,7 +2093,8 @@ class EmailLoaderTests(TestCase):
                 doc.original_file.save("email.msg", ContentFile(b"fake msg"), save=True)
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
-                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks):
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
+                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
@@ -2003,7 +2125,8 @@ class EmailLoaderTests(TestCase):
                 doc.original_file.save("email.eml", ContentFile(b"fake eml"), save=True)
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
-                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks):
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
+                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 doc.refresh_from_db()

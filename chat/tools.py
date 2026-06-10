@@ -311,11 +311,14 @@ class ReadDocumentTool(ContextAwareTool):
         total_chars = 0
 
         for idx in doc_indices:
+            # READY only: documents still scanning for PII (or failed) must not
+            # reach the LLM. Same "not found" message — don't leak scan state.
             try:
                 doc = DataRoomDocument.objects.get(
                     data_room_id__in=data_room_ids,
                     doc_index=idx,
                     is_archived=False,
+                    status=DataRoomDocument.Status.READY,
                 )
             except DataRoomDocument.DoesNotExist:
                 documents.append({
@@ -329,6 +332,7 @@ class ReadDocumentTool(ContextAwareTool):
                     data_room_id__in=data_room_ids,
                     doc_index=idx,
                     is_archived=False,
+                    status=DataRoomDocument.Status.READY,
                 ).first()
                 if doc is None:
                     documents.append({
