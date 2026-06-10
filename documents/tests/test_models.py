@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 from django.test import TestCase
 
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
@@ -19,6 +20,17 @@ class DataRoomModelTests(TestCase):
     def test_data_room_str(self):
         data_room = DataRoom.objects.create(name="My Project", slug="my-project", created_by=self.user)
         self.assertIn("My Project", str(data_room))
+
+    def test_same_slug_allowed_for_different_users(self):
+        other = User.objects.create_user(email="other@example.com", password="testpass")
+        DataRoom.objects.create(name="Finance", slug="finance", created_by=self.user)
+        room = DataRoom.objects.create(name="Finance", slug="finance", created_by=other)
+        self.assertEqual(room.slug, "finance")
+
+    def test_duplicate_slug_for_same_user_rejected(self):
+        DataRoom.objects.create(name="Finance", slug="finance", created_by=self.user)
+        with self.assertRaises(IntegrityError):
+            DataRoom.objects.create(name="Finance Again", slug="finance", created_by=self.user)
 
 
 class DataRoomDocumentModelTests(TestCase):
@@ -215,8 +227,10 @@ class DataRoomDocumentDocIndexTests(TestCase):
 
 
 class DataRoomDocumentStatusTests(TestCase):
-    def test_all_four_statuses_exist(self):
+    def test_all_statuses_exist(self):
         self.assertEqual(DataRoomDocument.Status.UPLOADED, "uploaded")
         self.assertEqual(DataRoomDocument.Status.PROCESSING, "processing")
+        self.assertEqual(DataRoomDocument.Status.SCANNING, "scanning")
+        self.assertEqual(DataRoomDocument.Status.SCAN_FAILED, "scan_failed")
         self.assertEqual(DataRoomDocument.Status.READY, "ready")
         self.assertEqual(DataRoomDocument.Status.FAILED, "failed")

@@ -36,12 +36,15 @@ def finalize_document_metadata(document_id: int) -> None:
     Imports are kept inside the function (like ``guardrails/tasks.py``) so importing
     this module at Celery autodiscover stays cheap.
     """
-    from accounts.models import Membership, Organization
     from core.preferences import resolve_org_feature_model
     from documents.models import DataRoomDocument, DataRoomDocumentTag
     from documents.services.chunk_access import build_head_tail_text
     from documents.services.description import generate_description_and_tags_from_text
-    from documents.services.pii_scan import scan_pii_categories_for_document
+    from documents.services.pii_scan import (
+        org_id_for_document,
+        resolve_pii_gate,
+        scan_pii_categories_for_document,
+    )
     from llm.service.errors import LLMAuthError, LLMConfigurationError, LLMPolicyDenied
 
     try:
@@ -51,23 +54,9 @@ def finalize_document_metadata(document_id: int) -> None:
         logger.info("finalize_document_metadata: document_id=%s not found (deleted before finalize)", document_id)
         return
 
-    org_id = None
-    if doc.uploaded_by_id:
-        org_id = Membership.objects.filter(user_id=doc.uploaded_by_id).values_list("org_id", flat=True).first()
-
+    org_id = org_id_for_document(doc)
     desc_model = resolve_org_feature_model(org_id, "document_description")
-    pii_model = resolve_org_feature_model(org_id, "pii_scan")
-
-    pii_enabled = True
-    pii_quarantine_enabled = True
-    if org_id:
-        try:
-            pii_org = Organization.objects.get(pk=org_id)
-            prefs = pii_org.preferences or {}
-            pii_enabled = prefs.get("pii_scan_enabled", True)
-            pii_quarantine_enabled = prefs.get("pii_quarantine_enabled", True)
-        except Organization.DoesNotExist:
-            pass
+    pii_model, pii_enabled, pii_quarantine_enabled = resolve_pii_gate(org_id)
 
     # Nothing to do — skip the chunk reads entirely.
     if not desc_model and not (pii_enabled and pii_model):

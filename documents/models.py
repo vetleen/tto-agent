@@ -14,7 +14,7 @@ from core.retention import RETENTION_PERIODS
 class DataRoom(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True)
     name = models.CharField(max_length=255)
-    slug = models.SlugField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -36,6 +36,15 @@ class DataRoom(models.Model):
 
     class Meta:
         ordering = ["-updated_at", "name"]
+        constraints = [
+            # Slugs are display/identity values scoped to their owner; global
+            # uniqueness would leak data room names across tenants (a collision
+            # suffix reveals another user has a room with that name).
+            models.UniqueConstraint(
+                fields=["created_by", "slug"],
+                name="documents_unique_slug_per_user",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.name
@@ -45,6 +54,10 @@ class DataRoomDocument(models.Model):
     class Status(models.TextChoices):
         UPLOADED = "uploaded", "Uploaded"
         PROCESSING = "processing", "Processing"
+        # Chunked and embedded, but the GDPR PII scan hasn't finished — the
+        # document must not surface in retrieval until the scan clears it.
+        SCANNING = "scanning", "Scanning"
+        SCAN_FAILED = "scan_failed", "Scan failed"
         READY = "ready", "Ready"
         FAILED = "failed", "Failed"
 

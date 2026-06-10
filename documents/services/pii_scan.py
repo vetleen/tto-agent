@@ -113,6 +113,53 @@ PII_CATEGORIES = [
 ]
 
 
+def org_id_for_document(doc) -> int | None:
+    """Resolve the uploading user's organization id (None when unaffiliated)."""
+    from accounts.models import Membership
+
+    if not doc.uploaded_by_id:
+        return None
+    return (
+        Membership.objects.filter(user_id=doc.uploaded_by_id)
+        .values_list("org_id", flat=True)
+        .first()
+    )
+
+
+def resolve_pii_gate(org_id) -> tuple[str, bool, bool]:
+    """Return ``(pii_model, pii_scan_enabled, pii_quarantine_enabled)`` for an org.
+
+    Single source of truth for the PII-scan configuration used by both
+    ``process_document`` (to decide whether to hold a document in SCANNING)
+    and ``finalize_document_metadata`` (to run the scan and quarantine).
+    """
+    from accounts.models import Organization
+    from core.preferences import resolve_org_feature_model
+
+    pii_model = resolve_org_feature_model(org_id, "pii_scan")
+    pii_enabled = True
+    pii_quarantine_enabled = True
+    if org_id:
+        try:
+            prefs = Organization.objects.get(pk=org_id).preferences or {}
+            pii_enabled = prefs.get("pii_scan_enabled", True)
+            pii_quarantine_enabled = prefs.get("pii_quarantine_enabled", True)
+        except Organization.DoesNotExist:
+            pass
+    return pii_model, pii_enabled, pii_quarantine_enabled
+
+
+def pii_gate_applies(org_id) -> bool:
+    """Whether documents must be held from retrieval until the PII scan completes.
+
+    True only when a scan model is resolved AND the org has both the scan and
+    quarantine enabled — without quarantine the scan is informational only, so
+    there is nothing to gate on.
+    """
+    pii_model, pii_enabled, pii_quarantine_enabled = resolve_pii_gate(org_id)
+    return bool(pii_model and pii_enabled and pii_quarantine_enabled)
+
+
 def scan_pii_categories(
     text: str,
     user_id: int | None = None,
@@ -167,8 +214,11 @@ def scan_pii_categories(
 def _scan_window(window, detected, user_id, data_room_id, org_id) -> None:
     """Scan one window of chunks and union any detected PII categories into ``detected``.
 
-    A single window failing (e.g. a transient LLM error) is logged and skipped so it
-    doesn't abort the whole-document scan.
+    A window failure (e.g. a transient LLM error) propagates: documents are held
+    from retrieval until the scan completes, so a silently skipped window would
+    flip a document to READY without it ever being fully scanned. The caller
+    (``finalize_document_metadata``) retries and marks the document SCAN_FAILED
+    when retries are exhausted.
     """
     if not window:
         return
@@ -178,13 +228,9 @@ def _scan_window(window, detected, user_id, data_room_id, org_id) -> None:
         text = chunk.get("text") or ""
         parts.append(f"{heading}\n{text}" if heading else text)
     window_text = "\n\n".join(parts)
-    try:
-        result = scan_pii_categories(
-            window_text, user_id=user_id, data_room_id=data_room_id, org_id=org_id,
-        )
-    except Exception:
-        logger.exception("scan_pii_categories_for_document: window scan failed (continuing)")
-        return
+    result = scan_pii_categories(
+        window_text, user_id=user_id, data_room_id=data_room_id, org_id=org_id,
+    )
     for category, present in result.items():
         if present:
             detected[category] = True

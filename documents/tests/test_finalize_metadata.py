@@ -433,15 +433,82 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         self.assertEqual(len(result), len(PII_CATEGORIES))
 
     @override_settings(PII_SCAN_WINDOW_TOKENS=10)
-    def test_window_failure_does_not_abort(self):
+    def test_window_failure_propagates(self):
+        """A failed window must raise — a silently skipped window would let a
+        document go READY without ever being fully scanned (the caller retries
+        and marks the document SCAN_FAILED when retries are exhausted)."""
         from documents.services.pii_scan import scan_pii_categories_for_document
 
         doc = self._doc_with_chunks(2, token_each=10)
         with patch("documents.services.pii_scan.scan_pii_categories",
                    side_effect=[RuntimeError("boom"), {"pii_ordinary_identity": True}]):
-            result = scan_pii_categories_for_document(doc.id)
+            with self.assertRaises(RuntimeError):
+                scan_pii_categories_for_document(doc.id)
 
-        self.assertEqual(result, {"pii_ordinary_identity": True})
+
+class PIIGateTests(TestCase):
+    """pii_gate_applies: documents are held from retrieval (SCANNING) only when a
+    scan model is resolved and the org has both scan and quarantine enabled."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="gate@example.com", password="testpass")
+
+    def _org(self, **prefs):
+        from accounts.models import Membership, Organization
+
+        org = Organization.objects.create(name="GateOrg", slug="gate-org", preferences=prefs)
+        Membership.objects.create(user=self.user, org=org, role="admin")
+        return org
+
+    @override_settings(**_MODELS)
+    def test_gate_applies_with_defaults(self):
+        from documents.services.pii_scan import pii_gate_applies
+
+        org = self._org()
+        self.assertTrue(pii_gate_applies(org.id))
+
+    @override_settings(**_MODELS)
+    def test_gate_off_when_scan_disabled(self):
+        from documents.services.pii_scan import pii_gate_applies
+
+        org = self._org(pii_scan_enabled=False)
+        self.assertFalse(pii_gate_applies(org.id))
+
+    @override_settings(**_MODELS)
+    def test_gate_off_when_quarantine_disabled(self):
+        """Quarantine off means the scan is informational — nothing to gate on."""
+        from documents.services.pii_scan import pii_gate_applies
+
+        org = self._org(pii_quarantine_enabled=False)
+        self.assertFalse(pii_gate_applies(org.id))
+
+    def test_gate_off_when_no_model_resolved(self):
+        from documents.services.pii_scan import pii_gate_applies
+
+        org = self._org()
+        with patch("core.preferences.resolve_org_feature_model", return_value=""):
+            self.assertFalse(pii_gate_applies(org.id))
+
+    @override_settings(**_MODELS)
+    def test_org_id_for_document(self):
+        from documents.services.pii_scan import org_id_for_document
+
+        org = self._org()
+        room = DataRoom.objects.create(name="GateRoom", slug="gate-room", created_by=self.user)
+        doc = DataRoomDocument.objects.create(
+            data_room=room, uploaded_by=self.user, original_filename="g.txt",
+        )
+        self.assertEqual(org_id_for_document(doc), org.id)
+
+    @override_settings(**_MODELS)
+    def test_org_id_none_without_membership(self):
+        from documents.services.pii_scan import org_id_for_document
+
+        room = DataRoom.objects.create(name="SoloRoom", slug="solo-room", created_by=self.user)
+        doc = DataRoomDocument.objects.create(
+            data_room=room, uploaded_by=self.user, original_filename="s.txt",
+        )
+        self.assertIsNone(org_id_for_document(doc))
 
 
 class ProcessDocumentDispatchTests(TestCase):
