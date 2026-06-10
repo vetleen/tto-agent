@@ -2208,3 +2208,74 @@ class ProcessDocumentAudioTests(TestCase):
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
                 self.assertIn("not enabled", doc.processing_error)
+
+
+class ResourceGuardTests(TestCase):
+    """Decompression-bomb and size guards in the processing pipeline."""
+
+    @override_settings(DOCX_MAX_UNCOMPRESSED_BYTES=1000)
+    def test_docx_uncompressed_size_guard(self):
+        """A docx whose declared uncompressed size exceeds the cap is rejected
+        before mammoth ever unzips it."""
+        import io
+        import zipfile
+
+        from documents.services.chunking import _load_docx_as_markdown
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "bomb.docx"
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("word/document.xml", b"\x00" * 10_000)  # 10 KB > 1 KB cap
+            path.write_bytes(buf.getvalue())
+
+            with self.assertRaises(ValueError) as ctx:
+                _load_docx_as_markdown(path)
+        self.assertIn("unusually large", str(ctx.exception))
+
+    def test_docx_corrupt_zip_rejected(self):
+        from documents.services.chunking import _load_docx_as_markdown
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "corrupt.docx"
+            path.write_bytes(b"this is not a zip file")
+
+            with self.assertRaises(ValueError) as ctx:
+                _load_docx_as_markdown(path)
+        self.assertIn("corrupt", str(ctx.exception))
+
+    @override_settings(DOCUMENT_ATTACHMENT_MAX_BYTES=10)
+    def test_attachment_size_guard(self):
+        """Oversized email attachments are listed but never extracted."""
+        self.assertIsNone(_extract_attachment_content(b"x" * 100, "big.txt"))
+        self.assertEqual(_extract_attachment_content(b"hello", "ok.txt"), "hello")
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic", DOCUMENT_MAX_EXTRACTED_CHARS=100)
+    def test_extracted_text_cap_marks_failed(self):
+        """Extraction output beyond the cap fails the document before chunking."""
+        from django.core.files.base import ContentFile
+
+        from documents.services.process_document import process_document
+
+        user = User.objects.create_user(email="guard@example.com", password="testpass")
+        data_room = DataRoom.objects.create(name="GuardProject", slug="guard-project", created_by=user)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=data_room,
+                    uploaded_by=user,
+                    original_filename="huge.txt",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("huge.txt", ContentFile(b"x"), save=True)
+
+                with patch("documents.services.process_document.load_documents",
+                           return_value=[Mock(page_content="y" * 5000)]), \
+                     patch("documents.services.process_document.semantic_chunk") as mock_chunk:
+                    process_document(doc.id)
+
+                mock_chunk.assert_not_called()
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+                self.assertIn("too large to process", doc.processing_error)

@@ -108,6 +108,16 @@ def process_document(document_id: int) -> None:
                 "It may be a scanned PDF or image-only file that requires OCR."
             )
 
+        # Resource guard: a decompression bomb (or pathological extraction) can
+        # balloon far past any sane document — fail it before chunking/embedding
+        # multiplies the memory cost on the worker.
+        max_chars = getattr(settings, "DOCUMENT_MAX_EXTRACTED_CHARS", 20_000_000)
+        if len(cleaned) > max_chars:
+            raise ValueError(
+                "This document's extracted text is too large to process "
+                f"(over {max_chars // 1_000_000} million characters)."
+            )
+
         # 2. Chunk (strategy from settings)
         logger.info("process_document: document_id=%s stage=chunking", document_id)
         strategy = getattr(settings, "CHUNKING_STRATEGY", "structure_aware")

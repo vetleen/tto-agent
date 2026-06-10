@@ -465,6 +465,45 @@ DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
     "audio/flac",
     "audio/ogg",
 ])
+# Per-extension MIME allowlist: when the browser supplies a specific MIME type
+# for a mapped extension it must match one of these (empty and
+# application/octet-stream always pass — browsers send those for unfamiliar
+# types, so this is a consistency check, not the primary gate). Unmapped
+# extensions fall back to DOCUMENT_ALLOWED_MIME_TYPES.
+DOCUMENT_EXTENSION_MIME_MAP = {
+    "pdf": {"application/pdf"},
+    "txt": {"text/plain"},
+    "md": {"text/markdown", "text/plain"},
+    "html": {"text/html"},
+    "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    "csv": {"text/csv", "application/csv", "application/vnd.ms-excel", "text/plain"},
+    "json": {"application/json", "text/plain"},
+    "xml": {"application/xml", "text/xml", "text/plain"},
+    "rst": {"text/x-rst", "text/plain"},
+    "tex": {"application/x-tex", "text/x-tex", "text/plain"},
+    "yaml": {"application/x-yaml", "text/yaml", "text/plain"},
+    "yml": {"application/x-yaml", "text/yaml", "text/plain"},
+    "log": {"text/plain"},
+    "msg": {"application/vnd.ms-outlook"},
+    "eml": {"message/rfc822"},
+    "mp3": {"audio/mpeg", "audio/mp3"},
+    "mpeg": {"audio/mpeg", "video/mpeg"},
+    "mpga": {"audio/mpeg"},
+    "mp4": {"audio/mp4", "video/mp4"},
+    "m4a": {"audio/x-m4a", "audio/mp4", "audio/m4a"},
+    "wav": {"audio/wav", "audio/x-wav", "audio/wave"},
+    "webm": {"audio/webm", "video/webm"},
+    "flac": {"audio/flac", "audio/x-flac"},
+    "ogg": {"audio/ogg", "application/ogg"},
+}
+# Per-request upload cap, enforced from Content-Length BEFORE the body is
+# parsed/spooled to disk (fits one 50 MB audio file plus multipart overhead;
+# the upload UI sends one file per request). Per-file caps still apply.
+DOCUMENT_UPLOAD_REQUEST_MAX_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_REQUEST_MAX_BYTES", "60000000"))  # 60 MB
+# Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
+DOCX_MAX_UNCOMPRESSED_BYTES = int(os.environ.get("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000"))  # 250 MB
+DOCUMENT_MAX_EXTRACTED_CHARS = int(os.environ.get("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000"))  # 20M chars
+DOCUMENT_ATTACHMENT_MAX_BYTES = int(os.environ.get("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000"))  # 20 MB
 TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
 MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
 CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", "100"))

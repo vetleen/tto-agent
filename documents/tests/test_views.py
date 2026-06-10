@@ -69,6 +69,15 @@ class DocumentViewsTests(TestCase):
         response = self.client.get(reverse("data_room_list"))
         self.assertEqual(response.status_code, 302)
 
+    def test_data_room_create_truncates_long_name(self):
+        """Names beyond the field limits are truncated, not a DB error (500)."""
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("data_room_list"), {"name": "x" * 600}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        room = DataRoom.objects.exclude(pk=self.data_room.pk).get(created_by=self.user)
+        self.assertEqual(len(room.name), 255)
+        self.assertLessEqual(len(room.slug), 100)
+
     def test_data_room_create_retries_after_integrity_error(self):
         self.client.force_login(self.user)
 
@@ -127,9 +136,10 @@ class DocumentViewsTests(TestCase):
         tag = DataRoomDocumentTag.objects.get(document=doc, key="source")
         self.assertEqual(tag.value, "user_uploaded")
 
-    def test_document_upload_falls_back_to_sync_when_delay_fails(self):
-        """When task.delay() raises (e.g. broker unavailable), the view should
-        fall back to synchronous processing instead of marking the doc FAILED."""
+    def test_document_upload_marks_failed_when_delay_fails(self):
+        """When task.delay() raises (e.g. broker unavailable), the document is
+        marked FAILED with a clear message — there is deliberately no synchronous
+        fallback (processing untrusted files would tie up the web dyno)."""
         self.client.force_login(self.user)
         fake_task = Mock()
         fake_task.delay.side_effect = RuntimeError("broker unavailable")
@@ -141,6 +151,29 @@ class DocumentViewsTests(TestCase):
             with patch(
                 "documents.services.process_document.process_document",
             ) as mock_sync:
+                with self.assertLogs("documents.views", level="ERROR"):
+                    response = self.client.post(
+                        reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+                        {"file": f},
+                        follow=True,
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="enqueue-fail.txt")
+        mock_sync.assert_not_called()
+        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+        self.assertIn("broker unavailable", doc.processing_error)
+        self.assertContains(response, "processing could not be started")
+
+    def test_document_upload_marks_failed_when_tasks_unimportable(self):
+        """If the task module can't be imported, the document fails gracefully
+        instead of raising a 500."""
+        self.client.force_login(self.user)
+        f = BytesIO(b"hello")
+        f.name = "sync-fail.txt"
+
+        with patch.dict(sys.modules, {"documents.tasks": None}):
+            with self.assertLogs("documents.views", level="ERROR"):
                 response = self.client.post(
                     reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
                     {"file": f},
@@ -148,63 +181,37 @@ class DocumentViewsTests(TestCase):
                 )
 
         self.assertEqual(response.status_code, 200)
-        doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="enqueue-fail.txt")
-        mock_sync.assert_called_once_with(doc.id)
-        self.assertNotEqual(doc.status, DataRoomDocument.Status.FAILED)
-
-    def test_document_upload_marks_failed_when_both_async_and_sync_fail(self):
-        """When task.delay() raises AND the sync fallback also fails,
-        the document should be marked FAILED gracefully."""
-        self.client.force_login(self.user)
-        fake_task = Mock()
-        fake_task.delay.side_effect = RuntimeError("broker unavailable")
-        fake_module = types.SimpleNamespace(process_document_task=fake_task)
-        f = BytesIO(b"hello")
-        f.name = "enqueue-fail.txt"
-
-        with patch.dict(sys.modules, {"documents.tasks": fake_module}):
-            with patch(
-                "documents.services.process_document.process_document",
-                side_effect=RuntimeError("sync also failed"),
-            ):
-                with self.assertLogs("documents.views", level="ERROR"):
-                    response = self.client.post(
-                        reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
-                        {"file": f},
-                        follow=True,
-                    )
-
-        self.assertEqual(response.status_code, 200)
-        doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="enqueue-fail.txt")
-        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
-        self.assertIn("sync also failed", doc.processing_error)
-        self.assertContains(response, "processing could not be started")
-
-    def test_document_upload_marks_failed_when_sync_fallback_fails(self):
-        """When Celery is unavailable (ImportError) and process_document also
-        raises, the document should be marked FAILED gracefully instead of
-        causing a 500 error."""
-        self.client.force_login(self.user)
-        f = BytesIO(b"hello")
-        f.name = "sync-fail.txt"
-
-        with patch.dict(sys.modules, {"documents.tasks": None}):
-            with patch(
-                "documents.services.process_document.process_document",
-                side_effect=RuntimeError("extraction crashed"),
-            ):
-                with self.assertLogs("documents.views", level="ERROR"):
-                    response = self.client.post(
-                        reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
-                        {"file": f},
-                        follow=True,
-                    )
-
-        self.assertEqual(response.status_code, 200)
         doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="sync-fail.txt")
         self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
-        self.assertIn("extraction crashed", doc.processing_error)
         self.assertContains(response, "processing could not be started")
+
+    def test_document_upload_rejects_oversized_request_before_parsing(self):
+        """A Content-Length above the per-request cap is rejected up front."""
+        self.client.force_login(self.user)
+        f = BytesIO(b"hello")
+        f.name = "huge.txt"
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+            CONTENT_LENGTH=str(10_000_000_000),
+        )
+        self.assertEqual(response.status_code, 200)  # redirect target after message
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 0)
+        self.assertContains(response, "Upload too large")
+
+    def test_document_upload_oversized_request_returns_413_json_for_ajax(self):
+        self.client.force_login(self.user)
+        f = BytesIO(b"hello")
+        f.name = "huge.txt"
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            HTTP_ACCEPT="application/json",
+            CONTENT_LENGTH=str(10_000_000_000),
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("Upload too large", response.json()["error"])
 
     @override_settings(DOCUMENT_ALLOWED_MIME_TYPES=set())
     def test_document_upload_allows_mime_when_allowlist_not_configured(self):
@@ -220,8 +227,9 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="mime-ok.txt").count(), 1)
 
-    @override_settings(DOCUMENT_ALLOWED_MIME_TYPES={"application/pdf"})
+    @override_settings(DOCUMENT_ALLOWED_MIME_TYPES={"application/pdf"}, DOCUMENT_EXTENSION_MIME_MAP={})
     def test_document_upload_rejects_mime_not_in_allowlist(self):
+        """Extensions without a MIME-map entry fall back to the global allowlist."""
         self.client.force_login(self.user)
         f = SimpleUploadedFile("mime-blocked.txt", b"hello", content_type="text/plain")
 
@@ -233,7 +241,49 @@ class DocumentViewsTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="mime-blocked.txt").count(), 0)
-        self.assertContains(response, "unsupported file type")
+        self.assertContains(response, "doesn&#x27;t match its extension")
+
+    def test_document_upload_rejects_mime_extension_mismatch(self):
+        """A mapped extension carrying a different specific MIME type is rejected."""
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("fake.pdf", b"<html></html>", content_type="text/html")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 0)
+        self.assertContains(response, "doesn&#x27;t match its extension")
+
+    def test_document_upload_allows_generic_mime_for_any_extension(self):
+        """Browsers send octet-stream for unfamiliar types — it carries no signal."""
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("notes.md", b"# hi", content_type="application/octet-stream")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="notes.md").count(), 1)
+
+    def test_document_upload_allows_matching_mime_for_mapped_extension(self):
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("real.pdf", b"%PDF-1.4", content_type="application/pdf")
+
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room, original_filename="real.pdf").count(), 1)
 
     def test_document_upload_sanitizes_path_from_original_filename(self):
         self.client.force_login(self.user)
@@ -636,6 +686,34 @@ class DocumentViewsTests(TestCase):
         response = self.client.post(
             reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
             data="not json",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_bulk_delete_rejects_non_integer_ids(self):
+        """Non-int ids must be a 400, not a 500 from the queryset filter."""
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("document_bulk_delete", kwargs={"data_room_id": self.data_room.uuid}),
+            data=json.dumps({"document_ids": ["abc"]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_bulk_archive_rejects_non_integer_ids(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("document_bulk_archive", kwargs={"data_room_id": self.data_room.uuid}),
+            data=json.dumps({"document_ids": ["abc"], "action": "archive"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_delete_check_rejects_non_integer_ids(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("document_delete_check", kwargs={"data_room_id": self.data_room.uuid}),
+            data=json.dumps({"document_ids": [{"id": 1}]}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
@@ -1240,3 +1318,63 @@ class DocumentDeleteCheckTests(TestCase):
         self.client.post(url)
         self.assertTrue(ChatThread.objects.filter(pk=thread.pk).exists())
         self.assertFalse(DataRoom.objects.filter(pk=self.data_room.pk).exists())
+
+
+_RATE_LIMIT_SETTINGS = {
+    "ALLOWED_HOSTS": ["testserver"],
+    "RATELIMIT_ENABLE": True,
+    "CACHES": {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+}
+
+
+@override_settings(**_RATE_LIMIT_SETTINGS)
+class DocumentRateLimitTests(TestCase):
+    """Per-user rate limits on the upload, generate-description, and rescan endpoints.
+
+    Rate limiting is globally disabled under ``manage.py test``; these tests opt
+    back in with an in-memory cache cleared in setUp (locmem persists for the
+    whole process).
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = User.objects.create_user(email="ratelimit@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="RL", slug="rl", created_by=self.user)
+        self.client.force_login(self.user)
+
+    def test_generate_description_blocks_11th_post_in_one_minute(self):
+        url = reverse("data_room_generate_description", kwargs={"data_room_id": self.data_room.uuid})
+        with patch(
+            "documents.services.data_room_description.generate_data_room_description",
+            return_value="A description",
+        ):
+            for _ in range(10):
+                response = self.client.post(url)
+                self.assertNotEqual(response.status_code, 429)
+            response = self.client.post(url)
+        self.assertEqual(response.status_code, 429)
+
+    def test_rescan_blocks_31st_post_in_one_minute(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="rl.txt", status=DataRoomDocument.Status.SCAN_FAILED,
+        )
+        url = reverse("document_rescan", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.pk})
+        with patch("documents.tasks.finalize_document_metadata.delay"):
+            for _ in range(30):
+                response = self.client.post(url)
+                self.assertNotEqual(response.status_code, 429)
+            response = self.client.post(url)
+        self.assertEqual(response.status_code, 429)
+
+    def test_upload_is_not_throttled_for_normal_use(self):
+        """600/h is an abuse backstop — a handful of uploads must pass freely."""
+        url = reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid})
+        with patch("documents.tasks.process_document_task.delay"):
+            for i in range(5):
+                f = BytesIO(b"hello")
+                f.name = f"rl-{i}.txt"
+                response = self.client.post(url, {"file": f}, follow=True)
+                self.assertNotEqual(response.status_code, 429)

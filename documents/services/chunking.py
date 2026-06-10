@@ -111,6 +111,12 @@ def _extract_attachment_content(
     if ext not in allowed:
         return None
 
+    # Oversized attachments are listed but not extracted — a nested docx/pdf
+    # bomb must not get a free pass around the upload size limits.
+    max_bytes = getattr(settings, "DOCUMENT_ATTACHMENT_MAX_BYTES", 20_000_000)
+    if len(data) > max_bytes:
+        return None
+
     # Cap recursion for nested emails
     if ext in ("msg", "eml") and _depth >= 1:
         return None
@@ -149,9 +155,25 @@ def _load_docx_as_markdown(path: Path) -> list[Any]:
     bold/italic are preserved as Markdown, which the structure-aware chunker
     can then split on.  Images are replaced with a simple placeholder.
     """
+    import zipfile
+
     import mammoth
+    from django.conf import settings
     from langchain_core.documents import Document
     from markdownify import markdownify as md
+
+    # Decompression-bomb guard: a small .docx can expand to gigabytes and OOM
+    # the worker. Check the declared uncompressed size before mammoth unzips.
+    max_uncompressed = getattr(settings, "DOCX_MAX_UNCOMPRESSED_BYTES", 250_000_000)
+    try:
+        with zipfile.ZipFile(path) as zf:
+            total_uncompressed = sum(info.file_size for info in zf.infolist())
+    except zipfile.BadZipFile as exc:
+        raise ValueError("This .docx file is corrupt or not a valid Word document.") from exc
+    if total_uncompressed > max_uncompressed:
+        raise ValueError(
+            "This .docx file expands to an unusually large size and can't be processed."
+        )
 
     image_counter = 0
 
@@ -332,29 +354,31 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
         raise FileNotFoundError(f"File not found: {path}")
     ext = file_extension.lower().lstrip(".")
     PyPDFLoader, TextLoader = _get_loaders()
+    # NOTE: never log document content here (even at DEBUG) — these are
+    # confidential uploads; counts and sizes only.
     if ext == "pdf":
         loader = PyPDFLoader(str(path))
         docs = loader.load()
         _strip_nul_bytes(docs)
-        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "docx":
         docs = _load_docx_as_markdown(path)
-        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "msg":
         docs = _load_msg_as_markdown(path)
-        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "eml":
         docs = _load_eml_as_markdown(path)
-        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext in ("txt", "md", "html", "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log"):
         # TextLoader works for all text-based; use utf-8 with errors=replace
         loader = TextLoader(str(path), encoding="utf-8", autodetect_encoding=True)
         docs = loader.load()
-        logger.debug("load_documents output (%d doc(s)):\n%s", len(docs), "\n---\n".join(d.page_content for d in docs))
+        logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     raise ValueError(f"Unsupported file type: {ext}")
 

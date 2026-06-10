@@ -13,6 +13,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
+from django_ratelimit.decorators import ratelimit
 
 from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from .pii_labels import CRIMINAL_TOOLTIP, PILL_LABEL, SPECIAL_TOOLTIP, summarize_pii_keys
@@ -54,6 +55,21 @@ def _parse_json_body(request):
         return None, JsonResponse({"error": "Invalid JSON"}, status=400)
 
 
+def _parse_document_ids(body):
+    """Validate body['document_ids'] as a non-empty list of ints.
+
+    Returns (ids, None) on success or (None, error response) — non-integer ids
+    would otherwise blow up as a 500 inside the queryset filter.
+    """
+    doc_ids = body.get("document_ids")
+    if not isinstance(doc_ids, list) or not doc_ids:
+        return None, JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+    try:
+        return [int(x) for x in doc_ids], None
+    except (TypeError, ValueError):
+        return None, JsonResponse({"error": "document_ids must contain only integers"}, status=400)
+
+
 def _annotate_relative_dates(docs):
     """Add relative_upload_display to each document in a list."""
     for doc in docs:
@@ -73,9 +89,11 @@ def _user_can_modify_data_room(user, data_room: DataRoom) -> bool:
 @require_http_methods(["GET", "POST"])
 def data_room_list(request):
     if request.method == "POST":
-        name = (request.POST.get("name") or "").strip()
+        # Truncate to the model field limits — longer values are a DB error (500).
+        name = (request.POST.get("name") or "").strip()[:255]
         if name:
-            base_slug = slugify(name) or "data-room"
+            # Slug capped at 90 to leave room for the -N collision suffix (max_length=100).
+            base_slug = (slugify(name) or "data-room")[:90]
             n = 0
             data_room = None
             while True:
@@ -253,10 +271,46 @@ def _allowed_mime(mime_type: str) -> bool:
     return mime_type in allowed_mime_types
 
 
+# Browsers send these for any type they don't recognize — they carry no signal,
+# so they always pass the extension cross-check.
+_GENERIC_MIME_TYPES = {"", "application/octet-stream"}
+
+
+def _mime_matches_extension(ext: str, mime_type: str) -> bool:
+    """Cross-check the browser-supplied MIME type against the file extension.
+
+    A mapped extension must carry one of its expected MIME types (or a generic
+    one); unmapped extensions fall back to the global allowlist.
+    """
+    if mime_type in _GENERIC_MIME_TYPES:
+        return True
+    allowed_for_ext = getattr(settings, "DOCUMENT_EXTENSION_MIME_MAP", {}).get(ext)
+    if allowed_for_ext is None:
+        return _allowed_mime(mime_type)
+    return mime_type in allowed_for_ext
+
+
 @login_required
 @require_POST
+@ratelimit(key="user", rate="600/h", method="POST", block=True)
 def document_upload(request, data_room_id):
     is_ajax = "application/json" in request.headers.get("Accept", "")
+
+    # Reject oversized requests from the Content-Length header BEFORE accessing
+    # request.FILES — once the body is parsed, Django has already spooled the
+    # whole thing to disk and the per-file size checks come too late.
+    try:
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    max_request_bytes = getattr(settings, "DOCUMENT_UPLOAD_REQUEST_MAX_BYTES", 60_000_000)
+    if content_length > max_request_bytes:
+        msg = f"Upload too large (max {max_request_bytes / 1_000_000:.0f} MB per request)."
+        if is_ajax:
+            return JsonResponse({"status": "error", "error": msg}, status=413)
+        messages.error(request, msg)
+        return redirect("data_room_documents", data_room_id=data_room_id)
+
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_modify_data_room(request.user, data_room):
         if is_ajax:
@@ -294,8 +348,8 @@ def document_upload(request, data_room_id):
             errors.append(f"{safe_filename}: unsupported file type.")
             continue
         mime = getattr(file_obj, "content_type", "") or ""
-        if mime and not _allowed_mime(mime):
-            errors.append(f"{safe_filename}: unsupported file type.")
+        if not _mime_matches_extension(file_ext, mime):
+            errors.append(f"{safe_filename}: file content doesn't match its extension.")
             continue
         if is_audio:
             from core.preferences import get_preferences
@@ -322,15 +376,13 @@ def document_upload(request, data_room_id):
         )
 
     for doc in created_docs:
+        # No synchronous fallback: processing a document inline would tie up the
+        # web dyno for minutes parsing untrusted files. If the broker is down,
+        # fail the document with a clear message instead.
         try:
-            try:
-                from documents.tasks import process_document_task
+            from documents.tasks import process_document_task
 
-                process_document_task.delay(doc.id)
-            except Exception:
-                from documents.services.process_document import process_document
-
-                process_document(doc.id)
+            process_document_task.delay(doc.id)
         except Exception as exc:
             logger.exception("document_upload: failed to enqueue processing for document_id=%s", doc.id)
             doc.status = DataRoomDocument.Status.FAILED
@@ -396,9 +448,9 @@ def document_delete_check(request, data_room_id):
     body, err = _parse_json_body(request)
     if err:
         return err
-    doc_ids = body.get("document_ids")
-    if not isinstance(doc_ids, list) or not doc_ids:
-        return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+    doc_ids, err = _parse_document_ids(body)
+    if err:
+        return err
 
     from chat.models import ThreadChunkUsage
 
@@ -453,6 +505,7 @@ def document_archive(request, data_room_id, document_id):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="30/m", method="POST", block=True)
 def document_rescan(request, data_room_id, document_id):
     """Re-run the PII scan for a document stuck in SCANNING or marked SCAN_FAILED."""
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
@@ -512,9 +565,9 @@ def document_bulk_delete(request, data_room_id):
     body, err = _parse_json_body(request)
     if err:
         return err
-    doc_ids = body.get("document_ids")
-    if not isinstance(doc_ids, list) or not doc_ids:
-        return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+    doc_ids, err = _parse_document_ids(body)
+    if err:
+        return err
     if body.get("delete_threads"):
         _delete_threads_for_documents(doc_ids, data_room)
     deleted, _ = DataRoomDocument.objects.filter(pk__in=doc_ids, data_room=data_room).delete()
@@ -530,9 +583,9 @@ def document_bulk_archive(request, data_room_id):
     body, err = _parse_json_body(request)
     if err:
         return err
-    doc_ids = body.get("document_ids")
-    if not isinstance(doc_ids, list) or not doc_ids:
-        return JsonResponse({"error": "document_ids must be a non-empty list"}, status=400)
+    doc_ids, err = _parse_document_ids(body)
+    if err:
+        return err
     action = body.get("action")
     if action not in ("archive", "restore"):
         return JsonResponse({"error": "action must be 'archive' or 'restore'"}, status=400)
@@ -558,6 +611,7 @@ def document_status(request, data_room_id):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def data_room_generate_description(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_modify_data_room(request.user, data_room):
