@@ -136,6 +136,33 @@ class DocumentViewsTests(TestCase):
         tag = DataRoomDocumentTag.objects.get(document=doc, key="source")
         self.assertEqual(tag.value, "user_uploaded")
 
+    def test_documents_page_scanning_doc_shows_state_without_view_button(self):
+        """A SCANNING doc renders its status for the JS layer and no View button."""
+        self.client.force_login(self.user)
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="scanning.txt", status=DataRoomDocument.Status.SCANNING,
+        )
+        response = self.client.get(reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}))
+        self.assertContains(response, 'data-status="scanning"')
+        self.assertContains(response, "data-rescan-url-template")
+        # The per-document "View document" dropdown entry is ready-only.
+        self.assertNotContains(response, "view-document-btn")
+
+    def test_documents_page_scan_failed_doc_carries_error_message(self):
+        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+
+        self.client.force_login(self.user)
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="scanfailed.txt", status=DataRoomDocument.Status.SCAN_FAILED,
+            processing_error=SCAN_FAILED_MESSAGE,
+        )
+        response = self.client.get(reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}))
+        self.assertContains(response, 'data-status="scan_failed"')
+        self.assertContains(response, "data-error=")
+        self.assertNotContains(response, "view-document-btn")
+
     def test_document_upload_marks_failed_when_delay_fails(self):
         """When task.delay() raises (e.g. broker unavailable), the document is
         marked FAILED with a clear message — there is deliberately no synchronous

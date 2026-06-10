@@ -71,6 +71,8 @@
        data-bulk-archive-url="{% url 'document_bulk_archive' data_room_id=data_room.uuid %}"
        data-delete-check-url="{% url 'document_delete_check' data_room_id=data_room.uuid %}"
        data-status-url="{% url 'document_status' data_room_id=data_room.uuid %}"
+       data-rescan-url-template="{% url 'document_rescan' data_room_id=data_room.uuid document_id=0 %}"
+       data-assistant-name="{{ assistant_name }}"
        data-csrf-token="{{ csrf_token }}"></div>
 
   <div id="processing-banner" class="hidden mt-6 px-4 py-3 bg-neutral-primary-soft border border-default rounded-base flex items-center gap-3">
@@ -99,7 +101,7 @@
       </div>
       {% endif %}
       {% for doc in documents %}
-      <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if doc.is_quarantined %}opacity-60{% endif %} {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="active">
+      <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if doc.is_quarantined %}opacity-60{% endif %} {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="active"{% if doc.processing_error %} data-error="{{ doc.processing_error }}"{% endif %}>
         <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
         <span class="doc-status-icon shrink-0 me-2"></span>
         <span class="flex-1 min-w-0 truncate font-medium text-heading" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
@@ -170,7 +172,7 @@
           </div>
         </div>
         {% for doc in archived_documents %}
-        <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="archived">
+        <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.status }}" data-list="archived"{% if doc.processing_error %} data-error="{{ doc.processing_error }}"{% endif %}>
           <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
           <span class="doc-status-icon shrink-0 me-2"></span>
           <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
@@ -458,8 +460,21 @@
             headers: { 'Accept': 'application/json', 'X-CSRFToken': csrf },
             body: formData
           });
-          var data = await resp.json();
-          if (data.status === 'ok' && data.document) {
+          // Check the status before parsing: 429/413 may carry a non-JSON body,
+          // and "network error" would be a misleading message for them.
+          if (resp.status === 429) {
+            failed++;
+            addError(valid[i].name + ': too many uploads right now — wait a moment and try again.');
+            continue;
+          }
+          if (resp.status === 413) {
+            failed++;
+            addError(valid[i].name + ': file is too large to upload.');
+            continue;
+          }
+          var data = null;
+          try { data = await resp.json(); } catch (parseErr) { /* non-JSON error page */ }
+          if (data && data.status === 'ok' && data.document) {
             uploaded++;
             uploadedDocIds.push(data.document.id);
             addDocumentRow(data.document);
@@ -468,7 +483,7 @@
             }
           } else {
             failed++;
-            addError(data.error || (valid[i].name + ": upload didn't go through. Try again."));
+            addError((data && data.error) || (valid[i].name + ": upload didn't go through. Try again."));
           }
         } catch (err) {
           failed++;

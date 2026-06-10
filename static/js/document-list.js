@@ -8,29 +8,131 @@
   var bulkArchiveUrl = config.dataset.bulkArchiveUrl;
   var deleteCheckUrl = config.dataset.deleteCheckUrl;
   var statusUrl = config.dataset.statusUrl;
+  var rescanUrlTemplate = config.dataset.rescanUrlTemplate;
+  var assistantName = config.dataset.assistantName || 'your assistant';
   var csrf = config.dataset.csrfToken || document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
 
   // ── Status icons ──────────────────────────────────────────────────
+  var SPINNER = '<svg class="w-4 h-4 animate-spin text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>';
   var ICONS = {
-    uploaded: '<svg class="w-4 h-4 animate-spin text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>',
-    processing: '<svg class="w-4 h-4 animate-spin text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>',
+    uploaded: SPINNER,
+    processing: SPINNER,
+    scanning: SPINNER,
+    scan_failed: '<svg class="w-4 h-4 text-fg-warning" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>',
     ready: '<svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>',
     failed: '<svg class="w-4 h-4 text-red-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>'
   };
 
-  function renderStatusIcons() {
+  var STATUS_TITLES = {
+    uploaded: 'Processing…',
+    processing: 'Processing…',
+    scanning: 'Checking for sensitive data — not available to ' + assistantName + ' until the check completes.',
+    scan_failed: 'Sensitive-data check failed — retry the scan.',
+    failed: 'Processing failed.'
+  };
+
+  function statusTitle(row) {
+    var status = row.dataset.status;
+    // Failed states carry the server's specific message when available.
+    if ((status === 'failed' || status === 'scan_failed') && row.dataset.error) {
+      return row.dataset.error;
+    }
+    return STATUS_TITLES[status] || '';
+  }
+
+  function rescanUrlFor(docId) {
+    if (!rescanUrlTemplate) return null;
+    return rescanUrlTemplate.replace('/documents/0/rescan/', '/documents/' + docId + '/rescan/');
+  }
+
+  // Inline note next to the filename for scan states ("what's the holdup"),
+  // plus a Retry button for scan_failed. Built with DOM APIs only.
+  function syncScanNotes() {
     document.querySelectorAll('[data-doc-id]').forEach(function (row) {
       var status = row.dataset.status;
+      var note = row.querySelector('.doc-scan-note');
+      var wanted = (status === 'scanning' || status === 'scan_failed') && row.dataset.list === 'active';
+      if (!wanted) {
+        if (note) note.remove();
+        return;
+      }
+      if (note && note.dataset.forStatus === status) return;
+      if (note) note.remove();
+
+      note = document.createElement('span');
+      note.className = 'doc-scan-note shrink-0 ms-2 inline-flex items-center gap-1.5';
+      note.dataset.forStatus = status;
+
+      var label = document.createElement('span');
+      if (status === 'scanning') {
+        label.className = 'text-xs text-body-subtle italic';
+        label.textContent = 'Checking for sensitive data…';
+      } else {
+        label.className = 'text-xs text-fg-warning font-medium';
+        label.textContent = 'Sensitive-data check failed';
+      }
+      label.title = statusTitle(row);
+      note.appendChild(label);
+
+      if (status === 'scan_failed' && rescanUrlFor(row.dataset.docId)) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'retry-scan-btn inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base';
+        btn.textContent = 'Retry scan';
+        note.appendChild(btn);
+      }
+
+      // Insert right after the filename span (status icon's next sibling).
       var iconEl = row.querySelector('.doc-status-icon');
-      if (iconEl) iconEl.innerHTML = ICONS[status] || '';
+      var nameEl = iconEl && iconEl.nextElementSibling;
+      if (nameEl) nameEl.insertAdjacentElement('afterend', note);
+      else row.appendChild(note);
     });
+  }
+
+  function renderStatusIcons() {
+    document.querySelectorAll('[data-doc-id]').forEach(function (row) {
+      var iconEl = row.querySelector('.doc-status-icon');
+      if (!iconEl) return;
+      iconEl.innerHTML = ICONS[row.dataset.status] || '';
+      var title = statusTitle(row);
+      if (title) iconEl.title = title;
+      else iconEl.removeAttribute('title');
+    });
+    syncScanNotes();
   }
 
   renderStatusIcons();
   window.renderStatusIcons = renderStatusIcons;
 
+  // ── Retry scan ──────────────────────────────────────────────────────
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.retry-scan-btn');
+    if (!btn) return;
+    var row = btn.closest('[data-doc-id]');
+    var url = row && rescanUrlFor(row.dataset.docId);
+    if (!url) return;
+    btn.disabled = true;
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json', 'X-CSRFToken': csrf }
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error('rescan failed');
+        row.dataset.status = 'scanning';
+        delete row.dataset.error;
+        renderStatusIcons();
+        ensurePolling();
+      })
+      .catch(function () {
+        btn.disabled = false;
+        alert("The scan couldn't be restarted. Please try again.");
+      });
+  });
+
   // ── Polling ────────────────────────────────────────────────────────
-  var TERMINAL = { ready: true, failed: true };
+  var TERMINAL = { ready: true, failed: true, scan_failed: true };
   var pollInterval = null;
   var trackedDocIds = null;
 
@@ -60,7 +162,7 @@
       trackedDocIds.forEach(function (id) {
         var s = statuses[String(id)];
         if (s === 'ready') done++;
-        else if (s === 'failed') failed++;
+        else if (s === 'failed' || s === 'scan_failed') failed++;
       });
       var total = trackedDocIds.length;
       var complete = done + failed;
