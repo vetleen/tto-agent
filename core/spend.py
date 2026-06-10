@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db.models import Sum
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+
+def _budget_decimal(raw) -> Decimal:
+    """Coerce a stored budget preference to a finite, non-negative Decimal.
+
+    Non-finite (NaN/Infinity), unparsable, or negative values mean "no budget"
+    (0). Decimal NaN comparisons raise InvalidOperation, and get_budget_status
+    runs in a context processor on every page — bad data must degrade to
+    "unbudgeted", never 500.
+    """
+    try:
+        value = Decimal(str(raw if raw is not None else 0))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")
+    if not value.is_finite() or value < 0:
+        return Decimal("0")
+    return value
 
 
 def get_month_boundaries(today: date | None = None):
@@ -77,8 +94,8 @@ def get_budget_status(user) -> dict | None:
         return None
 
     org_prefs = membership.org.preferences or {}
-    user_budget = Decimal(str(org_prefs.get("monthly_budget_per_user", 0) or 0))
-    org_budget = Decimal(str(org_prefs.get("monthly_budget_org", 0) or 0))
+    user_budget = _budget_decimal(org_prefs.get("monthly_budget_per_user", 0))
+    org_budget = _budget_decimal(org_prefs.get("monthly_budget_org", 0))
 
     if user_budget == 0 and org_budget == 0:
         return None

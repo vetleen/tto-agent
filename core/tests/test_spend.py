@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from accounts.models import Membership, Organization
 from core.spend import (
+    _budget_decimal,
     get_budget_status,
     get_month_boundaries,
     get_org_monthly_spend,
@@ -206,3 +207,66 @@ class GetBudgetStatusTests(TestCase):
         status = get_budget_status(self.user)
         # Should contain month name and year
         self.assertRegex(status["reset_date"], r"^[A-Z][a-z]+ \d+, \d{4}$")
+
+
+class BudgetDecimalTests(TestCase):
+    def test_normal_values_pass_through(self):
+        self.assertEqual(_budget_decimal("12.5"), Decimal("12.5"))
+        self.assertEqual(_budget_decimal(50), Decimal("50"))
+        self.assertEqual(_budget_decimal(0), Decimal("0"))
+
+    def test_non_finite_treated_as_zero(self):
+        self.assertEqual(_budget_decimal(float("nan")), Decimal("0"))
+        self.assertEqual(_budget_decimal(float("inf")), Decimal("0"))
+        self.assertEqual(_budget_decimal(float("-inf")), Decimal("0"))
+
+    def test_junk_and_none_treated_as_zero(self):
+        self.assertEqual(_budget_decimal("junk"), Decimal("0"))
+        self.assertEqual(_budget_decimal(None), Decimal("0"))
+
+    def test_negative_treated_as_zero(self):
+        self.assertEqual(_budget_decimal(-5), Decimal("0"))
+
+
+class JunkBudgetStatusTests(TestCase):
+    """JSON-valid but unusable stored budgets must degrade to "unbudgeted",
+    never raise.
+
+    Regression: a stored value that coerces to a non-finite Decimal made the
+    comparisons in get_budget_status raise InvalidOperation — and it runs in a
+    context processor on every page, so the whole org would 500. (Raw NaN/Inf
+    *floats* can't even reach the DB: jsonb / SQLite JSON_VALID reject them, and
+    org_budget_update now 400s on the literals. This guards the values that ARE
+    valid JSON — "nan"/"inf" strings, negatives, junk — set via admin or shell.)
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Junk Org", slug="junk-org")
+        self.user = User.objects.create_user(email="junk@test.com", password="pass123")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.MEMBER)
+
+    def test_nan_string_user_budget_returns_none(self):
+        self.org.preferences = {"monthly_budget_per_user": "nan"}
+        self.org.save()
+        self.assertIsNone(get_budget_status(self.user))
+
+    def test_inf_string_org_budget_returns_none(self):
+        self.org.preferences = {"monthly_budget_org": "inf"}
+        self.org.save()
+        self.assertIsNone(get_budget_status(self.user))
+
+    def test_negative_budget_returns_none(self):
+        self.org.preferences = {"monthly_budget_per_user": -10}
+        self.org.save()
+        self.assertIsNone(get_budget_status(self.user))
+
+    def test_junk_budget_with_valid_other_budget_still_works(self):
+        self.org.preferences = {
+            "monthly_budget_per_user": "nan",
+            "monthly_budget_org": 100,
+        }
+        self.org.save()
+        status = get_budget_status(self.user)
+        self.assertIsNotNone(status)
+        self.assertEqual(status["user_budget"], Decimal("0"))
+        self.assertEqual(status["org_budget"], Decimal("100"))

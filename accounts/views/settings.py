@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -8,6 +9,7 @@ from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
+from django_ratelimit.decorators import ratelimit
 
 from django.conf import settings as django_settings
 
@@ -830,6 +832,11 @@ def org_budget_update(request):
                 val = float(data[key])
             except (TypeError, ValueError):
                 return JsonResponse({"error": f"Invalid value for {key}"}, status=400)
+            # json.loads accepts the NaN/Infinity literals and NaN < 0 is False,
+            # so non-finite values would slip past the negative check (and then
+            # fail the Postgres jsonb write or poison budget comparisons).
+            if not math.isfinite(val):
+                return JsonResponse({"error": f"Invalid value for {key}"}, status=400)
             if val < 0:
                 return JsonResponse({"error": "Budget cannot be negative"}, status=400)
             prefs[key] = val
@@ -1173,8 +1180,12 @@ def profile_page(request):
     return redirect("accounts:agent")
 
 
+# The endpoints below each fire a synchronous LLM classifier call per request, so
+# they carry a per-user throttle (cost-amplification guard). login_required stays
+# first so anonymous requests never reach the user-pk rate key.
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def profile_update(request):
     import logging
 
@@ -1231,6 +1242,7 @@ def profile_update(request):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_description_update(request):
     import logging
 
@@ -1301,6 +1313,7 @@ def agent_page(request):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def soul_update(request):
     """Save the user's personal SOUL override (gated by the org's allow_user_soul)."""
     import logging
@@ -1365,6 +1378,7 @@ def soul_reset(request):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_soul_update(request):
     """Admin: set the org-wide SOUL baseline."""
     import logging
@@ -1432,6 +1446,7 @@ def org_soul_reset(request):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_name_update(request):
     """Admin: rename the organization (leaves the slug untouched)."""
     import logging

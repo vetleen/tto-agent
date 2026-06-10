@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model, login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView as BaseLoginView
 from django.contrib.auth.views import PasswordResetView as BasePasswordResetView
+from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.utils.decorators import method_decorator
 from django.views.decorators.http import require_http_methods
@@ -18,7 +19,19 @@ from ..verification import (
 User = get_user_model()
 
 
-@method_decorator(ratelimit(key="ip", rate="5/m", method="POST", block=True), name="post")
+# Two stacked throttles: per-IP (fast attacks from one source) and per-username
+# (distributed credential stuffing against one account; the key falls back to the
+# client IP when the field is empty — see core.ratelimit.login_username_or_ip).
+# Accepted tradeoff: username keying lets an attacker deliberately exhaust a known
+# account's bucket for the window; 30/h plus the generic 429 page (no reason
+# disclosed) and automatic expiry is the mitigation.
+@method_decorator(
+    [
+        ratelimit(key="ip", rate="5/m", method="POST", block=True),
+        ratelimit(key="core.ratelimit.login_username_or_ip", rate="30/h", method="POST", block=True),
+    ],
+    name="post",
+)
 class LoginView(BaseLoginView):
     # The login page is a fixed light/paper composition; force the light theme
     # so the shared form/semantic tokens resolve to their light values.
@@ -45,7 +58,16 @@ class PasswordResetView(BasePasswordResetView):
 
 
 def rate_limited(request, exception=None):
-    return render(request, "registration/rate_limited.html", status=429)
+    # Browser form posts (login, admin login) send Accept: text/html and get the
+    # branded page. fetch() callers — the JSON settings endpoints and the
+    # multipart feedback widget (Accept: */*) — get JSON their error handlers
+    # surface via data.error.
+    if "text/html" in (request.headers.get("Accept") or ""):
+        return render(request, "registration/rate_limited.html", status=429)
+    return JsonResponse(
+        {"error": "Too many requests. Please wait a few minutes and try again."},
+        status=429,
+    )
 
 
 def index(request):
@@ -78,8 +100,14 @@ def suspended(request):
 #      so the new gate does not lock anyone out (the field defaults to False).
 #   4. Un-skip accounts/tests/test_verification.py (esp.
 #      test_login_blocked_when_not_verified_redirects_to_verify_required).
-# Note: verify_email() below calls login() directly, bypassing the form gate — it
-# must perform the same email_verified / is_active check once routed.
+#   5. Hash verification tokens at rest (EmailVerificationToken stores them in
+#      plaintext and surfaces them read-only in the Django admin).
+#   6. Convert verify_email() to a POST-confirm step: it currently logs the user
+#      in on a GET with the token in the URL, which leaks into server/proxy logs
+#      and browser history.
+# Note: verify_email() below calls login() directly, bypassing the form gate.
+# verify_token() already rejects inactive users (accounts/verification.py); it
+# must additionally respect the email_verified gate once routed.
 def signup(request):
     if request.method == "POST":
         form = SignUpForm(request.POST)

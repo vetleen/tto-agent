@@ -118,6 +118,36 @@ class OrgBudgetUpdateViewTests(TestCase):
         self.org.refresh_from_db()
         self.assertEqual(self.org.preferences["monthly_budget_per_user"], 0.0)
 
+    def test_rejects_non_finite_json_literals(self):
+        # json.loads accepts these non-standard literals, NaN < 0 is False, and
+        # Postgres jsonb rejects them at save time — they must 400 cleanly.
+        self.client.login(email=self.admin_user.email, password=self.password)
+        for literal in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(literal=literal):
+                response = self.client.post(
+                    self.url,
+                    '{"monthly_budget_per_user": %s}' % literal,
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("error", response.json())
+        self.org.refresh_from_db()
+        self.assertNotIn("monthly_budget_per_user", self.org.preferences or {})
+
+    def test_rejects_non_finite_strings(self):
+        # float() accepts "nan"/"inf" strings, which json.dumps would then emit
+        # as the same invalid literals.
+        self.client.login(email=self.admin_user.email, password=self.password)
+        for value in ("nan", "inf", "-inf"):
+            with self.subTest(value=value):
+                response = self.client.post(
+                    self.url,
+                    json.dumps({"monthly_budget_org": value}),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("error", response.json())
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class BudgetContextProcessorTests(TestCase):

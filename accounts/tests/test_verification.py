@@ -101,6 +101,48 @@ class EmailVerificationTests(TestCase):
         self.assertEqual(error, "expired")
 
 
+class VerifyTokenUnitTests(TestCase):
+    """Direct verify_token() tests — no routed URLs needed, so these stay active
+    while the signup flow is disabled."""
+
+    def test_inactive_user_cannot_verify(self) -> None:
+        user = User.objects.create_user(email="inactive@example.com", password="pass")
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+        EmailVerificationToken.objects.create(user=user, token="t-inactive")
+
+        found_user, error = verify_token("t-inactive")
+
+        self.assertIsNone(found_user)
+        self.assertEqual(error, "invalid")
+        user.refresh_from_db()
+        self.assertFalse(user.email_verified)
+        # The (still time-limited) token survives so a legitimate reactivation
+        # within the window doesn't strand the user.
+        self.assertTrue(
+            EmailVerificationToken.objects.filter(token="t-inactive").exists()
+        )
+
+    def test_unknown_token_is_invalid(self) -> None:
+        found_user, error = verify_token("never-issued")
+        self.assertIsNone(found_user)
+        self.assertEqual(error, "invalid")
+
+    def test_active_user_verifies_and_token_is_consumed(self) -> None:
+        user = User.objects.create_user(email="active@example.com", password="pass")
+        EmailVerificationToken.objects.create(user=user, token="t-active")
+
+        found_user, error = verify_token("t-active")
+
+        self.assertIsNone(error)
+        self.assertEqual(found_user, user)
+        user.refresh_from_db()
+        self.assertTrue(user.email_verified)
+        self.assertFalse(
+            EmailVerificationToken.objects.filter(token="t-active").exists()
+        )
+
+
 @override_settings(ALLOWED_HOSTS=["testserver"], EMAIL_VERIFICATION_REQUIRED=True)
 class ResendRateLimitTests(TestCase):
     def test_can_resend_after_first_minute(self) -> None:

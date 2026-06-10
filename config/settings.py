@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import logging
 import os
 import ssl
+import sys
 import warnings
 from pathlib import Path
 
@@ -150,8 +151,10 @@ if not DEBUG:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
 
-    # HSTS: tell browsers to always use HTTPS (start with 1 hour, increase after verifying)
-    SECURE_HSTS_SECONDS = 3600
+    # HSTS: tell browsers to always use HTTPS for the next year (ramped up from
+    # 1 hour after verifying HTTPS in production). Preload stays off — it is
+    # effectively irreversible and *.herokuapp.com cannot be preloaded anyway.
+    SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = False
 
@@ -342,9 +345,21 @@ PASSWORD_RESET_TIMEOUT = int(os.environ.get("DJANGO_PASSWORD_RESET_TIMEOUT", "36
 
 # Rate limiting (django-ratelimit)
 RATELIMIT_VIEW = "accounts.views.auth.rate_limited"
-if not DEBUG:
-    # Heroku proxies requests — REMOTE_ADDR is the router, not the client.
-    RATELIMIT_IP_META_KEY = "HTTP_X_FORWARDED_FOR"
+# Heroku appends the real client IP as the LAST X-Forwarded-For entry; earlier
+# entries are client-controlled (spoofable). The helper takes the last entry and
+# falls back to REMOTE_ADDR when the header is absent (local dev, tests), so this
+# is deliberately unconditional: dev and CI exercise the same code path as
+# production. Never point this at the raw header — django-ratelimit would feed
+# the whole multi-entry value to ipaddress.ip_network and 500 on parse.
+RATELIMIT_IP_META_KEY = "core.ratelimit.client_ip"
+
+# Disable rate limiting under `manage.py test`: the default cache is a real Redis
+# whose rl:* counters survive across runs, and SQLite pk reuse makes unrelated
+# tests share user-keyed buckets. Rate-limit tests opt back in per-class with
+# override_settings(RATELIMIT_ENABLE=True, CACHES=<locmem>).
+TESTING = sys.argv[1:2] == ["test"]
+if TESTING:
+    RATELIMIT_ENABLE = False
 
 # Email verification (24 hours in seconds)
 EMAIL_VERIFICATION_TIMEOUT = int(os.environ.get("EMAIL_VERIFICATION_TIMEOUT", "86400"))

@@ -2,10 +2,17 @@ import io
 import json
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.cache import cache
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from feedback.models import Feedback
+
+_RATE_LIMIT_SETTINGS = {
+    "ALLOWED_HOSTS": ["testserver"],
+    "RATELIMIT_ENABLE": True,
+    "CACHES": {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+}
 
 
 class SubmitFeedbackTests(TestCase):
@@ -139,3 +146,45 @@ class SubmitFeedbackTests(TestCase):
         self.assertEqual(response.status_code, 200)
         fb = Feedback.objects.get()
         self.assertEqual(fb.console_errors, [])
+
+
+@override_settings(**_RATE_LIMIT_SETTINGS)
+class FeedbackRateLimitTests(TestCase):
+    """Submissions are throttled per user (10/h) — storage/email spam guard."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = "test-pass-123"
+        self.user = get_user_model().objects.create_user(
+            email="limited@example.com",
+            password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.url = reverse("feedback:feedback_submit")
+        self.client.login(email=self.user.email, password=self.password)
+
+    def test_eleventh_post_within_an_hour_is_throttled(self):
+        for _ in range(10):
+            response = self.client.post(self.url, {"text": "hello"})
+            self.assertEqual(response.status_code, 200)
+        response = self.client.post(self.url, {"text": "hello"})
+        self.assertEqual(response.status_code, 429)
+        # The widget posts multipart with Accept */*, so it must get JSON it can
+        # surface via data.error — not the branded HTML page.
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertIn("error", response.json())
+
+    def test_throttle_is_per_user(self):
+        for _ in range(11):
+            self.client.post(self.url, {"text": "hello"})
+        other = get_user_model().objects.create_user(
+            email="other@example.com",
+            password=self.password,
+        )
+        other.email_verified = True
+        other.save(update_fields=["email_verified"])
+        self.client.logout()
+        self.client.login(email=other.email, password=self.password)
+        response = self.client.post(self.url, {"text": "hello"})
+        self.assertEqual(response.status_code, 200)

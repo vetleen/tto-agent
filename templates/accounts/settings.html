@@ -215,7 +215,7 @@
 <script>
 (function() {
   // Set initial select values from server data
-  var userModels = {{ user_models|safe }};
+  var userModels = JSON.parse('{{ user_models|escapejs }}');
   document.querySelectorAll('.model-select').forEach(function(sel) {
     var tier = sel.dataset.tier;
     var val = (userModels && userModels[tier]) || '';

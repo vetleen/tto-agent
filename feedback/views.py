@@ -5,6 +5,7 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
+from django_ratelimit.decorators import ratelimit
 
 from .models import Feedback
 
@@ -17,6 +18,7 @@ MAX_CONSOLE_ERRORS = 50
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/h", method="POST", block=True)
 def submit_feedback(request):
     text = (request.POST.get("text") or "").strip()
     if not text:

@@ -18,8 +18,16 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
+from django_ratelimit.decorators import ratelimit
 
 from accounts.views.auth import index
+
+# /admin/login/ gets the same throttle as the main login form — staff accounts
+# must not be the easiest ones to brute-force. Rebinding the bound method on the
+# AdminSite instance wraps the view before admin.site.urls (below) snapshots it;
+# GETs and the ?next= flow are untouched, and a blocked POST raises Ratelimited,
+# which RatelimitMiddleware routes to RATELIMIT_VIEW (429 page).
+admin.site.login = ratelimit(key="ip", rate="5/m", method="POST", block=True)(admin.site.login)
 
 urlpatterns = [
     path("", index, name="index"),

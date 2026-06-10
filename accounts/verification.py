@@ -101,6 +101,13 @@ def verify_token(token: str) -> tuple[User | None, str | None]:
         return None, "invalid"
 
     user = token_obj.user
+    # Deactivated accounts must never be re-verified — verify_email() logs the
+    # returned user in directly, bypassing the auth form's is_active gate. The
+    # token is deliberately kept (still time-limited) so a legitimate
+    # reactivation within the window doesn't strand the user.
+    if not user.is_active:
+        return None, "invalid"
+
     timeout_seconds = getattr(
         settings, "EMAIL_VERIFICATION_TIMEOUT", 86400
     )

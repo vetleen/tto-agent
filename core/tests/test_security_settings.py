@@ -27,7 +27,7 @@ class SecuritySettingsTest(SimpleTestCase):
         source = inspect.getsource(config_mod)
         self.assertIn("SESSION_COOKIE_SECURE = True", source)
         self.assertIn("CSRF_COOKIE_SECURE = True", source)
-        self.assertIn("SECURE_HSTS_SECONDS", source)
+        self.assertIn("SECURE_HSTS_SECONDS = 31536000", source)
         self.assertIn("SECURE_SSL_REDIRECT = True", source)
 
     def test_security_middleware_present(self):

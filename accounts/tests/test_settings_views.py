@@ -132,6 +132,22 @@ class SettingsPageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "AI Models")
 
+    def test_user_models_json_is_escaped_not_raw(self):
+        # Regression: user_models was rendered with |safe; a </script> breakout
+        # in a stored model id would have been stored XSS. escapejs encodes it.
+        from accounts.models import UserSettings
+
+        payload = "</script><script>alert(1)</script>"
+        settings_obj, _ = UserSettings.objects.get_or_create(user=self.user)
+        settings_obj.preferences = {"models": {"primary": payload}}
+        settings_obj.save()
+
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, payload)
+        self.assertContains(response, "JSON.parse(")
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class PreferencesModelsUpdateTests(TestCase):

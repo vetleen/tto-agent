@@ -33,14 +33,16 @@ class ThemeContextProcessorTests(TestCase):
         context = theme(request)
         self.assertEqual(context["theme"], "dark")
 
-    def test_returns_empty_context_for_anonymous_user(self) -> None:
+    def test_returns_no_theme_for_anonymous_user(self) -> None:
+        # Anonymous users still get assistant_name (the landing page is branded),
+        # but no theme/admin/budget context, which is user-specific.
         from django.contrib.auth.models import AnonymousUser
 
         request = self.factory.get("/")
         request.user = AnonymousUser()
         context = theme(request)
-        self.assertEqual(context, {})
         self.assertNotIn("theme", context)
+        self.assertNotIn("user_is_org_admin", context)
 
     def test_creates_settings_if_missing(self) -> None:
         """Context processor uses get_or_create, so it should handle missing settings."""
