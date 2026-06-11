@@ -19,6 +19,17 @@
   const RECONNECT_BACKOFF_MS_BASE = 2000;
   const RECONNECT_BACKOFF_MS_MAX = 30000;
   const RECONNECT_MAX_ATTEMPTS = 6;
+  // Application WebSocket close codes the server uses to reject a handshake for
+  // a deterministic reason. These are terminal — retrying would just be
+  // rejected again — so we surface a specific message and stop reconnecting.
+  const TERMINAL_CLOSE_MESSAGES = {
+    4400: 'Couldn’t start transcription (bad request). Reload the page and try again.',
+    4401: 'Your session expired. Please sign in again.',
+    4402: 'Transcription isn’t enabled for your account.',
+    4403: 'You don’t have access to transcribe this meeting.',
+    4404: 'This meeting is unavailable for transcription right now.',
+    4409: 'You already have a meeting transcribing. Stop it before starting another.',
+  };
   // Watchdog fires if we haven't uploaded a chunk in 2× the segment duration,
   // indicating MediaRecorder has stalled (common when the tab is backgrounded
   // or the OS briefly suspended the process).
@@ -294,6 +305,10 @@
   let reconnectAttempts = 0;
   let reconnecting = false;
   let reconnectTimer = null;
+  // Set when the socket closes with a terminal app code (see
+  // TERMINAL_CLOSE_MESSAGES). Stops the reconnect loop and carries the message
+  // to show the user.
+  let terminalCloseMessage = null;
   const pendingUploads = [];
   // Watchdog state — detects a stalled MediaRecorder.
   let lastChunkSentAt = 0;
@@ -976,7 +991,22 @@
           showInlineError(msg.message || 'Transcription error');
         }
       };
-      ws.onclose = function () {
+      ws.onclose = function (event) {
+        const terminalMsg = event && TERMINAL_CLOSE_MESSAGES[event.code];
+        if (terminalMsg) {
+          // Deterministic server rejection (auth, concurrency cap, transcription
+          // disabled, …). Don't reconnect — record the reason so the start /
+          // reconnect paths can show it and stop.
+          terminalCloseMessage = terminalMsg;
+          if (resolved) {
+            // Already mid-session: tear down and surface the message now.
+            shutdownLocal({ keepBeforeUnload: false });
+            showFatalError(terminalMsg);
+          } else {
+            reject(new Error('WebSocket rejected (' + event.code + ')'));
+          }
+          return;
+        }
         if (!resolved) {
           // Socket closed before we received `started`. Either the initial
           // connect failed (onerror already rejected, this is idempotent) or
@@ -1011,6 +1041,14 @@
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    if (terminalCloseMessage) {
+      // The server rejected the (re)connect for a deterministic reason —
+      // retrying is pointless. Surface it and stop.
+      reconnecting = false;
+      shutdownLocal();
+      showFatalError(terminalCloseMessage);
+      return;
     }
     if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
       reconnecting = false;
@@ -1264,6 +1302,7 @@
 
   async function startTranscription() {
     if (transcribing) return;
+    terminalCloseMessage = null;  // fresh attempt — clear any prior rejection
     if (transcriptTextarea && transcriptTextarea.value !== transcriptTextarea.defaultValue) {
       postMetadata({ transcript: transcriptTextarea.value });
     }
@@ -1293,7 +1332,13 @@
       shutdownLocal();
       transcribeBtn.disabled = false;
       setTranscribeBtnLabel(startLabel);
-      alert('Could not open transcription connection.');
+      if (terminalCloseMessage) {
+        // Deterministic server rejection (auth, concurrency cap, transcription
+        // disabled, …) — show the specific reason instead of a generic alert.
+        showFatalError(terminalCloseMessage);
+      } else {
+        alert('Could not open transcription connection.');
+      }
       return;
     }
 

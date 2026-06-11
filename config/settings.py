@@ -568,6 +568,10 @@ MEETING_CHUNK_MIN_BYTES = int(os.environ.get("MEETING_CHUNK_MIN_BYTES", str(8 * 
 # to OpenAI. 2.0 roughly halves the tokens billed with minimal intelligibility
 # loss; 1.0 disables the speed-up. Clamped to [0.5, 3.0] in code.
 MEETING_UPLOAD_SPEED_UP_FACTOR = float(os.environ.get("MEETING_UPLOAD_SPEED_UP_FACTOR", "2.0"))
+# Per-file size cap and per-meeting count cap for supporting attachments
+# (slides, agenda PDFs, etc.). Distinct from the transcript/audio caps above.
+MEETING_ATTACHMENT_MAX_BYTES = int(os.environ.get("MEETING_ATTACHMENT_MAX_BYTES", "26214400"))  # 25 MB
+MEETING_ATTACHMENT_MAX_COUNT = int(os.environ.get("MEETING_ATTACHMENT_MAX_COUNT", "25"))
 
 # --- Redis connections: Celery broker, Channels layer, and cache ---
 # Heroku Data for Redis serves a self-signed cert chain that fails default TLS

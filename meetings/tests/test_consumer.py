@@ -109,6 +109,77 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertEqual(code, 4403)
         await comm.disconnect()
 
+    async def test_non_owner_connect_does_not_mutate_meeting(self):
+        # Regression: the status transition used to run BEFORE the ownership
+        # check, letting a non-owner flip a victim's meeting to LIVE_TRANSCRIBING.
+        thief = await database_sync_to_async(User.objects.create_user)(
+            email="thief@example.com", password="pw",
+        )
+        comm = _make_communicator(self.meeting.uuid, thief)
+        connected, code = await comm.connect()
+        self.assertFalse(connected)
+        self.assertEqual(code, 4403)
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
+        self.assertEqual(meeting.status, Meeting.Status.DRAFT)
+        self.assertIsNone(meeting.started_at)
+        await comm.disconnect()
+
+    async def test_second_active_meeting_rejected_with_4409(self):
+        # Another meeting owned by the same user is already transcribing.
+        await database_sync_to_async(Meeting.objects.create)(
+            name="Busy", slug="m-busy-cons", created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+        )
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        connected, code = await comm.connect()
+        self.assertFalse(connected)
+        self.assertEqual(code, 4409)
+        # The meeting we tried to start stays untouched.
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
+        self.assertEqual(meeting.status, Meeting.Status.DRAFT)
+        await comm.disconnect()
+
+    @patch("core.preferences.get_preferences")
+    async def test_transcription_disabled_rejected_with_4402(self, mock_prefs):
+        # Empty allow-list = transcription disabled for the user/org.
+        mock_prefs.return_value.allowed_transcription_models = []
+        mock_prefs.return_value.transcription_model_live = ""
+        mock_prefs.return_value.live_transcription_mode = "chunked"
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        connected, code = await comm.connect()
+        self.assertFalse(connected)
+        self.assertEqual(code, 4402)
+        await comm.disconnect()
+
+    @patch("meetings.services.chunks.cleanup_temp")
+    @patch("meetings.tasks.transcribe_meeting_chunk_task")
+    async def test_enqueue_failure_cleans_up_chunk(self, mock_task, mock_cleanup):
+        # If dispatching the Celery task fails, the chunk already written to
+        # storage must be cleaned up (it otherwise orphans) and the raw error
+        # must not leak to the client.
+        mock_task.delay.side_effect = RuntimeError("broker down")
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # started
+
+        chunk = b"\x00\x01\x02\x03"
+        await comm.send_to(text_data=json.dumps({
+            "type": "chunk_meta",
+            "segment_index": 0,
+            "byte_length": len(chunk),
+            "mime": "audio/webm",
+        }))
+        await comm.send_to(bytes_data=chunk)
+
+        msg1 = json.loads(await comm.receive_from())
+        self.assertEqual(msg1["type"], "segment.queued")
+        msg2 = json.loads(await comm.receive_from())
+        self.assertEqual(msg2["type"], "error")
+        self.assertNotIn("broker down", msg2["message"])
+        await asyncio.sleep(0.2)
+        self.assertTrue(mock_cleanup.called)
+        await comm.disconnect()
+
     @patch("meetings.tasks.transcribe_meeting_chunk_task")
     async def test_chunk_meta_plus_binary_enqueues_task(self, mock_task):
         comm = _make_communicator(self.meeting.uuid, self.user)

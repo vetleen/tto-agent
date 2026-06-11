@@ -712,8 +712,11 @@ def _finalize_meeting_failure(
 ) -> None:
     from meetings.models import Meeting
 
-    err_msg = str(exc)[:500]
-    note = f"Failed on chunk {failed_index + 1}/{total_chunks}: {err_msg}"
+    from .errors import classify_transcription_error, log_unmapped
+
+    classified = classify_transcription_error(exc)
+    log_unmapped(classified, exc, context="upload_orchestrator")
+    note = f"Failed on chunk {failed_index + 1}/{total_chunks}: {classified.user_message}"
     if partial_transcript:
         note += " (partial transcript saved)"
     ended = timezone.now()

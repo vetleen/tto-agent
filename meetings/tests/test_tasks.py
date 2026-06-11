@@ -204,7 +204,10 @@ class TranscribeUploadedAudioTaskTests(TestCase):
 
         self.meeting.refresh_from_db()
         self.assertEqual(self.meeting.status, Meeting.Status.FAILED)
-        self.assertIn("pydub blew up", self.meeting.transcription_error)
+        # The raw exception ("pydub blew up") is logged, not shown to the user —
+        # transcription_error now carries the classified, friendly message.
+        self.assertIn("Transcription failed unexpectedly", self.meeting.transcription_error)
+        self.assertNotIn("pydub blew up", self.meeting.transcription_error)
         self.assertEqual(self.meeting.transcription_chunks_total, 0)
         self.assertEqual(self.meeting.transcription_chunks_done, 0)
         # Temp file unlinked.

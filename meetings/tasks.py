@@ -105,30 +105,29 @@ def transcribe_meeting_chunk_task(
         try:
             text = transcribe_audio(local_path, model_id, user, prompt=prompt)
         except Exception as exc:
-            err = str(exc)[:1000]
-            # An undecodable chunk (e.g. a stray short/garbage live fragment) is a
-            # benign breadcrumb, not an error — log it at warning so it doesn't
-            # storm Sentry. Genuine/unexpected failures keep the full stack trace.
-            if isinstance(exc, ValueError) and "corrupted or unreadable" in str(exc):
-                logger.warning(
-                    "transcribe_meeting_chunk_task: skipping undecodable chunk for "
-                    "meeting=%s segment=%s: %s",
-                    meeting_id, segment_index, err,
-                )
-            else:
-                logger.exception(
-                    "transcribe_meeting_chunk_task: transcription failed for meeting=%s segment=%s",
-                    meeting_id, segment_index,
-                )
+            from .services.errors import classify_transcription_error, log_unmapped
+
+            classified = classify_transcription_error(exc)
+            # Log at the classified level (undecodable chunks stay WARNING so they
+            # don't storm Sentry; unknown failures keep the full stack trace).
+            # The raw exception only goes to logs — the user sees user_message.
+            log_fn = getattr(logger, classified.log_level, logger.error)
+            log_fn(
+                "transcribe_meeting_chunk_task: transcription failed for meeting=%s "
+                "segment=%s error_code=%s",
+                meeting_id, segment_index, classified.error_code,
+                exc_info=(classified.log_level == "error"),
+            )
+            log_unmapped(classified, exc, context="chunk_task")
             MeetingTranscriptSegment.objects.filter(pk=segment.pk).update(
                 status=MeetingTranscriptSegment.Status.FAILED,
-                error=err,
+                error=classified.user_message,
                 transcribed_at=timezone.now(),
             )
             _push_to_ws(meeting_uuid, {
                 "type": "segment.failed",
                 "segment_index": segment_index,
-                "error": err,
+                "error": classified.user_message,
             })
             # Don't re-raise: the failure is already recorded on the segment
             # and pushed to the WS. Re-raising here would only escalate to
@@ -209,15 +208,18 @@ def transcribe_uploaded_audio_task(
             # orchestrator could set its own error (e.g. pydub blew up on
             # load, or the meeting row went missing), this is the only place
             # the meeting will be marked failed.
-            err = str(exc)[:1000]
+            from .services.errors import classify_transcription_error, log_unmapped
+
+            classified = classify_transcription_error(exc)
             logger.exception("transcribe_uploaded_audio_task: failed for meeting %s", meeting_id)
+            log_unmapped(classified, exc, context="upload_task")
             Meeting.objects.filter(
                 pk=meeting_id,
             ).exclude(
                 status=Meeting.Status.FAILED,
             ).update(
                 status=Meeting.Status.FAILED,
-                transcription_error=err,
+                transcription_error=classified.user_message,
                 ended_at=timezone.now(),
                 transcription_chunks_total=0,
                 transcription_chunks_done=0,

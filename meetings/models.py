@@ -93,6 +93,9 @@ class Meeting(models.Model):
         ordering = ["-updated_at", "name"]
         indexes = [
             models.Index(fields=["created_by", "-updated_at"]),
+            # Backs the "does this user already have an active transcription?"
+            # concurrency check in the upload view and the live WS consumer.
+            models.Index(fields=["created_by", "status"]),
         ]
 
     def __str__(self) -> str:

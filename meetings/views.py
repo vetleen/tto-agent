@@ -15,6 +15,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
+from django_ratelimit.decorators import ratelimit
 
 from .models import Meeting, MeetingAttachment
 
@@ -51,6 +52,25 @@ def _user_can_access_meeting(user, meeting: Meeting) -> bool:
 
 def _user_can_modify_meeting(user, meeting: Meeting) -> bool:
     return meeting.created_by_id == user.id
+
+
+def _user_has_active_transcription(user, *, exclude_pk=None) -> bool:
+    """True when *user* already has a meeting actively transcribing.
+
+    "Actively transcribing" = ``status == LIVE_TRANSCRIBING``, which covers both
+    the live-recording path and the audio-upload path (the upload view/orchestrator
+    hold the meeting in that state until the Celery job finishes). This is the
+    single source of truth for the "one transcription at a time per user" cap.
+
+    Pass ``exclude_pk`` to ignore a specific meeting (e.g. the one being resumed)
+    so reconnecting to an already-live meeting isn't treated as a second session.
+    """
+    qs = Meeting.objects.filter(
+        created_by=user, status=Meeting.Status.LIVE_TRANSCRIBING
+    )
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    return qs.exists()
 
 
 def _format_relative(value):
@@ -97,6 +117,7 @@ def meeting_list(request):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="30/m", method="POST", block=True)
 def meeting_create(request):
     """Create a meeting with a default name and redirect to its detail page.
 
@@ -320,6 +341,7 @@ def meeting_delete(request, meeting_uuid):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="120/m", method="POST", block=True)
 def meeting_update_metadata(request, meeting_uuid):
     """Update editable metadata fields (name, agenda, participants, description, transcription_model)."""
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
@@ -500,6 +522,7 @@ def meeting_upload(request, meeting_uuid):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="20/m", method="POST", block=True)
 def meeting_save_to_data_room(request, meeting_uuid):
     """Save the raw meeting transcript to a data room as a Document.
 
@@ -593,11 +616,18 @@ def meeting_save_to_data_room(request, meeting_uuid):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="20/m", method="POST", block=True)
 def meeting_upload_transcript(request, meeting_uuid):
     """Upload a pre-existing transcript text file (.txt or .md)."""
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
         return redirect("meeting_list")
+    # Refuse while this meeting is live-transcribing — overwriting the transcript
+    # mid-session would clobber the live state (mirrors the 409 guard in
+    # meeting_update_metadata).
+    if meeting.status == Meeting.Status.LIVE_TRANSCRIBING:
+        messages.error(request, "Can't upload a transcript while a transcription is in progress.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
     file_obj = request.FILES.get("transcript")
     if not file_obj:
         messages.error(request, "Please choose a transcript file to upload.")
@@ -641,6 +671,7 @@ def meeting_upload_transcript(request, meeting_uuid):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def meeting_upload_audio(request, meeting_uuid):
     """Upload an audio file to be transcribed by the existing TranscriptionService."""
     from llm.transcription_registry import AUDIO_EXTENSIONS
@@ -650,6 +681,16 @@ def meeting_upload_audio(request, meeting_uuid):
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
         return redirect("meeting_list")
+
+    # One transcription at a time per user. No exclude_pk: a second upload to
+    # the same meeting (or any upload while another meeting is live) is refused.
+    if _user_has_active_transcription(request.user):
+        messages.error(
+            request,
+            "You already have a transcription in progress — wait for it to finish or stop it first.",
+        )
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
     file_obj = request.FILES.get("audio")
     if not file_obj:
         messages.error(request, "Please choose an audio file to upload.")
@@ -678,15 +719,19 @@ def meeting_upload_audio(request, meeting_uuid):
     except Exception:
         allowed_models = []
         upload_default = ""
+    # An empty allow-list means the org has disabled transcription (see
+    # core.preferences). Refuse rather than silently falling back to the system
+    # default model, which would bypass that intent.
+    if not allowed_models:
+        messages.error(request, "Transcription isn't enabled for your account.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
     meeting_model = (meeting.transcription_model or "").strip()
     if meeting_model and meeting_model in allowed_models:
         model_id = meeting_model
     elif upload_default and upload_default in allowed_models:
         model_id = upload_default
-    elif allowed_models:
-        model_id = allowed_models[0]
     else:
-        model_id = getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
+        model_id = allowed_models[0]
 
     # Persist the audio so the Celery worker can read it. On Heroku (S3
     # storage) this goes to shared remote storage; locally it writes to disk.
@@ -716,8 +761,11 @@ def meeting_upload_audio(request, meeting_uuid):
         )
     except Exception as exc:
         logger.exception("meeting_upload_audio: failed to enqueue task for meeting %s", meeting.uuid)
+        from .services.errors import classify_transcription_error, log_unmapped
+        classified = classify_transcription_error(exc)
+        log_unmapped(classified, exc, context="upload_enqueue")
         meeting.status = Meeting.Status.FAILED
-        meeting.transcription_error = str(exc)[:1000]
+        meeting.transcription_error = classified.user_message
         meeting.save(update_fields=["status", "transcription_error", "updated_at"])
         from meetings.services.chunks import cleanup_temp
         cleanup_temp(temp_path)
@@ -737,6 +785,7 @@ def meeting_upload_audio(request, meeting_uuid):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="40/m", method="POST", block=True)
 def meeting_upload_attachment(request, meeting_uuid):
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
@@ -745,6 +794,17 @@ def meeting_upload_attachment(request, meeting_uuid):
     if not file_obj:
         messages.error(request, "Please choose a file to attach.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
+    max_count = getattr(settings, "MEETING_ATTACHMENT_MAX_COUNT", 25)
+    if meeting.attachments.count() >= max_count:
+        messages.error(request, f"This meeting already has the maximum of {max_count} attachments.")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
+    max_bytes = getattr(settings, "MEETING_ATTACHMENT_MAX_BYTES", 26_214_400)
+    if (file_obj.size or 0) > max_bytes:
+        messages.error(request, f"Attachment is too large (max {max_bytes // (1024 * 1024)} MB).")
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
     safe_name = _safe_filename(file_obj.name, max_length=255)
     MeetingAttachment.objects.create(
         meeting=meeting,
@@ -778,6 +838,7 @@ def meeting_delete_attachment(request, meeting_uuid, attachment_id):
 
 @login_required
 @require_POST
+@ratelimit(key="user", rate="20/m", method="POST", block=True)
 def meeting_create_minutes_thread(request, meeting_uuid):
     from agent_skills.services import get_skill_for_user
 

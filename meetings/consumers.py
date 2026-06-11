@@ -152,13 +152,14 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             await self.close(code=4400)
             return
 
-        meeting = await self._load_and_lock_meeting(url_uuid)
-        if meeting is None:
-            await self.close(code=4404)
+        # _load_and_lock_meeting performs ALL read-side validation (ownership,
+        # upload-in-progress, one-transcription-per-user, transcription enabled)
+        # BEFORE transitioning the meeting row, and returns a typed result.
+        result = await self._load_and_lock_meeting(url_uuid)
+        if not result.get("ok"):
+            await self.close(code=result.get("code", 4404))
             return
-        if meeting["created_by_id"] != self.user.id:
-            await self.close(code=4403)
-            return
+        meeting = result
 
         self.meeting_id = meeting["id"]
         self.meeting_uuid = str(meeting["uuid"])
@@ -336,9 +337,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
         try:
             temp_path = await self._write_chunk(meta, raw)
-        except Exception as exc:
+        except Exception:
             logger.exception("write_chunk_to_temp failed")
-            await self._send_error(f"Could not buffer chunk: {exc}")
+            await self._send_error("Could not buffer the audio chunk. Please try again.")
             return
 
         self._segments_total += 1
@@ -349,9 +350,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
         try:
             await self._enqueue_chunk_task(meta, str(temp_path))
-        except Exception as exc:
+        except Exception:
             logger.exception("enqueue chunk task failed")
-            await self._send_error(f"Could not start transcription: {exc}")
+            # The chunk was already written to storage; clean it up so it
+            # doesn't orphan (cleanup otherwise only runs in the task's finally).
+            await self._cleanup_chunk(str(temp_path))
+            await self._send_error("Could not start transcription. Please try again.")
 
     # -------------------------------------------------- realtime mode
 
@@ -377,9 +381,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         if not self._realtime_started:
             try:
                 await self._start_realtime_session(mime)
-            except Exception as exc:
+            except Exception:
                 logger.exception("realtime: could not start session")
-                await self._send_error(f"Could not start realtime session: {exc}")
+                await self._send_error("Couldn't start live transcription — retrying in basic mode.")
                 await self._fall_back_to_chunked(reason="realtime_start_failed")
                 return
         try:
@@ -847,7 +851,29 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         try:
             meeting = Meeting.objects.get(uuid=meeting_uuid)
         except Meeting.DoesNotExist:
-            return None
+            return {"ok": False, "code": 4404}
+
+        # Authorize BEFORE any write. (Previously the status transition at the
+        # end of this method ran before connect() checked ownership, so a
+        # non-owner who knew a meeting UUID could flip a victim's meeting to
+        # LIVE_TRANSCRIBING / clear its error before being rejected.)
+        if meeting.created_by_id != self.user.id:
+            return {"ok": False, "code": 4403}
+
+        # One transcription at a time per user. Exclude this meeting so resuming
+        # / reconnecting to it isn't counted as a second concurrent session.
+        if (
+            Meeting.objects
+            .filter(created_by_id=self.user.id, status=Meeting.Status.LIVE_TRANSCRIBING)
+            .exclude(pk=meeting.pk)
+            .exists()
+        ):
+            logger.info(
+                "_load_and_lock_meeting: refused WS connect for meeting %s — "
+                "user %s already has an active transcription",
+                meeting.uuid, self.user.id,
+            )
+            return {"ok": False, "code": 4409}
 
         # Refuse the connect if an upload-path transcription is currently
         # mid-flight on this meeting. The upload orchestrator owns the meeting
@@ -866,7 +892,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 meeting.transcription_chunks_done,
                 meeting.transcription_chunks_total,
             )
-            return None
+            return {"ok": False, "code": 4409}
 
         max_existing = (
             MeetingTranscriptSegment.objects
@@ -898,6 +924,17 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         except Exception:
             pass
 
+        # An empty allow-list means the org has disabled transcription (see
+        # core.preferences). Refuse rather than silently using the system
+        # default model, which would bypass that intent.
+        if not allowed_models:
+            logger.info(
+                "_load_and_lock_meeting: refused WS connect for meeting %s — "
+                "no allowed transcription models for user %s",
+                meeting.uuid, self.user.id,
+            )
+            return {"ok": False, "code": 4402}
+
         def _is_live_capable(mid: str) -> bool:
             info = get_transcription_model_info(mid)
             return bool(info and info.supports_live_streaming)
@@ -911,13 +948,11 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             model_id = live_default
         elif live_capable_allowed:
             model_id = live_capable_allowed[0]
-        elif allowed_models:
-            # No live-capable models in the allow-list. Keep the meeting's
-            # choice so the user sees a meaningful error downstream rather
-            # than silently switching to something else.
-            model_id = meeting_model or allowed_models[0]
         else:
-            model_id = getattr(settings, "TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
+            # No live-capable models in the allow-list. Keep the meeting's
+            # choice (or first allowed) so the user sees a meaningful error
+            # downstream rather than silently switching providers.
+            model_id = meeting_model or allowed_models[0]
 
         # If no live-capable model is available (e.g. org only allows diarize),
         # force chunked mode — which will also fail, but at least with a clearer
@@ -955,6 +990,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         meeting.save(update_fields=update_fields)
 
         return {
+            "ok": True,
             "id": meeting.id,
             "uuid": str(meeting.uuid),
             "created_by_id": meeting.created_by_id,
@@ -986,6 +1022,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         return write_chunk_to_temp(
             self.meeting_uuid, meta["segment_index"], raw, meta["mime"]
         )
+
+    @database_sync_to_async
+    def _cleanup_chunk(self, path: str) -> None:
+        from .services.chunks import cleanup_temp
+
+        cleanup_temp(path)
 
     @database_sync_to_async
     def _enqueue_chunk_task(self, meta: dict, temp_path: str) -> None:

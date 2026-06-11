@@ -151,6 +151,20 @@ class MeetingTranscriptUploadTests(TestCase):
         self.meeting.refresh_from_db()
         self.assertEqual(self.meeting.transcript, "")
 
+    def test_upload_blocked_while_live_transcribing(self):
+        # Uploading a transcript over a live session would clobber its state.
+        self.meeting.status = Meeting.Status.LIVE_TRANSCRIBING
+        self.meeting.save(update_fields=["status"])
+        f = SimpleUploadedFile("notes.txt", b"hello world", content_type="text/plain")
+        response = self.client.post(
+            reverse("meeting_upload_transcript", args=[self.meeting.uuid]),
+            {"transcript": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript, "")
+        self.assertEqual(self.meeting.status, Meeting.Status.LIVE_TRANSCRIBING)
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingAudioUploadTests(TestCase):
@@ -181,6 +195,39 @@ class MeetingAudioUploadTests(TestCase):
         )
         mock_delay.assert_not_called()
 
+    @patch("meetings.tasks.transcribe_uploaded_audio_task.delay")
+    def test_upload_audio_blocked_when_another_meeting_active(self, mock_delay):
+        # A second meeting owned by the same user is already transcribing.
+        Meeting.objects.create(
+            name="Busy", slug="m-busy", created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+        )
+        f = SimpleUploadedFile("clip.mp3", b"\x00" * 32, content_type="audio/mpeg")
+        response = self.client.post(
+            reverse("meeting_upload_audio", args=[self.meeting.uuid]),
+            {"audio": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_delay.assert_not_called()
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, Meeting.Status.DRAFT)
+
+    @patch("meetings.tasks.transcribe_uploaded_audio_task.delay")
+    def test_upload_audio_refused_when_transcription_disabled(self, mock_delay):
+        # An empty allow-list means transcription is disabled for the user/org.
+        f = SimpleUploadedFile("clip.mp3", b"\x00" * 32, content_type="audio/mpeg")
+        with patch("core.preferences.get_preferences") as mock_prefs:
+            mock_prefs.return_value.allowed_transcription_models = []
+            mock_prefs.return_value.transcription_model_upload = ""
+            response = self.client.post(
+                reverse("meeting_upload_audio", args=[self.meeting.uuid]),
+                {"audio": f},
+            )
+        self.assertEqual(response.status_code, 302)
+        mock_delay.assert_not_called()
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, Meeting.Status.DRAFT)
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingAttachmentViewTests(TestCase):
@@ -208,6 +255,35 @@ class MeetingAttachmentViewTests(TestCase):
         )
         self.client.post(reverse("meeting_delete_attachment", args=[self.meeting.uuid, att.id]))
         self.assertFalse(MeetingAttachment.objects.filter(pk=att.pk).exists())
+
+    @override_settings(MEETING_ATTACHMENT_MAX_BYTES=10)
+    def test_attachment_rejects_oversized_file(self):
+        f = SimpleUploadedFile("big.pdf", b"%PDF" + b"x" * 100, content_type="application/pdf")
+        response = self.client.post(
+            reverse("meeting_upload_attachment", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(MeetingAttachment.objects.filter(meeting=self.meeting).count(), 0)
+
+    @override_settings(MEETING_ATTACHMENT_MAX_COUNT=2)
+    def test_attachment_rejects_past_count_cap(self):
+        from django.core.files.base import ContentFile
+
+        for i in range(2):
+            MeetingAttachment.objects.create(
+                meeting=self.meeting, uploaded_by=self.user,
+                file=ContentFile(b"x", name=f"x{i}.pdf"),
+                original_filename=f"x{i}.pdf", content_type="application/pdf", size_bytes=1,
+            )
+        f = SimpleUploadedFile("third.pdf", b"%PDF fake", content_type="application/pdf")
+        response = self.client.post(
+            reverse("meeting_upload_attachment", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        # Still 2 — the 3rd was rejected.
+        self.assertEqual(MeetingAttachment.objects.filter(meeting=self.meeting).count(), 2)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -679,3 +755,35 @@ class MeetingSaveToDataRoomTests(TestCase):
         response = self.client.get(reverse("meeting_detail", args=[self.meeting.uuid]))
         self.assertContains(response, "out of date")
         self.assertContains(response, "Save raw transcript to data room")
+
+
+_RATE_LIMIT_SETTINGS = {
+    "ALLOWED_HOSTS": ["testserver"],
+    "RATELIMIT_ENABLE": True,
+    "CACHES": {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+}
+
+
+@override_settings(**_RATE_LIMIT_SETTINGS)
+class MeetingRateLimitTests(TestCase):
+    """Per-user rate limits on the meetings POST endpoints.
+
+    Rate limiting is globally disabled under ``manage.py test``; these tests opt
+    back in with an in-memory cache cleared in setUp (locmem persists for the
+    whole process).
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = User.objects.create_user(email="mrl@example.com", password="pw")
+        self.client.force_login(self.user)
+
+    def test_meeting_create_blocks_31st_post_in_one_minute(self):
+        url = reverse("meeting_create")
+        for _ in range(30):
+            response = self.client.post(url)
+            self.assertNotEqual(response.status_code, 429)
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 429)
