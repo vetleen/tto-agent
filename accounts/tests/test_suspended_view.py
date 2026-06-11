@@ -20,14 +20,14 @@ class SuspendedViewTests(TestCase):
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 403)
         self.assertContains(resp, "Acme", status_code=403)
-        self.assertContains(resp, "has been suspended", status_code=403)
+        self.assertContains(resp, "Your account is suspended", status_code=403)
 
     def test_no_org_fallback_text(self) -> None:
         user = User.objects.create_user(email="none@example.com", password="pass")
         self.client.force_login(user)
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 403)
-        self.assertContains(resp, "Please contact your administrator", status_code=403)
+        self.assertContains(resp, "reach out to your administrator", status_code=403)
 
     def test_requires_login(self) -> None:
         resp = self.client.get(self.url)

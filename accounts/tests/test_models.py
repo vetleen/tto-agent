@@ -157,3 +157,53 @@ class UserProfileFieldTests(TestCase):
         self.assertEqual(user.last_name, "Smith")
         self.assertEqual(user.title, "Patent Attorney")
         self.assertEqual(user.description, "Specializes in biotech IP.")
+
+
+class MembershipSuspensionLifecycleTests(TestCase):
+    """Membership.save() keeps the suspension bookkeeping consistent for
+    every writer (guardrails, admin, shell)."""
+
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(email="susp@example.com", password="pass")
+        self.org = Organization.objects.create(name="SuspOrg", slug="susporg")
+        self.membership = Membership.objects.create(user=self.user, org=self.org)
+
+    def test_suspending_stamps_timestamp(self) -> None:
+        self.membership.is_suspended = True
+        self.membership.save()
+        self.membership.refresh_from_db()
+        self.assertTrue(self.membership.is_suspended)
+        self.assertIsNotNone(self.membership.suspended_at)
+
+    def test_explicit_timestamp_is_preserved(self) -> None:
+        from django.utils import timezone
+        explicit = timezone.now() - timezone.timedelta(days=3)
+        self.membership.is_suspended = True
+        self.membership.suspended_at = explicit
+        self.membership.save()
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.suspended_at, explicit)
+
+    def test_unsuspending_clears_timestamp_and_reason(self) -> None:
+        self.membership.suspend("policy violation")
+        self.membership.refresh_from_db()
+        self.assertIsNotNone(self.membership.suspended_at)
+        self.assertEqual(self.membership.suspended_reason, "policy violation")
+
+        self.membership.unsuspend()
+        self.membership.refresh_from_db()
+        self.assertFalse(self.membership.is_suspended)
+        self.assertIsNone(self.membership.suspended_at)
+        self.assertEqual(self.membership.suspended_reason, "")
+
+    def test_save_with_update_fields_persists_bookkeeping(self) -> None:
+        # update_fields without the lifecycle fields still persists the stamp.
+        self.membership.is_suspended = True
+        self.membership.save(update_fields=["is_suspended"])
+        self.membership.refresh_from_db()
+        self.assertIsNotNone(self.membership.suspended_at)
+
+    def test_suspend_truncates_reason(self) -> None:
+        self.membership.suspend("x" * 5000)
+        self.membership.refresh_from_db()
+        self.assertEqual(len(self.membership.suspended_reason), 2000)

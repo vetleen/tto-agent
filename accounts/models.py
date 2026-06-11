@@ -5,6 +5,7 @@ from typing import Any
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+from django.utils import timezone
 
 
 class UserManager(BaseUserManager):
@@ -156,7 +157,9 @@ class Membership(models.Model):
         blank=True,
     )
 
-    # Suspension (per-org; admins manage their own members)
+    # Suspension (per-org; admins manage their own members). Lifecycle fields
+    # are maintained by save() below — note that queryset .update() bypasses
+    # save(), so suspension writers must use save()/suspend()/unsuspend().
     is_suspended = models.BooleanField(default=False)
     suspended_at = models.DateTimeField(null=True, blank=True)
     suspended_reason = models.TextField(blank=True, default="")
@@ -167,6 +170,8 @@ class Membership(models.Model):
             models.UniqueConstraint(fields=["user"], name="unique_membership_per_user"),
         ]
 
+    # Kept (rather than the constraint's violation_error_message) so the form
+    # error stays keyed on the "user" field — admin inlines and tests rely on it.
     def validate_unique(self, exclude=None):
         super().validate_unique(exclude=exclude)
         if self.user_id is not None:
@@ -178,6 +183,37 @@ class Membership(models.Model):
                 raise ValidationError(
                     {"user": "This user already belongs to an organization."}
                 )
+
+    def save(self, **kwargs):
+        """Keep the suspension bookkeeping consistent for every writer.
+
+        Suspending without a timestamp stamps now; unsuspending clears the
+        timestamp and reason. Explicitly-set values are never overwritten, and
+        update_fields is extended so the bookkeeping always persists.
+        """
+        extra: set[str] = set()
+        if self.is_suspended and self.suspended_at is None:
+            self.suspended_at = timezone.now()
+            extra = {"suspended_at"}
+        elif not self.is_suspended and (self.suspended_at is not None or self.suspended_reason):
+            self.suspended_at = None
+            self.suspended_reason = ""
+            extra = {"suspended_at", "suspended_reason"}
+        update_fields = kwargs.get("update_fields")
+        if extra and update_fields is not None:
+            kwargs["update_fields"] = set(update_fields) | extra
+        super().save(**kwargs)
+
+    def suspend(self, reason: str = "") -> None:
+        """Suspend this membership; save() stamps suspended_at."""
+        self.is_suspended = True
+        self.suspended_reason = (reason or "")[:2000]
+        self.save(update_fields=["is_suspended", "suspended_reason"])
+
+    def unsuspend(self) -> None:
+        """Lift the suspension; save() clears the timestamp and reason."""
+        self.is_suspended = False
+        self.save(update_fields=["is_suspended"])
 
     def __str__(self) -> str:
         return f"{self.user} in {self.org} ({self.role})"
