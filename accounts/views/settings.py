@@ -609,6 +609,8 @@ def org_models_update(request):
 @org_admin_required
 def org_tools_update(request):
     """Toggle a tool on/off for the org."""
+    from llm.tools.registry import get_tool_registry
+
     membership = request.org_membership
 
     data, err = _parse_json_body(request)
@@ -620,6 +622,11 @@ def org_tools_update(request):
 
     if not tool_name:
         return JsonResponse({"error": "Tool name required"}, status=400)
+
+    # Reject unknown names so typos and stale clients can't pile junk keys
+    # into org.preferences["tools"].
+    if tool_name not in get_tool_registry().list_tools():
+        return JsonResponse({"error": "Unknown tool"}, status=400)
 
     def mutate(prefs):
         tools = prefs.get("tools", {})
@@ -701,7 +708,7 @@ def org_pii_quarantine_toggle_update(request):
 @org_admin_required
 def org_max_context_update(request):
     """Set org's max context tokens limit."""
-    from core.preferences import MIN_CONTEXT_TOKENS
+    from core.preferences import MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS
 
     membership = request.org_membership
 
@@ -722,6 +729,9 @@ def org_max_context_update(request):
 
     if value < MIN_CONTEXT_TOKENS:
         return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
+
+    if value > MAX_CONTEXT_TOKENS:
+        return JsonResponse({"error": f"max_context_tokens must be at most {MAX_CONTEXT_TOKENS:,}"}, status=400)
 
     def mutate(prefs):
         prefs["max_context_tokens"] = value
@@ -767,7 +777,12 @@ def org_budget_update(request):
 @require_POST
 def preferences_max_context_update(request):
     """Update user's max context tokens preference."""
-    from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS, _get_org_preferences
+    from core.preferences import (
+        DEFAULT_MAX_CONTEXT_TOKENS,
+        MAX_CONTEXT_TOKENS,
+        MIN_CONTEXT_TOKENS,
+        _get_org_preferences,
+    )
 
     data, err = _parse_json_body(request)
     if err:
@@ -786,6 +801,9 @@ def preferences_max_context_update(request):
 
     if value < MIN_CONTEXT_TOKENS:
         return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
+
+    if value > MAX_CONTEXT_TOKENS:
+        return JsonResponse({"error": f"max_context_tokens must be at most {MAX_CONTEXT_TOKENS:,}"}, status=400)
 
     # Check against org limit
     org_prefs = _get_org_preferences(request.user)
@@ -808,6 +826,10 @@ def preferences_max_context_update(request):
 @org_admin_required
 def org_skills_update(request):
     """Toggle a skill or a per-skill tool on/off for the org."""
+    from django.db.models import Q
+
+    from agent_skills.models import AgentSkill
+
     membership = request.org_membership
 
     data, err = _parse_json_body(request)
@@ -817,6 +839,19 @@ def org_skills_update(request):
     slug = data.get("slug", "").strip()
     if not slug:
         return JsonResponse({"error": "Skill slug required"}, status=400)
+
+    # Same visibility set org_settings_page renders (system + this org,
+    # active) — deliberately broader than get_available_skills so admins can
+    # re-enable skills they previously disabled. Rejecting everything else
+    # keeps typos and stale clients from piling junk keys into
+    # org.preferences["skills"].
+    slug_visible = AgentSkill.objects.filter(
+        Q(level="system") | Q(level="org", organization=membership.org),
+        slug=slug,
+        is_active=True,
+    ).exists()
+    if not slug_visible:
+        return JsonResponse({"error": "Unknown skill"}, status=400)
 
     tool_name = data.get("tool", "").strip() if "tool" in data else None
     enabled = data.get("enabled", True)
