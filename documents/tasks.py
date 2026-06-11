@@ -26,18 +26,20 @@ def process_document_task(document_id: int) -> None:
 def finalize_document_metadata(self, document_id: int) -> None:
     """Generate the document description + tags and run the full-document PII scan.
 
-    Dispatched (fire-and-forget) by ``process_document`` after processing, so the
-    heavy ``process_document`` frame can return and free every copy of the document
-    text before any LLM work begins. Reads the text back from the persisted chunks —
-    head/tail for the description, the full document in windows for PII — so the
-    worker never holds the whole document in memory here.
+    Dispatched (fire-and-forget) by ``scan_document_chunks`` once the guardrail chunk
+    scan completes, so the heavy ``process_document`` frame can return and free every
+    copy of the document text before any LLM work begins. Reads the text back from the
+    persisted chunks — head/tail for the description, the full document in windows for
+    PII — so the worker never holds the whole document in memory here.
 
-    When the org's PII quarantine gate is active the document arrives here in
-    SCANNING — held out of retrieval — and this task is what releases it: READY on
-    a completed scan (quarantine flags applied as needed), SCAN_FAILED when the scan
-    can't complete so the user can retry from the document list. Transient scan
-    failures retry (max 3 with backoff); config/policy errors won't self-heal and
-    fail immediately. Description generation stays best-effort.
+    Documents arrive here held in SCANNING (the guardrail chunk scan hands off to
+    this task after it completes) — held out of retrieval — and this task is the sole
+    releaser: READY on a completed scan (quarantine flags applied as needed),
+    SCAN_FAILED when the *PII quarantine gate* is active and its scan can't complete
+    so the user can retry from the document list. When PII scanning is informational
+    only (or absent), a scan failure still releases the document rather than stranding
+    it. Transient gated-scan failures retry (max 3 with backoff); config/policy errors
+    won't self-heal and fail immediately. Description generation stays best-effort.
 
     Imports are kept inside the function (like ``guardrails/tasks.py``) so importing
     this module at Celery autodiscover stays cheap.
@@ -64,9 +66,11 @@ def finalize_document_metadata(self, document_id: int) -> None:
         logger.info("finalize_document_metadata: document_id=%s not found (deleted before finalize)", document_id)
         return
 
-    # Gated documents are held in SCANNING by process_document (or document_rescan)
-    # and must leave this task as READY or SCAN_FAILED — never stay stuck.
-    gated = doc.status == DataRoomDocument.Status.SCANNING
+    # Every document now arrives held in SCANNING (the guardrail chunk scan hands off
+    # here after it completes) and must leave as READY or SCAN_FAILED — never stuck.
+    # ``held`` is the release responsibility; whether a *PII* scan failure must fail
+    # the doc closed is a separate question answered by ``pii_must_gate`` below.
+    held = doc.status == DataRoomDocument.Status.SCANNING
 
     def _release_to_ready():
         # Conditional update: a no-op if the document was deleted or changed since.
@@ -86,11 +90,15 @@ def finalize_document_metadata(self, document_id: int) -> None:
     org_id = org_id_for_document(doc)
     desc_model = resolve_org_feature_model(org_id, "document_description")
     pii_model, pii_enabled, pii_quarantine_enabled = resolve_pii_gate(org_id)
+    # The PII *quarantine* gate (GDPR Art. 9/10): only when this is active must a PII
+    # scan failure fail the held document closed. An informational-only scan that
+    # fails must still release the document, not strand it in SCANNING.
+    pii_must_gate = bool(pii_model and pii_enabled and pii_quarantine_enabled)
 
-    # Nothing to do — skip the chunk reads entirely. A gated document is still
+    # Nothing to do — skip the chunk reads entirely. A held document is still
     # released (the org may have disabled the scan since processing started).
     if not desc_model and not (pii_enabled and pii_model):
-        if gated:
+        if held:
             _release_to_ready()
         return
 
@@ -148,16 +156,22 @@ def finalize_document_metadata(self, document_id: int) -> None:
                 "finalize_document_metadata: document_id=%s PII scan blocked by LLM config/policy",
                 document_id,
             )
-            if gated:
+            if held and pii_must_gate:
                 _mark_scan_failed()
+            elif held:
+                # Informational scan — don't strand the held document.
+                _release_to_ready()
             return
         except Exception:
-            if not gated:
-                # Informational scan only — log and move on, as before.
+            if not (held and pii_must_gate):
+                # Best-effort: either we don't own this doc's release (not held) or
+                # the PII scan is informational. Log, and release if we're holding it.
                 logger.exception(
                     "finalize_document_metadata: document_id=%s PII scan failed (non-critical)",
                     document_id,
                 )
+                if held:
+                    _release_to_ready()
                 return
             logger.exception(
                 "finalize_document_metadata: document_id=%s PII scan failed (attempt %s/%s)",
@@ -204,6 +218,6 @@ def finalize_document_metadata(self, document_id: int) -> None:
                 return
 
     # Scan complete (quarantine flags applied where needed) — release the
-    # document to retrieval.
-    if gated:
+    # held document to retrieval.
+    if held:
         _release_to_ready()

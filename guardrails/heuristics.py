@@ -87,7 +87,13 @@ _EXCESSIVE_ZERO_WIDTH_THRESHOLD = 5
 # Base64 block detection (at least 20 chars of base64)
 _BASE64_BLOCK_RE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
 
-# Suspicious keywords to check in decoded base64 content
+# Suspicious keywords to check in decoded base64 content.
+# NOTE: This is a best-effort *shortcut* that fast-tracks obvious encoded
+# payloads to a block/escalation — it is NOT comprehensive. It only matches a
+# fixed list of English keywords in a single layer of base64; non-English,
+# nested, or differently-encoded payloads pass straight through. The LLM
+# classifier/reviewer is the catch-all; do not treat a clean result here as
+# proof the content is encoding-clean.
 _BASE64_SUSPICIOUS_KEYWORDS = [
     "ignore", "instructions", "system prompt", "jailbreak",
     "disregard", "override", "bypass",
@@ -97,6 +103,7 @@ _BASE64_SUSPICIOUS_KEYWORDS = [
 def _check_encoding_bypass(text: str) -> tuple[float, list[str]]:
     """Check for encoding bypass attempts (zero-width chars, suspicious base64).
 
+    Best-effort fast pre-filter only (see _BASE64_SUSPICIOUS_KEYWORDS note).
     Returns (confidence, list_of_matched_descriptions).
     """
     matches: list[str] = []

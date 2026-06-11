@@ -379,7 +379,7 @@ class ProcessDocumentServiceTests(TestCase):
 
     @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
     def test_process_document_happy_path(self):
-        """UPLOADED doc with a real file becomes READY and gets flat chunks persisted."""
+        """UPLOADED doc with a real file is held in SCANNING (guardrail scan) and gets chunks."""
         from django.core.files.base import ContentFile
         from documents.services.process_document import process_document
 
@@ -406,11 +406,11 @@ class ProcessDocumentServiceTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
+                     patch("guardrails.tasks.scan_document_chunks.delay"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
                 self.assertEqual(doc.chunks.count(), 2)
                 self.assertEqual(doc.token_count, 22)
                 self.assertEqual(doc.chunking_strategy, "semantic")
@@ -554,11 +554,11 @@ class ProcessDocumentSemanticTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test content")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
+                     patch("guardrails.tasks.scan_document_chunks.delay"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
                 self.assertEqual(doc.chunks.count(), 5)
 
                 # All chunks should have sequential indexes

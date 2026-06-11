@@ -89,6 +89,12 @@ def suspended(request):
     )
 
 
+@login_required
+def no_org(request):
+    """Shown to authenticated users with no organization (see RequireOrgMiddleware)."""
+    return render(request, "registration/no_org.html", status=403)
+
+
 # SECURITY — the signup / email-verification flow below is intentionally DISABLED
 # (no routes in accounts/urls.py). Before re-enabling public signup, add a login
 # gate so unverified / inactive users cannot authenticate:

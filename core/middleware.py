@@ -72,6 +72,49 @@ class SuspensionMiddleware:
         return self.get_response(request)
 
 
+class RequireOrgMiddleware:
+    """Redirect authenticated users with no organization to the no-org page.
+
+    Every active user must belong to exactly one organization: ``Membership`` has a
+    unique constraint on ``user`` and org-scoped features (preferences, budget,
+    guardrails, suspension) all resolve the org from it. A user with zero
+    memberships has no functional account — those resolutions silently no-op — so
+    gate them to an explanatory page until an administrator adds them to an org.
+
+    Mirrors ``SuspensionMiddleware``: runs once per HTTP request, exempts Django
+    staff/superusers (platform operators may have no org), and lets anonymous users
+    through to the normal login flow. Must run AFTER ``SuspensionMiddleware`` — a
+    suspended user is shown the suspended page; a no-org user can't be suspended
+    (suspension lives on a membership they don't have).
+    """
+
+    EXEMPT_PATHS = ("/accounts/no-org/", "/accounts/logout/")
+    EXEMPT_PREFIXES = ("/static/", "/media/")
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from django.conf import settings
+
+        user = getattr(request, "user", None)
+        if (
+            getattr(settings, "REQUIRE_ORG_MEMBERSHIP", True)
+            and user is not None
+            and user.is_authenticated
+            and not user.is_staff
+            and request.path not in self.EXEMPT_PATHS
+            and not request.path.startswith(self.EXEMPT_PREFIXES)
+        ):
+            from accounts.models import Membership
+
+            if not Membership.objects.filter(user=user).exists():
+                from django.shortcuts import redirect
+
+                return redirect("accounts:no_org")
+        return self.get_response(request)
+
+
 class RequestIDFilter(logging.Filter):
     """Inject request_id into every log record."""
 

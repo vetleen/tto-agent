@@ -11,6 +11,7 @@ from .forms import (
 from .views.auth import (
     LoginView,
     PasswordResetView,
+    no_org,
     suspended,
 )
 from .views.settings import (
@@ -115,6 +116,7 @@ urlpatterns = [
         name="password_reset_confirm",
     ),
     path("suspended/", suspended, name="suspended"),
+    path("no-org/", no_org, name="no_org"),
     path(
         "logged-out/",
         TemplateView.as_view(template_name="registration/logged_out.html"),

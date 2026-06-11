@@ -6,6 +6,16 @@ Public API:
 - check_heuristics() — instant Layer 0 scan, used as a blocking gate
 - run_classifier_pipeline() — Layers 1+2 (classifier + reviewer), run in parallel with LLM stream
 - check_user_message() — sequential wrapper calling both (backward compat / tests)
+
+Design note — parallel pipeline tradeoff (accepted):
+For a *clean* heuristic result, the consumer runs Layers 1+2 concurrently with the LLM stream
+(not before it). A block/suspend verdict cancels the stream and tells the client to redact, but
+tokens already streamed cannot be unsent and the redact is client-cooperative — so for an injection
+the regex layer misses, a fast response can reach a non-compliant client before the block lands.
+This is a deliberate latency-vs-risk tradeoff (exfil risk is low relative to adding a full
+classifier+reviewer round-trip to every message). Messages the Layer 0 heuristic flags as suspicious
+are the elevated-risk subset and are instead held pre-stream: the consumer awaits the full pipeline
+before streaming (see chat/consumers.py `_handle_chat_message`).
 """
 
 from __future__ import annotations
@@ -117,10 +127,22 @@ async def run_classifier_pipeline(
             org_id=org_id,
             conversation_id=thread_id,
         )
-        verdict.classifier_result = classifier_result
     except Exception:
-        logger.exception("guardrail: classifier error for user_id=%s, defaulting to allow", user.pk)
-        return verdict
+        # Fail to the reviewer, not open. A classifier an attacker can reliably
+        # crash must not become a bypass of Layers 1+2. Synthesize a low-confidence
+        # suspicious result so the Layer 2 reviewer (which fails closed on its own
+        # error) makes the real call. Confidence is kept at 0.0 because it is shown
+        # verbatim to the reviewer and a high value would bias it toward blocking.
+        logger.exception(
+            "guardrail: classifier error for user_id=%s, escalating to reviewer", user.pk,
+        )
+        classifier_result = ClassifierResult(
+            is_suspicious=True,
+            concern_tags=["classifier_error"],
+            confidence=0.0,
+            reasoning="Layer 1 classifier errored; escalated to reviewer for safety.",
+        )
+    verdict.classifier_result = classifier_result
 
     if not classifier_result.is_suspicious:
         if heuristic_result.is_suspicious:

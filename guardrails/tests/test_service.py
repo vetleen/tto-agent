@@ -126,20 +126,50 @@ class RunClassifierPipelineTest(TransactionTestCase):
         # Verify events were created (classifier escalation + review)
         self.assertTrue(len(verdict.events) >= 2)
 
+    @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
     @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
-    def test_classifier_error_allows(self, mock_classify):
-        """Classifier error should fail open (action=allow)."""
+    def test_classifier_error_escalates_to_reviewer(self, mock_classify, mock_review):
+        """M6: a classifier error fails to the reviewer, not open."""
         from guardrails.service import run_classifier_pipeline
 
         mock_classify.side_effect = RuntimeError("API failure")
+        mock_review.return_value = ReviewerDecision(
+            action="block",
+            confidence=0.9,
+            severity="high",
+            reasoning="Escalated due to classifier error.",
+            user_message="Your message was blocked.",
+        )
         verdict = async_to_sync(run_classifier_pipeline)(
-            text="This should fail open",
+            text="This should escalate, not pass",
             user=self.user,
             heuristic_result=self.clean_heuristic,
             thread_id=None,
             org_id=self.org.pk,
         )
-        self.assertEqual(verdict.action, "allow")
+        self.assertEqual(verdict.action, "block")
+        mock_review.assert_called_once()
+        # The synthesized classifier escalation carries the classifier_error tag.
+        self.assertTrue(
+            any("classifier_error" in (e.tags or []) for e in verdict.events)
+        )
+
+    @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
+    @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
+    def test_classifier_and_reviewer_error_blocks(self, mock_classify, mock_review):
+        """M6: classifier error escalates; a reviewer error then fails closed (block)."""
+        from guardrails.service import run_classifier_pipeline
+
+        mock_classify.side_effect = RuntimeError("classifier down")
+        mock_review.side_effect = RuntimeError("reviewer down")
+        verdict = async_to_sync(run_classifier_pipeline)(
+            text="both down",
+            user=self.user,
+            heuristic_result=self.clean_heuristic,
+            thread_id=None,
+            org_id=self.org.pk,
+        )
+        self.assertEqual(verdict.action, "block")
 
     @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
     @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)

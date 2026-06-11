@@ -242,6 +242,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "core.middleware.SuspensionMiddleware",
+    "core.middleware.RequireOrgMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_ratelimit.middleware.RatelimitMiddleware",
@@ -389,9 +390,16 @@ RATELIMIT_IP_META_KEY = "core.ratelimit.client_ip"
 # whose rl:* counters survive across runs, and SQLite pk reuse makes unrelated
 # tests share user-keyed buckets. Rate-limit tests opt back in per-class with
 # override_settings(RATELIMIT_ENABLE=True, CACHES=<locmem>).
+# Gate authenticated users with no organization to an error page
+# (core.middleware.RequireOrgMiddleware). Disabled under the test runner because the
+# vast majority of fixtures create org-less users; the dedicated no-org tests opt
+# back in per-class with override_settings(REQUIRE_ORG_MEMBERSHIP=True).
+REQUIRE_ORG_MEMBERSHIP = True
+
 TESTING = sys.argv[1:2] == ["test"]
 if TESTING:
     RATELIMIT_ENABLE = False
+    REQUIRE_ORG_MEMBERSHIP = False
 
 # Email verification (24 hours in seconds)
 EMAIL_VERIFICATION_TIMEOUT = int(os.environ.get("EMAIL_VERIFICATION_TIMEOUT", "86400"))

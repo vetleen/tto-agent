@@ -518,9 +518,12 @@ def document_rescan(request, data_room_id, document_id):
     doc.processing_error = None
     doc.save(update_fields=["status", "processing_error", "updated_at"])
     try:
-        from documents.tasks import finalize_document_metadata
+        # Re-run the full gate: the guardrail chunk scan first, which hands off to
+        # finalize (the sole releaser). Dispatching finalize directly would release
+        # the document with unscanned chunks, reopening the guardrail gap.
+        from guardrails.tasks import scan_document_chunks
 
-        finalize_document_metadata.delay(doc.id)
+        scan_document_chunks.delay(doc.id)
     except Exception:
         from documents.services.pii_scan import SCAN_FAILED_MESSAGE
 

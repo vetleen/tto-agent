@@ -1160,10 +1160,12 @@ class DocumentRescanTests(TestCase):
         response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 403)
 
-    def test_rescan_scan_failed_doc_dispatches_finalize(self):
+    def test_rescan_scan_failed_doc_dispatches_scan(self):
+        # Rescan re-runs the full gate: the guardrail chunk scan (which hands off to
+        # finalize), NOT finalize directly — else the doc would release unscanned.
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
         self.client.force_login(self.user)
-        with patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
+        with patch("guardrails.tasks.scan_document_chunks.delay") as mock_delay:
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 200)
         mock_delay.assert_called_once_with(doc.pk)
@@ -1174,7 +1176,7 @@ class DocumentRescanTests(TestCase):
     def test_rescan_allowed_for_stuck_scanning_doc(self):
         doc = self._make_doc(DataRoomDocument.Status.SCANNING)
         self.client.force_login(self.user)
-        with patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
+        with patch("guardrails.tasks.scan_document_chunks.delay") as mock_delay:
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 200)
         mock_delay.assert_called_once_with(doc.pk)
@@ -1182,7 +1184,7 @@ class DocumentRescanTests(TestCase):
     def test_rescan_rejected_for_ready_doc(self):
         doc = self._make_doc(DataRoomDocument.Status.READY)
         self.client.force_login(self.user)
-        with patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
+        with patch("guardrails.tasks.scan_document_chunks.delay") as mock_delay:
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 409)
         mock_delay.assert_not_called()
@@ -1192,7 +1194,7 @@ class DocumentRescanTests(TestCase):
 
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
         self.client.force_login(self.user)
-        with patch("documents.tasks.finalize_document_metadata.delay", side_effect=RuntimeError("broker down")):
+        with patch("guardrails.tasks.scan_document_chunks.delay", side_effect=RuntimeError("broker down")):
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 500)
         doc.refresh_from_db()

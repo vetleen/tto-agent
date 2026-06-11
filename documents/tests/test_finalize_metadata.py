@@ -512,14 +512,14 @@ class PIIGateTests(TestCase):
 
 
 class ProcessDocumentDispatchTests(TestCase):
-    """process_document dispatches finalize_document_metadata after marking READY."""
+    """process_document holds the document in SCANNING and dispatches the guardrail scan."""
 
     def setUp(self):
         self.user = User.objects.create_user(email="disp@example.com", password="testpass")
         self.data_room = DataRoom.objects.create(name="DispProject", slug="disp-project", created_by=self.user)
 
     @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
-    def test_process_document_dispatches_finalize(self):
+    def test_process_document_holds_scanning_and_dispatches_scan(self):
         from django.core.files.base import ContentFile
         from documents.services.process_document import process_document
 
@@ -536,24 +536,26 @@ class ProcessDocumentDispatchTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hi")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("guardrails.tasks.scan_document_chunks.delay"), \
-                     patch("documents.services.pii_scan.pii_gate_applies", return_value=False), \
-                     patch("documents.tasks.finalize_document_metadata.delay") as mock_delay:
+                     patch("documents.tasks.finalize_document_metadata.delay") as mock_finalize, \
+                     patch("guardrails.tasks.scan_document_chunks.delay") as mock_scan:
                     process_document(doc.id)
 
-                mock_delay.assert_called_once_with(doc.id)
+                # The guardrail scan is dispatched (it hands off to finalize); the doc
+                # is held in SCANNING, not released to READY here.
+                mock_scan.assert_called_once_with(doc.id)
+                mock_finalize.assert_not_called()
                 doc.refresh_from_db()
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
 
 
 class ProcessDocumentGateTests(TestCase):
-    """process_document holds gated documents in SCANNING until the PII scan clears them."""
+    """process_document holds every document in SCANNING until the guardrail scan releases it."""
 
     def setUp(self):
         self.user = User.objects.create_user(email="procgate@example.com", password="testpass")
         self.data_room = DataRoom.objects.create(name="ProcGate", slug="proc-gate", created_by=self.user)
 
-    def _run_process(self, mock_finalize_delay):
+    def _run_process(self, mock_scan_delay):
         from django.core.files.base import ContentFile
         from documents.services.process_document import process_document
 
@@ -570,21 +572,19 @@ class ProcessDocumentGateTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hi")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("guardrails.tasks.scan_document_chunks.delay"), \
-                     patch("documents.services.pii_scan.pii_gate_applies", return_value=True), \
-                     patch("documents.tasks.finalize_document_metadata.delay", mock_finalize_delay):
+                     patch("guardrails.tasks.scan_document_chunks.delay", mock_scan_delay):
                     process_document(doc.id)
                 doc.refresh_from_db()
                 return doc
 
     @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
-    def test_gated_doc_held_in_scanning(self):
+    def test_doc_held_in_scanning(self):
         doc = self._run_process(MagicMock())
         self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
         self.assertIsNone(doc.processing_error)
 
     @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
-    def test_gated_dispatch_failure_marks_scan_failed(self):
+    def test_scan_dispatch_failure_marks_scan_failed(self):
         from documents.services.pii_scan import SCAN_FAILED_MESSAGE
 
         doc = self._run_process(MagicMock(side_effect=RuntimeError("broker down")))

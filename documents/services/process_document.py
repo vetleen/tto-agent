@@ -200,15 +200,14 @@ def process_document(document_id: int) -> None:
                     document_id, vec_err,
                 )
 
-        # When the org's PII quarantine gate is active, hold the document in
-        # SCANNING until the PII scan (in finalize_document_metadata) clears it —
-        # retrieval only surfaces READY documents, so Art. 9/10 data can't reach
-        # the LLM during the scan window. Ungated orgs go straight to READY.
-        from documents.services.pii_scan import org_id_for_document, pii_gate_applies
-        gated = pii_gate_applies(org_id_for_document(doc))
-
+        # Hold EVERY document in SCANNING until the guardrail chunk scan completes —
+        # retrieval only surfaces READY documents, so an adversarial (prompt-injection)
+        # chunk can't reach the LLM during the scan window. The guardrail scan runs
+        # first and then hands off to finalize_document_metadata, which runs the PII
+        # scan/description and is the SOLE releaser of SCANNING -> READY (or SCAN_FAILED).
+        # This single-releaser chain also preserves the GDPR Art. 9/10 PII gate.
         doc.embedding_model = getattr(settings, "EMBEDDING_MODEL", "")
-        doc.status = DataRoomDocument.Status.SCANNING if gated else DataRoomDocument.Status.READY
+        doc.status = DataRoomDocument.Status.SCANNING
         doc.processing_error = None
         doc.processed_at = timezone.now()
         doc.save(update_fields=["status", "processing_error", "processed_at", "embedding_model", "updated_at"])
@@ -219,31 +218,20 @@ def process_document(document_id: int) -> None:
             document_id, doc.data_room_id, doc.status, chunk_count, duration_seconds,
         )
 
-        # Scan chunks for adversarial content (fire-and-forget)
+        # Dispatch the guardrail chunk scan, which hands off to finalize on success.
+        # The doc is held in SCANNING, so a failed dispatch must surface as SCAN_FAILED,
+        # not strand the document.
         try:
             from guardrails.tasks import scan_document_chunks
             scan_document_chunks.delay(document_id)
         except Exception:
-            logger.exception("process_document: document_id=%s guardrail scan dispatch failed (non-critical)", document_id)
-
-        # Generate description + tags and run the full-document PII scan in a separate
-        # task, so this heavy frame returns and frees every copy of the document text
-        # before any LLM work runs. When gated, finalize is what flips SCANNING to
-        # READY — a failed dispatch must surface as SCAN_FAILED, not strand the doc.
-        try:
-            from documents.tasks import finalize_document_metadata
-            finalize_document_metadata.delay(document_id)
-        except Exception:
-            if gated:
-                from documents.services.pii_scan import SCAN_FAILED_MESSAGE
-                logger.exception(
-                    "process_document: document_id=%s finalize dispatch failed; marking scan_failed", document_id,
-                )
-                doc.status = DataRoomDocument.Status.SCAN_FAILED
-                doc.processing_error = SCAN_FAILED_MESSAGE
-                doc.save(update_fields=["status", "processing_error", "updated_at"])
-            else:
-                logger.exception("process_document: document_id=%s finalize dispatch failed (non-critical)", document_id)
+            from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+            logger.exception(
+                "process_document: document_id=%s guardrail scan dispatch failed; marking scan_failed", document_id,
+            )
+            doc.status = DataRoomDocument.Status.SCAN_FAILED
+            doc.processing_error = SCAN_FAILED_MESSAGE
+            doc.save(update_fields=["status", "processing_error", "updated_at"])
 
     except ValueError as e:
         duration_seconds = time.perf_counter() - started_at
