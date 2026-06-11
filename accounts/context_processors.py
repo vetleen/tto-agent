@@ -3,8 +3,8 @@ from django.conf import settings as django_settings
 from .models import Membership, UserSettings
 
 
-def theme(request):
-    """Add current user theme and org admin flag to context."""
+def nav_context(request):
+    """Shared navbar context: assistant name, theme, org-admin flag, budget status."""
     context = {
         "assistant_name": django_settings.ASSISTANT_NAME,
     }

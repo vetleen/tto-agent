@@ -2,7 +2,7 @@
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
 
-from accounts.context_processors import theme
+from accounts.context_processors import nav_context
 from accounts.models import UserSettings
 
 User = get_user_model()
@@ -19,7 +19,7 @@ class ThemeContextProcessorTests(TestCase):
     def test_returns_theme_for_authenticated_user(self) -> None:
         request = self.factory.get("/")
         request.user = self.user
-        context = theme(request)
+        context = nav_context(request)
         self.assertIn("theme", context)
         self.assertEqual(context["theme"], UserSettings.Theme.LIGHT)
 
@@ -30,7 +30,7 @@ class ThemeContextProcessorTests(TestCase):
 
         request = self.factory.get("/")
         request.user = self.user
-        context = theme(request)
+        context = nav_context(request)
         self.assertEqual(context["theme"], "dark")
 
     def test_returns_no_theme_for_anonymous_user(self) -> None:
@@ -40,7 +40,7 @@ class ThemeContextProcessorTests(TestCase):
 
         request = self.factory.get("/")
         request.user = AnonymousUser()
-        context = theme(request)
+        context = nav_context(request)
         self.assertNotIn("theme", context)
         self.assertNotIn("user_is_org_admin", context)
 
@@ -50,7 +50,7 @@ class ThemeContextProcessorTests(TestCase):
 
         request = self.factory.get("/")
         request.user = self.user
-        context = theme(request)
+        context = nav_context(request)
         self.assertIn("theme", context)
         self.assertEqual(context["theme"], UserSettings.Theme.LIGHT)
         self.assertTrue(UserSettings.objects.filter(user=self.user).exists())

@@ -21,12 +21,29 @@ class UserAdmin(DjangoUserAdmin):
     search_fields = ("email",)
     fieldsets = (
         (None, {"fields": ("email", "password")}),
-        ("Profile", {"fields": ("first_name", "last_name", "title", "description")}),
-        ("Email verification", {"fields": ("email_verified",)}),
+        ("Profile", {"fields": ("first_name", "last_name", "title", "description", "soul")}),
+        (
+            "Email verification",
+            {
+                "fields": (
+                    "email_verified",
+                    "last_verification_email_sent_at",
+                    "verification_resend_count",
+                    "verification_resend_window_start",
+                )
+            },
+        ),
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")}),
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
-    readonly_fields = ("date_joined",)
+    # Resend tracking is code-written bookkeeping (accounts.verification);
+    # editable here it would desync the rate-limit window.
+    readonly_fields = (
+        "date_joined",
+        "last_verification_email_sent_at",
+        "verification_resend_count",
+        "verification_resend_window_start",
+    )
     add_fieldsets = (
         (
             None,
@@ -60,6 +77,11 @@ class OrganizationAdmin(admin.ModelAdmin):
     list_display = ("name", "slug")
     search_fields = ("name", "slug")
     prepopulated_fields = {"slug": ("name",)}
+    fields = ("name", "slug", "description", "soul", "preferences")
+    # preferences is shown for inspection only: the org-settings endpoints
+    # validate every key they write (allowed models, tool/skill names, budget
+    # bounds); raw JSON edits here would bypass all of that.
+    readonly_fields = ("preferences",)
 
 
 @admin.register(Scope)

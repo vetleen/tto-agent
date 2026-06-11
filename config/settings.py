@@ -267,7 +267,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
-                'accounts.context_processors.theme',
+                'accounts.context_processors.nav_context',
             ],
         },
     },
@@ -389,6 +389,11 @@ RATELIMIT_VIEW = "accounts.views.auth.rate_limited"
 # production. Never point this at the raw header — django-ratelimit would feed
 # the whole multi-entry value to ipaddress.ip_network and 500 on parse.
 RATELIMIT_IP_META_KEY = "core.ratelimit.client_ip"
+# Fail OPEN when the rate-limit cache (Redis) is unavailable: a Redis blip
+# degrades to temporarily-unthrottled logins instead of 500ing every login
+# POST (a total login outage). Throttling resumes when Redis recovers.
+# Deliberate availability-over-strictness decision.
+RATELIMIT_FAIL_OPEN = True
 
 # Disable rate limiting under `manage.py test`: the default cache is a real Redis
 # whose rl:* counters survive across runs, and SQLite pk reuse makes unrelated
