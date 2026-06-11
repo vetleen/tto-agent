@@ -1,4 +1,3 @@
-import json
 import logging
 
 from django.conf import settings
@@ -8,36 +7,48 @@ from django.views.decorators.http import require_POST
 from django_ratelimit.decorators import ratelimit
 
 from .models import Feedback
+from .validation import (
+    clean_feedback_url,
+    reencode_screenshot,
+    sanitize_console_errors,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_SCREENSHOT_SIZE = 5 * 1024 * 1024  # 5 MB
 MAX_TEXT_LENGTH = 5000
-MAX_CONSOLE_ERRORS = 50
+# ~5 MB screenshot + text + console errors, with headroom for multipart framing.
+FEEDBACK_UPLOAD_REQUEST_MAX_BYTES = 7_000_000
 
 
 @login_required
 @require_POST
 @ratelimit(key="user", rate="10/h", method="POST", block=True)
 def submit_feedback(request):
+    # Reject oversized requests from the Content-Length header BEFORE touching
+    # request.POST/request.FILES — once the body is parsed, Django has already
+    # spooled the whole thing to disk and the per-field checks come too late.
+    try:
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    max_request_bytes = getattr(
+        settings, "FEEDBACK_UPLOAD_REQUEST_MAX_BYTES", FEEDBACK_UPLOAD_REQUEST_MAX_BYTES
+    )
+    if content_length > max_request_bytes:
+        return JsonResponse({"error": "Request too large."}, status=413)
+
     text = (request.POST.get("text") or "").strip()
     if not text:
         return JsonResponse({"error": "Feedback text is required."}, status=400)
     if len(text) > MAX_TEXT_LENGTH:
         return JsonResponse({"error": "That's a bit long — please keep your feedback under 5,000 characters."}, status=400)
 
-    url = (request.POST.get("url") or "")[:2000]
+    url = clean_feedback_url(request.POST.get("url"))
     user_agent = (request.POST.get("user_agent") or "")[:1000]
     viewport = (request.POST.get("viewport") or "")[:50]
 
-    console_errors_raw = request.POST.get("console_errors", "[]")
-    try:
-        console_errors = json.loads(console_errors_raw)
-        if not isinstance(console_errors, list):
-            console_errors = []
-        console_errors = console_errors[:MAX_CONSOLE_ERRORS]
-    except (json.JSONDecodeError, ValueError):
-        console_errors = []
+    console_errors = sanitize_console_errors(request.POST.get("console_errors", ""))
 
     feedback = Feedback(
         user=request.user,
@@ -50,12 +61,17 @@ def submit_feedback(request):
 
     # The screenshot is captured automatically on the client, so a too-large or
     # unsupported image isn't the user's fault. Drop it quietly and still save the
-    # feedback rather than blocking the submission over it.
+    # feedback rather than blocking the submission over it. We re-encode rather
+    # than trusting the client's content_type/filename — that validates the bytes
+    # are a real image and strips any embedded payload.
     screenshot_file = request.FILES.get("screenshot")
     if screenshot_file:
-        valid_type = screenshot_file.content_type in ("image/jpeg", "image/png", "image/webp")
-        if screenshot_file.size <= MAX_SCREENSHOT_SIZE and valid_type:
-            feedback.screenshot = screenshot_file
+        result = None
+        if screenshot_file.size <= MAX_SCREENSHOT_SIZE:
+            result = reencode_screenshot(screenshot_file)
+        if result:
+            name, content = result
+            feedback.screenshot.save(name, content, save=False)
         else:
             logger.info(
                 "Dropping feedback screenshot from user %d (size=%d, type=%s)",
@@ -82,12 +98,15 @@ def _notify_admin(feedback):
     try:
         from django.core.mail import send_mail
 
-        subject = f"New feedback #{feedback.pk} from {feedback.user}"
+        subject = f"New feedback #{feedback.pk} (user #{feedback.user_id})"
         body = (
-            f"User: {feedback.user}\n"
-            f"URL: {feedback.url}\n"
-            f"Text: {feedback.text}\n"
+            "Fields below are user-supplied — do not click links or trust contents.\n"
+            f"User ID: {feedback.user_id}\n"
             f"Time: {feedback.created_at}\n"
+            "\n--- user-supplied URL ---\n"
+            f"{feedback.url}\n"
+            "\n--- user-supplied text ---\n"
+            f"{feedback.text}\n"
         )
         send_mail(
             subject=subject,

@@ -1,12 +1,23 @@
 import io
 import json
+import shutil
+import tempfile
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from PIL import Image
 
 from feedback.models import Feedback
+
+
+def _image_upload(fmt, name, content_type, size=(2, 2)):
+    buf = io.BytesIO()
+    Image.new("RGB", size, (0, 128, 255)).save(buf, format=fmt)
+    return SimpleUploadedFile(name, buf.getvalue(), content_type=content_type)
 
 _RATE_LIMIT_SETTINGS = {
     "ALLOWED_HOSTS": ["testserver"],
@@ -25,6 +36,14 @@ class SubmitFeedbackTests(TestCase):
         self.user.email_verified = True
         self.user.save(update_fields=["email_verified"])
         self.url = reverse("feedback:feedback_submit")
+        # Screenshots are written to MEDIA_ROOT and the filesystem isn't rolled
+        # back between tests, so isolate each test in its own temp dir to avoid
+        # name collisions (which storage resolves by appending a random suffix).
+        media_root = tempfile.mkdtemp()
+        override = override_settings(MEDIA_ROOT=media_root)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
 
     def test_unauthenticated_redirects(self):
         response = self.client.post(self.url, {"text": "hello"})
@@ -87,30 +106,15 @@ class SubmitFeedbackTests(TestCase):
 
     def test_submit_with_screenshot(self):
         self.client.login(email=self.user.email, password=self.password)
-        # Create a minimal valid JPEG (smallest valid JPEG is ~107 bytes)
-        img = io.BytesIO(
-            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01"
-            b"\x00\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06"
-            b"\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b"
-            b"\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c"
-            b"\x1c $.\x27 \",.+\x1c\x1c(7),01444\x1f\x27444444444444"
-            b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00"
-            b"\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01"
-            b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04"
-            b"\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10\x00\x02"
-            b"\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x01"
-            b"\x7d\x01\x02\x03\x00\x04\x11\x05\x12!1A\xff\xda\x00"
-            b"\x08\x01\x01\x00\x00?\x00\x7b\xff\xd9"
-        )
-        img.name = "screenshot.jpg"
         response = self.client.post(self.url, {
             "text": "See screenshot",
-            "screenshot": img,
+            "screenshot": _image_upload("JPEG", "screenshot.jpg", "image/jpeg"),
         }, format="multipart")
         self.assertEqual(response.status_code, 200)
         fb = Feedback.objects.get()
         self.assertTrue(fb.screenshot)
         self.assertIn("feedback/", fb.screenshot.name)
+        self.assertTrue(fb.screenshot.name.endswith("screenshot.jpg"))
 
     def test_screenshot_wrong_content_type_dropped_but_feedback_saved(self):
         self.client.login(email=self.user.email, password=self.password)
@@ -146,6 +150,127 @@ class SubmitFeedbackTests(TestCase):
         self.assertEqual(response.status_code, 200)
         fb = Feedback.objects.get()
         self.assertEqual(fb.console_errors, [])
+
+    def test_deeply_nested_console_errors_handled(self):
+        # Regression: deeply nested JSON used to raise RecursionError → 500.
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(self.url, {
+            "text": "Nested",
+            "console_errors": "[" * 100_000,
+        })
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertEqual(fb.console_errors, [])
+
+    def test_console_errors_keys_whitelisted_and_truncated(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(self.url, {
+            "text": "Whitelist",
+            "console_errors": json.dumps([
+                {"message": "x" * 5000, "lineno": 7, "evil": "drop me"},
+                {"foo": "no whitelisted keys"},
+                "not a dict",
+            ]),
+        })
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertEqual(len(fb.console_errors), 1)
+        entry = fb.console_errors[0]
+        self.assertEqual(len(entry["message"]), 2000)
+        self.assertEqual(entry["lineno"], 7)
+        self.assertNotIn("evil", entry)
+
+    def test_png_screenshot_accepted_and_renamed(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(self.url, {
+            "text": "PNG shot",
+            "screenshot": _image_upload("PNG", "ignored.png", "image/png"),
+        }, format="multipart")
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertTrue(fb.screenshot)
+        self.assertTrue(fb.screenshot.name.endswith("screenshot.png"))
+
+    def test_webp_screenshot_accepted_and_renamed(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(self.url, {
+            "text": "WEBP shot",
+            "screenshot": _image_upload("WEBP", "ignored.webp", "image/webp"),
+        }, format="multipart")
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertTrue(fb.screenshot.name.endswith("screenshot.webp"))
+
+    def test_spoofed_content_type_non_image_dropped(self):
+        self.client.login(email=self.user.email, password=self.password)
+        bogus = SimpleUploadedFile("evil.png", b"not really an image", content_type="image/png")
+        response = self.client.post(self.url, {
+            "text": "Spoofed",
+            "screenshot": bogus,
+        }, format="multipart")
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertFalse(fb.screenshot)
+
+    def test_hostile_filename_discarded(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(self.url, {
+            "text": "Hostile name",
+            "screenshot": _image_upload("PNG", "../../evil.html", "image/png"),
+        }, format="multipart")
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertTrue(fb.screenshot.name.endswith("screenshot.png"))
+        self.assertNotIn("evil", fb.screenshot.name)
+
+    def test_dangerous_url_scheme_dropped(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(self.url, {
+            "text": "JS url",
+            "url": "javascript:alert(1)",
+        })
+        self.assertEqual(response.status_code, 200)
+        fb = Feedback.objects.get()
+        self.assertEqual(fb.url, "")
+
+    def test_request_too_large_returns_413(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, {"text": "hi"}, CONTENT_LENGTH="8000000"
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(Feedback.objects.count(), 0)
+
+
+@override_settings(
+    EMAIL_SENDING_ENABLED=True,
+    ADMINS=[("Admin", "admin@example.com")],
+    DEFAULT_FROM_EMAIL="noreply@example.com",
+)
+class FeedbackAdminEmailTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = get_user_model().objects.create_user(
+            email="emailer@example.com",
+            password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.url = reverse("feedback:feedback_submit")
+        mail.outbox = []
+
+    def test_admin_email_marks_fields_as_user_supplied(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(self.url, {
+            "text": "Click here please",
+            "url": "https://example.com/page",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        self.assertIn("user-supplied", body)
+        self.assertIn("Click here please", body)
+        self.assertIn("https://example.com/page", body)
 
 
 @override_settings(**_RATE_LIMIT_SETTINGS)
