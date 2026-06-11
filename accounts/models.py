@@ -5,6 +5,7 @@ from typing import Any
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 
@@ -12,7 +13,11 @@ class UserManager(BaseUserManager):
     def _create_user(self, email: str, password: str | None, **extra_fields: Any) -> "User":
         if not email:
             raise ValueError("The email address must be set.")
-        email = self.normalize_email(email)
+        # normalize_email only lowercases the domain; store the whole address
+        # lowercase so equality and the Lower(email) unique constraint agree.
+        # (The admin add form bypasses this manager — the constraint plus the
+        # iexact lookup below still keep such accounts unique and loginable.)
+        email = self.normalize_email(email).lower()
         user = self.model(email=email, **extra_fields)
         if password:
             user.set_password(password)
@@ -20,6 +25,11 @@ class UserManager(BaseUserManager):
             user.set_unusable_password()
         user.save(using=self._db)
         return user
+
+    def get_by_natural_key(self, username: str | None) -> "User":
+        # Case-insensitive login lookup, matching PasswordResetForm's iexact
+        # behavior (and the Lower(email) unique constraint).
+        return self.get(**{f"{self.model.USERNAME_FIELD}__iexact": username})
 
     def create_user(self, email: str, password: str | None = None, **extra_fields: Any) -> "User":
         extra_fields.setdefault("is_staff", False)
@@ -62,6 +72,15 @@ class User(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                Lower("email"),
+                name="accounts_user_email_ci_unique",
+                violation_error_message="A user with this email already exists.",
+            ),
+        ]
+
     def __str__(self) -> str:
         return self.email
 
@@ -72,7 +91,7 @@ class EmailVerificationToken(models.Model):
         on_delete=models.CASCADE,
         related_name="email_verification_tokens",
     )
-    token = models.CharField(max_length=64, unique=True, db_index=True)
+    token = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
@@ -90,6 +109,9 @@ class UserSettings(models.Model):
         related_name="settings",
         primary_key=True,
     )
+    # Legacy: preferences["theme"] is the canonical store (backfilled in
+    # migration 0007); this column is dual-written for deploy safety and can
+    # be dropped once no running code reads it.
     theme = models.CharField(
         max_length=10,
         choices=Theme.choices,

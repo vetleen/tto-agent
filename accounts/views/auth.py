@@ -167,7 +167,7 @@ def resend_verification(request):
     if not email:
         return redirect("accounts:login")
     try:
-        user = User.objects.get(email=email)
+        user = User.objects.get(email__iexact=email)
     except User.DoesNotExist:
         return redirect("accounts:login")
     if user.email_verified:
