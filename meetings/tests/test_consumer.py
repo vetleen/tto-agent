@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from unittest.mock import patch
 
 from channels.db import database_sync_to_async
@@ -37,6 +38,18 @@ def _make_communicator(meeting_uuid, user):
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+    # Pin chunk persistence to the local filesystem: with AWS_STORAGE_BUCKET_NAME
+    # in the local .env the default storage is S3, so write_chunk_to_temp would
+    # upload real objects to the bucket — and the S3 round-trip blows the
+    # communicator's 1s receive timeout. Tests must not depend on (or write to)
+    # remote storage.
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"
+        },
+    },
+    MEETING_CHUNK_TEMP_DIR=tempfile.mkdtemp(prefix="wilfred-test-chunks-"),
 )
 class MeetingTranscribeConsumerTests(TransactionTestCase):
     """TransactionTestCase because we use database_sync_to_async.
