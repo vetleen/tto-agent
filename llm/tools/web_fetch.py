@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import socket
+import time
 
 from urllib.parse import urlparse
 
@@ -54,6 +55,10 @@ _NOISE_TAGS = [
     "script", "style", "nav", "footer", "header", "noscript", "iframe",
     "aside", "svg", "canvas", "object", "embed",
     "meta", "template", "dialog",
+    # Forms/buttons carry spam and injection payloads, never article content.
+    # Readability dropped them implicitly; trafilatura keeps them, so strip
+    # explicitly to stay extractor-independent.
+    "form", "button",
 ]
 
 # Inline style substrings that indicate a visually hidden element.
@@ -264,75 +269,119 @@ def _pinned_get(url: str, *, timeout: int, headers: dict, max_bytes: int) -> req
 
 class WebFetchInput(ReasonBaseModel):
     url: str = Field(description="The URL of the web page to fetch.")
-    max_chars: int = Field(default=20_000, description="Maximum characters to return (default 20000, max 50000).")
+    max_chars: int = Field(
+        default=20_000,
+        description=(
+            "Maximum characters to return per call (default 20000, max 50000). "
+            "Longer pages are truncated; the response then tells you the "
+            "start_index to continue reading from."
+        ),
+    )
+    start_index: int = Field(
+        default=0,
+        description=(
+            "Character offset to continue reading a long page (default 0). "
+            "Use the start_index suggested in a previous truncated response."
+        ),
+    )
 
 
 _JS_RENDER_MIN_HTML = 5000
 _JS_RENDER_MAX_CONTENT = 200
 
+# Jina bug: target-page errors come back as HTTP 200 with the error only in
+# the body ("Target URL returned error 404: Not Found").
+_JINA_BODY_ERROR_RE = re.compile(r"Target URL returned error\s+\d{3}", re.IGNORECASE)
+
+# Jina 503s are usually transient (rendering cold starts); brief retries only —
+# this runs inside an interactive chat turn, so no long waits.
+_JINA_503_BACKOFF = [3, 8]
+
 
 def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
-    """Fetch a page via Jina Reader API and extract content with readability."""
+    """Fetch a page as clean markdown via the Jina Reader API.
+
+    Jina renders the page (incl. JS) and runs its own extraction pipeline
+    server-side, so no local HTML processing is needed. Also handles PDFs.
+    """
     api_key = getattr(django_settings, "JINA_API_KEY", "")
     if not api_key:
         return None
+    base_url = getattr(django_settings, "JINA_READER_BASE_URL", "https://r.jina.ai")
     logger.info("web_fetch: falling back to Jina for url=%s reason=%s", url, reason)
-    try:
-        resp = requests.get(
-            f"https://eu.r.jina.ai/{url}",
-            timeout=30,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Accept": "text/html",
-                "X-Return-Format": "html",
-            },
-            stream=True,
-        )
-        resp.raise_for_status()
-        # Trusted host (eu.r.jina.ai) — no SSRF pinning needed, but still cap
-        # the body so a huge page can't OOM the worker. _ResponseTooLarge is an
-        # Exception, so it's caught here and the fallback declines gracefully.
-        _enforce_size_and_buffer(resp, _max_response_bytes())
-    except Exception:
-        logger.info("web_fetch: Jina fallback failed for url=%s", url)
+
+    resp = None
+    for attempt in range(1 + len(_JINA_503_BACKOFF)):
+        try:
+            resp = requests.get(
+                f"{base_url}/{url}",
+                timeout=30,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "application/json",
+                    "X-Return-Format": "markdown",
+                    # Server-side equivalent of _strip_hidden_elements: drop
+                    # invisible elements before extraction.
+                    "X-Detach-Invisibles": "true",
+                    "X-Retain-Images": "none",
+                    "X-Timeout": "25",
+                },
+                stream=True,
+            )
+            resp.raise_for_status()
+            # Trusted host — no SSRF pinning needed, but still cap the body so
+            # a huge page can't OOM the worker. _ResponseTooLarge is an
+            # Exception, so it's caught here and the fallback declines gracefully.
+            _enforce_size_and_buffer(resp, _max_response_bytes())
+            break
+        except requests.exceptions.HTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 503 and attempt < len(_JINA_503_BACKOFF):
+                logger.info(
+                    "web_fetch: Jina 503 for url=%s (attempt %d), retrying",
+                    url, attempt + 1,
+                )
+                time.sleep(_JINA_503_BACKOFF[attempt])
+                continue
+            # 402 = InsufficientBalanceError (account out of tokens) — make it
+            # visible in logs so a dead fallback doesn't go unnoticed again.
+            logger.warning("web_fetch: Jina fallback failed for url=%s status=%s", url, status)
+            return None
+        except Exception as e:
+            logger.warning(
+                "web_fetch: Jina fallback failed for url=%s error=%s: %s",
+                url, type(e).__name__, str(e)[:200],
+            )
+            return None
+    if resp is None:
         return None
 
-    raw_html = resp.text
-    if not raw_html.strip():
-        logger.info("web_fetch: Jina returned empty content for url=%s", url)
+    try:
+        payload = resp.json()
+    except Exception:
+        logger.info("web_fetch: Jina returned non-JSON response for url=%s", url)
         return None
 
-    soup = BeautifulSoup(raw_html, "html.parser")
-    _strip_hidden_elements(soup)
-    cleaned_html = str(soup)
+    data = payload.get("data") or {}
+    title = normalize_text(data.get("title") or "")
+    content = normalize_text(data.get("content") or "")
 
-    title = ""
-    text = ""
-    try:
-        doc = ReadabilityDocument(cleaned_html)
-        title = doc.short_title()
-        text = html_to_md(doc.summary(), strip=["img"])
-        text = normalize_text(text)
-    except Exception:
-        pass
-
-    if len(text) < _JS_RENDER_MAX_CONTENT:
-        logger.debug("web_fetch: readability extracted too little from Jina HTML, using cleaned text")
-        text = normalize_text(soup.get_text(separator="\n", strip=True))
-
-    if not text.strip():
+    if not content.strip():
         logger.info("web_fetch: Jina returned no extractable content for url=%s", url)
         return None
 
-    logger.info("web_fetch: Jina fallback succeeded for url=%s chars=%d", url, len(text))
-    _run_web_scan(text, context)
+    if _JINA_BODY_ERROR_RE.search(content[:200]):
+        logger.info("web_fetch: Jina reported in-body target error for url=%s", url)
+        return None
+
+    logger.info("web_fetch: Jina fallback succeeded for url=%s chars=%d", url, len(content))
+    _run_web_scan(content, context)
 
     return {
         "url": url,
         "title": title,
-        "content": text,
-        "truncated": False,
-        "char_count": len(text),
+        "content": content,
+        "char_count": len(content),
         "source": "jina",
     }
 
@@ -354,6 +403,246 @@ def _run_web_scan(text: str, context=None) -> None:
         logger.debug("web_fetch: web content scan failed (non-fatal)")
 
 
+def _extract_content(cleaned_html: str, soup: BeautifulSoup) -> tuple[str, str]:
+    """Extract (title, markdown body) from hidden-element-stripped HTML.
+
+    Chain: trafilatura (primary) → readability + markdownify → bs4 text dump.
+    Whichever non-last-resort extractor yields more content wins when
+    trafilatura's output looks too thin.
+    """
+    title_tag = soup.find("title")
+    title = title_tag.get_text(strip=True) if title_tag else ""
+
+    text = ""
+    try:
+        import trafilatura
+
+        extracted = trafilatura.extract(
+            cleaned_html,
+            output_format="markdown",
+            include_links=True,
+            include_tables=True,
+        )
+        if extracted:
+            text = normalize_text(extracted)
+    except Exception:
+        logger.debug("web_fetch: trafilatura extraction failed, falling back")
+
+    if len(text) < _JS_RENDER_MAX_CONTENT:
+        try:
+            doc = ReadabilityDocument(cleaned_html)
+            if not title:
+                title = doc.short_title()
+            fallback_text = normalize_text(html_to_md(doc.summary(), strip=["img"]))
+            if len(fallback_text) > len(text):
+                text = fallback_text
+        except Exception:
+            logger.debug("web_fetch: readability extraction failed, falling back to BS4")
+
+    if not text:
+        text = normalize_text(soup.get_text(separator="\n", strip=True))
+    return title, text
+
+
+def _cache_result(cache, cache_key: str, result: dict) -> dict:
+    """Cache a successful fetch result dict (full content) and return it."""
+    try:
+        cache.set(cache_key, json.dumps(result), timeout=3600)
+    except Exception:
+        logger.debug("web_fetch: cache write failed, continuing")
+    return result
+
+
+def _fetch_core(url: str, cache, context=None) -> dict:
+    """Fetch a URL and return a result dict with the FULL extracted content.
+
+    Returns ``{url, title, content, char_count, source}`` on success or
+    ``{"error": ..., "url": ...}`` on failure. Truncation/pagination happens
+    at the formatting boundary, never here — the cache always holds the full
+    content so paginated re-reads are cache hits.
+    """
+    url = url.strip()
+    if not url:
+        return {"error": "Empty URL", "url": url}
+
+    # Validate URL scheme
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return {"error": f"Invalid URL scheme: {parsed.scheme!r}. Only http/https allowed.", "url": url}
+
+    # Note: SSRF protection (resolve + validate + connection pinning) happens
+    # inside _pinned_get, per hop. We don't pre-check here so the host is
+    # resolved exactly once per fetch and the validated IP is the one we
+    # actually connect to (closes the DNS-rebinding gap).
+
+    cache_key = "web_fetch_v2:" + hashlib.sha256(url.encode()).hexdigest()
+    try:
+        cached = cache.get(cache_key)
+    except Exception:
+        logger.debug("web_fetch: cache read failed, proceeding without cache")
+        cached = None
+    if cached is not None:
+        logger.debug("Web fetch cache hit for url=%s", url)
+        return json.loads(cached)
+
+    # --- Fetch HTML ---
+    headers = {
+        "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    max_bytes = _max_response_bytes()
+    current_url = url
+    try:
+        # Each hop is resolved + SSRF-validated + IP-pinned independently
+        # (allow_redirects=False), and the body is streamed under a size cap.
+        response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
+
+        redirect_count = 0
+        while response.is_redirect and redirect_count < 5:
+            redirect_url = response.headers.get("Location", "")
+            if not redirect_url:
+                break
+            # Re-validate the redirect target's scheme. Relative/schemeless
+            # Locations fall here (no scheme) and are rejected; even if they
+            # slipped through, _resolve_and_validate fails closed on the
+            # missing hostname.
+            redirect_parsed = urlparse(redirect_url)
+            if redirect_parsed.scheme not in ("http", "https"):
+                return {
+                    "error": f"Invalid redirect scheme: {redirect_parsed.scheme!r}. Only http/https allowed.",
+                    "url": redirect_url,
+                }
+            response.close()  # release the streamed socket before the next hop
+            current_url = redirect_url
+            response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
+            redirect_count += 1
+
+        response.raise_for_status()
+    except _SSRFBlocked as exc:
+        return {"error": exc.message, "url": current_url}
+    except _ResponseTooLarge as exc:
+        return {"error": exc.message, "url": current_url}
+    except requests.exceptions.Timeout:
+        jina = _fetch_via_jina(url, context, reason="timeout")
+        if jina:
+            return _cache_result(cache, cache_key, jina)
+        return {"error": "Request timed out", "url": url}
+    except requests.exceptions.ConnectionError:
+        jina = _fetch_via_jina(url, context, reason="connection_error")
+        if jina:
+            return _cache_result(cache, cache_key, jina)
+        return {"error": "Connection failed", "url": url}
+    except requests.exceptions.HTTPError:
+        jina = _fetch_via_jina(url, context, reason=f"http_{response.status_code}")
+        if jina:
+            return _cache_result(cache, cache_key, jina)
+        return {"error": f"HTTP {response.status_code}", "url": url}
+    except requests.exceptions.RequestException:
+        jina = _fetch_via_jina(url, context, reason="request_error")
+        if jina:
+            return _cache_result(cache, cache_key, jina)
+        return {"error": "Request failed", "url": url}
+
+    # Check content type
+    content_type = response.headers.get("Content-Type", "")
+    if "application/pdf" in content_type:
+        # Jina Reader parses PDFs natively; direct extraction can't.
+        jina = _fetch_via_jina(url, context, reason="pdf")
+        if jina:
+            return _cache_result(cache, cache_key, jina)
+        return {"error": "PDF could not be processed (Jina Reader unavailable)", "url": url}
+    if not any(ct in content_type for ct in ("text/html", "text/plain", "application/xhtml", "text/xml", "application/xml")):
+        return {"error": f"Non-text content type: {content_type}", "url": url}
+
+    logger.info("web_fetch: fetched url=%s status=%d chars=%d", url, response.status_code, len(response.text))
+    raw_html = response.text
+
+    # --- Security pre-processing: strip hidden elements ---
+    try:
+        soup = BeautifulSoup(raw_html, "html.parser")
+    except Exception:
+        return {"error": "Failed to parse HTML", "url": url}
+    _strip_hidden_elements(soup)
+    cleaned_html = str(soup)
+
+    # --- Extract content as markdown ---
+    title, text = _extract_content(cleaned_html, soup)
+
+    # --- JS-rendered page detection: fall back to Jina ---
+    if len(text) < _JS_RENDER_MAX_CONTENT and len(raw_html) > _JS_RENDER_MIN_HTML:
+        logger.info("web_fetch: suspected JS-rendered page url=%s (html=%d, content=%d)", url, len(raw_html), len(text))
+        jina = _fetch_via_jina(url, context, reason="js_rendered")
+        if jina:
+            return _cache_result(cache, cache_key, jina)
+
+    _run_web_scan(text, context)
+
+    result = {
+        "url": url,
+        "title": title,
+        "content": text,
+        "char_count": len(text),
+        "source": "direct",
+    }
+    return _cache_result(cache, cache_key, result)
+
+
+def _format_fetch_error(data: dict) -> str:
+    """Format a fetch error dict as a short plain-text line."""
+    url = data.get("url", "")
+    error = data.get("error", "Unknown error")
+    if url:
+        return f"Error fetching {url}: {error}"
+    return f"Error: {error}"
+
+
+def _format_fetch_result(data: dict, max_chars: int, start_index: int) -> str:
+    """Format a fetch result dict as markdown, sliced to the requested window."""
+    from llm.tools._text_cleaning import (
+        EXTERNAL_CONTENT_BEGIN,
+        EXTERNAL_CONTENT_END,
+        EXTERNAL_CONTENT_NOTE,
+    )
+
+    content = data.get("content", "")
+    total_len = len(content)
+
+    if 0 < total_len <= start_index:
+        return (
+            f"Error fetching {data.get('url', '')}: start_index {start_index} is beyond "
+            f"the end of the content ({total_len} chars). Use a smaller start_index."
+        )
+
+    window = content[start_index:start_index + max_chars]
+    end_index = start_index + len(window)
+    if end_index < total_len:
+        # Truncate at a whitespace boundary so we don't cut mid-word.
+        boundary = max(window.rfind(" "), window.rfind("\n"))
+        if boundary > max_chars // 2:
+            window = window[:boundary]
+            end_index = start_index + len(window)
+
+    if end_index < total_len:
+        pagination = (
+            f"Showing chars {start_index}–{end_index} of {total_len} — "
+            f"call again with start_index={end_index} to continue reading"
+        )
+    else:
+        pagination = f"Showing chars {start_index}–{end_index} of {total_len} (complete)"
+
+    lines = [EXTERNAL_CONTENT_BEGIN, EXTERNAL_CONTENT_NOTE, ""]
+    if data.get("title"):
+        lines.append(f"**{data['title']}**")
+    lines.append(f"URL: {data.get('url', '')}")
+    if data.get("source") == "jina":
+        lines.append("(fetched via Jina Reader)")
+    lines.append(pagination)
+    lines.append("")
+    lines.append(window)
+    lines.append(EXTERNAL_CONTENT_END)
+    return "\n".join(lines)
+
+
 class WebFetchTool(ContextAwareTool):
     """Fetch a web page and extract clean markdown content."""
 
@@ -361,166 +650,21 @@ class WebFetchTool(ContextAwareTool):
     description: str = (
         "Fetch a web page and extract its content as clean markdown. "
         "Use this to read the content of a specific URL, such as articles, "
-        "documentation, or other web pages."
+        "documentation, PDFs, or other web pages. Long pages are returned "
+        "in chunks: pass the suggested start_index to keep reading."
     )
     args_schema: type[BaseModel] = WebFetchInput
 
-    def _run(self, url: str, max_chars: int = 20_000, **kwargs) -> str:
+    def _run(self, url: str, max_chars: int = 20_000, start_index: int = 0, **kwargs) -> str:
         from django.core.cache import cache
 
-        url = url.strip()
-        if not url:
-            return json.dumps({"error": "Empty URL"})
-
-        # Validate URL scheme
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return json.dumps({"error": f"Invalid URL scheme: {parsed.scheme!r}. Only http/https allowed."})
-
-        # Note: SSRF protection (resolve + validate + connection pinning) happens
-        # inside _pinned_get, per hop. We don't pre-check here so the host is
-        # resolved exactly once per fetch and the validated IP is the one we
-        # actually connect to (closes the DNS-rebinding gap).
-
         max_chars = max(1, min(max_chars, _ABSOLUTE_MAX_CHARS))
+        start_index = max(0, start_index)
 
-        cache_key = "web_fetch:" + hashlib.sha256(url.encode()).hexdigest()
-        try:
-            cached = cache.get(cache_key)
-        except Exception:
-            logger.debug("web_fetch: cache read failed, proceeding without cache")
-            cached = None
-        if cached is not None:
-            logger.debug("Web fetch cache hit for url=%s", url)
-            data = json.loads(cached)
-            content = data.get("content", "")
-            if len(content) > max_chars:
-                data["content"] = content[:max_chars]
-                data["truncated"] = True
-                data["char_count"] = max_chars
-            return json.dumps(data)
-
-        # --- Fetch HTML ---
-        headers = {
-            "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-        max_bytes = _max_response_bytes()
-        current_url = url
-        try:
-            # Each hop is resolved + SSRF-validated + IP-pinned independently
-            # (allow_redirects=False), and the body is streamed under a size cap.
-            response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
-
-            redirect_count = 0
-            while response.is_redirect and redirect_count < 5:
-                redirect_url = response.headers.get("Location", "")
-                if not redirect_url:
-                    break
-                # Re-validate the redirect target's scheme. Relative/schemeless
-                # Locations fall here (no scheme) and are rejected; even if they
-                # slipped through, _resolve_and_validate fails closed on the
-                # missing hostname.
-                redirect_parsed = urlparse(redirect_url)
-                if redirect_parsed.scheme not in ("http", "https"):
-                    return json.dumps({
-                        "error": f"Invalid redirect scheme: {redirect_parsed.scheme!r}. Only http/https allowed.",
-                        "url": redirect_url,
-                    })
-                response.close()  # release the streamed socket before the next hop
-                current_url = redirect_url
-                response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
-                redirect_count += 1
-
-            response.raise_for_status()
-        except _SSRFBlocked as exc:
-            return json.dumps({"error": exc.message, "url": current_url})
-        except _ResponseTooLarge as exc:
-            return json.dumps({"error": exc.message, "url": current_url})
-        except requests.exceptions.Timeout:
-            jina = _fetch_via_jina(url, self.context, reason="timeout")
-            if jina:
-                return json.dumps(jina)
-            return json.dumps({"error": "Request timed out", "url": url})
-        except requests.exceptions.ConnectionError:
-            jina = _fetch_via_jina(url, self.context, reason="connection_error")
-            if jina:
-                return json.dumps(jina)
-            return json.dumps({"error": "Connection failed", "url": url})
-        except requests.exceptions.HTTPError:
-            jina = _fetch_via_jina(url, self.context, reason=f"http_{response.status_code}")
-            if jina:
-                return json.dumps(jina)
-            return json.dumps({"error": f"HTTP {response.status_code}", "url": url})
-        except requests.exceptions.RequestException:
-            jina = _fetch_via_jina(url, self.context, reason="request_error")
-            if jina:
-                return json.dumps(jina)
-            return json.dumps({"error": "Request failed", "url": url})
-
-        # Check content type
-        content_type = response.headers.get("Content-Type", "")
-        if not any(ct in content_type for ct in ("text/html", "text/plain", "application/xhtml", "text/xml", "application/xml")):
-            return json.dumps({
-                "error": f"Non-text content type: {content_type}",
-                "url": url,
-            })
-
-        logger.info("web_fetch: fetched url=%s status=%d chars=%d", url, response.status_code, len(response.text))
-        raw_html = response.text
-
-        # --- Security pre-processing: strip hidden elements ---
-        try:
-            soup = BeautifulSoup(raw_html, "html.parser")
-        except Exception:
-            return json.dumps({"error": "Failed to parse HTML", "url": url})
-        _strip_hidden_elements(soup)
-        cleaned_html = str(soup)
-
-        # --- Extract content with readability, convert to markdown ---
-        try:
-            doc = ReadabilityDocument(cleaned_html)
-            title = doc.short_title()
-            article_html = doc.summary()
-            text = html_to_md(article_html, strip=["img"])
-            text = normalize_text(text)
-        except Exception:
-            logger.debug("web_fetch: readability extraction failed, falling back to BS4")
-            title_tag = soup.find("title")
-            title = title_tag.get_text(strip=True) if title_tag else ""
-            text = soup.get_text(separator="\n", strip=True)
-            text = normalize_text(text)
-
-        # --- JS-rendered page detection: fall back to Jina ---
-        if len(text) < _JS_RENDER_MAX_CONTENT and len(raw_html) > _JS_RENDER_MIN_HTML:
-            logger.info("web_fetch: suspected JS-rendered page url=%s (html=%d, content=%d)", url, len(raw_html), len(text))
-            jina = _fetch_via_jina(url, self.context, reason="js_rendered")
-            if jina:
-                return self._cache_and_return(cache, cache_key, jina, max_chars)
-
-        _run_web_scan(text, self.context)
-
-        result = {
-            "url": url,
-            "title": title,
-            "content": text,
-            "truncated": False,
-            "char_count": len(text),
-        }
-        return self._cache_and_return(cache, cache_key, result, max_chars)
-
-    @staticmethod
-    def _cache_and_return(cache, cache_key: str, result: dict, max_chars: int) -> str:
-        full_result = json.dumps(result)
-        try:
-            cache.set(cache_key, full_result, timeout=3600)
-        except Exception:
-            logger.debug("web_fetch: cache write failed, continuing")
-
-        text = result["content"]
-        if len(text) > max_chars:
-            result = {**result, "content": text[:max_chars], "truncated": True, "char_count": max_chars}
-        return json.dumps(result)
+        data = _fetch_core(url, cache, context=self.context)
+        if "error" in data:
+            return _format_fetch_error(data)
+        return _format_fetch_result(data, max_chars=max_chars, start_index=start_index)
 
 
 __all__ = ["WebFetchTool"]

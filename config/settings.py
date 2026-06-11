@@ -578,6 +578,9 @@ LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
+# Jina Reader endpoint. The former EU endpoint (eu.r.jina.ai) no longer
+# resolves (2026-06); override here if Jina ships a new regional endpoint.
+JINA_READER_BASE_URL = os.environ.get("JINA_READER_BASE_URL", "https://r.jina.ai")
 
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
