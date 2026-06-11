@@ -59,7 +59,7 @@ class UsagePageTests(TestCase):
     def test_no_data_message(self):
         self.client.login(email=self.user.email, password=self.password)
         response = self.client.get(self.url)
-        self.assertContains(response, "No usage data")
+        self.assertContains(response, "No usage to show for this period yet.")
 
     def test_total_cost(self):
         self.client.login(email=self.user.email, password=self.password)

@@ -1798,3 +1798,38 @@ class OrgSoulAndIdentityTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgAdminForbiddenNegotiationTests(TestCase):
+    """The org_admin_required 403 is content-negotiated: HTML for browser
+    page loads, JSON for fetch() callers (whose handlers read data.error)."""
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.member = User.objects.create_user(
+            email="negmember@example.com", password=self.password,
+        )
+        self.member.email_verified = True
+        self.member.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="NegOrg", slug="negorg")
+        Membership.objects.create(user=self.member, org=self.org, role=Membership.Role.MEMBER)
+        self.client.login(email=self.member.email, password=self.password)
+
+    def test_browser_get_receives_html_403(self):
+        response = self.client.get(
+            reverse("accounts:org_settings"),
+            HTTP_ACCEPT="text/html,application/xhtml+xml",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertNotEqual(response.headers.get("Content-Type"), "application/json")
+
+    def test_fetch_post_receives_json_403(self):
+        response = self.client.post(
+            reverse("accounts:org_tools_update"),
+            json.dumps({"name": "read_document", "enabled": False}),
+            content_type="application/json",
+            HTTP_ACCEPT="*/*",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"], "Admin access required.")

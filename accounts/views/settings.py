@@ -16,6 +16,7 @@ from django.conf import settings as django_settings
 
 from accounts.models import Membership, Organization, User, UserSettings
 from accounts.services import update_org_preferences, update_user_preferences
+from accounts.views._helpers import org_admin_required
 
 
 def _parse_json_body(request):
@@ -317,26 +318,16 @@ def preferences_feature_model_update(request):
 # ---- Organization Settings Page ----
 
 
-def _get_admin_membership(user):
-    """Return the user's admin membership or None."""
-    return (
-        Membership.objects.filter(user=user, role=Membership.Role.ADMIN)
-        .select_related("org")
-        .first()
-    )
-
-
 @login_required
 @require_GET
+@org_admin_required
 def org_settings_page(request):
     from agent_skills.models import AgentSkill
     from core.preferences import get_system_defaults
     from llm.service.policies import get_allowed_models
     from llm.tools.registry import get_tool_registry
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     org = membership.org
     org_prefs = org.preferences or {}
@@ -514,13 +505,12 @@ def org_settings_page(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_allowed_models_update(request):
     """Set org's allowed_models list."""
     from llm.service.policies import get_allowed_models
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -546,13 +536,12 @@ def org_allowed_models_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_allowed_transcription_models_update(request):
     """Set org's allowed transcription models list."""
     from django.conf import settings as django_settings
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -577,6 +566,7 @@ def org_allowed_transcription_models_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_transcription_model_update(request):
     """Set an organization-level default transcription model.
 
@@ -587,9 +577,7 @@ def org_transcription_model_update(request):
     """
     from llm.transcription_registry import get_transcription_model_info
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -626,11 +614,10 @@ def org_transcription_model_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_models_update(request):
     """Set org's default model for a tier."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -665,11 +652,10 @@ def org_models_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_tools_update(request):
     """Toggle a tool on/off for the org."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -693,11 +679,10 @@ def org_tools_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_subagents_update(request):
     """Update org's sub-agent settings (e.g. parallel toggle)."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -717,11 +702,10 @@ def org_subagents_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_pii_scan_toggle_update(request):
     """Toggle PII classification for document processing."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -739,11 +723,10 @@ def org_pii_scan_toggle_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_pii_quarantine_toggle_update(request):
     """Toggle automatic quarantine of documents containing GDPR Art. 9/10 data."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -761,13 +744,12 @@ def org_pii_quarantine_toggle_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_max_context_update(request):
     """Set org's max context tokens limit."""
     from core.preferences import MIN_CONTEXT_TOKENS
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -797,11 +779,10 @@ def org_max_context_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_budget_update(request):
     """Update org's monthly budget settings."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -870,11 +851,10 @@ def preferences_max_context_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_skills_update(request):
     """Toggle a skill or a per-skill tool on/off for the org."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -908,15 +888,14 @@ def org_skills_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_feature_model_update(request):
     """Set org's preferred model for a specific feature."""
     from core.preferences import FEATURE_DEFAULTS
     from llm.model_registry import TIER_ORDER, get_model_tier
     from llm.service.policies import get_allowed_models
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -1052,12 +1031,11 @@ def usage_page(request):
 
 @login_required
 @require_GET
+@org_admin_required
 def org_usage_page(request):
     from llm.models import LLMCallLog
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     org = membership.org
     today = timezone.now().date()
@@ -1219,6 +1197,7 @@ def profile_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 @ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_description_update(request):
     import logging
@@ -1227,9 +1206,7 @@ def org_description_update(request):
 
     logger = logging.getLogger(__name__)
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -1355,6 +1332,7 @@ def soul_reset(request):
 
 @login_required
 @require_POST
+@org_admin_required
 @ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_soul_update(request):
     """Admin: set the org-wide SOUL baseline."""
@@ -1365,9 +1343,7 @@ def org_soul_update(request):
 
     logger = logging.getLogger(__name__)
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -1407,13 +1383,12 @@ def org_soul_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_soul_reset(request):
     """Admin: clear the org-wide SOUL; effective value falls back to the system default."""
     from accounts.agent_customization import DEFAULT_SOUL
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     org = membership.org
     org.soul = ""
@@ -1423,6 +1398,7 @@ def org_soul_reset(request):
 
 @login_required
 @require_POST
+@org_admin_required
 @ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_name_update(request):
     """Admin: rename the organization (leaves the slug untouched)."""
@@ -1432,9 +1408,7 @@ def org_name_update(request):
 
     logger = logging.getLogger(__name__)
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -1476,11 +1450,10 @@ def org_name_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_allow_user_soul_update(request):
     """Admin: toggle whether members may set a personal SOUL override."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
