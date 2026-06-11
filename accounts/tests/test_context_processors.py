@@ -44,8 +44,10 @@ class ThemeContextProcessorTests(TestCase):
         self.assertNotIn("theme", context)
         self.assertNotIn("user_is_org_admin", context)
 
-    def test_creates_settings_if_missing(self) -> None:
-        """Context processor uses get_or_create, so it should handle missing settings."""
+    def test_missing_settings_defaults_to_light_without_creating(self) -> None:
+        """The context processor is read-only: a missing UserSettings row
+        (only possible for pre-signal legacy users) renders the default theme
+        and is NOT auto-created — row creation belongs to the post_save signal."""
         UserSettings.objects.filter(user=self.user).delete()
 
         request = self.factory.get("/")
@@ -53,4 +55,4 @@ class ThemeContextProcessorTests(TestCase):
         context = nav_context(request)
         self.assertIn("theme", context)
         self.assertEqual(context["theme"], UserSettings.Theme.LIGHT)
-        self.assertTrue(UserSettings.objects.filter(user=self.user).exists())
+        self.assertFalse(UserSettings.objects.filter(user=self.user).exists())

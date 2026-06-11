@@ -5,16 +5,20 @@ from functools import wraps
 
 from django.http import HttpResponseForbidden, JsonResponse
 
-from accounts.models import Membership
+from accounts.models import Membership, get_membership
 
 
 def get_admin_membership(user):
-    """Return the user's admin membership (with org) or None."""
-    return (
-        Membership.objects.filter(user=user, role=Membership.Role.ADMIN)
-        .select_related("org")
-        .first()
-    )
+    """Return the user's admin membership (with org) or None.
+
+    Uses the per-request memoized membership; a user has at most one
+    membership (unique_membership_per_user), so filtering by role in Python
+    is equivalent to filtering in SQL.
+    """
+    membership = get_membership(user)
+    if membership and membership.role == Membership.Role.ADMIN:
+        return membership
+    return None
 
 
 def org_admin_required(view_func):

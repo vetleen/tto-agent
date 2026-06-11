@@ -426,13 +426,9 @@ def get_system_defaults() -> dict[str, str]:
 
 def _get_org_preferences(user) -> dict:
     """Get the organization preferences for a user, or empty dict if no org."""
-    from accounts.models import Membership
+    from accounts.models import get_membership
 
-    membership = (
-        Membership.objects.filter(user=user)
-        .select_related("org")
-        .first()
-    )
+    membership = get_membership(user)
     if membership and membership.org:
         return membership.org.preferences or {}
     return {}

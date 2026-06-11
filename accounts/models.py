@@ -219,9 +219,36 @@ class Membership(models.Model):
         return f"{self.user} in {self.org} ({self.role})"
 
 
-def get_user_org(user):
-    """Return the user's single Organization, or None."""
+_MEMBERSHIP_CACHE_ATTR = "_cached_membership"
+
+
+def get_membership(user):
+    """Return the user's single Membership (with org), memoized on the user.
+
+    Middleware, the navbar context processor, budget checks, and the
+    preference resolvers all need the same membership row; caching it on the
+    user instance collapses those into one query per request (request.user is
+    a fresh instance each request, so the cache is naturally request-scoped).
+    Long-lived holders of a user instance (WebSocket consumers) must call
+    invalidate_membership_cache() before re-reading org state.
+    """
     if not user or not user.is_authenticated:
         return None
-    m = Membership.objects.filter(user=user).select_related("org").first()
+    if not hasattr(user, _MEMBERSHIP_CACHE_ATTR):
+        membership = (
+            Membership.objects.filter(user=user).select_related("org").first()
+        )
+        setattr(user, _MEMBERSHIP_CACHE_ATTR, membership)
+    return getattr(user, _MEMBERSHIP_CACHE_ATTR)
+
+
+def invalidate_membership_cache(user) -> None:
+    """Drop the memoized membership so the next get_membership() re-queries."""
+    if hasattr(user, _MEMBERSHIP_CACHE_ATTR):
+        delattr(user, _MEMBERSHIP_CACHE_ATTR)
+
+
+def get_user_org(user):
+    """Return the user's single Organization, or None."""
+    m = get_membership(user)
     return m.org if m else None

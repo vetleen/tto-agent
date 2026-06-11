@@ -410,6 +410,14 @@ if TESTING:
     RATELIMIT_ENABLE = False
     REQUIRE_ORG_MEMBERSHIP = False
 
+# Navbar budget bar: get_cached_budget_status TTL. Display-only — budget
+# enforcement always reads live. 0 disables caching; forced off under test
+# (same rationale as RATELIMIT_ENABLE: the default cache is a real Redis
+# shared across runs).
+BUDGET_STATUS_CACHE_SECONDS = 0 if TESTING else int(
+    os.environ.get("BUDGET_STATUS_CACHE_SECONDS", "60")
+)
+
 # Email verification (24 hours in seconds)
 EMAIL_VERIFICATION_TIMEOUT = int(os.environ.get("EMAIL_VERIFICATION_TIMEOUT", "86400"))
 EMAIL_VERIFICATION_REQUIRED = _get_env_bool(

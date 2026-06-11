@@ -116,7 +116,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _resolve_preferences(self):
+        from accounts.models import invalidate_membership_cache
         from core.preferences import get_preferences
+
+        # Preferences are re-resolved per message so org toggles take effect
+        # without a reconnect; self.user lives as long as the WebSocket, so
+        # the per-request membership memo must be dropped before re-reading.
+        invalidate_membership_cache(self.user)
         return get_preferences(self.user)
 
     @database_sync_to_async
@@ -156,8 +162,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _check_budget_exceeded(self) -> dict | None:
         """Check if user or org monthly budget is exceeded. Returns info dict or None."""
+        from accounts.models import invalidate_membership_cache
         from core.spend import get_budget_status
 
+        # Enforcement must see current budgets — drop the long-lived
+        # membership memo (see _resolve_preferences) and read live.
+        invalidate_membership_cache(self.user)
         status = get_budget_status(self.user)
         if status and status["exceeded"]:
             return status
