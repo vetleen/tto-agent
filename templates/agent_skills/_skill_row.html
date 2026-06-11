@@ -75,7 +75,7 @@ opacity propagates to all descendants and cannot be undone on a child.
         {% elif row.skill.level == "org" %}
         <form method="post" action="{% url 'agent_skills_demote' skill_id=row.skill.id %}" class="p-0">
           {% csrf_token %}
-          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" onclick="return confirm('Demote this to a personal skill? It\'ll be removed from your organization and only you will have it. This can\'t be undone.');">
+          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-confirm="Demote this to a personal skill? It'll be removed from your organization and only you will have it. This can't be undone.">
             Demote to personal skill
           </button>
         </form>
@@ -87,7 +87,7 @@ opacity propagates to all descendants and cannot be undone on a child.
       {% if row.can_edit %}
       <form method="post" action="{% url 'agent_skills_delete' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
-        <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left" onclick="return confirm('Delete this skill? This can\'t be undone.');">
+        <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left" data-confirm="Delete this skill? This can't be undone.">
           Delete
         </button>
       </form>

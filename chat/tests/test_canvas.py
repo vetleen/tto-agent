@@ -323,9 +323,14 @@ class CanvasExportViewTests(TestCase):
         self.thread.active_canvas = self.canvas
         self.thread.save(update_fields=["active_canvas"])
 
+    def _export(self, url, content=None):
+        """POST to the export endpoint (the only method it accepts)."""
+        body = {} if content is None else {"content": content}
+        return self.client.post(url, json.dumps(body), content_type="application/json")
+
     def test_export_returns_docx(self):
         url = f"/chat/threads/{self.thread.id}/canvas/export/"
-        response = self.client.get(url)
+        response = self._export(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.get("Content-Type"),
@@ -333,13 +338,19 @@ class CanvasExportViewTests(TestCase):
         )
         self.assertIn("My NDA", response.get("Content-Disposition", ""))
 
+    def test_export_get_not_allowed(self):
+        """The legacy GET path (server-side headless mermaid render) is removed."""
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 405)
+
     def test_export_tables_use_fixed_layout(self):
         """Tables in exported .docx should span the full page width."""
         self.canvas.content = "| A | B |\n| --- | --- |\n| 1 | 2 |"
         self.canvas.save(update_fields=["content"])
 
         url = f"/chat/threads/{self.thread.id}/canvas/export/"
-        response = self.client.get(url)
+        response = self._export(url)
         self.assertEqual(response.status_code, 200)
 
         from docx import Document as DocxDocument
@@ -362,7 +373,7 @@ class CanvasExportViewTests(TestCase):
     def test_export_404_no_canvas(self):
         other_thread = ChatThread.objects.create(created_by=self.user)
         url = f"/chat/threads/{other_thread.id}/canvas/export/"
-        response = self.client.get(url)
+        response = self._export(url)
         self.assertEqual(response.status_code, 404)
 
     def test_export_404_other_user(self):
@@ -370,7 +381,7 @@ class CanvasExportViewTests(TestCase):
         other_thread = ChatThread.objects.create(created_by=other)
         ChatCanvas.objects.create(thread=other_thread, title="X", content="y")
         url = f"/chat/threads/{other_thread.id}/canvas/export/"
-        response = self.client.get(url)
+        response = self._export(url)
         self.assertEqual(response.status_code, 404)
 
 

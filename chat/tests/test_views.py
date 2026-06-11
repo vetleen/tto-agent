@@ -55,6 +55,22 @@ class ChatHomeModelChoicesTests(TestCase):
         self.assertContains(response, 'id="model-selector-dropdown"')
         self.assertContains(response, 'name="thinking-level"')
 
+    def test_csp_header_enforced_with_nonce(self):
+        """The page carries a strict, nonce-based Content-Security-Policy and its
+        inline scripts carry the matching nonce."""
+        response = self.client.get(reverse("chat_home"))
+        csp = response.headers.get("Content-Security-Policy", "")
+        self.assertIn("script-src", csp)
+        self.assertIn("'self'", csp)
+        self.assertIn("object-src 'none'", csp)
+        self.assertIn("base-uri 'self'", csp)
+        # script-src must not fall back to unsafe-inline (that would defeat the policy)
+        script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+        self.assertNotIn("unsafe-inline", script_src)
+        self.assertIn("'nonce-", script_src)
+        # Inline scripts in the rendered page carry a nonce attribute.
+        self.assertContains(response, 'nonce="')
+
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],

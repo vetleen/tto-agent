@@ -40,10 +40,10 @@
       <div class="mt-8 flex items-center gap-5">
         <a href="/" class="inline-flex items-center rounded-base bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong focus:outline-none focus:ring-4 focus:ring-brand-medium transition-colors">Go home</a>
         {% block error_back %}
-        <a href="javascript:history.back()" class="inline-flex items-center gap-1.5 text-sm font-medium text-fg-brand hover:text-heading transition-colors">
+        <button type="button" data-history-back class="inline-flex items-center gap-1.5 text-sm font-medium text-fg-brand hover:text-heading transition-colors">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
           Go back
-        </a>
+        </button>
         {% endblock error_back %}
       </div>
     </div>

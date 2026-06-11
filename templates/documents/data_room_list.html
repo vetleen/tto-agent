@@ -72,7 +72,7 @@
 
   {% if archived_data_rooms %}
   <div class="mt-8">
-    <button type="button" class="flex items-center text-sm font-medium text-body hover:text-heading mb-3" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-90');">
+    <button type="button" class="flex items-center text-sm font-medium text-body hover:text-heading mb-3" data-toggle-next>
       <svg class="w-4 h-4 me-1.5 shrink-0 transition-transform" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
       Archived data rooms ({{ archived_data_rooms|length }})
     </button>
@@ -209,7 +209,7 @@
 </div>
 
 <script src="{% static 'js/rename-modal.js' %}"></script>
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function () {
   'use strict';
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');

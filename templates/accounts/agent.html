@@ -183,7 +183,7 @@
   {% endwith %}
 </main>
 
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
 

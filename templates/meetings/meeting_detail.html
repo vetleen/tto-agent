@@ -73,9 +73,21 @@
       <label id="upload-label" data-disable-while-busy class="text-heading bg-neutral-primary-soft hover:bg-neutral-secondary border border-default shadow-xs focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 cursor-pointer inline-flex items-center gap-2">
         <svg id="upload-spinner" class="hidden animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
         <span id="upload-label-text">{% if meeting.transcript %}Add to transcript from a file{% else %}Upload audio or transcript{% endif %}</span>
-        <input type="file" name="file" class="hidden" accept=".txt,.md,text/plain,text/markdown,audio/*,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg" onchange="document.getElementById('upload-spinner').classList.remove('hidden');document.getElementById('upload-label-text').textContent='Uploading\u2026';document.getElementById('upload-label').classList.add('pointer-events-none','opacity-60');this.form.submit()">
+        <input type="file" name="file" id="meeting-audio-input" class="hidden" accept=".txt,.md,text/plain,text/markdown,audio/*,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg">
       </label>
     </form>
+    <script nonce="{{ request.csp_nonce }}">
+      (function() {
+        var inp = document.getElementById('meeting-audio-input');
+        if (!inp) return;
+        inp.addEventListener('change', function() {
+          document.getElementById('upload-spinner').classList.remove('hidden');
+          document.getElementById('upload-label-text').textContent = 'Uploading\u2026';
+          document.getElementById('upload-label').classList.add('pointer-events-none', 'opacity-60');
+          this.form.submit();
+        });
+      })();
+    </script>
 
     {# ----- Transcription model picker (chat-style) ----- #}
     {% if transcription_model_choices %}
@@ -229,7 +241,7 @@
           <a href="{{ a.file.url }}" class="text-sm text-heading hover:text-brand truncate" title="{{ a.original_filename }}">{{ a.original_filename }}</a>
           <form method="post" action="{% url 'meeting_delete_attachment' meeting_uuid=meeting.uuid attachment_id=a.id %}">
             {% csrf_token %}
-            <button type="submit" data-disable-while-busy class="text-xs text-fg-danger hover:underline" onclick="return confirm('Delete this attachment?');">Delete</button>
+            <button type="submit" data-disable-while-busy class="text-xs text-fg-danger hover:underline" data-confirm="Delete this attachment?">Delete</button>
           </form>
         </li>
         {% endfor %}
@@ -241,7 +253,7 @@
       {% csrf_token %}
       <label data-disable-while-busy class="text-heading bg-neutral-primary-soft hover:bg-neutral-secondary border border-default shadow-xs focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 cursor-pointer">
         Add attachment
-        <input type="file" name="file" class="hidden" onchange="this.form.submit()">
+        <input type="file" name="file" class="hidden" data-submit-on-change>
       </label>
     </form>
   </section>
@@ -454,7 +466,7 @@
 </div>
 
 {% if summarizer_skills|length > 1 %}
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   var skillInput = document.getElementById('summarize-skill-id');
   var buttons = document.querySelectorAll('.summarizer-skill-option');
@@ -484,7 +496,7 @@
 })();
 </script>
 {% endif %}
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   var container = document.getElementById('page-container');
   var dropOverlay = document.getElementById('drop-overlay');

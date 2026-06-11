@@ -887,3 +887,83 @@ class LoadAttachmentsAccessTests(TransactionTestCase):
         result = await consumer._load_attachments([str(own_att.id), str(other_att.id)])
         self.assertIn(str(own_att.id), result)
         self.assertNotIn(str(other_att.id), result)
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class CrossUserThreadAccessTests(TransactionTestCase):
+    """A user must not reach another user's thread via /cost or chat.load_thread."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(email="x-owner@example.com", password="pass")
+        self.attacker = User.objects.create_user(email="x-attacker@example.com", password="pass")
+
+    async def _connect(self, user):
+        app = make_application()
+        communicator = WebsocketCommunicator(app, "/ws/chat/")
+        communicator.scope["user"] = user
+        connected, _ = await communicator.connect()
+        assert connected
+        return communicator
+
+    async def _owner_thread(self):
+        return await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner, title="Owner thread",
+        )
+
+    async def test_cost_denies_other_users_thread(self):
+        thread = await self._owner_thread()
+        comm = await self._connect(self.attacker)
+        await comm.send_json_to({
+            "type": "chat.message", "content": "/cost", "thread_id": str(thread.id),
+        })
+        resp = await comm.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "command.result")
+        self.assertEqual(resp["command"], "/cost")
+        self.assertEqual(resp["status"], "error")
+        self.assertNotIn("$", resp["message"])
+        await comm.disconnect()
+
+    async def test_cost_allows_owner(self):
+        thread = await self._owner_thread()
+        comm = await self._connect(self.owner)
+        await comm.send_json_to({
+            "type": "chat.message", "content": "/cost", "thread_id": str(thread.id),
+        })
+        resp = await comm.receive_json_from(timeout=5)
+        self.assertEqual(resp["status"], "ok")
+        self.assertIn("$", resp["message"])
+        await comm.disconnect()
+
+    async def test_load_thread_denies_other_users_thread(self):
+        thread = await self._owner_thread()
+        comm = await self._connect(self.attacker)
+        await comm.send_json_to({
+            "type": "chat.load_thread", "thread_id": str(thread.id),
+        })
+        # No thread.loaded (or any) event for a thread the attacker doesn't own.
+        self.assertTrue(await comm.receive_nothing(timeout=1))
+
+        # The attacker must not be subscribed to the thread's broadcast group:
+        # a group_send to that thread must not reach them.
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        await layer.group_send(
+            f"thread_{thread.id}",
+            {"type": "subagent.completed", "run_id": "x", "thread_id": str(thread.id)},
+        )
+        self.assertTrue(await comm.receive_nothing(timeout=1))
+        await comm.disconnect()
+
+    async def test_load_thread_allows_owner(self):
+        thread = await self._owner_thread()
+        comm = await self._connect(self.owner)
+        await comm.send_json_to({
+            "type": "chat.load_thread", "thread_id": str(thread.id),
+        })
+        resp = await comm.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "thread.loaded")
+        self.assertEqual(resp["thread_id"], str(thread.id))
+        await comm.disconnect()

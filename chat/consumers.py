@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 MAX_HISTORY_TOKENS = 20_000  # legacy default; overridden by dynamic budget when model is known
 OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when model is known
 
+# Max characters accepted in a single user chat message. Generous (~18-19k tokens);
+# bounds the per-message cost of the guardrail heuristic/classifier and the LLM call.
+# Enforced authoritatively here in the consumer and also client-side in chat.html.
+MESSAGE_MAX_CHARS = 75_000
+
 
 class ChatConsumer(AsyncWebsocketConsumer):
     """WebSocket consumer for chat with LLM streaming and optional RAG via data rooms."""
@@ -312,6 +317,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Load a thread's data rooms, skill, and canvas into the session."""
         thread_id = data.get("thread_id")
         if not thread_id:
+            return
+
+        # Verify ownership before joining the thread's broadcast group. thread_id
+        # comes from the client; without this check a user could subscribe to
+        # another user's thread_<id> group and receive its sub-agent events.
+        if not await self._get_thread_by_id(thread_id):
             return
 
         # Leave previous thread group, join the new one
@@ -669,6 +680,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 await self.send(text_data=json.dumps({"error": "Empty message"}))
                 return
 
+            if len(content) > MESSAGE_MAX_CHARS:
+                await self.send(text_data=json.dumps({
+                    "error": f"Message is too long ({len(content):,} characters). "
+                             f"The limit is {MESSAGE_MAX_CHARS:,} characters.",
+                }))
+                return
+
             if content.startswith("/"):
                 await self._handle_slash_command(content, data)
                 return
@@ -806,17 +824,52 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self._stream_finished.clear()
             self._guardrail_intercepted = False
             self._guardrail_warn_verdict = None
+            self._guardrail_task = None
             self._modified_canvas_ids = set()
 
-            # Launch classifier+reviewer pipeline in parallel with the LLM stream
-            # (skipped in seed mode — server-controlled text)
+            # Guardrail Layers 1+2 (classifier + reviewer). Skipped in seed mode
+            # (server-controlled text).
             if not seed_mode:
-                self._guardrail_task = asyncio.create_task(
-                    self._run_guardrail_pipeline(
-                        content, heuristic_verdict.heuristic_result,
-                        thread, org_id, self._cancel_event,
+                if heuristic_verdict.heuristic_result.is_suspicious:
+                    # Hold mode: the Layer 0 heuristic flagged this as suspicious, so run
+                    # the full pipeline to completion BEFORE streaming. An elevated-risk
+                    # message must not stream tokens to the client ahead of the verdict
+                    # (the parallel path below only redacts after the fact). Only this
+                    # heuristic-flagged subset pays the extra round-trip.
+                    hold_verdict = await run_classifier_pipeline(
+                        text=content,
+                        user=self.user,
+                        heuristic_result=heuristic_verdict.heuristic_result,
+                        thread_id=str(thread.id),
+                        org_id=org_id,
                     )
-                )
+                    if hold_verdict.action == "block":
+                        await self._redact_messages(thread, redact_assistant=False)
+                        await self.send(text_data=json.dumps({
+                            "event_type": "guardrail.blocked",
+                            "data": {"message": hold_verdict.message, "redact": True},
+                        }))
+                        return
+                    if hold_verdict.action == "suspend":
+                        await self._redact_messages(thread, redact_assistant=False)
+                        await self.send(text_data=json.dumps({
+                            "event_type": "guardrail.suspended",
+                            "data": {"message": hold_verdict.message, "redact": True},
+                        }))
+                        return
+                    if hold_verdict.action == "warn":
+                        # Stream is safe to proceed; deliver the warning after it ends.
+                        self._guardrail_warn_verdict = hold_verdict
+                    # dismiss/allow → just proceed; the pipeline has already run.
+                else:
+                    # Clean heuristic: run Layers 1+2 in parallel with the LLM stream
+                    # (see guardrails/service.py "parallel pipeline tradeoff").
+                    self._guardrail_task = asyncio.create_task(
+                        self._run_guardrail_pipeline(
+                            content, heuristic_verdict.heuristic_result,
+                            thread, org_id, self._cancel_event,
+                        )
+                    )
 
             # Refresh preferences per message so toggles (e.g. the "+" menu
             # autonomy switch) take effect on the next turn without requiring
@@ -2572,6 +2625,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thread_id = data.get("thread_id")
         if not thread_id:
             await self._send_command_result("/cost", "ok", "Thread cost: $0.00")
+            return
+        # Verify ownership — thread_id comes from the client and must not expose
+        # another user's spend.
+        if not await self._get_thread_by_id(thread_id):
+            await self._send_command_result("/cost", "error", "Thread not found.")
             return
         cost = await self._get_thread_cost(thread_id)
         if cost < 0.01:

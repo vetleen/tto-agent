@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 CANVAS_MAX_CHARS = 75_000
 MAX_CANVASES_PER_THREAD = 10
 MAX_ACTIVE_CANVASES = 3
-MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
 EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
 
 
@@ -588,129 +587,6 @@ def replace_email_with_html(content: str) -> str:
                 f'border-top:none;margin-bottom:1em;">{escaped_body}</div>'
             )
 
-        content = content[: m.start()] + replacement + content[m.end() :]
-
-    return content
-
-
-# ---------------------------------------------------------------------------
-# Mermaid diagram rendering (for .docx export)
-# ---------------------------------------------------------------------------
-
-MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
-
-
-def _render_mermaid_pngs(sources: list[str]) -> list[bytes | None]:
-    """Render multiple mermaid diagrams to PNG using a separate subprocess.
-
-    Playwright needs ProactorEventLoop on Windows but Daphne uses
-    SelectorEventLoop.  Changing the policy in-process would break the
-    WebSocket connections, so we isolate the rendering in a child process.
-    """
-    import json
-    import subprocess
-    import sys
-    import tempfile
-
-    results: list[bytes | None] = [None] * len(sources)
-    tmp_input = None
-
-    # Write sources to a temp file for the subprocess to read.
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
-        ) as f:
-            json.dump(sources, f)
-            tmp_input = f.name
-
-        # The subprocess sets ProactorEventLoop itself, rendering each
-        # diagram and writing base64-encoded results as JSON to stdout.
-        script = _MERMAID_SUBPROCESS_SCRIPT
-        proc = subprocess.run(
-            [sys.executable, "-c", script, tmp_input],
-            capture_output=True,
-            text=True,
-            timeout=60 + 20 * len(sources),
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            encoded_list = json.loads(proc.stdout)
-            for i, b64 in enumerate(encoded_list):
-                if b64:
-                    results[i] = base64.b64decode(b64)
-        else:
-            logger.error(
-                "Mermaid subprocess failed (rc=%d): %s",
-                proc.returncode,
-                proc.stderr[:500],
-            )
-    except Exception:
-        logger.exception("Failed to run mermaid rendering subprocess")
-    finally:
-        if tmp_input:
-            import os
-            try:
-                os.unlink(tmp_input)
-            except Exception:
-                pass
-    return results
-
-
-_MERMAID_SUBPROCESS_SCRIPT = r'''
-import asyncio, base64, json, sys
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-from html import escape
-from playwright.sync_api import sync_playwright
-
-MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
-sources = json.load(open(sys.argv[1], encoding="utf-8"))
-results = [None] * len(sources)
-try:
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-        for i, source in enumerate(sources):
-            esc = escape(source)
-            html = (
-                "<!DOCTYPE html><html><head>"
-                '<script src="' + MERMAID_CDN + '"></script>'
-                "</head><body>"
-                '<pre class="mermaid">' + esc + "</pre>"
-                "<script>mermaid.initialize({startOnLoad:true});</script>"
-                "</body></html>"
-            )
-            try:
-                page.set_content(html, wait_until="networkidle")
-                page.wait_for_selector(".mermaid svg", timeout=15000)
-                el = page.query_selector(".mermaid")
-                if el:
-                    results[i] = base64.b64encode(el.screenshot(type="png")).decode()
-            except Exception as e:
-                print(f"Diagram {i} failed: {e}", file=sys.stderr)
-        browser.close()
-except Exception as e:
-    print(f"Mermaid subprocess error: {e}", file=sys.stderr)
-print(json.dumps(results))
-'''
-
-
-def replace_mermaid_with_images(content: str) -> str:
-    """Replace ```mermaid blocks with base64 <img> tags for docx export."""
-    matches = list(MERMAID_BLOCK_RE.finditer(content))
-    if not matches:
-        return content
-
-    sources = [m.group(1) for m in matches]
-    rendered_pngs = _render_mermaid_pngs(sources)
-
-    # Replace in reverse order to preserve string offsets
-    for m, png in reversed(list(zip(matches, rendered_pngs))):
-        if png:
-            b64 = base64.b64encode(png).decode()
-            replacement = f'<img src="data:image/png;base64,{b64}" alt="Diagram" />'
-        else:
-            # Keep original code block on render failure
-            replacement = m.group(0)
         content = content[: m.start()] + replacement + content[m.end() :]
 
     return content

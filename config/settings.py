@@ -161,6 +161,37 @@ if not DEBUG:
     # Redirect HTTP to HTTPS (Heroku router handles this, but defense-in-depth)
     SECURE_SSL_REDIRECT = True
 
+# --- Content-Security-Policy (django-csp) ---
+# All third-party JS is self-hosted (static/js/vendor/), so script-src is 'self'
+# plus a per-request nonce: injected inline scripts carry no nonce and are blocked
+# — the primary XSS control. Inline styles keep 'unsafe-inline' (style injection is
+# low risk and there are many inline style= attributes + library-injected styles);
+# Google Fonts are allowlisted. img-src/media-src allow https: so S3-hosted media
+# and document images still load. These resource directives are a starting point to
+# tighten once verified on staging.
+from csp.constants import NONE, NONCE, SELF, UNSAFE_INLINE  # noqa: E402
+
+CONTENT_SECURITY_POLICY = {
+    "DIRECTIVES": {
+        "default-src": [SELF],
+        "script-src": [SELF, NONCE],
+        "style-src": [SELF, UNSAFE_INLINE, "https://fonts.googleapis.com"],
+        "font-src": [SELF, "https://fonts.gstatic.com", "https://cdn.jsdelivr.net", "data:"],
+        "img-src": [SELF, "data:", "blob:", "https:"],
+        "media-src": [SELF, "blob:", "https:"],
+        "connect-src": [SELF],
+        "worker-src": [SELF, "blob:"],
+        "object-src": [NONE],
+        "base-uri": [SELF],
+        "frame-ancestors": [NONE],
+        "form-action": [SELF],
+    },
+}
+# Enforced in every environment (including local DEBUG). django-debug-toolbar and
+# django-browser-reload are CSP-compatible (external scripts; the toolbar picks up
+# request.csp_nonce automatically). If a dev tool ever needs a relaxation, prefer
+# CONTENT_SECURITY_POLICY_REPORT_ONLY over weakening the enforced policy.
+
 # Email backend (set before INSTALLED_APPS so we can conditionally add anymail)
 EMAIL_BACKEND = os.getenv(
     "DJANGO_EMAIL_BACKEND",
@@ -203,6 +234,7 @@ if USING_ANYMAIL:
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "csp.middleware.CSPMiddleware",
     "core.middleware.RequestIDMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",

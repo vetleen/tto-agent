@@ -163,7 +163,7 @@
 
   {% if archived_documents %}
   <section class="mt-6">
-    <button type="button" class="flex items-center text-base font-semibold text-body hover:text-heading mb-3" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-90');">
+    <button type="button" class="flex items-center text-base font-semibold text-body hover:text-heading mb-3" data-toggle-next>
       <svg class="w-4 h-4 me-1.5 shrink-0 transition-transform" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
       Archived documents (<span class="wf-mono">{{ archived_documents|length }}</span>)
     </button>
@@ -326,13 +326,13 @@
   </div>
 
   {% include "_markdown_styles.html" %}
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+  <script src="{% static 'js/vendor/marked.min.js' %}"></script>
+  <script src="{% static 'js/vendor/purify.min.js' %}"></script>
   <script src="{% static 'js/rename-modal.js' %}"></script>
   <script src="{% static 'js/view-document-modal.js' %}"></script>
   <script src="{% static 'js/document-list.js' %}"></script>
   <script src="{% static 'js/data-room-description.js' %}?v=20260611"></script>
-  <script>
+  <script nonce="{{ request.csp_nonce }}">
   (function() {
     var container = document.getElementById('page-container');
     var dropOverlay = document.getElementById('drop-overlay');

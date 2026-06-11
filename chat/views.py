@@ -263,17 +263,14 @@ def thread_emoji(request, thread_id):
 
 
 @login_required
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["POST"])
 async def canvas_export(request, thread_id, canvas_id=None):
     """Export the canvas as a .docx file.
 
-    POST: client sends JSON ``{"content": "..."}`` with mermaid blocks already
-    rendered as ``<img>`` tags (avoids server-side Playwright dependency).
-
-    GET (legacy): server renders mermaid via Playwright subprocess (fallback).
+    The client sends JSON ``{"content": "..."}`` with mermaid blocks already
+    rendered as ``<img>`` tags (rendered in the browser), so the server never
+    runs a headless browser over untrusted canvas content.
     """
-    import asyncio
-
     from asgiref.sync import sync_to_async
 
     thread = await sync_to_async(get_object_or_404)(ChatThread, id=thread_id, created_by=request.user)
@@ -285,18 +282,14 @@ async def canvas_export(request, thread_id, canvas_id=None):
     import markdown as md
     from html2docx import html2docx
 
-    from chat.services import replace_email_with_html, replace_mermaid_with_images
+    from chat.services import replace_email_with_html
 
-    if request.method == "POST":
-        # Client already replaced mermaid blocks with <img> tags.
-        try:
-            body = json.loads(request.body)
-        except (json.JSONDecodeError, ValueError):
-            return HttpResponseBadRequest("Invalid JSON")
-        content = body.get("content", canvas.content)
-    else:
-        # Legacy GET: render mermaid server-side with Playwright.
-        content = await asyncio.to_thread(replace_mermaid_with_images, canvas.content)
+    # Client already replaced mermaid blocks with <img> tags.
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return HttpResponseBadRequest("Invalid JSON")
+    content = body.get("content", canvas.content)
 
     content = replace_email_with_html(content)
     html_content = md.markdown(content, extensions=["tables", "fenced_code"])
@@ -523,7 +516,16 @@ def skills_for_user(request):
 @login_required
 @require_POST
 def upload_attachments(request, thread_id):
-    """Upload file attachments for a chat message."""
+    """Upload file attachments for a chat message.
+
+    Security note: the stored ``content_type`` is client-asserted (the browser's
+    reported MIME type, only validated against an allow-list below). It is trusted
+    solely for routing the file to the LLM (image vs. pdf vs. text block) and is
+    never echoed back to a browser. Attachments are not served back as downloads;
+    if a serve-back endpoint is ever added it MUST send ``Content-Disposition:
+    attachment`` + ``X-Content-Type-Options: nosniff`` and must NOT reflect this
+    stored value as the response ``Content-Type`` (it could be a mislabeled file).
+    """
     from chat.services import SUPPORTED_ATTACHMENT_TYPES, SUPPORTED_DOCX_TYPES, max_size_for_content_type
 
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)

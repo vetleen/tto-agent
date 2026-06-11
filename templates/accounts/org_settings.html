@@ -437,7 +437,7 @@
   </div>
 </main>
 
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
   var orgModels = JSON.parse('{{ org_models_json|escapejs }}');
@@ -818,7 +818,7 @@
 })();
 </script>
 
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   // Section-index scrollspy — highlights the current section in the left nav.
   var links = Array.prototype.slice.call(document.querySelectorAll('.settings-nav'));

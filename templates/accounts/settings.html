@@ -256,7 +256,7 @@
   </div>
 </main>
 
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   // Set initial select values from server data
   var userModels = JSON.parse('{{ user_models|escapejs }}');
@@ -402,7 +402,7 @@
 })();
 </script>
 
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
   var activeClasses = 'bg-brand text-on-brand';
@@ -443,7 +443,7 @@
 })();
 </script>
 
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function() {
   // Section-index scrollspy — highlights the current section in the left nav.
   var links = Array.prototype.slice.call(document.querySelectorAll('.settings-nav'));

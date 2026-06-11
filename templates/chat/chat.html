@@ -187,7 +187,7 @@
                   {% endfor %}
                 </div>
                 {% endif %}
-                <button type="button" onclick="copyMessage(this)" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
+                <button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
               </div>
               <span class="wf-avatar" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
             </div>
@@ -196,7 +196,7 @@
               <span class="wmsg__av">{{ assistant_name|first|upper }}</span>
               <div class="wmsg__body">
                 <div class="text-sm text-body markdown-content">{{ m.content }}</div>
-                <button type="button" onclick="copyMessage(this)" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
+                <button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
               </div>
             </div>
           {% endif %}
@@ -351,15 +351,15 @@
         {% if not messages %}
         {# Empty-state quick actions — mirror the "+" attach menu #}
         <div id="quick-actions" class="quickrow">
-          <button type="button" class="quick" onclick="document.getElementById('open-data-room-modal-btn').click()">
+          <button type="button" class="quick" data-click-target="open-data-room-modal-btn">
             <span class="ic"><svg class="w-[15px] h-[15px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/></svg></span>
             Attach data room
           </button>
-          <button type="button" class="quick" onclick="document.getElementById('open-skill-modal-btn').click()">
+          <button type="button" class="quick" data-click-target="open-skill-modal-btn">
             <span class="ic"><svg class="w-[15px] h-[15px]" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg></span>
             Attach skill
           </button>
-          <button type="button" class="quick" onclick="document.getElementById('attach-images-btn').click()">
+          <button type="button" class="quick" data-click-target="attach-images-btn">
             <span class="ic"><svg class="w-[15px] h-[15px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span>
             Attach files
           </button>
@@ -531,12 +531,12 @@
 </div>
 
 {# Markdown rendering libraries #}
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked-footnote@1.2.4/dist/index.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/diff@7.0.0/dist/diff.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dom-to-image-more@3/dist/dom-to-image-more.min.js"></script>
+<script src="{% static 'js/vendor/marked.min.js' %}"></script>
+<script src="{% static 'js/vendor/marked-footnote.umd.min.js' %}"></script>
+<script src="{% static 'js/vendor/purify.min.js' %}"></script>
+<script src="{% static 'js/vendor/diff.min.js' %}"></script>
+<script src="{% static 'js/vendor/mermaid.min.js' %}"></script>
+<script src="{% static 'js/vendor/dom-to-image-more.min.js' %}"></script>
 
 {# Markdown styling #}
 {% include "_markdown_styles.html" %}
@@ -681,7 +681,7 @@
 
 </style>
 
-<script>
+<script nonce="{{ request.csp_nonce }}">
 (function () {
   const THREAD_ID = "{{ thread.id|default:'' }}";
   const USER_INITIAL = "{{ user.email|first|upper }}";
@@ -781,6 +781,14 @@
 
   function escapeHtml(text) { const div = document.createElement("div"); div.textContent = text; return div.innerHTML; }
 
+  // Defense-in-depth sanitization for mermaid-rendered SVG before it is assigned
+  // to innerHTML. mermaid runs with securityLevel:'strict', but we never trust its
+  // output directly. The svg + html profiles keep <foreignObject> label markup that
+  // mermaid v11 emits while DOMPurify strips <script>, on* handlers and javascript: URIs.
+  function sanitizeSvg(svg) {
+    return DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true, html: true } });
+  }
+
   window.copyMessage = function(btn) {
     var msgDiv = btn.closest('[data-role]');
     var role = msgDiv.getAttribute('data-role');
@@ -807,7 +815,12 @@
       navigator.clipboard.writeText(plainText).then(onSuccess);
     }
   };
-  var COPY_BTN_HTML = '<button type="button" onclick="copyMessage(this)" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>';
+  // Delegated copy handler — replaces the inline onclick that CSP blocks.
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.copy-msg-btn');
+    if (btn) window.copyMessage(btn);
+  });
+  var COPY_BTN_HTML = '<button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>';
 
   // -- Mermaid rendering & PNG export --
   function renderMermaidBlocks(container) {
@@ -825,7 +838,7 @@
           // Clean up the temp element mermaid inserts into the body
           var tmp = document.getElementById('d' + id);
           if (tmp) tmp.remove();
-          el.innerHTML = '<div class="mermaid-wrapper">' + result.svg +
+          el.innerHTML = '<div class="mermaid-wrapper">' + sanitizeSvg(result.svg) +
             '<button class="mermaid-download-btn" title="Download as PNG">PNG</button></div>';
           el.querySelector('.mermaid-download-btn').addEventListener('click', function() {
             var svgEl = this.closest('.mermaid-wrapper').querySelector('svg');
@@ -873,7 +886,7 @@
       // Insert rendered SVG into an offscreen container so domtoimage can capture it
       var container = document.createElement('div');
       container.style.cssText = 'position:fixed;left:-9999px;top:0;';
-      container.innerHTML = result.svg;
+      container.innerHTML = sanitizeSvg(result.svg);
       document.body.appendChild(container);
       var svgEl = container.querySelector('svg');
       return domtoimage.toPng(svgEl, { bgcolor: '#ffffff', scale: 2 }).then(function(dataUrl) {
@@ -2157,6 +2170,12 @@
   form.addEventListener("submit", function(e) {
     e.preventDefault(); if (locked) return;
     const text = (input.value || "").trim(); if (!text) return;
+    // Cap message length (server enforces the same limit authoritatively).
+    const MESSAGE_MAX_CHARS = 75000;
+    if (text.length > MESSAGE_MAX_CHARS) {
+      showToast("Message is too long (" + text.length.toLocaleString() + " characters). The limit is " + MESSAGE_MAX_CHARS.toLocaleString() + " characters.");
+      return;
+    }
     // Slash commands — send without user/assistant bubbles
     if (text.startsWith("/")) {
       input.value = ""; autoResize(input);

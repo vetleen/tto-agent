@@ -65,7 +65,7 @@
           </form>
           <form method="post" action="{% url 'meeting_delete' meeting_uuid=m.uuid %}" class="p-0">
             {% csrf_token %}
-            <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left" onclick="return confirm('Delete this meeting? This can\'t be undone.');">Delete</button>
+            <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left" data-confirm="Delete this meeting? This can't be undone.">Delete</button>
           </form>
         </div>
       </div>
@@ -86,7 +86,7 @@
 
   {% if archived_meetings %}
   <div class="mt-8">
-    <button type="button" class="flex items-center text-sm font-medium text-body hover:text-heading mb-3" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-90');">
+    <button type="button" class="flex items-center text-sm font-medium text-body hover:text-heading mb-3" data-toggle-next>
       <svg class="w-4 h-4 me-1.5 shrink-0 transition-transform" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
       Archived meetings ({{ archived_meetings|length }})
     </button>
@@ -109,7 +109,7 @@
             </form>
             <form method="post" action="{% url 'meeting_delete' meeting_uuid=m.uuid %}" class="p-0">
               {% csrf_token %}
-              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left" onclick="return confirm('Delete this meeting? This can\'t be undone.');">Delete</button>
+              <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left" data-confirm="Delete this meeting? This can't be undone.">Delete</button>
             </form>
           </div>
         </div>
@@ -143,7 +143,7 @@
     </div>
   </div>
 </div>
-<script>
+<script nonce="{{ request.csp_nonce }}">
 // Wire the rename buttons to the modal — minimal version of the data rooms rename-modal pattern.
 document.addEventListener('DOMContentLoaded', function () {
   const modalTrigger = document.getElementById('rename-mtg-modal-trigger');

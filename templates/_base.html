@@ -11,7 +11,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="{% static 'favicons/favicon-32x32.png' %}">
     <link rel="icon" type="image/png" sizes="16x16" href="{% static 'favicons/favicon-16x16.png' %}">
     <link rel="apple-touch-icon" href="{% static 'favicons/apple-touch-icon.png' %}">
-    <script>
+    <script nonce="{{ request.csp_nonce }}">
       (function() {
         var serverTheme = document.documentElement.getAttribute('data-theme');
         if (serverTheme === 'dark') {
@@ -139,9 +139,42 @@
     </nav>
     {% endblock navbar %}
     {% block content %}{% endblock content %}
-    <script src="https://cdn.jsdelivr.net/npm/flowbite@4.0.1/dist/flowbite.min.js" integrity="sha384-dXMudAuWq5MLjG7Tex8rC+3U/BPQ/OUAF6UyUa7DWzfAMW1JRIf2NuW2hAyGtsvO" crossorigin="anonymous"></script>
+    <script src="{% static 'js/vendor/flowbite.min.js' %}"></script>
+    <script nonce="{{ request.csp_nonce }}">
+      // Delegated handlers for declarative data-* attributes — these replace the
+      // inline on*= handlers that a nonce-based CSP blocks. One global listener
+      // covers every page (all extend _base.html).
+      document.addEventListener('click', function(e) {
+        var confirmEl = e.target.closest('[data-confirm]');
+        if (confirmEl && !window.confirm(confirmEl.getAttribute('data-confirm'))) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        var toggleEl = e.target.closest('[data-toggle-next]');
+        if (toggleEl) {
+          var next = toggleEl.nextElementSibling;
+          if (next) next.classList.toggle('hidden');
+          var svg = toggleEl.querySelector('svg');
+          if (svg) svg.classList.toggle('rotate-90');
+        }
+        var clickTargetEl = e.target.closest('[data-click-target]');
+        if (clickTargetEl) {
+          var target = document.getElementById(clickTargetEl.getAttribute('data-click-target'));
+          if (target) target.click();
+        }
+        if (e.target.closest('[data-history-back]')) {
+          e.preventDefault();
+          history.back();
+        }
+      });
+      document.addEventListener('change', function(e) {
+        var submitEl = e.target.closest('[data-submit-on-change]');
+        if (submitEl && submitEl.form) submitEl.form.submit();
+      });
+    </script>
     {% if user.is_authenticated %}
-    <script>
+    <script nonce="{{ request.csp_nonce }}">
       (function() {
         var themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
         var themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
@@ -183,7 +216,7 @@
     </script>
     {% endif %}
     {% if not user.is_authenticated and not landing_page %}
-    <script>
+    <script nonce="{{ request.csp_nonce }}">
       (function() {
         var btn = document.getElementById('theme-toggle-anon');
         if (!btn) return;
@@ -211,7 +244,7 @@
     </script>
     {% endif %}
     {% if user.is_authenticated %}
-    <script src="https://cdn.jsdelivr.net/npm/html2canvas-pro@1/dist/html2canvas-pro.min.js" crossorigin="anonymous"></script>
+    <script src="{% static 'js/vendor/html2canvas-pro.min.js' %}"></script>
     {% block feedback_widget %}{% include "feedback/_widget.html" %}{% endblock %}
     <script src="{% static 'js/feedback-widget.js' %}"></script>
     {% endif %}
