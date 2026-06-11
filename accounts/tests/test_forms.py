@@ -18,7 +18,8 @@ class InputClassesTests(TestCase):
     def test_returns_tailwind_classes(self) -> None:
         classes = _input_classes()
         self.assertIn("rounded-base", classes)
-        self.assertIn("focus:border-brand", classes)
+        # Focus/border styling now lives in the shared .wf-input CSS class.
+        self.assertIn("wf-input", classes)
 
     def test_returns_string(self) -> None:
         self.assertIsInstance(_input_classes(), str)

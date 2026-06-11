@@ -35,12 +35,12 @@ class FeedbackModelTests(TestCase):
         self.assertEqual(items[0], fb2)
         self.assertEqual(items[1], fb1)
 
-    def test_user_deletion_preserves_feedback(self):
-        fb = Feedback.objects.create(user=self.user, text="Keep this")
+    def test_user_deletion_cascades_feedback(self):
+        # GDPR Phase 1: Feedback.user is on_delete=CASCADE so deleting a
+        # user removes their feedback (no orphaned PII).
+        fb = Feedback.objects.create(user=self.user, text="Delete this")
         self.user.delete()
-        fb.refresh_from_db()
-        self.assertIsNone(fb.user)
-        self.assertEqual(fb.text, "Keep this")
+        self.assertFalse(Feedback.objects.filter(pk=fb.pk).exists())
 
     def test_default_values(self):
         fb = Feedback.objects.create(user=self.user, text="Minimal")

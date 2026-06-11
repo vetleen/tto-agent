@@ -2094,12 +2094,15 @@ class EmailLoaderTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
                      patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
+                     patch("guardrails.tasks.scan_document_chunks.delay"), \
                      patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
                 self.assertEqual(doc.parser_type, "msg")
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                # process_document always holds documents in SCANNING; the
+                # guardrail scan releases them to READY.
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
 
     @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="structure_aware")
     def test_process_document_eml_parser_type(self):
@@ -2126,12 +2129,15 @@ class EmailLoaderTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
                      patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
+                     patch("guardrails.tasks.scan_document_chunks.delay"), \
                      patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
                 self.assertEqual(doc.parser_type, "eml")
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                # process_document always holds documents in SCANNING; the
+                # guardrail scan releases them to READY.
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
 
 
 class ProcessDocumentAudioTests(TestCase):
@@ -2143,7 +2149,7 @@ class ProcessDocumentAudioTests(TestCase):
 
     @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="structure_aware")
     def test_process_document_audio_file(self):
-        """Audio file goes through transcribe -> chunk -> READY."""
+        """Audio file goes through transcribe -> chunk -> SCANNING (guardrail gate)."""
         from django.core.files.base import ContentFile
         from documents.services.process_document import process_document
 
@@ -2171,12 +2177,15 @@ class ProcessDocumentAudioTests(TestCase):
                 with patch("core.preferences.get_preferences", return_value=mock_prefs), \
                      patch("documents.services.transcription.transcribe_audio", return_value="This is a transcript.") as mock_transcribe, \
                      patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks) as mock_chunk, \
+                     patch("guardrails.tasks.scan_document_chunks.delay"), \
                      patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
                 mock_transcribe.assert_called_once()
                 doc.refresh_from_db()
-                self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+                # process_document always holds documents in SCANNING; the
+                # guardrail scan releases them to READY.
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
                 self.assertEqual(doc.parser_type, "audio")
                 self.assertEqual(doc.transcript, "This is a transcript.")
                 self.assertEqual(doc.transcription_model, "openai/gpt-4o-mini-transcribe")

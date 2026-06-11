@@ -8,10 +8,10 @@ from llm.model_info import get_context_window, get_history_budget
 class GetContextWindowTests(TestCase):
 
     def test_known_model(self):
-        self.assertEqual(get_context_window("claude-sonnet-4-6"), 200_000)
+        self.assertEqual(get_context_window("claude-sonnet-4-6"), 1_000_000)
 
     def test_known_model_with_prefix(self):
-        self.assertEqual(get_context_window("anthropic/claude-sonnet-4-6"), 200_000)
+        self.assertEqual(get_context_window("anthropic/claude-sonnet-4-6"), 1_000_000)
 
     def test_unknown_model_returns_default(self):
         self.assertEqual(get_context_window("unknown-model-xyz"), 128_000)
@@ -32,7 +32,7 @@ class GetContextWindowTests(TestCase):
 class GetHistoryBudgetTests(TestCase):
 
     def test_budget_is_75_percent_of_context(self):
-        # claude-sonnet-4-6: 200k * 0.75 = 150k (at cap)
+        # claude-sonnet-4-6: 1M * 0.75 = 750k, capped to 150k
         self.assertEqual(get_history_budget("claude-sonnet-4-6"), 150_000)
 
     def test_budget_capped_at_150k(self):
@@ -59,5 +59,5 @@ class GetHistoryBudgetTests(TestCase):
         self.assertEqual(get_history_budget("gpt-5.4", max_context_tokens=None), 150_000)
 
     def test_max_context_larger_than_model_no_effect(self):
-        # max_context=500k on 200k model still gives 150k (200k * 0.75 = 150k)
+        # max_context=500k on a 1M model: 500k * 0.75 = 375k, still capped to 150k
         self.assertEqual(get_history_budget("claude-sonnet-4-6", max_context_tokens=500_000), 150_000)

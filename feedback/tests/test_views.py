@@ -48,7 +48,7 @@ class SubmitFeedbackTests(TestCase):
     def test_unauthenticated_redirects(self):
         response = self.client.post(self.url, {"text": "hello"})
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+        self.assertIn("/accounts/logged-out/", response.url)
 
     def test_get_not_allowed(self):
         self.client.login(email=self.user.email, password=self.password)

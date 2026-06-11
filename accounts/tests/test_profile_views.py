@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Membership, Organization
+from accounts.views.settings import MAX_DESCRIPTION_LENGTH
 from guardrails.schemas import ClassifierResult
 
 User = get_user_model()
@@ -84,7 +85,7 @@ class ProfileUpdateTests(TestCase):
         mock_cls.assert_called_once()
 
     def test_description_too_long_returns_400(self):
-        r = self._post({"description": "x" * 601})
+        r = self._post({"description": "x" * (MAX_DESCRIPTION_LENGTH + 1)})
         self.assertEqual(r.status_code, 400)
         self.assertIn("error", r.json())
 
@@ -144,7 +145,7 @@ class OrgDescriptionUpdateTests(TestCase):
         self.assertEqual(self.org.description, "A biotech TTO.")
 
     def test_too_long_returns_400(self):
-        r = self._post({"description": "x" * 601})
+        r = self._post({"description": "x" * (MAX_DESCRIPTION_LENGTH + 1)})
         self.assertEqual(r.status_code, 400)
 
     @patch("guardrails.classifier.classify_description_sync", return_value=_SUSPICIOUS)

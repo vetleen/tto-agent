@@ -556,6 +556,12 @@ class PreferencesSkillCascadeTests(TestCase):
         from unittest.mock import MagicMock
 
         mock_reg.return_value.list_tools.return_value = {}
+        # filter_to_skill_tools() resolves each tool via registry.get_tool()
+        # and keeps only section == "skills" tools.
+        skills_tool = MagicMock(section="skills")
+        mock_reg.return_value.get_tool.side_effect = (
+            lambda name: skills_tool if name in ("create_skill", "edit_skill") else None
+        )
         self.org.preferences = {
             "skills": {"test-skill": {"enabled": True, "tools": {"create_skill": False}}}
         }
@@ -574,6 +580,12 @@ class PreferencesSkillCascadeTests(TestCase):
         from unittest.mock import MagicMock
 
         mock_reg.return_value.list_tools.return_value = {}
+        # filter_to_skill_tools() resolves each tool via registry.get_tool()
+        # and keeps only section == "skills" tools.
+        skills_tool = MagicMock(section="skills")
+        mock_reg.return_value.get_tool.side_effect = (
+            lambda name: skills_tool if name in ("create_skill", "edit_skill") else None
+        )
         self.org.preferences = {"skills": {"test-skill": {"enabled": True}}}
         self.org.save(update_fields=["preferences"])
 
@@ -1337,16 +1349,17 @@ class OrgFeatureModelUpdateTests(TestCase):
     ])
     def test_happy_path(self, mock_models):
         self.client.login(email=self.admin_user.email, password=self.password)
+        # document_description has a "mid" tier floor, so pick a mid-tier model.
         response = self.client.post(
             self.url,
-            json.dumps({"feature": "document_description", "model": "openai/gpt-5.4-nano"}),
+            json.dumps({"feature": "document_description", "model": "openai/gpt-5.4-mini"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["ok"])
         self.org.refresh_from_db()
-        self.assertEqual(self.org.preferences["feature_models"]["document_description"], "openai/gpt-5.4-nano")
+        self.assertEqual(self.org.preferences["feature_models"]["document_description"], "openai/gpt-5.4-mini")
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",

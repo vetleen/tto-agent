@@ -73,7 +73,7 @@ class EditInChatViewTests(TestCase):
             reverse("agent_skills_edit_in_chat", args=[self.user_skill.id])
         )
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/login", response["Location"])
+        self.assertIn("/accounts/logged-out/", response["Location"])
 
     def test_user_skill_owner_creates_thread(self):
         self.client.force_login(self.user)

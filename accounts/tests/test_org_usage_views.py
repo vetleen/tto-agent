@@ -73,7 +73,7 @@ class OrgUsagePageTests(TestCase):
         self.assertContains(response, "Organization usage")
         self.assertContains(response, "Test Org")
         self.assertContains(response, "$0.00")
-        self.assertContains(response, "No usage data for this period.")
+        self.assertContains(response, "No usage to show for this period yet.")
 
     def test_totals_include_all_org_members(self):
         _create_log(self.admin, cost="0.10")

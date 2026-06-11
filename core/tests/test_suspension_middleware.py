@@ -72,4 +72,4 @@ class SuspensionMiddlewareTests(TestCase):
         resp = self.client.get("/chat/")
         self.assertEqual(resp.status_code, 302)
         self.assertNotEqual(resp.headers["Location"], self.suspended_url)
-        self.assertIn("/accounts/login/", resp.headers["Location"])
+        self.assertIn("/accounts/logged-out/", resp.headers["Location"])

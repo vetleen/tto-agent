@@ -132,13 +132,17 @@ class ChatEndToEndTests(TransactionTestCase):
             ChatMessage.objects.order_by("created_at").values_list("role", "content")
         )
 
+    # The allow-list is intersected with the model registry, and the chat
+    # feature requires a standard-tier model, so tests must use a registered
+    # standard-tier model ID. The model itself is faked via the patched
+    # create_chat_model, so no real API is called.
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "test-model", "DEFAULT_LLM_MODEL": "test-model"},
+        {"LLM_ALLOWED_MODELS": "gpt-5.4", "DEFAULT_LLM_MODEL": "gpt-5.4"},
         clear=False,
     )
     async def test_user_message_to_llm_tokens_to_persisted_assistant(self):
-        fake = _FakeChatModel(model_name="test-model", tokens="Hello")
+        fake = _FakeChatModel(model_name="gpt-5.4", tokens="Hello")
         self._register_fake_model(fake)
 
         communicator = await self._connect()
@@ -156,6 +160,12 @@ class ChatEndToEndTests(TransactionTestCase):
         self.assertEqual(ev2["event_type"], "token")
         self.assertEqual(ev2["data"].get("text"), "Hello")
         self.assertEqual(ev3["event_type"], "message_end")
+
+        # Persistence happens in the background stream task after message_end;
+        # thread.cost_updated is sent only once the assistant message is saved.
+        # Waiting for it avoids racing disconnect() against the persist step.
+        cost_ev = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(cost_ev["event_type"], "thread.cost_updated")
 
         await communicator.disconnect()
 
@@ -176,11 +186,11 @@ class ChatEndToEndTests(TransactionTestCase):
         # User message has semi-static/dynamic context prepended for caching;
         # the original user text should still be present at the end.
         self.assertIn("Hi", req.messages[-1].content)
-        self.assertEqual(req.model, "test-model")
+        self.assertEqual(req.model, "gpt-5.4")
 
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "test-model", "DEFAULT_LLM_MODEL": "test-model"},
+        {"LLM_ALLOWED_MODELS": "gpt-5.4", "DEFAULT_LLM_MODEL": "gpt-5.4"},
         clear=False,
     )
     @patch("documents.services.retrieval.similarity_search_chunks")
@@ -188,7 +198,7 @@ class ChatEndToEndTests(TransactionTestCase):
         mock_search.return_value = []
 
         fake = _FakeChatModel(
-            model_name="test-model",
+            model_name="gpt-5.4",
             tokens="Done",
             tool_call_on_first_generate=True,
         )

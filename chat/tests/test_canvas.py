@@ -427,6 +427,7 @@ class DescribeImageTests(TestCase):
         from chat.services import describe_image
 
         prefs = MagicMock()
+        prefs.feature_models = {}
         prefs.cheap_model = "gemini/gemini-3.5-flash"
         prefs.mid_model = "openai/gpt-5-mini"
         prefs.top_model = "anthropic/claude-sonnet-4-5"
@@ -445,6 +446,7 @@ class DescribeImageTests(TestCase):
         from chat.services import describe_image
 
         prefs = MagicMock()
+        prefs.feature_models = {}
         prefs.cheap_model = "openai/o3"
         prefs.mid_model = "openai/o4-mini"
         prefs.top_model = "custom/text-only"
@@ -459,6 +461,7 @@ class DescribeImageTests(TestCase):
         from chat.services import describe_image
 
         prefs = MagicMock()
+        prefs.feature_models = {}
         prefs.cheap_model = "anthropic/claude-haiku-4-5-20251001"
         prefs.mid_model = "openai/gpt-5-mini"
         prefs.top_model = "anthropic/claude-sonnet-4-5"
@@ -474,6 +477,7 @@ class DescribeImageTests(TestCase):
         from chat.services import describe_image
 
         prefs = MagicMock()
+        prefs.feature_models = {}
         prefs.cheap_model = "openai/o3"  # no vision
         prefs.mid_model = "openai/gpt-5-mini"  # vision
         prefs.top_model = "anthropic/claude-sonnet-4-5"
@@ -499,6 +503,7 @@ class GenerateCanvasTitleTests(TestCase):
         from chat.services import generate_canvas_title
 
         prefs = MagicMock()
+        prefs.feature_models = {}
         prefs.cheap_model = "openai/gpt-5-mini"
         mock_prefs.return_value = prefs
 
@@ -516,6 +521,7 @@ class GenerateCanvasTitleTests(TestCase):
         from chat.services import generate_canvas_title
 
         prefs = MagicMock()
+        prefs.feature_models = {}
         prefs.cheap_model = "openai/gpt-5-mini"
         mock_prefs.return_value = prefs
 
@@ -529,6 +535,7 @@ class GenerateCanvasTitleTests(TestCase):
         from chat.services import generate_canvas_title
 
         prefs = MagicMock()
+        prefs.feature_models = {}
         prefs.cheap_model = "openai/gpt-5-mini"
         mock_prefs.return_value = prefs
 

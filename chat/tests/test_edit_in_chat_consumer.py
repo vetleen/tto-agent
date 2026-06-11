@@ -135,6 +135,10 @@ class PendingInitialTurnDispatchTests(TransactionTestCase):
         loaded = await communicator.receive_json_from(timeout=5)
         self.assertEqual(loaded.get("event_type"), "thread.loaded")
 
+        # The task plan system sends tasks.loaded after thread.loaded.
+        tasks_loaded = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(tasks_loaded.get("event_type"), "tasks.loaded")
+
         msg_start = await communicator.receive_json_from(timeout=5)
         self.assertEqual(msg_start.get("event_type"), "message_start")
 
