@@ -60,8 +60,12 @@ warnings.filterwarnings(
 # ---------------------------------------------------------------------------
 # Sentry — error tracking & performance monitoring
 # ---------------------------------------------------------------------------
+# Never initialize Sentry during test runs: error-handling tests intentionally
+# log WARNING/ERROR ("db boom", "LLM down", mock artifacts, ...) and would
+# flood Sentry with local_dev noise that drowns out real production issues.
+_is_test_run = len(sys.argv) > 1 and sys.argv[1] == "test"
 _sentry_dsn = os.environ.get("SENTRY_DSN", "")
-if _sentry_dsn:
+if _sentry_dsn and not _is_test_run:
     from core.middleware import get_request_id
     from core.sentry_scrub import scrub_event
 
