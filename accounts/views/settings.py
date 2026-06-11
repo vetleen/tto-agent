@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.decorators import login_required
+from django.db import transaction
 from django.db.models import Count, Sum
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
@@ -14,6 +15,7 @@ from django_ratelimit.decorators import ratelimit
 from django.conf import settings as django_settings
 
 from accounts.models import Membership, Organization, User, UserSettings
+from accounts.services import update_org_preferences, update_user_preferences
 
 
 def _parse_json_body(request):
@@ -30,14 +32,17 @@ def theme_update(request):
     theme_value = (request.POST.get("theme") or "").strip().lower()
     if theme_value not in (UserSettings.Theme.LIGHT, UserSettings.Theme.DARK):
         return JsonResponse({"error": "Invalid theme"}, status=400)
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    settings.theme = theme_value
-    # Dual-write: keep preferences["theme"] in sync during transition
-    prefs = settings.preferences or {}
-    prefs["theme"] = theme_value
-    settings.preferences = prefs
-    settings.save()
-    return JsonResponse({"theme": settings.theme})
+    # Dual-write: keep the legacy CharField and preferences["theme"] in sync.
+    # Inline (not update_user_preferences) because it writes both fields; same
+    # locking discipline as the helper.
+    with transaction.atomic():
+        settings, _ = UserSettings.objects.select_for_update().get_or_create(user=request.user)
+        settings.theme = theme_value
+        prefs = settings.preferences or {}
+        prefs["theme"] = theme_value
+        settings.preferences = prefs
+        settings.save(update_fields=["theme", "preferences"])
+    return JsonResponse({"theme": theme_value})
 
 
 # ---- User Settings Page ----
@@ -166,13 +171,12 @@ def preferences_models_update(request):
         if not is_model_valid_for_slot(model, tier):
             return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    models = prefs_dict.get("models", {})
-    models[tier] = model
-    prefs_dict["models"] = models
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        models = prefs.get("models", {})
+        models[tier] = model
+        prefs["models"] = models
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "tier": tier, "model": model})
 
@@ -191,10 +195,9 @@ def preferences_transcription_model_update(request):
     from core.preferences import get_preferences
     from llm.transcription_registry import get_transcription_model_info
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     model = (data.get("model") or "").strip() or None
     kind = (data.get("kind") or "default").strip().lower()
@@ -213,13 +216,12 @@ def preferences_transcription_model_update(request):
                     status=400,
                 )
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    transcription_models = prefs_dict.get("transcription_models", {})
-    transcription_models[kind] = model
-    prefs_dict["transcription_models"] = transcription_models
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        transcription_models = prefs.get("transcription_models", {})
+        transcription_models[kind] = model
+        prefs["transcription_models"] = transcription_models
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "model": model, "kind": kind})
 
@@ -235,10 +237,9 @@ def preferences_live_transcription_mode_update(request):
     """
     from core.preferences import LIVE_TRANSCRIPTION_MODES
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     mode = (data.get("mode") or "").strip().lower() or None
     if mode and mode not in LIVE_TRANSCRIPTION_MODES:
@@ -247,14 +248,13 @@ def preferences_live_transcription_mode_update(request):
             status=400,
         )
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    if mode is None:
-        prefs_dict.pop("live_transcription_mode", None)
-    else:
-        prefs_dict["live_transcription_mode"] = mode
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        if mode is None:
+            prefs.pop("live_transcription_mode", None)
+        else:
+            prefs["live_transcription_mode"] = mode
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "mode": mode})
 
@@ -267,11 +267,11 @@ def preferences_agent_attach_skills_update(request):
     if err:
         return err
     enabled = bool(data.get("enabled", True))
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    prefs_dict["allow_agent_attach_skills"] = enabled
-    settings.preferences = prefs_dict
-    settings.save()
+
+    def mutate(prefs):
+        prefs["allow_agent_attach_skills"] = enabled
+
+    update_user_preferences(request.user, mutate)
     return JsonResponse({"ok": True, "enabled": enabled})
 
 
@@ -304,13 +304,12 @@ def preferences_feature_model_update(request):
         if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
             return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    feature_models = prefs_dict.get("feature_models", {})
-    feature_models[feature] = model
-    prefs_dict["feature_models"] = feature_models
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        feature_models = prefs.get("feature_models", {})
+        feature_models[feature] = model
+        prefs["feature_models"] = feature_models
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "feature": feature, "model": model})
 
@@ -537,11 +536,10 @@ def org_allowed_models_update(request):
     if invalid:
         return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["allowed_models"] = models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["allowed_models"] = models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "allowed_models": models})
 
@@ -556,10 +554,9 @@ def org_allowed_transcription_models_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     models = data.get("allowed_transcription_models")
     if not isinstance(models, list):
@@ -570,11 +567,10 @@ def org_allowed_transcription_models_update(request):
     if invalid:
         return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["allowed_transcription_models"] = models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["allowed_transcription_models"] = models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "allowed_transcription_models": models})
 
@@ -595,22 +591,17 @@ def org_transcription_model_update(request):
     if not membership:
         return HttpResponseForbidden("Admin access required.")
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     model = (data.get("model") or "").strip() or None
     kind = (data.get("kind") or "default").strip().lower()
     if kind not in ("default", "live", "upload"):
         return JsonResponse({"error": "Invalid kind"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-
     if model:
-        org_allowed = prefs.get("allowed_transcription_models")
-        from django.conf import settings as django_settings
+        org_allowed = (membership.org.preferences or {}).get("allowed_transcription_models")
         system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
         effective = [m for m in org_allowed if m in system_models] if isinstance(org_allowed, list) else system_models
         if model not in effective:
@@ -623,11 +614,12 @@ def org_transcription_model_update(request):
                     status=400,
                 )
 
-    transcription_models = prefs.get("transcription_models", {})
-    transcription_models[kind] = model
-    prefs["transcription_models"] = transcription_models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        transcription_models = prefs.get("transcription_models", {})
+        transcription_models[kind] = model
+        prefs["transcription_models"] = transcription_models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "model": model, "kind": kind})
 
@@ -650,9 +642,7 @@ def org_models_update(request):
     if tier not in ("primary", "mid", "cheap"):
         return JsonResponse({"error": "Invalid tier"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    org_allowed = prefs.get("allowed_models") or []
+    org_allowed = (membership.org.preferences or {}).get("allowed_models") or []
 
     if model and org_allowed and model not in org_allowed:
         return JsonResponse({"error": "Model not in org allowed list"}, status=400)
@@ -663,11 +653,12 @@ def org_models_update(request):
         if not is_model_valid_for_slot(model, tier):
             return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
 
-    models = prefs.get("models", {})
-    models[tier] = model
-    prefs["models"] = models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        models = prefs.get("models", {})
+        models[tier] = model
+        prefs["models"] = models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "tier": tier, "model": model})
 
@@ -690,13 +681,12 @@ def org_tools_update(request):
     if not tool_name:
         return JsonResponse({"error": "Tool name required"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    tools = prefs.get("tools", {})
-    tools[tool_name] = bool(enabled)
-    prefs["tools"] = tools
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        tools = prefs.get("tools", {})
+        tools[tool_name] = bool(enabled)
+        prefs["tools"] = tools
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "name": tool_name, "enabled": bool(enabled)})
 
@@ -715,13 +705,12 @@ def org_subagents_update(request):
 
     parallel = data.get("parallel", True)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    subagents = prefs.get("subagents", {})
-    subagents["parallel"] = bool(parallel)
-    prefs["subagents"] = subagents
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        subagents = prefs.get("subagents", {})
+        subagents["parallel"] = bool(parallel)
+        prefs["subagents"] = subagents
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "parallel": bool(parallel)})
 
@@ -740,11 +729,10 @@ def org_pii_scan_toggle_update(request):
 
     enabled = data.get("enabled", True)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["pii_scan_enabled"] = bool(enabled)
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["pii_scan_enabled"] = bool(enabled)
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "enabled": bool(enabled)})
 
@@ -763,11 +751,10 @@ def org_pii_quarantine_toggle_update(request):
 
     enabled = data.get("enabled", True)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["pii_quarantine_enabled"] = bool(enabled)
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["pii_quarantine_enabled"] = bool(enabled)
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "enabled": bool(enabled)})
 
@@ -789,11 +776,9 @@ def org_max_context_update(request):
     value = data.get("max_context_tokens")
     if value is None:
         # Clear (reset to default)
-        org = membership.org
-        prefs = org.preferences or {}
-        prefs.pop("max_context_tokens", None)
-        org.preferences = prefs
-        org.save(update_fields=["preferences"])
+        update_org_preferences(
+            membership.org_id, lambda prefs: prefs.pop("max_context_tokens", None)
+        )
         return JsonResponse({"ok": True, "max_context_tokens": None})
 
     if not isinstance(value, int) or isinstance(value, bool):
@@ -802,11 +787,10 @@ def org_max_context_update(request):
     if value < MIN_CONTEXT_TOKENS:
         return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["max_context_tokens"] = value
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["max_context_tokens"] = value
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "max_context_tokens": value})
 
@@ -823,9 +807,7 @@ def org_budget_update(request):
     if err:
         return err
 
-    org = membership.org
-    prefs = org.preferences or {}
-
+    updates = {}
     for key in ("monthly_budget_per_user", "monthly_budget_org"):
         if key in data:
             try:
@@ -839,10 +821,9 @@ def org_budget_update(request):
                 return JsonResponse({"error": f"Invalid value for {key}"}, status=400)
             if val < 0:
                 return JsonResponse({"error": "Budget cannot be negative"}, status=400)
-            prefs[key] = val
+            updates[key] = val
 
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    update_org_preferences(membership.org_id, lambda prefs: prefs.update(updates))
 
     return JsonResponse({"ok": True})
 
@@ -860,11 +841,9 @@ def preferences_max_context_update(request):
     value = data.get("max_context_tokens")
     if value is None:
         # Clear user override
-        settings, _ = UserSettings.objects.get_or_create(user=request.user)
-        prefs_dict = settings.preferences or {}
-        prefs_dict.pop("max_context_tokens", None)
-        settings.preferences = prefs_dict
-        settings.save()
+        update_user_preferences(
+            request.user, lambda prefs: prefs.pop("max_context_tokens", None)
+        )
         return JsonResponse({"ok": True, "max_context_tokens": None})
 
     if not isinstance(value, int) or isinstance(value, bool):
@@ -881,11 +860,10 @@ def preferences_max_context_update(request):
     if value > org_limit:
         return JsonResponse({"error": f"Cannot exceed organization limit of {org_limit:,} tokens"}, status=400)
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    prefs_dict["max_context_tokens"] = value
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        prefs["max_context_tokens"] = value
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "max_context_tokens": value})
 
@@ -906,28 +884,24 @@ def org_skills_update(request):
     if not slug:
         return JsonResponse({"error": "Skill slug required"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    skills = prefs.get("skills", {})
-
-    if slug not in skills:
-        skills[slug] = {}
-
     tool_name = data.get("tool", "").strip() if "tool" in data else None
     enabled = data.get("enabled", True)
 
-    if tool_name:
-        # Per-tool toggle within a skill
-        tool_toggles = skills[slug].get("tools", {})
-        tool_toggles[tool_name] = bool(enabled)
-        skills[slug]["tools"] = tool_toggles
-    else:
-        # Skill-level toggle
-        skills[slug]["enabled"] = bool(enabled)
+    def mutate(prefs):
+        skills = prefs.get("skills", {})
+        if slug not in skills:
+            skills[slug] = {}
+        if tool_name:
+            # Per-tool toggle within a skill
+            tool_toggles = skills[slug].get("tools", {})
+            tool_toggles[tool_name] = bool(enabled)
+            skills[slug]["tools"] = tool_toggles
+        else:
+            # Skill-level toggle
+            skills[slug]["enabled"] = bool(enabled)
+        prefs["skills"] = skills
 
-    prefs["skills"] = skills
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "slug": slug, "enabled": bool(enabled)})
 
@@ -958,11 +932,8 @@ def org_feature_model_update(request):
     if scope != "org":
         return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-
     if model:
-        org_allowed = prefs.get("allowed_models") or []
+        org_allowed = (membership.org.preferences or {}).get("allowed_models") or []
         system_models = get_allowed_models()
         effective = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
         if model not in effective:
@@ -971,11 +942,12 @@ def org_feature_model_update(request):
         if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
             return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
 
-    feature_models = prefs.get("feature_models", {})
-    feature_models[feature] = model
-    prefs["feature_models"] = feature_models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        feature_models = prefs.get("feature_models", {})
+        feature_models[feature] = model
+        prefs["feature_models"] = feature_models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "feature": feature, "model": model})
 
@@ -1515,9 +1487,9 @@ def org_allow_user_soul_update(request):
         return err
 
     allow = bool(data.get("allow_user_soul", False))
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["allow_user_soul"] = allow
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+
+    def mutate(prefs):
+        prefs["allow_user_soul"] = allow
+
+    update_org_preferences(membership.org_id, mutate)
     return JsonResponse({"ok": True, "allow_user_soul": allow})
