@@ -396,4 +396,54 @@
     .wf-caret { animation: none; }
     html { scroll-behavior: auto; }
   }
+
+  /* Wilfred AI-trigger buttons — twinkling constellation icon + waiting spinner.
+     Shared by every button that hands work to the assistant (Ask Wilfred,
+     Edit with Wilfred, Summarize meeting in chat). Stars and spinner inherit
+     currentColor, so they read correctly on the forest fill (light) and on the
+     copper fill the brand token flips to in dark mode. */
+  .wf-ai-icon {
+    position: relative;
+    width: 17px;
+    height: 17px;
+    display: inline-block;
+    flex: none;
+  }
+  .wf-ai-icon svg {
+    position: absolute;
+    transform-origin: center;
+    animation: wf-twinkle 2.4s ease-in-out infinite;
+  }
+  .wf-ai-icon .wf-star-1 { left: 0; bottom: 0; }
+  .wf-ai-icon .wf-star-2 { right: 0; top: 0; animation-delay: 0.8s; }
+  .wf-ai-icon .wf-star-3 { right: 3px; bottom: 1px; animation-delay: 1.6s; }
+  @keyframes wf-twinkle {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.3; transform: scale(0.72); }
+  }
+
+  /* Replaces .wf-ai-icon once the action is in flight. */
+  .wf-ai-spinner {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    box-sizing: border-box;
+    animation: wf-ai-spin 0.8s linear infinite;
+  }
+  @keyframes wf-ai-spin { to { transform: rotate(360deg); } }
+
+  /* Button modifier while waiting — dim, non-interactive, wait cursor. */
+  .wf-ai-waiting {
+    opacity: 0.85;
+    cursor: wait;
+    pointer-events: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wf-ai-icon svg,
+    .wf-ai-spinner { animation: none; }
+  }
 }

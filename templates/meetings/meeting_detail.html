@@ -254,15 +254,21 @@
         <input type="hidden" name="skill_id" id="summarize-skill-id" value="{{ effective_summarizer_id }}">
         <div class="inline-flex rounded-base" role="group">
           <button type="submit" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
-                  class="inline-flex items-center gap-2 text-white bg-accent hover:bg-accent-hover focus:ring-4 focus:outline-none focus:ring-accent-subtle font-medium {% if summarizer_skills|length > 1 %}rounded-s-base{% else %}rounded-base{% endif %} text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-wf-ai-trigger data-busy-label="Summarizing…"
+                  class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium {% if summarizer_skills|length > 1 %}rounded-s-base{% else %}rounded-base{% endif %} text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="{% if not meeting.transcript %}Add a transcript first.{% else %}Summarize with {{ effective_summarizer_name }}{% endif %}">
-            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
-            Summarize meeting in chat
+            <span class="wf-ai-icon" data-wf-ai-icon aria-hidden="true">
+              <svg class="wf-star-1" width="13" height="13" viewBox="0 0 24 24"><path d="M12 1.5l2.7 7.8 7.8 2.7-7.8 2.7L12 22.5l-2.7-7.8-7.8-2.7 7.8-2.7Z" fill="currentColor" fill-opacity="1"/></svg>
+              <svg class="wf-star-2" width="7" height="7" viewBox="0 0 24 24"><path d="M12 1.5l2.7 7.8 7.8 2.7-7.8 2.7L12 22.5l-2.7-7.8-7.8-2.7 7.8-2.7Z" fill="currentColor" fill-opacity="0.85"/></svg>
+              <svg class="wf-star-3" width="5" height="5" viewBox="0 0 24 24"><path d="M12 1.5l2.7 7.8 7.8 2.7-7.8 2.7L12 22.5l-2.7-7.8-7.8-2.7 7.8-2.7Z" fill="currentColor" fill-opacity="0.7"/></svg>
+            </span>
+            <span class="wf-ai-spinner hidden" data-wf-ai-spinner aria-hidden="true"></span>
+            <span data-wf-ai-label>Summarize meeting in chat</span>
           </button>
           {% if summarizer_skills|length > 1 %}
           <button type="button" {% if not meeting.transcript %}disabled{% endif %}
-                  data-dropdown-toggle="summarizer-skill-dropdown"
-                  class="inline-flex items-center text-white bg-accent hover:bg-accent-hover focus:ring-4 focus:outline-none focus:ring-accent-subtle font-medium rounded-e-base text-sm px-2 py-2 border-l border-white/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-dropdown-toggle="summarizer-skill-dropdown" data-wf-ai-sibling
+                  class="inline-flex items-center text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium rounded-e-base text-sm px-2 py-2 border-l border-white/25 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Choose summarizer skill">
             <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>
           </button>
@@ -550,4 +556,5 @@
 })();
 </script>
 <script src="{% static 'meetings/transcribe.js' %}?v=rt12" defer></script>
+<script src="{% static 'js/wilfred-ai-button.js' %}" defer></script>
 {% endblock %}

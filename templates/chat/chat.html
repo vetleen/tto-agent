@@ -962,6 +962,7 @@
   const form = document.getElementById("chat-form");
   const input = document.getElementById("message-input");
   const button = document.getElementById("send-button");
+  const SEND_BTN_HTML = button.innerHTML;  // up-arrow icon; restored after the turn returns (the spinner/old "Send" text replaced it)
   const stopButton = document.getElementById("stop-button");
   const messagesContainer = document.getElementById("chat-messages");
   const scrollContainer = document.getElementById("messages-scroll-container");
@@ -2126,7 +2127,7 @@
     if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
-  function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = "Send"; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } renderTaskPlan(); }
+  function enableInput() { locked = false; stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = SEND_BTN_HTML; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } renderTaskPlan(); }
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("{{ assistant_name|escapejs }} took too long to respond. Please try again."); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   function createAssistantBubble() {

@@ -9,6 +9,10 @@
   var textarea = document.getElementById('data-room-description');
   var generateBtn = document.getElementById('generate-description-btn');
   var generateText = document.getElementById('generate-description-text');
+  var generateIcon = generateBtn ? generateBtn.querySelector('[data-wf-ai-icon]') : null;
+  var generateSpinner = generateBtn ? generateBtn.querySelector('[data-wf-ai-spinner]') : null;
+  var generateIdleLabel = generateText ? generateText.textContent : '';
+  var generateBusyLabel = (generateBtn && generateBtn.dataset.busyLabel) || 'Working…';
   var saveBtn = document.getElementById('save-description-btn');
   var charCount = document.getElementById('description-char-count');
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -61,7 +65,11 @@
   // Generate description via LLM
   generateBtn.addEventListener('click', function () {
     generateBtn.disabled = true;
-    generateText.textContent = 'Generating...';
+    generateBtn.classList.add('wf-ai-waiting');
+    generateBtn.setAttribute('aria-busy', 'true');
+    if (generateIcon) generateIcon.classList.add('hidden');
+    if (generateSpinner) generateSpinner.classList.remove('hidden');
+    generateText.textContent = generateBusyLabel;
 
     fetch(generateUrl, {
       method: 'POST',
@@ -87,7 +95,11 @@
       })
       .finally(function () {
         generateBtn.disabled = false;
-        generateText.textContent = 'Ask Wilfred';
+        generateBtn.classList.remove('wf-ai-waiting');
+        generateBtn.removeAttribute('aria-busy');
+        if (generateSpinner) generateSpinner.classList.add('hidden');
+        if (generateIcon) generateIcon.classList.remove('hidden');
+        generateText.textContent = generateIdleLabel;
       });
   });
 
