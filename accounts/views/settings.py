@@ -1202,7 +1202,12 @@ def profile_update(request):
 
     for field in ("first_name", "last_name", "title"):
         if field in data:
-            val = str(data[field]).strip()[:MAX_NAME_LENGTH]
+            val = str(data[field]).strip()
+            if len(val) > MAX_NAME_LENGTH:
+                return JsonResponse(
+                    {"error": f"{field.replace('_', ' ').capitalize()} must be {MAX_NAME_LENGTH} characters or fewer."},
+                    status=400,
+                )
             setattr(user, field, val)
             update_fields.append(field)
 

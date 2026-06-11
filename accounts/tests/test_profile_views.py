@@ -83,10 +83,14 @@ class ProfileUpdateTests(TestCase):
         self.assertEqual(self.user.description, "I handle biotech patents.")
         mock_cls.assert_called_once()
 
-    def test_description_too_long_returns_400(self):
-        r = self._post({"description": "x" * 601})
+    @patch("guardrails.classifier.classify_description_sync", return_value=_CLEAN)
+    def test_description_too_long_returns_400(self, mock_cls):
+        # Mocked so a regression in the length check can't fall through to a
+        # live classifier call.
+        r = self._post({"description": "x" * 5001})
         self.assertEqual(r.status_code, 400)
         self.assertIn("error", r.json())
+        mock_cls.assert_not_called()
 
     @patch("guardrails.classifier.classify_description_sync", return_value=_SUSPICIOUS)
     def test_description_guardrail_blocks(self, mock_cls):
@@ -102,11 +106,12 @@ class ProfileUpdateTests(TestCase):
         self.assertEqual(r.status_code, 200)
         mock_cls.assert_not_called()
 
-    def test_name_fields_truncated_at_150(self):
-        r = self._post({"first_name": "A" * 200})
-        self.assertEqual(r.status_code, 200)
+    def test_name_field_too_long_returns_400(self):
+        r = self._post({"first_name": "A" * 151})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("error", r.json())
         self.user.refresh_from_db()
-        self.assertEqual(len(self.user.first_name), 150)
+        self.assertEqual(self.user.first_name, "")
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -143,9 +148,11 @@ class OrgDescriptionUpdateTests(TestCase):
         self.org.refresh_from_db()
         self.assertEqual(self.org.description, "A biotech TTO.")
 
-    def test_too_long_returns_400(self):
-        r = self._post({"description": "x" * 601})
+    @patch("guardrails.classifier.classify_description_sync", return_value=_CLEAN)
+    def test_too_long_returns_400(self, mock_cls):
+        r = self._post({"description": "x" * 5001})
         self.assertEqual(r.status_code, 400)
+        mock_cls.assert_not_called()
 
     @patch("guardrails.classifier.classify_description_sync", return_value=_SUSPICIOUS)
     def test_guardrail_blocks(self, mock_cls):
