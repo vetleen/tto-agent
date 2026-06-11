@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 from django.template.loader import render_to_string
 from django.utils import timezone
 
@@ -18,7 +19,6 @@ if TYPE_CHECKING:
     from django.http import HttpRequest
 
 VERIFICATION_WINDOW_HOURS = 24
-VERIFICATION_TOKEN_VALID_HOURS = 24
 
 
 def _generate_token() -> str:
@@ -44,14 +44,51 @@ def get_verification_link(request: HttpRequest, token: str) -> str:
 
 def send_verification_email(
     request: HttpRequest, user: User, *, is_resend: bool = False
-) -> EmailVerificationToken:
+) -> EmailVerificationToken | None:
     """
-    Create a token, send verification email, and update user's resend tracking.
-    At signup use is_resend=False (resend_count not incremented). On resend use is_resend=True.
-    """
-    token_obj = create_token(user)
-    link = get_verification_link(request, token_obj.token)
+    Create a token, update the user's resend tracking, then send the email.
+    At signup use is_resend=False (resend_count not incremented). On resend use
+    is_resend=True.
 
+    Token creation and bookkeeping run atomically under a row lock, with the
+    rate limit re-checked inside it, so two concurrent resends can't both pass
+    can_resend_verification(); the loser returns None without sending. The
+    email goes out only after the counter is committed — a crash or mail
+    failure can cost the user a resend slot but never grants a free one
+    (deliberate fail-closed).
+    """
+    with transaction.atomic():
+        # Fresh locked row; the caller's instance may be stale.
+        locked_user = User.objects.select_for_update().get(pk=user.pk)
+        if is_resend:
+            allowed, _wait = can_resend_verification(locked_user)
+            if not allowed:
+                return None
+
+        token_obj = create_token(locked_user)
+
+        now = timezone.now()
+        locked_user.last_verification_email_sent_at = now
+        if locked_user.verification_resend_window_start is None:
+            locked_user.verification_resend_window_start = now
+        # Reset the rate-limit window if 24 hours have passed
+        if is_resend and _is_window_expired(locked_user):
+            locked_user.verification_resend_count = 0
+            locked_user.verification_resend_window_start = now
+        if is_resend:
+            locked_user.verification_resend_count += 1
+        locked_user.save(update_fields=[
+            "last_verification_email_sent_at",
+            "verification_resend_window_start",
+            "verification_resend_count",
+        ])
+
+    # Keep the caller's instance in sync with what was persisted.
+    user.last_verification_email_sent_at = locked_user.last_verification_email_sent_at
+    user.verification_resend_window_start = locked_user.verification_resend_window_start
+    user.verification_resend_count = locked_user.verification_resend_count
+
+    link = get_verification_link(request, token_obj.token)
     subject = render_to_string(
         "registration/email_verification_subject.txt",
         {"user": user},
@@ -60,7 +97,6 @@ def send_verification_email(
         "registration/email_verification_body.txt",
         {"user": user, "link": link},
     )
-
     send_mail(
         subject=subject,
         message=body,
@@ -68,23 +104,6 @@ def send_verification_email(
         recipient_list=[user.email],
         fail_silently=False,
     )
-
-    now = timezone.now()
-    user.last_verification_email_sent_at = now
-    if user.verification_resend_window_start is None:
-        user.verification_resend_window_start = now
-    # Reset the rate-limit window if 24 hours have passed
-    if is_resend and _is_window_expired(user):
-        user.verification_resend_count = 0
-        user.verification_resend_window_start = now
-    if is_resend:
-        user.verification_resend_count += 1
-    update_fields = [
-        "last_verification_email_sent_at",
-        "verification_resend_window_start",
-        "verification_resend_count",
-    ]
-    user.save(update_fields=update_fields)
     return token_obj
 
 
@@ -92,33 +111,40 @@ def verify_token(token: str) -> tuple[User | None, str | None]:
     """
     Validate token and mark user verified. Returns (user, None) on success,
     (None, error_message) on failure. Deletes the token on success.
+
+    Runs atomically with the token row locked so a concurrent verify (or a
+    resend deleting/replacing the token mid-flight) can't double-fire.
     """
-    try:
-        token_obj = EmailVerificationToken.objects.select_related("user").get(
-            token=token
+    with transaction.atomic():
+        try:
+            # FOR UPDATE locks the joined user row too on Postgres (intended).
+            token_obj = (
+                EmailVerificationToken.objects.select_for_update()
+                .select_related("user")
+                .get(token=token)
+            )
+        except EmailVerificationToken.DoesNotExist:
+            return None, "invalid"
+
+        user = token_obj.user
+        # Deactivated accounts must never be re-verified — verify_email() logs the
+        # returned user in directly, bypassing the auth form's is_active gate. The
+        # token is deliberately kept (still time-limited) so a legitimate
+        # reactivation within the window doesn't strand the user.
+        if not user.is_active:
+            return None, "invalid"
+
+        timeout_seconds = getattr(
+            settings, "EMAIL_VERIFICATION_TIMEOUT", 86400
         )
-    except EmailVerificationToken.DoesNotExist:
-        return None, "invalid"
+        if (timezone.now() - token_obj.created_at).total_seconds() > timeout_seconds:
+            token_obj.delete()
+            return None, "expired"
 
-    user = token_obj.user
-    # Deactivated accounts must never be re-verified — verify_email() logs the
-    # returned user in directly, bypassing the auth form's is_active gate. The
-    # token is deliberately kept (still time-limited) so a legitimate
-    # reactivation within the window doesn't strand the user.
-    if not user.is_active:
-        return None, "invalid"
-
-    timeout_seconds = getattr(
-        settings, "EMAIL_VERIFICATION_TIMEOUT", 86400
-    )
-    if (timezone.now() - token_obj.created_at).total_seconds() > timeout_seconds:
+        user.email_verified = True
+        user.save(update_fields=["email_verified"])
         token_obj.delete()
-        return None, "expired"
-
-    user.email_verified = True
-    user.save(update_fields=["email_verified"])
-    token_obj.delete()
-    return user, None
+        return user, None
 
 
 def _is_window_expired(user: User) -> bool:

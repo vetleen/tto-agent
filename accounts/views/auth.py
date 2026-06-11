@@ -111,6 +111,12 @@ def no_org(request):
 #   6. Convert verify_email() to a POST-confirm step: it currently logs the user
 #      in on a GET with the token in the URL, which leaks into server/proxy logs
 #      and browser history.
+#   7. Add a view-level @ratelimit to resend_verification — the per-user
+#      backoff in can_resend_verification only throttles known accounts; the
+#      view itself accepts arbitrary POSTed emails.
+#   8. Fix the account-enumeration oracle in resend_verification: unknown
+#      email -> redirect to login, existing unverified email -> rendered
+#      "sent" page. Responses must be indistinguishable.
 # Note: verify_email() below calls login() directly, bypassing the form gate.
 # verify_token() already rejects inactive users (accounts/verification.py); it
 # must additionally respect the email_verified gate once routed.
@@ -178,7 +184,20 @@ def resend_verification(request):
             },
         )
     if request.method == "POST":
-        send_verification_email(request, user, is_resend=True)
+        token = send_verification_email(request, user, is_resend=True)
+        if token is None:
+            # Raced double-submit: another request consumed the resend slot
+            # between our check and the locked re-check inside.
+            allowed, wait_seconds = can_resend_verification(user)
+            return render(
+                request,
+                "registration/verify_email_sent.html",
+                {
+                    "email": email,
+                    "resend_wait_seconds": wait_seconds,
+                    "resend_rate_limited": True,
+                },
+            )
         return render(
             request,
             "registration/verify_email_sent.html",
