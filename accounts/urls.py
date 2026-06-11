@@ -34,7 +34,6 @@ from .views.settings import (
     org_subagents_update,
     org_tools_update,
     org_transcription_model_update,
-    org_usage_page,
     preferences_agent_attach_skills_update,
     preferences_feature_model_update,
     preferences_live_transcription_mode_update,
@@ -47,8 +46,8 @@ from .views.settings import (
     soul_reset,
     soul_update,
     theme_update,
-    usage_page,
 )
+from .views.usage import org_usage_page, usage_page
 
 app_name = "accounts"
 

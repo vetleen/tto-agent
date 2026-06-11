@@ -1,21 +1,22 @@
 import json
 import math
-from datetime import date, timedelta
-from decimal import Decimal
 
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.db.models import Count, Sum
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
-from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 from django_ratelimit.decorators import ratelimit
 
 from django.conf import settings as django_settings
 
-from accounts.models import Membership, Organization, User, UserSettings
+from accounts.models import UserSettings
 from accounts.services import update_org_preferences, update_user_preferences
+from accounts.views._builders import (
+    build_feature_rows,
+    build_tier_rows,
+    partition_transcription_models,
+)
 from accounts.views._helpers import org_admin_required
 
 
@@ -73,24 +74,13 @@ def settings_page(request):
     user_transcription_model_upload = user_transcription_prefs.get("upload")
     user_live_transcription_mode = (user_settings.preferences or {}).get("live_transcription_mode", "")
 
-    from llm.transcription_registry import get_all_transcription_models, get_transcription_model_info
+    from llm.transcription_registry import get_all_transcription_models
     all_models = get_all_transcription_models()
     transcription_model_display = {mid: info.display_name for mid, info in all_models.items()}
 
-    # Partition the allow-list into per-capability pools so each dropdown
-    # shows only options that work in its context. Unknown registry entries
-    # are dropped silently (same filtering the meeting picker does).
-    live_capable_models = [
-        mid for mid in prefs.allowed_transcription_models
-        if (info := get_transcription_model_info(mid)) and info.supports_live_streaming
-    ]
-    upload_capable_models = [
-        mid for mid in prefs.allowed_transcription_models
-        if get_transcription_model_info(mid) is not None
-    ]
-
-    from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import get_models_at_or_above_tier, get_models_for_slot
+    live_capable_models, upload_capable_models = partition_transcription_models(
+        prefs.allowed_transcription_models
+    )
 
     user_feature_models = (user_settings.preferences or {}).get("feature_models", {})
     _USER_FEATURE_META = {
@@ -100,21 +90,13 @@ def settings_page(request):
         "canvas_title": ("Canvas title", "Generates a title when a new canvas is created."),
         "image_description": ("Image description", f"Describes images pasted or uploaded in chat so {django_settings.ASSISTANT_NAME} can understand them."),
     }
-    user_features = []
-    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
-        if scope != "user":
-            continue
-        label, desc = _USER_FEATURE_META.get(fkey, (fkey.replace("_", " ").title(), ""))
-        eligible = [m for m in get_models_at_or_above_tier(min_tier) if m in prefs.allowed_models]
-        user_features.append({
-            "key": fkey,
-            "label": label,
-            "desc": desc,
-            "default_slot": default_slot,
-            "current": user_feature_models.get(fkey) or "",
-            "resolved": prefs.feature_models.get(fkey, ""),
-            "eligible_models": eligible,
-        })
+    user_features = build_feature_rows(
+        "user",
+        user_feature_models,
+        prefs.allowed_models,
+        _USER_FEATURE_META,
+        resolved=prefs.feature_models,
+    )
 
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
@@ -138,11 +120,7 @@ def settings_page(request):
         "assistant_name": django_settings.ASSISTANT_NAME,
         "preference_warnings": prefs.warnings,
         "user_features": user_features,
-        "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"], "slot_models": get_models_for_slot("primary", prefs.allowed_models)},
-            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"], "slot_models": get_models_for_slot("mid", prefs.allowed_models)},
-            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": tier_defaults["cheap"], "slot_models": get_models_for_slot("cheap", prefs.allowed_models)},
-        ],
+        "tiers": build_tier_rows(tier_defaults, prefs.allowed_models),
     })
 
 
@@ -411,7 +389,7 @@ def org_settings_page(request):
     if not isinstance(org_max_context_tokens, int):
         org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
 
-    from llm.transcription_registry import get_all_transcription_models, get_transcription_model_info
+    from llm.transcription_registry import get_all_transcription_models
 
     system_transcription_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
     org_allowed_transcription = org_prefs.get("allowed_transcription_models")
@@ -420,25 +398,16 @@ def org_settings_page(request):
         mid: info.display_name for mid, info in get_all_transcription_models().items()
     }
 
-    # Partition by capability so each dropdown only offers viable options.
     effective_allowed = (
         org_allowed_transcription
         if isinstance(org_allowed_transcription, list)
         else system_transcription_models
     )
-    live_capable_transcription_models = [
-        mid for mid in effective_allowed
-        if (info := get_transcription_model_info(mid)) and info.supports_live_streaming
-    ]
-    upload_capable_transcription_models = [
-        mid for mid in effective_allowed
-        if get_transcription_model_info(mid) is not None
-    ]
+    live_capable_transcription_models, upload_capable_transcription_models = (
+        partition_transcription_models(effective_allowed)
+    )
     system_transcription_default_live = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "") or ""
     system_transcription_default_upload = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "") or ""
-
-    from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import get_models_at_or_above_tier, get_models_for_slot
 
     effective_org_allowed = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
 
@@ -452,20 +421,9 @@ def org_settings_page(request):
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
         "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),
     }
-    org_features = []
-    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
-        if scope != "org":
-            continue
-        label, desc = _ORG_FEATURE_META.get(fkey, (fkey.replace("_", " ").title(), ""))
-        eligible = [m for m in get_models_at_or_above_tier(min_tier) if m in effective_org_allowed]
-        org_features.append({
-            "key": fkey,
-            "label": label,
-            "desc": desc,
-            "default_slot": default_slot,
-            "current": org_feature_models.get(fkey) or "",
-            "eligible_models": eligible,
-        })
+    org_features = build_feature_rows(
+        "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
+    )
 
     return render(request, "accounts/org_settings.html", {
         "org": org,
@@ -495,11 +453,7 @@ def org_settings_page(request):
         "system_transcription_default_upload": system_transcription_default_upload,
         "transcription_model_display": transcription_model_display,
         "org_features": org_features,
-        "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"], "slot_models": get_models_for_slot("primary", effective_org_allowed)},
-            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"], "slot_models": get_models_for_slot("mid", effective_org_allowed)},
-            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": system_defaults["cheap"], "slot_models": get_models_for_slot("cheap", effective_org_allowed)},
-        ],
+        "tiers": build_tier_rows(system_defaults, effective_org_allowed),
     })
 
 
@@ -929,191 +883,6 @@ def org_feature_model_update(request):
     update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "feature": feature, "model": model})
-
-
-# ---- Usage Page ----
-
-
-def _parse_date(value):
-    """Parse a YYYY-MM-DD string, return a date or None."""
-    try:
-        return date.fromisoformat(value)
-    except (ValueError, TypeError):
-        return None
-
-
-@login_required
-@require_GET
-def usage_page(request):
-    from llm.models import LLMCallLog
-
-    today = timezone.now().date()
-    raw_start = request.GET.get("start")
-    raw_end = request.GET.get("end")
-
-    parsed_start = _parse_date(raw_start)
-    parsed_end = _parse_date(raw_end)
-
-    # Determine mode: custom range vs month
-    if parsed_start and parsed_end:
-        custom_range = True
-        start_date = parsed_start
-        end_date = parsed_end
-        if start_date > end_date:
-            start_date, end_date = end_date, start_date
-        # Inclusive: query up to end_date + 1 day
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(end_date + timedelta(days=1), timezone.datetime.min.time()))
-        display_month = None
-        prev_month = None
-        next_month = None
-    else:
-        custom_range = False
-        if parsed_start:
-            # Month mode with a specific month
-            start_date = parsed_start.replace(day=1)
-        else:
-            start_date = today.replace(day=1)
-        # End of month = first of next month
-        if start_date.month == 12:
-            next_month_first = start_date.replace(year=start_date.year + 1, month=1, day=1)
-        else:
-            next_month_first = start_date.replace(month=start_date.month + 1, day=1)
-        end_date = next_month_first - timedelta(days=1)
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(next_month_first, timezone.datetime.min.time()))
-        display_month = start_date
-        prev_month = (start_date - timedelta(days=1)).replace(day=1)
-        # Only show next if not in the future
-        next_month = next_month_first if next_month_first <= today.replace(day=1) else None
-
-    # Query data
-    qs = LLMCallLog.objects.filter(
-        user=request.user,
-        created_at__gte=query_start,
-        created_at__lt=query_end,
-    )
-
-    totals = qs.aggregate(
-        total_cost=Sum("cost_usd"),
-        total_calls=Count("id"),
-        total_input_tokens=Sum("input_tokens"),
-        total_output_tokens=Sum("output_tokens"),
-    )
-    totals["total_cost"] = totals["total_cost"] or Decimal("0")
-    totals["total_input_tokens"] = totals["total_input_tokens"] or 0
-    totals["total_output_tokens"] = totals["total_output_tokens"] or 0
-
-    model_breakdown = (
-        qs.values("model")
-        .annotate(
-            cost=Sum("cost_usd"),
-            calls=Count("id"),
-            input_tokens=Sum("input_tokens"),
-            output_tokens=Sum("output_tokens"),
-        )
-        .order_by("-cost")
-    )
-
-    return render(request, "accounts/usage.html", {
-        "start_date": start_date,
-        "end_date": end_date,
-        "custom_range": custom_range,
-        "display_month": display_month,
-        "prev_month": prev_month,
-        "next_month": next_month,
-        "totals": totals,
-        "model_breakdown": model_breakdown,
-        "today": today,
-        "current_year": today.year,
-    })
-
-
-@login_required
-@require_GET
-@org_admin_required
-def org_usage_page(request):
-    from llm.models import LLMCallLog
-
-    membership = request.org_membership
-
-    org = membership.org
-    today = timezone.now().date()
-    raw_start = request.GET.get("start")
-    raw_end = request.GET.get("end")
-
-    parsed_start = _parse_date(raw_start)
-    parsed_end = _parse_date(raw_end)
-
-    if parsed_start and parsed_end:
-        custom_range = True
-        start_date = parsed_start
-        end_date = parsed_end
-        if start_date > end_date:
-            start_date, end_date = end_date, start_date
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(end_date + timedelta(days=1), timezone.datetime.min.time()))
-        display_month = None
-        prev_month = None
-        next_month = None
-    else:
-        custom_range = False
-        if parsed_start:
-            start_date = parsed_start.replace(day=1)
-        else:
-            start_date = today.replace(day=1)
-        if start_date.month == 12:
-            next_month_first = start_date.replace(year=start_date.year + 1, month=1, day=1)
-        else:
-            next_month_first = start_date.replace(month=start_date.month + 1, day=1)
-        end_date = next_month_first - timedelta(days=1)
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(next_month_first, timezone.datetime.min.time()))
-        display_month = start_date
-        prev_month = (start_date - timedelta(days=1)).replace(day=1)
-        next_month = next_month_first if next_month_first <= today.replace(day=1) else None
-
-    user_ids = list(Membership.objects.filter(org=org).values_list("user_id", flat=True))
-    qs = LLMCallLog.objects.filter(
-        user_id__in=user_ids,
-        created_at__gte=query_start,
-        created_at__lt=query_end,
-    )
-
-    totals = qs.aggregate(
-        total_cost=Sum("cost_usd"),
-        total_calls=Count("id"),
-        total_input_tokens=Sum("input_tokens"),
-        total_output_tokens=Sum("output_tokens"),
-    )
-    totals["total_cost"] = totals["total_cost"] or Decimal("0")
-    totals["total_input_tokens"] = totals["total_input_tokens"] or 0
-    totals["total_output_tokens"] = totals["total_output_tokens"] or 0
-
-    user_breakdown = (
-        qs.values("user_id", "user__email", "user__first_name", "user__last_name")
-        .annotate(
-            cost=Sum("cost_usd"),
-            calls=Count("id"),
-            input_tokens=Sum("input_tokens"),
-            output_tokens=Sum("output_tokens"),
-        )
-        .order_by("-cost")
-    )
-
-    return render(request, "accounts/org_usage.html", {
-        "org": org,
-        "start_date": start_date,
-        "end_date": end_date,
-        "custom_range": custom_range,
-        "display_month": display_month,
-        "prev_month": prev_month,
-        "next_month": next_month,
-        "totals": totals,
-        "user_breakdown": user_breakdown,
-        "today": today,
-        "current_year": today.year,
-    })
 
 
 # ---- User Profile ----
