@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-
 from guardrails.schemas import ClassifierResult, HeuristicResult, ReviewerDecision
 
 logger = logging.getLogger(__name__)
@@ -192,6 +191,30 @@ async def run_classifier_pipeline(
         logger.exception("guardrail: reviewer error for user_id=%s, defaulting to block", user.pk)
         verdict.action = "block"
         verdict.message = "Your message has been flagged for review. Please contact your system administrator."
+        # Audit the failsafe block — without this, the block is invisible to
+        # admins and to the reviewer's own history-based suspend logic. The
+        # write is isolated: if it fails, the exception must not escape, or the
+        # consumer's parallel path would catch it and fail OPEN, losing the block.
+        try:
+            failsafe_event = await _create_event_async(
+                user=user,
+                org_id=org_id,
+                thread_id=thread_id,
+                trigger_source="user_message",
+                check_type="llm_review",
+                tags=classifier_result.concern_tags,
+                confidence=0.0,
+                severity="medium",
+                action_taken="blocked",
+                raw_input=text[:2000],
+                reviewer_output="Reviewer errored; failsafe block.",
+                related_event=classifier_event,
+            )
+            verdict.events.append(failsafe_event)
+        except Exception:
+            logger.exception(
+                "guardrail: failed to audit failsafe block for user_id=%s", user.pk,
+            )
         return verdict
 
     # Apply reviewer decision
@@ -304,19 +327,36 @@ async def _create_event_async(**kwargs):
 
 
 def _suspend_user_sync(user, org_id: int | None, reason: str):
-    """Suspend the user's membership in the organization (sync)."""
+    """Suspend the user's membership in the organization (sync).
+
+    Falls back to suspending ALL the user's memberships when no org-scoped
+    membership matches (org_id missing or stale) — a reviewer-ordered suspend
+    must never silently no-op. Users currently have exactly one membership,
+    so the fallback is belt-and-braces.
+    """
     from accounts.models import Membership
 
+    memberships = []
     if org_id:
-        membership = Membership.objects.filter(user=user, org_id=org_id).first()
-        if membership is None:
-            return
-        # Membership.suspend() keeps the lifecycle bookkeeping (suspended_at)
-        # in one place for every writer, including the admin.
+        memberships = list(Membership.objects.filter(user=user, org_id=org_id))
+    if not memberships:
+        memberships = list(Membership.objects.filter(user=user))
+
+    # Membership.suspend() keeps the lifecycle bookkeeping (suspended_at)
+    # in one place for every writer, including the admin.
+    for membership in memberships:
         membership.suspend(reason)
+
+    if memberships:
         logger.warning(
-            "guardrail: suspended user_id=%s org_id=%s reason=%s",
-            user.pk, org_id, reason[:200],
+            "guardrail: suspended user_id=%s org_id=%s memberships=%s reason=%s",
+            user.pk, org_id, len(memberships), reason[:200],
+        )
+    else:
+        logger.error(
+            "guardrail: reviewer ordered suspend for user_id=%s org_id=%s "
+            "but no membership was updated",
+            user.pk, org_id,
         )
 
 

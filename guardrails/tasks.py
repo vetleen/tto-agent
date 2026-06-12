@@ -114,13 +114,26 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
     document must never be released with unclassified chunks (fail closed), so
     the caller retries before marking it SCAN_FAILED. Quarantines from batches
     that did succeed are persisted before raising.
+
+    Resume-aware via ``DataRoomDocumentChunk.guardrail_scan_state``: chunks a
+    prior attempt fully scanned (heuristic-blocked, or in a classifier batch
+    that succeeded) are skipped, so a Celery retry neither duplicates
+    GuardrailEvents nor re-pays for already-classified batches.
     """
+    from documents.models import DataRoomDocumentChunk
     from guardrails.heuristics import heuristic_scan
 
+    ScanState = DataRoomDocumentChunk.GuardrailScanState
+
     chunks = list(
-        doc.chunks.order_by("chunk_index").values("id", "chunk_index", "text")
+        doc.chunks.exclude(guardrail_scan_state=ScanState.DONE)
+        .order_by("chunk_index")
+        .values("id", "chunk_index", "text", "guardrail_scan_state")
     )
     if not chunks:
+        # Nothing left to scan (empty document, or a retry after every chunk
+        # completed) — make sure the doc-level flag reflects prior quarantines.
+        _refresh_partial_quarantine(document_id)
         return
 
     logger.info(
@@ -130,9 +143,15 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
 
     flagged_chunk_ids = []
 
-    # Phase 1: Heuristic scan (fast)
+    # Phase 1: Heuristic scan (fast) — only chunks that haven't been through it.
     remaining_chunks = []
+    clean_chunk_ids = []
     for chunk in chunks:
+        if chunk["guardrail_scan_state"] != ScanState.PENDING:
+            # Heuristic phase completed on a prior attempt (events already
+            # logged) — straight to the classifier.
+            remaining_chunks.append(chunk)
+            continue
         result = heuristic_scan(chunk["text"])
         if result.should_block:
             flagged_chunk_ids.append(chunk["id"])
@@ -149,6 +168,9 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
                 severity="high",
                 action_taken="blocked",
             )
+            # Event before state: a crash between the two duplicates the event
+            # on retry rather than losing it.
+            _set_chunk_scan_state([chunk["id"]], ScanState.DONE)
         elif result.is_suspicious:
             remaining_chunks.append(chunk)
             _log_chunk_event(
@@ -160,8 +182,13 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
                 severity="low",
                 action_taken="escalated",
             )
+            _set_chunk_scan_state([chunk["id"]], ScanState.HEURISTIC_DONE)
         else:
             remaining_chunks.append(chunk)
+            clean_chunk_ids.append(chunk["id"])
+    if clean_chunk_ids:
+        # Clean chunks log no events, so one bulk update is crash-safe.
+        _set_chunk_scan_state(clean_chunk_ids, ScanState.HEURISTIC_DONE)
 
     # Phase 2: Cheap model classifier (batch)
     from accounts.models import Membership
@@ -169,12 +196,32 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
 
     org_id = None
     if doc.uploaded_by_id:
-        mem = Membership.objects.filter(user_id=doc.uploaded_by_id).values_list("org_id", flat=True).first()
+        # Users have exactly one membership today; order_by keeps the pick
+        # deterministic if that ever changes.
+        mem = (
+            Membership.objects.filter(user_id=doc.uploaded_by_id)
+            .order_by("pk")
+            .values_list("org_id", flat=True)
+            .first()
+        )
         if mem:
             org_id = mem
 
     cheap_model = resolve_org_feature_model(org_id, "guardrail_chunk_scan")
-    if not cheap_model or not remaining_chunks:
+    if not cheap_model:
+        # Released with a heuristics-only scan — deliberate: this is a system
+        # misconfiguration, not an attack signal, and failing the document
+        # would brick uploads. Chunks stay HEURISTIC_DONE so a later rescan
+        # with a model configured still classifies them. WARNING so Sentry
+        # surfaces the misconfiguration.
+        _refresh_partial_quarantine(document_id)
+        logger.warning(
+            "scan_document_chunks: document_id=%s released without classifier scan "
+            "(no model resolves for guardrail_chunk_scan); heuristic_flagged=%s",
+            document_id, len(flagged_chunk_ids),
+        )
+        return
+    if not remaining_chunks:
         # Heuristic phase alone may have quarantined chunks — reflect that at the doc level.
         _refresh_partial_quarantine(document_id)
         logger.info(
@@ -193,6 +240,9 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
                 "scan_document_chunks: classifier failed document_id=%s chunk_indexes=%s",
                 document_id, [c["chunk_index"] for c in batch],
             )
+        else:
+            # Batch fully processed — exclude it from any retry.
+            _set_chunk_scan_state([c["id"] for c in batch], ScanState.DONE)
 
     # Persist what the successful batches found before deciding the outcome.
     _refresh_partial_quarantine(document_id)
@@ -278,14 +328,32 @@ def _classify_chunk_batch(doc, chunks: list[dict], model: str) -> None:
     service = get_llm_service()
     parsed, usage = service.run_structured(request, BatchClassifierResult)
 
-    # Build lookup by chunk_index for matching results to chunks
     chunk_by_index = {c["chunk_index"]: c for c in chunks}
 
+    # Dedupe (first occurrence wins) and drop hallucinated indexes not in this
+    # batch, BEFORE any writes.
+    results_by_index = {}
     for result in parsed.results:
-        if result.is_suspicious and result.confidence >= 0.7:
-            chunk = chunk_by_index.get(result.chunk_index)
-            if not chunk:
-                continue
+        if result.chunk_index in chunk_by_index and result.chunk_index not in results_by_index:
+            results_by_index[result.chunk_index] = result
+
+    # Fail closed on incomplete output: models routinely drop items from long
+    # lists (and an adversarial chunk could try to induce its own omission).
+    # An omitted chunk must not slip through unclassified — raising here, before
+    # any quarantine/event writes, hands the whole batch to the caller's
+    # retry -> SCAN_FAILED machinery without double-writing on the retry.
+    missing = set(chunk_by_index) - set(results_by_index)
+    if missing:
+        raise RuntimeError(
+            f"classifier returned {len(results_by_index)} result(s) for "
+            f"{len(chunks)} chunk(s); missing chunk_indexes: {sorted(missing)}"
+        )
+
+    for chunk_index, result in results_by_index.items():
+        if not result.is_suspicious:
+            continue
+        chunk = chunk_by_index[chunk_index]
+        if result.confidence >= 0.7:
             _quarantine_chunk(
                 chunk["id"],
                 reason=f"Classifier: {', '.join(result.concern_tags)} (confidence: {result.confidence:.2f})",
@@ -298,6 +366,18 @@ def _classify_chunk_batch(doc, chunks: list[dict], model: str) -> None:
                 confidence=result.confidence,
                 severity="medium",
                 action_taken="blocked",
+            )
+        else:
+            # Below the quarantine threshold: record without acting, so the
+            # threshold can be tuned on real borderline data later.
+            _log_chunk_event(
+                document=doc,
+                chunk_text=chunk["text"],
+                check_type="classifier",
+                tags=result.concern_tags,
+                confidence=result.confidence,
+                severity="low",
+                action_taken="logged",
             )
 
 
@@ -326,6 +406,15 @@ def _quarantine_chunk(chunk_id: int, reason: str) -> None:
     DataRoomDocumentChunk.objects.filter(pk=chunk_id).update(
         is_quarantined=True,
         quarantine_reason=reason[:2000],
+    )
+
+
+def _set_chunk_scan_state(chunk_ids: list[int], state: str) -> None:
+    """Record guardrail scan progress on chunks (see GuardrailScanState)."""
+    from documents.models import DataRoomDocumentChunk
+
+    DataRoomDocumentChunk.objects.filter(pk__in=chunk_ids).update(
+        guardrail_scan_state=state,
     )
 
 

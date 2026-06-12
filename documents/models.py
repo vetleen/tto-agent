@@ -135,6 +135,14 @@ class DataRoomDocument(models.Model):
 
 
 class DataRoomDocumentChunk(models.Model):
+    class GuardrailScanState(models.TextChoices):
+        # Progress marker for the adversarial-content scan (guardrails.tasks).
+        # Lets a retried scan resume: chunks past a phase are not re-processed,
+        # so events are not duplicated and classifier calls are not re-paid.
+        PENDING = "pending", "Pending"  # not yet heuristic-scanned
+        HEURISTIC_DONE = "heuristic_done", "Heuristic Done"  # awaiting classifier
+        DONE = "done", "Done"  # fully scanned (or heuristic-blocked)
+
     document = models.ForeignKey(
         DataRoomDocument,
         on_delete=models.CASCADE,
@@ -151,6 +159,11 @@ class DataRoomDocumentChunk(models.Model):
     search_vector = SearchVectorField(null=True)
     is_quarantined = models.BooleanField(default=False, db_index=True)
     quarantine_reason = models.TextField(blank=True, default="")
+    guardrail_scan_state = models.CharField(
+        max_length=20,
+        choices=GuardrailScanState.choices,
+        default=GuardrailScanState.PENDING,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

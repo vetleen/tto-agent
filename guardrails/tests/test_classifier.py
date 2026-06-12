@@ -6,6 +6,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase, override_settings
 
 from guardrails.classifier import (
+    GuardrailModelUnavailableError,
     classify_description_sync,
     classify_message,
     classify_soul_sync,
@@ -67,11 +68,11 @@ class ClassifyMessageSyncTest(TestCase):
         self.assertFalse(result.is_suspicious)
         self.assertEqual(result.concern_tags, [])
 
-    @override_settings(LLM_DEFAULT_CHEAP_MODEL="")
-    def test_no_model_configured(self):
-        """Should return clean result when no cheap model is configured."""
-        result = _classify(text="test", user_id=1, org_id=None)
-        self.assertFalse(result.is_suspicious)
+    @patch("core.preferences.resolve_org_feature_model", return_value="")
+    def test_no_model_configured_fails_closed(self, _mock_resolve):
+        """No resolvable model must raise (fail closed), never silently allow."""
+        with self.assertRaises(GuardrailModelUnavailableError):
+            _classify(text="test", user_id=1, org_id=None)
 
     @patch("core.preferences.resolve_org_feature_model", return_value="test-cheap-model")
     @patch("guardrails.classifier._get_llm_service")
@@ -135,10 +136,11 @@ class ClassifyDescriptionSyncTest(TestCase):
         result = classify_description_sync("Patent attorney specializing in biotech.", user_id=1)
         self.assertFalse(result.is_suspicious)
 
-    @override_settings(LLM_DEFAULT_CHEAP_MODEL="")
-    def test_no_model_configured(self):
-        result = classify_description_sync("test", user_id=1)
-        self.assertFalse(result.is_suspicious)
+    @patch("core.preferences.resolve_org_feature_model", return_value="")
+    def test_no_model_configured_fails_closed(self, _mock_resolve):
+        """The view's except-path turns this into a 503; the save is rejected."""
+        with self.assertRaises(GuardrailModelUnavailableError):
+            classify_description_sync("test", user_id=1)
 
     @override_settings(LLM_DEFAULT_CHEAP_MODEL="test-cheap-model")
     @patch("guardrails.classifier._get_llm_service")
@@ -164,6 +166,12 @@ class ClassifyDescriptionSyncTest(TestCase):
 
 class ClassifySoulSyncTest(TestCase):
     """Test the synchronous SOUL (personality) classifier."""
+
+    @patch("core.preferences.resolve_org_feature_model", return_value="")
+    def test_no_model_configured_fails_closed(self, _mock_resolve):
+        """The view's except-path turns this into a 503; the save is rejected."""
+        with self.assertRaises(GuardrailModelUnavailableError):
+            classify_soul_sync("test", user_id=1)
 
     @override_settings(LLM_DEFAULT_CHEAP_MODEL="test-cheap-model")
     @patch("guardrails.classifier._get_llm_service")

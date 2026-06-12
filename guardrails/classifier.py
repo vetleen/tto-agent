@@ -18,6 +18,16 @@ from guardrails.schemas import ClassifierResult
 
 logger = logging.getLogger(__name__)
 
+
+class GuardrailModelUnavailableError(RuntimeError):
+    """No model resolves for the guardrail classifier — the guardrail cannot run.
+
+    Raised instead of failing open: callers already fail closed on exceptions
+    (the chat pipeline escalates to the reviewer, which blocks when it too has
+    no model; the settings views return HTTP 503 and reject the save).
+    """
+
+
 _CLASSIFIER_SYSTEM_PROMPT = """\
 You are a content safety classifier for an AI assistant used by technology transfer offices.
 
@@ -49,10 +59,12 @@ def _run_classifier(
 
     cheap_model = resolve_org_feature_model(org_id, "guardrails_classifier")
     if not cheap_model:
-        logger.warning("classifier: no cheap model configured, defaulting to allow")
-        return ClassifierResult(
-            is_suspicious=False, concern_tags=[], confidence=0.0,
-            reasoning="No cheap model configured; skipping classification.",
+        # Fail closed, not open: a misconfigured environment must not silently
+        # disable the guardrail. Raising routes each caller to its existing
+        # fail-closed exception path (see GuardrailModelUnavailableError).
+        logger.error("classifier: no model resolves for guardrails_classifier (org_id=%s)", org_id)
+        raise GuardrailModelUnavailableError(
+            "No model configured for the guardrail classifier."
         )
 
     context = RunContext.create(

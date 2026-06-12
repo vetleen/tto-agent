@@ -2,7 +2,8 @@
 
 Zero latency, zero cost. Catches high-confidence injection patterns before
 they reach the LLM classifier. Each pattern set has an associated confidence
-weight; aggregated hits produce a combined score.
+weight; the highest-confidence hit wins (confidence = max across matches,
+not a combined score).
 """
 
 from __future__ import annotations
@@ -100,8 +101,13 @@ _BASE64_SUSPICIOUS_KEYWORDS = [
 ]
 
 
-def _check_encoding_bypass(text: str) -> tuple[float, list[str]]:
+def _check_encoding_bypass(original: str, stripped: str) -> tuple[float, list[str]]:
     """Check for encoding bypass attempts (zero-width chars, suspicious base64).
+
+    Zero-width chars are COUNTED on the original text (the threshold tolerates
+    legitimate low counts — emoji ZWJ sequences, Persian ZWNJ); the base64 scan
+    runs on the stripped copy so interleaved zero-width chars cannot break up
+    an encoded payload.
 
     Best-effort fast pre-filter only (see _BASE64_SUSPICIOUS_KEYWORDS note).
     Returns (confidence, list_of_matched_descriptions).
@@ -110,13 +116,13 @@ def _check_encoding_bypass(text: str) -> tuple[float, list[str]]:
     max_confidence = 0.0
 
     # Zero-width character abuse
-    zero_width_count = len(_ZERO_WIDTH_RE.findall(text))
+    zero_width_count = len(_ZERO_WIDTH_RE.findall(original))
     if zero_width_count >= _EXCESSIVE_ZERO_WIDTH_THRESHOLD:
         matches.append(f"excessive_zero_width_chars ({zero_width_count})")
         max_confidence = max(max_confidence, 0.7)
 
     # Suspicious base64 content
-    for b64_match in _BASE64_BLOCK_RE.finditer(text):
+    for b64_match in _BASE64_BLOCK_RE.finditer(stripped):
         try:
             decoded = base64.b64decode(b64_match.group() + "==", validate=False).decode(
                 "utf-8", errors="ignore"
@@ -142,6 +148,12 @@ def heuristic_scan(text: str) -> HeuristicResult:
     if not text or not text.strip():
         return HeuristicResult()
 
+    # Run patterns against a copy with zero-width chars stripped: a handful of
+    # invisible chars inside a trigger phrase ("ig​nore previous
+    # instructions") must not defeat the regexes. The original text is still
+    # used for the zero-width count itself.
+    stripped = _ZERO_WIDTH_RE.sub("", text)
+
     tags: set[str] = set()
     matched_patterns: list[str] = []
     max_confidence = 0.0
@@ -149,13 +161,13 @@ def heuristic_scan(text: str) -> HeuristicResult:
     # Check regex pattern sets
     for tag, patterns in _PATTERN_SETS:
         for pattern, confidence in patterns:
-            if pattern.search(text):
+            if pattern.search(stripped):
                 tags.add(tag)
                 matched_patterns.append(pattern.pattern)
                 max_confidence = max(max_confidence, confidence)
 
     # Check encoding bypass
-    enc_confidence, enc_matches = _check_encoding_bypass(text)
+    enc_confidence, enc_matches = _check_encoding_bypass(text, stripped)
     if enc_matches:
         tags.add("encoding_bypass")
         matched_patterns.extend(enc_matches)

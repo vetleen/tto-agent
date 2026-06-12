@@ -173,6 +173,72 @@ class RunClassifierPipelineTest(TransactionTestCase):
 
     @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
     @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
+    def test_reviewer_error_creates_audit_event(self, mock_classify, mock_review):
+        """A reviewer-crash failsafe block must leave an audit trail."""
+        from guardrails.service import run_classifier_pipeline
+
+        mock_classify.return_value = ClassifierResult(
+            is_suspicious=True,
+            concern_tags=["prompt_injection"],
+            confidence=0.8,
+            reasoning="Suspicious.",
+        )
+        mock_review.side_effect = RuntimeError("reviewer down")
+
+        verdict = async_to_sync(run_classifier_pipeline)(
+            text="reviewer is down",
+            user=self.user,
+            heuristic_result=self.clean_heuristic,
+            thread_id=None,
+            org_id=self.org.pk,
+        )
+        self.assertEqual(verdict.action, "block")
+        failsafe = GuardrailEvent.objects.filter(
+            user=self.user, check_type="llm_review", action_taken="blocked",
+        ).first()
+        self.assertIsNotNone(failsafe)
+        self.assertEqual(failsafe.confidence, 0.0)
+        # Linked back to the classifier escalation that triggered the review.
+        self.assertIsNotNone(failsafe.related_event)
+        self.assertEqual(failsafe.related_event.check_type, "classifier")
+        self.assertIn(failsafe, verdict.events)
+
+    @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
+    @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
+    def test_suspend_falls_back_to_all_memberships(self, mock_classify, mock_review):
+        """A suspend with a stale/mismatched org_id must still suspend the user."""
+        from guardrails.service import run_classifier_pipeline
+
+        mock_classify.return_value = ClassifierResult(
+            is_suspicious=True,
+            concern_tags=["prompt_injection"],
+            confidence=0.95,
+            reasoning="Severe injection.",
+        )
+        mock_review.return_value = ReviewerDecision(
+            action="suspend",
+            confidence=0.95,
+            severity="critical",
+            reasoning="Repeated severe violations.",
+            user_message="Your account has been suspended.",
+        )
+
+        # A real org the user has no membership in (stale/mismatched org_id).
+        other_org = Organization.objects.create(name="Other Org", slug="other-org")
+        verdict = async_to_sync(run_classifier_pipeline)(
+            text="Extreme attack",
+            user=self.user,
+            heuristic_result=self.clean_heuristic,
+            thread_id=None,
+            org_id=other_org.pk,
+        )
+        self.assertEqual(verdict.action, "suspend")
+        self.membership.refresh_from_db()
+        self.assertTrue(self.membership.is_suspended)
+        self.assertIsNotNone(self.membership.suspended_at)
+
+    @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
+    @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
     def test_reviewer_dismiss(self, mock_classify, mock_review):
         """Reviewer dismissal should result in action=dismiss."""
         from guardrails.service import run_classifier_pipeline
