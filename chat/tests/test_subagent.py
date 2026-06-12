@@ -7,9 +7,10 @@ import uuid
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
+from channels.db import database_sync_to_async
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from chat.models import ChatMessage, ChatThread, SubAgentRun
@@ -438,6 +439,39 @@ class StaleRunExpirationTests(TestCase):
         # The stale run is cleaned up, so this user should be allowed
         allowed, msg = check_subagent_limits(self.user)
         self.assertTrue(allowed)
+
+    def test_running_with_fresh_started_at_not_expired(self):
+        """A run that queued for a while before starting gets its full
+        execution window — RUNNING staleness is measured from started_at."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="queued then started", status=SubAgentRun.Status.RUNNING,
+        )
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - timedelta(minutes=16),
+            started_at=timezone.now() - timedelta(minutes=2),
+        )
+
+        expired = _expire_stale_runs()
+        self.assertEqual(expired, 0)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.RUNNING)
+
+    def test_running_with_stale_started_at_expired(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="stuck", status=SubAgentRun.Status.RUNNING,
+        )
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            started_at=timezone.now() - timedelta(minutes=11),
+        )
+
+        expired = _expire_stale_runs()
+        self.assertEqual(expired, 1)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
 
     def test_task_swallows_transient_db_error(self):
         """A transient DB outage (e.g. Postgres restarting during maintenance)
@@ -1009,3 +1043,184 @@ class CeleryOnFailureTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.FAILED)
         self.assertIn("Final failure", run.error)
         self.assertIsNotNone(run.completed_at)
+
+    def test_on_failure_keeps_existing_failure_reason(self):
+        """A run already FAILED (e.g. cancelled by the user) must not have its
+        error clobbered by the task exception."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="cancelled task", status=SubAgentRun.Status.FAILED,
+            error="Cancelled by user.",
+        )
+
+        from chat.tasks import run_subagent_task
+        run_subagent_task.on_failure(
+            RuntimeError("Worker terminated"),
+            "fake-task-id",
+            [str(run.id)],
+            {},
+            None,
+        )
+
+        run.refresh_from_db()
+        self.assertEqual(run.error, "Cancelled by user.")
+
+
+# ---------------------------------------------------------------------------
+# Cancellation vs. completion races (fix: stop must not be overwritten)
+# ---------------------------------------------------------------------------
+
+class RunSubagentCancellationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="cancel@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_cancelled_pending_run_not_resurrected(self, mock_prefs, mock_svc):
+        """A run cancelled while PENDING must not be executed at all."""
+        mock_prefs.return_value = _prefs()
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.FAILED,
+            error="Cancelled by user.",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertEqual(run.error, "Cancelled by user.")
+        mock_svc.return_value.run.assert_not_called()
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_cancelled_mid_run_result_discarded(self, mock_prefs, mock_svc):
+        """If the user cancels while the LLM call is in flight, the late result
+        must not flip the run back to COMPLETED or create a hidden message."""
+        mock_prefs.return_value = _prefs()
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task",
+        )
+
+        def cancel_then_respond(*args, **kwargs):
+            # Simulate the user hitting stop mid-run
+            SubAgentRun.objects.filter(pk=run.pk).update(
+                status=SubAgentRun.Status.FAILED, error="Cancelled by user.",
+            )
+            mock_response = MagicMock()
+            mock_response.message.content = "Late findings."
+            mock_response.usage.total_tokens = 100
+            mock_response.usage.cost_usd = 0.001
+            return mock_response
+
+        mock_svc.return_value.run.side_effect = cancel_then_respond
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertEqual(run.error, "Cancelled by user.")
+        msg_count = ChatMessage.objects.filter(
+            thread=self.thread,
+            metadata__source="subagent",
+            metadata__subagent_run_id=str(run.id),
+        ).count()
+        self.assertEqual(msg_count, 0)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_started_at_set_when_running(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 10
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertIsNotNone(run.started_at)
+        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator claim of unreported results (fix: two-tab duplicate seeds)
+# ---------------------------------------------------------------------------
+
+class ClaimUnreportedSubagentsTests(TransactionTestCase):
+    def setUp(self):
+        from chat.consumers import ChatConsumer
+
+        self.user = User.objects.create_user(email="claim@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.consumer = ChatConsumer()
+        self.consumer.user = self.user
+
+    @database_sync_to_async
+    def _make_completed_run(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.COMPLETED,
+            result="Findings.",
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="user",
+            content=f"[Sub-agent result: {str(run.id)[:8]}]\nFindings.",
+            metadata={"source": "subagent", "subagent_run_id": str(run.id)},
+            is_hidden_from_user=True,
+        )
+        return run
+
+    async def _claim(self):
+        return await self.consumer._claim_unreported_subagents(str(self.thread.id))
+
+    @database_sync_to_async
+    def _backdate_reported_at(self, run, minutes):
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            reported_at=timezone.now() - timedelta(minutes=minutes),
+        )
+
+    async def test_first_claim_wins_second_loses(self):
+        run = await self._make_completed_run()
+
+        self.assertTrue(await self._claim())
+        # Second claim (e.g. the same thread open in another tab) must lose.
+        self.assertFalse(await self._claim())
+
+        await database_sync_to_async(run.refresh_from_db)()
+        self.assertIsNotNone(run.reported_at)
+
+    async def test_stale_claim_is_reclaimable(self):
+        """If the seeded stream died (no assistant response), the claim expires
+        after the lease and the result is retried."""
+        run = await self._make_completed_run()
+        self.assertTrue(await self._claim())
+
+        await self._backdate_reported_at(run, 6)
+        self.assertTrue(await self._claim())
+
+    async def test_reported_run_with_response_not_reclaimed(self):
+        """Once an assistant response exists, the run is permanently reported —
+        even after the lease window."""
+        run = await self._make_completed_run()
+        self.assertTrue(await self._claim())
+
+        await database_sync_to_async(ChatMessage.objects.create)(
+            thread=self.thread, role="assistant",
+            content="Here is what the sub-agent found...",
+            metadata={"subagent_response": True},
+        )
+        await self._backdate_reported_at(run, 6)
+        self.assertFalse(await self._claim())
+
+    async def test_no_completed_runs_returns_false(self):
+        self.assertFalse(await self._claim())

@@ -60,8 +60,14 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
     run = SubAgentRun.objects.select_related("user", "thread").get(pk=run_id)
 
     try:
-        run.status = SubAgentRun.Status.RUNNING
-        run.save(update_fields=["status"])
+        # Guarded transition: if the user cancelled while the run was PENDING
+        # (status already FAILED), don't resurrect it.
+        started = SubAgentRun.objects.filter(pk=run_id).exclude(
+            status=SubAgentRun.Status.FAILED,
+        ).update(status=SubAgentRun.Status.RUNNING, started_at=timezone.now())
+        if not started:
+            logger.info("Sub-agent run %s was cancelled before starting; skipping", run_id)
+            return
 
         user = run.user
         prefs = get_preferences(user)
@@ -154,9 +160,24 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
                 run_id, run.tokens_used,
             )
         run.completed_at = timezone.now()
-        run.save(update_fields=[
-            "result", "tokens_used", "cost_usd", "status", "error", "completed_at",
-        ])
+        # Guarded write: if the user cancelled mid-run (status flipped to
+        # FAILED by _cancel_active_subagents), don't overwrite the
+        # cancellation with COMPLETED — and don't report the result.
+        finished = SubAgentRun.objects.filter(pk=run_id).exclude(
+            status=SubAgentRun.Status.FAILED,
+        ).update(
+            result=run.result,
+            tokens_used=run.tokens_used,
+            cost_usd=run.cost_usd,
+            status=run.status,
+            error=run.error,
+            completed_at=run.completed_at,
+        )
+        if not finished:
+            logger.info(
+                "Sub-agent run %s was cancelled mid-run; discarding its result", run_id,
+            )
+            return
 
         # Persist the result as a hidden ChatMessage so it survives
         # across reconnects and failed LLM streams.  Uses role="user"
@@ -195,8 +216,13 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
 
     except Exception as exc:
         logger.exception("Sub-agent run %s failed", run_id)
-        run.status = SubAgentRun.Status.FAILED
-        run.error = str(exc)
-        run.completed_at = timezone.now()
-        run.save(update_fields=["status", "error", "completed_at"])
+        # Guarded: keep an earlier failure reason (e.g. "Cancelled by user.")
+        # instead of clobbering it with this exception's message.
+        SubAgentRun.objects.filter(pk=run_id).exclude(
+            status=SubAgentRun.Status.FAILED,
+        ).update(
+            status=SubAgentRun.Status.FAILED,
+            error=str(exc),
+            completed_at=timezone.now(),
+        )
         raise

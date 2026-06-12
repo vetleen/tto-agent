@@ -17,8 +17,11 @@ def extend_retention_on_message(sender, instance, **kwargs):
     from documents.models import DataRoom
 
     now = timezone.now()
+    # updated_at drives the sidebar's Today/Yesterday/Earlier grouping and
+    # ordering — bump it on activity (a .update() bypasses auto_now).
     ChatThread.objects.filter(pk=instance.thread_id).update(
         retain_until=now + RETENTION_PERIODS["chat.ChatThread"],
+        updated_at=now,
     )
     DataRoom.objects.filter(
         thread_links__thread_id=instance.thread_id,

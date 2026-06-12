@@ -66,6 +66,41 @@ class WriteCanvasToolTests(TestCase):
         result = json.loads(tool.invoke({"title": "T", "content": "C"}))
         self.assertEqual(result["status"], "error")
 
+    def test_long_title_truncated_to_column_limit(self):
+        """LLM-supplied titles longer than the 255-char column must be
+        truncated, not raise a DB error."""
+        long_title = "T" * 400
+        result = _invoke(
+            WriteCanvasTool,
+            {"title": long_title, "content": "body"},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["status"], "ok")
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        self.assertEqual(len(canvas.title), 255)
+
+    def test_overwrite_snapshots_uncommitted_user_edits(self):
+        """A full rewrite over user edits that aren't checkpointed yet must
+        auto-snapshot them first so they're recoverable from history."""
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "ai v1"}, _ctx(self.user.pk, self.thread.id))
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Draft")
+
+        # Simulate user edits saved directly (no checkpoint), as the consumer's
+        # _save_canvas does on autosave.
+        canvas.content = "user edited content"
+        canvas.save(update_fields=["content", "updated_at"])
+
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "ai v2"}, _ctx(self.user.pk, self.thread.id))
+
+        snapshots = CanvasCheckpoint.objects.filter(
+            canvas=canvas, source="user_save",
+            description="Auto-saved before AI edit",
+        )
+        self.assertEqual(snapshots.count(), 1)
+        self.assertEqual(snapshots.first().content, "user edited content")
+        canvas.refresh_from_db()
+        self.assertEqual(canvas.content, "ai v2")
+
 
 # ---------------------------------------------------------------------------
 # ActiveCanvasTool tests
@@ -219,6 +254,25 @@ class EditCanvasToolTests(TestCase):
         }, _ctx(self.user.pk, self.thread.id))
         self.assertEqual(result["status"], "error")
         self.assertIn("write_canvas", result["message"])
+
+    def test_edit_snapshots_uncommitted_user_edits(self):
+        """AI edits over user content that isn't checkpointed yet must
+        auto-snapshot it first so it's recoverable from history."""
+        self._setup_canvas("User wrote this draft.")
+
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "draft", "new_text": "document", "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["applied"], 1)
+
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        snapshots = CanvasCheckpoint.objects.filter(
+            canvas=canvas, source="user_save",
+            description="Auto-saved before AI edit",
+        )
+        self.assertEqual(snapshots.count(), 1)
+        self.assertEqual(snapshots.first().content, "User wrote this draft.")
+        self.assertIn("document", canvas.content)
 
 
 # ---------------------------------------------------------------------------

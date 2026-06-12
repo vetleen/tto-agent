@@ -117,6 +117,32 @@ def set_active_canvas(thread_id, canvas):
     activate_canvas(thread_id, canvas)
 
 
+def snapshot_user_edits(canvas):
+    """Checkpoint uncommitted user edits before the AI mutates a canvas.
+
+    If the canvas content has drifted from its latest checkpoint (the user
+    edited in the UI but no checkpoint captured it yet), save a ``user_save``
+    checkpoint first so an AI write/edit can never silently clobber user work
+    — it stays recoverable from version history.
+    """
+    from chat.models import CanvasCheckpoint
+
+    latest = (
+        CanvasCheckpoint.objects.filter(canvas=canvas)
+        .order_by("-order")
+        .first()
+    )
+    if latest is None:
+        drifted = bool(canvas.content)  # nothing to preserve on a blank canvas
+    else:
+        drifted = latest.content != canvas.content or latest.title != canvas.title
+    if drifted:
+        create_canvas_checkpoint(
+            canvas, source="user_save",
+            description="Auto-saved before AI edit",
+        )
+
+
 def create_canvas_checkpoint(canvas, source, description=""):
     """Create a new checkpoint for the given canvas, using its current title/content.
 

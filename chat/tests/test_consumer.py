@@ -202,6 +202,121 @@ class ConsumerMessageTests(TransactionTestCase):
         await communicator.disconnect()
 
     @patch("llm.get_llm_service")
+    async def test_new_thread_joins_subagent_group(self, mock_get_service):
+        """A thread created mid-session must join the thread_<id> channel group
+        so sub-agent completion notifications reach this consumer."""
+        from channels.layers import get_channel_layer
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+        })
+        response = await communicator.receive_json_from(timeout=10)
+        self.assertEqual(response["event_type"], "thread.created")
+        thread_id = response["thread_id"]
+
+        # With an empty stream, the only remaining lifecycle event is the
+        # cost update. (No timeout-draining here: asgiref's receive_output
+        # cancels the whole application on timeout.)
+        response = await communicator.receive_json_from(timeout=10)
+        self.assertEqual(response["event_type"], "thread.cost_updated")
+
+        # Broadcast a sub-agent completion to the thread group, exactly like
+        # chat.tasks._notify_consumer does from the Celery worker.
+        channel_layer = get_channel_layer()
+        await channel_layer.group_send(
+            f"thread_{thread_id}",
+            {
+                "type": "subagent.completed",
+                "run_id": "00000000-0000-0000-0000-000000000000",
+                "thread_id": thread_id,
+            },
+        )
+
+        response = await communicator.receive_json_from(timeout=10)
+        self.assertEqual(response["event_type"], "subagents.updated")
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
+    async def test_tool_loop_narration_persisted(self, mock_get_service):
+        """Narration text and thinking streamed before tool calls must be
+        persisted on the hidden tool-loop assistant message."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="thinking", data={"text": "Pondering the request."}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Let me search the documents..."}, sequence=2, run_id="r1"),
+            StreamEvent(event_type="tool_start", data={"tool_call_id": "c1", "tool_name": "brave_search", "arguments": {}}, sequence=3, run_id="r1"),
+            StreamEvent(event_type="tool_end", data={"tool_call_id": "c1", "tool_name": "brave_search", "result": "{}"}, sequence=4, run_id="r1"),
+            StreamEvent(event_type="message_start", data={}, sequence=5, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Final answer."}, sequence=6, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=7, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Search for X",
+        })
+
+        # Drain until message_end arrives
+        for _ in range(20):
+            resp = await communicator.receive_json_from(timeout=10)
+            if resp.get("event_type") == "message_end":
+                break
+
+        @database_sync_to_async
+        def get_messages():
+            return list(ChatMessage.objects.order_by("created_at"))
+
+        # Allow the persistence (post-stream) to finish
+        import asyncio
+        for _ in range(20):
+            msgs = await get_messages()
+            if len(msgs) >= 4:
+                break
+            await asyncio.sleep(0.1)
+
+        # user, hidden assistant (tool calls + narration), tool result, final assistant
+        roles = [(m.role, m.is_hidden_from_user) for m in msgs]
+        self.assertIn(("user", False), roles)
+
+        tool_loop_msg = next(
+            m for m in msgs
+            if m.role == "assistant" and m.metadata.get("tool_calls")
+        )
+        self.assertTrue(tool_loop_msg.is_hidden_from_user)
+        self.assertEqual(tool_loop_msg.content, "Let me search the documents...")
+        self.assertEqual(tool_loop_msg.metadata.get("thinking"), "Pondering the request.")
+
+        final_msg = [m for m in msgs if m.role == "assistant"][-1]
+        self.assertEqual(final_msg.content, "Final answer.")
+        self.assertFalse(final_msg.is_hidden_from_user)
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
     async def test_error_event_strips_raw_details(self, mock_get_service):
         """The raw provider exception (`details`) must not reach the client; the
         curated `message` and `error_code` are kept."""

@@ -6,11 +6,30 @@ import asyncio
 import json
 import logging
 import threading
+from dataclasses import dataclass, field
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _TurnState:
+    """Per-turn state shared between a turn's stream task and its guardrail task.
+
+    Each chat turn gets a fresh instance so a superseded turn's guardrail
+    pipeline (which may still be running) can never intercept or redact a
+    later turn — it only ever acts on its own state and its own user message.
+    """
+
+    cancel_event: threading.Event
+    stream_finished: asyncio.Event
+    user_message_id: object | None = None  # pk of the user message this turn guards
+    guardrail_task: asyncio.Task | None = None
+    guardrail_intercepted: bool = False
+    warn_verdict: object | None = None
+    modified_canvas_ids: set = field(default_factory=set)
 
 MAX_HISTORY_TOKENS = 20_000  # legacy default; overridden by dynamic budget when model is known
 OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when model is known
@@ -30,10 +49,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.data_room_ids: list[int] = []
         self.active_skill_id: str | None = None
         self._cancel_event: threading.Event | None = None
-        self._stream_finished = asyncio.Event()
+        self._turn: _TurnState | None = None  # current turn's shared state
         self._guardrail_task: asyncio.Task | None = None
-        self._guardrail_intercepted: bool = False
-        self._guardrail_warn_verdict: object | None = None  # stored for post-stream delivery
         self._org_id: int | None = None
         self._org_name: str | None = None
         self._soul: str | None = None
@@ -107,7 +124,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         if self._stream_task and not self._stream_task.done():
             return
-        if not await self._check_unreported_subagents(thread_id):
+        if not await self._claim_unreported_subagents(thread_id):
             return
         await self._handle_chat_message(
             {"thread_id": thread_id, "content": ""},
@@ -382,16 +399,32 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # subagents completed while the user was disconnected.
             needs_seed = pending_consumed
             if not needs_seed and self._has_tool("create_subagent"):
-                needs_seed = await self._check_unreported_subagents(thread_id)
+                needs_seed = await self._claim_unreported_subagents(thread_id)
             if needs_seed:
                 await self._handle_chat_message(
                     {"thread_id": thread_id, "content": ""},
                     seed_mode=True,
                 )
 
+    # Re-claimable after this long: covers seeded streams that died before
+    # producing the assistant response (retried on the next load/notification).
+    SUBAGENT_REPORT_LEASE_MINUTES = 5
+
     @database_sync_to_async
-    def _check_unreported_subagents(self, thread_id) -> bool:
-        """Return True if any completed subagent results haven't been processed by the orchestrator."""
+    def _claim_unreported_subagents(self, thread_id) -> bool:
+        """Atomically claim completed subagent results that haven't been reported.
+
+        Returns True iff this caller won the claim and should seed an
+        orchestrator turn. The claim is an optimistic CAS on ``reported_at``,
+        so when the same thread is open in multiple tabs only one consumer
+        seeds — preventing duplicate assistant turns (and double LLM cost).
+        A stale claim (older than the lease, still no response) is re-claimable.
+        """
+        from datetime import timedelta
+
+        from django.db.models import Q
+        from django.utils import timezone
+
         from chat.models import ChatMessage, SubAgentRun
 
         completed_run_ids = list(
@@ -403,6 +436,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not completed_run_ids:
             return False
 
+        unreported_ids = []
         for run_id in completed_run_ids:
             hidden_msg = ChatMessage.objects.filter(
                 thread_id=thread_id,
@@ -417,28 +451,45 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     created_at__gt=hidden_msg.created_at,
                 ).exists()
                 if not has_response:
-                    return True
-        return False
+                    unreported_ids.append(run_id)
+        if not unreported_ids:
+            return False
+
+        now = timezone.now()
+        lease_cutoff = now - timedelta(minutes=self.SUBAGENT_REPORT_LEASE_MINUTES)
+        claimed = SubAgentRun.objects.filter(pk__in=unreported_ids).filter(
+            Q(reported_at__isnull=True) | Q(reported_at__lt=lease_cutoff)
+        ).update(reported_at=now)
+        return claimed > 0
 
     @database_sync_to_async
     def _consume_pending_initial_turn(self, thread_id) -> bool:
         """Atomically read+clear the pending_initial_turn flag on a thread.
 
-        Returns True iff the flag was set (and has been cleared).
+        Returns True iff the flag was set (and has been cleared). The row is
+        locked for the read-modify-write so two consumers loading the same
+        thread simultaneously (e.g. two tabs) can't both consume the flag and
+        double-fire the initial turn.
         """
+        from django.db import transaction
+
         from chat.models import ChatThread
 
-        try:
-            thread = ChatThread.objects.get(id=thread_id, created_by=self.user)
-        except ChatThread.DoesNotExist:
-            return False
-        meta = thread.metadata or {}
-        if not meta.get("pending_initial_turn"):
-            return False
-        meta.pop("pending_initial_turn", None)
-        thread.metadata = meta
-        thread.save(update_fields=["metadata"])
-        return True
+        with transaction.atomic():
+            thread = (
+                ChatThread.objects.select_for_update()
+                .filter(id=thread_id, created_by=self.user)
+                .first()
+            )
+            if thread is None:
+                return False
+            meta = thread.metadata or {}
+            if not meta.get("pending_initial_turn"):
+                return False
+            meta.pop("pending_initial_turn", None)
+            thread.metadata = meta
+            thread.save(update_fields=["metadata"])
+            return True
 
     async def _handle_canvas_save(self, data):
         """Save user edits to the canvas."""
@@ -446,7 +497,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
         canvas_id = data.get("canvas_id")
-        title = data.get("title", "Untitled document")
+        title = (data.get("title") or "Untitled document")[:255]
         content = data.get("content", "")
         content = content[:CANVAS_MAX_CHARS]
         if thread_id:
@@ -726,6 +777,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self._active_thread_id = str(thread.id)
 
             if created:
+                # Join the thread's broadcast group so sub-agent completion
+                # notifications reach this consumer. Without this, background
+                # sub-agents in threads created mid-session (the common "new
+                # chat" flow) never auto-trigger the orchestrator — the
+                # channel-layer group has no members until a page reload.
+                if self._current_thread_id and self._current_thread_id != str(thread.id):
+                    await self.channel_layer.group_discard(
+                        f"thread_{self._current_thread_id}", self.channel_name,
+                    )
+                self._current_thread_id = str(thread.id)
+                await self.channel_layer.group_add(
+                    f"thread_{thread.id}", self.channel_name,
+                )
+
                 # Persist session data_room_ids as M2M for new threads
                 if self.data_room_ids:
                     await self._persist_data_room_links(thread.id, self.data_room_ids)
@@ -763,6 +828,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     await self._persist_thread_skill(str(thread.id), None)
 
             # Persist user message (skipped in seed mode — caller pre-persisted it)
+            user_message = None
             if not seed_mode:
                 user_metadata = {}
                 if attachment_ids:
@@ -812,20 +878,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
 
                 if heuristic_verdict.action == "block":
-                    await self._redact_messages(thread, redact_assistant=False)
+                    await self._redact_messages(
+                        thread, redact_assistant=False,
+                        from_message_id=user_message.pk if user_message else None,
+                    )
                     await self.send(text_data=json.dumps({
                         "event_type": "guardrail.blocked",
                         "data": {"message": heuristic_verdict.message, "redact": True},
                     }))
                     return
 
-            # Prepare cancel_event before launching parallel tasks
-            self._cancel_event = threading.Event()
-            self._stream_finished.clear()
-            self._guardrail_intercepted = False
-            self._guardrail_warn_verdict = None
+            # Fresh per-turn state. A superseded turn's guardrail task keeps a
+            # reference to ITS OWN _TurnState, so a late verdict can never
+            # intercept this turn's stream or redact this turn's message.
+            turn = _TurnState(
+                cancel_event=threading.Event(),
+                stream_finished=asyncio.Event(),
+                user_message_id=user_message.pk if user_message else None,
+            )
+            self._turn = turn
+            self._cancel_event = turn.cancel_event
             self._guardrail_task = None
-            self._modified_canvas_ids = set()
 
             # Guardrail Layers 1+2 (classifier + reviewer). Skipped in seed mode
             # (server-controlled text).
@@ -844,14 +917,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         org_id=org_id,
                     )
                     if hold_verdict.action == "block":
-                        await self._redact_messages(thread, redact_assistant=False)
+                        await self._redact_messages(
+                            thread, redact_assistant=False,
+                            from_message_id=turn.user_message_id,
+                        )
                         await self.send(text_data=json.dumps({
                             "event_type": "guardrail.blocked",
                             "data": {"message": hold_verdict.message, "redact": True},
                         }))
                         return
                     if hold_verdict.action == "suspend":
-                        await self._redact_messages(thread, redact_assistant=False)
+                        await self._redact_messages(
+                            thread, redact_assistant=False,
+                            from_message_id=turn.user_message_id,
+                        )
                         await self.send(text_data=json.dumps({
                             "event_type": "guardrail.suspended",
                             "data": {"message": hold_verdict.message, "redact": True},
@@ -859,17 +938,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         return
                     if hold_verdict.action == "warn":
                         # Stream is safe to proceed; deliver the warning after it ends.
-                        self._guardrail_warn_verdict = hold_verdict
+                        turn.warn_verdict = hold_verdict
                     # dismiss/allow → just proceed; the pipeline has already run.
                 else:
                     # Clean heuristic: run Layers 1+2 in parallel with the LLM stream
                     # (see guardrails/service.py "parallel pipeline tradeoff").
-                    self._guardrail_task = asyncio.create_task(
+                    turn.guardrail_task = asyncio.create_task(
                         self._run_guardrail_pipeline(
                             content, heuristic_verdict.heuristic_result,
-                            thread, org_id, self._cancel_event,
+                            thread, org_id, turn,
                         )
                     )
+                    # Kept on self too so _handle_stop / disconnect can cancel
+                    # the *current* turn's pipeline.
+                    self._guardrail_task = turn.guardrail_task
 
             # Refresh preferences per message so toggles (e.g. the "+" menu
             # autonomy switch) take effect on the next turn without requiring
@@ -958,7 +1040,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     requested_model=requested_model,
                     thinking_level=thinking_level,
                     resolved_model=model,
-                    cancel_event=self._cancel_event,
+                    turn=turn,
                     seed_mode=seed_mode,
                     content=content,
                     meta=meta,
@@ -977,12 +1059,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self, thread, static_system, history, *,
         semi_static_system, dynamic_context,
         requested_model, thinking_level, resolved_model,
-        cancel_event, seed_mode, content, meta, max_context_tokens,
+        turn, seed_mode, content, meta, max_context_tokens,
     ):
         """Stream LLM response and run post-processing.
 
         Runs as a background ``asyncio.Task`` so the dispatch loop stays
-        free for ``chat.stop`` and other messages.
+        free for ``chat.stop`` and other messages. All guardrail coordination
+        goes through this turn's ``_TurnState`` so a superseded turn's late
+        verdict can't leak into this one.
         """
         try:
             await self._stream_response(
@@ -991,21 +1075,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 dynamic_context=dynamic_context,
                 requested_model=requested_model, thinking_level=thinking_level,
                 resolved_model=resolved_model,
-                cancel_event=cancel_event,
+                turn=turn,
                 seed_mode=seed_mode,
             )
 
             if self._stopped:
                 return
 
-            # Wait for guardrail pipeline to finish
-            if self._guardrail_task and not self._guardrail_task.done():
-                await self._guardrail_task
+            # Wait for THIS turn's guardrail pipeline to finish
+            if turn.guardrail_task and not turn.guardrail_task.done():
+                await turn.guardrail_task
 
             # If the guardrail pipeline intercepted, redact messages and skip post-stream work
-            if self._guardrail_intercepted:
-                await self._redact_messages(thread)
-                redacted_ids = await self._redact_canvases(thread)
+            if turn.guardrail_intercepted:
+                await self._redact_messages(thread, from_message_id=turn.user_message_id)
+                redacted_ids = await self._redact_canvases(
+                    thread, turn,
+                )
                 for cid in redacted_ids:
                     canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
                     if canvas_data:
@@ -1013,10 +1099,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
 
             # Send guardrail warning after stream if the pipeline flagged but allowed
-            if self._guardrail_warn_verdict:
+            if turn.warn_verdict:
                 await self.send(text_data=json.dumps({
                     "event_type": "guardrail.warning",
-                    "data": {"message": self._guardrail_warn_verdict.message},
+                    "data": {"message": turn.warn_verdict.message},
                 }))
 
             # Send updated thread cost
@@ -1050,7 +1136,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if (
                 not self._stopped
                 and self._has_tool("create_subagent")
-                and await self._check_unreported_subagents(str(thread.id))
+                and await self._claim_unreported_subagents(str(thread.id))
             ):
                 await self._handle_chat_message(
                     {"thread_id": str(thread.id), "content": ""},
@@ -1062,7 +1148,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         semi_static_system="",
         dynamic_context="",
         requested_model=None, thinking_level="off", resolved_model=None,
-        cancel_event=None, seed_mode=False,
+        turn=None, seed_mode=False,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
@@ -1151,8 +1237,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             tools = [t for t in all_tools if t not in doc_tools]
 
-        # Extend with skill-specific tools (filtered through prefs.allowed_skills)
-        if self.active_skill_id and prefs and prefs.allowed_skills:
+        # Extend with skill-specific tools (filtered through prefs.allowed_skills).
+        # Whenever prefs exist, trust the org-filtered allowed_skills list — even
+        # when it's empty. The raw tool_names fallback is reserved for the case
+        # where there are genuinely no prefs (no org/membership), so it can never
+        # bypass org per-skill tool toggles.
+        if self.active_skill_id and prefs is not None:
             for s in prefs.allowed_skills:
                 if s["id"] == self.active_skill_id:
                     for t in s["tool_names"]:
@@ -1163,7 +1253,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # org — do NOT fall back to raw tool_names as that would bypass
             # org-level filtering.
         elif self.active_skill_id:
-            # No prefs available (e.g. no org) — fall back to raw tool_names
+            # No prefs available (e.g. no org) — fall back to raw tool_names.
             skill_tool_names = await self._get_skill_tool_names(self.active_skill_id)
             for t in skill_tool_names:
                 if t not in tools:
@@ -1174,10 +1264,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if prefs and not prefs.allow_agent_attach_skills:
             tools = [t for t in tools if t != "attach_skills"]
 
-        if cancel_event is not None:
-            self._cancel_event = cancel_event
-        elif self._cancel_event is None:
-            self._cancel_event = threading.Event()
+        if turn is None:
+            # Defensive: direct callers (tests) may not provide a turn.
+            turn = _TurnState(
+                cancel_event=threading.Event(),
+                stream_finished=asyncio.Event(),
+            )
+        self._cancel_event = turn.cancel_event
 
         request = ChatRequest(
             messages=messages,
@@ -1185,7 +1278,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             stream=True,
             tools=tools,
             context=context,
-            params={"thinking_level": thinking_level, "_cancel_event": self._cancel_event},
+            params={"thinking_level": thinking_level, "_cancel_event": turn.cancel_event},
         )
 
         service = get_llm_service()
@@ -1197,7 +1290,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         heartbeat_task = asyncio.create_task(self._send_heartbeats())
 
         try:
-            async for event in service.astream("simple_chat", request, cancel_event=self._cancel_event):
+            async for event in service.astream("simple_chat", request, cancel_event=turn.cancel_event):
                 event_data = event.model_dump()
                 # Never leak the raw provider exception string to the client. The
                 # user-facing `message` (curated by classify_api_error) and
@@ -1232,7 +1325,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok" and result.get("canvas_id"):
                                 canvas_id = result["canvas_id"]
-                                self._modified_canvas_ids.add(canvas_id)
+                                turn.modified_canvas_ids.add(canvas_id)
                                 canvas = await database_sync_to_async(self._resolve_canvas_id)(
                                     str(thread.id), canvas_id,
                                 )
@@ -1296,9 +1389,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 elif event.event_type == "error":
                     stream_error = True
                 elif event.event_type == "message_start" and pending_tool_calls:
-                    # Tool loop completed, new LLM turn starting — persist intermediate messages
+                    # Tool loop completed, new LLM turn starting — persist
+                    # intermediate messages, including any narration text and
+                    # thinking emitted before the tool calls (otherwise that
+                    # text vanishes from the UI on reload and from the LLM's
+                    # own history).
                     await self._persist_tool_loop_messages(
                         thread, pending_tool_calls, pending_tool_results,
+                        content=accumulated_content,
+                        thinking=accumulated_thinking,
                     )
                     pending_tool_calls = []
                     pending_tool_results = []
@@ -1311,7 +1410,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if pending_tool_calls:
                     await self._persist_tool_loop_messages(
                         thread, pending_tool_calls, pending_tool_results,
+                        content=accumulated_content,
+                        thinking=accumulated_thinking,
                     )
+                    accumulated_content = ""
+                    accumulated_thinking = ""
 
                 # Persist final assistant message (with thinking in metadata if present)
                 if accumulated_content.strip():
@@ -1357,16 +1460,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
-            self._stream_finished.set()
+            turn.stream_finished.set()
             self._cancel_event = None
 
     async def _run_guardrail_pipeline(
-        self, text, heuristic_result, thread, org_id, cancel_event,
+        self, text, heuristic_result, thread, org_id, turn,
     ):
         """Run classifier+reviewer pipeline concurrently with the LLM stream.
 
         If the verdict is block/suspend and the stream is still running,
         cancel the stream and send the guardrail event to the client.
+
+        All state lives on this turn's ``_TurnState``: if a new message
+        superseded this turn before the verdict landed, the verdict still
+        applies to — and redacts — *this turn's* user message, never the
+        newer one.
         """
         from guardrails.service import STREAM_INTERCEPT_ACTIONS, run_classifier_pipeline
 
@@ -1385,10 +1493,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             logger.exception("guardrail: pipeline error, failing open")
             return
 
-        if verdict.action in STREAM_INTERCEPT_ACTIONS and not self._stream_finished.is_set():
+        if verdict.action in STREAM_INTERCEPT_ACTIONS and not turn.stream_finished.is_set():
             # Stream still running — intercept it
-            self._guardrail_intercepted = True
-            cancel_event.set()
+            turn.guardrail_intercepted = True
+            turn.cancel_event.set()
 
             if verdict.action == "block":
                 await self.send(text_data=json.dumps({
@@ -1402,9 +1510,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 }))
         elif verdict.action in STREAM_INTERCEPT_ACTIONS:
             # Stream already finished — redact persisted messages and notify frontend
-            self._guardrail_intercepted = True
-            await self._redact_messages(thread)
-            redacted_ids = await self._redact_canvases(thread)
+            turn.guardrail_intercepted = True
+            await self._redact_messages(thread, from_message_id=turn.user_message_id)
+            redacted_ids = await self._redact_canvases(thread, turn)
             for cid in redacted_ids:
                 canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
                 if canvas_data:
@@ -1422,7 +1530,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 }))
         elif verdict.action == "warn":
             # Store for post-stream delivery
-            self._guardrail_warn_verdict = verdict
+            turn.warn_verdict = verdict
 
     # -- Summarization helpers --
 
@@ -1880,6 +1988,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _save_canvas(self, thread_id, title, content, canvas_id=None):
         from chat.models import ChatCanvas, ChatThread
+        title = (title or "")[:255]  # column limit; longer is a DB error
         canvas = self._resolve_canvas_id(thread_id, canvas_id)
         if canvas:
             canvas.title = title
@@ -1948,6 +2057,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _canvas_save_version(self, thread_id, title, content, canvas_id=None):
         from chat.models import CanvasCheckpoint
         from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
+        title = (title or "")[:255]  # column limit; longer is a DB error
         canvas = self._resolve_canvas_id(thread_id, canvas_id)
         if not canvas:
             return None
@@ -2122,21 +2232,29 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     @database_sync_to_async
-    def _redact_messages(self, thread, *, redact_user=True, redact_assistant=True):
+    def _redact_messages(self, thread, *, redact_user=True, redact_assistant=True, from_message_id=None):
         """Overwrite content and mark messages as redacted after a guardrail block.
 
-        Finds the most recent user message and (optionally) all assistant/tool
-        messages created at or after it, then wipes their content.
+        Anchors on ``from_message_id`` (the user message the guardrail verdict
+        was issued for) when given, so a late verdict redacts the offending
+        message even if the user has since sent newer ones. Falls back to the
+        most recent user message when no anchor is provided.
         """
         from chat.models import ChatMessage
 
         REDACTED_TEXT = "[This message was removed by the content safety system.]"
 
-        last_user = (
-            ChatMessage.objects.filter(thread=thread, role="user")
-            .order_by("-created_at")
-            .first()
-        )
+        last_user = None
+        if from_message_id is not None:
+            last_user = ChatMessage.objects.filter(
+                thread=thread, role="user", pk=from_message_id,
+            ).first()
+        if last_user is None:
+            last_user = (
+                ChatMessage.objects.filter(thread=thread, role="user")
+                .order_by("-created_at")
+                .first()
+            )
         if not last_user:
             return
 
@@ -2161,17 +2279,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
 
     @database_sync_to_async
-    def _redact_canvases(self, thread):
-        """Redact canvases modified during a guardrail-blocked turn."""
+    def _redact_canvases(self, thread, turn=None):
+        """Redact canvases modified during a guardrail-blocked turn.
+
+        Anchors the cutoff on the turn's user message when available (so a
+        late verdict targets the right turn), falling back to the most recent
+        user message.
+        """
         from chat.models import CanvasCheckpoint, ChatCanvas, ChatMessage
 
         REDACTED_TEXT = "[This message was removed by the content safety system.]"
 
-        last_user = (
-            ChatMessage.objects.filter(thread=thread, role="user")
-            .order_by("-created_at")
-            .first()
-        )
+        last_user = None
+        if turn is not None and turn.user_message_id is not None:
+            last_user = ChatMessage.objects.filter(
+                thread=thread, role="user", pk=turn.user_message_id,
+            ).first()
+        if last_user is None:
+            last_user = (
+                ChatMessage.objects.filter(thread=thread, role="user")
+                .order_by("-created_at")
+                .first()
+            )
         if not last_user:
             return []
 
@@ -2184,7 +2313,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             created_at__gte=cutoff,
         )
         affected_ids = set(str(cp.canvas_id) for cp in turn_cps)
-        affected_ids |= getattr(self, "_modified_canvas_ids", set())
+        if turn is not None:
+            affected_ids |= turn.modified_canvas_ids
 
         if not affected_ids:
             return []
@@ -2352,15 +2482,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
         finally:
             attachment.file.close()
 
-    async def _persist_tool_loop_messages(self, thread, tool_calls, tool_results):
+    async def _persist_tool_loop_messages(self, thread, tool_calls, tool_results, *, content="", thinking=""):
         """Persist assistant tool-call message and tool result messages.
 
         These intermediate messages are needed in the LLM conversation history
-        but are hidden from the chat UI — they have no user-visible content
-        (empty body + tool_calls in metadata), so rendering them produced
-        empty "Wilfred HH:MM" bubbles on page reload.
+        but are hidden from the chat UI as standalone bubbles
+        (``is_hidden_from_user=True``). ``content`` carries any narration text
+        the model streamed before calling tools, and ``thinking`` any
+        reasoning — both are preserved so the LLM keeps its own words in
+        history and the chat view can surface them as collapsed
+        "Thought further" blocks on reload.
         """
-        # 1. Assistant message requesting tools (content empty, tool_calls in metadata)
+        # 1. Assistant message requesting tools (narration in body, tool_calls in metadata)
         tc_data = [
             {
                 "id": tc.get("tool_call_id", ""),
@@ -2369,8 +2502,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
             for tc in tool_calls
         ]
+        metadata = {"tool_calls": tc_data}
+        if thinking:
+            metadata["thinking"] = thinking
         await self._create_message(
-            thread, "assistant", "", metadata={"tool_calls": tc_data},
+            thread, "assistant", content or "", metadata=metadata,
             is_hidden_from_user=True,
         )
         # 2. Tool result messages

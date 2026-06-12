@@ -1,16 +1,28 @@
 """Tests for message and canvas redaction on guardrail block."""
 
+import asyncio
+import threading
+
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.test import TransactionTestCase
 
-from chat.consumers import ChatConsumer
+from chat.consumers import ChatConsumer, _TurnState
 from chat.models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread
 from chat.services import create_canvas_checkpoint
 
 User = get_user_model()
 
 REDACTED_TEXT = "[This message was removed by the content safety system.]"
+
+
+def _make_turn(modified_canvas_ids=None, user_message_id=None):
+    return _TurnState(
+        cancel_event=threading.Event(),
+        stream_finished=asyncio.Event(),
+        user_message_id=user_message_id,
+        modified_canvas_ids=modified_canvas_ids or set(),
+    )
 
 
 class RedactMessagesTests(TransactionTestCase):
@@ -123,6 +135,37 @@ class RedactMessagesTests(TransactionTestCase):
         asst_msg = await self._refresh(asst_msg)
         self.assertFalse(asst_msg.is_redacted)
 
+    async def test_from_message_id_targets_the_offending_message(self):
+        """A late verdict anchored on message N redacts N (and its turn), not a
+        newer innocent message N+1."""
+        offending = await self._make_msg("attack prompt", role="user")
+        leaked = await self._make_msg("leaked response", role="assistant")
+        innocent = await self._make_msg("innocent follow-up", role="user")
+
+        await self.consumer._redact_messages(
+            self.thread, from_message_id=offending.pk,
+        )
+
+        offending = await self._refresh(offending)
+        leaked = await self._refresh(leaked)
+        innocent = await self._refresh(innocent)
+        self.assertTrue(offending.is_redacted)
+        self.assertEqual(offending.content, REDACTED_TEXT)
+        self.assertTrue(leaked.is_redacted)
+        self.assertFalse(innocent.is_redacted)
+        self.assertEqual(innocent.content, "innocent follow-up")
+
+    async def test_from_message_id_missing_falls_back_to_latest(self):
+        """An unknown anchor pk falls back to the most recent user message."""
+        import uuid
+
+        user_msg = await self._make_msg("attack", role="user")
+        await self.consumer._redact_messages(
+            self.thread, from_message_id=uuid.uuid4(),
+        )
+        user_msg = await self._refresh(user_msg)
+        self.assertTrue(user_msg.is_redacted)
+
 
 class LoadHistoryExcludesRedactedTests(TransactionTestCase):
     """Test that _load_history excludes redacted messages."""
@@ -219,9 +262,9 @@ class RedactCanvasTests(TransactionTestCase):
         cp = await self._make_checkpoint(canvas, source="original", content="fabricated legal letter")
 
         # Track it as modified during this turn
-        self.consumer._modified_canvas_ids = {str(canvas.pk)}
+        turn = _make_turn(modified_canvas_ids={str(canvas.pk)}, user_message_id=user_msg.pk)
 
-        result = await self.consumer._redact_canvases(self.thread)
+        result = await self.consumer._redact_canvases(self.thread, turn)
 
         self.assertEqual(result, [str(canvas.pk)])
         canvas = await self._refresh_canvas(canvas)
@@ -257,9 +300,9 @@ class RedactCanvasTests(TransactionTestCase):
             return create_canvas_checkpoint(canvas, source="ai_edit", description="AI edit")
         turn_cp = await simulate_ai_edit()
 
-        self.consumer._modified_canvas_ids = {str(canvas.pk)}
+        turn = _make_turn(modified_canvas_ids={str(canvas.pk)}, user_message_id=new_user_msg.pk)
 
-        result = await self.consumer._redact_canvases(self.thread)
+        result = await self.consumer._redact_canvases(self.thread, turn)
 
         self.assertEqual(result, [str(canvas.pk)])
         canvas = await self._refresh_canvas(canvas)
@@ -281,9 +324,9 @@ class RedactCanvasTests(TransactionTestCase):
 
         # New turn with no canvas modifications
         new_user = await self._make_msg("attack", role="user")
-        self.consumer._modified_canvas_ids = set()
+        turn = _make_turn(user_message_id=new_user.pk)
 
-        result = await self.consumer._redact_canvases(self.thread)
+        result = await self.consumer._redact_canvases(self.thread, turn)
 
         self.assertEqual(result, [])
         old_canvas = await self._refresh_canvas(old_canvas)
@@ -308,9 +351,9 @@ class RedactCanvasTests(TransactionTestCase):
 
     async def test_no_canvas_modifications_is_noop(self):
         """When no canvases were modified during the turn, returns empty list."""
-        await self._make_msg("attack", role="user")
-        self.consumer._modified_canvas_ids = set()
+        msg = await self._make_msg("attack", role="user")
+        turn = _make_turn(user_message_id=msg.pk)
 
-        result = await self.consumer._redact_canvases(self.thread)
+        result = await self.consumer._redact_canvases(self.thread, turn)
 
         self.assertEqual(result, [])

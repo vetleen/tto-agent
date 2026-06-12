@@ -106,6 +106,7 @@ class WriteCanvasTool(ContextAwareTool):
             MAX_CANVASES_PER_THREAD,
             activate_canvas,
             create_canvas_checkpoint,
+            snapshot_user_edits,
         )
 
         thread_id = self.context.conversation_id if self.context else None
@@ -113,13 +114,17 @@ class WriteCanvasTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "No thread context available."})
 
         content = content[:CANVAS_MAX_CHARS]
+        # Truncate to the column limit before the lookup so it matches stored titles
+        title = title[:255]
 
         # Resolve target canvas
-        lookup_title = canvas_name or title
+        lookup_title = (canvas_name or title)[:255]
         try:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
                 thread_id=thread_id, title=lookup_title,
             )
+            # Preserve any uncommitted user edits before overwriting
+            snapshot_user_edits(canvas)
             # Update existing canvas
             canvas.title = title
             canvas.content = content
@@ -187,6 +192,10 @@ class EditCanvasTool(ContextAwareTool):
                 "status": "error",
                 "message": err if canvas_name else "No canvas exists for this thread. Use write_canvas to create one first.",
             })
+
+        # Preserve any uncommitted user edits before applying AI edits
+        from chat.services import snapshot_user_edits
+        snapshot_user_edits(canvas)
 
         content = canvas.content
         applied = 0

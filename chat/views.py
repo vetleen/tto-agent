@@ -75,10 +75,28 @@ def chat_home(request):
             if thread.is_archived:
                 thread.is_archived = False
                 thread.save(update_fields=["is_archived"])
+            # Visible messages, plus hidden assistant tool-loop messages that
+            # carry narration or thinking — those render as collapsed
+            # "Thought further" blocks (matching the live-streaming UI).
+            from django.db.models import Q
+
             chat_messages = list(
-                thread.messages.filter(is_hidden_from_user=False)
-                .order_by("created_at")[:100]
+                thread.messages.filter(
+                    Q(is_hidden_from_user=False)
+                    | Q(is_hidden_from_user=True, role="assistant", is_redacted=False)
+                ).order_by("created_at")[:100]
             )
+            filtered = []
+            for m in chat_messages:
+                if m.is_hidden_from_user:
+                    has_narration = bool(m.content.strip()) or bool(
+                        (m.metadata or {}).get("thinking")
+                    )
+                    if not has_narration:
+                        continue
+                    m.is_intermediate = True
+                filtered.append(m)
+            chat_messages = filtered
 
             # Annotate user messages with attachment filenames for rendering
             msg_ids = [m.pk for m in chat_messages if m.role == "user"]

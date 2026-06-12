@@ -41,7 +41,11 @@ class _SubagentTask(Task):
         if not run_id_str:
             return
         try:
-            updated = SubAgentRun.objects.filter(pk=run_id_str).update(
+            # Guarded: don't clobber an earlier failure reason (e.g.
+            # "Cancelled by user.") with the task exception message.
+            updated = SubAgentRun.objects.filter(pk=run_id_str).exclude(
+                status=SubAgentRun.Status.FAILED,
+            ).update(
                 status=SubAgentRun.Status.FAILED,
                 error=str(exc),
                 completed_at=timezone.now(),

@@ -270,7 +270,12 @@ class SubAgentRun(models.Model):
     cost_usd = models.FloatField(default=0.0)
 
     created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    # When the orchestrator claimed this run's result for reporting (see
+    # ChatConsumer._claim_unreported_subagents). Acts as a lease: a claim
+    # older than the lease window with no assistant response is re-claimable.
+    reported_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]

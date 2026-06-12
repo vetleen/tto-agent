@@ -41,9 +41,13 @@ def _record_chunk_usage(conversation_id: str, chunk_ids: list[int]) -> None:
 
 
 def _filter_accessible_rooms(data_room_ids: list[int], user_id: int | None) -> list[int]:
-    """Filter data room IDs to those the user owns. Raises if none remain."""
+    """Filter data room IDs to those the user owns. Raises if none remain.
+
+    Fails closed: with no user in context there is no basis for access, so
+    deny rather than pass the IDs through unfiltered.
+    """
     if not user_id:
-        return data_room_ids
+        raise ValueError("Data rooms not found or access denied")
     from documents.models import DataRoom
 
     accessible = set(

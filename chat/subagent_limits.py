@@ -22,6 +22,8 @@ def _expire_stale_runs() -> int:
 
     Returns the number of expired runs.
     """
+    from django.db.models import Q
+
     from chat.models import SubAgentRun
 
     now = timezone.now()
@@ -31,9 +33,15 @@ def _expire_stale_runs() -> int:
         created_at__lt=now - timedelta(minutes=STALE_PENDING_MINUTES),
     ).values_list("id", "thread_id"))
 
+    # Measure RUNNING staleness from started_at, not created_at — a run that
+    # waited in the queue before starting must get its full execution window
+    # (created_at fallback covers legacy rows that predate started_at).
+    running_cutoff = now - timedelta(minutes=STALE_RUNNING_MINUTES)
     stale_running = list(SubAgentRun.objects.filter(
         status=SubAgentRun.Status.RUNNING,
-        created_at__lt=now - timedelta(minutes=STALE_RUNNING_MINUTES),
+    ).filter(
+        Q(started_at__lt=running_cutoff)
+        | Q(started_at__isnull=True, created_at__lt=running_cutoff)
     ).values_list("id", "thread_id"))
 
     expired = 0

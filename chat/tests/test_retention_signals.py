@@ -51,6 +51,20 @@ class ChatThreadRetainUntilTests(TestCase):
 
         self.assertGreater(thread.retain_until, timezone.now() + timedelta(days=363))
 
+    def test_message_bumps_thread_updated_at(self):
+        """New messages must bump updated_at — it drives the sidebar's
+        Today/Yesterday/Earlier grouping and ordering."""
+        thread = ChatThread.objects.create(title="test", created_by=self.user)
+        ChatThread.objects.filter(pk=thread.pk).update(
+            updated_at=timezone.now() - timedelta(days=7),
+        )
+
+        before = timezone.now()
+        ChatMessage.objects.create(thread=thread, role="user", content="hello")
+        thread.refresh_from_db()
+
+        self.assertGreaterEqual(thread.updated_at, before)
+
     def test_message_extends_attached_dataroom_retain(self):
         thread = ChatThread.objects.create(title="test", created_by=self.user)
         dr = DataRoom.objects.create(name="DR", slug="dr-ret", created_by=self.user)
