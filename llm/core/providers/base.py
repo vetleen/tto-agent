@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from dataclasses import dataclass
@@ -187,6 +188,56 @@ def _is_retryable_transient_error(exc: Exception) -> bool:
     return _is_rate_limit_error(exc) or _is_overloaded_error(exc)
 
 
+def _get_retry_controls(request: ChatRequest):
+    """Extract (cancel_event, cancel_check, deadline_dt) from a request.
+
+    ``_cancel_event`` (threading.Event) is set by the chat consumer on the
+    streaming path; ``_cancel_check`` (callable) by the sync/subagent path.
+    ``deadline_dt`` is the absolute run deadline when the context carries one.
+    """
+    params = request.params or {}
+    cancel_event = params.get("_cancel_event")
+    cancel_check = params.get("_cancel_check")
+    deadline_dt = None
+    ctx = request.context
+    if ctx is not None and getattr(ctx, "deadline_seconds", None):
+        deadline_dt = ctx.started_at + timedelta(seconds=ctx.deadline_seconds)
+    return cancel_event, cancel_check, deadline_dt
+
+
+def _is_cancelled(cancel_event, cancel_check) -> bool:
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    if cancel_check is not None and cancel_check():
+        return True
+    return False
+
+
+def _wait_before_retry(wait: float, *, cancel_event=None, cancel_check=None, deadline_dt=None) -> bool:
+    """Sleep *wait* seconds before a retry, honouring cancellation and deadlines.
+
+    Returns False when the retry should be abandoned instead: the run was
+    cancelled, or the deadline would pass before the wait completes (in which
+    case it doesn't sleep at all). With no cancel mechanism and no deadline
+    this is a single ``time.sleep(wait)``.
+    """
+    if deadline_dt is not None and datetime.now(timezone.utc) + timedelta(seconds=wait) >= deadline_dt:
+        return False
+    if cancel_event is None and cancel_check is None:
+        time.sleep(wait)
+        return True
+    # Sleep in ~1s slices so a user cancel takes effect promptly instead of
+    # blocking the worker thread for up to 120s.
+    remaining = float(wait)
+    while remaining > 0:
+        if _is_cancelled(cancel_event, cancel_check):
+            return False
+        step = min(1.0, remaining)
+        time.sleep(step)
+        remaining -= step
+    return not _is_cancelled(cancel_event, cancel_check)
+
+
 class BaseLangChainChatModel(ChatModel):
     """Shared generate/stream logic for all LangChain-backed providers.
 
@@ -256,6 +307,27 @@ class BaseLangChainChatModel(ChatModel):
             return details.get("reasoning") or details.get("reasoning_tokens")
         return None
 
+    @staticmethod
+    def _extract_cache_write_1h_tokens(result: object) -> int | None:
+        """Extract the 1h-TTL portion of cache-write tokens (Anthropic only).
+
+        Anthropic's raw usage carries a ``cache_creation`` breakdown
+        (``ephemeral_1h_input_tokens`` / ``ephemeral_5m_input_tokens``) inside
+        ``response_metadata["usage"]``. Returns None when absent, in which
+        case cost falls back to billing all cache writes at the 5m rate.
+        """
+        resp_meta = getattr(result, "response_metadata", None)
+        if not isinstance(resp_meta, dict):
+            return None
+        usage = resp_meta.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        cache_creation = usage.get("cache_creation")
+        if not isinstance(cache_creation, dict):
+            return None
+        tokens = cache_creation.get("ephemeral_1h_input_tokens")
+        return tokens if isinstance(tokens, int) and tokens > 0 else None
+
     def _build_config(self, request: ChatRequest, callbacks: list) -> dict:
         """Build LangChain RunnableConfig with tracing metadata."""
         config: dict = {"callbacks": callbacks}
@@ -311,7 +383,10 @@ class BaseLangChainChatModel(ChatModel):
             cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
             cache_write_tokens = details.get("cache_creation") if isinstance(details, dict) else None
             reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
-            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens)
+            cost = calculate_cost(
+                self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens,
+                cache_write_1h_tokens=self._extract_cache_write_1h_tokens(last_chunk),
+            )
             data["input_tokens"] = input_tokens
             data["output_tokens"] = output_tokens
             data["total_tokens"] = total_tokens
@@ -382,7 +457,21 @@ class BaseLangChainChatModel(ChatModel):
                         attempt + 1, _RATE_LIMIT_MAX_RETRIES + 1,
                         wait, run_id,
                     )
-                    time.sleep(wait)
+                    cancel_event, cancel_check, deadline_dt = _get_retry_controls(request)
+                    if not _wait_before_retry(
+                        wait,
+                        cancel_event=cancel_event,
+                        cancel_check=cancel_check,
+                        deadline_dt=deadline_dt,
+                    ):
+                        # Cancelled or deadline too close to wait out the
+                        # backoff — treat as retries exhausted.
+                        logger.info(
+                            "LLM generate retry wait aborted (cancelled or deadline) "
+                            "model=%s provider=%s run_id=%s",
+                            self.name, self._provider_label, run_id,
+                        )
+                        break
 
         if result is None:
             classified = classify_api_error(last_exc, self._provider_label)
@@ -433,7 +522,10 @@ class BaseLangChainChatModel(ChatModel):
             cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
             cache_write_tokens = details.get("cache_creation") if isinstance(details, dict) else None
             reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
-            cost = calculate_cost(self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens)
+            cost = calculate_cost(
+                self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens,
+                cache_write_1h_tokens=self._extract_cache_write_1h_tokens(result),
+            )
             usage = Usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
@@ -481,6 +573,11 @@ class BaseLangChainChatModel(ChatModel):
         last_chunk = None
         accumulated = None  # AIMessageChunk accumulator for tool_calls aggregation
         output_text_parts: list[str] = []
+        # True once any token/thinking event has been yielded in the current
+        # attempt. A retry after that point would replay already-delivered
+        # content (duplicate thinking/text on the client), so it becomes a
+        # terminal error instead.
+        events_yielded = False
 
         stream_succeeded = False
         last_exc: Exception | None = None
@@ -493,6 +590,7 @@ class BaseLangChainChatModel(ChatModel):
                     for event_type, event_data in self._parse_chunk(chunk):
                         if event_type == "token":
                             output_text_parts.append(event_data.get("text", ""))
+                        events_yielded = True
                         yield StreamEvent(
                             event_type=event_type,
                             data=event_data,
@@ -505,8 +603,8 @@ class BaseLangChainChatModel(ChatModel):
             except Exception as exc:
                 last_exc = exc
                 if _is_retryable_transient_error(exc) and attempt < _RATE_LIMIT_MAX_RETRIES:
-                    # Only retry if no tokens have been streamed yet
-                    if output_text_parts:
+                    # Only retry if nothing (token or thinking) has streamed yet
+                    if events_yielded:
                         mid_classified = classify_api_error(exc, self._provider_label)
                         logger.error(
                             "LLM stream transient error mid-stream model=%s provider=%s error_code=%s run_id=%s",
@@ -536,7 +634,24 @@ class BaseLangChainChatModel(ChatModel):
                         attempt + 1, _RATE_LIMIT_MAX_RETRIES + 1,
                         wait, run_id,
                     )
-                    time.sleep(wait)
+                    cancel_event, cancel_check, deadline_dt = _get_retry_controls(request)
+                    if not _wait_before_retry(
+                        wait,
+                        cancel_event=cancel_event,
+                        cancel_check=cancel_check,
+                        deadline_dt=deadline_dt,
+                    ):
+                        if _is_cancelled(cancel_event, cancel_check):
+                            # User cancelled — end the stream quietly; the
+                            # consumer already stopped listening.
+                            logger.info(
+                                "LLM stream retry wait cancelled model=%s provider=%s run_id=%s",
+                                self.name, self._provider_label, run_id,
+                            )
+                            return
+                        # Deadline too close to wait out the backoff — fall
+                        # through to the retries-exhausted error event.
+                        break
                     # Reset state for retry
                     last_chunk = None
                     accumulated = None

@@ -41,10 +41,17 @@ def calculate_cost(
     output_tokens: Optional[int],
     cached_input_tokens: Optional[int] = None,
     cache_write_tokens: Optional[int] = None,
+    *,
+    cache_write_1h_tokens: Optional[int] = None,
 ) -> Optional[Decimal]:
     """Compute the USD cost of a call, or *None* if pricing is unknown.
 
     Handles partial data gracefully: missing token counts are treated as 0.
+
+    ``cache_write_1h_tokens`` is the 1h-TTL portion of ``cache_write_tokens``
+    (Anthropic bills 1h writes at 2x input vs 1.25x for 5m writes). When the
+    breakdown is absent — or the model has no 1h rate configured — all cache
+    writes bill at the 5m rate, matching the pre-breakdown behavior.
     """
     pricing = get_model_pricing(model)
     if pricing is None:
@@ -56,12 +63,23 @@ def calculate_cost(
     cached = Decimal(cached_input_tokens or 0)
     written = Decimal(cache_write_tokens or 0)
 
+    written_1h = Decimal(0)
+    write_1h_price = Decimal(0)
+    if cache_write_1h_tokens:
+        info = get_model_info(model)
+        if info and info.cache_write_1h_price is not None:
+            # Clamp to the total write count in case of inconsistent data.
+            written_1h = min(Decimal(cache_write_1h_tokens), written)
+            write_1h_price = info.cache_write_1h_price
+    written_5m = written - written_1h
+
     # Cache reads and writes are subsets of input tokens, each billed at
     # their own rate.  The remainder is regular input.
     regular_input = inp - cached - written
     cost = (
         regular_input * inp_price / _ONE_MILLION
-        + written * write_price / _ONE_MILLION
+        + written_5m * write_price / _ONE_MILLION
+        + written_1h * write_1h_price / _ONE_MILLION
         + cached * cached_price / _ONE_MILLION
         + out * out_price / _ONE_MILLION
     )

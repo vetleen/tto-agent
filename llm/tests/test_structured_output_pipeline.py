@@ -6,6 +6,7 @@ from django.test import TestCase
 from pydantic import BaseModel, Field
 
 from llm.pipelines.structured_output import StructuredOutputPipeline
+from llm.service.errors import LLMProviderError
 from llm.types.context import RunContext
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
@@ -96,6 +97,68 @@ class StructuredOutputPipelineTests(TestCase):
 
         self.assertIsNone(response.usage)
         self.assertEqual(response.metadata["structured_response"]["description"], "A doc.")
+
+    @patch("llm.pipelines.structured_output.create_chat_model")
+    def test_run_retries_once_on_parse_failure_and_sums_usage(self, mock_create):
+        """parsed=None on the first attempt → one retry; usage covers both calls."""
+        fake_parsed = _TestSchema(description="A patent.", document_type="Patent")
+
+        failed_raw = MagicMock()
+        failed_raw.usage_metadata = {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "total_tokens": 140,
+        }
+        ok_raw = MagicMock()
+        ok_raw.usage_metadata = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        }
+        fake_structured = MagicMock()
+        fake_structured.invoke.side_effect = [
+            {"raw": failed_raw, "parsed": None, "parsing_error": ValueError("bad json")},
+            {"raw": ok_raw, "parsed": fake_parsed, "parsing_error": None},
+        ]
+        fake_client = MagicMock()
+        fake_client.with_structured_output.return_value = fake_structured
+        fake_model = MagicMock()
+        fake_model._client = fake_client
+        mock_create.return_value = fake_model
+
+        pipeline = StructuredOutputPipeline()
+        response = pipeline.run(self._make_request())
+
+        self.assertEqual(fake_structured.invoke.call_count, 2)
+        self.assertEqual(response.metadata["structured_response"], fake_parsed.model_dump())
+        self.assertIsNotNone(response.usage)
+        self.assertEqual(response.usage.prompt_tokens, 200)
+        self.assertEqual(response.usage.completion_tokens, 90)
+        self.assertEqual(response.usage.total_tokens, 290)
+
+    @patch("llm.pipelines.structured_output.create_chat_model")
+    def test_run_raises_provider_error_after_two_parse_failures(self, mock_create):
+        failed_raw = MagicMock()
+        failed_raw.usage_metadata = None
+        fake_structured = MagicMock()
+        fake_structured.invoke.return_value = {
+            "raw": failed_raw,
+            "parsed": None,
+            "parsing_error": ValueError("output did not match schema"),
+        }
+        fake_client = MagicMock()
+        fake_client.with_structured_output.return_value = fake_structured
+        fake_model = MagicMock()
+        fake_model._client = fake_client
+        mock_create.return_value = fake_model
+
+        pipeline = StructuredOutputPipeline()
+        with self.assertRaises(LLMProviderError) as ctx:
+            pipeline.run(self._make_request())
+
+        self.assertEqual(fake_structured.invoke.call_count, 2)
+        self.assertIn("_TestSchema", str(ctx.exception))
+        self.assertIn("output did not match schema", str(ctx.exception))
 
     def test_stream_raises_not_implemented(self):
         pipeline = StructuredOutputPipeline()

@@ -496,6 +496,41 @@ class LogStreamTests(TestCase):
         self.assertEqual(log.error_type, "stream_error")
         self.assertEqual(log.error_message, "boom")
 
+    def test_error_event_with_trailing_message_end_still_logs_error(self):
+        """Defensive: if both an error event and a message_end are present,
+        the row must be ERROR (not SUCCESS), but usage from the message_end
+        is kept so spend stays visible."""
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id),
+            StreamEvent(
+                event_type="error",
+                data={"message": "boom", "error_code": "provider_error"},
+                sequence=2,
+                run_id=run_id,
+            ),
+            StreamEvent(
+                event_type="message_end",
+                data={
+                    "input_tokens": 100,
+                    "output_tokens": 40,
+                    "total_tokens": 140,
+                    "cost_usd": 0.0005,
+                },
+                sequence=3,
+                run_id=run_id,
+            ),
+        ]
+        log_stream(request, events, duration_ms=80)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "error")
+        self.assertEqual(log.error_type, "provider_error")
+        self.assertEqual(log.input_tokens, 100)
+        self.assertEqual(log.output_tokens, 40)
+        self.assertEqual(log.cost_usd, Decimal("0.0005"))
+
 
 class LogErrorTests(TestCase):
     """Tests for log_error."""

@@ -11,11 +11,10 @@ from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
 
 logger = logging.getLogger(__name__)
 
-# Per-page content budget for the combined tool. Deliberately generous: deep
-# research runs are typically delegated to cheap subagents, so occasionally
-# pulling a full 20k-char page is an accepted trade-off (see web_fetch
-# pagination for reading beyond it).
-_PER_PAGE_CHARS = 20_000
+# Per-page content budget for the combined tool. 10k chars covers the vast
+# majority of pages; for the rare longer page the truncation note points the
+# model at web_fetch's start_index pagination to keep reading when relevant.
+_PER_PAGE_CHARS = 10_000
 
 
 class WebSearchAndReadInput(ReasonBaseModel):

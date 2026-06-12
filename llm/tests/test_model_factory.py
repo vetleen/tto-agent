@@ -9,6 +9,7 @@ from llm.core.model_factory import (
     _get_rate_limiter,
     _parse_provider,
     _rate_limiters,
+    clear_client_cache,
     detect_provider,
 )
 from llm.service.errors import LLMConfigurationError
@@ -99,6 +100,14 @@ class DetectProviderTests(SimpleTestCase):
 class CreateChatModelTests(SimpleTestCase):
     """Test create_chat_model wrapper class selection."""
 
+    def setUp(self):
+        # init_chat_model is patched here; a mock client cached by one test
+        # must not leak into the next (or into other test modules).
+        clear_client_cache()
+
+    def tearDown(self):
+        clear_client_cache()
+
     @patch("llm.core.model_factory.init_chat_model")
     def test_openai_model_uses_openai_wrapper(self, mock_init):
         from llm.core.model_factory import create_chat_model
@@ -171,6 +180,92 @@ class CreateChatModelTests(SimpleTestCase):
 
         with self.assertRaises(LLMConfigurationError):
             create_chat_model("unknown-model-xyz")
+
+
+class ClientCacheTests(SimpleTestCase):
+    """LangChain clients are cached per (provider, api_model, kwargs)."""
+
+    def setUp(self):
+        clear_client_cache()
+
+    def tearDown(self):
+        clear_client_cache()
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_same_model_builds_client_once(self, mock_init):
+        from llm.core.model_factory import create_chat_model
+
+        mock_init.return_value = MagicMock()
+
+        model1 = create_chat_model("gpt-5-mini")
+        model2 = create_chat_model("gpt-5-mini")
+
+        mock_init.assert_called_once()
+        # Same cached client; the wrappers stay per-call.
+        self.assertIs(model1._client, model2._client)
+        self.assertIsNot(model1, model2)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_different_models_get_separate_clients(self, mock_init):
+        from llm.core.model_factory import create_chat_model
+
+        mock_init.side_effect = lambda *a, **kw: MagicMock()
+
+        model1 = create_chat_model("gpt-5-mini")
+        model2 = create_chat_model("claude-sonnet-4-6")
+
+        self.assertEqual(mock_init.call_count, 2)
+        self.assertIsNot(model1._client, model2._client)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_variant_kwargs_get_separate_cache_entry(self, mock_init):
+        """A thinking variant (different kwargs) must not collide with the
+        base client for the same model."""
+        from llm.core.model_factory import create_chat_model, create_variant_client
+
+        mock_init.side_effect = lambda *a, **kw: MagicMock()
+
+        base = create_chat_model("claude-sonnet-4-6")
+        variant = create_variant_client(
+            "claude-sonnet-4-6", "anthropic",
+            thinking={"type": "enabled", "budget_tokens": 32_000},
+            max_tokens=40_000,
+        )
+
+        self.assertEqual(mock_init.call_count, 2)
+        self.assertIsNot(base._client, variant)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_variant_client_reused_across_calls(self, mock_init):
+        """The big win: thinking variants previously rebuilt a client per
+        request — identical variant kwargs must now hit the cache."""
+        from llm.core.model_factory import create_variant_client
+
+        mock_init.return_value = MagicMock()
+
+        v1 = create_variant_client(
+            "claude-sonnet-4-6", "anthropic",
+            thinking={"type": "enabled", "budget_tokens": 32_000},
+        )
+        v2 = create_variant_client(
+            "claude-sonnet-4-6", "anthropic",
+            thinking={"type": "enabled", "budget_tokens": 32_000},
+        )
+
+        mock_init.assert_called_once()
+        self.assertIs(v1, v2)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_clear_client_cache_forces_rebuild(self, mock_init):
+        from llm.core.model_factory import create_chat_model
+
+        mock_init.side_effect = lambda *a, **kw: MagicMock()
+
+        create_chat_model("gpt-5-mini")
+        clear_client_cache()
+        create_chat_model("gpt-5-mini")
+
+        self.assertEqual(mock_init.call_count, 2)
 
 
 class ProviderKwargsTests(SimpleTestCase):

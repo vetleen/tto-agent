@@ -40,6 +40,10 @@ class GeminiChatModel(BaseLangChainChatModel):
         client = self._client
         level = request.params.get("thinking_level", "off")
         if level != "off" and self._supports_thinking():
+            if level == "max":
+                # Gemini has no "max" level; clamp to the largest budget
+                # instead of silently falling back to the medium default.
+                level = "high"
             budget = _GEMINI_THINKING_BUDGETS.get(level, 8_192)
             try:
                 client = create_variant_client(

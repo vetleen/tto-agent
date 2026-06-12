@@ -42,6 +42,10 @@ class OpenAIChatModel(BaseLangChainChatModel):
     def _get_streaming_client(self, request: ChatRequest):
         client = self._client
         level = request.params.get("thinking_level", "off")
+        if level == "max":
+            # OpenAI's reasoning_effort has no "max"; clamp to the highest
+            # supported effort instead of sending a value the API rejects.
+            level = "high"
         if level != "off" and self._supports_reasoning():
             try:
                 client = create_variant_client(

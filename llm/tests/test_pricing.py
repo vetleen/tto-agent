@@ -88,6 +88,61 @@ class CalculateCostTests(SimpleTestCase):
         ) / Decimal("1000000")
         self.assertEqual(cost, expected)
 
+    def test_cache_write_with_1h_breakdown(self):
+        """1h-TTL writes bill at 2x input; the 5m remainder at 1.25x."""
+        cost = calculate_cost(
+            "claude-sonnet-4-6", 1000, 500,
+            cached_input_tokens=0, cache_write_tokens=500,
+            cache_write_1h_tokens=200,
+        )
+        expected = (
+            Decimal("500") * Decimal("3.00")    # regular input (1000 - 500 writes)
+            + Decimal("300") * Decimal("3.75")  # 5m cache write (1.25x)
+            + Decimal("200") * Decimal("6.00")  # 1h cache write (2x)
+            + Decimal("500") * Decimal("15.00") # output
+        ) / Decimal("1000000")
+        self.assertEqual(cost, expected)
+
+    def test_cache_write_1h_clamped_to_total_writes(self):
+        """Inconsistent provider data: 1h tokens can't exceed total writes."""
+        cost = calculate_cost(
+            "claude-sonnet-4-6", 1000, 500,
+            cached_input_tokens=0, cache_write_tokens=200,
+            cache_write_1h_tokens=999,
+        )
+        expected = (
+            Decimal("800") * Decimal("3.00")    # regular input
+            + Decimal("200") * Decimal("6.00")  # all writes billed at 1h rate
+            + Decimal("500") * Decimal("15.00") # output
+        ) / Decimal("1000000")
+        self.assertEqual(cost, expected)
+
+    def test_cache_write_no_breakdown_unchanged(self):
+        """Without the 1h breakdown the result matches the 5m-only path."""
+        with_kw = calculate_cost(
+            "claude-sonnet-4-6", 1000, 500,
+            cached_input_tokens=300, cache_write_tokens=200,
+            cache_write_1h_tokens=None,
+        )
+        without_kw = calculate_cost(
+            "claude-sonnet-4-6", 1000, 500,
+            cached_input_tokens=300, cache_write_tokens=200,
+        )
+        self.assertEqual(with_kw, without_kw)
+
+    def test_cache_write_1h_ignored_for_model_without_1h_price(self):
+        """Models with no cache_write_1h_price bill all writes at the 5m rate."""
+        cost = calculate_cost(
+            "gpt-5.4-mini", 1000, 500,
+            cached_input_tokens=0, cache_write_tokens=200,
+            cache_write_1h_tokens=100,
+        )
+        without_breakdown = calculate_cost(
+            "gpt-5.4-mini", 1000, 500,
+            cached_input_tokens=0, cache_write_tokens=200,
+        )
+        self.assertEqual(cost, without_breakdown)
+
     def test_output_only_fallback(self):
         """Streaming case: only output tokens known."""
         cost = calculate_cost("gpt-5.4-mini", None, 1000)

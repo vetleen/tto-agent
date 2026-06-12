@@ -46,8 +46,14 @@ class AnthropicChatModel(BaseLangChainChatModel):
         if level != "off":
             if self._uses_adaptive_thinking():
                 client = self._get_adaptive_thinking_client(level)
-            elif level in _ANTHROPIC_THINKING:
-                client = self._get_extended_thinking_client(level)
+            else:
+                if level == "max":
+                    # "max" only exists for adaptive-thinking models; clamp to
+                    # the largest extended-thinking budget instead of silently
+                    # disabling thinking.
+                    level = "high"
+                if level in _ANTHROPIC_THINKING:
+                    client = self._get_extended_thinking_client(level)
 
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)

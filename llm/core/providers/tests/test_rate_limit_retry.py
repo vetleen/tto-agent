@@ -320,3 +320,140 @@ class TestStreamErrorHandling(TestCase):
         self.assertIn("message_end", event_types)
         self.assertNotIn("error", event_types)
         mock_sleep.assert_not_called()
+
+    def test_stream_mid_stream_error_after_thinking_no_retry(self, mock_sleep):
+        """A transient error after a *thinking* event must not retry — a retry
+        would replay the already-delivered thinking on the client."""
+        model = _make_model()
+
+        chunk = MagicMock()
+        chunk.content = ""
+        chunk.usage_metadata = {}
+        chunk.response_metadata = {}
+
+        def stream_then_fail(*args, **kwargs):
+            yield chunk
+            raise _rate_limit_error()
+
+        model._client.stream = MagicMock(side_effect=stream_then_fail)
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        with patch.object(
+            model, "_parse_chunk",
+            return_value=[("thinking", {"text": "pondering"})],
+        ):
+            events = list(model.stream(_make_request()))
+
+        event_types = [e.event_type for e in events]
+        self.assertEqual(event_types.count("thinking"), 1)
+        self.assertIn("error", event_types)
+        self.assertNotIn("message_end", event_types)
+        # No retry: thinking had already streamed.
+        self.assertEqual(model._client.stream.call_count, 1)
+        mock_sleep.assert_not_called()
+
+
+@patch("llm.core.providers.base.time.sleep", return_value=None)
+class TestRetryCancellationAndDeadline(TestCase):
+    """Retry waits honour _cancel_event/_cancel_check and the run deadline."""
+
+    def test_generate_cancel_event_aborts_wait_and_raises(self, mock_sleep):
+        import threading
+
+        model = _make_model()
+        model._client.invoke = MagicMock(side_effect=_rate_limit_error())
+
+        cancel = threading.Event()
+        cancel.set()
+        request = ChatRequest(
+            messages=[Message(role="user", content="hi")],
+            model="test-model",
+            params={"_cancel_event": cancel},
+        )
+        with self.assertRaises(LLMRateLimitError):
+            model.generate(request)
+        # The wait aborted before sleeping; no further attempts.
+        self.assertEqual(model._client.invoke.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_generate_cancel_check_aborts_wait_and_raises(self, mock_sleep):
+        model = _make_model()
+        model._client.invoke = MagicMock(side_effect=_rate_limit_error())
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="hi")],
+            model="test-model",
+            params={"_cancel_check": lambda: True},
+        )
+        with self.assertRaises(LLMRateLimitError):
+            model.generate(request)
+        self.assertEqual(model._client.invoke.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_generate_deadline_too_close_skips_wait_and_raises(self, mock_sleep):
+        from llm.types.context import RunContext
+
+        model = _make_model()
+        model._client.invoke = MagicMock(side_effect=_rate_limit_error())
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="hi")],
+            model="test-model",
+            context=RunContext.create(deadline_seconds=5),  # < 30s backoff
+        )
+        with self.assertRaises(LLMRateLimitError):
+            model.generate(request)
+        self.assertEqual(model._client.invoke.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_stream_cancel_event_ends_stream_quietly(self, mock_sleep):
+        import threading
+
+        model = _make_model()
+        model._client.stream = MagicMock(side_effect=_rate_limit_error())
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        cancel = threading.Event()
+        cancel.set()
+        request = ChatRequest(
+            messages=[Message(role="user", content="hi")],
+            model="test-model",
+            params={"_cancel_event": cancel},
+        )
+        events = list(model.stream(request))
+        event_types = [e.event_type for e in events]
+        # Quiet end: no error event, no message_end — the consumer is gone.
+        self.assertEqual(event_types, ["message_start"])
+        self.assertEqual(model._client.stream.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_stream_deadline_too_close_yields_classified_error(self, mock_sleep):
+        from llm.types.context import RunContext
+
+        model = _make_model()
+        model._client.stream = MagicMock(side_effect=_rate_limit_error())
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="hi")],
+            model="test-model",
+            context=RunContext.create(deadline_seconds=5),
+        )
+        events = list(model.stream(request))
+        error_events = [e for e in events if e.event_type == "error"]
+        self.assertEqual(len(error_events), 1)
+        self.assertEqual(error_events[0].data["error_code"], "rate_limited")
+        self.assertNotIn("message_end", [e.event_type for e in events])
+        self.assertEqual(model._client.stream.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_generate_no_cancel_mechanism_uses_single_sleep(self, mock_sleep):
+        """Without cancel/deadline the wait is one plain time.sleep(wait) —
+        the contract the backoff assertions in the classes above rely on."""
+        model = _make_model()
+        model._client.invoke = MagicMock(
+            side_effect=[_rate_limit_error(), _ai_message("ok")]
+        )
+        result = model.generate(_make_request())
+        self.assertEqual(result.message.content, "ok")
+        mock_sleep.assert_called_once_with(30)

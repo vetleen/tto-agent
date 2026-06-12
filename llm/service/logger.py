@@ -212,9 +212,10 @@ def log_stream(
     Providers catch exceptions in ``BaseLangChainChatModel.stream`` and yield
     an ``error`` ``StreamEvent`` instead of re-raising, so ``LLMService.stream``
     never sees the underlying exception and can't call ``log_error`` itself.
-    Detect that case here: when the stream ended without a ``message_end`` and
-    an ``error`` event is present, write an ERROR row so failed calls stay
-    visible in ``LLMCallLog``.
+    Detect that case here: whenever an ``error`` event is present, write an
+    ERROR row so failed calls stay visible in ``LLMCallLog`` — even if a
+    ``message_end`` also slipped through (defensive; its usage fields are
+    kept on the ERROR row).
     """
     try:
         from llm.models import LLMCallLog
@@ -230,26 +231,6 @@ def log_stream(
             (e for e in events if e.event_type == "error"),
             None,
         )
-
-        if end_event is None and error_event is not None:
-            err_data = error_event.data or {}
-            context = request.context
-            LLMCallLog.objects.create(
-                user=_resolve_user(context.user_id if context else None),
-                run_id=context.run_id if context else "",
-                trace_id=(context.trace_id if context else "") or "",
-                conversation_id=(context.conversation_id if context else "") or "",
-                model=request.model or "",
-                is_stream=True,
-                prompt=_serialize_messages(request),
-                tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
-                raw_output=raw_output,
-                duration_ms=duration_ms,
-                status=LLMCallLog.Status.ERROR,
-                error_type=(err_data.get("error_code") or "stream_error")[:255],
-                error_message=(err_data.get("details") or err_data.get("message") or "")[:2000],
-            )
-            return
 
         end_data = end_event.data if end_event else {}
         input_tokens = end_data.get("input_tokens")
@@ -279,6 +260,35 @@ def log_stream(
         provider_model_id = end_data.get("provider_model_id", "")
 
         context = request.context
+        if error_event is not None:
+            err_data = error_event.data or {}
+            LLMCallLog.objects.create(
+                user=_resolve_user(context.user_id if context else None),
+                run_id=context.run_id if context else "",
+                trace_id=(context.trace_id if context else "") or "",
+                conversation_id=(context.conversation_id if context else "") or "",
+                model=request.model or "",
+                is_stream=True,
+                prompt=_serialize_messages(request),
+                tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
+                raw_output=raw_output,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cached_tokens=cached_tokens,
+                cache_write_tokens=cache_write_tokens,
+                reasoning_tokens=reasoning_tokens,
+                cost_usd=cost,
+                duration_ms=duration_ms,
+                status=LLMCallLog.Status.ERROR,
+                error_type=(err_data.get("error_code") or "stream_error")[:255],
+                error_message=(err_data.get("details") or err_data.get("message") or "")[:2000],
+                response_metadata=resp_metadata,
+                stop_reason=stop_reason,
+                provider_model_id=provider_model_id,
+            )
+            return
+
         LLMCallLog.objects.create(
             user=_resolve_user(context.user_id if context else None),
             run_id=context.run_id if context else "",

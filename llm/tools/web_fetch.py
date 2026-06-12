@@ -10,7 +10,7 @@ import re
 import socket
 import time
 
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -270,9 +270,9 @@ def _pinned_get(url: str, *, timeout: int, headers: dict, max_bytes: int) -> req
 class WebFetchInput(ReasonBaseModel):
     url: str = Field(description="The URL of the web page to fetch.")
     max_chars: int = Field(
-        default=20_000,
+        default=10_000,
         description=(
-            "Maximum characters to return per call (default 20000, max 50000). "
+            "Maximum characters to return per call (default 10000, max 50000). "
             "Longer pages are truncated; the response then tells you the "
             "start_index to continue reading from."
         ),
@@ -502,10 +502,12 @@ def _fetch_core(url: str, cache, context=None) -> dict:
             redirect_url = response.headers.get("Location", "")
             if not redirect_url:
                 break
-            # Re-validate the redirect target's scheme. Relative/schemeless
-            # Locations fall here (no scheme) and are rejected; even if they
-            # slipped through, _resolve_and_validate fails closed on the
-            # missing hostname.
+            # Resolve relative/schemeless Locations against the current URL
+            # (RFC 7231 allows them and they're common), then re-validate the
+            # scheme so javascript:/ftp:/data: targets are still rejected.
+            # SSRF protection is unaffected: _pinned_get re-resolves and
+            # re-validates every hop independently.
+            redirect_url = urljoin(current_url, redirect_url)
             redirect_parsed = urlparse(redirect_url)
             if redirect_parsed.scheme not in ("http", "https"):
                 return {
@@ -655,7 +657,7 @@ class WebFetchTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = WebFetchInput
 
-    def _run(self, url: str, max_chars: int = 20_000, start_index: int = 0, **kwargs) -> str:
+    def _run(self, url: str, max_chars: int = 10_000, start_index: int = 0, **kwargs) -> str:
         from django.core.cache import cache
 
         max_chars = max(1, min(max_chars, _ABSOLUTE_MAX_CHARS))

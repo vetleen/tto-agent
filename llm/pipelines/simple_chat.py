@@ -22,6 +22,13 @@ from llm.tools.registry import get_tool_registry
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on a single tool result entering the conversation history.
+# ~50k tokens — fits comfortably inside the smallest registry context window
+# (128k tokens) with room left for history. Enforced centrally in
+# _execute_tool_calls so every tool (web, canvas, doc search, skills) is
+# covered without per-tool logic.
+MAX_TOOL_RESULT_CHARS = 200_000
+
 
 class SimpleChatPipeline(BasePipeline):
     """Single pipeline: LLM-driven tool calling via bind_tools(), else delegate to ChatModel."""
@@ -144,6 +151,19 @@ class SimpleChatPipeline(BasePipeline):
                 result_str = json.dumps({"error": str(e)})
             finally:
                 close_old_connections()
+            total_len = len(result_str)
+            if total_len > MAX_TOOL_RESULT_CHARS:
+                over = total_len - MAX_TOOL_RESULT_CHARS
+                logger.warning(
+                    "Tool result truncated: tool=%s len=%d (%d over the %d-char limit)",
+                    tc.name, total_len, over, MAX_TOOL_RESULT_CHARS,
+                )
+                result_str = result_str[:MAX_TOOL_RESULT_CHARS] + (
+                    f"\n\n[TOOL RESULT TRUNCATED: output was {total_len:,} chars, "
+                    f"{over:,} over the {MAX_TOOL_RESULT_CHARS:,}-char limit. "
+                    "The content above is cut off; narrow the request or "
+                    "paginate to see more.]"
+                )
             return (tc, result_str)
 
         if len(tool_calls) <= 1:
@@ -176,16 +196,21 @@ class SimpleChatPipeline(BasePipeline):
         agg_output = 0
         agg_total = 0
         agg_cached = 0
+        agg_cache_write = 0
+        agg_reasoning = 0
         agg_cost: float | None = None
 
         def _accumulate(usage: Usage | None) -> None:
-            nonlocal agg_input, agg_output, agg_total, agg_cached, agg_cost
+            nonlocal agg_input, agg_output, agg_total, agg_cached, \
+                agg_cache_write, agg_reasoning, agg_cost
             if not usage:
                 return
             agg_input += usage.prompt_tokens or 0
             agg_output += usage.completion_tokens or 0
             agg_total += usage.total_tokens or 0
             agg_cached += usage.cached_tokens or 0
+            agg_cache_write += usage.cache_write_tokens or 0
+            agg_reasoning += usage.reasoning_tokens or 0
             if usage.cost_usd is not None:
                 agg_cost = (agg_cost or 0.0) + usage.cost_usd
 
@@ -196,6 +221,8 @@ class SimpleChatPipeline(BasePipeline):
                     completion_tokens=agg_output,
                     total_tokens=agg_total,
                     cached_tokens=agg_cached or None,
+                    cache_write_tokens=agg_cache_write or None,
+                    reasoning_tokens=agg_reasoning or None,
                     cost_usd=agg_cost,
                 ),
             })
@@ -312,15 +339,22 @@ class SimpleChatPipeline(BasePipeline):
         agg_input_tokens = 0
         agg_output_tokens = 0
         agg_total_tokens = 0
+        agg_cached_tokens = 0
+        agg_cache_write_tokens = 0
+        agg_reasoning_tokens = 0
         agg_cost_usd: float | None = None
 
         def _do_stream_iteration(req, sequence):
-            """Stream one LLM call, forwarding events and returning (end_data, sequence)."""
+            """Stream one LLM call, forwarding events; the final sentinel is
+            ``(end_data, sequence, saw_error)``."""
             end_data = {}
+            saw_error = False
             for event in chat_model.stream(req):
                 if event.event_type == "message_end":
                     end_data = dict(event.data)
                 else:
+                    if event.event_type == "error":
+                        saw_error = True
                     # Re-sequence with pipeline's sequence/run_id
                     yield StreamEvent(
                         event_type=event.event_type,
@@ -332,7 +366,7 @@ class SimpleChatPipeline(BasePipeline):
                 if cancel_event and cancel_event.is_set():
                     break
             # Yield a sentinel to pass end_data back
-            yield (end_data, sequence)
+            yield (end_data, sequence, saw_error)
 
         for i in range(max_iterations):
             if cancel_event and cancel_event.is_set():
@@ -347,17 +381,27 @@ class SimpleChatPipeline(BasePipeline):
                 break
             # Stream from the model, forwarding all events except message_end
             end_data = {}
+            saw_error = False
             for item in _do_stream_iteration(req, sequence):
                 if isinstance(item, StreamEvent):
                     yield item
                 else:
-                    # Sentinel: (end_data, updated_sequence)
-                    end_data, sequence = item
+                    # Sentinel: (end_data, updated_sequence, saw_error)
+                    end_data, sequence, saw_error = item
+
+            if saw_error:
+                # The provider already yielded an error event and stopped.
+                # Don't fabricate a message_end — log_stream would record
+                # this failed turn as SUCCESS.
+                return
 
             # Accumulate usage from this iteration
             agg_input_tokens += end_data.get("input_tokens") or 0
             agg_output_tokens += end_data.get("output_tokens") or 0
             agg_total_tokens += end_data.get("total_tokens") or 0
+            agg_cached_tokens += end_data.get("cached_tokens") or 0
+            agg_cache_write_tokens += end_data.get("cache_write_tokens") or 0
+            agg_reasoning_tokens += end_data.get("reasoning_tokens") or 0
             iter_cost = end_data.get("cost_usd")
             if iter_cost is not None:
                 agg_cost_usd = (agg_cost_usd or 0.0) + iter_cost
@@ -369,6 +413,9 @@ class SimpleChatPipeline(BasePipeline):
                 end_data["input_tokens"] = agg_input_tokens
                 end_data["output_tokens"] = agg_output_tokens
                 end_data["total_tokens"] = agg_total_tokens
+                end_data["cached_tokens"] = agg_cached_tokens or None
+                end_data["cache_write_tokens"] = agg_cache_write_tokens or None
+                end_data["reasoning_tokens"] = agg_reasoning_tokens or None
                 end_data["cost_usd"] = agg_cost_usd
                 # Clean internal fields from end_data
                 end_data.pop("content", None)
@@ -476,21 +523,31 @@ class SimpleChatPipeline(BasePipeline):
             "tool_schemas": None,
             "messages": final_messages,
         })
+        saw_error = False
         for item in _do_stream_iteration(final_req, sequence):
             if isinstance(item, StreamEvent):
                 yield item
             else:
-                end_data, sequence = item
+                end_data, sequence, saw_error = item
+        if saw_error:
+            # Error event already forwarded; no synthetic message_end.
+            return
         # Add aggregate usage to final message_end
         agg_input_tokens += end_data.get("input_tokens") or 0
         agg_output_tokens += end_data.get("output_tokens") or 0
         agg_total_tokens += end_data.get("total_tokens") or 0
+        agg_cached_tokens += end_data.get("cached_tokens") or 0
+        agg_cache_write_tokens += end_data.get("cache_write_tokens") or 0
+        agg_reasoning_tokens += end_data.get("reasoning_tokens") or 0
         iter_cost = end_data.get("cost_usd")
         if iter_cost is not None:
             agg_cost_usd = (agg_cost_usd or 0.0) + iter_cost
         end_data["input_tokens"] = agg_input_tokens
         end_data["output_tokens"] = agg_output_tokens
         end_data["total_tokens"] = agg_total_tokens
+        end_data["cached_tokens"] = agg_cached_tokens or None
+        end_data["cache_write_tokens"] = agg_cache_write_tokens or None
+        end_data["reasoning_tokens"] = agg_reasoning_tokens or None
         end_data["cost_usd"] = agg_cost_usd
         end_data.pop("content", None)
         end_data.pop("content_blocks", None)

@@ -624,6 +624,183 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(end_data["total_tokens"], 1600)
         self.assertAlmostEqual(end_data["cost_usd"], 0.03)
 
+    def test_stream_error_event_suppresses_message_end(self):
+        """A provider error event must end the stream without a synthetic
+        message_end — otherwise log_stream records the failed turn as SUCCESS."""
+        mock_tool = self._make_mock_tool("search_documents")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hi")],
+            stream=True,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=RunContext.create(),
+        )
+
+        def error_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "partial"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="error", data={
+                "message": "Provider overloaded", "error_code": "overloaded",
+            }, sequence=3, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [error_stream(None)]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        self.assertEqual(fake_model.stream.call_count, 1)
+        error_events = [e for e in events if e.event_type == "error"]
+        end_events = [e for e in events if e.event_type == "message_end"]
+        self.assertEqual(len(error_events), 1)
+        self.assertEqual(len(end_events), 0)
+
+    def test_stream_error_in_final_exhaustion_stream_suppresses_message_end(self):
+        """Same guarantee for the tool-stripped final stream after exhaustion."""
+        mock_tool = self._make_mock_tool("search_documents")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hi")],
+            stream=True,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=RunContext.create(),
+            params={"max_tool_iterations": 0},  # skip straight to the final stream
+        )
+
+        def error_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
+            yield StreamEvent(event_type="error", data={
+                "message": "Rate limited", "error_code": "rate_limited",
+            }, sequence=2, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [error_stream(None)]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        self.assertEqual(len([e for e in events if e.event_type == "error"]), 1)
+        self.assertEqual(len([e for e in events if e.event_type == "message_end"]), 0)
+
+    def test_run_tool_loop_aggregates_cache_and_reasoning_tokens(self):
+        """cache_write and reasoning tokens must aggregate across iterations too."""
+        mock_tool = self._make_mock_tool("search_documents")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Multi-step")],
+            stream=False,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=RunContext.create(),
+        )
+        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        iter1 = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tool_call]),
+            model="gpt-4o-mini",
+            usage=Usage(
+                prompt_tokens=500, completion_tokens=100, total_tokens=600,
+                cached_tokens=100, cache_write_tokens=300, reasoning_tokens=40,
+            ),
+            metadata={},
+        )
+        final = ChatResponse(
+            message=Message(role="assistant", content="Done."),
+            model="gpt-4o-mini",
+            usage=Usage(
+                prompt_tokens=800, completion_tokens=200, total_tokens=1000,
+                cached_tokens=400, cache_write_tokens=50, reasoning_tokens=60,
+            ),
+            metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = [iter1, final]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            response = SimpleChatPipeline().run(request)
+
+        self.assertEqual(response.usage.cached_tokens, 500)
+        self.assertEqual(response.usage.cache_write_tokens, 350)
+        self.assertEqual(response.usage.reasoning_tokens, 100)
+
+    def test_stream_tool_loop_aggregates_cache_and_reasoning_tokens(self):
+        """Streaming loop: cached/cache_write/reasoning tokens summed into message_end."""
+        mock_tool = self._make_mock_tool("search_documents")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Multi-step stream")],
+            stream=True,
+            model="gpt-4o-mini",
+            tools=["search_documents"],
+            context=RunContext.create(),
+        )
+
+        def tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+                "input_tokens": 500, "output_tokens": 100, "total_tokens": 600,
+                "cached_tokens": 100, "cache_write_tokens": 300, "reasoning_tokens": 40,
+            }, sequence=2, run_id="")
+
+        def final_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "Done"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "Done",
+                "input_tokens": 800, "output_tokens": 200, "total_tokens": 1000,
+                "cached_tokens": 400, "cache_write_tokens": 50, "reasoning_tokens": 60,
+            }, sequence=3, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [tool_stream(None), final_stream(None)]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        end_data = [e for e in events if e.event_type == "message_end"][0].data
+        self.assertEqual(end_data["cached_tokens"], 500)
+        self.assertEqual(end_data["cache_write_tokens"], 350)
+        self.assertEqual(end_data["reasoning_tokens"], 100)
+
+    def test_oversized_tool_result_truncated_with_notice(self):
+        """A tool result above MAX_TOOL_RESULT_CHARS is truncated with a notice."""
+        from llm.pipelines.simple_chat import MAX_TOOL_RESULT_CHARS
+
+        class _HugeTool(ContextAwareTool):
+            name: str = "search_documents"
+            description: str = "Returns a huge result"
+            args_schema: type[BaseModel] = _MockInput
+            def _run(self, a: float, b: float) -> str:
+                return "x" * (MAX_TOOL_RESULT_CHARS + 50_000)
+
+        tc = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        results = SimpleChatPipeline._execute_tool_calls(
+            [tc], {"search_documents": _HugeTool()}
+        )
+        _, result_str = results[0]
+        self.assertIn("[TOOL RESULT TRUNCATED", result_str)
+        self.assertIn(f"{MAX_TOOL_RESULT_CHARS + 50_000:,} chars", result_str)
+        self.assertIn("50,000", result_str)
+        # Capped content + a short notice, nothing more
+        self.assertLess(len(result_str), MAX_TOOL_RESULT_CHARS + 500)
+
+    def test_normal_tool_result_not_truncated(self):
+        """Results under the cap pass through untouched."""
+        tc = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        results = SimpleChatPipeline._execute_tool_calls(
+            [tc], {"search_documents": self._make_mock_tool("search_documents")}
+        )
+        _, result_str = results[0]
+        self.assertEqual(result_str, '{"result": 5}')
+        self.assertNotIn("TRUNCATED", result_str)
+
     def test_run_tool_loop_respects_deadline(self):
         """Tool loop should break early when the RunContext deadline is exceeded."""
         mock_tool = self._make_mock_tool("search_documents")

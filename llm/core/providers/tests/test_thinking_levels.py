@@ -72,6 +72,19 @@ class AnthropicThinkingLevelTests(TestCase):
         model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
         self.assertIs(client, model._client.bind.return_value)
 
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_max_clamps_to_high_on_non_adaptive_model(self, mock_create):
+        """"max" only exists for adaptive models; on Sonnet it must clamp to
+        the high extended-thinking budget instead of silently disabling
+        thinking."""
+        mock_create.return_value = MagicMock()
+        model = self._make_model()
+        request = _make_request("max")
+        model._get_streaming_client(request)
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        self.assertEqual(call_kwargs["thinking"]["budget_tokens"], 32_000)
+
 
 class AnthropicAdaptiveThinkingTests(TestCase):
 
@@ -199,6 +212,17 @@ class OpenAIThinkingLevelTests(TestCase):
             call_kwargs = mock_create.call_args[1]
             self.assertEqual(call_kwargs["model_kwargs"]["reasoning_effort"], level)
 
+    @patch("llm.core.providers.openai.create_variant_client")
+    def test_max_clamps_to_high(self, mock_create):
+        """OpenAI has no "max" reasoning_effort — it must clamp to "high"."""
+        mock_create.return_value = MagicMock()
+        model = self._make_model("openai/gpt-5.4")
+        request = _make_request("max")
+        model._get_streaming_client(request)
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        self.assertEqual(call_kwargs["model_kwargs"]["reasoning_effort"], "high")
+
 
 class GeminiThinkingLevelTests(TestCase):
 
@@ -245,3 +269,15 @@ class GeminiThinkingLevelTests(TestCase):
         request = _make_request("medium")
         client = model._get_streaming_client(request)
         self.assertIs(client, model._client)
+
+    @patch("llm.core.providers.gemini.create_variant_client")
+    def test_max_clamps_to_high_budget(self, mock_create):
+        """Gemini has no "max" level — it must clamp to the high budget
+        instead of silently defaulting to medium."""
+        mock_create.return_value = MagicMock()
+        model = self._make_model("gemini/gemini-3.5-flash")
+        request = _make_request("max")
+        model._get_streaming_client(request)
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        self.assertEqual(call_kwargs["thinking_budget"], 24_576)

@@ -6,6 +6,7 @@ automatic max_retries/timeout, and rate_limiter support.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -128,6 +129,52 @@ def _get_rate_limiter(provider: str):
     return _rate_limiters[provider]
 
 
+# Cache of LangChain clients keyed by (provider, api_model, resolved kwargs).
+# LangChain chat models are immutable config holders — bind()/bind_tools()
+# return derived runnables without mutating the original — so one instance is
+# safe to share across requests and threads. Caching avoids re-running
+# init_chat_model (provider detection + SDK client construction) on every
+# request, which notably matters for thinking variants that previously
+# rebuilt a client per call. The rate limiter is excluded from the key: it's
+# a per-provider singleton resolved at build time.
+_client_cache: dict[tuple, object] = {}
+_client_cache_lock = threading.Lock()
+
+
+def clear_client_cache() -> None:
+    """Clear the LangChain client cache.
+
+    Primarily for tests that patch ``init_chat_model`` — without clearing,
+    a mock client cached by one test leaks into the next.
+    """
+    with _client_cache_lock:
+        _client_cache.clear()
+
+
+def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]):
+    """Return a cached (or newly built) LangChain client for this configuration."""
+    kwargs_key = json.dumps(provider_kwargs, sort_keys=True, default=str)
+    key = (provider, api_model, kwargs_key)
+    client = _client_cache.get(key)
+    if client is not None:
+        return client
+
+    rate_limiter = _get_rate_limiter(provider)
+    with _client_cache_lock:
+        client = _client_cache.get(key)
+        if client is None:
+            client = init_chat_model(
+                api_model,
+                model_provider=provider,
+                max_retries=3,
+                timeout=120,
+                **({"rate_limiter": rate_limiter} if rate_limiter else {}),
+                **provider_kwargs,
+            )
+            _client_cache[key] = client
+    return client
+
+
 def create_chat_model(model_name: str, *, fallback_models: list[str] | None = None, **overrides):
     """Create a ChatModel instance using init_chat_model for provider detection.
 
@@ -164,17 +211,9 @@ def create_chat_model(model_name: str, *, fallback_models: list[str] | None = No
 
     # TODO: when fallback_models is provided, chain via .with_fallbacks()
 
-    rate_limiter = _get_rate_limiter(provider)
+    lc_client = _build_client(provider, api_model, provider_kwargs)
 
-    lc_client = init_chat_model(
-        api_model,
-        model_provider=provider,
-        max_retries=3,
-        timeout=120,
-        **({"rate_limiter": rate_limiter} if rate_limiter else {}),
-        **provider_kwargs,
-    )
-
+    # Wrappers stay per-call (cheap); only the LangChain client is cached.
     wrapper_cls = provider_wrappers.get(provider, BaseLangChainChatModel)
     return wrapper_cls(model_name=model_name, client=lc_client)
 
@@ -201,16 +240,7 @@ def create_variant_client(api_model: str, provider: str, **extra_kwargs):
     provider_kwargs = _get_provider_kwargs(provider, api_model)
     provider_kwargs.update(extra_kwargs)
 
-    rate_limiter = _get_rate_limiter(provider)
-
-    return init_chat_model(
-        api_model,
-        model_provider=provider,
-        max_retries=3,
-        timeout=120,
-        **({"rate_limiter": rate_limiter} if rate_limiter else {}),
-        **provider_kwargs,
-    )
+    return _build_client(provider, api_model, provider_kwargs)
 
 
-__all__ = ["create_chat_model", "create_variant_client", "detect_provider"]
+__all__ = ["create_chat_model", "create_variant_client", "clear_client_cache", "detect_provider"]

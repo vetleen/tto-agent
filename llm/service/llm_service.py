@@ -246,7 +246,16 @@ class LLMService:
                 yield item
 
     def _get_stream_semaphore(self) -> asyncio.Semaphore:
-        """Lazy-init the semaphore inside a running event loop."""
+        """Lazy-init the semaphore inside a running event loop.
+
+        NOTE: asyncio.Semaphore binds to the event loop that first awaits it.
+        This is safe today because astream() is only called from the Channels
+        consumer, which runs on a single Daphne event loop per process. If
+        astream() is ever called from a second loop (Celery, a management
+        command, multi-loop tests), waiters on the foreign loop will raise
+        "attached to a different loop" — at that point make this per-loop,
+        e.g. a dict keyed by id(asyncio.get_running_loop()).
+        """
         if self._stream_semaphore is None:
             self._stream_semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENT_STREAMS)
         return self._stream_semaphore

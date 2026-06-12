@@ -239,6 +239,25 @@ class WebFetchToolTests(TestCase):
         result = self.tool.invoke({"url": "https://example.com", "max_chars": 999999})
         self.assertIn("content", result)
 
+    def test_default_max_chars_is_10k(self):
+        """Default per-fetch budget is 10k chars (explicit requests go up to 50k)."""
+        field = self.tool.args_schema.model_fields["max_chars"]
+        self.assertEqual(field.default, 10_000)
+
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_default_fetch_truncates_at_10k(self, mock_get):
+        long_body = "word " * 4000  # ~20k chars of extractable text
+        mock_get.return_value = _mock_response(
+            content_type="text/html",
+            text=f"<html><body><p>{long_body}</p></body></html>",
+        )
+
+        result = self.tool.invoke({"url": "https://example.com/long-default"})
+
+        match = re.search(r"call again with start_index=(\d+)", result)
+        self.assertIsNotNone(match)
+        self.assertLessEqual(int(match.group(1)), 10_000)
+
 
 @override_settings(
     CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
@@ -557,16 +576,47 @@ class WebFetchSSRFIntegrationTests(TestCase):
 
     @patch("llm.tools.web_fetch.requests.Session.get")
     @patch("llm.tools.web_fetch.socket.getaddrinfo")
-    def test_relative_redirect_fails_closed(self, mock_dns, mock_session_get):
+    def test_relative_redirect_resolved_and_followed(self, mock_dns, mock_session_get):
+        """A relative Location (RFC 7231) resolves against the current URL and
+        is followed — with SSRF validation still applied to the new hop."""
+        mock_dns.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 80)),
+        ]
+        mock_session_get.side_effect = [
+            _mock_response(
+                status_code=301, is_redirect=True,
+                location="/next-page", content_type=None,
+            ),
+            _mock_response(
+                content_type="text/html",
+                text="<html><body><p>Landed on next page</p></body></html>",
+            ),
+        ]
+        result = self.tool.invoke({"url": "https://example.com/redir"})
+        self.assertNotIn("Error fetching", result)
+        self.assertIn("Landed on next page", result)
+        self.assertEqual(mock_session_get.call_count, 2)
+        # The second hop targets the joined absolute URL.
+        second_url = mock_session_get.call_args_list[1].args[0]
+        self.assertEqual(second_url, "https://example.com/next-page")
+        # Each hop is independently resolved + validated.
+        self.assertEqual(mock_dns.call_count, 2)
+
+    @patch("llm.tools.web_fetch.requests.Session.get")
+    @patch("llm.tools.web_fetch.socket.getaddrinfo")
+    def test_javascript_redirect_still_blocked(self, mock_dns, mock_session_get):
+        """urljoin keeps absolute non-http schemes intact; the scheme check
+        after joining must still reject them."""
         mock_dns.return_value = [
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 80)),
         ]
         mock_session_get.return_value = _mock_response(
             status_code=301, is_redirect=True,
-            location="/internal/admin", content_type=None,
+            location="javascript:alert(1)", content_type=None,
         )
         result = self.tool.invoke({"url": "https://example.com/redir"})
         self.assertIn("Error", result)
+        self.assertIn("scheme", result.lower())
         self.assertEqual(mock_session_get.call_count, 1)
 
 
