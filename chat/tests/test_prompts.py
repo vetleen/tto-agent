@@ -450,16 +450,17 @@ class BuildSemiStaticPromptTests(TestCase):
 class BuildDynamicContextTests(TestCase):
     """Verify build_dynamic_context produces correct per-turn content."""
 
-    def test_empty_when_no_dynamic_content(self):
+    def test_always_contains_current_time(self):
         result = build_dynamic_context()
-        self.assertEqual(result, "")
+        self.assertIn("# Current time", result)
+        self.assertIn("<context>", result)
 
-    def test_empty_with_all_none(self):
+    def test_current_time_with_all_none(self):
         result = build_dynamic_context(
             doc_context=None, active_canvas=None, tasks=None,
             subagent_runs=None, history_meta=None,
         )
-        self.assertEqual(result, "")
+        self.assertIn("# Current time", result)
 
     def test_doc_context_included(self):
         doc_context = {
@@ -617,14 +618,14 @@ class BuildDynamicContextTests(TestCase):
         self.assertIn("30 most recent", result)
         self.assertIn("summary of earlier messages", result.lower())
 
-    def test_history_meta_all_included_no_output(self):
+    def test_history_meta_all_included_no_truncation_note(self):
         meta = {
             "total_messages": 5,
             "included_messages": 5,
             "has_summary": False,
         }
         result = build_dynamic_context(history_meta=meta)
-        self.assertEqual(result, "")
+        self.assertNotIn("messages total", result)
 
     def test_context_tags_wrap_output(self):
         tasks = [{"title": "Do thing", "status": "pending"}]
@@ -683,11 +684,12 @@ class BuildSystemPromptRegressionTests(TestCase):
         self.assertIn("test.pdf", prompt)
         self.assertIn("[~] Analyze", prompt)
 
-    def test_wrapper_no_dynamic_content(self):
-        """When there's no dynamic content, wrapper returns just static."""
+    def test_wrapper_always_has_current_time(self):
+        """build_system_prompt always injects current time into context."""
         prompt = build_system_prompt()
         self.assertIn(settings.ASSISTANT_NAME, prompt)
-        self.assertNotIn("<context>", prompt)
+        self.assertIn("<context>", prompt)
+        self.assertIn("# Current time", prompt)
 
     def test_static_is_stable_across_calls(self):
         """Static portion should be identical across calls."""

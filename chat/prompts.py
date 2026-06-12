@@ -341,6 +341,16 @@ After using either canvas tool, do not repeat or reproduce the generated text in
     return prompt
 
 
+def _fmt_time(dt) -> str | None:
+    """Format a datetime as HH:MM (today) or dd.mm.yy HH:MM (other days)."""
+    if dt is None:
+        return None
+    local = timezone.localtime(dt)
+    if local.date() == timezone.localdate():
+        return local.strftime("%H:%M")
+    return local.strftime("%d.%m.%y %H:%M")
+
+
 def build_dynamic_context(
     *,
     doc_context: dict[str, Any] | None = None,
@@ -361,6 +371,8 @@ def build_dynamic_context(
     Returns an empty string when there is no dynamic content.
     """
     parts: list[str] = []
+
+    parts.append(f"# Current time\n{timezone.now().strftime('%H:%M')}")
 
     # -- Document context / RAG results --
     if doc_context and doc_context.get("total_doc_count", 0) > 0:
@@ -444,6 +456,18 @@ def build_dynamic_context(
             task_excerpt = run["prompt"][:120]
             tier = run.get("model_tier", "mid")
             section += f"\n## [{short_id}] {status.upper()} (tier: {tier})\nTask: {task_excerpt}\n"
+            timing_parts = []
+            started = _fmt_time(run.get("started_at"))
+            completed = _fmt_time(run.get("completed_at"))
+            queued = _fmt_time(run.get("created_at"))
+            if started:
+                timing_parts.append(f"started {started}")
+            elif queued:
+                timing_parts.append(f"queued {queued}")
+            if completed:
+                timing_parts.append(f"completed {completed}")
+            if timing_parts:
+                section += f"Timing: {', '.join(timing_parts)}\n"
             if status == "completed" and run.get("result"):
                 section += "Result delivered as message in conversation history.\n"
             elif status == "completed":

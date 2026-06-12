@@ -1865,7 +1865,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return list(
             SubAgentRun.objects.filter(thread_id=thread_id)
             .order_by("-created_at")[:20]
-            .values("id", "status", "prompt", "model_tier", "result", "error")
+            .values("id", "status", "prompt", "model_tier", "result", "error",
+                    "created_at", "started_at", "completed_at")
         )
 
     @database_sync_to_async
