@@ -9,6 +9,7 @@ from agent_skills.services import (
     can_edit_skill,
     create_org_skill,
     create_user_skill,
+    filter_to_skill_tools,
     fork_skill,
     get_accessible_skills,
     get_available_skills,
@@ -575,6 +576,39 @@ class PromoteSkillToOrgTests(TestCase):
         )
         result = promote_skill_to_org(self.admin, existing, self.org)
         self.assertEqual(result.pk, existing.pk)
+
+
+class FilterToSkillToolsTests(TestCase):
+    """The allow-list keeps only registered skills-section tools.
+
+    Relies on the real tool registry, populated at startup: agent_skills.tools
+    registers the skills-section tools (view_template, ...) and chat.tools
+    registers the chat-section doc tools (search_documents, read_document).
+    """
+
+    def test_keeps_skills_section_tools(self):
+        self.assertEqual(
+            filter_to_skill_tools(["view_template", "load_template_to_canvas"]),
+            ["view_template", "load_template_to_canvas"],
+        )
+
+    def test_drops_chat_section_and_unknown_tools(self):
+        result = filter_to_skill_tools(
+            ["view_template", "search_documents", "read_document", "totally_made_up"]
+        )
+        self.assertEqual(result, ["view_template"])
+
+    def test_preserves_order(self):
+        self.assertEqual(
+            filter_to_skill_tools(["load_template_to_canvas", "view_template"]),
+            ["load_template_to_canvas", "view_template"],
+        )
+
+    def test_handles_none_and_non_strings(self):
+        self.assertEqual(filter_to_skill_tools(None), [])
+        self.assertEqual(filter_to_skill_tools([]), [])
+        # Non-str entries are coerced to str, then dropped as unknown.
+        self.assertEqual(filter_to_skill_tools([123, {"x": 1}]), [])
 
 
 class OrgDisabledSkillVisibilityTests(TestCase):

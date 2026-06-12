@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from django.utils.text import slugify
 
-from agent_skills.models import AgentSkill, SkillTemplate
+from agent_skills.models import MAX_INSTRUCTIONS_CHARS, AgentSkill, SkillTemplate
 
 if TYPE_CHECKING:
     from django.contrib.auth import get_user_model
@@ -18,6 +18,27 @@ if TYPE_CHECKING:
 
 # Priority order for shadowing — higher level wins.
 _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
+
+
+def filter_to_skill_tools(tool_names) -> list[str]:
+    """Allow-list: keep only registered ``section == "skills"`` tools, in order.
+
+    Drops names unknown to the registry and tools from any other section
+    (always-available chat tools, data-room doc tools). This is the single
+    chokepoint enforced at save, import, edit, and runtime resolution so a
+    hand-crafted import or a stale stored row can't smuggle a non-skill tool
+    into the LLM's tool list.
+    """
+    from llm.tools.registry import get_tool_registry
+
+    registry = get_tool_registry()
+    out: list[str] = []
+    for name in tool_names or []:
+        name = name if isinstance(name, str) else str(name)
+        tool = registry.get_tool(name)
+        if tool is not None and getattr(tool, "section", "chat") == "skills":
+            out.append(name)
+    return out
 
 
 def _org_disabled_info(user) -> tuple[set[str], set[str]]:
@@ -646,16 +667,14 @@ def _normalize_skill_payload(entry: dict) -> dict:
     name = (str(entry.get("name") or "").strip() or "Imported skill")[:255]
     emoji = str(entry.get("emoji") or "")[:16]
     description = _join_lines(entry.get("description"))[:1024]
-    instructions = _join_lines(entry.get("instructions"))
+    instructions = _join_lines(entry.get("instructions"))[:MAX_INSTRUCTIONS_CHARS]
 
     raw_slug = str(entry.get("slug") or "").strip()
     slug = slugify(raw_slug)[:64] if raw_slug else ""
 
     raw_tools = entry.get("tool_names")
     tool_names = (
-        [str(t) for t in raw_tools if isinstance(t, (str, int))]
-        if isinstance(raw_tools, list)
-        else []
+        filter_to_skill_tools(raw_tools) if isinstance(raw_tools, list) else []
     )
 
     templates: list[dict] = []
@@ -752,13 +771,15 @@ def import_skill(user, payload: dict) -> AgentSkill:
         slug = base_slug[: 64 - len(suffix)] + suffix
         counter += 1
 
+    # Allow-list tool_names and cap instructions at the persistence boundary so
+    # the rule holds even for a caller that bypassed _normalize_skill_payload.
     skill = AgentSkill.objects.create(
         slug=slug,
         name=payload["name"],
         emoji=payload.get("emoji", ""),
         description=payload.get("description", ""),
-        instructions=payload.get("instructions", ""),
-        tool_names=list(payload.get("tool_names") or []),
+        instructions=(payload.get("instructions", "") or "")[:MAX_INSTRUCTIONS_CHARS],
+        tool_names=filter_to_skill_tools(payload.get("tool_names") or []),
         level="user",
         created_by=user,
         parent=None,

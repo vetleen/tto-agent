@@ -90,6 +90,7 @@
       </div>
       <textarea name="instructions" id="skill-instructions" rows="14"
                 placeholder="You are an AI colleague for..."
+                maxlength="{{ max_instructions_chars }}"
                 {% if not editable %}readonly{% endif %}
         class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 placeholder:text-body font-mono {% if not editable %}cursor-not-allowed{% endif %}">{{ skill.instructions }}</textarea>
       <div id="instructions-preview" class="hidden w-full rounded-base border border-input px-3 py-2 text-sm text-body markdown-content overflow-y-auto" style="min-height: 14rem;"></div>

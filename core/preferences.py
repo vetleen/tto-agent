@@ -246,7 +246,7 @@ def get_preferences(user) -> ResolvedPreferences:
     # tool_names field, so they only appear in a chat when the active skill
     # declares them.  They are further filtered by org per-skill tool toggles
     # and by the org-level tool toggles.
-    from agent_skills.services import get_available_skills
+    from agent_skills.services import filter_to_skill_tools, get_available_skills
 
     org_skills_prefs = org_prefs.get("skills", {})
     user_skills = get_available_skills(user)
@@ -256,10 +256,11 @@ def get_preferences(user) -> ResolvedPreferences:
         skill_pref = org_skills_prefs.get(skill.slug, {})
         if skill_pref.get("enabled", skill.level != "system") is False:
             continue
-        # Filter tool_names through org per-skill tool settings AND org tool toggles
+        # Allow-list to skills-section tools first so a dirty stored row can't
+        # smuggle a non-skill tool, then apply org per-skill + org tool toggles.
         tool_toggles = skill_pref.get("tools", {})
         filtered_tools = [
-            t for t in (skill.tool_names or [])
+            t for t in filter_to_skill_tools(skill.tool_names)
             if tool_toggles.get(t, True) is not False
             and org_tools.get(t, True) is not False
         ]

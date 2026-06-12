@@ -7,7 +7,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Membership, Organization, UserSettings
-from agent_skills.models import AgentSkill, SkillTemplate
+from agent_skills.models import MAX_INSTRUCTIONS_CHARS, AgentSkill, SkillTemplate
 
 User = get_user_model()
 
@@ -183,6 +183,21 @@ class SkillsSaveViewTests(TestCase):
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.name, "Updated")
         self.assertEqual(self.skill.instructions, "new instructions")
+
+    def test_save_strips_non_skill_tool_names(self):
+        self.client.force_login(self.user)
+        self._post("save", tool_names_json=json.dumps(
+            ["view_template", "search_documents", "totally_made_up"]
+        ))
+        self.skill.refresh_from_db()
+        # Only the skills-section tool survives.
+        self.assertEqual(self.skill.tool_names, ["view_template"])
+
+    def test_save_caps_oversized_instructions(self):
+        self.client.force_login(self.user)
+        self._post("save", instructions="z" * (MAX_INSTRUCTIONS_CHARS + 1000))
+        self.skill.refresh_from_db()
+        self.assertEqual(len(self.skill.instructions), MAX_INSTRUCTIONS_CHARS)
 
     def test_save_persists_emoji(self):
         self.client.force_login(self.user)

@@ -117,6 +117,33 @@ class EditSkillToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["tool_names"], [])
 
+    def test_tool_names_drops_unknown_tools(self):
+        """Unknown tool names are dropped (allow-list), not passed through."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable",
+            updates={"tool_names": ["view_template", "totally_made_up_tool"]},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["tool_names"], ["view_template"])
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.tool_names, ["view_template"])
+
+    def test_find_replace_caps_instructions(self):
+        """A find-replace that would grow instructions past the cap is clamped."""
+        from agent_skills.models import MAX_INSTRUCTIONS_CHARS
+
+        self.skill.instructions = "START"
+        self.skill.save(update_fields=["instructions"])
+        huge = "z" * (MAX_INSTRUCTIONS_CHARS + 1000)
+        result = json.loads(self.tool._run(
+            skill_slug="editable",
+            updates={},
+            text_edits=[{"field": "instructions", "old_text": "START", "new_text": huge}],
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertEqual(len(self.skill.instructions), MAX_INSTRUCTIONS_CHARS)
+
     def test_delete_templates(self):
         SkillTemplate.objects.create(skill=self.skill, name="tmpl-a", content="A")
         SkillTemplate.objects.create(skill=self.skill, name="tmpl-b", content="B")

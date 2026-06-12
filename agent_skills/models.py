@@ -5,6 +5,13 @@ import uuid
 from django.conf import settings
 from django.db import models
 
+# Upper bound on a skill's instructions length. Enforced at the model
+# (max_length, so ModelForms and the Django admin validate it), in the UI
+# (the textarea's maxlength), and as a server-side truncation backstop on
+# every write path. Equal to chat.services.CANVAS_MAX_CHARS so the
+# canvas->instructions path can never exceed it.
+MAX_INSTRUCTIONS_CHARS = 75_000
+
 
 class AgentSkill(models.Model):
     class Level(models.TextChoices):
@@ -17,7 +24,7 @@ class AgentSkill(models.Model):
     name = models.CharField(max_length=255)
     emoji = models.CharField(max_length=16, blank=True, default="")
     description = models.TextField(max_length=1024, blank=True)
-    instructions = models.TextField()
+    instructions = models.TextField(max_length=MAX_INSTRUCTIONS_CHARS)
     tool_names = models.JSONField(default=list, blank=True)
     level = models.CharField(max_length=10, choices=Level.choices)
     organization = models.ForeignKey(

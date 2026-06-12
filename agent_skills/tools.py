@@ -65,11 +65,11 @@ def resolve_skill_for_thread_edit(user, thread_id, slug: str):
 
     Returns ``(skill, error_message)``: exactly one of the two is non-None.
     """
-    from agent_skills.models import AgentSkill
     from agent_skills.services import (
         can_edit_skill,
         fork_skill,
         get_editable_skill_for_user,
+        get_skill_for_user,
     )
     from chat.models import ChatThread
 
@@ -81,10 +81,13 @@ def resolve_skill_for_thread_edit(user, thread_id, slug: str):
             return None, f"Skill '{slug}' not found or not editable."
         return skill, None
 
-    try:
-        source = AgentSkill.objects.get(pk=source_id)
-    except AgentSkill.DoesNotExist:
-        return None, "Source skill no longer exists."
+    # Resolve the source through the access gate — never fork a skill the user
+    # can't actually see. source_skill_id is server-set today, but routing the
+    # lookup through get_skill_for_user keeps a stray or forged value from
+    # cloning an arbitrary skill by UUID.
+    source = get_skill_for_user(user, source_id)
+    if source is None:
+        return None, "Source skill no longer exists or is not accessible."
 
     if can_edit_skill(user, source):
         return source, None
@@ -322,6 +325,10 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
             })
 
         content = canvas.content
+        if field_name == "instructions":
+            from agent_skills.models import MAX_INSTRUCTIONS_CHARS
+
+            content = content[:MAX_INSTRUCTIONS_CHARS]
 
         if field_name in ("instructions", "description"):
             setattr(skill, field_name, content)
@@ -454,16 +461,12 @@ class EditSkillTool(ContextAwareTool):
             skill.slug = new_slug
             update_fields.append("slug")
         if "tool_names" in updates:
-            # Silently filter out standard (chat-section) tools — they're
-            # always available and don't need to be attached to a skill.
-            # Unknown tool names are kept (they may belong to another app).
-            registry = get_tool_registry()
-            filtered = []
-            for t in updates["tool_names"]:
-                tool_obj = registry.get_tool(t)
-                if tool_obj is None or getattr(tool_obj, "section", "chat") != "chat":
-                    filtered.append(t)
-            skill.tool_names = filtered
+            # Allow-list to skills-section tools only — standard chat/doc tools
+            # are always available and don't belong on a skill, and unknown
+            # names are dropped rather than passed through to the LLM.
+            from agent_skills.services import filter_to_skill_tools
+
+            skill.tool_names = filter_to_skill_tools(updates["tool_names"])
             update_fields.append("tool_names")
         if "is_active" in updates:
             skill.is_active = bool(updates["is_active"])
@@ -505,6 +508,12 @@ class EditSkillTool(ContextAwareTool):
                     "old_text": old_text[:80],
                     "error": "Text not found.",
                 })
+
+        # A find-replace can grow instructions past the model limit; clamp it.
+        if "instructions" in update_fields:
+            from agent_skills.models import MAX_INSTRUCTIONS_CHARS
+
+            skill.instructions = (skill.instructions or "")[:MAX_INSTRUCTIONS_CHARS]
 
         if len(update_fields) > 1 or applied > 0:
             skill.save(update_fields=update_fields)

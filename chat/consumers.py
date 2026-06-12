@@ -2074,13 +2074,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_skill_tool_names(self, skill_id):
-        from agent_skills.models import AgentSkill
+        from agent_skills.services import filter_to_skill_tools, get_skill_for_user
 
-        try:
-            skill = AgentSkill.objects.get(pk=skill_id, is_active=True)
-            return skill.tool_names or []
-        except AgentSkill.DoesNotExist:
+        # Re-check access: a thread can retain a skill the user has since lost
+        # access to (left the org, or an admin disabled it). Resolve through the
+        # access gate and allow-list to skills-section tools so a stale
+        # active_skill_id can't surface tools the user shouldn't get.
+        skill = get_skill_for_user(self.user, skill_id)
+        if skill is None:
             return []
+        return filter_to_skill_tools(skill.tool_names or [])
 
     # -- Database helpers --
 

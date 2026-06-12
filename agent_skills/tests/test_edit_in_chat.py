@@ -214,6 +214,27 @@ class ResolveSkillForThreadEditTests(TestCase):
         self.assertIsNone(skill)
         self.assertIn("not found", err)
 
+    def test_inaccessible_source_errors_and_does_not_fork(self):
+        # A skill the acting user cannot see (another user's personal skill).
+        # Even with its id planted in thread.metadata, resolution must refuse
+        # rather than fork — closing the clone-any-skill-by-UUID path.
+        stranger = User.objects.create_user(email="stranger@example.com", password="pw")
+        secret = AgentSkill.objects.create(
+            slug="secret", name="Secret", instructions="private",
+            level="user", created_by=stranger,
+        )
+        thread = self._make_thread(secret.id)
+        before = AgentSkill.objects.filter(created_by=self.user).count()
+
+        skill, err = resolve_skill_for_thread_edit(self.user, thread.id, "secret")
+
+        self.assertIsNone(skill)
+        self.assertIn("not accessible", err)
+        # No fork was created for the acting user.
+        self.assertEqual(
+            AgentSkill.objects.filter(created_by=self.user).count(), before
+        )
+
 
 class SaveCanvasForkOnWriteTests(TestCase):
     """End-to-end: SaveCanvasToSkillFieldTool routes through fork-on-write."""

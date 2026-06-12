@@ -14,7 +14,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods, require_POST
 
 from accounts.models import Membership
-from agent_skills.models import AgentSkill, SkillTemplate
+from agent_skills.models import MAX_INSTRUCTIONS_CHARS, AgentSkill, SkillTemplate
 from agent_skills.services import (
     get_accessible_skills,
     get_user_skill_prefs,
@@ -23,6 +23,7 @@ from agent_skills.services import (
     create_org_skill,
     create_user_skill,
     dump_skills_json,
+    filter_to_skill_tools,
     fork_skill,
     get_skill_for_user,
     import_skill,
@@ -41,7 +42,12 @@ logger = logging.getLogger(__name__)
 
 
 def _user_org(user):
-    """Return the user's organization (first membership) or None."""
+    """Return the user's organization or None.
+
+    A user has at most one membership — the ``unique_membership_per_user``
+    constraint (accounts.models.Membership) enforces this at the DB level — so
+    ``.first()`` is deterministic, not an arbitrary pick among many.
+    """
     membership = Membership.objects.filter(user=user).select_related("org").first()
     return membership.org if membership else None
 
@@ -267,6 +273,7 @@ def skills_detail(request, skill_id):
             "colleague_count": colleague_count,
             "level_label": skill.get_level_display(),
             "override_slug_map_json": json.dumps(override_slug_map),
+            "max_instructions_chars": MAX_INSTRUCTIONS_CHARS,
         },
     )
 
@@ -304,20 +311,12 @@ def _parse_tool_names_json(raw: str) -> list[str]:
 
 
 def _filter_skill_tools(tool_names: list[str]) -> list[str]:
-    """Drop chat-section tools — only skill-section tools belong on skills."""
-    from llm.tools.registry import get_tool_registry
+    """Allow-list submitted tool names down to skills-section tools.
 
-    registry = get_tool_registry()
-    out = []
-    for name in tool_names:
-        tool = registry.get_tool(name)
-        if tool is None:
-            # Unknown tools may belong to another app — keep them.
-            out.append(name)
-            continue
-        if getattr(tool, "section", "chat") == "skills":
-            out.append(name)
-    return out
+    Thin wrapper over the shared chokepoint so the save form, import, edit
+    tool, and runtime resolution all enforce the same rule.
+    """
+    return filter_to_skill_tools(tool_names)
 
 
 class SkillFormValidationError(Exception):
@@ -339,7 +338,7 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     name = (request.POST.get("name") or skill.name).strip() or skill.name
     emoji = (request.POST.get("emoji") or "").strip()[:16]
     description = request.POST.get("description") or ""
-    instructions = request.POST.get("instructions") or ""
+    instructions = (request.POST.get("instructions") or "")[:MAX_INSTRUCTIONS_CHARS]
     tool_names = _filter_skill_tools(
         _parse_tool_names_json(request.POST.get("tool_names_json", ""))
     )

@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Membership, Organization
-from agent_skills.models import AgentSkill, SkillTemplate
+from agent_skills.models import MAX_INSTRUCTIONS_CHARS, AgentSkill, SkillTemplate
 from agent_skills.services import (
     EXPORT_VERSION,
     SkillImportError,
@@ -29,7 +29,7 @@ def _make_skill(**overrides):
         emoji="🔎",
         description="A skill that researches things.",
         instructions="# Researcher\n\nDo the research.\nThen report.",
-        tool_names=["create_subagent"],
+        tool_names=["view_template"],
         level="system",
     )
     defaults.update(overrides)
@@ -55,7 +55,7 @@ class ExportSkillTests(TestCase):
             ["# Researcher", "", "Do the research.", "Then report."],
         )
         self.assertEqual(data["description"], ["A skill that researches things."])
-        self.assertEqual(data["tool_names"], ["create_subagent"])
+        self.assertEqual(data["tool_names"], ["view_template"])
         # Templates ordered by name, content as line arrays.
         self.assertEqual([t["name"] for t in data["templates"]], ["Notes", "Outline"])
         outline = next(t for t in data["templates"] if t["name"] == "Outline")
@@ -100,15 +100,29 @@ class ParseImportServiceTests(TestCase):
         self.assertEqual(tmpls["Outline"], "# Title\n\n## Findings")
         self.assertEqual(tmpls["Notes"], "single line")
 
-    def test_import_keeps_unknown_tool_names_verbatim(self):
+    def test_import_strips_non_skill_tool_names(self):
+        # view_template is a skills-section tool (kept); create_subagent is a
+        # chat-section tool and totally_made_up_tool is unknown (both dropped).
         payload = {
             "name": "Tooly",
             "instructions": "x",
-            "tool_names": ["create_subagent", "totally_made_up_tool"],
+            "tool_names": ["view_template", "create_subagent", "totally_made_up_tool"],
             "templates": [],
         }
         skill = import_skill(self.user, payload)
-        self.assertEqual(skill.tool_names, ["create_subagent", "totally_made_up_tool"])
+        self.assertEqual(skill.tool_names, ["view_template"])
+
+    def test_import_truncates_oversized_instructions(self):
+        raw = json.dumps({"skills": [{
+            "name": "Huge",
+            "instructions": ["x" * (MAX_INSTRUCTIONS_CHARS + 5000)],
+        }]}).encode("utf-8")
+        payloads = parse_skill_export(raw)
+        # Normalization caps the payload...
+        self.assertEqual(len(payloads[0]["instructions"]), MAX_INSTRUCTIONS_CHARS)
+        # ...and so does the persisted skill.
+        skill = import_skill(self.user, payloads[0])
+        self.assertEqual(len(skill.instructions), MAX_INSTRUCTIONS_CHARS)
 
     def test_accepts_string_form_for_text_fields(self):
         # A hand-author may collapse a line-array back to a plain string.
