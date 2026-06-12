@@ -146,6 +146,12 @@ def finalize_document_metadata(self, document_id: int) -> None:
             pii_result = scan_pii_categories_for_document(
                 document_id, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=org_id,
             )
+            # NOTE: detections are union-only — categories are added here but never
+            # cleared, and is_quarantined is never un-set by a later scan. That's the
+            # right bias while document content is immutable, but if a rescan-after-edit
+            # feature is ever added (e.g. the user edits and resaves a document), it must
+            # first clear existing pii_* tags and re-evaluate quarantine from scratch,
+            # or stale detections from the old content will stick forever.
             for category in pii_result:
                 DataRoomDocumentTag.objects.update_or_create(
                     document=doc, key=category, defaults={"value": "true"},

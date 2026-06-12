@@ -1,9 +1,8 @@
 """
 Backend retrieval: get chunks by data room/document (ordered), by similarity
 search, by full-text search, or hybrid (semantic + full-text with RRF).
-Provides dynamic context expansion via get_chunk_with_context() and merged
-context windows via get_merged_context_windows(). Optionally reranks results
-with FlashRank when RERANK_ENABLED is True.
+Provides merged context windows via get_merged_context_windows(). Optionally
+reranks results with FlashRank when RERANK_ENABLED is True.
 """
 from __future__ import annotations
 
@@ -347,71 +346,6 @@ def similarity_search_chunks(
     ]
 
 
-def get_chunk_with_context(
-    chunk_id: int,
-    target_tokens: int | None = None,
-) -> dict[str, Any]:
-    """Fetch a chunk and expand with neighboring chunks until reaching token budget.
-
-    Expands symmetrically (alternating left/right neighbors by chunk_index).
-    Returns dict with: id, document_id, chunk_index, text, context_text,
-    token_count, context_token_count, chunks_included.
-    """
-    if target_tokens is None:
-        target_tokens = getattr(django_settings, "RETRIEVAL_CONTEXT_TARGET_TOKENS", 1200)
-
-    try:
-        center = DataRoomDocumentChunk.objects.select_related("document").get(pk=chunk_id)
-    except DataRoomDocumentChunk.DoesNotExist:
-        return {"error": f"Chunk {chunk_id} not found"}
-
-    # Quarantined chunks/documents and documents not yet released by the PII
-    # scan never surface to the LLM. Same "not found" shape — don't leak state.
-    if (
-        center.is_quarantined
-        or center.document.is_quarantined
-        or center.document.status != DataRoomDocument.Status.READY
-    ):
-        return {"error": f"Chunk {chunk_id} not found"}
-
-    # Fetch all non-quarantined chunks for the same document, ordered by chunk_index
-    all_chunks = list(
-        DataRoomDocumentChunk.objects.filter(
-            document_id=center.document_id,
-            is_quarantined=False,
-        )
-        .exclude(document__is_quarantined=True)
-        .order_by("chunk_index")
-        .values("id", "chunk_index", "text", "token_count")
-    )
-
-    # Find center position in list
-    center_pos = None
-    for i, c in enumerate(all_chunks):
-        if c["id"] == chunk_id:
-            center_pos = i
-            break
-
-    if center_pos is None:
-        return {"error": f"Chunk {chunk_id} not found in document chunks"}
-
-    # Expand symmetrically around center chunk
-    start_pos, end_pos, total_tokens = _expand_window(center_pos, all_chunks, target_tokens)
-    context_chunks = all_chunks[start_pos:end_pos + 1]
-    context_text = "\n\n".join(c["text"] for c in context_chunks)
-
-    return {
-        "id": chunk_id,
-        "document_id": center.document_id,
-        "chunk_index": center.chunk_index,
-        "text": center.text,
-        "context_text": context_text,
-        "token_count": center.token_count,
-        "context_token_count": total_tokens,
-        "chunks_included": [c["chunk_index"] for c in context_chunks],
-    }
-
-
 # ---------------------------------------------------------------------------
 # Merged context windows (deduplication)
 # ---------------------------------------------------------------------------
@@ -466,7 +400,7 @@ def get_merged_context_windows(
     """Fetch chunks, expand into context windows, and merge overlapping windows.
 
     Groups chunk_ids by document. For each document, expands each hit chunk
-    into a context window (symmetric expansion like get_chunk_with_context),
+    into a context window (symmetric expansion via ``_expand_window``),
     then merges overlapping or adjacent windows using interval merge.
 
     Cross-document windows are never merged.

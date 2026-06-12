@@ -1126,6 +1126,43 @@ class DocumentViewsTests(TestCase):
         doc = DataRoomDocument.objects.get(data_room=self.data_room)
         self.assertEqual(doc.original_filename, "test.mp3")
 
+    @patch("core.preferences.get_preferences")
+    @override_settings(DOCUMENT_UPLOAD_MAX_SIZE_BYTES=10_000, AUDIO_UPLOAD_MAX_SIZE_BYTES=25_000)
+    def test_upload_audio_between_caps_accepted(self, mock_prefs):
+        """An audio file over the document cap but under the audio cap is accepted —
+        the generic document cap must not also apply to audio files."""
+        mock_prefs.return_value = MagicMock(
+            allowed_transcription_models=["openai/gpt-4o-mini-transcribe"]
+        )
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("between.mp3", b"\x00" * 15_000, content_type="audio/mpeg")
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        # Assert via Django messages, not page HTML — the upload page's embedded
+        # JS validation always contains a literal "file is too large" string.
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertFalse(any("too large" in m for m in msgs), msgs)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 1)
+
+    @override_settings(DOCUMENT_UPLOAD_MAX_SIZE_BYTES=10_000, AUDIO_UPLOAD_MAX_SIZE_BYTES=25_000)
+    def test_upload_document_over_cap_still_rejected(self):
+        """Non-audio files are still bounded by the document cap."""
+        self.client.force_login(self.user)
+        f = SimpleUploadedFile("big.txt", b"a" * 15_000, content_type="text/plain")
+        response = self.client.post(
+            reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+            {"file": f},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("file is too large" in m for m in msgs), msgs)
+        self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 0)
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 @override_settings(ALLOWED_HOSTS=["testserver"])

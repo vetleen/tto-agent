@@ -325,8 +325,8 @@ def document_upload(request, data_room_id):
 
     from llm.transcription_registry import AUDIO_EXTENSIONS
 
-    max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 10_000_000)
-    audio_max_size = getattr(settings, "AUDIO_UPLOAD_MAX_SIZE_BYTES", 25_000_000)
+    max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
+    audio_max_size = getattr(settings, "AUDIO_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
     errors = []
     created_docs = []
 
@@ -338,10 +338,12 @@ def document_upload(request, data_room_id):
         if file_obj.size <= 0:
             errors.append(f"{safe_filename}: file is empty.")
             continue
+        # Audio gets its own cap; the generic document cap must not also apply,
+        # or AUDIO_UPLOAD_MAX_SIZE_BYTES could never exceed the document cap.
         if is_audio and file_obj.size > audio_max_size:
             errors.append(f"{safe_filename}: audio file is too large (max {audio_max_size / 1_000_000:.0f} MB).")
             continue
-        if file_obj.size > max_size:
+        if not is_audio and file_obj.size > max_size:
             errors.append(f"{safe_filename}: file is too large (max {max_size / 1_000_000:.0f} MB).")
             continue
         if not _allowed_extension(safe_filename):

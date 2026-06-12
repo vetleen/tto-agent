@@ -109,8 +109,11 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
     """Heuristic + classifier scan of a document's chunks; quarantines suspicious ones.
 
     Returns normally on completion (including the no-chunks and no-classifier-model
-    cases) so the caller can hand off to finalize. Raises only on unexpected errors
-    (e.g. transient DB failures), which the caller retries before failing closed.
+    cases) so the caller can hand off to finalize. Raises on unexpected errors
+    (e.g. transient DB failures) AND when any classifier batch fails — a held
+    document must never be released with unclassified chunks (fail closed), so
+    the caller retries before marking it SCAN_FAILED. Quarantines from batches
+    that did succeed are persisted before raising.
     """
     from guardrails.heuristics import heuristic_scan
 
@@ -180,16 +183,28 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
         )
         return
 
+    failed_batches = 0
     for batch in _batch_chunks_by_budget(remaining_chunks):
         try:
             _classify_chunk_batch(doc, batch, cheap_model)
         except Exception:
+            failed_batches += 1
             logger.exception(
                 "scan_document_chunks: classifier failed document_id=%s chunk_indexes=%s",
                 document_id, [c["chunk_index"] for c in batch],
             )
 
+    # Persist what the successful batches found before deciding the outcome.
     _refresh_partial_quarantine(document_id)
+
+    # Fail closed: a skipped batch means unclassified chunks, and releasing the
+    # document would let them straight past the guardrail. Raising hands control
+    # to the caller's retry -> SCAN_FAILED machinery.
+    if failed_batches:
+        raise RuntimeError(
+            f"{failed_batches} classifier batch(es) failed for document {document_id}"
+        )
+
     logger.info(
         "scan_document_chunks: document_id=%s complete",
         document_id,

@@ -23,7 +23,6 @@ from documents.services.chunking import (
 )
 from documents.services.retrieval import (
     _rrf_score,
-    get_chunk_with_context,
     get_chunks_by_document,
     get_chunks_by_data_room,
     get_merged_context_windows,
@@ -155,20 +154,36 @@ class SemanticChunkTests(TestCase):
 
 
 class VectorStoreTests(TestCase):
-    @patch("django.db.connection")
+    @patch("documents.services.vector_store._get_vector_store")
     @patch("documents.services.vector_store._get_connection_string", return_value="postgresql://example")
-    def test_delete_vectors_for_document_scopes_to_collection(self, _mock_conn, mock_connection):
+    def test_delete_vectors_for_document_scopes_to_collection(self, _mock_conn, mock_get_store):
+        """The delete runs on the store's own SQLAlchemy session (PGVECTOR_CONNECTION),
+        scoped to this app's collection and the given document_id."""
         from documents.services.vector_store import COLLECTION_NAME, delete_vectors_for_document
 
-        mock_cursor = Mock()
-        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_session = MagicMock()
+        store = Mock()
+        store.session_maker.return_value.__enter__ = Mock(return_value=mock_session)
+        store.session_maker.return_value.__exit__ = Mock(return_value=False)
+        mock_get_store.return_value = store
 
         delete_vectors_for_document(document_id=42)
 
-        query, params = mock_cursor.execute.call_args.args
-        self.assertIn("col.name = %s", query)
-        self.assertIn("emb.cmetadata->>'document_id' = %s", query)
-        self.assertEqual(params, [COLLECTION_NAME, "42"])
+        stmt, params = mock_session.execute.call_args.args
+        self.assertIn("col.name = :collection", str(stmt))
+        self.assertIn("emb.cmetadata->>'document_id' = :document_id", str(stmt))
+        self.assertEqual(params, {"collection": COLLECTION_NAME, "document_id": "42"})
+        mock_session.commit.assert_called_once()
+
+    @patch("documents.services.vector_store._get_vector_store")
+    @patch("documents.services.vector_store._get_connection_string", return_value=None)
+    def test_delete_vectors_noop_without_connection(self, _mock_conn, mock_get_store):
+        """No PGVECTOR_CONNECTION (e.g. SQLite dev/tests) -> silent no-op."""
+        from documents.services.vector_store import delete_vectors_for_document
+
+        delete_vectors_for_document(document_id=42)
+
+        mock_get_store.assert_not_called()
 
     @patch("documents.services.vector_store._get_connection_string", return_value="postgresql://example")
     @patch("documents.services.vector_store._get_vector_store")
@@ -663,10 +678,6 @@ class QuarantineRetrievalTests(TestCase):
         doc_ids = {r["document_id"] for r in result}
         self.assertEqual(doc_ids, {self.clean.id})
 
-    def test_get_chunk_with_context_short_circuits_quarantined(self):
-        result = get_chunk_with_context(self.quar_chunk.id)
-        self.assertIn("error", result)
-
     def test_get_merged_context_windows_drops_quarantined_doc(self):
         windows = get_merged_context_windows([self.quar_chunk.id, self.clean_chunk.id])
         self.assertEqual(len(windows), 1)
@@ -679,15 +690,6 @@ class QuarantineRetrievalTests(TestCase):
         results = fulltext_search_chunks([self.data_room.id], "content", k=10)
         doc_ids = {r["document_id"] for r in results}
         self.assertNotIn(self.quarantined.id, doc_ids)
-
-    def test_get_chunk_with_context_rejects_quarantined_center_chunk(self):
-        """A chunk-level quarantine (guardrails) blocks that chunk even when its document is clean."""
-        bad_chunk = DataRoomDocumentChunk.objects.create(
-            document=self.clean, chunk_index=1, text="Injected content", token_count=5,
-            is_quarantined=True, quarantine_reason="Adversarial content",
-        )
-        result = get_chunk_with_context(bad_chunk.id)
-        self.assertIn("error", result)
 
     @patch("documents.services.retrieval.fulltext_search_chunks", return_value=[])
     @patch("documents.services.retrieval.vs.similarity_search")
@@ -746,11 +748,6 @@ class ScanningStatusRetrievalTests(TestCase):
         doc_ids = {r["document_id"] for r in result}
         self.assertEqual(doc_ids, {self.ready.id})
 
-    def test_get_chunk_with_context_requires_ready(self):
-        self.assertIn("error", get_chunk_with_context(self.scanning_chunk.id))
-        self.assertIn("error", get_chunk_with_context(self.scan_failed_chunk.id))
-        self.assertNotIn("error", get_chunk_with_context(self.ready_chunk.id))
-
     def test_get_merged_context_windows_requires_ready(self):
         windows = get_merged_context_windows(
             [self.scanning_chunk.id, self.scan_failed_chunk.id, self.ready_chunk.id]
@@ -774,93 +771,6 @@ class ScanningStatusRetrievalTests(TestCase):
         results = hybrid_search_chunks(data_room_ids=[self.data_room.id], query="content", k=5)
         ids = {r["id"] for r in results}
         self.assertEqual(ids, {self.ready_chunk.id})
-
-
-class DynamicContextTests(TestCase):
-    """Tests for get_chunk_with_context() dynamic expansion."""
-
-    def setUp(self):
-        self.user = User.objects.create_user(email="ctx@example.com", password="testpass")
-        self.data_room = DataRoom.objects.create(name="CtxProject", slug="ctx-project", created_by=self.user)
-        self.doc = DataRoomDocument.objects.create(
-            data_room=self.data_room,
-            uploaded_by=self.user,
-            original_filename="ctx.txt",
-            status=DataRoomDocument.Status.READY,
-        )
-
-    def _create_chunks(self, count, tokens_each=100):
-        """Create sequential chunks with given token counts."""
-        chunks = []
-        for i in range(count):
-            text = f"Chunk {i} content. " * (tokens_each // 5)
-            c = DataRoomDocumentChunk.objects.create(
-                document=self.doc,
-                chunk_index=i,
-                text=text,
-                token_count=tokens_each,
-            )
-            chunks.append(c)
-        return chunks
-
-    def test_symmetric_expansion(self):
-        """Context expands symmetrically around center chunk."""
-        chunks = self._create_chunks(5, tokens_each=100)
-        center = chunks[2]
-
-        result = get_chunk_with_context(center.id, target_tokens=300)
-        self.assertEqual(result["id"], center.id)
-        self.assertIn(center.chunk_index, result["chunks_included"])
-        # Should include center + 1 left + 1 right = 3 chunks
-        self.assertEqual(len(result["chunks_included"]), 3)
-        self.assertEqual(result["chunks_included"], [1, 2, 3])
-
-    def test_edge_of_document_left(self):
-        """First chunk can only expand right."""
-        chunks = self._create_chunks(5, tokens_each=100)
-
-        result = get_chunk_with_context(chunks[0].id, target_tokens=300)
-        self.assertEqual(result["chunks_included"][0], 0)
-        self.assertEqual(len(result["chunks_included"]), 3)
-        self.assertEqual(result["chunks_included"], [0, 1, 2])
-
-    def test_edge_of_document_right(self):
-        """Last chunk can only expand left."""
-        chunks = self._create_chunks(5, tokens_each=100)
-
-        result = get_chunk_with_context(chunks[4].id, target_tokens=300)
-        self.assertIn(4, result["chunks_included"])
-        self.assertEqual(len(result["chunks_included"]), 3)
-        self.assertEqual(result["chunks_included"], [2, 3, 4])
-
-    def test_budget_respected(self):
-        """Total tokens should not exceed target_tokens."""
-        chunks = self._create_chunks(10, tokens_each=100)
-        center = chunks[5]
-
-        result = get_chunk_with_context(center.id, target_tokens=350)
-        self.assertLessEqual(result["context_token_count"], 350)
-
-    def test_single_chunk_document(self):
-        """Single chunk returns just that chunk."""
-        chunks = self._create_chunks(1, tokens_each=100)
-
-        result = get_chunk_with_context(chunks[0].id, target_tokens=1200)
-        self.assertEqual(len(result["chunks_included"]), 1)
-        self.assertEqual(result["context_text"], chunks[0].text)
-
-    def test_nonexistent_chunk(self):
-        """Non-existent chunk ID returns error."""
-        result = get_chunk_with_context(99999)
-        self.assertIn("error", result)
-
-    def test_context_text_joins_chunks(self):
-        """context_text should contain text from all included chunks."""
-        chunks = self._create_chunks(3, tokens_each=100)
-
-        result = get_chunk_with_context(chunks[1].id, target_tokens=400)
-        for c in chunks:
-            self.assertIn(f"Chunk {c.chunk_index} content.", result["context_text"])
 
 
 class CleanExtractedTextTests(TestCase):
@@ -1272,7 +1182,7 @@ class MergedContextWindowTests(TestCase):
         self.assertEqual(len(doc_ids), 2)
 
     def test_single_hit_unchanged(self):
-        """Single hit returns one window similar to get_chunk_with_context."""
+        """Single hit returns one symmetrically expanded window."""
         chunks = self._create_chunks(5, tokens_each=100)
         windows = get_merged_context_windows(
             [chunks[2].id], target_tokens_per_window=300,

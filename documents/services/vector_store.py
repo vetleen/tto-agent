@@ -75,27 +75,42 @@ def _get_vector_store():
 
 
 def delete_vectors_for_document(document_id: int) -> None:
-    """Remove from vector store all chunks belonging to this document (for re-index)."""
+    """Remove from vector store all chunks belonging to this document.
+
+    Called on re-index (``process_document``) and on document deletion (the
+    ``post_delete`` signal) — the embedding rows carry the full chunk text in
+    their ``document`` column, so GDPR erasure requires removing them too.
+
+    Runs on the same SQLAlchemy engine that ``add_chunk_vectors`` writes
+    through (built from PGVECTOR_CONNECTION), so deletes can never silently
+    target a different database than the inserts.
+    """
     conn = _get_connection_string()
     if not conn:
         return
-    # PGVector stores rows for all collections; scope deletion to this app collection.
-    from django.db import connection, transaction
-    from django.db.utils import ProgrammingError
+    store = _get_vector_store()
+    if not store:
+        return
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
 
+    # PGVector stores rows for all collections; scope deletion to this app
+    # collection. Filters on cmetadata->>'document_id' (no index) — fine at
+    # current volume; add an expression index if bulk deletes ever get slow.
+    stmt = text(
+        "DELETE FROM langchain_pg_embedding AS emb "
+        "USING langchain_pg_collection AS col "
+        "WHERE emb.collection_id = col.uuid "
+        "  AND col.name = :collection "
+        "  AND emb.cmetadata->>'document_id' = :document_id"
+    )
     try:
-        with transaction.atomic():
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    DELETE FROM langchain_pg_embedding AS emb
-                    USING langchain_pg_collection AS col
-                    WHERE emb.collection_id = col.uuid
-                      AND col.name = %s
-                      AND emb.cmetadata->>'document_id' = %s
-                    """,
-                    [COLLECTION_NAME, str(document_id)],
-                )
+        with store.session_maker() as session:
+            session.execute(
+                stmt,
+                {"collection": COLLECTION_NAME, "document_id": str(document_id)},
+            )
+            session.commit()
     except ProgrammingError:
         # Table doesn't exist yet; nothing to delete.
         logger.debug("langchain_pg_embedding table does not exist yet, skipping delete")

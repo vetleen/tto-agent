@@ -100,3 +100,59 @@ class DocumentStorageDeletionTests(TestCase):
             DataRoomDocument.objects.filter(pk=doc_pk).exists(),
             "DB row should be deleted even when storage delete fails",
         )
+
+
+@patch("documents.services.vector_store.delete_vectors_for_document")
+class DocumentVectorDeletionTests(TestCase):
+    """Embedding rows (which hold the full chunk text) must be removed from the
+    vector store when a document row is deleted — GDPR erasure."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="vec@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="Vec", slug="vec", created_by=self.user)
+
+    def _make_doc(self, filename: str = "a.txt") -> DataRoomDocument:
+        return DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename=filename,
+            status=DataRoomDocument.Status.READY,
+        )
+
+    def test_single_document_delete_removes_vectors(self, mock_delete):
+        doc = self._make_doc()
+        doc_pk = doc.pk
+
+        doc.delete()
+
+        mock_delete.assert_called_once_with(doc_pk)
+
+    def test_data_room_delete_cascades_to_vector_removal(self, mock_delete):
+        doc1 = self._make_doc("a.txt")
+        doc2 = self._make_doc("b.txt")
+        pks = {doc1.pk, doc2.pk}
+
+        self.data_room.delete()
+
+        self.assertEqual({c.args[0] for c in mock_delete.call_args_list}, pks)
+
+    def test_bulk_queryset_delete_removes_vectors(self, mock_delete):
+        doc1 = self._make_doc("a.txt")
+        doc2 = self._make_doc("b.txt")
+        pks = {doc1.pk, doc2.pk}
+
+        DataRoomDocument.objects.filter(pk__in=pks).delete()
+
+        self.assertEqual({c.args[0] for c in mock_delete.call_args_list}, pks)
+
+    def test_vector_delete_failure_does_not_block_db_delete(self, mock_delete):
+        mock_delete.side_effect = RuntimeError("simulated pgvector outage")
+        doc = self._make_doc()
+        doc_pk = doc.pk
+
+        doc.delete()
+
+        self.assertFalse(
+            DataRoomDocument.objects.filter(pk=doc_pk).exists(),
+            "DB row should be deleted even when vector delete fails",
+        )

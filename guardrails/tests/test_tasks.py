@@ -158,6 +158,66 @@ class ScanDocumentChunksTest(TestCase):
         self.assertEqual(self.document.status, DataRoomDocument.Status.SCAN_FAILED)
         self.mock_finalize.assert_not_called()
 
+    @override_settings(LLM_DEFAULT_CHEAP_MODEL="test/model")
+    @patch("guardrails.tasks._classify_chunk_batch", side_effect=RuntimeError("LLM down"))
+    def test_classifier_batch_failure_fails_closed(self, _mock_classify):
+        """A classifier batch failure must NOT release the document with unclassified
+        chunks — retries exhaust, the doc fails closed, finalize is never handed off."""
+        from guardrails.tasks import scan_document_chunks
+
+        self.document.status = DataRoomDocument.Status.SCANNING
+        self.document.save(update_fields=["status"])
+        self._create_chunk(0, "Normal patent text.")
+
+        with patch(
+            "guardrails.tasks.scan_document_chunks.retry",
+            side_effect=MaxRetriesExceededError,
+        ):
+            scan_document_chunks(self.document.pk)
+
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.mock_finalize.assert_not_called()
+
+    @override_settings(LLM_DEFAULT_CHEAP_MODEL="test/model")
+    @patch("guardrails.tasks._classify_chunk_batch")
+    def test_partial_classifier_failure_keeps_quarantines_and_fails_closed(self, mock_classify):
+        """One failed batch among several still fails the document closed, but the
+        quarantines from batches that succeeded are persisted (and reflected in
+        is_partially_quarantined) before the failure propagates."""
+        from guardrails.tasks import _BATCH_CHAR_BUDGET, scan_document_chunks
+
+        # ~60% of the char budget each -> one chunk per batch, two batches.
+        filler = "patent " * (int(_BATCH_CHAR_BUDGET * 0.6) // 7)
+        self._create_chunk(0, filler)
+        chunk2 = self._create_chunk(1, filler)
+
+        calls = {"n": 0}
+
+        def fake_classify(doc, batch, model):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("LLM down")
+            DataRoomDocumentChunk.objects.filter(pk=chunk2.pk).update(
+                is_quarantined=True, quarantine_reason="Classifier: test",
+            )
+
+        mock_classify.side_effect = fake_classify
+        self.document.status = DataRoomDocument.Status.SCANNING
+        self.document.save(update_fields=["status"])
+
+        with patch(
+            "guardrails.tasks.scan_document_chunks.retry",
+            side_effect=MaxRetriesExceededError,
+        ):
+            scan_document_chunks(self.document.pk)
+
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertTrue(self.document.is_partially_quarantined)
+        self.assertTrue(DataRoomDocumentChunk.objects.get(pk=chunk2.pk).is_quarantined)
+        self.mock_finalize.assert_not_called()
+
     # -- H2 / M4: batching + full-chunk classification -------------------------
 
     @override_settings(LLM_DEFAULT_CHEAP_MODEL="test/model")
