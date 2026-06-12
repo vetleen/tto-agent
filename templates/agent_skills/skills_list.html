@@ -42,9 +42,9 @@
         </form>
       </div>
     </div>
-    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden text-sm font-medium text-heading">
+    <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
       {% for row in user_rows %}
-        {% include "agent_skills/_skill_row.html" with row=row section="user" %}
+        {% include "agent_skills/_skill_row.html" with row=row section="user" is_first=forloop.first is_last=forloop.last %}
       {% empty %}
       <p class="px-5 py-6 text-body text-sm">No skills of your own yet. Use <strong>New</strong> to teach {{ assistant_name }} something.</p>
       {% endfor %}
@@ -70,9 +70,9 @@
       </form>
       {% endif %}
     </div>
-    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden text-sm font-medium text-heading">
+    <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
       {% for row in org_rows %}
-        {% include "agent_skills/_skill_row.html" with row=row section="org" %}
+        {% include "agent_skills/_skill_row.html" with row=row section="org" is_first=forloop.first is_last=forloop.last %}
       {% empty %}
       <p class="px-5 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New</strong> above to add one.{% endif %}</p>
       {% endfor %}
@@ -88,9 +88,9 @@
         <span class="wf-mono text-xs font-normal text-body-subtle">{{ system_rows|length }}</span>
       </h2>
     </div>
-    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden text-sm font-medium text-heading">
+    <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
       {% for row in system_rows %}
-        {% include "agent_skills/_skill_row.html" with row=row section="system" %}
+        {% include "agent_skills/_skill_row.html" with row=row section="system" is_first=forloop.first is_last=forloop.last %}
       {% empty %}
       <p class="px-5 py-6 text-body text-sm">No built-in skills available.</p>
       {% endfor %}

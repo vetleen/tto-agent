@@ -4,7 +4,7 @@ Opacity is applied to individual content elements (not the row) so the
 dropdown menu stays fully opaque even when the skill is disabled. CSS
 opacity propagates to all descendants and cannot be undone on a child.
 {% endcomment %}
-<div class="skill-row flex items-center w-full px-5 py-3.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group"
+<div class="skill-row flex items-center w-full px-5 py-3.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group{% if is_first %} rounded-t-base{% endif %}{% if is_last %} rounded-b-base{% endif %}"
      data-skill-id="{{ row.skill.id }}"
      data-skill-slug="{{ row.skill.slug }}"
      data-toggle-url="{% url 'agent_skills_toggle' skill_id=row.skill.id %}">
