@@ -115,3 +115,84 @@ class ScrubEventTests(SimpleTestCase):
         # user_email is not in the deny list (email is), content is.
         self.assertEqual(event["contexts"]["state"]["content"], REDACTED)
         self.assertEqual(event["contexts"]["state"]["user_email"], "a@b.com")
+
+
+class ScrubStacktraceVarsTests(SimpleTestCase):
+    """Frame-local variables in exception/thread stacktraces are scrubbed.
+
+    The SDK ships each frame's locals by default (include_local_variables);
+    its built-in scrubber misses domain keys like prompt/messages/content.
+    """
+
+    @staticmethod
+    def _event_with_frame_vars(frame_vars, section="exception"):
+        return {
+            section: {
+                "values": [
+                    {
+                        "type": "ValueError",
+                        "stacktrace": {
+                            "frames": [
+                                {"function": "handler", "vars": frame_vars},
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+
+    def test_exception_frame_deny_keys_redacted(self):
+        event = self._event_with_frame_vars(
+            {
+                "prompt": "summarize this contract",
+                "email": "a@b.com",
+                "doc_id": 42,
+            }
+        )
+        scrub_event(event)
+        frame_vars = event["exception"]["values"][0]["stacktrace"]["frames"][0]["vars"]
+        self.assertEqual(frame_vars["prompt"], REDACTED)
+        self.assertEqual(frame_vars["email"], REDACTED)
+        self.assertEqual(frame_vars["doc_id"], 42)
+
+    def test_exception_frame_nested_vars_scrubbed_recursively(self):
+        event = self._event_with_frame_vars(
+            {"payload": {"messages": [{"role": "user"}], "thread_id": 7}}
+        )
+        scrub_event(event)
+        frame_vars = event["exception"]["values"][0]["stacktrace"]["frames"][0]["vars"]
+        self.assertEqual(frame_vars["payload"]["messages"], REDACTED)
+        self.assertEqual(frame_vars["payload"]["thread_id"], 7)
+
+    def test_threads_frame_vars_also_scrubbed(self):
+        event = self._event_with_frame_vars({"token": "sk-live"}, section="threads")
+        scrub_event(event)
+        frame_vars = event["threads"]["values"][0]["stacktrace"]["frames"][0]["vars"]
+        self.assertEqual(frame_vars["token"], REDACTED)
+
+    def test_malformed_shapes_tolerated(self):
+        # Must never raise inside before_send, whatever the SDK hands us.
+        events = [
+            {"exception": None},
+            {"exception": {"values": None}},
+            {"exception": {"values": ["not-a-dict"]}},
+            {"exception": {"values": [{"stacktrace": None}]}},
+            {"exception": {"values": [{"stacktrace": {"frames": None}}]}},
+            {"exception": {"values": [{"stacktrace": {"frames": ["nope"]}}]}},
+            self._event_with_frame_vars(None),
+            self._event_with_frame_vars("a string"),
+        ]
+        for event in events:
+            scrub_event(event)  # no exception
+
+    def test_frame_without_vars_untouched(self):
+        event = {
+            "exception": {
+                "values": [
+                    {"stacktrace": {"frames": [{"function": "handler", "lineno": 3}]}}
+                ]
+            }
+        }
+        scrub_event(event)
+        frame = event["exception"]["values"][0]["stacktrace"]["frames"][0]
+        self.assertEqual(frame, {"function": "handler", "lineno": 3})

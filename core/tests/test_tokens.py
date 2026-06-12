@@ -61,6 +61,46 @@ class CountTokensTests(TestCase):
             tiktoken.get_encoding = original
 
 
+class TiktokenFallbackWarnOnceTests(TestCase):
+    """The tiktoken-failure WARNING fires once, then drops to DEBUG.
+
+    A persistent failure (e.g. no network to fetch the BPE file) would
+    otherwise emit one WARNING per count — flooding logs and Sentry.
+    """
+
+    def setUp(self):
+        import core.tokens
+        self._saved_flag = core.tokens._tiktoken_fallback_warned
+        core.tokens._tiktoken_fallback_warned = False
+
+    def tearDown(self):
+        import core.tokens
+        core.tokens._tiktoken_fallback_warned = self._saved_flag
+
+    def test_first_failure_warns_subsequent_do_not(self):
+        import tiktoken
+        original = tiktoken.get_encoding
+        tiktoken.get_encoding = MagicMock(side_effect=RuntimeError("fail"))
+        try:
+            with self.assertLogs("core.tokens", level="WARNING"):
+                count_tokens("first call")
+            with self.assertNoLogs("core.tokens", level="WARNING"):
+                count_tokens("second call")
+                count_tokens("third call")
+        finally:
+            tiktoken.get_encoding = original
+
+    def test_fallback_still_counts_after_warning_suppressed(self):
+        import tiktoken
+        original = tiktoken.get_encoding
+        tiktoken.get_encoding = MagicMock(side_effect=RuntimeError("fail"))
+        try:
+            count_tokens("first call")
+            self.assertGreater(count_tokens("one two three"), 0)
+        finally:
+            tiktoken.get_encoding = original
+
+
 class CountTokensListContentTests(TestCase):
     """Test count_tokens with multimodal list content."""
 

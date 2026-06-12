@@ -489,6 +489,16 @@ if _aws_bucket:
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
+elif not DEBUG and not _is_test_run and not _get_env_bool(
+    os.environ.get("MEDIA_ALLOW_EPHEMERAL"), False
+):
+    # Without S3, media falls back to MEDIA_ROOT on the dyno's ephemeral
+    # filesystem and silently vanishes on every restart (at least daily).
+    raise ImproperlyConfigured(
+        "AWS_STORAGE_BUCKET_NAME must be set in production — media saved to "
+        "the dyno filesystem is lost on every restart. Set "
+        "MEDIA_ALLOW_EPHEMERAL=true to override deliberately."
+    )
 
 # Web fetch: hard ceiling on bytes downloaded from a (user/LLM-supplied) URL,
 # enforced while streaming so a malicious/huge response can't exhaust worker memory.
@@ -657,6 +667,16 @@ CELERY_BEAT_SCHEDULE = {
     "expire-stale-subagent-runs": {
         "task": "chat.tasks.expire_stale_subagent_runs",
         "schedule": 120.0,
+    },
+    # Recover work stranded by worker restarts (Heroku cycles dynos daily;
+    # Celery acks early, so in-flight tasks are silently dropped).
+    "requeue-stale-documents": {
+        "task": "documents.tasks.requeue_stale_documents",
+        "schedule": 300.0,
+    },
+    "expire-stale-transcriptions": {
+        "task": "meetings.tasks.expire_stale_transcriptions",
+        "schedule": 300.0,
     },
 }
 

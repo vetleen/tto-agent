@@ -3,7 +3,8 @@
 Strips personal data from Sentry event payloads before transmission:
 request headers (Authorization, Cookie), request cookies, request body,
 event.user (keeps id only), values under sensitive keys in extra/contexts,
-and breadcrumb message bodies for SQL / HTTP categories.
+stack-frame local variables in exception/thread stacktraces, and breadcrumb
+message bodies for SQL / HTTP categories.
 """
 
 from __future__ import annotations
@@ -60,6 +61,38 @@ def _scrub_mapping(obj: Any) -> Any:
     return obj
 
 
+def _scrub_stacktrace_vars(event: dict) -> None:
+    """Scrub local variables captured in exception/thread stack frames.
+
+    The SDK ships each frame's locals by default (include_local_variables), and
+    its built-in scrubber only covers generic secrets — not domain keys like
+    ``prompt``/``messages``/``content``/``email``. Every level is isinstance-
+    guarded: this runs inside before_send and must never raise.
+    """
+    for section in ("exception", "threads"):
+        container = event.get(section)
+        if not isinstance(container, dict):
+            continue
+        values = container.get("values")
+        if not isinstance(values, list):
+            continue
+        for entry in values:
+            if not isinstance(entry, dict):
+                continue
+            stacktrace = entry.get("stacktrace")
+            if not isinstance(stacktrace, dict):
+                continue
+            frames = stacktrace.get("frames")
+            if not isinstance(frames, list):
+                continue
+            for frame in frames:
+                if not isinstance(frame, dict):
+                    continue
+                frame_vars = frame.get("vars")
+                if isinstance(frame_vars, (dict, list)):
+                    frame["vars"] = _scrub_mapping(frame_vars)
+
+
 def _scrub_request(request: dict) -> dict:
     headers = request.get("headers")
     if isinstance(headers, dict):
@@ -94,6 +127,8 @@ def scrub_event(event: dict | None) -> dict | None:
     for key in ("extra", "contexts"):
         if key in event:
             event[key] = _scrub_mapping(event[key])
+
+    _scrub_stacktrace_vars(event)
 
     breadcrumbs = event.get("breadcrumbs")
     values = None

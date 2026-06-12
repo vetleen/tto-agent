@@ -22,6 +22,127 @@ def process_document_task(document_id: int) -> None:
     process_document(document_id)
 
 
+# Sweeper staleness thresholds. UPLOADED uses the same window as the
+# PROCESSING stale guard in documents/services/process_document.py; SCANNING
+# gets a wider one because it spans the guardrail chunk scan plus
+# finalize_document_metadata, each with a 600s limit and retries with backoff.
+STALE_UPLOADED_MINUTES = 15
+STALE_SCANNING_MINUTES = 60
+MAX_REQUEUES = 3
+
+
+@shared_task(time_limit=60)
+def requeue_stale_documents() -> int:
+    """Periodic recovery of documents stranded by a worker restart.
+
+    Celery acks tasks early, so a dyno restart (Heroku cycles dynos daily)
+    silently drops any in-flight task: documents stay UPLOADED (enqueue lost),
+    PROCESSING (worker died mid-pipeline), or SCANNING (guardrail scan or
+    finalize lost) forever.
+
+    - UPLOADED/PROCESSING past the stale window are re-enqueued — safe because
+      process_document uses select_for_update(skip_locked=True) plus its own
+      stale-PROCESSING guard. ``requeue_count`` caps this at MAX_REQUEUES so a
+      poison document (e.g. one that OOMs the worker) becomes FAILED instead
+      of crash-looping forever.
+    - SCANNING past its window fails closed to SCAN_FAILED (the document never
+      reached retrieval), matching guardrails' own failure path; the user
+      recovers via the existing rescan button.
+
+    Like chat.tasks.expire_stale_subagent_runs, transient DB unavailability is
+    logged at INFO and skipped — the next beat tick retries.
+    """
+    from datetime import timedelta
+
+    from django.db.models import F, Q
+    from django.db.utils import InterfaceError, OperationalError
+    from django.utils import timezone
+
+    from documents.models import DataRoomDocument
+    from documents.services.process_document import STALE_PROCESSING_MINUTES
+    from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+
+    Status = DataRoomDocument.Status
+    now = timezone.now()
+    handled = 0
+
+    try:
+        stale_pipeline = Q(
+            status=Status.UPLOADED,
+            updated_at__lt=now - timedelta(minutes=STALE_UPLOADED_MINUTES),
+        ) | Q(
+            status=Status.PROCESSING,
+            updated_at__lt=now - timedelta(minutes=STALE_PROCESSING_MINUTES),
+        )
+
+        # Requeue cap reached → permanent FAILED so the user sees a state
+        # they can act on (re-upload) instead of an eternal spinner.
+        exhausted = DataRoomDocument.objects.filter(
+            stale_pipeline, requeue_count__gte=MAX_REQUEUES,
+        ).update(
+            status=Status.FAILED,
+            processing_error=(
+                "Processing was interrupted repeatedly and has been stopped."
+            ),
+            updated_at=now,
+        )
+        if exhausted:
+            logger.warning(
+                "requeue_stale_documents: %s document(s) exceeded %s requeues, marked FAILED",
+                exhausted, MAX_REQUEUES,
+            )
+            handled += exhausted
+
+        requeue_ids = list(
+            DataRoomDocument.objects.filter(
+                stale_pipeline, requeue_count__lt=MAX_REQUEUES,
+            ).values_list("pk", flat=True)
+        )
+        for doc_id in requeue_ids:
+            # Conditional per-row update: a no-op if the document moved on
+            # (or was requeued by a concurrent tick) since the list query.
+            # Deliberately leaves updated_at stale so process_document's
+            # stale-PROCESSING guard force-reprocesses instead of skipping.
+            updated = DataRoomDocument.objects.filter(
+                stale_pipeline, pk=doc_id, requeue_count__lt=MAX_REQUEUES,
+            ).update(requeue_count=F("requeue_count") + 1)
+            if updated:
+                logger.warning(
+                    "requeue_stale_documents: document_id=%s stale, re-enqueueing", doc_id,
+                )
+                process_document_task.delay(doc_id)
+                handled += 1
+
+        # Stuck SCANNING → fail closed (same terminal state guardrails uses
+        # when the chunk scan exhausts retries). Staleness is measured from
+        # processed_at (when processing handed off to the scan); updated_at
+        # is only a fallback — description generation refreshes it mid-scan.
+        scan_cutoff = now - timedelta(minutes=STALE_SCANNING_MINUTES)
+        stuck_scans = DataRoomDocument.objects.filter(status=Status.SCANNING).filter(
+            Q(processed_at__lt=scan_cutoff)
+            | Q(processed_at__isnull=True, updated_at__lt=scan_cutoff)
+        ).update(
+            status=Status.SCAN_FAILED,
+            processing_error=SCAN_FAILED_MESSAGE,
+            updated_at=now,
+        )
+        if stuck_scans:
+            logger.warning(
+                "requeue_stale_documents: %s document(s) stuck in SCANNING marked SCAN_FAILED",
+                stuck_scans,
+            )
+            handled += stuck_scans
+    except (OperationalError, InterfaceError):
+        logger.info(
+            "Skipping stale document sweep: database temporarily unavailable; "
+            "will retry on next beat tick.",
+            exc_info=True,
+        )
+        return 0
+
+    return handled
+
+
 @shared_task(bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
 def finalize_document_metadata(self, document_id: int) -> None:
     """Generate the document description + tags and run the full-document PII scan.

@@ -231,3 +231,98 @@ def transcribe_uploaded_audio_task(
         if str(local_path) != temp_path:
             local_path.unlink(missing_ok=True)
         cleanup_temp(temp_path)
+
+
+# Sweeper staleness thresholds. Chunk segments transcribe within the chunk
+# task's 600s hard limit, so 15 min is safely past it; the upload task's hard
+# limit is 1800s, so 60 min clears it with margin.
+STALE_SEGMENT_MINUTES = 15
+STALE_UPLOAD_MINUTES = 60
+
+
+@shared_task(time_limit=60)
+def expire_stale_transcriptions() -> int:
+    """Periodic recovery of transcription work stranded by a worker restart.
+
+    Celery acks tasks early, so a dyno restart (Heroku cycles dynos daily)
+    silently drops in-flight transcription tasks:
+
+    - ``MeetingTranscriptSegment`` rows stay PENDING forever. Re-enqueueing is
+      impossible — the chunk temp file was deleted (or lost with the dyno) —
+      so stale segments are marked FAILED, with a best-effort WS push so an
+      open live session shows the gap.
+    - Upload-path meetings stay LIVE_TRANSCRIBING forever, which also blocks
+      the per-user "already transcribing" gate in meetings.views. Stale ones
+      are marked FAILED (mirrors the defensive update in
+      ``transcribe_uploaded_audio_task``). Live-path LIVE_TRANSCRIBING is
+      WS-managed (Stop/disconnect set READY/INTERRUPTED) and is left alone —
+      hence the ``transcript_source`` filter.
+
+    Like chat.tasks.expire_stale_subagent_runs, transient DB unavailability is
+    logged at INFO and skipped — the next beat tick retries.
+    """
+    from datetime import timedelta
+
+    from django.db.utils import InterfaceError, OperationalError
+
+    from .models import Meeting, MeetingTranscriptSegment
+
+    now = timezone.now()
+    handled = 0
+
+    try:
+        stale_segments = list(
+            MeetingTranscriptSegment.objects.filter(
+                status=MeetingTranscriptSegment.Status.PENDING,
+                created_at__lt=now - timedelta(minutes=STALE_SEGMENT_MINUTES),
+            ).values_list("pk", "segment_index", "meeting__uuid")
+        )
+        if stale_segments:
+            handled += MeetingTranscriptSegment.objects.filter(
+                pk__in=[s[0] for s in stale_segments],
+                status=MeetingTranscriptSegment.Status.PENDING,
+            ).update(
+                status=MeetingTranscriptSegment.Status.FAILED,
+                error="Transcription was interrupted.",
+                transcribed_at=now,
+            )
+            logger.warning(
+                "expire_stale_transcriptions: %s segment(s) stuck in PENDING marked FAILED",
+                len(stale_segments),
+            )
+            for _pk, segment_index, meeting_uuid in stale_segments:
+                _push_to_ws(str(meeting_uuid), {
+                    "type": "segment.failed",
+                    "segment_index": segment_index,
+                    "error": "Transcription was interrupted.",
+                })
+
+        stale_uploads = Meeting.objects.filter(
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+            transcript_source=Meeting.TranscriptSource.AUDIO_UPLOAD,
+            updated_at__lt=now - timedelta(minutes=STALE_UPLOAD_MINUTES),
+        ).update(
+            status=Meeting.Status.FAILED,
+            transcription_error=(
+                "Transcription was interrupted. Please upload the audio again."
+            ),
+            ended_at=now,
+            transcription_chunks_total=0,
+            transcription_chunks_done=0,
+        )
+        if stale_uploads:
+            logger.warning(
+                "expire_stale_transcriptions: %s upload meeting(s) stuck in "
+                "LIVE_TRANSCRIBING marked FAILED",
+                stale_uploads,
+            )
+            handled += stale_uploads
+    except (OperationalError, InterfaceError):
+        logger.info(
+            "Skipping stale transcription sweep: database temporarily unavailable; "
+            "will retry on next beat tick.",
+            exc_info=True,
+        )
+        return 0
+
+    return handled

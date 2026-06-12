@@ -86,6 +86,10 @@ class DataRoomDocument(models.Model):
         db_index=True,
     )
     processing_error = models.TextField(null=True, blank=True)
+    # Times the stale-document sweeper has re-enqueued processing for this
+    # document (documents.tasks.requeue_stale_documents). Caps crash-loops: a
+    # poison document that OOMs the worker must not be re-enqueued forever.
+    requeue_count = models.PositiveSmallIntegerField(default=0)
     token_count = models.PositiveIntegerField(null=True, blank=True)
     parser_type = models.CharField(max_length=64, blank=True)
     chunking_strategy = models.CharField(max_length=64, blank=True)

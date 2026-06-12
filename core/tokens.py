@@ -6,6 +6,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Warn-once flag: when tiktoken can't load an encoding (e.g. no network to
+# fetch the BPE file), EVERY count falls back — one WARNING per call would
+# flood logs/Sentry. First failure warns, the rest log at DEBUG.
+_tiktoken_fallback_warned = False
+
 
 def count_tokens(content, encoding_name: str = "cl100k_base") -> int:
     """Count the number of tokens in *content* using tiktoken.
@@ -42,7 +47,12 @@ def _count_text_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
         enc = tiktoken.get_encoding(encoding_name)
         return len(enc.encode(text))
     except Exception as e:
-        logger.warning("tiktoken count failed: %s", e)
+        global _tiktoken_fallback_warned
+        if not _tiktoken_fallback_warned:
+            _tiktoken_fallback_warned = True
+            logger.warning("tiktoken count failed: %s", e)
+        else:
+            logger.debug("tiktoken count failed: %s", e)
         # Fallback token estimate to keep chunking and limits functional even
         # when tiktoken cannot download/load encoding data.
         # Use both word- and char-based heuristics to avoid severe

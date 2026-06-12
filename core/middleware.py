@@ -1,22 +1,30 @@
+import contextvars
 import logging
-import threading
 import uuid
 
 
-_thread_locals = threading.local()
+# A ContextVar, not threading.local: under ASGI (Daphne) the sync middleware and
+# sync views of *different concurrent requests* interleave on one shared thread
+# (asgiref's thread_sensitive executor), so a thread-local set by request A can
+# be read — or reset — by request B. Each ASGI request runs as its own asyncio
+# task with its own context, and asgiref propagates contextvars across every
+# sync_to_async/async_to_sync hop, so a ContextVar stays request-scoped.
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="-"
+)
 
 
 def get_request_id() -> str:
     """Return the current request ID, or '-' if none is set."""
-    return getattr(_thread_locals, "request_id", "-")
+    return _request_id_var.get()
 
 
 class RequestIDMiddleware:
     """Capture or generate a request ID for every HTTP request.
 
     Reads X-Request-ID from the incoming request (set by Heroku router),
-    or generates a UUID4 if absent. Stores it in thread-local storage
-    for the logging filter and echoes it back in the response header.
+    or generates a UUID4 if absent. Stores it in a ContextVar for the
+    logging filter and echoes it back in the response header.
     """
 
     def __init__(self, get_response):
@@ -24,17 +32,19 @@ class RequestIDMiddleware:
 
     def __call__(self, request):
         request_id = request.META.get("HTTP_X_REQUEST_ID") or str(uuid.uuid4())
-        _thread_locals.request_id = request_id
+        token = _request_id_var.set(request_id)
         request.request_id = request_id
         try:
-            import sentry_sdk as _sentry_sdk
-            _sentry_sdk.set_tag("request_id", request_id)
-        except ImportError:
-            pass
-        response = self.get_response(request)
-        response["X-Request-ID"] = request_id
-        _thread_locals.request_id = "-"
-        return response
+            try:
+                import sentry_sdk as _sentry_sdk
+                _sentry_sdk.set_tag("request_id", request_id)
+            except ImportError:
+                pass
+            response = self.get_response(request)
+            response["X-Request-ID"] = request_id
+            return response
+        finally:
+            _request_id_var.reset(token)
 
 
 class SuspensionMiddleware:
