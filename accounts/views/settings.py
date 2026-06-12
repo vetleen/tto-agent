@@ -1,19 +1,23 @@
 import json
 import math
-from datetime import date, timedelta
-from decimal import Decimal
 
 from django.contrib.auth.decorators import login_required
-from django.db.models import Count, Sum
+from django.db import transaction
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
-from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 from django_ratelimit.decorators import ratelimit
 
 from django.conf import settings as django_settings
 
-from accounts.models import Membership, Organization, User, UserSettings
+from accounts.models import UserSettings
+from accounts.services import update_org_preferences, update_user_preferences
+from accounts.views._builders import (
+    build_feature_rows,
+    build_tier_rows,
+    partition_transcription_models,
+)
+from accounts.views._helpers import org_admin_required
 
 
 def _parse_json_body(request):
@@ -30,14 +34,17 @@ def theme_update(request):
     theme_value = (request.POST.get("theme") or "").strip().lower()
     if theme_value not in (UserSettings.Theme.LIGHT, UserSettings.Theme.DARK):
         return JsonResponse({"error": "Invalid theme"}, status=400)
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    settings.theme = theme_value
-    # Dual-write: keep preferences["theme"] in sync during transition
-    prefs = settings.preferences or {}
-    prefs["theme"] = theme_value
-    settings.preferences = prefs
-    settings.save()
-    return JsonResponse({"theme": settings.theme})
+    # Dual-write: keep the legacy CharField and preferences["theme"] in sync.
+    # Inline (not update_user_preferences) because it writes both fields; same
+    # locking discipline as the helper.
+    with transaction.atomic():
+        settings, _ = UserSettings.objects.select_for_update().get_or_create(user=request.user)
+        settings.theme = theme_value
+        prefs = settings.preferences or {}
+        prefs["theme"] = theme_value
+        settings.preferences = prefs
+        settings.save(update_fields=["theme", "preferences"])
+    return JsonResponse({"theme": theme_value})
 
 
 # ---- User Settings Page ----
@@ -67,24 +74,13 @@ def settings_page(request):
     user_transcription_model_upload = user_transcription_prefs.get("upload")
     user_live_transcription_mode = (user_settings.preferences or {}).get("live_transcription_mode", "")
 
-    from llm.transcription_registry import get_all_transcription_models, get_transcription_model_info
+    from llm.transcription_registry import get_all_transcription_models
     all_models = get_all_transcription_models()
     transcription_model_display = {mid: info.display_name for mid, info in all_models.items()}
 
-    # Partition the allow-list into per-capability pools so each dropdown
-    # shows only options that work in its context. Unknown registry entries
-    # are dropped silently (same filtering the meeting picker does).
-    live_capable_models = [
-        mid for mid in prefs.allowed_transcription_models
-        if (info := get_transcription_model_info(mid)) and info.supports_live_streaming
-    ]
-    upload_capable_models = [
-        mid for mid in prefs.allowed_transcription_models
-        if get_transcription_model_info(mid) is not None
-    ]
-
-    from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import get_models_at_or_above_tier, get_models_for_slot
+    live_capable_models, upload_capable_models = partition_transcription_models(
+        prefs.allowed_transcription_models
+    )
 
     user_feature_models = (user_settings.preferences or {}).get("feature_models", {})
     _USER_FEATURE_META = {
@@ -94,21 +90,13 @@ def settings_page(request):
         "canvas_title": ("Canvas title", "Generates a title when a new canvas is created."),
         "image_description": ("Image description", f"Describes images pasted or uploaded in chat so {django_settings.ASSISTANT_NAME} can understand them."),
     }
-    user_features = []
-    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
-        if scope != "user":
-            continue
-        label, desc = _USER_FEATURE_META.get(fkey, (fkey.replace("_", " ").title(), ""))
-        eligible = [m for m in get_models_at_or_above_tier(min_tier) if m in prefs.allowed_models]
-        user_features.append({
-            "key": fkey,
-            "label": label,
-            "desc": desc,
-            "default_slot": default_slot,
-            "current": user_feature_models.get(fkey) or "",
-            "resolved": prefs.feature_models.get(fkey, ""),
-            "eligible_models": eligible,
-        })
+    user_features = build_feature_rows(
+        "user",
+        user_feature_models,
+        prefs.allowed_models,
+        _USER_FEATURE_META,
+        resolved=prefs.feature_models,
+    )
 
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
@@ -132,11 +120,7 @@ def settings_page(request):
         "assistant_name": django_settings.ASSISTANT_NAME,
         "preference_warnings": prefs.warnings,
         "user_features": user_features,
-        "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": tier_defaults["primary"], "slot_models": get_models_for_slot("primary", prefs.allowed_models)},
-            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": tier_defaults["mid"], "slot_models": get_models_for_slot("mid", prefs.allowed_models)},
-            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": tier_defaults["cheap"], "slot_models": get_models_for_slot("cheap", prefs.allowed_models)},
-        ],
+        "tiers": build_tier_rows(tier_defaults, prefs.allowed_models),
     })
 
 
@@ -166,13 +150,12 @@ def preferences_models_update(request):
         if not is_model_valid_for_slot(model, tier):
             return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    models = prefs_dict.get("models", {})
-    models[tier] = model
-    prefs_dict["models"] = models
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        models = prefs.get("models", {})
+        models[tier] = model
+        prefs["models"] = models
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "tier": tier, "model": model})
 
@@ -191,10 +174,9 @@ def preferences_transcription_model_update(request):
     from core.preferences import get_preferences
     from llm.transcription_registry import get_transcription_model_info
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     model = (data.get("model") or "").strip() or None
     kind = (data.get("kind") or "default").strip().lower()
@@ -213,13 +195,12 @@ def preferences_transcription_model_update(request):
                     status=400,
                 )
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    transcription_models = prefs_dict.get("transcription_models", {})
-    transcription_models[kind] = model
-    prefs_dict["transcription_models"] = transcription_models
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        transcription_models = prefs.get("transcription_models", {})
+        transcription_models[kind] = model
+        prefs["transcription_models"] = transcription_models
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "model": model, "kind": kind})
 
@@ -235,10 +216,9 @@ def preferences_live_transcription_mode_update(request):
     """
     from core.preferences import LIVE_TRANSCRIPTION_MODES
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     mode = (data.get("mode") or "").strip().lower() or None
     if mode and mode not in LIVE_TRANSCRIPTION_MODES:
@@ -247,14 +227,13 @@ def preferences_live_transcription_mode_update(request):
             status=400,
         )
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    if mode is None:
-        prefs_dict.pop("live_transcription_mode", None)
-    else:
-        prefs_dict["live_transcription_mode"] = mode
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        if mode is None:
+            prefs.pop("live_transcription_mode", None)
+        else:
+            prefs["live_transcription_mode"] = mode
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "mode": mode})
 
@@ -267,11 +246,11 @@ def preferences_agent_attach_skills_update(request):
     if err:
         return err
     enabled = bool(data.get("enabled", True))
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    prefs_dict["allow_agent_attach_skills"] = enabled
-    settings.preferences = prefs_dict
-    settings.save()
+
+    def mutate(prefs):
+        prefs["allow_agent_attach_skills"] = enabled
+
+    update_user_preferences(request.user, mutate)
     return JsonResponse({"ok": True, "enabled": enabled})
 
 
@@ -304,13 +283,12 @@ def preferences_feature_model_update(request):
         if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
             return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    feature_models = prefs_dict.get("feature_models", {})
-    feature_models[feature] = model
-    prefs_dict["feature_models"] = feature_models
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        feature_models = prefs.get("feature_models", {})
+        feature_models[feature] = model
+        prefs["feature_models"] = feature_models
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "feature": feature, "model": model})
 
@@ -318,26 +296,16 @@ def preferences_feature_model_update(request):
 # ---- Organization Settings Page ----
 
 
-def _get_admin_membership(user):
-    """Return the user's admin membership or None."""
-    return (
-        Membership.objects.filter(user=user, role=Membership.Role.ADMIN)
-        .select_related("org")
-        .first()
-    )
-
-
 @login_required
 @require_GET
+@org_admin_required
 def org_settings_page(request):
     from agent_skills.models import AgentSkill
     from core.preferences import get_system_defaults
     from llm.service.policies import get_allowed_models
     from llm.tools.registry import get_tool_registry
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     org = membership.org
     org_prefs = org.preferences or {}
@@ -421,7 +389,7 @@ def org_settings_page(request):
     if not isinstance(org_max_context_tokens, int):
         org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
 
-    from llm.transcription_registry import get_all_transcription_models, get_transcription_model_info
+    from llm.transcription_registry import get_all_transcription_models
 
     system_transcription_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
     org_allowed_transcription = org_prefs.get("allowed_transcription_models")
@@ -430,25 +398,16 @@ def org_settings_page(request):
         mid: info.display_name for mid, info in get_all_transcription_models().items()
     }
 
-    # Partition by capability so each dropdown only offers viable options.
     effective_allowed = (
         org_allowed_transcription
         if isinstance(org_allowed_transcription, list)
         else system_transcription_models
     )
-    live_capable_transcription_models = [
-        mid for mid in effective_allowed
-        if (info := get_transcription_model_info(mid)) and info.supports_live_streaming
-    ]
-    upload_capable_transcription_models = [
-        mid for mid in effective_allowed
-        if get_transcription_model_info(mid) is not None
-    ]
+    live_capable_transcription_models, upload_capable_transcription_models = (
+        partition_transcription_models(effective_allowed)
+    )
     system_transcription_default_live = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "") or ""
     system_transcription_default_upload = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "") or ""
-
-    from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import get_models_at_or_above_tier, get_models_for_slot
 
     effective_org_allowed = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
 
@@ -462,20 +421,9 @@ def org_settings_page(request):
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
         "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),
     }
-    org_features = []
-    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
-        if scope != "org":
-            continue
-        label, desc = _ORG_FEATURE_META.get(fkey, (fkey.replace("_", " ").title(), ""))
-        eligible = [m for m in get_models_at_or_above_tier(min_tier) if m in effective_org_allowed]
-        org_features.append({
-            "key": fkey,
-            "label": label,
-            "desc": desc,
-            "default_slot": default_slot,
-            "current": org_feature_models.get(fkey) or "",
-            "eligible_models": eligible,
-        })
+    org_features = build_feature_rows(
+        "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
+    )
 
     return render(request, "accounts/org_settings.html", {
         "org": org,
@@ -505,23 +453,18 @@ def org_settings_page(request):
         "system_transcription_default_upload": system_transcription_default_upload,
         "transcription_model_display": transcription_model_display,
         "org_features": org_features,
-        "tiers": [
-            {"key": "primary", "label": "Primary model", "desc": "Used for important tasks like chat and writing.", "default_model": system_defaults["primary"], "slot_models": get_models_for_slot("primary", effective_org_allowed)},
-            {"key": "mid", "label": "Mid model", "desc": "Used for tasks that don't need the best model, like text summarization or tagging.", "default_model": system_defaults["mid"], "slot_models": get_models_for_slot("mid", effective_org_allowed)},
-            {"key": "cheap", "label": "Cheap model", "desc": "Used for very simple tasks, like yes/no questions.", "default_model": system_defaults["cheap"], "slot_models": get_models_for_slot("cheap", effective_org_allowed)},
-        ],
+        "tiers": build_tier_rows(system_defaults, effective_org_allowed),
     })
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_allowed_models_update(request):
     """Set org's allowed_models list."""
     from llm.service.policies import get_allowed_models
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -537,29 +480,26 @@ def org_allowed_models_update(request):
     if invalid:
         return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["allowed_models"] = models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["allowed_models"] = models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "allowed_models": models})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_allowed_transcription_models_update(request):
     """Set org's allowed transcription models list."""
     from django.conf import settings as django_settings
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     models = data.get("allowed_transcription_models")
     if not isinstance(models, list):
@@ -570,17 +510,17 @@ def org_allowed_transcription_models_update(request):
     if invalid:
         return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["allowed_transcription_models"] = models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["allowed_transcription_models"] = models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "allowed_transcription_models": models})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_transcription_model_update(request):
     """Set an organization-level default transcription model.
 
@@ -591,26 +531,19 @@ def org_transcription_model_update(request):
     """
     from llm.transcription_registry import get_transcription_model_info
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
-    try:
-        data = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    data, err = _parse_json_body(request)
+    if err:
+        return err
 
     model = (data.get("model") or "").strip() or None
     kind = (data.get("kind") or "default").strip().lower()
     if kind not in ("default", "live", "upload"):
         return JsonResponse({"error": "Invalid kind"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-
     if model:
-        org_allowed = prefs.get("allowed_transcription_models")
-        from django.conf import settings as django_settings
+        org_allowed = (membership.org.preferences or {}).get("allowed_transcription_models")
         system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
         effective = [m for m in org_allowed if m in system_models] if isinstance(org_allowed, list) else system_models
         if model not in effective:
@@ -623,22 +556,22 @@ def org_transcription_model_update(request):
                     status=400,
                 )
 
-    transcription_models = prefs.get("transcription_models", {})
-    transcription_models[kind] = model
-    prefs["transcription_models"] = transcription_models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        transcription_models = prefs.get("transcription_models", {})
+        transcription_models[kind] = model
+        prefs["transcription_models"] = transcription_models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "model": model, "kind": kind})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_models_update(request):
     """Set org's default model for a tier."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -650,9 +583,7 @@ def org_models_update(request):
     if tier not in ("primary", "mid", "cheap"):
         return JsonResponse({"error": "Invalid tier"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    org_allowed = prefs.get("allowed_models") or []
+    org_allowed = (membership.org.preferences or {}).get("allowed_models") or []
 
     if model and org_allowed and model not in org_allowed:
         return JsonResponse({"error": "Model not in org allowed list"}, status=400)
@@ -663,22 +594,24 @@ def org_models_update(request):
         if not is_model_valid_for_slot(model, tier):
             return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
 
-    models = prefs.get("models", {})
-    models[tier] = model
-    prefs["models"] = models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        models = prefs.get("models", {})
+        models[tier] = model
+        prefs["models"] = models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "tier": tier, "model": model})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_tools_update(request):
     """Toggle a tool on/off for the org."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    from llm.tools.registry import get_tool_registry
+
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -690,24 +623,27 @@ def org_tools_update(request):
     if not tool_name:
         return JsonResponse({"error": "Tool name required"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    tools = prefs.get("tools", {})
-    tools[tool_name] = bool(enabled)
-    prefs["tools"] = tools
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    # Reject unknown names so typos and stale clients can't pile junk keys
+    # into org.preferences["tools"].
+    if tool_name not in get_tool_registry().list_tools():
+        return JsonResponse({"error": "Unknown tool"}, status=400)
+
+    def mutate(prefs):
+        tools = prefs.get("tools", {})
+        tools[tool_name] = bool(enabled)
+        prefs["tools"] = tools
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "name": tool_name, "enabled": bool(enabled)})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_subagents_update(request):
     """Update org's sub-agent settings (e.g. parallel toggle)."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -715,24 +651,22 @@ def org_subagents_update(request):
 
     parallel = data.get("parallel", True)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    subagents = prefs.get("subagents", {})
-    subagents["parallel"] = bool(parallel)
-    prefs["subagents"] = subagents
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        subagents = prefs.get("subagents", {})
+        subagents["parallel"] = bool(parallel)
+        prefs["subagents"] = subagents
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "parallel": bool(parallel)})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_pii_scan_toggle_update(request):
     """Toggle PII classification for document processing."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -740,22 +674,20 @@ def org_pii_scan_toggle_update(request):
 
     enabled = data.get("enabled", True)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["pii_scan_enabled"] = bool(enabled)
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["pii_scan_enabled"] = bool(enabled)
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "enabled": bool(enabled)})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_pii_quarantine_toggle_update(request):
     """Toggle automatic quarantine of documents containing GDPR Art. 9/10 data."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -763,24 +695,22 @@ def org_pii_quarantine_toggle_update(request):
 
     enabled = data.get("enabled", True)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["pii_quarantine_enabled"] = bool(enabled)
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        prefs["pii_quarantine_enabled"] = bool(enabled)
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "enabled": bool(enabled)})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_max_context_update(request):
     """Set org's max context tokens limit."""
-    from core.preferences import MIN_CONTEXT_TOKENS
+    from core.preferences import MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -789,11 +719,9 @@ def org_max_context_update(request):
     value = data.get("max_context_tokens")
     if value is None:
         # Clear (reset to default)
-        org = membership.org
-        prefs = org.preferences or {}
-        prefs.pop("max_context_tokens", None)
-        org.preferences = prefs
-        org.save(update_fields=["preferences"])
+        update_org_preferences(
+            membership.org_id, lambda prefs: prefs.pop("max_context_tokens", None)
+        )
         return JsonResponse({"ok": True, "max_context_tokens": None})
 
     if not isinstance(value, int) or isinstance(value, bool):
@@ -802,30 +730,29 @@ def org_max_context_update(request):
     if value < MIN_CONTEXT_TOKENS:
         return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["max_context_tokens"] = value
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    if value > MAX_CONTEXT_TOKENS:
+        return JsonResponse({"error": f"max_context_tokens must be at most {MAX_CONTEXT_TOKENS:,}"}, status=400)
+
+    def mutate(prefs):
+        prefs["max_context_tokens"] = value
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "max_context_tokens": value})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_budget_update(request):
     """Update org's monthly budget settings."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
         return err
 
-    org = membership.org
-    prefs = org.preferences or {}
-
+    updates = {}
     for key in ("monthly_budget_per_user", "monthly_budget_org"):
         if key in data:
             try:
@@ -839,10 +766,9 @@ def org_budget_update(request):
                 return JsonResponse({"error": f"Invalid value for {key}"}, status=400)
             if val < 0:
                 return JsonResponse({"error": "Budget cannot be negative"}, status=400)
-            prefs[key] = val
+            updates[key] = val
 
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    update_org_preferences(membership.org_id, lambda prefs: prefs.update(updates))
 
     return JsonResponse({"ok": True})
 
@@ -851,7 +777,12 @@ def org_budget_update(request):
 @require_POST
 def preferences_max_context_update(request):
     """Update user's max context tokens preference."""
-    from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS, _get_org_preferences
+    from core.preferences import (
+        DEFAULT_MAX_CONTEXT_TOKENS,
+        MAX_CONTEXT_TOKENS,
+        MIN_CONTEXT_TOKENS,
+        _get_org_preferences,
+    )
 
     data, err = _parse_json_body(request)
     if err:
@@ -860,11 +791,9 @@ def preferences_max_context_update(request):
     value = data.get("max_context_tokens")
     if value is None:
         # Clear user override
-        settings, _ = UserSettings.objects.get_or_create(user=request.user)
-        prefs_dict = settings.preferences or {}
-        prefs_dict.pop("max_context_tokens", None)
-        settings.preferences = prefs_dict
-        settings.save()
+        update_user_preferences(
+            request.user, lambda prefs: prefs.pop("max_context_tokens", None)
+        )
         return JsonResponse({"ok": True, "max_context_tokens": None})
 
     if not isinstance(value, int) or isinstance(value, bool):
@@ -872,6 +801,9 @@ def preferences_max_context_update(request):
 
     if value < MIN_CONTEXT_TOKENS:
         return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
+
+    if value > MAX_CONTEXT_TOKENS:
+        return JsonResponse({"error": f"max_context_tokens must be at most {MAX_CONTEXT_TOKENS:,}"}, status=400)
 
     # Check against org limit
     org_prefs = _get_org_preferences(request.user)
@@ -881,22 +813,24 @@ def preferences_max_context_update(request):
     if value > org_limit:
         return JsonResponse({"error": f"Cannot exceed organization limit of {org_limit:,} tokens"}, status=400)
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    prefs_dict = settings.preferences or {}
-    prefs_dict["max_context_tokens"] = value
-    settings.preferences = prefs_dict
-    settings.save()
+    def mutate(prefs):
+        prefs["max_context_tokens"] = value
+
+    update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "max_context_tokens": value})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_skills_update(request):
     """Toggle a skill or a per-skill tool on/off for the org."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    from django.db.models import Q
+
+    from agent_skills.models import AgentSkill
+
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -906,43 +840,51 @@ def org_skills_update(request):
     if not slug:
         return JsonResponse({"error": "Skill slug required"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-    skills = prefs.get("skills", {})
-
-    if slug not in skills:
-        skills[slug] = {}
+    # Same visibility set org_settings_page renders (system + this org,
+    # active) — deliberately broader than get_available_skills so admins can
+    # re-enable skills they previously disabled. Rejecting everything else
+    # keeps typos and stale clients from piling junk keys into
+    # org.preferences["skills"].
+    slug_visible = AgentSkill.objects.filter(
+        Q(level="system") | Q(level="org", organization=membership.org),
+        slug=slug,
+        is_active=True,
+    ).exists()
+    if not slug_visible:
+        return JsonResponse({"error": "Unknown skill"}, status=400)
 
     tool_name = data.get("tool", "").strip() if "tool" in data else None
     enabled = data.get("enabled", True)
 
-    if tool_name:
-        # Per-tool toggle within a skill
-        tool_toggles = skills[slug].get("tools", {})
-        tool_toggles[tool_name] = bool(enabled)
-        skills[slug]["tools"] = tool_toggles
-    else:
-        # Skill-level toggle
-        skills[slug]["enabled"] = bool(enabled)
+    def mutate(prefs):
+        skills = prefs.get("skills", {})
+        if slug not in skills:
+            skills[slug] = {}
+        if tool_name:
+            # Per-tool toggle within a skill
+            tool_toggles = skills[slug].get("tools", {})
+            tool_toggles[tool_name] = bool(enabled)
+            skills[slug]["tools"] = tool_toggles
+        else:
+            # Skill-level toggle
+            skills[slug]["enabled"] = bool(enabled)
+        prefs["skills"] = skills
 
-    prefs["skills"] = skills
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "slug": slug, "enabled": bool(enabled)})
 
 
 @login_required
 @require_POST
+@org_admin_required
 def org_feature_model_update(request):
     """Set org's preferred model for a specific feature."""
     from core.preferences import FEATURE_DEFAULTS
     from llm.model_registry import TIER_ORDER, get_model_tier
     from llm.service.policies import get_allowed_models
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -958,11 +900,8 @@ def org_feature_model_update(request):
     if scope != "org":
         return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
 
-    org = membership.org
-    prefs = org.preferences or {}
-
     if model:
-        org_allowed = prefs.get("allowed_models") or []
+        org_allowed = (membership.org.preferences or {}).get("allowed_models") or []
         system_models = get_allowed_models()
         effective = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
         if model not in effective:
@@ -971,199 +910,14 @@ def org_feature_model_update(request):
         if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
             return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
 
-    feature_models = prefs.get("feature_models", {})
-    feature_models[feature] = model
-    prefs["feature_models"] = feature_models
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+    def mutate(prefs):
+        feature_models = prefs.get("feature_models", {})
+        feature_models[feature] = model
+        prefs["feature_models"] = feature_models
+
+    update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "feature": feature, "model": model})
-
-
-# ---- Usage Page ----
-
-
-def _parse_date(value):
-    """Parse a YYYY-MM-DD string, return a date or None."""
-    try:
-        return date.fromisoformat(value)
-    except (ValueError, TypeError):
-        return None
-
-
-@login_required
-@require_GET
-def usage_page(request):
-    from llm.models import LLMCallLog
-
-    today = timezone.now().date()
-    raw_start = request.GET.get("start")
-    raw_end = request.GET.get("end")
-
-    parsed_start = _parse_date(raw_start)
-    parsed_end = _parse_date(raw_end)
-
-    # Determine mode: custom range vs month
-    if parsed_start and parsed_end:
-        custom_range = True
-        start_date = parsed_start
-        end_date = parsed_end
-        if start_date > end_date:
-            start_date, end_date = end_date, start_date
-        # Inclusive: query up to end_date + 1 day
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(end_date + timedelta(days=1), timezone.datetime.min.time()))
-        display_month = None
-        prev_month = None
-        next_month = None
-    else:
-        custom_range = False
-        if parsed_start:
-            # Month mode with a specific month
-            start_date = parsed_start.replace(day=1)
-        else:
-            start_date = today.replace(day=1)
-        # End of month = first of next month
-        if start_date.month == 12:
-            next_month_first = start_date.replace(year=start_date.year + 1, month=1, day=1)
-        else:
-            next_month_first = start_date.replace(month=start_date.month + 1, day=1)
-        end_date = next_month_first - timedelta(days=1)
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(next_month_first, timezone.datetime.min.time()))
-        display_month = start_date
-        prev_month = (start_date - timedelta(days=1)).replace(day=1)
-        # Only show next if not in the future
-        next_month = next_month_first if next_month_first <= today.replace(day=1) else None
-
-    # Query data
-    qs = LLMCallLog.objects.filter(
-        user=request.user,
-        created_at__gte=query_start,
-        created_at__lt=query_end,
-    )
-
-    totals = qs.aggregate(
-        total_cost=Sum("cost_usd"),
-        total_calls=Count("id"),
-        total_input_tokens=Sum("input_tokens"),
-        total_output_tokens=Sum("output_tokens"),
-    )
-    totals["total_cost"] = totals["total_cost"] or Decimal("0")
-    totals["total_input_tokens"] = totals["total_input_tokens"] or 0
-    totals["total_output_tokens"] = totals["total_output_tokens"] or 0
-
-    model_breakdown = (
-        qs.values("model")
-        .annotate(
-            cost=Sum("cost_usd"),
-            calls=Count("id"),
-            input_tokens=Sum("input_tokens"),
-            output_tokens=Sum("output_tokens"),
-        )
-        .order_by("-cost")
-    )
-
-    return render(request, "accounts/usage.html", {
-        "start_date": start_date,
-        "end_date": end_date,
-        "custom_range": custom_range,
-        "display_month": display_month,
-        "prev_month": prev_month,
-        "next_month": next_month,
-        "totals": totals,
-        "model_breakdown": model_breakdown,
-        "today": today,
-        "current_year": today.year,
-    })
-
-
-@login_required
-@require_GET
-def org_usage_page(request):
-    from llm.models import LLMCallLog
-
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
-
-    org = membership.org
-    today = timezone.now().date()
-    raw_start = request.GET.get("start")
-    raw_end = request.GET.get("end")
-
-    parsed_start = _parse_date(raw_start)
-    parsed_end = _parse_date(raw_end)
-
-    if parsed_start and parsed_end:
-        custom_range = True
-        start_date = parsed_start
-        end_date = parsed_end
-        if start_date > end_date:
-            start_date, end_date = end_date, start_date
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(end_date + timedelta(days=1), timezone.datetime.min.time()))
-        display_month = None
-        prev_month = None
-        next_month = None
-    else:
-        custom_range = False
-        if parsed_start:
-            start_date = parsed_start.replace(day=1)
-        else:
-            start_date = today.replace(day=1)
-        if start_date.month == 12:
-            next_month_first = start_date.replace(year=start_date.year + 1, month=1, day=1)
-        else:
-            next_month_first = start_date.replace(month=start_date.month + 1, day=1)
-        end_date = next_month_first - timedelta(days=1)
-        query_start = timezone.make_aware(timezone.datetime.combine(start_date, timezone.datetime.min.time()))
-        query_end = timezone.make_aware(timezone.datetime.combine(next_month_first, timezone.datetime.min.time()))
-        display_month = start_date
-        prev_month = (start_date - timedelta(days=1)).replace(day=1)
-        next_month = next_month_first if next_month_first <= today.replace(day=1) else None
-
-    user_ids = list(Membership.objects.filter(org=org).values_list("user_id", flat=True))
-    qs = LLMCallLog.objects.filter(
-        user_id__in=user_ids,
-        created_at__gte=query_start,
-        created_at__lt=query_end,
-    )
-
-    totals = qs.aggregate(
-        total_cost=Sum("cost_usd"),
-        total_calls=Count("id"),
-        total_input_tokens=Sum("input_tokens"),
-        total_output_tokens=Sum("output_tokens"),
-    )
-    totals["total_cost"] = totals["total_cost"] or Decimal("0")
-    totals["total_input_tokens"] = totals["total_input_tokens"] or 0
-    totals["total_output_tokens"] = totals["total_output_tokens"] or 0
-
-    user_breakdown = (
-        qs.values("user_id", "user__email", "user__first_name", "user__last_name")
-        .annotate(
-            cost=Sum("cost_usd"),
-            calls=Count("id"),
-            input_tokens=Sum("input_tokens"),
-            output_tokens=Sum("output_tokens"),
-        )
-        .order_by("-cost")
-    )
-
-    return render(request, "accounts/org_usage.html", {
-        "org": org,
-        "start_date": start_date,
-        "end_date": end_date,
-        "custom_range": custom_range,
-        "display_month": display_month,
-        "prev_month": prev_month,
-        "next_month": next_month,
-        "totals": totals,
-        "user_breakdown": user_breakdown,
-        "today": today,
-        "current_year": today.year,
-    })
 
 
 # ---- User Profile ----
@@ -1202,7 +956,12 @@ def profile_update(request):
 
     for field in ("first_name", "last_name", "title"):
         if field in data:
-            val = str(data[field]).strip()[:MAX_NAME_LENGTH]
+            val = str(data[field]).strip()
+            if len(val) > MAX_NAME_LENGTH:
+                return JsonResponse(
+                    {"error": f"{field.replace('_', ' ').capitalize()} must be {MAX_NAME_LENGTH} characters or fewer."},
+                    status=400,
+                )
             setattr(user, field, val)
             update_fields.append(field)
 
@@ -1242,6 +1001,7 @@ def profile_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 @ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_description_update(request):
     import logging
@@ -1250,9 +1010,7 @@ def org_description_update(request):
 
     logger = logging.getLogger(__name__)
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -1378,6 +1136,7 @@ def soul_reset(request):
 
 @login_required
 @require_POST
+@org_admin_required
 @ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_soul_update(request):
     """Admin: set the org-wide SOUL baseline."""
@@ -1388,9 +1147,7 @@ def org_soul_update(request):
 
     logger = logging.getLogger(__name__)
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -1430,13 +1187,12 @@ def org_soul_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_soul_reset(request):
     """Admin: clear the org-wide SOUL; effective value falls back to the system default."""
     from accounts.agent_customization import DEFAULT_SOUL
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     org = membership.org
     org.soul = ""
@@ -1446,6 +1202,7 @@ def org_soul_reset(request):
 
 @login_required
 @require_POST
+@org_admin_required
 @ratelimit(key="user", rate="10/m", method="POST", block=True)
 def org_name_update(request):
     """Admin: rename the organization (leaves the slug untouched)."""
@@ -1455,9 +1212,7 @@ def org_name_update(request):
 
     logger = logging.getLogger(__name__)
 
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
@@ -1499,20 +1254,19 @@ def org_name_update(request):
 
 @login_required
 @require_POST
+@org_admin_required
 def org_allow_user_soul_update(request):
     """Admin: toggle whether members may set a personal SOUL override."""
-    membership = _get_admin_membership(request.user)
-    if not membership:
-        return HttpResponseForbidden("Admin access required.")
+    membership = request.org_membership
 
     data, err = _parse_json_body(request)
     if err:
         return err
 
     allow = bool(data.get("allow_user_soul", False))
-    org = membership.org
-    prefs = org.preferences or {}
-    prefs["allow_user_soul"] = allow
-    org.preferences = prefs
-    org.save(update_fields=["preferences"])
+
+    def mutate(prefs):
+        prefs["allow_user_soul"] = allow
+
+    update_org_preferences(membership.org_id, mutate)
     return JsonResponse({"ok": True, "allow_user_soul": allow})

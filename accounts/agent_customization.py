@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from accounts.models import Membership, Organization, User
+from accounts.models import Membership, Organization, User, get_membership
 
 DEFAULT_SOUL = """\
 # Who are you?
@@ -161,7 +161,7 @@ def _effective_user_name(user: User) -> str:
 
 def resolve_agent_customization(user: User) -> AgentCustomization:
     """Resolve every customization tier into effective values for *user*."""
-    membership = Membership.objects.filter(user=user).select_related("org").first()
+    membership = get_membership(user)
     org = membership.org if membership else None
     is_org_admin = bool(membership and membership.role == Membership.Role.ADMIN)
 

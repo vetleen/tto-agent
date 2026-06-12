@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import Membership, Organization
@@ -270,3 +270,66 @@ class JunkBudgetStatusTests(TestCase):
         self.assertIsNotNone(status)
         self.assertEqual(status["user_budget"], Decimal("0"))
         self.assertEqual(status["org_budget"], Decimal("100"))
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class CachedBudgetStatusTests(TestCase):
+    """get_cached_budget_status: display-only caching, off when TTL is 0."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = User.objects.create_user(email="cachebudget@example.com", password="pw")
+        self.org = Organization.objects.create(
+            name="CacheOrg", slug="cacheorg",
+            preferences={"monthly_budget_per_user": 50},
+        )
+        Membership.objects.create(user=self.user, org=self.org)
+
+    def _fresh_user(self):
+        # get_membership memoizes on the instance; use a fresh one per call
+        # so these tests exercise the budget cache, not the membership memo.
+        from django.contrib.auth import get_user_model
+        return get_user_model().objects.get(pk=self.user.pk)
+
+    @override_settings(BUDGET_STATUS_CACHE_SECONDS=60)
+    def test_caches_status_dict(self):
+        from core.spend import get_cached_budget_status
+
+        first = get_cached_budget_status(self._fresh_user())
+        self.assertIsNotNone(first)
+
+        # Change the budget; the cached value should still be served.
+        self.org.preferences = {"monthly_budget_per_user": 99}
+        self.org.save(update_fields=["preferences"])
+        second = get_cached_budget_status(self._fresh_user())
+        self.assertEqual(second["user_budget"], first["user_budget"])
+
+    @override_settings(BUDGET_STATUS_CACHE_SECONDS=60)
+    def test_none_is_cached(self):
+        from django.core.cache import cache
+
+        from core.spend import get_cached_budget_status
+
+        self.org.preferences = {}
+        self.org.save(update_fields=["preferences"])
+
+        self.assertIsNone(get_cached_budget_status(self._fresh_user()))
+        # The sentinel (not a miss) is stored.
+        self.assertIsNotNone(cache.get(f"budget_status:v1:{self.user.pk}"))
+        self.assertIsNone(get_cached_budget_status(self._fresh_user()))
+
+    @override_settings(BUDGET_STATUS_CACHE_SECONDS=0)
+    def test_ttl_zero_bypasses_cache(self):
+        from core.spend import get_cached_budget_status
+
+        first = get_cached_budget_status(self._fresh_user())
+        self.assertEqual(first["user_budget"], 50)
+
+        self.org.preferences = {"monthly_budget_per_user": 99}
+        self.org.save(update_fields=["preferences"])
+        second = get_cached_budget_status(self._fresh_user())
+        self.assertEqual(second["user_budget"], 99)

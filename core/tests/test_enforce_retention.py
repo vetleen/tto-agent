@@ -174,7 +174,19 @@ class EnforceRetentionFileCleanupTests(TestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls._tmpdir = tempfile.TemporaryDirectory()
-        cls._override = override_settings(MEDIA_ROOT=cls._tmpdir.name)
+        # Pin the storage backend, not just MEDIA_ROOT: when the local .env
+        # sets AWS_STORAGE_BUCKET_NAME, default storage is S3 — the upload
+        # below would hit the real bucket and .path would raise
+        # NotImplementedError. Tests must stay on the local filesystem.
+        cls._override = override_settings(
+            MEDIA_ROOT=cls._tmpdir.name,
+            STORAGES={
+                "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+                "staticfiles": {
+                    "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"
+                },
+            },
+        )
         cls._override.enable()
 
     @classmethod

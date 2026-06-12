@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 200_000
 MIN_CONTEXT_TOKENS = 10_000
+# Upper bound for org/user max_context_tokens settings — generous headroom
+# above today's largest real context windows, low enough that a typo'd value
+# can't poison downstream token math.
+MAX_CONTEXT_TOKENS = 2_000_000
 
 # Live transcription path preference — cascades system → org → user → meeting.
 # "chunked" (default) uses the HTTP /v1/audio/transcriptions batching path;
@@ -423,13 +427,9 @@ def get_system_defaults() -> dict[str, str]:
 
 def _get_org_preferences(user) -> dict:
     """Get the organization preferences for a user, or empty dict if no org."""
-    from accounts.models import Membership
+    from accounts.models import get_membership
 
-    membership = (
-        Membership.objects.filter(user=user)
-        .select_related("org")
-        .first()
-    )
+    membership = get_membership(user)
     if membership and membership.org:
         return membership.org.preferences or {}
     return {}

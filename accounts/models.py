@@ -5,13 +5,19 @@ from typing import Any
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+from django.db.models.functions import Lower
+from django.utils import timezone
 
 
 class UserManager(BaseUserManager):
     def _create_user(self, email: str, password: str | None, **extra_fields: Any) -> "User":
         if not email:
             raise ValueError("The email address must be set.")
-        email = self.normalize_email(email)
+        # normalize_email only lowercases the domain; store the whole address
+        # lowercase so equality and the Lower(email) unique constraint agree.
+        # (The admin add form bypasses this manager — the constraint plus the
+        # iexact lookup below still keep such accounts unique and loginable.)
+        email = self.normalize_email(email).lower()
         user = self.model(email=email, **extra_fields)
         if password:
             user.set_password(password)
@@ -19,6 +25,11 @@ class UserManager(BaseUserManager):
             user.set_unusable_password()
         user.save(using=self._db)
         return user
+
+    def get_by_natural_key(self, username: str | None) -> "User":
+        # Case-insensitive login lookup, matching PasswordResetForm's iexact
+        # behavior (and the Lower(email) unique constraint).
+        return self.get(**{f"{self.model.USERNAME_FIELD}__iexact": username})
 
     def create_user(self, email: str, password: str | None = None, **extra_fields: Any) -> "User":
         extra_fields.setdefault("is_staff", False)
@@ -61,6 +72,15 @@ class User(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                Lower("email"),
+                name="accounts_user_email_ci_unique",
+                violation_error_message="A user with this email already exists.",
+            ),
+        ]
+
     def __str__(self) -> str:
         return self.email
 
@@ -71,7 +91,7 @@ class EmailVerificationToken(models.Model):
         on_delete=models.CASCADE,
         related_name="email_verification_tokens",
     )
-    token = models.CharField(max_length=64, unique=True, db_index=True)
+    token = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
@@ -89,6 +109,9 @@ class UserSettings(models.Model):
         related_name="settings",
         primary_key=True,
     )
+    # Legacy: preferences["theme"] is the canonical store (backfilled in
+    # migration 0007); this column is dual-written for deploy safety and can
+    # be dropped once no running code reads it.
     theme = models.CharField(
         max_length=10,
         choices=Theme.choices,
@@ -156,7 +179,9 @@ class Membership(models.Model):
         blank=True,
     )
 
-    # Suspension (per-org; admins manage their own members)
+    # Suspension (per-org; admins manage their own members). Lifecycle fields
+    # are maintained by save() below — note that queryset .update() bypasses
+    # save(), so suspension writers must use save()/suspend()/unsuspend().
     is_suspended = models.BooleanField(default=False)
     suspended_at = models.DateTimeField(null=True, blank=True)
     suspended_reason = models.TextField(blank=True, default="")
@@ -167,6 +192,8 @@ class Membership(models.Model):
             models.UniqueConstraint(fields=["user"], name="unique_membership_per_user"),
         ]
 
+    # Kept (rather than the constraint's violation_error_message) so the form
+    # error stays keyed on the "user" field — admin inlines and tests rely on it.
     def validate_unique(self, exclude=None):
         super().validate_unique(exclude=exclude)
         if self.user_id is not None:
@@ -179,13 +206,71 @@ class Membership(models.Model):
                     {"user": "This user already belongs to an organization."}
                 )
 
+    def save(self, **kwargs):
+        """Keep the suspension bookkeeping consistent for every writer.
+
+        Suspending without a timestamp stamps now; unsuspending clears the
+        timestamp and reason. Explicitly-set values are never overwritten, and
+        update_fields is extended so the bookkeeping always persists.
+        """
+        extra: set[str] = set()
+        if self.is_suspended and self.suspended_at is None:
+            self.suspended_at = timezone.now()
+            extra = {"suspended_at"}
+        elif not self.is_suspended and (self.suspended_at is not None or self.suspended_reason):
+            self.suspended_at = None
+            self.suspended_reason = ""
+            extra = {"suspended_at", "suspended_reason"}
+        update_fields = kwargs.get("update_fields")
+        if extra and update_fields is not None:
+            kwargs["update_fields"] = set(update_fields) | extra
+        super().save(**kwargs)
+
+    def suspend(self, reason: str = "") -> None:
+        """Suspend this membership; save() stamps suspended_at."""
+        self.is_suspended = True
+        self.suspended_reason = (reason or "")[:2000]
+        self.save(update_fields=["is_suspended", "suspended_reason"])
+
+    def unsuspend(self) -> None:
+        """Lift the suspension; save() clears the timestamp and reason."""
+        self.is_suspended = False
+        self.save(update_fields=["is_suspended"])
+
     def __str__(self) -> str:
         return f"{self.user} in {self.org} ({self.role})"
 
 
-def get_user_org(user):
-    """Return the user's single Organization, or None."""
+_MEMBERSHIP_CACHE_ATTR = "_cached_membership"
+
+
+def get_membership(user):
+    """Return the user's single Membership (with org), memoized on the user.
+
+    Middleware, the navbar context processor, budget checks, and the
+    preference resolvers all need the same membership row; caching it on the
+    user instance collapses those into one query per request (request.user is
+    a fresh instance each request, so the cache is naturally request-scoped).
+    Long-lived holders of a user instance (WebSocket consumers) must call
+    invalidate_membership_cache() before re-reading org state.
+    """
     if not user or not user.is_authenticated:
         return None
-    m = Membership.objects.filter(user=user).select_related("org").first()
+    if not hasattr(user, _MEMBERSHIP_CACHE_ATTR):
+        membership = (
+            Membership.objects.filter(user=user).select_related("org").first()
+        )
+        setattr(user, _MEMBERSHIP_CACHE_ATTR, membership)
+    return getattr(user, _MEMBERSHIP_CACHE_ATTR)
+
+
+def invalidate_membership_cache(user) -> None:
+    """Drop the memoized membership so the next get_membership() re-queries."""
+    if hasattr(user, _MEMBERSHIP_CACHE_ATTR):
+        delattr(user, _MEMBERSHIP_CACHE_ATTR)
+
+
+def get_user_org(user):
+    """Return the user's single Organization, or None."""
+    m = get_membership(user)
     return m.org if m else None

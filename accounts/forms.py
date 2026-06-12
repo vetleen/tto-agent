@@ -70,3 +70,8 @@ class SignUpForm(UserCreationForm):
         self.fields["email"].widget = forms.EmailInput(attrs={"class": base_classes})
         self.fields["password1"].widget = forms.PasswordInput(attrs={"class": base_classes})
         self.fields["password2"].widget = forms.PasswordInput(attrs={"class": base_classes})
+
+    def clean_email(self):
+        # Emails are stored lowercase (see UserManager._create_user and the
+        # Lower(email) unique constraint).
+        return (self.cleaned_data.get("email") or "").lower()

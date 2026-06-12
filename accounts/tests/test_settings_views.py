@@ -1348,6 +1348,7 @@ class OrgFeatureModelUpdateTests(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
     ])
     def test_happy_path(self, mock_models):
+        # document_description requires a mid-tier model minimum; gpt-5.4-mini is mid.
         self.client.login(email=self.admin_user.email, password=self.password)
         # document_description has a "mid" tier floor, so pick a mid-tier model.
         response = self.client.post(
@@ -1810,3 +1811,100 @@ class OrgSoulAndIdentityTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgAdminForbiddenNegotiationTests(TestCase):
+    """The org_admin_required 403 is content-negotiated: HTML for browser
+    page loads, JSON for fetch() callers (whose handlers read data.error)."""
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.member = User.objects.create_user(
+            email="negmember@example.com", password=self.password,
+        )
+        self.member.email_verified = True
+        self.member.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="NegOrg", slug="negorg")
+        Membership.objects.create(user=self.member, org=self.org, role=Membership.Role.MEMBER)
+        self.client.login(email=self.member.email, password=self.password)
+
+    def test_browser_get_receives_html_403(self):
+        response = self.client.get(
+            reverse("accounts:org_settings"),
+            HTTP_ACCEPT="text/html,application/xhtml+xml",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertNotEqual(response.headers.get("Content-Type"), "application/json")
+
+    def test_fetch_post_receives_json_403(self):
+        response = self.client.post(
+            reverse("accounts:org_tools_update"),
+            json.dumps({"name": "read_document", "enabled": False}),
+            content_type="application/json",
+            HTTP_ACCEPT="*/*",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"], "Admin access required.")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgPreferenceValidationTests(TestCase):
+    """Unknown tool names / skill slugs and out-of-range context limits are
+    rejected instead of accumulating as junk keys in org.preferences."""
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="valadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="ValOrg", slug="valorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+    def _post(self, url_name, payload):
+        return self.client.post(
+            reverse(url_name), json.dumps(payload), content_type="application/json",
+        )
+
+    def test_unknown_tool_rejected(self):
+        response = self._post(
+            "accounts:org_tools_update", {"name": "no_such_tool", "enabled": False}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.org.refresh_from_db()
+        self.assertNotIn("no_such_tool", (self.org.preferences or {}).get("tools", {}))
+
+    def test_unknown_skill_slug_rejected_without_junk_key(self):
+        response = self._post(
+            "accounts:org_skills_update", {"slug": "no-such-skill", "enabled": False}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.org.refresh_from_db()
+        self.assertNotIn("no-such-skill", (self.org.preferences or {}).get("skills", {}))
+
+    def test_inactive_skill_slug_rejected(self):
+        AgentSkill.objects.create(
+            name="Dormant", slug="dormant-skill", level="org",
+            organization=self.org, is_active=False, instructions="x",
+        )
+        response = self._post(
+            "accounts:org_skills_update", {"slug": "dormant-skill", "enabled": True}
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_org_max_context_above_cap_rejected(self):
+        response = self._post(
+            "accounts:org_max_context_update", {"max_context_tokens": 2_000_001}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.org.refresh_from_db()
+        self.assertNotIn("max_context_tokens", self.org.preferences or {})
+
+    def test_user_max_context_above_cap_rejected(self):
+        response = self._post(
+            "accounts:preferences_max_context_update", {"max_context_tokens": 2_000_001}
+        )
+        self.assertEqual(response.status_code, 400)

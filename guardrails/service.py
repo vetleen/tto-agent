@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from django.utils import timezone
 
 from guardrails.schemas import ClassifierResult, HeuristicResult, ReviewerDecision
 
@@ -309,13 +308,12 @@ def _suspend_user_sync(user, org_id: int | None, reason: str):
     from accounts.models import Membership
 
     if org_id:
-        Membership.objects.filter(
-            user=user, org_id=org_id,
-        ).update(
-            is_suspended=True,
-            suspended_at=timezone.now(),
-            suspended_reason=reason[:2000],
-        )
+        membership = Membership.objects.filter(user=user, org_id=org_id).first()
+        if membership is None:
+            return
+        # Membership.suspend() keeps the lifecycle bookkeeping (suspended_at)
+        # in one place for every writer, including the admin.
+        membership.suspend(reason)
         logger.warning(
             "guardrail: suspended user_id=%s org_id=%s reason=%s",
             user.pk, org_id, reason[:200],

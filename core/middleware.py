@@ -63,9 +63,12 @@ class SuspensionMiddleware:
             and request.path not in self.EXEMPT_PATHS
             and not request.path.startswith(self.EXEMPT_PREFIXES)
         ):
-            from accounts.models import Membership
+            from accounts.models import get_membership
 
-            if Membership.objects.filter(user=user, is_suspended=True).exists():
+            # Memoized on the user instance — the context processor and
+            # preference resolvers reuse the same row later in the request.
+            membership = get_membership(user)
+            if membership is not None and membership.is_suspended:
                 from django.shortcuts import redirect
 
                 return redirect("accounts:suspended")

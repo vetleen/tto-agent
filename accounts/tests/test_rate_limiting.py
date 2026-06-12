@@ -35,10 +35,26 @@ _CLEAN = ClassifierResult(
 )
 
 
+def _pin_ratelimit_window(testcase: TestCase) -> None:
+    """Pin django-ratelimit's time window for the duration of one test.
+
+    The limiter buckets counts into fixed windows (the window id is part of
+    the cache key), so a test that posts N times in a loop can straddle a
+    window boundary mid-loop and see the count reset — e.g. the 6th post of a
+    5/m test lands in a fresh bucket and passes instead of returning 429.
+    Pinning the window makes the counting deterministic; per-key isolation is
+    unaffected (the key value is hashed into the cache key separately).
+    """
+    patcher = patch("django_ratelimit.core._get_window", return_value=2_000_000_000)
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+
+
 @override_settings(**_RATE_LIMIT_SETTINGS)
 class LoginRateLimitTests(TestCase):
     def setUp(self) -> None:
         cache.clear()
+        _pin_ratelimit_window(self)
         self.url = reverse("accounts:login")
         self.user = User.objects.create_user(email="u@example.com", password="pass")
 
@@ -76,6 +92,7 @@ class LoginRateLimitTests(TestCase):
 class PasswordResetRateLimitTests(TestCase):
     def setUp(self) -> None:
         cache.clear()
+        _pin_ratelimit_window(self)
         self.url = reverse("accounts:password_reset")
 
     def test_allows_up_to_3_posts_per_hour(self) -> None:
@@ -101,6 +118,7 @@ class XffSpoofingRegressionTests(TestCase):
 
     def setUp(self) -> None:
         cache.clear()
+        _pin_ratelimit_window(self)
         self.url = reverse("accounts:login")
 
     def _post(self, xff: str):
@@ -133,6 +151,7 @@ class UsernameLoginRateLimitTests(TestCase):
 
     def setUp(self) -> None:
         cache.clear()
+        _pin_ratelimit_window(self)
         self.url = reverse("accounts:login")
         User.objects.create_user(email="victim@example.com", password="right-horse")
 
@@ -171,6 +190,7 @@ class AdminLoginRateLimitTests(TestCase):
 
     def setUp(self) -> None:
         cache.clear()
+        _pin_ratelimit_window(self)
         self.url = reverse("admin:login")
 
     def test_blocks_6th_post_in_one_minute(self) -> None:
@@ -202,6 +222,7 @@ class RateLimited429ContentNegotiationTests(TestCase):
 
     def setUp(self) -> None:
         cache.clear()
+        _pin_ratelimit_window(self)
         self.url = reverse("accounts:login")
         self.payload = {"username": "u@example.com", "password": "wrong"}
         for _ in range(6):
@@ -237,6 +258,7 @@ class LlmEndpointRateLimitTests(TestCase):
 
     def setUp(self) -> None:
         cache.clear()
+        _pin_ratelimit_window(self)
         self.password = "test-pass-123"
         self.admin_user = User.objects.create_user(
             email="admin@test.com", password=self.password

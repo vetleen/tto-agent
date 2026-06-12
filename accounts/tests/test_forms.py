@@ -18,7 +18,7 @@ class InputClassesTests(TestCase):
     def test_returns_tailwind_classes(self) -> None:
         classes = _input_classes()
         self.assertIn("rounded-base", classes)
-        # Focus/border styling now lives in the shared .wf-input CSS class.
+        # .wf-input owns background, hairline, inset shadow and focus styling.
         self.assertIn("wf-input", classes)
 
     def test_returns_string(self) -> None:
@@ -135,3 +135,16 @@ class SignUpFormTests(TestCase):
         form = SignUpForm()
         self.assertIn("rounded-base", form.fields["password1"].widget.attrs.get("class", ""))
         self.assertIn("rounded-base", form.fields["password2"].widget.attrs.get("class", ""))
+
+
+class SignUpFormEmailNormalizationTests(TestCase):
+    def test_clean_email_lowercases(self) -> None:
+        form = SignUpForm(data={
+            "email": "New.User@Example.COM",
+            "password1": "str0ng-pass-xyz",
+            "password2": "str0ng-pass-xyz",
+        })
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["email"], "new.user@example.com")
+        user = form.save()
+        self.assertEqual(user.email, "new.user@example.com")

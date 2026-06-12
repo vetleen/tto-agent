@@ -360,10 +360,10 @@ def set_user_skill_selection(user, skill: AgentSkill, enabled: bool) -> dict:
     can craft a "Disabled the org version" toast.
     """
     from accounts.models import UserSettings
+    from accounts.services import update_user_preferences
 
-    us, _ = UserSettings.objects.get_or_create(user=user)
-    prefs = dict(us.preferences or {})
-    skills_prefs = dict(prefs.get("skills") or {})
+    us = UserSettings.objects.filter(user=user).first()
+    skills_prefs = dict(((us.preferences if us else None) or {}).get("skills") or {})
 
     # Detect what was previously active for this slug — either an explicit
     # selection or, if none, the shadowing default among accessible skills.
@@ -378,14 +378,12 @@ def set_user_skill_selection(user, skill: AgentSkill, enabled: bool) -> dict:
     elif candidates:
         previous = shadowing_default(candidates)
 
-    if enabled:
-        skills_prefs[skill.slug] = {"selected_skill_id": str(skill.id)}
-    else:
-        skills_prefs[skill.slug] = {"selected_skill_id": None}
+    def mutate(prefs):
+        sp = prefs.get("skills") or {}
+        sp[skill.slug] = {"selected_skill_id": str(skill.id) if enabled else None}
+        prefs["skills"] = sp
 
-    prefs["skills"] = skills_prefs
-    us.preferences = prefs
-    us.save(update_fields=["preferences"])
+    update_user_preferences(user, mutate)
 
     replaced = None
     if enabled and previous and previous.pk != skill.pk:

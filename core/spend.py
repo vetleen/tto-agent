@@ -83,13 +83,9 @@ def get_budget_status(user) -> dict | None:
     Returns a dict with keys: user_spend, user_budget, org_spend, org_budget,
     effective_spend, effective_budget, percentage, exceeded, exceeded_reason, reset_date.
     """
-    from accounts.models import Membership
+    from accounts.models import get_membership
 
-    membership = (
-        Membership.objects.filter(user=user)
-        .select_related("org")
-        .first()
-    )
+    membership = get_membership(user)
     if not membership or not membership.org:
         return None
 
@@ -141,3 +137,34 @@ def get_budget_status(user) -> dict | None:
         "reset_date": f"{next_month_start.strftime('%B')} {next_month_start.day}, {next_month_start.year}",
         "month_name": timezone.now().strftime("%B"),
     }
+
+
+# Sentinel so a cached "no budget configured" (None) is distinguishable from
+# a cache miss.
+_NO_BUDGET = "__no_budget__"
+
+
+def get_cached_budget_status(user) -> dict | None:
+    """get_budget_status with a short Redis cache for display surfaces.
+
+    The navbar progress bar renders on every page, and the underlying SUMs
+    over LLMCallLog grow with usage — a slightly stale bar is fine. Budget
+    ENFORCEMENT (e.g. the chat consumer's exceeded check) must keep calling
+    get_budget_status() directly; caching there would extend an exceeded
+    user's access by up to the TTL. BUDGET_STATUS_CACHE_SECONDS=0 disables
+    caching (forced under test).
+    """
+    from django.conf import settings as django_settings
+    from django.core.cache import cache
+
+    ttl = getattr(django_settings, "BUDGET_STATUS_CACHE_SECONDS", 60)
+    if not ttl:
+        return get_budget_status(user)
+
+    key = f"budget_status:v1:{user.pk}"
+    cached = cache.get(key)
+    if cached is not None:
+        return None if cached == _NO_BUDGET else cached
+    status = get_budget_status(user)
+    cache.set(key, _NO_BUDGET if status is None else status, ttl)
+    return status

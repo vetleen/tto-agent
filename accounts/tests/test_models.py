@@ -106,10 +106,13 @@ class MembershipModelTests(TestCase):
         self.assertIn("user", ctx.exception.message_dict)
 
     def test_get_user_org(self) -> None:
-        from accounts.models import get_user_org
+        from accounts.models import get_user_org, invalidate_membership_cache
 
         self.assertIsNone(get_user_org(self.user))
         Membership.objects.create(user=self.user, org=self.org)
+        # get_user_org memoizes the membership on the user instance; after a
+        # same-instance membership change the cache must be invalidated.
+        invalidate_membership_cache(self.user)
         self.assertEqual(get_user_org(self.user), self.org)
 
     def test_user_organization_memberships_reverse(self) -> None:
@@ -157,3 +160,98 @@ class UserProfileFieldTests(TestCase):
         self.assertEqual(user.last_name, "Smith")
         self.assertEqual(user.title, "Patent Attorney")
         self.assertEqual(user.description, "Specializes in biotech IP.")
+
+
+class MembershipSuspensionLifecycleTests(TestCase):
+    """Membership.save() keeps the suspension bookkeeping consistent for
+    every writer (guardrails, admin, shell)."""
+
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(email="susp@example.com", password="pass")
+        self.org = Organization.objects.create(name="SuspOrg", slug="susporg")
+        self.membership = Membership.objects.create(user=self.user, org=self.org)
+
+    def test_suspending_stamps_timestamp(self) -> None:
+        self.membership.is_suspended = True
+        self.membership.save()
+        self.membership.refresh_from_db()
+        self.assertTrue(self.membership.is_suspended)
+        self.assertIsNotNone(self.membership.suspended_at)
+
+    def test_explicit_timestamp_is_preserved(self) -> None:
+        from django.utils import timezone
+        explicit = timezone.now() - timezone.timedelta(days=3)
+        self.membership.is_suspended = True
+        self.membership.suspended_at = explicit
+        self.membership.save()
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.suspended_at, explicit)
+
+    def test_unsuspending_clears_timestamp_and_reason(self) -> None:
+        self.membership.suspend("policy violation")
+        self.membership.refresh_from_db()
+        self.assertIsNotNone(self.membership.suspended_at)
+        self.assertEqual(self.membership.suspended_reason, "policy violation")
+
+        self.membership.unsuspend()
+        self.membership.refresh_from_db()
+        self.assertFalse(self.membership.is_suspended)
+        self.assertIsNone(self.membership.suspended_at)
+        self.assertEqual(self.membership.suspended_reason, "")
+
+    def test_save_with_update_fields_persists_bookkeeping(self) -> None:
+        # update_fields without the lifecycle fields still persists the stamp.
+        self.membership.is_suspended = True
+        self.membership.save(update_fields=["is_suspended"])
+        self.membership.refresh_from_db()
+        self.assertIsNotNone(self.membership.suspended_at)
+
+    def test_suspend_truncates_reason(self) -> None:
+        self.membership.suspend("x" * 5000)
+        self.membership.refresh_from_db()
+        self.assertEqual(len(self.membership.suspended_reason), 2000)
+
+
+class MembershipMemoizationTests(TestCase):
+    """get_membership memoizes on the user instance (request-scoped in HTTP;
+    consumers invalidate explicitly)."""
+
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(email="memo@example.com", password="pass")
+        self.org = Organization.objects.create(name="MemoOrg", slug="memoorg")
+        self.membership = Membership.objects.create(user=self.user, org=self.org)
+
+    def test_second_call_hits_cache(self) -> None:
+        from accounts.models import get_membership
+
+        with self.assertNumQueries(1):
+            first = get_membership(self.user)
+            second = get_membership(self.user)
+        self.assertEqual(first.pk, self.membership.pk)
+        self.assertIs(first, second)
+
+    def test_none_result_is_cached(self) -> None:
+        from accounts.models import get_membership
+
+        loner = User.objects.create_user(email="loner@example.com", password="pass")
+        with self.assertNumQueries(1):
+            self.assertIsNone(get_membership(loner))
+            self.assertIsNone(get_membership(loner))
+
+    def test_invalidate_forces_requery(self) -> None:
+        from accounts.models import get_membership, invalidate_membership_cache
+
+        get_membership(self.user)
+        self.membership.role = Membership.Role.ADMIN
+        self.membership.save(update_fields=["role"])
+
+        invalidate_membership_cache(self.user)
+        self.assertEqual(get_membership(self.user).role, Membership.Role.ADMIN)
+
+    def test_anonymous_returns_none(self) -> None:
+        from django.contrib.auth.models import AnonymousUser
+
+        from accounts.models import get_membership
+
+        self.assertIsNone(get_membership(AnonymousUser()))
+        self.assertIsNone(get_membership(None))

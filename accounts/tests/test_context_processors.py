@@ -2,7 +2,7 @@
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
 
-from accounts.context_processors import theme
+from accounts.context_processors import nav_context
 from accounts.models import UserSettings
 
 User = get_user_model()
@@ -19,7 +19,7 @@ class ThemeContextProcessorTests(TestCase):
     def test_returns_theme_for_authenticated_user(self) -> None:
         request = self.factory.get("/")
         request.user = self.user
-        context = theme(request)
+        context = nav_context(request)
         self.assertIn("theme", context)
         self.assertEqual(context["theme"], UserSettings.Theme.LIGHT)
 
@@ -30,7 +30,7 @@ class ThemeContextProcessorTests(TestCase):
 
         request = self.factory.get("/")
         request.user = self.user
-        context = theme(request)
+        context = nav_context(request)
         self.assertEqual(context["theme"], "dark")
 
     def test_returns_no_theme_for_anonymous_user(self) -> None:
@@ -40,17 +40,19 @@ class ThemeContextProcessorTests(TestCase):
 
         request = self.factory.get("/")
         request.user = AnonymousUser()
-        context = theme(request)
+        context = nav_context(request)
         self.assertNotIn("theme", context)
         self.assertNotIn("user_is_org_admin", context)
 
-    def test_creates_settings_if_missing(self) -> None:
-        """Context processor uses get_or_create, so it should handle missing settings."""
+    def test_missing_settings_defaults_to_light_without_creating(self) -> None:
+        """The context processor is read-only: a missing UserSettings row
+        (only possible for pre-signal legacy users) renders the default theme
+        and is NOT auto-created — row creation belongs to the post_save signal."""
         UserSettings.objects.filter(user=self.user).delete()
 
         request = self.factory.get("/")
         request.user = self.user
-        context = theme(request)
+        context = nav_context(request)
         self.assertIn("theme", context)
         self.assertEqual(context["theme"], UserSettings.Theme.LIGHT)
-        self.assertTrue(UserSettings.objects.filter(user=self.user).exists())
+        self.assertFalse(UserSettings.objects.filter(user=self.user).exists())

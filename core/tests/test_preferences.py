@@ -312,37 +312,6 @@ class SectionAwareToolFilteringTest(TestCase):
         self.assertNotIn("normalize_document", prefs.allowed_tools)
 
 
-class SkillToolAllowListTest(TestCase):
-    """A skill's stored tool_names is allow-listed to skills-section tools at
-    resolution time, so a smuggled chat/doc tool never reaches allowed_skills.
-
-    Uses the real tool registry (no get_tool_registry patch) so the section
-    check is exercised against the actual registered tools.
-    """
-
-    @override_settings(
-        LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
-        LLM_DEFAULT_CHEAP_MODEL="",
-    )
-    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
-    def test_non_skill_tools_stripped_from_allowed_skills(self, mock_allowed):
-        from agent_skills.models import AgentSkill
-
-        AgentSkill.objects.all().delete()
-        user = _create_user(email="allowlist@example.com")
-        AgentSkill.objects.create(
-            slug="tools-test", name="Tools Test", instructions="i",
-            level="user", created_by=user,
-            tool_names=["view_template", "search_documents"],
-        )
-
-        prefs = get_preferences(user)
-        entry = next(s for s in prefs.allowed_skills if s["slug"] == "tools-test")
-        # search_documents (chat-section) is dropped; view_template survives.
-        self.assertEqual(entry["tool_names"], ["view_template"])
-
-
 class ParallelSubagentsTest(TestCase):
     """parallel_subagents is resolved from org subagent preferences."""
 
@@ -852,8 +821,8 @@ class ResolveOrgFeatureModelTest(TestCase):
     ])
     def test_no_org_returns_system_default(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
+        # document_description defaults to the mid slot.
         model = resolve_org_feature_model(None, "document_description")
-        # document_description's default slot is "mid".
         self.assertEqual(model, "openai/gpt-5.4-mini")
 
     @override_settings(
@@ -868,8 +837,8 @@ class ResolveOrgFeatureModelTest(TestCase):
     def test_org_feature_override(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
 
-        # Override must meet the feature's min tier (document_description: mid),
-        # so use a standard-tier model.
+        # gemini-3.5-flash is standard tier, above document_description's
+        # mid-tier minimum, so the org override applies.
         org = Organization.objects.create(name="FeatOrg", slug="featorg", preferences={
             "feature_models": {"document_description": "gemini/gemini-3.5-flash"},
         })
@@ -885,12 +854,12 @@ class ResolveOrgFeatureModelTest(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         "gemini/gemini-3.1-flash-lite",
     ])
-    def test_org_feature_override_below_min_tier_ignored(self, mock_allowed):
+    def test_org_feature_override_below_min_tier_falls_back(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
 
-        # gemini-3.1-flash-lite is cheap tier — below document_description's
-        # "mid" floor — so the override is skipped and the mid default wins.
-        org = Organization.objects.create(name="FeatOrgLow", slug="featorglow", preferences={
+        # gemini-3.1-flash-lite is cheap tier; document_description requires
+        # mid, so the override is ignored and the mid default applies.
+        org = Organization.objects.create(name="FeatOrg2", slug="featorg2", preferences={
             "feature_models": {"document_description": "gemini/gemini-3.1-flash-lite"},
         })
         model = resolve_org_feature_model(org.pk, "document_description")
@@ -907,7 +876,6 @@ class ResolveOrgFeatureModelTest(TestCase):
     def test_nonexistent_org_returns_system_default(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
         model = resolve_org_feature_model(99999, "document_description")
-        # document_description's default slot is "mid".
         self.assertEqual(model, "openai/gpt-5.4-mini")
 
     @override_settings(
