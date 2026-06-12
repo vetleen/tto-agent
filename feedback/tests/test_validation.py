@@ -1,4 +1,5 @@
 import io
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 from PIL import Image
@@ -63,6 +64,19 @@ class ReencodeScreenshotTests(SimpleTestCase):
         buf = _image_bytes("PNG")
         buf.read()  # exhaust it
         result = reencode_screenshot(buf)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "screenshot.png")
+
+    def test_pixel_count_over_cap_rejected(self):
+        # Pixel bombs are rejected from the header dimensions, before decode.
+        # Patch the cap down so the test never allocates a real bomb.
+        with patch("feedback.validation._MAX_IMAGE_PIXELS", 16):
+            self.assertIsNone(reencode_screenshot(_image_bytes("PNG", size=(5, 4))))
+
+    def test_pixel_count_at_cap_accepted(self):
+        # Boundary is `>`, not `>=`: exactly at the cap is still accepted.
+        with patch("feedback.validation._MAX_IMAGE_PIXELS", 16):
+            result = reencode_screenshot(_image_bytes("PNG", size=(4, 4)))
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "screenshot.png")
 

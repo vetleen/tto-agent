@@ -167,9 +167,15 @@
     document.body.style.overflow = '';
     screenshotDataUrl = null;
     screenshotBlob = null;
+    // Deliberately does NOT reset the submit state: closing the modal while a
+    // request is in flight must not re-arm the submit button (duplicate
+    // submission). Only the fetch's terminal handlers reset it.
+  }
+
+  function resetSubmitState() {
     isSubmitting = false;
     submitBtn.disabled = false;
-    submitBtn.textContent = 'Send Feedback';
+    submitBtn.textContent = 'Send feedback';
   }
 
   // Resolve to the parsed JSON body, or null when the response is not JSON
@@ -201,17 +207,19 @@
     var fd = new FormData();
     fd.append('text', text);
 
-    if (metaCheckbox.checked) {
+    // Console errors contain script URLs and stack traces, so they fall under
+    // the same opt-out as the page URL and browser info.
+    var includeMeta = metaCheckbox.checked;
+    if (includeMeta) {
       fd.append('url', window.location.href);
       fd.append('user_agent', navigator.userAgent);
       fd.append('viewport', window.innerWidth + 'x' + window.innerHeight);
+      fd.append('console_errors', JSON.stringify(consoleErrors));
     }
 
     if (screenshotCheckbox.checked && screenshotBlob) {
       fd.append('screenshot', screenshotBlob, 'screenshot.jpg');
     }
-
-    fd.append('console_errors', JSON.stringify(consoleErrors));
 
     fetch('/api/feedback/submit/', {
       method: 'POST',
@@ -244,13 +252,16 @@
         });
       })
       .then(function () {
+        // Clear the buffer only when it was actually sent, so an opted-out
+        // submission doesn't silently discard errors the user might choose to
+        // include next time.
+        if (includeMeta) consoleErrors.length = 0;
+        resetSubmitState();
         closeModal();
         showToast('Thank you for your feedback!');
       })
       .catch(function (err) {
-        isSubmitting = false;
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Send Feedback';
+        resetSubmitState();
         var msg = (err && err.message) || 'Please try again.';
         // Network failures (and any stray parse error) read as technical noise;
         // show something actionable instead of leaking it to the user.

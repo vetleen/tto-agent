@@ -2,9 +2,9 @@ import io
 import json
 import shutil
 import tempfile
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.core import mail
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
@@ -44,6 +44,10 @@ class SubmitFeedbackTests(TestCase):
         override.enable()
         self.addCleanup(override.disable)
         self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        # The view enqueues the admin notification; keep tests off the broker.
+        patcher = patch("feedback.tasks.notify_admin_feedback_task.delay")
+        self.mock_delay = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_unauthenticated_redirects(self):
         response = self.client.post(self.url, {"text": "hello"})
@@ -242,12 +246,10 @@ class SubmitFeedbackTests(TestCase):
         self.assertEqual(Feedback.objects.count(), 0)
 
 
-@override_settings(
-    EMAIL_SENDING_ENABLED=True,
-    ADMINS=[("Admin", "admin@example.com")],
-    DEFAULT_FROM_EMAIL="noreply@example.com",
-)
-class FeedbackAdminEmailTests(TestCase):
+class FeedbackNotificationEnqueueTests(TestCase):
+    """The admin email is sent by a Celery task; the view only enqueues it,
+    and a broker outage must never fail the submission."""
+
     def setUp(self):
         self.password = "test-pass-123"
         self.user = get_user_model().objects.create_user(
@@ -257,20 +259,25 @@ class FeedbackAdminEmailTests(TestCase):
         self.user.email_verified = True
         self.user.save(update_fields=["email_verified"])
         self.url = reverse("feedback:feedback_submit")
-        mail.outbox = []
-
-    def test_admin_email_marks_fields_as_user_supplied(self):
         self.client.login(email=self.user.email, password=self.password)
-        response = self.client.post(self.url, {
-            "text": "Click here please",
-            "url": "https://example.com/page",
-        })
+
+    def test_submit_enqueues_notification_with_pk(self):
+        with patch("feedback.tasks.notify_admin_feedback_task.delay") as mock_delay:
+            response = self.client.post(self.url, {"text": "Great app!"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(mail.outbox), 1)
-        body = mail.outbox[0].body
-        self.assertIn("user-supplied", body)
-        self.assertIn("Click here please", body)
-        self.assertIn("https://example.com/page", body)
+        fb = Feedback.objects.get()
+        mock_delay.assert_called_once_with(fb.pk)
+
+    def test_enqueue_failure_does_not_fail_submission(self):
+        with patch(
+            "feedback.tasks.notify_admin_feedback_task.delay",
+            side_effect=RuntimeError("broker down"),
+        ):
+            with self.assertLogs("feedback.views", level="ERROR"):
+                response = self.client.post(self.url, {"text": "Still saved"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(Feedback.objects.count(), 1)
 
 
 @override_settings(**_RATE_LIMIT_SETTINGS)
@@ -288,6 +295,9 @@ class FeedbackRateLimitTests(TestCase):
         self.user.save(update_fields=["email_verified"])
         self.url = reverse("feedback:feedback_submit")
         self.client.login(email=self.user.email, password=self.password)
+        patcher = patch("feedback.tasks.notify_admin_feedback_task.delay")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_eleventh_post_within_an_hour_is_throttled(self):
         for _ in range(10):

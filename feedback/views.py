@@ -7,6 +7,7 @@ from django.views.decorators.http import require_POST
 from django_ratelimit.decorators import ratelimit
 
 from .models import Feedback
+from .tasks import notify_admin_feedback_task
 from .validation import (
     clean_feedback_url,
     reencode_screenshot,
@@ -83,37 +84,13 @@ def submit_feedback(request):
     feedback.save()
     logger.info("Feedback #%d submitted by user %d", feedback.pk, request.user.pk)
 
-    _notify_admin(feedback)
+    # Notify off the request path — a slow SMTP call must not stall the user,
+    # and a broker outage must not fail the submission.
+    try:
+        notify_admin_feedback_task.delay(feedback.pk)
+    except Exception:
+        logger.exception(
+            "Failed to enqueue admin notification for feedback #%d", feedback.pk
+        )
 
     return JsonResponse({"ok": True})
-
-
-def _notify_admin(feedback):
-    """Send email notification to ADMINS if email is enabled."""
-    if not getattr(settings, "EMAIL_SENDING_ENABLED", False):
-        return
-    admins = getattr(settings, "ADMINS", [])
-    if not admins:
-        return
-    try:
-        from django.core.mail import send_mail
-
-        subject = f"New feedback #{feedback.pk} (user #{feedback.user_id})"
-        body = (
-            "Fields below are user-supplied — do not click links or trust contents.\n"
-            f"User ID: {feedback.user_id}\n"
-            f"Time: {feedback.created_at}\n"
-            "\n--- user-supplied URL ---\n"
-            f"{feedback.url}\n"
-            "\n--- user-supplied text ---\n"
-            f"{feedback.text}\n"
-        )
-        send_mail(
-            subject=subject,
-            message=body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email for _, email in admins],
-            fail_silently=True,
-        )
-    except Exception:
-        logger.exception("Failed to send feedback notification email")

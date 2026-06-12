@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
 _IMAGE_FORMAT_EXT = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 
+# Decode cap: Image.open() reads only the header, so dimensions are known before
+# any pixel decode. Pillow's own DecompressionBombError only fires above ~179M
+# pixels — a solid-color JPEG well under the 5 MB upload cap can decode to
+# hundreds of MB of RAM before that (RGB is 3-4 bytes/px), enough to OOM a
+# 512 MB dyno. 25M px is far above any real capture at the widget's 0.5 scale.
+_MAX_IMAGE_PIXELS = 25_000_000
+
 # Keys the widget sends per console-error entry (static/js/feedback-widget.js).
 _CONSOLE_STR_KEYS = ("message", "source", "stack", "timestamp")
 _CONSOLE_INT_KEYS = ("lineno", "colno")
@@ -48,6 +55,10 @@ def reencode_screenshot(f):
         with Image.open(f) as img:
             fmt = img.format
             if fmt not in _ALLOWED_IMAGE_FORMATS:
+                return None
+            # Dimensions come from the header — reject pixel bombs before the
+            # full decode below allocates width*height*bytes-per-pixel of RAM.
+            if img.width * img.height > _MAX_IMAGE_PIXELS:
                 return None
             # save() forces a full decode here, which is where Pillow raises
             # DecompressionBombError / truncation errors — all caught below.

@@ -21,6 +21,15 @@ class FeedbackAdmin(admin.ModelAdmin):
         "created_at",
     )
 
+    # Feedback is immutable user testimony: no adding or editing in the admin.
+    # (Editing would also orphan replaced screenshots — the cleanup signal only
+    # fires on delete.) Delete stays allowed for GDPR/cleanup.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
     @admin.display(description="Text")
     def short_text(self, obj):
         return obj.text[:100] if obj.text else ""
