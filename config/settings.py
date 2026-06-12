@@ -60,12 +60,17 @@ warnings.filterwarnings(
 # ---------------------------------------------------------------------------
 # Sentry — error tracking & performance monitoring
 # ---------------------------------------------------------------------------
-# Never initialize Sentry during test runs: error-handling tests intentionally
-# log WARNING/ERROR ("db boom", "LLM down", mock artifacts, ...) and would
-# flood Sentry with local_dev noise that drowns out real production issues.
+# Never initialize Sentry during test runs or local development. Error-handling
+# tests intentionally log WARNING/ERROR ("db boom", "LLM down", mock artifacts),
+# and routine local management commands (check, makemigrations, runserver,
+# one-off shells) raise or log expected errors. Either source floods Sentry with
+# local_dev noise that drowns out real production issues. Deployed apps run with
+# DEBUG=False, so gating on DEBUG keeps every developer machine out of Sentry
+# regardless of whether SENTRY_ENVIRONMENT is set locally; the test-run guard
+# stays for CI, where DEBUG may be False while the suite runs.
 _is_test_run = len(sys.argv) > 1 and sys.argv[1] == "test"
 _sentry_dsn = os.environ.get("SENTRY_DSN", "")
-if _sentry_dsn and not _is_test_run:
+if _sentry_dsn and not _is_test_run and not DEBUG:
     from core.middleware import get_request_id
     from core.sentry_scrub import scrub_event
 
