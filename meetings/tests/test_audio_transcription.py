@@ -8,7 +8,6 @@ is always mocked here — its own behaviour is tested in
 """
 from __future__ import annotations
 
-import contextlib
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -22,10 +21,12 @@ from meetings.services.audio_transcription import (
     CHARS_PER_OVERLAP_SECOND,
     DEFAULT_OVERLAP_SECONDS,
     AudioSplitTimeoutError,
-    ChunkSpec,
+    ChunkBoundary,
+    _extract_chunk,
+    _plan_upload_chunks,
     build_transcription_prompt,
     orchestrate_upload_transcription,
-    split_audio_with_overlap,
+    plan_chunk_boundaries,
     stitch_transcripts,
 )
 
@@ -86,103 +87,70 @@ class BuildTranscriptionPromptTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# split_audio_with_overlap
+# plan_chunk_boundaries (pure math) + probe/extract helpers
 # ---------------------------------------------------------------------------
 
 
-def _fake_extract(file_path, start_ms, end_ms, index, *, output_prefix="chunk", timeout=120):
-    """Create a tiny temp file simulating ffmpeg chunk output."""
-    tmp = tempfile.NamedTemporaryFile(
-        suffix=".mp3", delete=False, prefix=f"{output_prefix}{index}_",
-    )
-    tmp.write(b"\x00" * 32)
-    tmp.close()
-    return Path(tmp.name)
-
-
-def _patch_audio_helpers(total_ms: int):
-    """Context manager that mocks ffprobe/ffmpeg helpers for splitter tests."""
-    stack = contextlib.ExitStack()
-    stack.enter_context(
-        patch("llm.service._audio_subprocess.ffmpeg_available", return_value=True)
-    )
-    stack.enter_context(
-        patch("llm.service._audio_subprocess.ffprobe_duration_ms", return_value=total_ms)
-    )
-    stack.enter_context(
-        patch("llm.service._audio_subprocess.ffmpeg_extract_chunk", side_effect=_fake_extract)
-    )
-    return stack
-
-
-class SplitAudioWithOverlapTests(TestCase):
-    """Splitter tests use FakeAudio to avoid touching real audio files."""
+class PlanChunkBoundariesTests(TestCase):
+    """Boundary planning is pure arithmetic — no ffmpeg, no disk."""
 
     def test_short_file_single_chunk_no_overlap(self):
-        with _patch_audio_helpers(total_ms=60_000):  # 60 s
-            specs = split_audio_with_overlap(
-                Path("/fake.mp3"),
-                target_chunk_seconds=900,
-                overlap_seconds=15,
-                max_bytes=25_000_000,
-                max_seconds=1400,
-            )
-        self.assertEqual(len(specs), 1)
-        self.assertEqual(specs[0].start_ms, 0)
-        self.assertEqual(specs[0].end_ms, 60_000)
-        for s in specs:
-            s.path.unlink(missing_ok=True)
+        boundaries = plan_chunk_boundaries(
+            60_000,  # 60 s
+            target_chunk_seconds=900,
+            overlap_seconds=15,
+            max_bytes=25_000_000,
+            max_seconds=1400,
+        )
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(boundaries[0].start_ms, 0)
+        self.assertEqual(boundaries[0].end_ms, 60_000)
 
     def test_two_chunks_with_correct_overlap(self):
         # 2 * target = 1800 s. We expect 2 chunks; the second should start
         # at 900_000 - 15_000 = 885_000 ms (15 s leading overlap).
         total_ms = 1_800_000
-        with _patch_audio_helpers(total_ms=total_ms):
-            specs = split_audio_with_overlap(
-                Path("/fake.mp3"),
-                target_chunk_seconds=900,
-                overlap_seconds=15,
-                max_bytes=25_000_000,
-                max_seconds=1400,
-            )
-        try:
-            self.assertEqual(len(specs), 2)
-            self.assertEqual(specs[0].start_ms, 0)
-            self.assertEqual(specs[0].end_ms, 900_000)
-            self.assertEqual(specs[1].start_ms, 900_000 - 15_000)
-            self.assertEqual(specs[1].end_ms, total_ms)
-        finally:
-            for s in specs:
-                s.path.unlink(missing_ok=True)
+        boundaries = plan_chunk_boundaries(
+            total_ms,
+            target_chunk_seconds=900,
+            overlap_seconds=15,
+            max_bytes=25_000_000,
+            max_seconds=1400,
+        )
+        self.assertEqual(len(boundaries), 2)
+        self.assertEqual(boundaries[0].start_ms, 0)
+        self.assertEqual(boundaries[0].end_ms, 900_000)
+        self.assertEqual(boundaries[1].start_ms, 900_000 - 15_000)
+        self.assertEqual(boundaries[1].end_ms, total_ms)
 
     def test_four_chunks_for_3_5x_target(self):
         # 3.5 * target = 3150 s -> ceil(3150/900) = 4 chunks
         total_ms = 3_150_000
-        with _patch_audio_helpers(total_ms=total_ms):
-            specs = split_audio_with_overlap(
-                Path("/fake.mp3"),
-                target_chunk_seconds=900,
-                overlap_seconds=15,
-                max_bytes=25_000_000,
-                max_seconds=1400,
-            )
-        try:
-            self.assertEqual(len(specs), 4)
-            self.assertEqual(specs[0].start_ms, 0)
-            for i in range(1, 4):
-                # Each subsequent chunk starts 15 s before the previous chunk's
-                # nominal end.
-                self.assertEqual(specs[i].start_ms, i * 900_000 - 15_000)
-            # Last chunk ends at the file end.
-            self.assertEqual(specs[-1].end_ms, total_ms)
-        finally:
-            for s in specs:
-                s.path.unlink(missing_ok=True)
+        boundaries = plan_chunk_boundaries(
+            total_ms,
+            target_chunk_seconds=900,
+            overlap_seconds=15,
+            max_bytes=25_000_000,
+            max_seconds=1400,
+        )
+        self.assertEqual(len(boundaries), 4)
+        self.assertEqual(boundaries[0].start_ms, 0)
+        for i in range(1, 4):
+            # Each subsequent chunk starts 15 s before the previous chunk's
+            # nominal end.
+            self.assertEqual(boundaries[i].start_ms, i * 900_000 - 15_000)
+        # Last chunk ends at the file end.
+        self.assertEqual(boundaries[-1].end_ms, total_ms)
+
+    def test_non_positive_duration_yields_no_chunks(self):
+        self.assertEqual(
+            plan_chunk_boundaries(0, max_bytes=25_000_000, max_seconds=1400), []
+        )
 
     def test_degenerate_overlap_raises(self):
         with self.assertRaises(ValueError):
-            split_audio_with_overlap(
-                Path("/fake.mp3"),
+            plan_chunk_boundaries(
+                60_000,
                 target_chunk_seconds=10,
                 overlap_seconds=10,  # 2*overlap >= target
                 max_bytes=25_000_000,
@@ -191,35 +159,86 @@ class SplitAudioWithOverlapTests(TestCase):
 
     def test_negative_overlap_raises(self):
         with self.assertRaises(ValueError):
-            split_audio_with_overlap(
-                Path("/fake.mp3"),
+            plan_chunk_boundaries(
+                60_000,
                 target_chunk_seconds=900,
                 overlap_seconds=-1,
                 max_bytes=25_000_000,
                 max_seconds=1400,
             )
 
-    def test_ffprobe_failure_falls_back_to_single_chunk(self):
-        """When ffprobe cannot determine duration, the splitter should fall
-        back to a single chunk pointing at the original file."""
+
+class _FakeInfo:
+    """Minimal transcription-model info stand-in for _plan_upload_chunks."""
+    max_file_size_bytes = 25_000_000
+    max_duration_seconds = 1400
+
+
+class PlanUploadChunksTests(TestCase):
+    """The probe wrapper falls back to a single direct pass when it can't split."""
+
+    def test_no_ffmpeg_returns_none_for_small_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+            f.write(b"\x00" * 1024)
+            tmp = Path(f.name)
+        try:
+            with patch("llm.service._audio_subprocess.ffmpeg_available", return_value=False):
+                result = _plan_upload_chunks(
+                    tmp, _FakeInfo(),
+                    target_chunk_seconds=300, overlap_seconds=15, meeting_id=1,
+                )
+            self.assertIsNone(result)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def test_unprobeable_duration_returns_none(self):
         with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
             f.write(b"\x00" * 1024)
             tmp = Path(f.name)
         try:
             with patch("llm.service._audio_subprocess.ffmpeg_available", return_value=True), \
                  patch("llm.service._audio_subprocess.ffprobe_duration_ms", return_value=None):
-                specs = split_audio_with_overlap(
-                    tmp,
-                    target_chunk_seconds=900,
-                    overlap_seconds=15,
-                    max_bytes=25_000_000,
-                    max_seconds=1400,
+                result = _plan_upload_chunks(
+                    tmp, _FakeInfo(),
+                    target_chunk_seconds=300, overlap_seconds=15, meeting_id=1,
                 )
-            self.assertEqual(len(specs), 1)
-            self.assertEqual(specs[0].path, tmp)
-            self.assertEqual(specs[0].index, 0)
+            self.assertIsNone(result)
         finally:
             tmp.unlink(missing_ok=True)
+
+    def test_oversized_unsplittable_file_raises(self):
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+            f.write(b"\x00" * 2048)
+            tmp = Path(f.name)
+        try:
+            with patch("llm.service._audio_subprocess.ffmpeg_available", return_value=False), \
+                 patch.object(Path, "stat") as mock_stat:
+                mock_stat.return_value = MagicMock(st_size=99_000_000)
+                with self.assertRaises(RuntimeError) as ctx:
+                    _plan_upload_chunks(
+                        tmp, _FakeInfo(),
+                        target_chunk_seconds=300, overlap_seconds=15, meeting_id=1,
+                    )
+            self.assertIn("exceeds", str(ctx.exception))
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+class ExtractChunkTests(TestCase):
+    @patch("meetings.services.audio_transcription.AUDIO_SPLIT_TIMEOUT_SECONDS", 1)
+    def test_extract_timeout_raises_and_logs(self):
+        import subprocess as _sp
+
+        boundary = ChunkBoundary(index=0, start_ms=0, end_ms=1000)
+        with patch(
+            "llm.service._audio_subprocess.ffmpeg_extract_chunk",
+            side_effect=_sp.TimeoutExpired(cmd="ffmpeg", timeout=1),
+        ):
+            with self.assertLogs("meetings.services.audio_transcription", level="ERROR") as cm:
+                with self.assertRaises(AudioSplitTimeoutError) as ctx:
+                    _extract_chunk(Path("/fake.mp3"), boundary, 25_000_000)
+        self.assertIn("timed out", str(ctx.exception))
+        self.assertTrue(any("extraction timed out" in line for line in cm.output))
 
 
 # ---------------------------------------------------------------------------
@@ -277,12 +296,22 @@ class StitchTranscriptsTests(TestCase):
 # ---------------------------------------------------------------------------
 
 
-def _make_chunk_spec(index: int) -> ChunkSpec:
-    """Create a real (but tiny) temp file and return a ChunkSpec for it."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, prefix=f"orch_test_seg{index}_")
+def _make_boundary(index: int) -> ChunkBoundary:
+    return ChunkBoundary(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000)
+
+
+def _fake_extract_chunk(source_path, boundary, max_bytes):
+    """Stand-in for _extract_chunk: write a tiny temp file and return its Path.
+
+    Signature mirrors meetings.services.audio_transcription._extract_chunk so it
+    can be used as a ``side_effect`` for that patch.
+    """
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".mp3", delete=False, prefix=f"orch_test_seg{boundary.index}_",
+    )
     tmp.write(b"\x00" * 16)
     tmp.close()
-    return ChunkSpec(path=Path(tmp.name), index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000)
+    return Path(tmp.name)
 
 
 class _FakeResult:
@@ -304,10 +333,10 @@ class OrchestratorTests(TestCase):
     def _fresh(self) -> Meeting:
         return Meeting.objects.get(pk=self.meeting.pk)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_single_chunk_path_skips_progress_fields(self, mock_split):
-        spec = _make_chunk_spec(0)
-        mock_split.return_value = [spec]
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_single_chunk_path_skips_progress_fields(self, mock_plan, mock_extract):
+        mock_plan.return_value = [_make_boundary(0)]
 
         service = MagicMock()
         service.transcribe.return_value = _FakeResult("only chunk text")
@@ -333,10 +362,10 @@ class OrchestratorTests(TestCase):
         self.assertIn("OncoBio Therapeutics", prompt_arg)
         self.assertNotIn("Previous transcript excerpt", prompt_arg)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_multi_chunk_happy_path_progress_and_carryover(self, mock_split):
-        specs = [_make_chunk_spec(i) for i in range(3)]
-        mock_split.return_value = specs
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_multi_chunk_happy_path_progress_and_carryover(self, mock_plan, mock_extract):
+        mock_plan.return_value = [_make_boundary(i) for i in range(3)]
 
         # Each chunk's "transcript" includes a long, distinctive overlap phrase
         # with the next chunk so the stitcher's fuzzy matcher splices them
@@ -386,10 +415,10 @@ class OrchestratorTests(TestCase):
         self.assertIn("Previous transcript excerpt", second_prompt)
         self.assertIn("Previous transcript excerpt", third_prompt)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_chunk_failure_persists_partial_and_resets_progress(self, mock_split):
-        specs = [_make_chunk_spec(i) for i in range(3)]
-        mock_split.return_value = specs
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_chunk_failure_persists_partial_and_resets_progress(self, mock_plan, mock_extract):
+        mock_plan.return_value = [_make_boundary(i) for i in range(3)]
 
         service = MagicMock()
         service.transcribe.side_effect = [
@@ -415,14 +444,14 @@ class OrchestratorTests(TestCase):
         self.assertEqual(m.transcription_chunks_total, 0)
         self.assertEqual(m.transcription_chunks_done, 0)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_cancellation_bails_before_next_chunk_and_preserves_partial(self, mock_split):
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_cancellation_bails_before_next_chunk_and_preserves_partial(self, mock_plan, mock_extract):
         """When the user clicks Stop mid-way, the cancel view flips status to
         FAILED. The orchestrator must detect that before starting the next
         chunk, persist whatever was stitched so far, and return instead of
         raising."""
-        specs = [_make_chunk_spec(i) for i in range(3)]
-        mock_split.return_value = specs
+        mock_plan.return_value = [_make_boundary(i) for i in range(3)]
 
         service = MagicMock()
 
@@ -470,16 +499,16 @@ class OrchestratorTests(TestCase):
         self.assertEqual(m.transcription_chunks_total, 0)
         self.assertEqual(m.transcription_chunks_done, 0)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_cancellation_before_first_chunk_preserves_existing_transcript(self, mock_split):
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_cancellation_before_first_chunk_preserves_existing_transcript(self, mock_plan, mock_extract):
         """If cancellation happens before ANY chunk completes (edge case: user
         is fast, or the first chunk hasn't been dispatched yet), the meeting's
         existing transcript must survive untouched."""
         self.meeting.transcript = "PRIOR TRANSCRIPT FROM FILE ONE"
         self.meeting.save(update_fields=["transcript"])
 
-        specs = [_make_chunk_spec(i) for i in range(3)]
-        mock_split.return_value = specs
+        mock_plan.return_value = [_make_boundary(i) for i in range(3)]
 
         # Flip status before the loop even starts.
         Meeting.objects.filter(pk=self.meeting.pk).update(
@@ -523,15 +552,15 @@ class OrchestratorTests(TestCase):
         self.assertIn("PRIOR TRANSCRIPT FROM FILE ONE", m.transcript)
         self.assertIn("PRIOR TRANSCRIPT FROM FILE ONE", text)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_single_chunk_appends_to_existing_transcript(self, mock_split):
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_single_chunk_appends_to_existing_transcript(self, mock_plan, mock_extract):
         """Re-uploading a short (single-chunk) file to a meeting that already
         has a transcript must append the new text, never replace it."""
         self.meeting.transcript = "PRIOR TRANSCRIPT FROM FILE ONE — do not lose."
         self.meeting.save(update_fields=["transcript"])
 
-        spec = _make_chunk_spec(0)
-        mock_split.return_value = [spec]
+        mock_plan.return_value = [_make_boundary(0)]
         service = MagicMock()
         service.transcribe.return_value = _FakeResult("fresh content from file two")
 
@@ -563,8 +592,9 @@ class OrchestratorTests(TestCase):
         self.assertIn("Previous transcript excerpt", prompt_arg)
         self.assertIn("do not lose", prompt_arg)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_multi_chunk_appends_to_existing_transcript(self, mock_split):
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_multi_chunk_appends_to_existing_transcript(self, mock_plan, mock_extract):
         """Re-uploading a multi-chunk file must preserve the prior transcript
         AND stitch all new chunks — not just the last chunk."""
         self.meeting.transcript = (
@@ -573,8 +603,7 @@ class OrchestratorTests(TestCase):
         )
         self.meeting.save(update_fields=["transcript"])
 
-        specs = [_make_chunk_spec(i) for i in range(3)]
-        mock_split.return_value = specs
+        mock_plan.return_value = [_make_boundary(i) for i in range(3)]
 
         # Build overlap phrases long enough for the fuzzy stitcher's confident
         # match floor (same pattern as the existing happy-path test).
@@ -634,15 +663,15 @@ class OrchestratorTests(TestCase):
         self.assertIn("Previous transcript excerpt", first_prompt)
         self.assertIn("meaningful text inside", first_prompt)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_multi_chunk_append_failure_preserves_existing(self, mock_split):
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_multi_chunk_append_failure_preserves_existing(self, mock_plan, mock_extract):
         """If a chunk fails mid-upload, the existing transcript must still be
         present (alongside any partial new content)."""
         self.meeting.transcript = "KEEP THIS PRIOR TRANSCRIPT SAFE"
         self.meeting.save(update_fields=["transcript"])
 
-        specs = [_make_chunk_spec(i) for i in range(3)]
-        mock_split.return_value = specs
+        mock_plan.return_value = [_make_boundary(i) for i in range(3)]
 
         service = MagicMock()
         service.transcribe.side_effect = [
@@ -668,15 +697,15 @@ class OrchestratorTests(TestCase):
         self.assertIn("first new chunk content", m.transcript)
 
     @patch("meetings.services.audio_transcription.time.sleep", return_value=None)
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_transient_error_is_retried(self, mock_split, mock_sleep):
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_transient_error_is_retried(self, mock_plan, mock_extract, mock_sleep):
         try:
             from openai import RateLimitError
         except Exception:  # pragma: no cover
             self.skipTest("openai library missing")
 
-        specs = [_make_chunk_spec(0), _make_chunk_spec(1)]
-        mock_split.return_value = specs
+        mock_plan.return_value = [_make_boundary(0), _make_boundary(1)]
 
         rate_limited = RateLimitError(
             message="429 rate-limited",
@@ -711,11 +740,11 @@ class OrchestratorTests(TestCase):
         # We slept for the first backoff entry.
         self.assertTrue(mock_sleep.called)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_split_duration_is_logged(self, mock_split):
-        """The orchestrator logs the split duration at INFO level."""
-        spec = _make_chunk_spec(0)
-        mock_split.return_value = [spec]
+    @patch("meetings.services.audio_transcription._extract_chunk", side_effect=_fake_extract_chunk)
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_chunk_plan_is_logged(self, mock_plan, mock_extract):
+        """The orchestrator logs the planned chunk count at INFO level."""
+        mock_plan.return_value = [_make_boundary(0)]
 
         service = MagicMock()
         service.transcribe.return_value = _FakeResult("ok")
@@ -729,21 +758,19 @@ class OrchestratorTests(TestCase):
                 service=service,
             )
 
-        split_log = [line for line in cm.output if "audio split completed" in line]
-        self.assertEqual(len(split_log), 1)
-        self.assertIn("1 chunks", split_log[0])
+        plan_log = [line for line in cm.output if "planned" in line and "chunk" in line]
+        self.assertEqual(len(plan_log), 1)
+        self.assertIn("1 chunk", plan_log[0])
 
-    @patch("meetings.services.audio_transcription.AUDIO_SPLIT_TIMEOUT_SECONDS", 0.1)
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_split_timeout_raises_error(self, mock_split):
-        """When the split hangs beyond the timeout, AudioSplitTimeoutError is raised."""
-        import threading
-
-        def hang_forever(*args, **kwargs):
-            threading.Event().wait(timeout=10)
-            return []
-
-        mock_split.side_effect = hang_forever
+    @patch("meetings.services.audio_transcription._extract_chunk")
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_single_chunk_extract_timeout_propagates(self, mock_plan, mock_extract):
+        """An extraction timeout surfaces as AudioSplitTimeoutError to the caller
+        (the Celery task wrapper then marks the meeting FAILED)."""
+        mock_plan.return_value = [_make_boundary(0)]
+        mock_extract.side_effect = AudioSplitTimeoutError(
+            "Audio chunk 0 extraction timed out after 1s."
+        )
 
         with self.assertRaises(AudioSplitTimeoutError) as ctx:
             orchestrate_upload_transcription(
@@ -753,30 +780,36 @@ class OrchestratorTests(TestCase):
                 user_id=self.user.pk,
                 service=MagicMock(),
             )
-
         self.assertIn("timed out", str(ctx.exception))
 
-    @patch("meetings.services.audio_transcription.AUDIO_SPLIT_TIMEOUT_SECONDS", 0.1)
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_split_timeout_logs_error(self, mock_split):
-        """The orchestrator logs an ERROR when the split times out."""
-        import threading
+    @patch("meetings.services.audio_transcription._extract_chunk")
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_extract_failure_mid_upload_preserves_partial(self, mock_plan, mock_extract):
+        """An extraction failure on a later chunk persists the partial transcript
+        and marks the meeting FAILED — same contract as a transcribe failure."""
+        mock_plan.return_value = [_make_boundary(i) for i in range(3)]
 
-        def hang_forever(*args, **kwargs):
-            threading.Event().wait(timeout=10)
-            return []
+        def extract_side_effect(source_path, boundary, max_bytes):
+            if boundary.index == 0:
+                return _fake_extract_chunk(source_path, boundary, max_bytes)
+            raise AudioSplitTimeoutError("Audio chunk 1 extraction timed out after 1s.")
+        mock_extract.side_effect = extract_side_effect
 
-        mock_split.side_effect = hang_forever
+        service = MagicMock()
+        service.transcribe.return_value = _FakeResult("first chunk transcript")
 
-        with self.assertLogs("meetings.services.audio_transcription", level="ERROR") as cm:
-            with self.assertRaises(AudioSplitTimeoutError):
-                orchestrate_upload_transcription(
-                    meeting_id=self.meeting.pk,
-                    temp_path=Path("/fake.mp3"),
-                    model_id="openai/gpt-4o-mini-transcribe",
-                    user_id=self.user.pk,
-                    service=MagicMock(),
-                )
+        with self.assertRaises(AudioSplitTimeoutError):
+            orchestrate_upload_transcription(
+                meeting_id=self.meeting.pk,
+                temp_path=Path("/fake.mp3"),
+                model_id="openai/gpt-4o-mini-transcribe",
+                user_id=self.user.pk,
+                service=service,
+            )
 
-        timeout_log = [line for line in cm.output if "audio split timed out" in line]
-        self.assertEqual(len(timeout_log), 1)
+        m = self._fresh()
+        self.assertEqual(m.status, Meeting.Status.FAILED)
+        self.assertIn("first chunk transcript", m.transcript)
+        self.assertIn("Failed on chunk 2/3", m.transcription_error)
+        self.assertEqual(m.transcription_chunks_total, 0)
+        self.assertEqual(m.transcription_chunks_done, 0)

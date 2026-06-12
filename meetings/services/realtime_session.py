@@ -235,6 +235,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         self._session_id: str | None = None
         self._replay_buffer: deque[bytes] = deque()
         self._replay_bytes = 0
+        # Monotonic count of server events received. finalize() snapshots this,
+        # sends the commit, then waits for it to advance so the server's
+        # post-commit transcription has a chance to arrive before teardown.
+        self._server_event_count = 0
         self._reconnect_attempt = 0
         self._last_reconnect_success: float = 0.0
         self._ws_connect_factory = _ws_connect_factory or _default_ws_connect
@@ -318,6 +322,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                 asyncio.create_task(self._try_reconnect())
 
     async def _dispatch_server_event(self, evt_type: str, event: dict) -> None:
+        self._server_event_count += 1
         if evt_type in ("session.created", "session.updated"):
             session = event.get("session") or {}
             if isinstance(session, dict):
@@ -378,6 +383,11 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             await self._events.put(
                 SessionError(code=code or err_type or "unknown", message=message, fatal=fatal)
             )
+            if fatal:
+                # A fatal error ends the session. Emit a disconnected status so
+                # the base events() generator self-terminates instead of relying
+                # solely on the consumer returning after the SessionError.
+                await self._events.put(SessionStatus(state="disconnected"))
             return
         # Other event types (rate_limits.updated etc.) are ignored for now.
 
@@ -455,17 +465,37 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             self._replay_bytes -= len(old)
 
     async def finalize(self, timeout: float = 3.0) -> None:
-        """Commit any pending audio and wait briefly for ``.completed`` events."""
+        """Commit any pending audio and wait for the server's final transcription.
+
+        Sends an ``input_audio_buffer.commit`` and then waits for the server to
+        respond (any new event) so the trailing ``.completed`` transcription of
+        whatever the user said right before Stop has a chance to arrive and be
+        persisted by the still-running receive/consume loop. ``timeout`` is a
+        hard ceiling — we never block longer than that even if the server goes
+        quiet (failsafe against a wedged socket).
+        """
         if self._closed or self._ws is None:
             return
+        # Snapshot the event counter BEFORE the commit so we can tell when the
+        # server has responded to it.
+        events_before = self._server_event_count
         try:
             await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
         except Exception as exc:
             logger.debug("OpenAIRealtimeSession: commit raised (%s) — continuing", exc)
-        # Let the server produce any last completed event — we don't wait
-        # on specific events, we just give the recv loop a moment to drain.
+            return
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and self._events.qsize() > 0:
+        # Phase 1: wait (up to the deadline) for the server to react to the
+        # commit at all — a ``.committed`` ack, a ``.completed`` transcript, or
+        # an error. The old code bailed the instant the queue was empty, which
+        # is the common case (the consumer drains it), so it never actually
+        # waited and the final utterance was lost.
+        while time.monotonic() < deadline and self._server_event_count == events_before:
+            await asyncio.sleep(0.05)
+        # Phase 2: brief settle window so a ``.completed`` that trails the
+        # ``.committed`` ack lands too. Still bounded by the overall deadline.
+        settle_deadline = min(deadline, time.monotonic() + 0.4)
+        while time.monotonic() < settle_deadline:
             await asyncio.sleep(0.05)
 
     async def aclose(self) -> None:

@@ -665,6 +665,75 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertGreaterEqual(consumer._realtime_failure_count, REALTIME_FAILURE_BUDGET)
         self.assertTrue(consumer._realtime_permanently_disabled)
 
+    async def test_fatal_error_tears_down_pipe_and_session(self):
+        """A fatal upstream SessionError must release the ffmpeg pipe + pump
+        task + session (not leak them until disconnect). _teardown_realtime is
+        invoked from inside the consumer task, so it must skip its own task and
+        still cancel the pump + close the pipe/session."""
+        from meetings.services.realtime_session import SessionError, SessionStatus
+
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
+        consumer._realtime_mode = "realtime"
+        consumer._realtime_failure_count = 0
+        consumer._realtime_permanently_disabled = False
+        consumer._realtime_was_active_this_conn = True
+        consumer._post_fallback_drop_armed = False
+        consumer._interruption_started_at = None
+        consumer._realtime_started = True
+        consumer._total_pcm_bytes = 0
+
+        sent = []
+
+        async def _fake_send(text_data=None, **kwargs):
+            sent.append(json.loads(text_data))
+        consumer.send = _fake_send
+
+        calls = {"session_finalize": 0, "session_aclose": 0, "pipe_aclose": 0}
+
+        class _FakeSession:
+            async def events(self):
+                yield SessionError(code="invalid_api_key", message="bad key", fatal=True)
+                yield SessionStatus(state="disconnected")  # never reached
+
+            async def finalize(self, timeout=2.0):
+                calls["session_finalize"] += 1
+
+            async def aclose(self):
+                calls["session_aclose"] += 1
+
+        class _FakePipe:
+            stats = None
+
+            async def aclose(self):
+                calls["pipe_aclose"] += 1
+
+        consumer._realtime_session = _FakeSession()
+        consumer._pcm_pipe = _FakePipe()
+
+        async def _park():
+            await asyncio.sleep(3600)
+        pump_task = asyncio.create_task(_park())
+        consume_task = asyncio.create_task(consumer._consume_realtime_events())
+        # The consumer's own task is in the realtime task list — teardown must
+        # not try to cancel/await itself.
+        consumer._realtime_tasks = [pump_task, consume_task]
+
+        await asyncio.wait_for(consume_task, timeout=2.0)
+
+        # Resources released, not leaked.
+        self.assertEqual(calls["session_aclose"], 1)
+        self.assertEqual(calls["pipe_aclose"], 1)
+        self.assertIsNone(consumer._realtime_session)
+        self.assertIsNone(consumer._pcm_pipe)
+        self.assertFalse(consumer._realtime_started)
+        self.assertEqual(consumer._realtime_tasks, [])
+        # The parked pump task was cancelled, not left running.
+        self.assertTrue(pump_task.cancelled() or pump_task.done())
+        # Client was told to fall back to chunked.
+        self.assertTrue(any(m["type"] == "live_mode_changed" for m in sent))
+
 
 class RecomputeIncludesMarkerTests(TransactionTestCase):
     """A marker segment with status=READY must show up inline in the joined

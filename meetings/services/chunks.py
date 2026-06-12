@@ -175,8 +175,14 @@ def download_chunk_to_local(storage_path: str, mime: str = "") -> Path:
     if local.exists():
         return local
 
-    # Must be a remote storage key — download it.
-    ext = _ext_for_mime(mime)
+    # Must be a remote storage key — download it. Pick the temp-file extension
+    # from the caller's mime when given, else fall back to the storage key's own
+    # suffix (upload/chunk keys end in the real extension, e.g. ``…/000000.mp3``)
+    # so the local temp file is named accurately for ffmpeg/ffprobe sniffing.
+    if mime:
+        ext = _ext_for_mime(mime)
+    else:
+        ext = Path(storage_path).suffix.lstrip(".") or "webm"
     tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False, prefix="meet_chunk_")
     tmp.close()
     local_tmp = Path(tmp.name)

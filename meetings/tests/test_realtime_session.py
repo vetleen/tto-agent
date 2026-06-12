@@ -395,3 +395,82 @@ class OpenAIRealtimeSessionTests(TestCase):
             isinstance(e, SessionStatus) and e.state == "disconnected"
             for e in seen
         ))
+
+
+class FinalizeTests(TestCase):
+    """finalize() must wait for the server's post-commit transcription so the
+    user's last utterance isn't dropped on Stop — bounded by `timeout`."""
+
+    def test_finalize_waits_for_post_commit_completed(self):
+        class _CommitRespondingWS(_FakeWebSocket):
+            async def send(self, payload):
+                await super().send(payload)
+                if json.loads(payload).get("type") == "input_audio_buffer.commit":
+                    # Server reacts to the commit with a final transcription —
+                    # the case the old drain loop returned too early to catch.
+                    self.push_server_json({
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "item_id": "item_final",
+                        "transcript": "the last words.",
+                    })
+
+        ws = _CommitRespondingWS(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            completed: list[TranscriptCompleted] = []
+
+            async def consume():
+                async for evt in session.events():
+                    if isinstance(evt, TranscriptCompleted):
+                        completed.append(evt)
+                    elif isinstance(evt, SessionStatus) and evt.state == "disconnected":
+                        return
+
+            consumer = asyncio.create_task(consume())
+            await asyncio.sleep(0.05)  # let session.created drain (queue empties)
+            await session.finalize(timeout=2.0)
+            await session.aclose()
+            await consumer
+            return completed
+
+        completed = _run(run())
+        self.assertTrue(
+            any(e.text == "the last words." for e in completed),
+            "finalize() must wait for the post-commit .completed event",
+        )
+        self.assertTrue(
+            any(json.loads(s).get("type") == "input_audio_buffer.commit" for s in ws.sent)
+        )
+
+    def test_finalize_returns_within_timeout_when_server_silent(self):
+        # No server response to the commit — finalize must not hang; it returns
+        # at the deadline (the failsafe ceiling).
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            await asyncio.sleep(0.05)
+            # A short timeout keeps the test fast; the assertion is that this
+            # await completes at all (no hang) and the commit was sent.
+            await asyncio.wait_for(session.finalize(timeout=0.3), timeout=2.0)
+            await session.aclose()
+
+        _run(run())
+        self.assertTrue(
+            any(json.loads(s).get("type") == "input_audio_buffer.commit" for s in ws.sent)
+        )

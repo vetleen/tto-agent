@@ -469,6 +469,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                         "state": evt.state,
                     }))
                     if evt.state == "disconnected":
+                        # Release the pipe + session now rather than leaking
+                        # them until disconnect. Safe from inside the consumer.
+                        await self._teardown_realtime()
                         return
                 elif isinstance(evt, SessionError):
                     await self.send(text_data=json.dumps({
@@ -486,7 +489,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                             }))
                         except Exception:
                             pass
+                        # Notify the client first so it switches to chunked
+                        # immediately, then release realtime resources (the
+                        # ffmpeg pipe + forwarder task + session) instead of
+                        # leaking them until disconnect.
                         await self._fall_back_to_chunked(reason=f"realtime_error:{evt.code}")
+                        await self._teardown_realtime()
                         return
         except asyncio.CancelledError:
             raise
@@ -582,15 +590,33 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             return None
 
     async def _teardown_realtime(self) -> None:
-        """Cancel forwarder tasks, flush the session, close the pipe."""
+        """Cancel forwarder tasks, flush the session, close the pipe.
+
+        Safe to call from inside one of the realtime tasks (e.g. the event
+        consumer on a fatal error): it never cancels or awaits the task it is
+        currently running on — that task is expected to ``return`` on its own
+        right afterwards. Idempotent, so the consumer-branch call and the later
+        ``disconnect`` call don't double-tear-down.
+        """
+        if (
+            not self._realtime_started
+            and self._realtime_session is None
+            and self._pcm_pipe is None
+        ):
+            return
+        current = asyncio.current_task()
         if self._realtime_session is not None:
             try:
                 await self._realtime_session.finalize(timeout=2.0)
             except Exception:
                 pass
         for task in self._realtime_tasks:
+            if task is current:
+                continue
             task.cancel()
         for task in self._realtime_tasks:
+            if task is current:
+                continue
             try:
                 await task
             except (asyncio.CancelledError, Exception):

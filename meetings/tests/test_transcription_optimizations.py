@@ -27,9 +27,11 @@ from llm.transcription_registry import (
 )
 from meetings.models import Meeting
 from meetings.services.audio_transcription import (
-    ChunkSpec,
+    DEFAULT_TARGET_CHUNK_SECONDS,
+    ChunkBoundary,
     _PartialTranscriptFlusher,
     orchestrate_upload_transcription,
+    plan_chunk_boundaries,
 )
 
 User = get_user_model()
@@ -199,70 +201,49 @@ class PartialTranscriptFlusherTests(TestCase):
 
 
 class ChunkPlannerSpeedUpAwarenessTests(TestCase):
-    """split_audio_with_overlap accounts for the speed-up factor.
+    """plan_chunk_boundaries divides by duration, and respects the speed-up
+    factor when the API size limit (not the 5-min chunk target) is the binding
+    constraint.
 
-    At factor=2 the API only sees half the source audio per chunk, so we can
-    fit much more source into each API call and avoid over-chunking.
+    With the default 5-min target the count is simply ceil(duration / 300s):
+    300 s of source is well under the size/duration cap at any factor, so the
+    factor only changes the count when a larger target lets the size cap bite.
     """
 
-    def _run_planner(self, duration_seconds: float, factor: float) -> int:
+    def _run_planner(
+        self,
+        duration_seconds: float,
+        factor: float,
+        target_chunk_seconds: int = DEFAULT_TARGET_CHUNK_SECONDS,
+    ) -> int:
         from llm.service import _audio_subprocess
-        from meetings.services import audio_transcription as at
 
-        def fake_extract(file_path, start_ms, end_ms, index, **_):
-            tmp = tempfile.NamedTemporaryFile(
-                suffix=".mp3", delete=False, prefix=f"plan_{index}_"
+        # plan_chunk_boundaries is pure math after a metadata-only probe; it
+        # imports _resolve_speed_up_factor lazily, so patch it on the source
+        # module (the local import resolves the attribute at call time).
+        with patch.object(_audio_subprocess, "_resolve_speed_up_factor", return_value=factor):
+            boundaries = plan_chunk_boundaries(
+                int(duration_seconds * 1000),
+                target_chunk_seconds=target_chunk_seconds,
+                max_bytes=25_000_000,
+                max_seconds=1400,
             )
-            # ~1MB placeholder so the in-test size validation (80% of 25MB)
-            # never trips regardless of chunk count.
-            tmp.write(b"\x00" * (1 * 1024 * 1024))
-            tmp.close()
-            return Path(tmp.name)
+        return len(boundaries)
 
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as src:
-            src.write(b"\x00" * 1024)
-            src_path = Path(src.name)
-
-        try:
-            # split_audio_with_overlap imports the helpers lazily from
-            # llm.service._audio_subprocess — patch there, not on the
-            # meetings module, or the local import bypasses the mocks.
-            with patch.object(_audio_subprocess, "ffmpeg_available", return_value=True), \
-                 patch.object(_audio_subprocess, "ffprobe_duration_ms",
-                              return_value=int(duration_seconds * 1000)), \
-                 patch.object(_audio_subprocess, "ffmpeg_extract_chunk",
-                              side_effect=fake_extract), \
-                 patch.object(_audio_subprocess, "_resolve_speed_up_factor",
-                              return_value=factor):
-                specs = at.split_audio_with_overlap(
-                    src_path,
-                    max_bytes=25_000_000,
-                    max_seconds=1400,
-                )
-            n = len(specs)
-            # Clean up the temp extracted files.
-            for s in specs:
-                if s.path != src_path:
-                    s.path.unlink(missing_ok=True)
-            return n
-        finally:
-            src_path.unlink(missing_ok=True)
-
-    def test_sixty_minute_file_at_2x_produces_two_chunks(self):
-        # A 60-min source at 2x speed-up should fit in 2 chunks of 30 min each
-        # (15 min output each — well under the 1400s API limit).
-        self.assertEqual(self._run_planner(duration_seconds=3600, factor=2.0), 2)
-
-    def test_ninety_minute_file_at_2x_produces_three_chunks(self):
-        self.assertEqual(self._run_planner(duration_seconds=5400, factor=2.0), 3)
+    def test_default_target_chunks_by_duration(self):
+        # 5-min chunks: a 60-min file -> 12 chunks, a 90-min file -> 18.
+        self.assertEqual(self._run_planner(duration_seconds=3600, factor=2.0), 12)
+        self.assertEqual(self._run_planner(duration_seconds=5400, factor=2.0), 18)
 
     def test_short_file_is_single_chunk(self):
         self.assertEqual(self._run_planner(duration_seconds=300, factor=2.0), 1)
 
-    def test_factor_one_falls_back_to_half_as_many_chunks(self):
-        # At factor=1 (no speed-up) a 60-min file must split further — size
-        # limit at 128 kbps mono bounds a chunk to ~20 min of output.
-        self.assertGreater(self._run_planner(duration_seconds=3600, factor=1.0), 2)
+    def test_speed_up_factor_reduces_chunks_when_size_bound(self):
+        # With a large chunk target the API size limit is the binding cap, so a
+        # 2x speed-up (half the bytes per source-second) yields fewer chunks.
+        chunks_1x = self._run_planner(duration_seconds=3600, factor=1.0, target_chunk_seconds=3600)
+        chunks_2x = self._run_planner(duration_seconds=3600, factor=2.0, target_chunk_seconds=3600)
+        self.assertLess(chunks_2x, chunks_1x)
 
 
 class OrchestratorLanguageAndDeltaTests(TestCase):
@@ -275,16 +256,17 @@ class OrchestratorLanguageAndDeltaTests(TestCase):
             created_by=self.user,
         )
 
-    def _make_spec(self) -> ChunkSpec:
+    def _fake_extract(self, source_path, boundary, max_bytes):
         tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, prefix="lang_")
         tmp.write(b"\x00" * 16)
         tmp.close()
-        return ChunkSpec(path=Path(tmp.name), index=0, start_ms=0, end_ms=1000)
+        return Path(tmp.name)
 
-    @patch("meetings.services.audio_transcription.split_audio_with_overlap")
-    def test_orchestrator_passes_forced_language_and_delta_callback(self, mock_split):
-        spec = self._make_spec()
-        mock_split.return_value = [spec]
+    @patch("meetings.services.audio_transcription._extract_chunk")
+    @patch("meetings.services.audio_transcription._plan_upload_chunks")
+    def test_orchestrator_passes_forced_language_and_delta_callback(self, mock_plan, mock_extract):
+        mock_plan.return_value = [ChunkBoundary(index=0, start_ms=0, end_ms=1000)]
+        mock_extract.side_effect = self._fake_extract
 
         captured_kwargs = {}
 

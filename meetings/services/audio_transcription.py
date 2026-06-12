@@ -26,6 +26,7 @@ from __future__ import annotations
 import difflib
 import logging
 import math
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +47,10 @@ logger = logging.getLogger(__name__)
 # Defaults — see plan file for rationale
 # ---------------------------------------------------------------------------
 
-DEFAULT_TARGET_CHUNK_SECONDS = 1800  # 30 min *source* chunk (becomes 15 min output at 2x)
+DEFAULT_TARGET_CHUNK_SECONDS = 300   # 5 min *source* chunk. Smaller chunks keep the
+                                     # OpenAI SDK's per-call in-memory upload buffer (and
+                                     # the on-disk temp chunk) small on the 512 MB worker,
+                                     # at the cost of more sequential API calls.
 DEFAULT_OVERLAP_SECONDS = 15         # audio overlap between consecutive chunks
 DEFAULT_PRIOR_TAIL_CHARS = 800       # transcript tail length used in prompt carryover
 LIVE_PROMPT_TAIL_CHARS = 1200        # tail length for live-path prompt seeding
@@ -65,10 +69,14 @@ class AudioSplitTimeoutError(RuntimeError):
 
 
 @dataclass
-class ChunkSpec:
-    """A single audio chunk produced by ``split_audio_with_overlap``."""
+class ChunkBoundary:
+    """A planned chunk's source time range — pure metadata, no extracted file yet.
 
-    path: Path
+    Produced by :func:`plan_chunk_boundaries`; the audio for each boundary is
+    extracted on demand (one at a time) by :func:`_extract_chunk` so peak disk
+    stays at ~one chunk regardless of meeting length.
+    """
+
     index: int
     start_ms: int
     end_ms: int
@@ -126,32 +134,31 @@ def build_transcription_prompt(meeting: "Meeting", prior_tail: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# Audio splitter with overlap
+# Chunk planner (pure math) + on-demand extractor
 # ---------------------------------------------------------------------------
 
 
-def split_audio_with_overlap(
-    file_path: Path,
+def plan_chunk_boundaries(
+    total_ms: int,
     *,
     target_chunk_seconds: int = DEFAULT_TARGET_CHUNK_SECONDS,
     overlap_seconds: int = DEFAULT_OVERLAP_SECONDS,
     max_bytes: int,
     max_seconds: int,
-) -> list[ChunkSpec]:
-    """Split *file_path* into overlapping MP3 chunks ready for transcription.
+) -> list[ChunkBoundary]:
+    """Plan overlapping chunk boundaries for audio of duration ``total_ms``.
 
-    Each chunk i covers audio range
-    ``[max(0, i*effective - overlap_ms), min(total, (i+1)*effective)]``,
-    so chunk i contains ``overlap_seconds`` of audio from the tail of
-    chunk i-1. The first chunk has no leading overlap; the last chunk
-    is clamped to the file end.
+    Pure arithmetic — no ffmpeg, no disk. Each chunk i covers source range
+    ``[max(0, i*effective - overlap_ms), min(total, (i+1)*effective)]``, so
+    chunk i carries ``overlap_seconds`` of audio from the tail of chunk i-1.
+    The first chunk has no leading overlap; the last is clamped to the end.
 
-    Returns an empty list if the audio is shorter than the smallest possible
-    chunk. Returns a single-element list if the file fits in one chunk
-    (no overlap needed). Caller is responsible for unlinking the temp files.
+    Returns ``[]`` for non-positive duration, a single boundary when the file
+    fits one API-legal chunk, else the full overlapping plan. The caller
+    extracts each boundary's audio on demand (see :func:`_extract_chunk`).
 
-    Raises ValueError if ``overlap_seconds * 2 >= target_chunk_seconds``
-    (degenerate overlap configuration).
+    Raises ``ValueError`` on a degenerate overlap configuration
+    (``overlap_seconds < 0`` or ``target_chunk_seconds <= 2 * overlap_seconds``).
     """
     if overlap_seconds < 0:
         raise ValueError(f"overlap_seconds must be >= 0, got {overlap_seconds}")
@@ -161,38 +168,6 @@ def split_audio_with_overlap(
             f"2 * overlap_seconds ({overlap_seconds * 2})"
         )
 
-    from llm.service._audio_subprocess import (
-        ffmpeg_available,
-        ffmpeg_extract_chunk,
-        ffprobe_duration_ms,
-    )
-
-    if not ffmpeg_available():
-        file_size = file_path.stat().st_size
-        if file_size > max_bytes:
-            raise RuntimeError(
-                f"Audio file is {file_size / 1_000_000:.1f} MB which exceeds "
-                f"the {max_bytes / 1_000_000:.0f} MB API limit, and ffmpeg is "
-                f"not installed to split it into smaller chunks."
-            )
-        return [ChunkSpec(path=file_path, index=0, start_ms=0, end_ms=0)]
-
-    duration_ms = ffprobe_duration_ms(file_path)
-    if duration_ms is None:
-        logger.warning(
-            "ffprobe could not determine duration for %s; falling back to single chunk",
-            file_path,
-        )
-        file_size = file_path.stat().st_size
-        if file_size > max_bytes:
-            raise RuntimeError(
-                f"Audio file is {file_size / 1_000_000:.1f} MB which exceeds "
-                f"the {max_bytes / 1_000_000:.0f} MB API limit, and ffprobe "
-                f"could not probe the file to split it into smaller chunks."
-            )
-        return [ChunkSpec(path=file_path, index=0, start_ms=0, end_ms=0)]
-
-    total_ms = duration_ms
     if total_ms <= 0:
         return []
 
@@ -200,10 +175,9 @@ def split_audio_with_overlap(
     # output audio that is ``factor`` times shorter than the source time
     # range. Compute the largest source-time chunk that still lands within
     # BOTH API limits on the encoded output: duration (max_seconds) and
-    # bytes (max_bytes). Without this the chunking planner treats 900 s of
-    # source as if the API saw 900 s — even though at factor=2 the API
-    # only sees 450 s. The result is over-chunking (e.g. 4 chunks for a
-    # 60-min file instead of 2).
+    # bytes (max_bytes). Without this the planner treats N source-seconds as
+    # if the API saw N seconds — even though at factor=2 the API only sees
+    # N/2 — causing over-chunking.
     from llm.service._audio_subprocess import _resolve_speed_up_factor
     factor = _resolve_speed_up_factor(None)
 
@@ -228,35 +202,106 @@ def split_audio_with_overlap(
 
     # Single-chunk fast path: file fits inside a single API-legal chunk.
     if total_ms <= effective_ms:
-        path = ffmpeg_extract_chunk(
-            file_path, 0, total_ms, 0,
-            output_prefix="meet_upload_seg",
-        )
-        _validate_chunk_size(path, 0, max_bytes)
-        return [ChunkSpec(path=path, index=0, start_ms=0, end_ms=total_ms)]
+        return [ChunkBoundary(index=0, start_ms=0, end_ms=total_ms)]
 
     num_chunks = math.ceil(total_ms / effective_ms)
-    specs: list[ChunkSpec] = []
-    try:
-        for i in range(num_chunks):
-            raw_start = i * effective_ms
-            start = max(0, raw_start - overlap_ms) if i > 0 else 0
-            end = min((i + 1) * effective_ms, total_ms)
-            if end <= start:
-                break
-            path = ffmpeg_extract_chunk(
-                file_path, start, end, i,
-                output_prefix="meet_upload_seg",
-            )
-            _validate_chunk_size(path, i, max_bytes)
-            specs.append(ChunkSpec(path=path, index=i, start_ms=start, end_ms=end))
-    except Exception:
-        # On failure mid-split, clean up anything we already wrote.
-        for s in specs:
-            s.path.unlink(missing_ok=True)
-        raise
+    boundaries: list[ChunkBoundary] = []
+    for i in range(num_chunks):
+        raw_start = i * effective_ms
+        start = max(0, raw_start - overlap_ms) if i > 0 else 0
+        end = min((i + 1) * effective_ms, total_ms)
+        if end <= start:
+            break
+        boundaries.append(ChunkBoundary(index=i, start_ms=start, end_ms=end))
+    return boundaries
 
-    return specs
+
+def _guard_unsplittable_size(file_path: Path, max_bytes: int, *, reason: str) -> None:
+    """Raise if a file we can't split is over the API size limit."""
+    file_size = file_path.stat().st_size
+    if file_size > max_bytes:
+        raise RuntimeError(
+            f"Audio file is {file_size / 1_000_000:.1f} MB which exceeds "
+            f"the {max_bytes / 1_000_000:.0f} MB API limit, and {reason}."
+        )
+
+
+def _plan_upload_chunks(
+    source_path: Path,
+    info,
+    *,
+    target_chunk_seconds: int,
+    overlap_seconds: int,
+    meeting_id: int,
+) -> list[ChunkBoundary] | None:
+    """Probe the source and plan its chunk boundaries.
+
+    Returns ``None`` when ffmpeg/ffprobe is unavailable or the duration can't
+    be read — the caller then transcribes the original file directly (no split,
+    no speed-up), after we've checked it isn't over the API size limit. Returns
+    a (possibly empty) list of :class:`ChunkBoundary` otherwise.
+    """
+    from llm.service._audio_subprocess import ffmpeg_available, ffprobe_duration_ms
+
+    if not ffmpeg_available():
+        _guard_unsplittable_size(
+            source_path, info.max_file_size_bytes,
+            reason="ffmpeg is not installed to split it into smaller chunks",
+        )
+        return None
+
+    duration_ms = ffprobe_duration_ms(source_path)
+    if duration_ms is None:
+        logger.warning(
+            "ffprobe could not determine duration for %s; transcribing as a single file",
+            source_path,
+        )
+        _guard_unsplittable_size(
+            source_path, info.max_file_size_bytes,
+            reason="ffprobe could not probe the file to split it into smaller chunks",
+        )
+        return None
+
+    return plan_chunk_boundaries(
+        duration_ms,
+        target_chunk_seconds=target_chunk_seconds,
+        overlap_seconds=overlap_seconds,
+        max_bytes=info.max_file_size_bytes,
+        max_seconds=info.max_duration_seconds,
+    )
+
+
+def _extract_chunk(source_path: Path, boundary: ChunkBoundary, max_bytes: int) -> Path:
+    """Extract one planned chunk to a temp MP3, validating its encoded size.
+
+    Wraps ``ffmpeg_extract_chunk`` + :func:`_validate_chunk_size`. A wedged
+    ffmpeg surfaces as :class:`AudioSplitTimeoutError` (ffmpeg has its own
+    per-call subprocess timeout) so it can't burn the whole Celery time limit.
+    The caller is responsible for unlinking the returned path.
+    """
+    from llm.service._audio_subprocess import ffmpeg_extract_chunk
+
+    try:
+        path = ffmpeg_extract_chunk(
+            source_path,
+            boundary.start_ms,
+            boundary.end_ms,
+            boundary.index,
+            output_prefix="meet_upload_seg",
+            timeout=AUDIO_SPLIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error(
+            "audio chunk %d extraction timed out after %ds for %s",
+            boundary.index, AUDIO_SPLIT_TIMEOUT_SECONDS, source_path,
+        )
+        raise AudioSplitTimeoutError(
+            f"Audio chunk {boundary.index} extraction timed out after "
+            f"{AUDIO_SPLIT_TIMEOUT_SECONDS}s. The file may be corrupted or too "
+            f"complex for ffmpeg to process."
+        ) from exc
+    _validate_chunk_size(path, boundary.index, max_bytes)
+    return path
 
 
 def _validate_chunk_size(path: Path, index: int, max_bytes: int) -> None:
@@ -363,14 +408,19 @@ def orchestrate_upload_transcription(
     """Transcribe an uploaded meeting audio file end-to-end.
 
     Sequence:
-      1. Load the Meeting and build the meta prompt.
-      2. Split the audio into overlapping chunks.
-      3. If single chunk: one transcription call, persist, return.
-      4. Else: set chunks_total/done atomically, then iterate sequentially.
-         For each chunk, build a prompt with the running tail, call the
-         service with a small transient-error retry, and stitch.
-      5. On chunk failure: persist any partial transcript, set FAILED,
-         reset progress fields, re-raise.
+      1. Load the Meeting and snapshot any existing transcript.
+      2. Probe + plan chunk boundaries (metadata-only ffprobe + arithmetic;
+         no audio decoded and no temp files written yet).
+      3. Single-pass fallback when ffmpeg/ffprobe is unavailable: transcribe
+         the original uploaded file directly.
+      4. Single chunk: extract it, one transcription call, persist, return.
+      5. Else: set chunks_total/done, then iterate sequentially. For each
+         chunk, extract its audio ON DEMAND, build a prompt with the running
+         tail, call the service with a small transient-error retry, stitch,
+         then DELETE the chunk file before moving on — so peak disk stays at
+         ~one chunk regardless of meeting length.
+      6. On chunk failure (extract or transcribe): persist any partial
+         transcript, set FAILED, reset progress fields, re-raise.
 
     When the meeting already has a transcript (re-upload case), the newly
     transcribed text is appended to the existing transcript — never
@@ -397,54 +447,54 @@ def orchestrate_upload_transcription(
     # auto-detects per call — which is usually correct for multilingual orgs.
     forced_language = (getattr(meeting, "forced_language", "") or "").strip() or None
 
-    # Snapshot the existing transcript BEFORE any chunking work. If the user
-    # is re-uploading to an existing meeting, new text is appended to this
+    # Snapshot the existing transcript BEFORE any work. If the user is
+    # re-uploading to an existing meeting, new text is appended to this
     # snapshot rather than overwriting it.
     existing_transcript = meeting.transcript or ""
 
-    # Build the chunks before touching any meeting state — if pydub blows up
-    # we don't want partially-set progress fields lying around.
-    # Wrap in a timeout so a hung ffmpeg process cannot burn the entire Celery
-    # time_limit (30 min). The timeout is deliberately generous — normal splits
-    # finish in single-digit seconds even for hour-long files.
-    import concurrent.futures
-
-    t0 = time.perf_counter()
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                split_audio_with_overlap,
-                temp_path,
-                target_chunk_seconds=target_chunk_seconds,
-                overlap_seconds=overlap_seconds,
-                max_bytes=info.max_file_size_bytes,
-                max_seconds=info.max_duration_seconds,
-            )
-            chunk_specs = future.result(timeout=AUDIO_SPLIT_TIMEOUT_SECONDS)
-    except concurrent.futures.TimeoutError:
-        split_duration = time.perf_counter() - t0
-        logger.error(
-            "audio split timed out after %.1fs (limit=%ds) for meeting=%s file=%s",
-            split_duration, AUDIO_SPLIT_TIMEOUT_SECONDS, meeting_id, temp_path,
-        )
-        raise AudioSplitTimeoutError(
-            f"Audio splitting timed out after {AUDIO_SPLIT_TIMEOUT_SECONDS}s. "
-            f"The file may be corrupted or too complex for ffmpeg to process."
-        )
-    split_duration = time.perf_counter() - t0
-    logger.info(
-        "audio split completed in %.1fs (%d chunks) for meeting=%s file=%s",
-        split_duration, len(chunk_specs), meeting_id, temp_path,
-    )
-
-    if not chunk_specs:
-        raise ValueError(f"Audio file produced no chunks: {temp_path}")
-
     expected_overlap_chars = overlap_seconds * CHARS_PER_OVERLAP_SECOND
 
+    # Probe + plan boundaries before touching any meeting state. This is a
+    # metadata-only ffprobe plus arithmetic — no audio is decoded and no temp
+    # files are written yet, so a planning failure can't leave progress fields
+    # half-set.
+    boundaries = _plan_upload_chunks(
+        temp_path, info,
+        target_chunk_seconds=target_chunk_seconds,
+        overlap_seconds=overlap_seconds,
+        meeting_id=meeting_id,
+    )
+
+    # Single-pass fallback: ffmpeg/ffprobe unavailable -> transcribe the
+    # original uploaded file directly (no split, no speed-up).
+    if boundaries is None:
+        logger.info("audio upload: transcribing %s as a single file (no split)", temp_path)
+        prior_tail = (
+            existing_transcript[-DEFAULT_PRIOR_TAIL_CHARS:] if existing_transcript else None
+        )
+        prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
+        delta_buf = _PartialTranscriptFlusher(meeting_id, existing_transcript)
+        result = _transcribe_with_transient_retry(
+            service, temp_path, model_id, ctx, prompt,
+            language=forced_language, on_delta=delta_buf.on_delta,
+        )
+        text = result.text or ""
+        combined = combine_existing_and_new_transcript(existing_transcript, text)
+        _finalize_meeting_success(meeting_id, combined, model_id)
+        return combined
+
+    if not boundaries:
+        raise ValueError(f"Audio file produced no chunks: {temp_path}")
+
+    n = len(boundaries)
+    logger.info(
+        "audio upload: planned %d chunk(s) for meeting=%s file=%s",
+        n, meeting_id, temp_path,
+    )
+
     # Single-chunk fast path: skip overlap/progress entirely.
-    if len(chunk_specs) == 1:
-        spec = chunk_specs[0]
+    if n == 1:
+        current_path: Path | None = None
         try:
             # Seed the prompt with the tail of any existing transcript so the
             # model has continuity for proper nouns across the append boundary.
@@ -454,9 +504,10 @@ def orchestrate_upload_transcription(
                 else None
             )
             prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
+            current_path = _extract_chunk(temp_path, boundaries[0], info.max_file_size_bytes)
             delta_buf = _PartialTranscriptFlusher(meeting_id, existing_transcript)
             result = _transcribe_with_transient_retry(
-                service, spec.path, model_id, ctx, prompt,
+                service, current_path, model_id, ctx, prompt,
                 language=forced_language,
                 on_delta=delta_buf.on_delta,
             )
@@ -465,10 +516,10 @@ def orchestrate_upload_transcription(
             _finalize_meeting_success(meeting_id, combined, model_id)
             return combined
         finally:
-            spec.path.unlink(missing_ok=True)
+            if current_path is not None:
+                current_path.unlink(missing_ok=True)
 
     # Multi-chunk path.
-    n = len(chunk_specs)
     Meeting.objects.filter(pk=meeting_id).update(
         transcription_chunks_total=n,
         transcription_chunks_done=0,
@@ -479,12 +530,13 @@ def orchestrate_upload_transcription(
     )
 
     running_new_transcript = ""  # only the *new* upload's stitched text
+    current_path = None
     try:
-        for i, spec in enumerate(chunk_specs):
+        for i, boundary in enumerate(boundaries):
             # Cancellation check: if the user clicked Stop, the cancel view
             # flipped status to FAILED. Bail out with the partial transcript
             # we've stitched so far. We can't interrupt the in-flight chunk,
-            # but we won't start a new one.
+            # but we won't extract / start a new one.
             current_status = Meeting.objects.filter(pk=meeting_id).values_list("status", flat=True).first()
             if current_status != Meeting.Status.LIVE_TRANSCRIBING:
                 logger.info(
@@ -526,8 +578,12 @@ def orchestrate_upload_transcription(
             seed = combine_existing_and_new_transcript(existing_transcript, running_new_transcript)
             delta_buf = _PartialTranscriptFlusher(meeting_id, seed)
             try:
+                # Extract this chunk's audio on demand, then transcribe it. Both
+                # are inside the try so an extraction failure also persists the
+                # partial transcript and marks the meeting FAILED.
+                current_path = _extract_chunk(temp_path, boundary, info.max_file_size_bytes)
                 result = _transcribe_with_transient_retry(
-                    service, spec.path, model_id, ctx, prompt,
+                    service, current_path, model_id, ctx, prompt,
                     language=forced_language,
                     on_delta=delta_buf.on_delta,
                 )
@@ -576,10 +632,14 @@ def orchestrate_upload_transcription(
                 updated_at=timezone.now(),
             )
 
-            spec.path.unlink(missing_ok=True)
+            # Delete this chunk's file before extracting the next one — this is
+            # what keeps peak disk at ~one chunk instead of the whole file.
+            current_path.unlink(missing_ok=True)
+            current_path = None
     finally:
-        for spec in chunk_specs:
-            spec.path.unlink(missing_ok=True)
+        # Clean up the in-flight chunk (e.g. one that failed mid-transcribe).
+        if current_path is not None:
+            current_path.unlink(missing_ok=True)
 
     combined = combine_existing_and_new_transcript(existing_transcript, running_new_transcript)
     _finalize_meeting_success(meeting_id, combined, model_id)
