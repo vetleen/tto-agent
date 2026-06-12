@@ -70,6 +70,60 @@ class SkillsListViewTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class AnnotateSkillsTests(TestCase):
+    """The skills-list row annotation: can_edit is derived from a precomputed
+    is_org_admin flag (no per-row Membership query)."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="ann@example.com", password="pw")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Acme", slug="acme")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.MEMBER)
+        AgentSkill.objects.create(slug="sys-x", name="Sys X", instructions="i", level="system")
+        AgentSkill.objects.create(
+            slug="org-x", name="Org X", instructions="i", level="org", organization=self.org,
+        )
+        AgentSkill.objects.create(
+            slug="usr-x", name="My X", instructions="i", level="user", created_by=self.user,
+        )
+        self.org.preferences = {"skills": {"sys-x": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+
+    def _rows(self, level, is_org_admin):
+        from agent_skills.services import get_accessible_skills, get_user_skill_prefs
+        from agent_skills.views import _annotate_skills
+
+        accessible = get_accessible_skills(self.user)
+        prefs = get_user_skill_prefs(self.user)
+        skills = [s for s in accessible if s.level == level]
+        return _annotate_skills(self.user, skills, accessible, prefs, is_org_admin)
+
+    def test_org_skill_editable_only_for_admin(self):
+        self.assertTrue(all(not r["can_edit"] for r in self._rows("org", is_org_admin=False)))
+        self.assertTrue(all(r["can_edit"] for r in self._rows("org", is_org_admin=True)))
+
+    def test_user_skill_always_editable(self):
+        # Ownership-based; independent of the org-admin flag.
+        self.assertTrue(all(r["can_edit"] for r in self._rows("user", is_org_admin=False)))
+
+    def test_system_skill_never_editable(self):
+        self.assertTrue(all(not r["can_edit"] for r in self._rows("system", is_org_admin=True)))
+
+    def test_list_view_does_not_call_can_edit_skill_per_row(self):
+        """Regression: the list path inlines can_edit, so the per-row query
+        helper (services.can_edit_skill) must not be invoked during render."""
+        from unittest.mock import patch
+
+        self.client.force_login(self.user)
+        with patch("agent_skills.views.can_edit_skill") as mock_can_edit:
+            response = self.client.get(reverse("agent_skills_list"))
+        self.assertEqual(response.status_code, 200)
+        mock_can_edit.assert_not_called()
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class SkillsCreateViewTests(TestCase):
     def setUp(self):
         AgentSkill.objects.all().delete()

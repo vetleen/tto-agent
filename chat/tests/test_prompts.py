@@ -173,6 +173,19 @@ class BuildSystemPromptTests(TestCase):
         # The description is empty so it should not leave an extra blank line
         self.assertNotIn("## Patent Drafter\n\n\n", prompt)
 
+    def test_skill_section_has_no_stray_code_comment(self):
+        # Regression: a developer comment once lived inside the skill f-string
+        # and leaked the literal text "#chr(10) produces a newline..." into the
+        # prompt. The skill block must never contain that or a bare chr(10) ref.
+        skill = self._make_skill(
+            "Patent Drafter",
+            "Draft patents carefully.",
+            description="Helps draft patent applications.",
+        )
+        prompt = build_system_prompt(skill=skill)
+        self.assertNotIn("chr(10)", prompt)
+        self.assertNotIn("produces a newline", prompt)
+
     def test_skill_appears_after_instructions_before_data_rooms(self):
         skill = self._make_skill("Test Skill", "Do the test.")
         prompt = build_system_prompt(skill=skill, data_rooms=[self.data_room])

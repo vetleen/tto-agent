@@ -268,8 +268,16 @@ class CreateSkillTool(ContextAwareTool):
         # Best-effort emoji auto-pick. Any failure leaves emoji empty; the
         # user can still set one manually via the skill detail form.
         try:
+            from accounts.models import get_user_org
+
             conversation_id = self.context.conversation_id if self.context else None
-            emoji = _generate_emoji_for_skill(name, user_id, conversation_id)
+            # skill_emoji is an org-scoped feature: pass the org so the model
+            # resolver honors the org's chosen cheap model / allowed_models
+            # instead of falling back to the system default.
+            org = get_user_org(user)
+            emoji = _generate_emoji_for_skill(
+                name, user_id, conversation_id, org_id=org.id if org else None,
+            )
             if emoji:
                 skill.emoji = emoji
                 skill.save(update_fields=["emoji", "updated_at"])
@@ -312,6 +320,12 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
             user = User.objects.get(pk=user_id)
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
+
+        # Guard against a blank target so an empty/whitespace name can't create
+        # a junk SkillTemplate(name="") via the template branch below.
+        field_name = (field_name or "").strip()
+        if not field_name:
+            return json.dumps({"status": "error", "message": "field_name is required."})
 
         skill, err = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
         if err:
@@ -444,9 +458,21 @@ class EditSkillTool(ContextAwareTool):
             skill.name = updates["name"]
             update_fields.append("name")
         if "new_slug" in updates:
+            from django.utils.text import slugify
+
             from agent_skills.models import AgentSkill
 
-            new_slug = updates["new_slug"]
+            # Slugify + cap at the SlugField's 64-char limit, mirroring the
+            # save form (views._apply_skill_form). Without this, a raw value
+            # with spaces/uppercase would persist a malformed slug, and a
+            # >64-char value would raise a DataError on Postgres (SlugField
+            # validators don't run on .save()).
+            new_slug = slugify(str(updates["new_slug"]))[:64]
+            if not new_slug:
+                return json.dumps({
+                    "status": "error",
+                    "message": "Invalid slug.",
+                })
             conflict = AgentSkill.objects.filter(
                 slug=new_slug, level=skill.level, **{
                     "organization": skill.organization} if skill.level == "org"

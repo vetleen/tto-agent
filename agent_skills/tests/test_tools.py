@@ -64,6 +64,20 @@ class CreateSkillToolTests(TestCase):
         skill = AgentSkill.objects.get(slug="resilient", created_by=self.user)
         self.assertEqual(skill.emoji, "")
 
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="")
+    def test_create_skill_passes_org_id_to_emoji(self, mock_gen):
+        """The user's org is forwarded so the org-scoped skill_emoji model wins."""
+        org = Organization.objects.create(name="Acme", slug="acme")
+        Membership.objects.create(user=self.user, org=org, role=Membership.Role.ADMIN)
+        self.tool._run(name="Org Skill")
+        self.assertEqual(mock_gen.call_args.kwargs.get("org_id"), org.id)
+
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="")
+    def test_create_skill_org_id_none_without_membership(self, mock_gen):
+        """Unaffiliated user → org_id None (resolver falls back to system default)."""
+        self.tool._run(name="Solo Skill")
+        self.assertEqual(mock_gen.call_args.kwargs.get("org_id"), None)
+
 
 class EditSkillToolTests(TestCase):
     def setUp(self):
@@ -84,6 +98,34 @@ class EditSkillToolTests(TestCase):
         self.assertEqual(result["name"], "Renamed")
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.name, "Renamed")
+
+    def test_new_slug_is_slugified(self):
+        """A raw new_slug with spaces/uppercase is slugified before saving."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"new_slug": "My New Slug"},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["slug"], "my-new-slug")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "my-new-slug")
+
+    def test_new_slug_truncated_to_64(self):
+        """An over-long new_slug is capped at the SlugField's 64-char limit."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"new_slug": "a" * 200},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "a" * 64)
+
+    def test_new_slug_empty_after_slugify_rejected(self):
+        """A new_slug that slugifies to empty is rejected; slug is unchanged."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"new_slug": "!!!"},
+        ))
+        self.assertEqual(result["status"], "error")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "editable")
 
     def test_find_replace_description(self):
         result = json.loads(self.tool._run(
@@ -254,6 +296,17 @@ class SaveCanvasToSkillFieldToolTests(TestCase):
         )
         result = json.loads(self.tool._run(skill_slug="sys", field_name="instructions"))
         self.assertEqual(result["status"], "error")
+
+    def test_empty_field_name_rejected(self):
+        """A blank field_name is rejected and creates no junk template."""
+        result = json.loads(self.tool._run(skill_slug="canvas-skill", field_name=""))
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(SkillTemplate.objects.filter(skill=self.skill).exists())
+
+    def test_whitespace_field_name_rejected(self):
+        result = json.loads(self.tool._run(skill_slug="canvas-skill", field_name="   "))
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(SkillTemplate.objects.filter(skill=self.skill).exists())
 
     def test_save_from_named_canvas(self):
         """canvas_name parameter targets a specific canvas by title."""

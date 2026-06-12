@@ -84,16 +84,23 @@ def _relative_date(value) -> str:
 _LEVEL_DISPLAY = {"system": "built-in", "org": "organization", "user": "your"}
 
 
-def _annotate_skills(user, skills: list[AgentSkill]) -> list[dict]:
+def _annotate_skills(
+    user,
+    skills: list[AgentSkill],
+    accessible: list[AgentSkill],
+    user_skill_prefs: dict,
+    is_org_admin: bool,
+) -> list[dict]:
     """Compute per-row metadata for the list template.
 
     Returns dicts with: skill, is_enabled, can_edit, has_conflict,
     conflict_label, relative_date.
-    """
-    user_skill_prefs = get_user_skill_prefs(user)
 
+    ``accessible``, ``user_skill_prefs`` and ``is_org_admin`` are resolved once
+    by the caller and passed in so this helper issues no per-call or per-row
+    queries (it is invoked once per tier).
+    """
     # Group all accessible skills by slug for conflict detection.
-    accessible = get_accessible_skills(user)
     by_slug: dict[str, list[AgentSkill]] = {}
     for s in accessible:
         by_slug.setdefault(s.slug, []).append(s)
@@ -135,10 +142,21 @@ def _annotate_skills(user, skills: list[AgentSkill]) -> list[dict]:
             else:
                 conflict_label = "You have disabled this skill name"
 
+        # Inline the can_edit_skill rules using the precomputed is_org_admin
+        # flag, avoiding a Membership query per org-skill row (the N+1 the
+        # service helper would otherwise cause). System skills are never
+        # editable; org skills need org admin; user skills need ownership.
+        if skill.level == "system":
+            can_edit = False
+        elif skill.level == "org":
+            can_edit = is_org_admin
+        else:
+            can_edit = skill.created_by_id == user.pk
+
         rows.append({
             "skill": skill,
             "is_enabled": is_enabled,
-            "can_edit": can_edit_skill(user, skill),
+            "can_edit": can_edit,
             "has_conflict": has_conflict,
             "conflict_label": conflict_label,
             "relative_date": _relative_date(skill.updated_at),
@@ -173,6 +191,7 @@ def skills_list(request):
     is_org_admin = _is_org_admin(request.user, org)
 
     accessible = get_accessible_skills(request.user)
+    user_skill_prefs = get_user_skill_prefs(request.user)
     user_skills = sorted(
         [s for s in accessible if s.level == "user"], key=lambda s: s.name
     )
@@ -187,9 +206,15 @@ def skills_list(request):
         request,
         "agent_skills/skills_list.html",
         {
-            "user_rows": _annotate_skills(request.user, user_skills),
-            "org_rows": _annotate_skills(request.user, org_skills),
-            "system_rows": _annotate_skills(request.user, system_skills),
+            "user_rows": _annotate_skills(
+                request.user, user_skills, accessible, user_skill_prefs, is_org_admin
+            ),
+            "org_rows": _annotate_skills(
+                request.user, org_skills, accessible, user_skill_prefs, is_org_admin
+            ),
+            "system_rows": _annotate_skills(
+                request.user, system_skills, accessible, user_skill_prefs, is_org_admin
+            ),
             "user_org": org,
             "is_org_admin": is_org_admin,
         },

@@ -256,7 +256,7 @@ Below is a predefined SKILL explaining in detail how to handle \
 the user's request. Follow it to the best of your ability.
 
 ## {skill.name}
-{f'## Skill description:{chr(10)}{skill.description}{chr(10)}' if skill.description else ''} #chr(10) produces a newline character (\n).
+{f'## Skill description:{chr(10)}{skill.description}{chr(10)}' if skill.description else ''}
 ## Skill instructions:
 {deepened}
 
