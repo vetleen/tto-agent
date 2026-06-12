@@ -8,9 +8,15 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Membership, Organization
-from agent_skills.models import MAX_INSTRUCTIONS_CHARS, AgentSkill, SkillTemplate
+from agent_skills.models import (
+    MAX_INSTRUCTIONS_CHARS,
+    MAX_TEMPLATE_CHARS,
+    AgentSkill,
+    SkillTemplate,
+)
 from agent_skills.services import (
     EXPORT_VERSION,
+    MAX_SKILLS_PER_IMPORT,
     SkillImportError,
     dump_skills_json,
     export_skill,
@@ -177,6 +183,43 @@ class ParseImportServiceTests(TestCase):
         templates = list(skill.templates.all())
         self.assertEqual(len(templates), 1)
         self.assertEqual(templates[0].content, "first")
+
+    def test_import_truncates_oversized_template_content(self):
+        raw = json.dumps({"skills": [{
+            "name": "Big Tmpl",
+            "instructions": ["ok"],
+            "templates": [
+                {"name": "Huge", "content": ["x" * (MAX_TEMPLATE_CHARS + 5000)]},
+            ],
+        }]}).encode("utf-8")
+        payloads = parse_skill_export(raw)
+        # Normalization caps the payload...
+        self.assertEqual(len(payloads[0]["templates"][0]["content"]), MAX_TEMPLATE_CHARS)
+        # ...and so does the persisted template.
+        skill = import_skill(self.user, payloads[0])
+        tmpl = skill.templates.get(name="Huge")
+        self.assertEqual(len(tmpl.content), MAX_TEMPLATE_CHARS)
+
+    def test_rejects_too_many_skills(self):
+        """A file over the per-import skill cap is rejected before any
+        normalization work (the slug dedup is O(N²) per skill)."""
+        entries = [
+            {"name": f"S{i}", "instructions": ["x"]}
+            for i in range(MAX_SKILLS_PER_IMPORT + 1)
+        ]
+        raw = json.dumps({"skills": entries}).encode("utf-8")
+        with self.assertRaises(SkillImportError) as ctx:
+            parse_skill_export(raw)
+        self.assertIn(str(MAX_SKILLS_PER_IMPORT), str(ctx.exception))
+
+    def test_accepts_exactly_max_skills(self):
+        entries = [
+            {"name": f"S{i}", "instructions": ["x"]}
+            for i in range(MAX_SKILLS_PER_IMPORT)
+        ]
+        raw = json.dumps({"skills": entries}).encode("utf-8")
+        payloads = parse_skill_export(raw)
+        self.assertEqual(len(payloads), MAX_SKILLS_PER_IMPORT)
 
     def test_rejects_invalid_json(self):
         with self.assertRaises(SkillImportError):

@@ -3,6 +3,7 @@
 import json
 
 from django.contrib.auth import get_user_model
+from django.contrib.messages import get_messages
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
@@ -333,6 +334,56 @@ class SkillsSaveViewTests(TestCase):
         self.assertEqual(templates[0].name, "B")
         self.assertEqual(templates[0].content, "ca")
 
+    def test_save_tolerates_malformed_template_entries(self):
+        """Regression: a non-UUID template id (or non-string name/content)
+        previously raised an unhandled ValidationError in the pk filter — a
+        500. A bad id must degrade to "new template"."""
+        templates_json = json.dumps([
+            {"id": "not-a-uuid", "name": 123, "content": None},
+        ])
+        self.client.force_login(self.user)
+        response = self._post("save", templates_json=templates_json)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("agent_skills_list"))
+
+        templates = list(self.skill.templates.all())
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0].name, "123")
+        self.assertEqual(templates[0].content, "")
+
+    def test_save_slug_rename_migrates_prefs(self):
+        """Renaming the slug on the detail form carries the user's slug-keyed
+        selection over (prefs live under preferences["skills"][slug])."""
+        us, _ = UserSettings.objects.get_or_create(user=self.user)
+        us.preferences = {
+            "skills": {"my": {"selected_skill_id": str(self.skill.id)}}
+        }
+        us.save(update_fields=["preferences"])
+
+        self.client.force_login(self.user)
+        payload = {
+            "action": "save",
+            "name": "My Skill",
+            "slug": "my-renamed",
+            "description": "desc",
+            "instructions": "hello",
+            "tool_names_json": "[]",
+            "templates_json": "[]",
+        }
+        response = self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.skill.id}),
+            payload,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "my-renamed")
+        us.refresh_from_db()
+        skills_prefs = us.preferences["skills"]
+        self.assertNotIn("my", skills_prefs)
+        self.assertEqual(
+            skills_prefs["my-renamed"]["selected_skill_id"], str(self.skill.id)
+        )
+
     def test_non_owner_save_forbidden(self):
         outsider = User.objects.create_user(email="o2@example.com", password="pw")
         outsider.email_verified = True
@@ -519,6 +570,65 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
 
         copy = AgentSkill.objects.get(level="org", organization=self.org)
         self.assertEqual(copy.templates.count(), 2)
+
+    def _make_org_skill(self):
+        skill = AgentSkill.objects.create(
+            slug="org-keeper", name="Org Keeper", instructions="i",
+            level="org", organization=self.org,
+        )
+        SkillTemplate.objects.create(skill=skill, name="Keep", content="kept")
+        return skill
+
+    def test_save_as_org_on_existing_org_skill_error_keeps_skill(self):
+        """Regression: save_as_org on an *existing* org skill no-ops in
+        promote_skill_to_org (it returns the original row). A validation
+        error must not delete the original — the old error path did, then
+        500'd building the redirect (skill.id was None after delete)."""
+        org_skill = self._make_org_skill()
+        self.client.force_login(self.user)
+        dup_templates = json.dumps([
+            {"id": None, "name": "Dup", "content": "a"},
+            {"id": None, "name": "Dup", "content": "b"},
+        ])
+        response = self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": org_skill.id}),
+            self._detail_payload(
+                "save_as_org", name="Org Keeper", templates_json=dup_templates
+            ),
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse("agent_skills_detail", kwargs={"skill_id": org_skill.id}),
+        )
+        # The original org skill (and its templates) must survive.
+        org_skill.refresh_from_db()
+        self.assertEqual(org_skill.templates.count(), 1)
+        msgs = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("share the name" in m for m in msgs))
+
+    def test_save_as_org_on_existing_org_skill_saves_in_place(self):
+        """save_as_org on an org skill in the same org edits it in place —
+        no duplicate row, and the message says 'Saved' (no copy was made)."""
+        org_skill = self._make_org_skill()
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": org_skill.id}),
+            self._detail_payload(
+                "save_as_org", name="Renamed Keeper", templates_json="[]"
+            ),
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            AgentSkill.objects.filter(
+                level="org", organization=self.org, slug="org-keeper"
+            ).count(),
+            1,
+        )
+        org_skill.refresh_from_db()
+        self.assertEqual(org_skill.name, "Renamed Keeper")
+        msgs = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertIn("Saved 'Renamed Keeper'.", msgs)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

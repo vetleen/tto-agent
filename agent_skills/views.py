@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import uuid
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -14,7 +15,12 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods, require_POST
 
 from accounts.models import Membership
-from agent_skills.models import MAX_INSTRUCTIONS_CHARS, AgentSkill, SkillTemplate
+from agent_skills.models import (
+    MAX_INSTRUCTIONS_CHARS,
+    MAX_TEMPLATE_CHARS,
+    AgentSkill,
+    SkillTemplate,
+)
 from agent_skills.services import (
     get_accessible_skills,
     get_user_skill_prefs,
@@ -304,6 +310,13 @@ def skills_detail(request, skill_id):
 
 
 def _parse_templates_json(raw: str) -> list[dict]:
+    """Parse the submitted templates list, tolerating malformed entries.
+
+    Field-level coercion matters: the values come from client-side JSON, so a
+    non-string name, a non-UUID id, or a non-string content must degrade
+    gracefully instead of raising (an invalid UUID in a pk filter is an
+    unhandled ValidationError — a 500). A bad id is treated as "new template".
+    """
     try:
         data = json.loads(raw or "[]")
     except (json.JSONDecodeError, ValueError):
@@ -314,13 +327,22 @@ def _parse_templates_json(raw: str) -> list[dict]:
     for entry in data:
         if not isinstance(entry, dict):
             continue
-        name = (entry.get("name") or "").strip()
+        name = str(entry.get("name") or "").strip()
         if not name:
             continue
+        tmpl_id = entry.get("id")
+        if tmpl_id is not None:
+            try:
+                tmpl_id = str(uuid.UUID(str(tmpl_id)))
+            except (TypeError, ValueError):
+                tmpl_id = None
+        content = entry.get("content")
+        if not isinstance(content, str):
+            content = "" if content is None else str(content)
         cleaned.append({
-            "id": entry.get("id") or None,
+            "id": tmpl_id,
             "name": name[:255],
-            "content": entry.get("content") or "",
+            "content": content[:MAX_TEMPLATE_CHARS],
         })
     return cleaned
 
@@ -369,6 +391,7 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     )
 
     # Handle slug updates for user-level skills.
+    old_slug = skill.slug
     raw_slug = request.POST.get("slug", "").strip()
     if raw_slug and skill.level == "user":
         from django.utils.text import slugify
@@ -407,6 +430,13 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     skill.save(update_fields=[
         "slug", "name", "emoji", "description", "instructions", "tool_names", "updated_at",
     ])
+
+    # Keep the user's slug-keyed enable/disable selection pointing at this
+    # skill across a rename (prefs live under preferences["skills"][slug]).
+    if skill.slug != old_slug:
+        from agent_skills.services import migrate_skill_slug_prefs
+
+        migrate_skill_slug_prefs(skill, old_slug, skill.slug)
 
     # Delete templates the user removed BEFORE updating kept ones, so a
     # rename like "remove B, rename A→B" doesn't trip the unique constraint.
@@ -476,13 +506,21 @@ def skills_save(request, skill_id):
             )
         except PermissionError:
             return HttpResponseForbidden("Org admin required.")
+        # promote_skill_to_org no-ops (returns the source row) when the skill
+        # is already an org skill in this org — in that case there is no copy
+        # to clean up on failure, and deleting would destroy the original.
+        is_copy = promoted.pk != skill.pk
         try:
             _apply_skill_form(promoted, request)
         except SkillFormValidationError as exc:
-            promoted.delete()
+            if is_copy:
+                promoted.delete()
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
-        messages.success(request, f"Saved as organization skill '{promoted.name}'.")
+        if is_copy:
+            messages.success(request, f"Saved as organization skill '{promoted.name}'.")
+        else:
+            messages.success(request, f"Saved '{promoted.name}'.")
         return redirect("agent_skills_list")
 
     if action == "promote":

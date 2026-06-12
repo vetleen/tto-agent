@@ -203,7 +203,7 @@ class EditSkillInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to edit.")
     updates: dict = Field(
         default_factory=dict,
-        description="Optional keys: name, new_slug, tool_names, is_active.",
+        description="Optional keys: name, new_slug, tool_names.",
     )
     text_edits: list[TextEdit] = Field(
         default_factory=list,
@@ -263,7 +263,9 @@ class CreateSkillTool(ContextAwareTool):
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
 
-        skill = create_user_skill(user, name)
+        # Cap at the CharField limit, mirroring the create form — an over-long
+        # name raises a DataError on Postgres (invisible on SQLite).
+        skill = create_user_skill(user, name[:255])
 
         # Best-effort emoji auto-pick. Any failure leaves emoji empty; the
         # user can still set one manually via the skill detail form.
@@ -338,11 +340,21 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
                 "message": err,
             })
 
+        # Cap each target at its field's limit: instructions at the model cap,
+        # description at the CharField-style 1024 the edit form enforces (it is
+        # injected verbatim into the system prompt of every thread using the
+        # skill), templates at the shared template cap.
         content = canvas.content
         if field_name == "instructions":
             from agent_skills.models import MAX_INSTRUCTIONS_CHARS
 
             content = content[:MAX_INSTRUCTIONS_CHARS]
+        elif field_name == "description":
+            content = content[:1024]
+        else:
+            from agent_skills.models import MAX_TEMPLATE_CHARS
+
+            content = content[:MAX_TEMPLATE_CHARS]
 
         if field_name in ("instructions", "description"):
             setattr(skill, field_name, content)
@@ -455,8 +467,12 @@ class EditSkillTool(ContextAwareTool):
         update_fields = ["updated_at"]
 
         if "name" in updates:
-            skill.name = updates["name"]
-            update_fields.append("name")
+            # Cap at the CharField limit (DataError on Postgres otherwise) and
+            # skip blank names, mirroring the save form's fallback.
+            new_name = str(updates["name"]).strip()[:255]
+            if new_name:
+                skill.name = new_name
+                update_fields.append("name")
         if "new_slug" in updates:
             from django.utils.text import slugify
 
@@ -484,6 +500,7 @@ class EditSkillTool(ContextAwareTool):
                     "status": "error",
                     "message": f"Slug '{new_slug}' is already taken.",
                 })
+            old_slug = skill.slug
             skill.slug = new_slug
             update_fields.append("slug")
         if "tool_names" in updates:
@@ -494,9 +511,11 @@ class EditSkillTool(ContextAwareTool):
 
             skill.tool_names = filter_to_skill_tools(updates["tool_names"])
             update_fields.append("tool_names")
-        if "is_active" in updates:
-            skill.is_active = bool(updates["is_active"])
-            update_fields.append("is_active")
+        # NOTE: is_active is deliberately NOT editable here. Every skill lookup
+        # (list, detail, this tool's own resolution) filters is_active=True, so
+        # deactivating would make the skill invisible and unrecoverable outside
+        # the Django admin. Deletion has its own explicit tool; per-user
+        # disabling is the UI toggle's job.
 
         # Apply text edits (find-replace on text fields)
         failed = []
@@ -535,14 +554,22 @@ class EditSkillTool(ContextAwareTool):
                     "error": "Text not found.",
                 })
 
-        # A find-replace can grow instructions past the model limit; clamp it.
+        # A find-replace can grow text fields past their limits; clamp them.
         if "instructions" in update_fields:
             from agent_skills.models import MAX_INSTRUCTIONS_CHARS
 
             skill.instructions = (skill.instructions or "")[:MAX_INSTRUCTIONS_CHARS]
+        if "description" in update_fields:
+            skill.description = (skill.description or "")[:1024]
 
         if len(update_fields) > 1 or applied > 0:
             skill.save(update_fields=update_fields)
+            # Keep the user's slug-keyed enable/disable selection pointing at
+            # this skill across a rename.
+            if "slug" in update_fields:
+                from agent_skills.services import migrate_skill_slug_prefs
+
+                migrate_skill_slug_prefs(skill, old_slug, skill.slug)
 
         # Delete templates by name
         templates_deleted = 0
@@ -636,11 +663,27 @@ class ViewTemplateTool(ContextAwareTool):
                 "message": f"Template '{template_name}' not found on the active skill.",
             })
 
-        return json.dumps({
+        # Bound what goes into the LLM context. Write paths now cap content at
+        # MAX_TEMPLATE_CHARS, so this only fires for pre-existing oversized rows.
+        from agent_skills.models import MAX_TEMPLATE_CHARS
+
+        content = tmpl.content
+        truncated = len(content) > MAX_TEMPLATE_CHARS
+        if truncated:
+            content = content[:MAX_TEMPLATE_CHARS]
+
+        result = {
             "status": "ok",
             "template_name": tmpl.name,
-            "content": tmpl.content,
-        })
+            "content": content,
+        }
+        if truncated:
+            result["truncated"] = True
+            result["note"] = (
+                f"Template content exceeded {MAX_TEMPLATE_CHARS} characters "
+                "and was truncated."
+            )
+        return json.dumps(result)
 
 
 class LoadTemplateToCanvasTool(ContextAwareTool):

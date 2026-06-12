@@ -12,6 +12,12 @@ from django.db import models
 # canvas->instructions path can never exceed it.
 MAX_INSTRUCTIONS_CHARS = 75_000
 
+# Upper bound on a template's content length. SkillTemplate.content is an
+# uncapped TextField (no migration needed); this is enforced as a truncation
+# backstop on every write path (form save, import, canvas save) and when
+# view_template returns content into the LLM context.
+MAX_TEMPLATE_CHARS = MAX_INSTRUCTIONS_CHARS
+
 
 class AgentSkill(models.Model):
     class Level(models.TextChoices):

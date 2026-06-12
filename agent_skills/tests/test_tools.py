@@ -78,6 +78,15 @@ class CreateSkillToolTests(TestCase):
         self.tool._run(name="Solo Skill")
         self.assertEqual(mock_gen.call_args.kwargs.get("org_id"), None)
 
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="")
+    def test_create_skill_caps_long_name(self, mock_gen):
+        """A >255-char name is capped before the CharField (DataError on
+        Postgres otherwise; SQLite silently accepts the overflow)."""
+        result = json.loads(self.tool._run(name="N" * 300))
+        self.assertEqual(result["status"], "ok")
+        skill = AgentSkill.objects.get(created_by=self.user)
+        self.assertEqual(len(skill.name), 255)
+
 
 class EditSkillToolTests(TestCase):
     def setUp(self):
@@ -185,6 +194,73 @@ class EditSkillToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.skill.refresh_from_db()
         self.assertEqual(len(self.skill.instructions), MAX_INSTRUCTIONS_CHARS)
+
+    def test_find_replace_caps_description(self):
+        """A find-replace that would grow description past 1024 is clamped."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable",
+            updates={},
+            text_edits=[{
+                "field": "description",
+                "old_text": "Original desc.",
+                "new_text": "z" * 2000,
+            }],
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertEqual(len(self.skill.description), 1024)
+
+    def test_update_name_caps_at_255(self):
+        """A >255-char name is capped at the CharField limit (DataError on
+        Postgres otherwise)."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"name": "N" * 300},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertEqual(len(self.skill.name), 255)
+
+    def test_update_name_blank_ignored(self):
+        """A blank name is skipped, mirroring the save form's fallback."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"name": "   "},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.name, "Editable")
+
+    def test_is_active_not_editable(self):
+        """Regression: edit_skill accepted is_active=False, but every skill
+        lookup filters is_active=True — a deactivated skill became invisible
+        and unrecoverable outside the Django admin."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"is_active": False},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        self.assertTrue(self.skill.is_active)
+
+    def test_new_slug_migrates_user_prefs(self):
+        """Renaming the slug via edit_skill carries the user's slug-keyed
+        selection over to the new slug."""
+        from accounts.models import UserSettings
+
+        us, _ = UserSettings.objects.get_or_create(user=self.user)
+        us.preferences = {
+            "skills": {"editable": {"selected_skill_id": str(self.skill.id)}}
+        }
+        us.save(update_fields=["preferences"])
+
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"new_slug": "renamed"},
+        ))
+        self.assertEqual(result["status"], "ok")
+        us.refresh_from_db()
+        skills_prefs = us.preferences["skills"]
+        self.assertNotIn("editable", skills_prefs)
+        self.assertEqual(
+            skills_prefs["renamed"]["selected_skill_id"], str(self.skill.id)
+        )
 
     def test_delete_templates(self):
         SkillTemplate.objects.create(skill=self.skill, name="tmpl-a", content="A")
@@ -321,6 +397,33 @@ class SaveCanvasToSkillFieldToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.instructions, "Named canvas content.")
+
+    def test_save_description_caps_at_1024(self):
+        """An oversized canvas saved to description is capped at the field's
+        1024 limit — it is injected verbatim into the system prompt of every
+        thread using the skill."""
+        self.canvas.content = "z" * 2000
+        self.canvas.save(update_fields=["content"])
+        result = json.loads(self.tool._run(
+            skill_slug="canvas-skill", field_name="description",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["chars_saved"], 1024)
+        self.skill.refresh_from_db()
+        self.assertEqual(len(self.skill.description), 1024)
+
+    def test_save_template_caps_at_template_limit(self):
+        """An oversized canvas saved to a template is capped at MAX_TEMPLATE_CHARS."""
+        from agent_skills.models import MAX_TEMPLATE_CHARS
+
+        self.canvas.content = "z" * (MAX_TEMPLATE_CHARS + 1000)
+        self.canvas.save(update_fields=["content"])
+        result = json.loads(self.tool._run(
+            skill_slug="canvas-skill", field_name="Big Template",
+        ))
+        self.assertEqual(result["status"], "ok")
+        tmpl = SkillTemplate.objects.get(skill=self.skill, name="Big Template")
+        self.assertEqual(len(tmpl.content), MAX_TEMPLATE_CHARS)
 
 
 class ShowSkillFieldInCanvasToolTests(TestCase):
@@ -461,6 +564,26 @@ class ViewTemplateToolTests(TestCase):
         self.tool.context = _make_context(self.user, thread_id=str(bare_thread.id))
         result = json.loads(self.tool._run(template_name="Report Format"))
         self.assertEqual(result["status"], "error")
+
+    def test_oversized_template_truncated(self):
+        """Pre-existing oversized rows are truncated before entering the LLM
+        context, with an explicit truncation marker."""
+        from agent_skills.models import MAX_TEMPLATE_CHARS
+
+        SkillTemplate.objects.create(
+            skill=self.skill, name="Huge", content="z" * (MAX_TEMPLATE_CHARS + 1000),
+        )
+        result = json.loads(self.tool._run(template_name="Huge"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["content"]), MAX_TEMPLATE_CHARS)
+        self.assertIs(result["truncated"], True)
+        self.assertIn("note", result)
+
+    def test_normal_template_has_no_truncation_marker(self):
+        result = json.loads(self.tool._run(template_name="Report Format"))
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("truncated", result)
+        self.assertNotIn("note", result)
 
 
 class LoadTemplateToCanvasToolTests(TestCase):

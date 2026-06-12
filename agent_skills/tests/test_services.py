@@ -1,11 +1,14 @@
 """Tests for agent_skills.services."""
 
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 from django.test import TestCase
 
 from accounts.models import Membership, Organization, UserSettings
 from agent_skills.models import AgentSkill, SkillTemplate
 from agent_skills.services import (
+    _next_free_slug,
+    _save_with_free_slug,
     can_edit_skill,
     create_org_skill,
     create_user_skill,
@@ -15,6 +18,7 @@ from agent_skills.services import (
     get_available_skills,
     get_editable_skill_for_user,
     get_skill_for_user,
+    migrate_skill_slug_prefs,
     promote_skill_to_org,
     set_user_skill_selection,
 )
@@ -304,6 +308,50 @@ class GetEditableSkillForUserTests(TestCase):
     def test_returns_none_for_nonexistent(self):
         result = get_editable_skill_for_user(self.user, "no-such-skill")
         self.assertIsNone(result)
+
+    def test_falls_back_to_owned_when_slug_disabled(self):
+        """'Edit my skill X' must work even when the user toggled X off —
+        a disabled slug vanishes from get_available_skills entirely."""
+        mine = AgentSkill.objects.create(
+            slug="toggled", name="Toggled", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        set_user_skill_selection(self.user, mine, enabled=False)
+        result = get_editable_skill_for_user(self.user, "toggled")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.pk, mine.pk)
+
+    def test_falls_back_to_owned_when_org_tier_selected(self):
+        """A non-admin member selected the org version (not editable by
+        them); the fallback must surface the member's own version."""
+        member = User.objects.create_user(email="ed-mem@example.com", password="pass")
+        Membership.objects.create(
+            user=member, org=self.org, role=Membership.Role.MEMBER
+        )
+        org_skill = AgentSkill.objects.create(
+            slug="dual", name="Org Dual", instructions="Inst.",
+            level="org", organization=self.org,
+        )
+        mine = AgentSkill.objects.create(
+            slug="dual", name="My Dual", instructions="Inst.",
+            level="user", created_by=member,
+        )
+        set_user_skill_selection(member, org_skill, enabled=True)
+        result = get_editable_skill_for_user(member, "dual")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.pk, mine.pk)
+
+    def test_fallback_returns_none_when_user_owns_nothing(self):
+        """Visible-but-not-editable with no owned skill behind it → None."""
+        member = User.objects.create_user(email="ed-mem2@example.com", password="pass")
+        Membership.objects.create(
+            user=member, org=self.org, role=Membership.Role.MEMBER
+        )
+        AgentSkill.objects.create(
+            slug="org-only", name="Org Only", instructions="Inst.",
+            level="org", organization=self.org,
+        )
+        self.assertIsNone(get_editable_skill_for_user(member, "org-only"))
 
 
 class ForkSkillTests(TestCase):
@@ -685,3 +733,150 @@ class OrgDisabledSkillVisibilityTests(TestCase):
         self.org.preferences = {"skills": {"research": {"enabled": True}}}
         self.org.save(update_fields=["preferences"])
         self.assertEqual([s.pk for s in get_accessible_skills(self.member)], [skill.pk])
+
+
+class SlugDedupHelperTests(TestCase):
+    """_next_free_slug / _save_with_free_slug — the shared dedup + race retry."""
+
+    def test_next_free_slug_returns_base_when_free(self):
+        self.assertEqual(_next_free_slug("base", lambda s: False), "base")
+
+    def test_next_free_slug_increments_past_taken(self):
+        taken = {"base", "base-1"}
+        self.assertEqual(_next_free_slug("base", lambda s: s in taken), "base-2")
+
+    def test_next_free_slug_suffix_fits_64_chars(self):
+        base = "a" * 64
+        result = _next_free_slug(base, lambda s: s == base)
+        self.assertEqual(result, "a" * 62 + "-1")
+        self.assertLessEqual(len(result), 64)
+
+    def test_retries_with_recomputed_slug_on_integrity_error(self):
+        """Simulated race: a concurrent request claims the slug between the
+        existence check and the INSERT. The retry recomputes and succeeds."""
+        now_taken = set()
+        calls = []
+
+        def persist(slug):
+            calls.append(slug)
+            if len(calls) == 1:
+                now_taken.add(slug)  # the concurrent winner owns it now
+                raise IntegrityError("simulated concurrent claim")
+            return slug
+
+        result = _save_with_free_slug("race", lambda s: s in now_taken, persist)
+        self.assertEqual(calls, ["race", "race-1"])
+        self.assertEqual(result, "race-1")
+
+    def test_reraises_after_max_attempts(self):
+        def persist(slug):
+            raise IntegrityError("always loses the race")
+
+        with self.assertRaises(IntegrityError):
+            _save_with_free_slug("doomed", lambda s: False, persist)
+
+
+class MigrateSkillSlugPrefsTests(TestCase):
+    """Slug-keyed user prefs must follow a skill across a slug rename."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="mig@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="old-slug", name="Mig", instructions="i",
+            level="user", created_by=self.user,
+        )
+
+    def _set_prefs(self, user, skills_dict):
+        us, _ = UserSettings.objects.get_or_create(user=user)
+        us.preferences = {"skills": skills_dict}
+        us.save(update_fields=["preferences"])
+        return us
+
+    def test_moves_matching_entry(self):
+        us = self._set_prefs(
+            self.user, {"old-slug": {"selected_skill_id": str(self.skill.id)}}
+        )
+        migrate_skill_slug_prefs(self.skill, "old-slug", "new-slug")
+        us.refresh_from_db()
+        skills = us.preferences["skills"]
+        self.assertNotIn("old-slug", skills)
+        self.assertEqual(skills["new-slug"]["selected_skill_id"], str(self.skill.id))
+
+    def test_leaves_disable_entries_alone(self):
+        """A slug-wide disable (selected_skill_id: None) isn't a selection of
+        this skill — it stays keyed under the old slug."""
+        us = self._set_prefs(self.user, {"old-slug": {"selected_skill_id": None}})
+        migrate_skill_slug_prefs(self.skill, "old-slug", "new-slug")
+        us.refresh_from_db()
+        skills = us.preferences["skills"]
+        self.assertIn("old-slug", skills)
+        self.assertNotIn("new-slug", skills)
+
+    def test_leaves_other_skill_entries_alone(self):
+        other_owner = User.objects.create_user(email="oth@example.com", password="pass")
+        other = AgentSkill.objects.create(
+            slug="old-slug", name="Other's", instructions="i",
+            level="user", created_by=other_owner,
+        )
+        us = self._set_prefs(
+            self.user, {"old-slug": {"selected_skill_id": str(other.id)}}
+        )
+        migrate_skill_slug_prefs(self.skill, "old-slug", "new-slug")
+        us.refresh_from_db()
+        skills = us.preferences["skills"]
+        self.assertEqual(skills["old-slug"]["selected_skill_id"], str(other.id))
+        self.assertNotIn("new-slug", skills)
+
+    def test_does_not_clobber_existing_target_entry(self):
+        target = AgentSkill.objects.create(
+            slug="new-slug", name="Target", instructions="i",
+            level="user", created_by=self.user,
+        )
+        us = self._set_prefs(self.user, {
+            "old-slug": {"selected_skill_id": str(self.skill.id)},
+            "new-slug": {"selected_skill_id": str(target.id)},
+        })
+        migrate_skill_slug_prefs(self.skill, "old-slug", "new-slug")
+        us.refresh_from_db()
+        skills = us.preferences["skills"]
+        # Old key is removed, but the user's explicit choice under the new
+        # slug wins — never clobbered.
+        self.assertNotIn("old-slug", skills)
+        self.assertEqual(skills["new-slug"]["selected_skill_id"], str(target.id))
+
+    def test_noop_when_slug_unchanged(self):
+        us = self._set_prefs(
+            self.user, {"old-slug": {"selected_skill_id": str(self.skill.id)}}
+        )
+        migrate_skill_slug_prefs(self.skill, "old-slug", "old-slug")
+        us.refresh_from_db()
+        self.assertIn("old-slug", us.preferences["skills"])
+
+    def test_migrates_every_user_with_matching_entry(self):
+        """An org skill rename must follow every member's selection."""
+        second = User.objects.create_user(email="mig2@example.com", password="pass")
+        us1 = self._set_prefs(
+            self.user, {"old-slug": {"selected_skill_id": str(self.skill.id)}}
+        )
+        us2 = self._set_prefs(
+            second, {"old-slug": {"selected_skill_id": str(self.skill.id)}}
+        )
+        migrate_skill_slug_prefs(self.skill, "old-slug", "new-slug")
+        for us in (us1, us2):
+            us.refresh_from_db()
+            self.assertEqual(
+                us.preferences["skills"]["new-slug"]["selected_skill_id"],
+                str(self.skill.id),
+            )
+
+    def test_unrelated_prefs_untouched(self):
+        us, _ = UserSettings.objects.get_or_create(user=self.user)
+        us.preferences = {
+            "theme_overrides": {"foo": "bar"},
+            "skills": {"old-slug": {"selected_skill_id": str(self.skill.id)}},
+        }
+        us.save(update_fields=["preferences"])
+        migrate_skill_slug_prefs(self.skill, "old-slug", "new-slug")
+        us.refresh_from_db()
+        self.assertEqual(us.preferences.get("theme_overrides"), {"foo": "bar"})

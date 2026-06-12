@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
+from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
-from agent_skills.models import MAX_INSTRUCTIONS_CHARS, AgentSkill, SkillTemplate
+from agent_skills.models import (
+    MAX_INSTRUCTIONS_CHARS,
+    MAX_TEMPLATE_CHARS,
+    AgentSkill,
+    SkillTemplate,
+)
 
 if TYPE_CHECKING:
     from django.contrib.auth import get_user_model
@@ -18,6 +24,39 @@ if TYPE_CHECKING:
 
 # Priority order for shadowing — higher level wins.
 _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
+
+
+def _next_free_slug(base_slug: str, taken: Callable[[str], bool]) -> str:
+    """Return ``base_slug`` or the first ``base-N`` variant not ``taken``.
+
+    Suffixes eat into the 64-char SlugField limit so the result always fits.
+    """
+    slug = base_slug
+    counter = 1
+    while taken(slug):
+        suffix = f"-{counter}"
+        slug = base_slug[: 64 - len(suffix)] + suffix
+        counter += 1
+    return slug
+
+
+def _save_with_free_slug(base_slug: str, taken: Callable[[str], bool], persist, *, attempts: int = 3):
+    """Run ``persist(slug)`` with a free slug, retrying on IntegrityError.
+
+    The check-then-write slug dedup is racy: a concurrent request can claim
+    the slug between the existence check and the INSERT/UPDATE, tripping the
+    partial unique constraints. Each attempt recomputes the next free slug
+    and runs inside ``transaction.atomic()`` so a failed write is rolled back
+    before the retry. The last attempt re-raises.
+    """
+    for attempt in range(attempts):
+        slug = _next_free_slug(base_slug, taken)
+        try:
+            with transaction.atomic():
+                return persist(slug)
+        except IntegrityError:
+            if attempt == attempts - 1:
+                raise
 
 
 def filter_to_skill_tools(tool_names) -> list[str]:
@@ -219,14 +258,23 @@ def can_edit_skill(user, skill: AgentSkill) -> bool:
 
 
 def get_editable_skill_for_user(user, slug: str) -> AgentSkill | None:
-    """Look up a skill by slug (with shadowing) and return it only if editable."""
+    """Look up a skill by slug (with shadowing) and return it only if editable.
+
+    When the visible tier isn't editable (e.g. the user selected the org or
+    system version) — or the slug is hidden entirely (explicitly disabled, or
+    org-disabled) — fall back to the user's own skill with that slug: the
+    owner can always edit their own skill, and "edit/delete my skill X" should
+    not fail just because X is currently shadowed or toggled off.
+    """
     skills = get_available_skills(user)
     for skill in skills:
         if skill.slug == slug:
             if can_edit_skill(user, skill):
                 return skill
-            return None
-    return None
+            break  # visible tier not editable -> fall back to owned
+    return AgentSkill.objects.filter(
+        slug=slug, level="user", created_by=user, is_active=True
+    ).first()
 
 
 def create_user_skill(user, name: str, slug: str | None = None) -> AgentSkill:
@@ -236,21 +284,19 @@ def create_user_skill(user, name: str, slug: str | None = None) -> AgentSkill:
     if not slug:
         slug = "skill"
 
-    # Ensure uniqueness for this user
-    base_slug = slug
-    counter = 1
-    while AgentSkill.objects.filter(slug=slug, level="user", created_by=user).exists():
-        suffix = f"-{counter}"
-        slug = base_slug[: 64 - len(suffix)] + suffix
-        counter += 1
-
-    return AgentSkill.objects.create(
-        slug=slug,
-        name=name,
-        instructions="",
-        description="",
-        level="user",
-        created_by=user,
+    return _save_with_free_slug(
+        slug,
+        lambda s: AgentSkill.objects.filter(
+            slug=s, level="user", created_by=user
+        ).exists(),
+        lambda s: AgentSkill.objects.create(
+            slug=s,
+            name=name,
+            instructions="",
+            description="",
+            level="user",
+            created_by=user,
+        ),
     )
 
 
@@ -314,26 +360,24 @@ def fork_skill(
     """
     new_name = _next_user_skill_name(user, source_skill.name)
 
-    base_slug = source_skill.slug
-    slug = base_slug
-    counter = 1
-    while AgentSkill.objects.filter(slug=slug, level="user", created_by=user).exists():
-        suffix = f"-{counter}"
-        slug = base_slug[: 64 - len(suffix)] + suffix
-        counter += 1
-
     parent = source_skill.parent if source_skill.level == "user" else source_skill
 
-    new_skill = AgentSkill.objects.create(
-        slug=slug,
-        name=new_name,
-        emoji=source_skill.emoji,
-        description=source_skill.description,
-        instructions=source_skill.instructions,
-        tool_names=list(source_skill.tool_names or []),
-        level="user",
-        created_by=user,
-        parent=parent,
+    new_skill = _save_with_free_slug(
+        source_skill.slug,
+        lambda s: AgentSkill.objects.filter(
+            slug=s, level="user", created_by=user
+        ).exists(),
+        lambda s: AgentSkill.objects.create(
+            slug=s,
+            name=new_name,
+            emoji=source_skill.emoji,
+            description=source_skill.description,
+            instructions=source_skill.instructions,
+            tool_names=list(source_skill.tool_names or []),
+            level="user",
+            created_by=user,
+            parent=parent,
+        ),
     )
 
     if copy_templates:
@@ -399,6 +443,44 @@ def set_user_skill_selection(user, skill: AgentSkill, enabled: bool) -> dict:
     }
 
 
+def migrate_skill_slug_prefs(skill, old_slug: str, new_slug: str) -> None:
+    """Re-key user skill prefs after ``skill``'s slug changed.
+
+    ``UserSettings.preferences["skills"]`` is keyed by slug, so a rename would
+    silently orphan any explicit enable selection pointing at this skill (the
+    old key no longer matches a skill; the new slug has no entry, so it falls
+    back to shadowing defaults).
+
+    Moves only entries whose ``selected_skill_id`` is this skill's id. Slug-wide
+    disables (``selected_skill_id: None``) and entries selecting a *different*
+    skill that shares the old slug are left alone, and an existing entry under
+    ``new_slug`` is never clobbered (the user's explicit choice there wins).
+    """
+    from accounts.models import UserSettings
+
+    if old_slug == new_slug:
+        return
+
+    skill_id = str(skill.id)
+    settings_qs = UserSettings.objects.filter(
+        preferences__skills__has_key=old_slug
+    )
+    for us in settings_qs:
+        prefs = dict(us.preferences or {})
+        skills_prefs = dict(prefs.get("skills") or {})
+        entry = skills_prefs.get(old_slug)
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("selected_skill_id")) != skill_id:
+            continue
+        del skills_prefs[old_slug]
+        if new_slug not in skills_prefs:
+            skills_prefs[new_slug] = entry
+        prefs["skills"] = skills_prefs
+        us.preferences = prefs
+        us.save(update_fields=["preferences"])
+
+
 def create_org_skill(user, name: str, organization, slug: str | None = None) -> AgentSkill:
     """Create an org-level skill. Caller must be an admin of ``organization``.
 
@@ -417,22 +499,19 @@ def create_org_skill(user, name: str, organization, slug: str | None = None) -> 
     if not slug:
         slug = "skill"
 
-    base_slug = slug
-    counter = 1
-    while AgentSkill.objects.filter(
-        slug=slug, level="org", organization=organization
-    ).exists():
-        suffix = f"-{counter}"
-        slug = base_slug[: 64 - len(suffix)] + suffix
-        counter += 1
-
-    return AgentSkill.objects.create(
-        slug=slug,
-        name=name,
-        instructions="",
-        description="",
-        level="org",
-        organization=organization,
+    return _save_with_free_slug(
+        slug,
+        lambda s: AgentSkill.objects.filter(
+            slug=s, level="org", organization=organization
+        ).exists(),
+        lambda s: AgentSkill.objects.create(
+            slug=s,
+            name=name,
+            instructions="",
+            description="",
+            level="org",
+            organization=organization,
+        ),
     )
 
 
@@ -461,26 +540,22 @@ def promote_skill_to_org(
     if source_skill.level == "org" and source_skill.organization_id == organization.id:
         return source_skill
 
-    base_slug = source_skill.slug
-    slug = base_slug
-    counter = 1
-    while AgentSkill.objects.filter(
-        slug=slug, level="org", organization=organization
-    ).exists():
-        suffix = f"-{counter}"
-        slug = base_slug[: 64 - len(suffix)] + suffix
-        counter += 1
-
-    new_skill = AgentSkill.objects.create(
-        slug=slug,
-        name=source_skill.name,
-        emoji=source_skill.emoji,
-        description=source_skill.description,
-        instructions=source_skill.instructions,
-        tool_names=list(source_skill.tool_names or []),
-        level="org",
-        organization=organization,
-        parent=source_skill,
+    new_skill = _save_with_free_slug(
+        source_skill.slug,
+        lambda s: AgentSkill.objects.filter(
+            slug=s, level="org", organization=organization
+        ).exists(),
+        lambda s: AgentSkill.objects.create(
+            slug=s,
+            name=source_skill.name,
+            emoji=source_skill.emoji,
+            description=source_skill.description,
+            instructions=source_skill.instructions,
+            tool_names=list(source_skill.tool_names or []),
+            level="org",
+            organization=organization,
+            parent=source_skill,
+        ),
     )
 
     if copy_templates:
@@ -515,23 +590,27 @@ def move_skill_to_org(user, skill: AgentSkill, organization) -> AgentSkill:
     if skill.level != "user":
         raise ValueError("Only personal skills can be promoted to the organization.")
 
-    base_slug = skill.slug
-    slug = base_slug
-    counter = 1
-    while AgentSkill.objects.filter(
-        slug=slug, level="org", organization=organization
-    ).exclude(pk=skill.pk).exists():
-        suffix = f"-{counter}"
-        slug = base_slug[: 64 - len(suffix)] + suffix
-        counter += 1
+    old_slug = skill.slug
 
-    skill.slug = slug
-    skill.level = "org"
-    skill.organization = organization
-    skill.created_by = None
-    skill.save(
-        update_fields=["slug", "level", "organization", "created_by", "updated_at"]
+    def persist(slug: str) -> AgentSkill:
+        skill.slug = slug
+        skill.level = "org"
+        skill.organization = organization
+        skill.created_by = None
+        skill.save(
+            update_fields=["slug", "level", "organization", "created_by", "updated_at"]
+        )
+        return skill
+
+    _save_with_free_slug(
+        old_slug,
+        lambda s: AgentSkill.objects.filter(
+            slug=s, level="org", organization=organization
+        ).exclude(pk=skill.pk).exists(),
+        persist,
     )
+    if skill.slug != old_slug:
+        migrate_skill_slug_prefs(skill, old_slug, skill.slug)
     return skill
 
 
@@ -555,23 +634,27 @@ def move_skill_to_personal(user, skill: AgentSkill) -> AgentSkill:
     if not is_admin:
         raise PermissionError("Only org admins can demote skills.")
 
-    base_slug = skill.slug
-    slug = base_slug
-    counter = 1
-    while AgentSkill.objects.filter(
-        slug=slug, level="user", created_by=user
-    ).exclude(pk=skill.pk).exists():
-        suffix = f"-{counter}"
-        slug = base_slug[: 64 - len(suffix)] + suffix
-        counter += 1
+    old_slug = skill.slug
 
-    skill.slug = slug
-    skill.level = "user"
-    skill.created_by = user
-    skill.organization = None
-    skill.save(
-        update_fields=["slug", "level", "created_by", "organization", "updated_at"]
+    def persist(slug: str) -> AgentSkill:
+        skill.slug = slug
+        skill.level = "user"
+        skill.created_by = user
+        skill.organization = None
+        skill.save(
+            update_fields=["slug", "level", "created_by", "organization", "updated_at"]
+        )
+        return skill
+
+    _save_with_free_slug(
+        old_slug,
+        lambda s: AgentSkill.objects.filter(
+            slug=s, level="user", created_by=user
+        ).exclude(pk=skill.pk).exists(),
+        persist,
     )
+    if skill.slug != old_slug:
+        migrate_skill_slug_prefs(skill, old_slug, skill.slug)
     return skill
 
 
@@ -580,6 +663,11 @@ def move_skill_to_personal(user, skill: AgentSkill) -> AgentSkill:
 # Bump when the export format changes incompatibly. Importers reject files
 # carrying a higher version than they understand.
 EXPORT_VERSION = 1
+
+# Upper bound on skills per import file. The per-user slug dedup does one
+# EXISTS query per collision, so an unbounded list of same-slug entries would
+# be quadratic in queries — a 2 MB file of tiny entries could hang a dyno.
+MAX_SKILLS_PER_IMPORT = 50
 
 
 class SkillImportError(Exception):
@@ -686,7 +774,10 @@ def _normalize_skill_payload(entry: dict) -> dict:
             if not tname or tname in seen_names:
                 continue
             seen_names.add(tname)
-            templates.append({"name": tname, "content": _join_lines(t.get("content"))})
+            templates.append({
+                "name": tname,
+                "content": _join_lines(t.get("content"))[:MAX_TEMPLATE_CHARS],
+            })
 
     return {
         "slug": slug,
@@ -742,6 +833,12 @@ def parse_skill_export(raw) -> list[dict]:
         # Tolerate a single bare skill dict.
         entries = [data]
 
+    if len(entries) > MAX_SKILLS_PER_IMPORT:
+        raise SkillImportError(
+            f"That file contains {len(entries)} skills — the limit is "
+            f"{MAX_SKILLS_PER_IMPORT} per import."
+        )
+
     payloads = [
         _normalize_skill_payload(e) for e in entries if isinstance(e, dict)
     ]
@@ -762,30 +859,33 @@ def import_skill(user, payload: dict) -> AgentSkill:
         or slugify(payload.get("name") or "")[:64]
         or "skill"
     )
-    slug = base_slug
-    counter = 1
-    while AgentSkill.objects.filter(slug=slug, level="user", created_by=user).exists():
-        suffix = f"-{counter}"
-        slug = base_slug[: 64 - len(suffix)] + suffix
-        counter += 1
 
-    # Allow-list tool_names and cap instructions at the persistence boundary so
-    # the rule holds even for a caller that bypassed _normalize_skill_payload.
-    skill = AgentSkill.objects.create(
-        slug=slug,
-        name=payload["name"],
-        emoji=payload.get("emoji", ""),
-        description=payload.get("description", ""),
-        instructions=(payload.get("instructions", "") or "")[:MAX_INSTRUCTIONS_CHARS],
-        tool_names=filter_to_skill_tools(payload.get("tool_names") or []),
-        level="user",
-        created_by=user,
-        parent=None,
+    # Allow-list tool_names and cap instructions/template content at the
+    # persistence boundary so the rules hold even for a caller that bypassed
+    # _normalize_skill_payload.
+    skill = _save_with_free_slug(
+        base_slug,
+        lambda s: AgentSkill.objects.filter(
+            slug=s, level="user", created_by=user
+        ).exists(),
+        lambda s: AgentSkill.objects.create(
+            slug=s,
+            name=payload["name"],
+            emoji=payload.get("emoji", ""),
+            description=payload.get("description", ""),
+            instructions=(payload.get("instructions", "") or "")[:MAX_INSTRUCTIONS_CHARS],
+            tool_names=filter_to_skill_tools(payload.get("tool_names") or []),
+            level="user",
+            created_by=user,
+            parent=None,
+        ),
     )
 
     for tmpl in payload.get("templates", []):
         SkillTemplate.objects.create(
-            skill=skill, name=tmpl["name"], content=tmpl.get("content", ""),
+            skill=skill,
+            name=tmpl["name"],
+            content=(tmpl.get("content", "") or "")[:MAX_TEMPLATE_CHARS],
         )
 
     return skill
