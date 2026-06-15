@@ -455,62 +455,15 @@ def canvas_save_to_data_room(request, thread_id, canvas_id=None):
     if not _user_can_modify_data_room(request.user, data_room):
         return JsonResponse({"error": "Access denied"}, status=403)
 
-    title = canvas.title or "Untitled document"
-    content = canvas.content or ""
+    from chat.services import save_canvas_to_data_room as save_canvas_to_data_room_service
 
-    from django.core.files.base import ContentFile
-
-    safe_title = (
-        "".join(c for c in title if c.isalnum() or c in " _-").strip() or "document"
-    )
-    filename = f"{safe_title}.md"
-    file_bytes = content.encode("utf-8")
-    file_content = ContentFile(file_bytes, name=filename)
-
-    doc = DataRoomDocument.objects.create(
-        data_room=data_room,
-        uploaded_by=request.user,
-        original_file=file_content,
-        original_filename=filename,
-        mime_type="text/markdown",
-        size_bytes=len(file_bytes),
-        status=DataRoomDocument.Status.UPLOADED,
-    )
-    DataRoomDocumentTag.objects.create(
-        document=doc, key="source", value="canvas_export"
-    )
-
-    try:
-        from documents.tasks import process_document_task
-
-        process_document_task.delay(doc.id)
-    except ImportError:
-        try:
-            from documents.services.process_document import process_document
-
-            process_document(doc.id)
-        except Exception as exc:
-            logger.exception(
-                "canvas_save_to_data_room: failed to process document_id=%s (sync fallback)",
-                doc.id,
-            )
-            doc.status = DataRoomDocument.Status.FAILED
-            doc.processing_error = str(exc)[:2000]
-            doc.save(update_fields=["status", "processing_error", "updated_at"])
-    except Exception as exc:
-        logger.exception(
-            "canvas_save_to_data_room: failed to enqueue processing for document_id=%s",
-            doc.id,
-        )
-        doc.status = DataRoomDocument.Status.FAILED
-        doc.processing_error = str(exc)[:2000]
-        doc.save(update_fields=["status", "processing_error", "updated_at"])
+    doc = save_canvas_to_data_room_service(canvas, data_room, request.user)
 
     return JsonResponse(
         {
             "ok": True,
             "document_id": doc.id,
-            "filename": filename,
+            "filename": doc.original_filename,
             "data_room_name": data_room.name,
         }
     )

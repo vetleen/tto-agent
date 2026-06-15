@@ -456,3 +456,112 @@ class ReadDocumentToolTests(TestCase):
         usages = ThreadChunkUsage.objects.filter(thread=thread)
         self.assertEqual(usages.count(), 2)
         self.assertEqual(set(usages.values_list("chunk_id", flat=True)), {c1.id, c2.id})
+
+
+class SaveCanvasToDataRoomToolTests(TestCase):
+    """Tests for SaveCanvasToDataRoomTool — saving a canvas as a .md document."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        from chat.models import ChatCanvas, ChatThread
+        from chat.tools import SaveCanvasToDataRoomTool
+
+        self.tool = SaveCanvasToDataRoomTool()
+        self.user = User.objects.create_user(email="canvassaver@test.com", password="pass")
+        self.data_room = DataRoom.objects.create(
+            name="Owner Room", slug="save-canvas", created_by=self.user,
+        )
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.canvas = ChatCanvas.objects.create(
+            thread=self.thread, title="Memo", content="# Hello\n\nBody text.",
+            is_active=True, last_activated_at=timezone.now(),
+        )
+
+    def _ctx(self, user_id=None, data_room_pks=None):
+        return RunContext.create(
+            user_id=user_id or self.user.pk,
+            conversation_id=str(self.thread.id),
+            data_room_ids=data_room_pks if data_room_pks is not None else [self.data_room.pk],
+        )
+
+    def _invoke_json(self, args, ctx):
+        tool = self.tool.model_copy()
+        tool.set_context(ctx)
+        return json.loads(tool.invoke(args))
+
+    def test_has_required_attributes(self):
+        self.assertEqual(self.tool.name, "save_canvas_to_data_room")
+        schema = self.tool.args_schema.model_json_schema()
+        self.assertIn("canvas_name", schema["properties"])
+        self.assertIn("data_room_name", schema["properties"])
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_saves_active_canvas_as_md_document(self, mock_delay):
+        result = self._invoke_json({}, self._ctx())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["filename"], "Memo.md")
+        self.assertEqual(result["data_room_name"], "Owner Room")
+
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
+        self.assertEqual(doc.original_filename, "Memo.md")
+        self.assertEqual(doc.mime_type, "text/markdown")
+        self.assertEqual(doc.status, DataRoomDocument.Status.UPLOADED)
+        self.assertTrue(
+            DataRoomDocumentTag.objects.filter(
+                document=doc, key="source", value="canvas_export"
+            ).exists()
+        )
+        mock_delay.assert_called_once_with(doc.id)
+
+    def test_no_data_room_returns_error(self):
+        result = self._invoke_json({}, self._ctx(data_room_pks=[]))
+        self.assertIn("error", result)
+        self.assertFalse(DataRoomDocument.objects.exists())
+
+    def test_blank_canvas_returns_error(self):
+        self.canvas.content = "   "
+        self.canvas.save(update_fields=["content"])
+        result = self._invoke_json({}, self._ctx())
+        self.assertIn("error", result)
+        self.assertIn("empty", result["error"].lower())
+        self.assertFalse(DataRoomDocument.objects.exists())
+
+    def test_unknown_canvas_name_returns_error(self):
+        result = self._invoke_json({"canvas_name": "Nope"}, self._ctx())
+        self.assertIn("error", result)
+        self.assertFalse(DataRoomDocument.objects.exists())
+
+    def test_multiple_rooms_without_name_returns_error(self):
+        second = DataRoom.objects.create(
+            name="Second Room", slug="save-canvas-2", created_by=self.user,
+        )
+        result = self._invoke_json(
+            {}, self._ctx(data_room_pks=[self.data_room.pk, second.pk])
+        )
+        self.assertIn("error", result)
+        self.assertIn("Second Room", result["error"])
+        self.assertFalse(DataRoomDocument.objects.exists())
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_multiple_rooms_with_name_saves_to_named_room(self, mock_delay):
+        second = DataRoom.objects.create(
+            name="Second Room", slug="save-canvas-2", created_by=self.user,
+        )
+        result = self._invoke_json(
+            {"data_room_name": "Second Room"},
+            self._ctx(data_room_pks=[self.data_room.pk, second.pk]),
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(DataRoomDocument.objects.filter(data_room=second).exists())
+        self.assertFalse(DataRoomDocument.objects.filter(data_room=self.data_room).exists())
+
+    def test_access_denied_for_unowned_room(self):
+        other = User.objects.create_user(email="intruder@test.com", password="pass")
+        other_room = DataRoom.objects.create(
+            name="Other Room", slug="other-room", created_by=other,
+        )
+        result = self._invoke_json({}, self._ctx(data_room_pks=[other_room.pk]))
+        self.assertIn("error", result)
+        self.assertFalse(DataRoomDocument.objects.exists())

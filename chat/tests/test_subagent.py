@@ -153,11 +153,15 @@ class ResolveSubagentModelTests(TestCase):
 
 class ResolveSubagentToolsTests(TestCase):
     def test_removes_canvas_and_subagent_tools(self):
-        prefs = _prefs()
+        prefs = _prefs(allowed_tools=[
+            "active_canvas", "write_canvas", "edit_canvas",
+            "save_canvas_to_data_room", "create_subagent", "search_documents",
+        ])
         tools = resolve_subagent_tools(prefs, data_room_ids=[1])
         self.assertNotIn("active_canvas", tools)
         self.assertNotIn("write_canvas", tools)
         self.assertNotIn("edit_canvas", tools)
+        self.assertNotIn("save_canvas_to_data_room", tools)
         self.assertNotIn("create_subagent", tools)
 
     def test_removes_skill_and_template_tools(self):

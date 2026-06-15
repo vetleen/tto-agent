@@ -85,6 +85,17 @@ class ReadDocumentInput(ReasonBaseModel):
     )
 
 
+class SaveCanvasToDataRoomInput(ReasonBaseModel):
+    canvas_name: str = Field(
+        default="",
+        description="Title of the canvas to save. Defaults to the active canvas if omitted.",
+    )
+    data_room_name: str = Field(
+        default="",
+        description="Name of the attached data room to save into. Required only when more than one data room is attached.",
+    )
+
+
 # --- Tools ---
 
 class SearchDocumentsTool(ContextAwareTool):
@@ -417,7 +428,91 @@ class ReadDocumentTool(ContextAwareTool):
         })
 
 
+class SaveCanvasToDataRoomTool(ContextAwareTool):
+    """Save the current canvas into an attached data room as a markdown document."""
+
+    name: str = "save_canvas_to_data_room"
+    description: str = (
+        "Save the current canvas into one of the attached data rooms as a markdown (.md) document. "
+        "The saved document is processed like any upload — chunked, embedded, and scanned for safety "
+        "and PII — and becomes searchable via search_documents. Use this when the user wants to file "
+        "or store a canvas in their data room. Only available when a data room is attached."
+    )
+    args_schema: type[BaseModel] = SaveCanvasToDataRoomInput
+
+    def _run(self, canvas_name: str = "", data_room_name: str = "", **kwargs) -> str:
+        from django.contrib.auth import get_user_model
+
+        from chat.services import resolve_canvas, save_canvas_to_data_room
+        from documents.models import DataRoom
+
+        context = self.context
+        thread_id = context.conversation_id if context else None
+        user_id = context.user_id if context else None
+        data_room_ids = context.data_room_ids if context else []
+
+        if not thread_id:
+            return json.dumps({"error": "No thread context available."})
+        if not data_room_ids:
+            return json.dumps({
+                "error": "No data rooms attached. Attach a data room to save canvases into it.",
+            })
+
+        # Verify the user owns the attached rooms (fails closed without a user).
+        try:
+            data_room_ids = _filter_accessible_rooms(data_room_ids, user_id)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+
+        # Resolve the canvas (named or active) and require non-empty content.
+        canvas, err = resolve_canvas(thread_id, canvas_name or None)
+        if err:
+            return json.dumps({"error": err})
+        if not (canvas.content or "").strip():
+            return json.dumps({"error": f"Canvas '{canvas.title}' is empty; nothing to save."})
+
+        # Resolve the target data room from the attached, accessible rooms.
+        rooms = list(DataRoom.objects.filter(pk__in=data_room_ids))
+        room_names = ", ".join(f'"{r.name}"' for r in rooms)
+        if data_room_name:
+            matches = [r for r in rooms if r.name == data_room_name]
+            if not matches:
+                return json.dumps({
+                    "error": f"No attached data room named '{data_room_name}'. Attached: {room_names}.",
+                })
+            if len(matches) > 1:
+                return json.dumps({
+                    "error": f"Multiple attached data rooms are named '{data_room_name}'; cannot disambiguate.",
+                })
+            target = matches[0]
+        elif len(rooms) == 1:
+            target = rooms[0]
+        else:
+            return json.dumps({
+                "error": f"Multiple data rooms are attached ({room_names}). Specify which with data_room_name.",
+            })
+
+        User = get_user_model()
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return json.dumps({"error": "User not found."})
+
+        doc = save_canvas_to_data_room(canvas, target, user)
+        return json.dumps({
+            "status": "ok",
+            "filename": doc.original_filename,
+            "data_room_name": target.name,
+            "canvas_title": canvas.title,
+            "note": (
+                "The document is being processed in the background (chunked, embedded, and scanned "
+                "for safety and PII) and will appear in the data room shortly."
+            ),
+        })
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(SearchDocumentsTool())
 _registry.register_tool(ReadDocumentTool())
+_registry.register_tool(SaveCanvasToDataRoomTool())

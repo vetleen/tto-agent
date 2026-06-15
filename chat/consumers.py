@@ -1240,7 +1240,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
-        doc_tools = {"search_documents", "read_document"}
+        doc_tools = {"search_documents", "read_document", "save_canvas_to_data_room"}
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
             tools = list(all_tools)

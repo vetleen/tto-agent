@@ -34,6 +34,7 @@ def resolve_subagent_tools(
     """
     excluded = {
         "active_canvas", "write_canvas", "edit_canvas",
+        "save_canvas_to_data_room",
         "create_subagent",
         "attach_skills", "create_skill", "edit_skill", "delete_skill",
         "save_canvas_to_skill_field", "show_skill_field_in_canvas",
