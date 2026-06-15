@@ -59,6 +59,11 @@
   // editor adapter (or null if the bundle failed to load — in which case the
   // plain textarea is left visible as a graceful fallback). An optional preview
   // button toggles between the editor and a rendered-markdown div.
+  //
+  // On read-only skills (o.readOnly) pass o.defaultPreview to open in the rendered
+  // view: the button then toggles to the raw markdown source instead of an editor,
+  // so built-in skills read as formatted text by default but the source stays a
+  // click away.
   function mountMarkdownEditor(o) {
     var textarea = o.textarea;
     if (!textarea) return null;
@@ -88,9 +93,8 @@
     });
 
     if (o.previewBtn && preview) {
-      var inPreview = false;
-      o.previewBtn.addEventListener("click", function () {
-        inPreview = !inPreview;
+      var inPreview = !!o.defaultPreview;
+      var applyPreviewState = function () {
         if (inPreview) {
           preview.innerHTML = renderMarkdown(ed.getValue());
           preview.classList.remove("hidden");
@@ -103,7 +107,13 @@
           o.previewBtn.innerHTML = "<span>Preview</span>" + EYE_ICON;
           o.previewBtn.title = "Toggle preview";
         }
+      };
+      o.previewBtn.addEventListener("click", function () {
+        inPreview = !inPreview;
+        applyPreviewState();
       });
+      // Render the initial preview when a skill opens in preview-by-default mode.
+      if (inPreview) applyPreviewState();
     }
     return ed;
   }
@@ -227,7 +237,7 @@
       if (!editable) {
         nameInput.setAttribute("readonly", "");
         removeBtn.remove();
-        if (previewToggleBtn) previewToggleBtn.remove();
+        // Keep previewToggleBtn: read-only templates still toggle preview/source.
       } else {
         nameInput.addEventListener("input", function () {
           templates[idx].name = nameInput.value;
@@ -243,8 +253,9 @@
       var ed = mountMarkdownEditor({
         textarea: contentInput,
         preview: contentPreview,
-        previewBtn: editable ? previewToggleBtn : null,
+        previewBtn: previewToggleBtn,
         readOnly: !editable,
+        defaultPreview: !editable,
         minHeight: "9rem",
         maxHeight: "24rem",
         onChange: function (val) {
@@ -402,6 +413,7 @@
     preview: document.getElementById("instructions-preview"),
     previewBtn: document.getElementById("instructions-preview-btn"),
     readOnly: !editable,
+    defaultPreview: !editable,
     minHeight: "14rem",
     maxHeight: "32rem",
   });
@@ -410,6 +422,7 @@
     preview: document.getElementById("description-preview"),
     previewBtn: document.getElementById("description-preview-btn"),
     readOnly: !editable,
+    defaultPreview: !editable,
     maxLength: 1024,
     minHeight: "5rem",
     maxHeight: "20rem",

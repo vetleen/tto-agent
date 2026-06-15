@@ -202,6 +202,25 @@ class SkillsDetailViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 302)
 
+    def test_system_skill_read_only_but_has_preview_toggles(self):
+        # Built-in (system) skills are not editable, but the detail page still
+        # offers the markdown preview toggles so users can read the rendered
+        # version (which the client-side JS shows by default).
+        system_skill = AgentSkill.objects.create(
+            slug="sys", name="System Skill", instructions="# hi", level="system",
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("agent_skills_detail", kwargs={"skill_id": system_skill.id})
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["editable"])
+        # Read-only fields…
+        self.assertContains(response, "readonly")
+        # …but the preview toggle buttons are still rendered.
+        self.assertContains(response, 'id="instructions-preview-btn"')
+        self.assertContains(response, 'id="description-preview-btn"')
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class SkillsSaveViewTests(TestCase):
