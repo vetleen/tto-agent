@@ -567,6 +567,9 @@
   });
 })();
 </script>
-<script src="{% static 'meetings/transcribe.js' %}?v=rt12" defer></script>
+{# marked + DOMPurify power the transcript editor's markdown preview toggle. #}
+<script src="{% static 'js/vendor/marked.min.js' %}"></script>
+<script src="{% static 'js/vendor/purify.min.js' %}"></script>
+<script src="{% static 'meetings/transcribe.js' %}?v=rt14" defer></script>
 <script src="{% static 'js/wilfred-ai-button.js' %}?v=20260611" defer></script>
 {% endblock %}

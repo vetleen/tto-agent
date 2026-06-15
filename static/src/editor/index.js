@@ -234,6 +234,20 @@ const SVG_UL =
 const SVG_PLAINBLOCK =
   '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M7 9.5h7M7 12.5h10M7 15.5h5"/></svg>';
 
+// Right-side action icons. The save button swaps between four states by toggling
+// `.hidden` on these siblings — the exact floppy/spinner/check/cross set the chat
+// canvas uses, so the affordance reads identically across the app.
+const SVG_SAVE =
+  '<svg class="cm-btn-icon" style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-8H7v8M7 3v5h8"/></svg>';
+const SVG_SPINNER =
+  '<svg class="cm-btn-spinner animate-spin hidden" style="width:1rem;height:1rem" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path style="opacity:0.75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>';
+const SVG_CHECK =
+  '<svg class="cm-btn-check hidden text-fg-success" style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>';
+const SVG_ERROR =
+  '<svg class="cm-btn-error hidden text-fg-danger" style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>';
+const SVG_EYE =
+  '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>';
+
 const TB = [
   { title: "Bold", mod: "b", run: cmdBold, html: glyph("B", "font-weight:700") },
   { title: "Italic", mod: "i", run: cmdItalic, html: glyph("I", "font-style:italic;font-weight:600") },
@@ -270,6 +284,63 @@ function populateToolbar(toolbar, view) {
     });
     toolbar.appendChild(btn);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Right-side toolbar actions (save / preview) — shared so every editor with the
+// internal toolbar frame gets the same affordances as the chat canvas.
+// ---------------------------------------------------------------------------
+
+// Square icon button matching the canvas document-action buttons. Themed via
+// template-proven classes; layout via inline styles.
+function makeActionButton(title, innerHTML) {
+  const btn = document.createElement("button");
+  btn.type = "button"; // never submit a surrounding <form>
+  btn.className = "rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:opacity-80";
+  btn.style.cssText =
+    "cursor:pointer;border:none;background:transparent;padding:6px;display:inline-flex;align-items:center;justify-content:center;";
+  btn.title = title;
+  btn.innerHTML = innerHTML;
+  return btn;
+}
+
+// Save-button state machine: idle floppy → spinner → check/cross → idle, by
+// toggling `.hidden` on the four icon siblings (mirrors the canvas).
+function setBtnState(btn, state) {
+  ["cm-btn-icon", "cm-btn-spinner", "cm-btn-check", "cm-btn-error"].forEach((c) => {
+    const el = btn.querySelector("." + c);
+    if (el) el.classList.add("hidden");
+  });
+  const cls =
+    state === "loading" ? "cm-btn-spinner" :
+    state === "success" ? "cm-btn-check" :
+    state === "error" ? "cm-btn-error" : "cm-btn-icon";
+  const target = btn.querySelector("." + cls);
+  if (target) target.classList.remove("hidden");
+  btn.disabled = state === "loading";
+}
+
+// Markdown → sanitized HTML for the preview pane. Uses the page's global marked +
+// DOMPurify when present (chat / skills load them); otherwise falls back to
+// escaped plain text with <br>, which is exactly right for non-markdown content
+// like meeting transcripts.
+function renderPreviewHtml(text) {
+  if (!text) return "";
+  try {
+    if (window.marked && window.DOMPurify) {
+      return window.DOMPurify.sanitize(window.marked.parse(text), {
+        ALLOWED_TAGS: ["p", "br", "strong", "em", "u", "s", "del", "code", "pre", "ul", "ol", "li",
+                       "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "a", "hr",
+                       "table", "thead", "tbody", "tr", "th", "td", "div", "span", "sup", "section"],
+        ALLOWED_ATTR: ["href", "title", "target", "class", "id"],
+      });
+    }
+  } catch (e) {
+    /* fall through to plain-text rendering */
+  }
+  return String(text)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/\n/g, "<br>");
 }
 
 // ---------------------------------------------------------------------------
@@ -484,18 +555,27 @@ function create(parent, opts) {
     return doc;
   };
 
+  // Wired to the toolbar save icon below (if any) so Mod-S triggers the same save.
+  let saveAction = null;
+  const keyBindings = [
+    { key: "Mod-b", run: cmdBold },
+    { key: "Mod-i", run: cmdItalic },
+    { key: "Mod-k", run: cmdLink },
+    { key: "Enter", run: insertNewlineContinueMarkup },
+    { key: "Backspace", run: deleteMarkupBackward },
+  ];
+  if (opts.onSave) {
+    // Returning true preventDefaults the browser's native save dialog.
+    keyBindings.push({
+      key: "Mod-s",
+      run: () => { if (saveAction) { saveAction(); return true; } return false; },
+    });
+  }
+  keyBindings.push(indentWithTab, ...defaultKeymap, ...historyKeymap);
+
   const extensions = [
     history(),
-    keymap.of([
-      { key: "Mod-b", run: cmdBold },
-      { key: "Mod-i", run: cmdItalic },
-      { key: "Mod-k", run: cmdLink },
-      { key: "Enter", run: insertNewlineContinueMarkup },
-      { key: "Backspace", run: deleteMarkupBackward },
-      indentWithTab,
-      ...defaultKeymap,
-      ...historyKeymap,
-    ]),
+    keymap.of(keyBindings),
     markdown({ base: markdownLanguage }),
     bracketMatching(),
     drawSelection(),
@@ -539,34 +619,116 @@ function create(parent, opts) {
   // template-proven Tailwind classes for theming.
   let mountTarget = parent;
   let toolbarEl = null;
+  let frameEl = null;
+  let hostEl = null;
   if (opts.toolbarTarget) {
     // Render the formatting buttons into a caller-provided element (e.g. the canvas
     // header row, alongside its document-action icons); the editor mounts directly
     // into `parent`, with no internal frame.
     toolbarEl = opts.toolbarTarget;
   } else if (opts.toolbar) {
-    const frame = document.createElement("div");
-    frame.className = "border-t-[3px] border-t-blue-500"; // recognizable accent
-    frame.style.cssText =
+    frameEl = document.createElement("div");
+    frameEl.className = "border-t-[3px] border-t-blue-500"; // recognizable accent
+    frameEl.style.cssText =
       "display:flex;flex-direction:column;overflow:hidden;" +
       (opts.fillParent ? "height:100%;width:100%;" : "");
     toolbarEl = document.createElement("div");
     toolbarEl.className = "border-b border-default bg-neutral-primary-soft";
     toolbarEl.style.cssText =
       "display:flex;align-items:center;flex-wrap:wrap;gap:2px;padding:4px 6px;flex-shrink:0;";
-    const host = document.createElement("div");
-    host.style.cssText = opts.fillParent ? "flex:1 1 0;min-height:0;position:relative;" : "";
-    frame.appendChild(toolbarEl);
-    frame.appendChild(host);
-    parent.appendChild(frame);
-    mountTarget = host;
+    hostEl = document.createElement("div");
+    hostEl.style.cssText = opts.fillParent ? "flex:1 1 0;min-height:0;position:relative;" : "";
+    frameEl.appendChild(toolbarEl);
+    frameEl.appendChild(hostEl);
+    parent.appendChild(frameEl);
+    mountTarget = hostEl;
   }
 
   const view = new EditorView({
     state: EditorState.create({ doc: clamp(opts.value), extensions }),
     parent: mountTarget,
   });
-  if (toolbarEl) populateToolbar(toolbarEl, view);
+  if (toolbarEl) {
+    if (frameEl) {
+      // Internal frame: keep the format buttons in their own group so the preview
+      // toggle can hide just them, then add right-aligned document actions
+      // (save / preview) like the chat canvas. `margin-left:auto` pushes the
+      // actions to the right edge; the toolbar's flex-wrap lets the group drop to
+      // its own line on narrow widths.
+      const formatGroup = document.createElement("div");
+      formatGroup.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:2px;";
+      populateToolbar(formatGroup, view);
+      toolbarEl.appendChild(formatGroup);
+
+      if (opts.onSave || opts.preview) {
+        const actions = document.createElement("div");
+        actions.style.cssText = "margin-left:auto;display:flex;align-items:center;gap:2px;";
+
+        if (opts.onSave) {
+          const saveBtn = makeActionButton(
+            "Save" + (IS_MAC ? " (⌘S)" : " (Ctrl+S)"),
+            SVG_SAVE + SVG_SPINNER + SVG_CHECK + SVG_ERROR
+          );
+          const doSave = () => {
+            if (saveBtn.disabled) return;
+            setBtnState(saveBtn, "loading");
+            let result;
+            try {
+              result = opts.onSave(view.state.doc.toString());
+            } catch (e) {
+              result = Promise.reject(e);
+            }
+            Promise.resolve(result).then(
+              () => { setBtnState(saveBtn, "success"); setTimeout(() => setBtnState(saveBtn, "idle"), 1500); },
+              () => { setBtnState(saveBtn, "error"); setTimeout(() => setBtnState(saveBtn, "idle"), 2000); }
+            );
+          };
+          saveBtn.addEventListener("click", doSave);
+          saveAction = doSave; // wired to Mod-S above
+          actions.appendChild(saveBtn);
+        }
+
+        if (opts.preview) {
+          const previewEl = document.createElement("div");
+          previewEl.className = "markdown-content hidden";
+          previewEl.style.cssText =
+            "overflow:auto;padding:12px 16px;font-size:0.875rem;" +
+            (opts.fillParent ? "flex:1 1 0;min-height:0;" : "") +
+            (opts.minHeight ? "min-height:" + opts.minHeight + ";" : "") +
+            (opts.maxHeight ? "max-height:" + opts.maxHeight + ";" : "");
+          frameEl.appendChild(previewEl);
+
+          const previewBtn = makeActionButton("Toggle preview", SVG_EYE);
+          let previewing = false;
+          previewBtn.addEventListener("click", () => {
+            previewing = !previewing;
+            if (previewing) {
+              previewEl.innerHTML = renderPreviewHtml(view.state.doc.toString());
+              previewEl.classList.remove("hidden");
+              hostEl.classList.add("hidden");
+              // Set inline display, not `.hidden` — the class can't beat the
+              // group's inline `display:flex`. Can't format while previewing.
+              formatGroup.style.display = "none";
+              previewBtn.classList.add("text-heading", "bg-neutral-tertiary");
+              previewBtn.title = "Back to editor";
+            } else {
+              previewEl.classList.add("hidden");
+              hostEl.classList.remove("hidden");
+              formatGroup.style.display = "flex";
+              previewBtn.classList.remove("text-heading", "bg-neutral-tertiary");
+              previewBtn.title = "Toggle preview";
+              view.focus();
+            }
+          });
+          actions.appendChild(previewBtn);
+        }
+
+        toolbarEl.appendChild(actions);
+      }
+    } else {
+      populateToolbar(toolbarEl, view);
+    }
+  }
   if (opts.readOnly) view.dom.classList.add("cm-readonly");
 
   const inst = { view, themeCompartment };

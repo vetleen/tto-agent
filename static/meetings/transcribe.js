@@ -124,7 +124,7 @@
   }
 
   // ---------------- metadata save (fetch, no reload) ----------------
-  function postMetadata(fields, onSuccess) {
+  function postMetadata(fields, onSuccess, onError) {
     if (!metadataForm) return;
     const data = new FormData();
     const csrf = metadataForm.querySelector('input[name="csrfmiddlewaretoken"]');
@@ -139,6 +139,9 @@
       if (!r.ok) throw new Error('save failed');
       if (typeof onSuccess === 'function') onSuccess();
     }).catch(function () {
+      // When a caller handles its own failure UI (e.g. the toolbar save icon's
+      // error state) let it through instead of the generic alert.
+      if (typeof onError === 'function') { onError(); return; }
       alert('Could not save meeting metadata.');
     });
   }
@@ -243,6 +246,45 @@
   var transcriptSaveBtn = document.getElementById('transcript-save-btn');
   var transcriptSavedEl = document.getElementById('transcript-saved-indicator');
   var transcriptTextarea = (transcriptPane && transcriptPane.tagName === 'TEXTAREA') ? transcriptPane : null;
+
+  // Mount the shared CodeMirror editor (window.WilfredEditor) over the non-live
+  // transcript textarea so it matches the editing surface used across the app
+  // (skills, canvas, agent settings). The textarea is hidden and kept in sync
+  // via onChange so the existing "Save transcript" POST still submits its value.
+  // If the bundle failed to load the bare textarea stays visible as a fallback.
+  var transcriptEditor = null;
+  var transcriptEditorWrapper = null;
+  if (transcriptTextarea && window.WilfredEditor) {
+    transcriptEditorWrapper = document.createElement('div');
+    transcriptEditorWrapper.className = 'cm-field wf-input rounded-base overflow-hidden';
+    transcriptTextarea.classList.add('hidden');
+    transcriptTextarea.parentNode.insertBefore(transcriptEditorWrapper, transcriptTextarea.nextSibling);
+    transcriptEditor = window.WilfredEditor.create(transcriptEditorWrapper, {
+      value: transcriptTextarea.value,
+      toolbar: true,
+      preview: true,
+      placeholder: transcriptTextarea.getAttribute('placeholder') || '',
+      minHeight: '12rem',
+      maxHeight: '32rem',
+      onChange: function () {
+        transcriptTextarea.value = transcriptEditor.getValue();
+        updateLineCount();
+      },
+      // The toolbar save icon replaces the old bottom "Save transcript" button.
+      // Resolve/reject so the icon can flash its success / error state.
+      onSave: function (value) {
+        return new Promise(function (resolve, reject) {
+          transcriptTextarea.value = value;
+          postMetadata({ transcript: value }, resolve, reject);
+        });
+      },
+    });
+    // Editor mounted: retire the now-redundant bottom save button (it stays as a
+    // fallback only on the rare path where the editor bundle failed to load).
+    if (transcriptSaveBtn && transcriptSaveBtn.parentNode) {
+      transcriptSaveBtn.parentNode.classList.add('hidden');
+    }
+  }
 
   if (transcriptSaveBtn && transcriptTextarea) {
     var lastSavedTranscript = transcriptTextarea.value;
@@ -744,7 +786,9 @@
 
   function updateLineCount() {
     if (!transcriptLineCount || !transcriptPane) return;
-    const text = (transcriptPane.textContent || '').trim();
+    // Prefer the mounted editor's value: a hidden textarea's textContent reflects
+    // its server-rendered default, not live edits, so count from the editor.
+    const text = (transcriptEditor ? transcriptEditor.getValue() : (transcriptPane.textContent || '')).trim();
     if (!text) {
       transcriptLineCount.textContent = '0 lines';
       return;
@@ -931,9 +975,21 @@
             const div = document.createElement('div');
             div.id = 'transcript-pane';
             div.className = 'whitespace-pre-wrap pt-4';
-            // Preserve any existing transcript text as a starting point.
-            if (transcriptPane.value) {
-              div.textContent = transcriptPane.value;
+            // Preserve any existing transcript text as a starting point. When the
+            // shared editor is mounted its value is the source of truth (it keeps
+            // the hidden textarea synced, but read it directly to be safe).
+            const startingText = transcriptEditor ? transcriptEditor.getValue() : transcriptPane.value;
+            if (startingText) {
+              div.textContent = startingText;
+            }
+            // Tear down the editor so its wrapper doesn't linger beside the live div.
+            if (transcriptEditor) {
+              transcriptEditor.destroy();
+              transcriptEditor = null;
+            }
+            if (transcriptEditorWrapper) {
+              transcriptEditorWrapper.remove();
+              transcriptEditorWrapper = null;
             }
             transcriptPane.parentNode.replaceChild(div, transcriptPane);
             transcriptPane = div;
@@ -1704,6 +1760,14 @@
 
     function renderTranscript(text) {
       if (!transcriptPane) return;
+      // When the shared editor is mounted, push updates through it (and keep the
+      // hidden textarea synced) so the upload-poll refresh stays visible.
+      if (transcriptEditor) {
+        transcriptEditor.setValue(text || '');
+        if (transcriptTextarea) transcriptTextarea.value = text || '';
+        updateLineCount();
+        return;
+      }
       // Replace the pane's innerText (not innerHTML) so a transcript
       // containing angle brackets can't inject markup.
       transcriptPane.textContent = text || '';
