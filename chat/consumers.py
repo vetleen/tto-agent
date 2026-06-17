@@ -58,6 +58,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._stopped: bool = False
         self._stream_task: asyncio.Task | None = None
 
+        # Output sink for turn streaming. Interactive chat delivers events over
+        # this WebSocket; headless loop turns swap in a BroadcastSink/NullSink.
+        from chat.sinks import WebSocketSink
+        self._sink = WebSocketSink(self)
+
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
             await self.close(code=4401)
@@ -106,6 +111,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 await self._guardrail_task
             except asyncio.CancelledError:
                 pass
+
+    async def loop_event(self, event):
+        """Channel-layer handler: forward a headless loop turn's event to this socket.
+
+        A loop turn runs in a Celery task with a ``BroadcastSink`` that publishes
+        each event to the thread's group. Membership in ``thread_{id}`` already
+        guarantees this consumer is viewing that thread, so we just forward the
+        inner event for live rendering (prompt, tokens, canvas updates, etc.).
+        """
+        if self._stopped:
+            return
+        inner = event.get("event")
+        if inner is not None:
+            await self.send(text_data=json.dumps(inner))
 
     async def subagent_completed(self, event):
         """Channel layer handler: a sub-agent finished. Auto-trigger orchestrator turn."""
@@ -382,6 +401,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
             self.active_skill_id = skill_data["skill_id"] if skill_data else None
 
+            # Effective model for the picker (honors the thread's stored model,
+            # with tier fallback if it's no longer allowed).
+            from core.preferences import resolve_thread_model
+            from llm.display import get_display_name
+
+            stored_model = await self._get_thread_stored_model(thread_id)
+            effective_model = (
+                resolve_thread_model(stored_model, self.resolved_prefs)
+                if self.resolved_prefs else ""
+            )
+
             await self.send(text_data=json.dumps({
                 "event_type": "thread.loaded",
                 "thread_id": thread_id,
@@ -389,6 +419,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "skill": skill_data,
                 "thread_cost_usd": thread_cost,
                 "active_subagent_count": active_subagent_count,
+                "model": effective_model,
+                "model_display": get_display_name(effective_model) if effective_model else "",
             }))
             if canvases_data:
                 await self.send(text_data=json.dumps({
@@ -969,75 +1001,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self.resolved_prefs = await self._resolve_preferences()
 
             # Resolve model early for dynamic history budget
+            from core.preferences import resolve_thread_model
             prefs = self.resolved_prefs
             if requested_model and prefs and requested_model in prefs.allowed_models:
                 model = requested_model
             else:
-                model = prefs.feature_models.get("chat", prefs.top_model) if prefs else None
+                model = resolve_thread_model(thread.model, prefs) if prefs else None
+
+            # Remember the effective model on the thread so reopening honors it.
+            if model and thread.model != model:
+                await self._persist_thread_model(thread, model)
 
             max_context_tokens = prefs.max_context_tokens if prefs else None
 
-            # Load conversation history (token-aware, model-aware budget)
-            history_result = await self._load_history(thread, model=model, max_context_tokens=max_context_tokens)
-            history = history_result["messages"]
-            meta = history_result["meta"]
-
-            # Gather document context for the system prompt
-            doc_context = None
-            if self.data_room_ids:
-                doc_context = await self._get_document_context(
-                    self.data_room_ids, content,
+            # Gather history + context and build the layered system prompt.
+            static_system, history, semi_static_system, dynamic_context, meta = (
+                await self._assemble_turn_inputs(
+                    thread, content,
+                    model=model, max_context_tokens=max_context_tokens,
                 )
-
-            # Build system prompt (split into static/semi-static/dynamic for caching)
-            from chat.prompts import (
-                build_dynamic_context,
-                build_semi_static_prompt,
-                build_static_system_prompt,
-            )
-            data_rooms = None
-            if self.data_room_ids:
-                data_rooms = await self._get_data_room_info(self.data_room_ids)
-            org_name = await self._get_organization_name()
-            try:
-                canvases_info = await self._get_canvases_for_prompt(str(thread.id))
-            except Exception:
-                logger.exception("Failed to load canvases for thread %s", thread.id)
-                canvases_info = None
-            skill_obj = None
-            if self.active_skill_id:
-                skill_obj = await self._load_skill(self.active_skill_id)
-            tasks = await self._get_thread_tasks(str(thread.id))
-            subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("create_subagent") else None
-            parallel_subagents = prefs.parallel_subagents if prefs else True
-            static_system = build_static_system_prompt(
-                organization_name=org_name,
-                has_subagent_tool=self._has_tool("create_subagent"),
-                has_task_tool=self._has_tool("update_tasks"),
-                parallel_subagents=parallel_subagents,
-            )
-            available_skills_for_prompt = (
-                prefs.allowed_skills
-                if prefs and prefs.allow_agent_attach_skills
-                else None
-            )
-            semi_static_system = build_semi_static_prompt(
-                data_rooms=data_rooms,
-                canvases=canvases_info["canvases"] if canvases_info else None,
-                skill=skill_obj,
-                soul=self._soul,
-                organization_name=org_name,
-                organization_description=self._org_description or None,
-                user_context=self._user_context,
-                available_skills=available_skills_for_prompt,
-            )
-            dynamic_context = build_dynamic_context(
-                doc_context=doc_context,
-                active_canvases=canvases_info["active_canvases"] if canvases_info else None,
-                tasks=tasks,
-                subagent_runs=subagent_runs if subagent_runs else None,
-                history_meta=meta,
-                data_rooms=data_rooms,
             )
 
             # Launch streaming + post-processing as a background task so
@@ -1105,22 +1087,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 for cid in redacted_ids:
                     canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
                     if canvas_data:
-                        await self.send(text_data=json.dumps(canvas_data))
+                        await self._sink.send_event(canvas_data)
                 return
 
             # Send guardrail warning after stream if the pipeline flagged but allowed
             if turn.warn_verdict:
-                await self.send(text_data=json.dumps({
+                await self._sink.send_event({
                     "event_type": "guardrail.warning",
                     "data": {"message": turn.warn_verdict.message},
-                }))
+                })
 
             # Send updated thread cost
             thread_cost = await self._get_thread_cost(str(thread.id))
-            await self.send(text_data=json.dumps({
+            await self._sink.send_event({
                 "event_type": "thread.cost_updated",
                 "thread_cost_usd": thread_cost,
-            }))
+            })
 
             if not self._stopped and not seed_mode and not thread.title:
                 await self._generate_thread_title(thread, content)
@@ -1135,10 +1117,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except Exception:
             logger.exception("Error in stream lifecycle")
             try:
-                await self.send(text_data=json.dumps({
+                await self._sink.send_event({
                     "event_type": "error",
                     "data": {"message": "An error occurred processing your message."},
-                }))
+                })
             except Exception:
                 pass
         finally:
@@ -1152,6 +1134,145 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     {"thread_id": str(thread.id), "content": ""},
                     seed_mode=True,
                 )
+
+    async def _assemble_turn_inputs(
+        self, thread, content, *,
+        model, max_context_tokens,
+        history_mode="conversational", is_loop_turn=False,
+    ):
+        """Gather history + context and build the layered system prompt.
+
+        Shared by the interactive turn (``_handle_chat_message``) and the
+        headless loop turn (``run_turn_to_completion``). Returns
+        ``(static_system, history, semi_static_system, dynamic_context, meta)``.
+
+        ``history_mode``:
+          - ``"conversational"``: token-aware history from the thread (rolling
+            summary + recent window) — the normal chat behaviour.
+          - ``"fresh"``: no prior conversation; history is just the current user
+            message (``content``) so each scheduled run starts clean.
+        """
+        prefs = self.resolved_prefs
+
+        if history_mode == "fresh":
+            history = [{"role": "user", "content": content, "tool_call_id": None}]
+            meta = {
+                "total_messages": 1, "included_messages": 1,
+                "has_summary": False, "needs_summary": False,
+            }
+        else:
+            history_result = await self._load_history(
+                thread, model=model, max_context_tokens=max_context_tokens,
+            )
+            history = history_result["messages"]
+            meta = history_result["meta"]
+
+        # Gather document context for the system prompt
+        doc_context = None
+        if self.data_room_ids:
+            doc_context = await self._get_document_context(self.data_room_ids, content)
+
+        # Build system prompt (split into static/semi-static/dynamic for caching)
+        from chat.prompts import (
+            build_dynamic_context,
+            build_semi_static_prompt,
+            build_static_system_prompt,
+        )
+        data_rooms = None
+        if self.data_room_ids:
+            data_rooms = await self._get_data_room_info(self.data_room_ids)
+        org_name = await self._get_organization_name()
+        try:
+            canvases_info = await self._get_canvases_for_prompt(str(thread.id))
+        except Exception:
+            logger.exception("Failed to load canvases for thread %s", thread.id)
+            canvases_info = None
+        skill_obj = None
+        if self.active_skill_id:
+            skill_obj = await self._load_skill(self.active_skill_id)
+        tasks = await self._get_thread_tasks(str(thread.id))
+        subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("create_subagent") else None
+        parallel_subagents = prefs.parallel_subagents if prefs else True
+        static_system = build_static_system_prompt(
+            organization_name=org_name,
+            has_subagent_tool=self._has_tool("create_subagent"),
+            has_task_tool=self._has_tool("update_tasks"),
+            parallel_subagents=parallel_subagents,
+            is_loop_turn=is_loop_turn,
+        )
+        available_skills_for_prompt = (
+            prefs.allowed_skills
+            if prefs and prefs.allow_agent_attach_skills
+            else None
+        )
+        semi_static_system = build_semi_static_prompt(
+            data_rooms=data_rooms,
+            canvases=canvases_info["canvases"] if canvases_info else None,
+            skill=skill_obj,
+            soul=self._soul,
+            organization_name=org_name,
+            organization_description=self._org_description or None,
+            user_context=self._user_context,
+            available_skills=available_skills_for_prompt,
+        )
+        dynamic_context = build_dynamic_context(
+            doc_context=doc_context,
+            active_canvases=canvases_info["active_canvases"] if canvases_info else None,
+            tasks=tasks,
+            subagent_runs=subagent_runs if subagent_runs else None,
+            history_meta=meta,
+            data_rooms=data_rooms,
+        )
+        return static_system, history, semi_static_system, dynamic_context, meta
+
+    async def run_turn_to_completion(
+        self, thread, content, *,
+        history_mode="conversational", is_loop_turn=False,
+        requested_model=None, thinking_level="off",
+    ):
+        """Run one agent turn to completion, awaiting the full stream.
+
+        For headless callers (the loop runner) that have no live socket and want
+        to block until the turn finishes. The caller must have already persisted
+        the user message. Refreshes prefs, assembles inputs, streams + persists
+        the response, and triggers summarization when conversational history
+        needs it. Output goes wherever ``self._sink`` points.
+        """
+        self.resolved_prefs = await self._resolve_preferences()
+        prefs = self.resolved_prefs
+        from core.preferences import resolve_thread_model
+        if requested_model and prefs and requested_model in prefs.allowed_models:
+            model = requested_model
+        else:
+            model = resolve_thread_model(thread.model, prefs) if prefs else None
+        max_context_tokens = prefs.max_context_tokens if prefs else None
+
+        static_system, history, semi_static_system, dynamic_context, meta = (
+            await self._assemble_turn_inputs(
+                thread, content,
+                model=model, max_context_tokens=max_context_tokens,
+                history_mode=history_mode, is_loop_turn=is_loop_turn,
+            )
+        )
+
+        turn = _TurnState(
+            cancel_event=threading.Event(),
+            stream_finished=asyncio.Event(),
+        )
+        self._turn = turn
+        self._cancel_event = turn.cancel_event
+        await self._stream_response(
+            thread, static_system, history,
+            semi_static_system=semi_static_system,
+            dynamic_context=dynamic_context,
+            requested_model=requested_model, thinking_level=thinking_level,
+            resolved_model=model, turn=turn, seed_mode=False,
+        )
+
+        if history_mode == "conversational" and meta.get("needs_summary"):
+            await self._trigger_summarization(
+                thread, model=model, max_context_tokens=max_context_tokens,
+            )
 
     async def _stream_response(
         self, thread, system_prompt, history,
@@ -1233,10 +1354,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Use pre-resolved model from _handle_chat_message, or resolve here
         model = resolved_model
         if model is None:
+            from core.preferences import resolve_thread_model
             if requested_model and prefs and requested_model in prefs.allowed_models:
                 model = requested_model
             else:
-                model = prefs.feature_models.get("chat", prefs.top_model) if prefs else None
+                model = resolve_thread_model(thread.model, prefs) if prefs else None
 
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
@@ -1297,7 +1419,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         pending_tool_calls = []
         pending_tool_results = []
         stream_error = False
-        heartbeat_task = asyncio.create_task(self._send_heartbeats())
+        heartbeat_task = (
+            asyncio.create_task(self._send_heartbeats())
+            if self._sink.wants_heartbeats else None
+        )
 
         try:
             async for event in service.astream("simple_chat", request, cancel_event=turn.cancel_event):
@@ -1308,7 +1433,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # still recorded in LLMCallLog.error_message via log_stream).
                 if event_data.get("event_type") == "error":
                     event_data.get("data", {}).pop("details", None)
-                await self.send(text_data=json.dumps(event_data))
+                await self._sink.send_event(event_data)
 
                 # Accumulate assistant text from token events
                 if event.event_type == "token":
@@ -1349,17 +1474,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     }
                                     if accepted is not None:
                                         canvas_event["accepted_content"] = accepted
-                                    await self.send(text_data=json.dumps(canvas_event))
+                                    await self._sink.send_event(canvas_event)
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     if tool_name == "active_canvas":
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
-                                await self.send(text_data=json.dumps({
+                                await self._sink.send_event({
                                     "event_type": "canvases.active_changed",
                                     "activated": result.get("activated", []),
-                                }))
+                                })
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     # Intercept task tool results and broadcast tasks.updated
@@ -1367,10 +1492,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
-                                await self.send(text_data=json.dumps({
+                                await self._sink.send_event({
                                     "event_type": "tasks.updated",
                                     "tasks": result.get("tasks", []),
-                                }))
+                                })
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     # Intercept attach_skills results: mirror on self.active_skill_id
@@ -1383,17 +1508,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 new_id = result.get("attached_skill_id")
                                 if new_id:
                                     self.active_skill_id = str(new_id)
-                                    await self.send(text_data=json.dumps({
+                                    await self._sink.send_event({
                                         "event_type": "skill.attached",
                                         "skill_id": str(new_id),
                                         "skill_name": result.get("attached_skill_name", ""),
                                         "skill_emoji": result.get("attached_skill_emoji", ""),
-                                    }))
+                                    })
                                 elif result.get("detached"):
                                     self.active_skill_id = None
-                                    await self.send(text_data=json.dumps({
+                                    await self._sink.send_event({
                                         "event_type": "skill.detached",
-                                    }))
+                                    })
                         except (json.JSONDecodeError, AttributeError):
                             pass
                 elif event.event_type == "error":
@@ -1439,37 +1564,38 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         except LLMConfigurationError:
             logger.exception("LLM misconfigured for streaming response")
-            await self.send(text_data=json.dumps({
+            await self._sink.send_event({
                 "event_type": "error",
                 "data": {"message": "AI service is not configured. Please contact support."},
-            }))
+            })
         except LLMPolicyDenied:
             logger.exception("LLM policy denied streaming response")
-            await self.send(text_data=json.dumps({
+            await self._sink.send_event({
                 "event_type": "error",
                 "data": {"message": "This request is not allowed by the current policy."},
-            }))
+            })
         except LLMProviderError as exc:
             logger.exception("LLM provider error during streaming response")
             error_data = {"message": str(exc) or "The AI service encountered an error. Please try again."}
             if hasattr(exc, "error_code"):
                 error_data["error_code"] = exc.error_code
-            await self.send(text_data=json.dumps({
+            await self._sink.send_event({
                 "event_type": "error",
                 "data": error_data,
-            }))
+            })
         except Exception:
             logger.exception("Unexpected error streaming LLM response")
-            await self.send(text_data=json.dumps({
+            await self._sink.send_event({
                 "event_type": "error",
                 "data": {"message": "Failed to get AI response."},
-            }))
+            })
         finally:
-            heartbeat_task.cancel()
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
             turn.stream_finished.set()
             self._cancel_event = None
 
@@ -2241,6 +2367,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
             token_count=count_tokens(content),
             is_hidden_from_user=is_hidden_from_user,
         )
+
+    @database_sync_to_async
+    def _persist_thread_model(self, thread, model):
+        """Store the thread's effective model so it survives reopen.
+
+        Uses a direct UPDATE (not save()) so it doesn't bump retain_until.
+        """
+        from chat.models import ChatThread
+
+        ChatThread.objects.filter(pk=thread.id).update(model=model)
+        thread.model = model
+
+    @database_sync_to_async
+    def _get_thread_stored_model(self, thread_id):
+        from chat.models import ChatThread
+
+        return ChatThread.objects.filter(pk=thread_id).values_list(
+            "model", flat=True,
+        ).first() or ""
 
     @database_sync_to_async
     def _redact_messages(self, thread, *, redact_user=True, redact_assistant=True, from_message_id=None):

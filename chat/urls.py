@@ -19,4 +19,10 @@ urlpatterns = [
     path("api/search/", views.search_threads, name="chat_search"),
     path("api/skills/", views.skills_for_user, name="chat_skills_api"),
     path("api/data-rooms/", views.data_rooms_for_user, name="chat_data_rooms_api"),
+    # Loops
+    path("loops/", views.loops_list, name="loops_list"),
+    path("api/loops/create/", views.loop_create, name="loop_create"),
+    path("api/loops/<uuid:loop_id>/edit/", views.loop_edit, name="loop_edit"),
+    path("api/loops/<uuid:loop_id>/pause/", views.loop_pause, name="loop_pause"),
+    path("api/loops/<uuid:loop_id>/resume/", views.loop_resume, name="loop_resume"),
 ]

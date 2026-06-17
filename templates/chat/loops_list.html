@@ -1,0 +1,496 @@
+{% extends "_base.html" %}
+{% load static %}
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-10">
+  {% csrf_token %}
+  <div class="flex flex-wrap items-start justify-between gap-4 mb-10">
+    <div>
+      <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Loops</h1>
+      <p class="mt-2 text-sm text-body">Schedule {{ assistant_name }} to run the same prompt on a cadence — a recurring chat that works while you're away.</p>
+    </div>
+    <div class="shrink-0">
+      <button type="button" id="new-loop-btn" class="inline-flex items-center gap-2 bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        New loop
+      </button>
+    </div>
+  </div>
+
+  {# ---------------- Active loops ---------------- #}
+  <div class="w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+    {% for loop in active_loops %}
+    <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.first %}rounded-t-base{% endif %} {% if forloop.last %}rounded-b-base{% endif %}">
+      <button type="button" class="edit-loop-btn flex-1 flex items-center min-w-0 text-left cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand focus:text-heading rounded-base" data-loop-id="{{ loop.id }}">
+        {% if loop.is_unread %}<span class="w-2 h-2 me-2 shrink-0 rounded-full bg-brand" title="New result" aria-label="New result"></span>{% else %}
+        <svg class="w-4 h-4 me-2 shrink-0 text-body" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>{% endif %}
+        <span class="truncate {% if loop.is_unread %}font-semibold{% endif %}" title="{{ loop.prompt }}">{{ loop.prompt|truncatechars:60 }}</span>
+        <span class="ms-3 shrink-0 wf-mono text-xs text-body-subtle">{{ loop.schedule_label }}</span>
+        <span class="ms-3 shrink-0 text-xs text-body-subtle hidden sm:inline">next {{ loop.next_run|date:"M j, H:i" }}</span>
+        <span class="ms-3 shrink-0 wf-mono text-xs text-body-subtle hidden md:inline">{{ loop.runs_completed }}/{{ loop.max_runs }}</span>
+      </button>
+      <div class="relative shrink-0 ms-2">
+        <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Loop options" data-dropdown-toggle="dropdown-loop-{{ loop.id }}">
+          <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+        </button>
+        <div id="dropdown-loop-{{ loop.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+          <a href="{% url 'chat_home' %}?thread={{ loop.thread_id }}" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">View in chat</a>
+          <button type="button" class="edit-loop-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-loop-id="{{ loop.id }}">Edit</button>
+          <button type="button" class="loop-action-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-action="{% url 'loop_pause' loop_id=loop.id %}">Pause</button>
+        </div>
+      </div>
+    </div>
+    {% empty %}
+    <div class="px-4 py-10 text-center">
+      <p class="text-heading font-medium">No active loops</p>
+      <p class="mt-1 text-sm text-body">Create one and {{ assistant_name }} will run your prompt on a schedule.</p>
+      <button type="button" id="new-loop-btn-empty" class="mt-4 inline-flex items-center gap-2 bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">New loop</button>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ---------------- Paused loops ---------------- #}
+  {% if paused_loops %}
+  <div class="mt-8">
+    <button type="button" class="flex items-center text-sm font-medium text-body hover:text-heading mb-3" data-toggle-next>
+      <svg class="w-4 h-4 me-1.5 shrink-0 transition-transform" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
+      Paused loops ({{ paused_loops|length }})
+    </button>
+    <div class="hidden w-full text-sm font-medium text-heading bg-neutral-primary-soft border border-default rounded-base">
+      {% for loop in paused_loops %}
+      <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.first %}rounded-t-base{% endif %} {% if forloop.last %}rounded-b-base{% endif %}">
+        <button type="button" class="edit-loop-btn flex-1 flex items-center min-w-0 text-left cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand focus:text-heading rounded-base opacity-70" data-loop-id="{{ loop.id }}">
+          {% if loop.is_unread %}<span class="w-2 h-2 me-2 shrink-0 rounded-full bg-brand"></span>{% endif %}
+          <span class="truncate" title="{{ loop.prompt }}">{{ loop.prompt|truncatechars:60 }}</span>
+          <span class="ms-3 shrink-0 wf-mono text-xs text-body-subtle">{{ loop.schedule_label }}</span>
+          <span class="ms-3 shrink-0 wf-mono text-xs text-body-subtle hidden md:inline">{{ loop.runs_completed }}/{{ loop.max_runs }}</span>
+        </button>
+        <div class="relative shrink-0 ms-2">
+          <button type="button" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Loop options" data-dropdown-toggle="dropdown-paused-loop-{{ loop.id }}">
+            <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+          </button>
+          <div id="dropdown-paused-loop-{{ loop.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
+            <a href="{% url 'chat_home' %}?thread={{ loop.thread_id }}" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">View in chat</a>
+            <button type="button" class="edit-loop-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-loop-id="{{ loop.id }}">Edit</button>
+            <button type="button" class="loop-action-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-action="{% url 'loop_resume' loop_id=loop.id %}">Resume</button>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{# ===================== Create / Edit loop modal (design-system) ===================== #}
+<style>
+  .wf-loop-modal { animation: wfloop-pop 280ms cubic-bezier(0.16,1,0.3,1) both; }
+  @keyframes wfloop-pop { from { transform: translateY(10px) scale(0.99); } to { transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .wf-loop-modal { animation: none; } }
+  .wf-stepbtn:hover { color: var(--color-heading); background: var(--color-neutral-secondary-soft); }
+  .wf-menuitem:hover { background: var(--color-neutral-secondary-soft); }
+  .wf-seg:hover { color: var(--color-heading); }
+  .wf-daybtn:hover { border-color: var(--color-brand-subtle); }
+  .wf-chip-x:hover { color: var(--color-fg-danger); }
+  #loop-prompt:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px rgba(22,67,44,0.18); }
+  #loop-submit:not(:disabled):hover { background: var(--color-brand-strong); }
+  #loop-modal-close:hover, #loop-modal-cancel:hover { background: var(--color-neutral-secondary-soft); }
+</style>
+<div id="loop-modal" class="fixed inset-0 z-50 hidden" style="overflow-y:auto;">
+  <div data-loop-scrim style="position:absolute;inset:0;background:radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55));"></div>
+  <div data-loop-overlay style="position:relative;min-height:100%;display:flex;align-items:flex-start;justify-content:center;padding:48px 16px;">
+    <section class="wf-loop-modal" style="position:relative;width:484px;max-width:100%;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+      <form id="loop-form" data-loop-id="" data-restart="">
+
+        {# Header #}
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
+          <div style="display:flex;align-items:center;gap:11px;">
+            <span style="color:var(--color-copper-600);display:inline-flex;"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
+            <h2 id="loop-modal-title" style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Create new loop</h2>
+          </div>
+          <button type="button" id="loop-modal-close" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+        </div>
+
+        {# Body #}
+        <div style="padding:22px;display:flex;flex-direction:column;gap:20px;">
+
+          <div id="loop-error" style="display:none;font-size:13px;color:var(--color-fg-danger-strong);background:var(--color-danger-soft);border:1px solid var(--color-danger-subtle);border-radius:8px;padding:8px 11px;"></div>
+
+          {# Instructions #}
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--color-fg-accent);margin-bottom:8px;">Each run, Wilfred should</div>
+            <textarea id="loop-prompt" placeholder="Summarize press releases the last week from these companies" style="width:100%;min-height:78px;resize:vertical;font-family:var(--font-sans);font-size:14.5px;line-height:1.5;color:var(--color-heading);background:var(--color-neutral-primary-soft);border:1px solid var(--color-brand-subtle);border-radius:8px;padding:11px 12px;box-shadow:var(--shadow-inset);"></textarea>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px;">
+              <span id="loop-chips" style="display:contents;"></span>
+              <div style="position:relative;">
+                <button type="button" data-act="toggleRoomMenu" style="display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;font-family:var(--font-sans);font-size:12.5px;font-weight:500;color:var(--color-body);background:var(--color-neutral-primary-soft);border:1px dashed var(--color-default);border-radius:8px;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v5"/><path d="M22 12h-6l-2 3h-4l-2-3H2"/></svg>
+                  Attach data room
+                </button>
+                <div id="loop-room-menu" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:60;min-width:212px;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default);border-radius:8px;box-shadow:var(--shadow-lg);padding:6px;"></div>
+              </div>
+              {% if skills %}
+              <div style="position:relative;">
+                <button type="button" data-act="toggleSkillMenu" style="display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;font-family:var(--font-sans);font-size:12.5px;font-weight:500;color:var(--color-body);background:var(--color-neutral-primary-soft);border:1px dashed var(--color-default);border-radius:8px;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.7 4.7L18 9l-4.3 1.3L12 15l-1.7-4.7L6 9l4.3-1.3z"/><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>
+                  Attach skill
+                </button>
+                <div id="loop-skill-menu" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:60;min-width:212px;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default);border-radius:8px;box-shadow:var(--shadow-lg);padding:6px;"></div>
+              </div>
+              {% endif %}
+            </div>
+          </div>
+
+          {# Schedule #}
+          <div style="border-top:1px solid var(--color-default-subtle);padding-top:18px;">
+            <div style="font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--color-fg-accent);margin-bottom:10px;">Wilfred should run this task</div>
+            <div style="display:inline-flex;background:var(--color-neutral-secondary-soft);border:1px solid var(--color-default-subtle);border-radius:8px;padding:3px;gap:2px;width:100%;">
+              <button type="button" class="wf-seg" data-act="preset" data-preset="Hourly" style="flex:1;height:32px;border:0;border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">Hourly</button>
+              <button type="button" class="wf-seg" data-act="preset" data-preset="Daily" style="flex:1;height:32px;border:0;border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">Daily</button>
+              <button type="button" class="wf-seg" data-act="preset" data-preset="Weekdays" style="flex:1;height:32px;border:0;border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">Weekdays</button>
+              <button type="button" class="wf-seg" data-act="preset" data-preset="Weekly" style="flex:1;height:32px;border:0;border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">Weekly</button>
+              <button type="button" class="wf-seg" data-act="preset" data-preset="Custom" style="flex:1;height:32px;border:0;border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">Custom</button>
+            </div>
+
+            <div style="margin-top:14px;display:flex;align-items:center;flex-wrap:wrap;gap:10px;min-height:34px;">
+              <span data-rev="every" style="font-size:14px;color:var(--color-body-subtle);">Every</span>
+              <div data-rev="stepper" style="display:inline-flex;align-items:center;border:1px solid var(--color-brand-subtle);border-radius:8px;height:34px;background:var(--color-neutral-primary-soft);box-shadow:var(--shadow-inset);">
+                <button type="button" class="wf-stepbtn" data-act="decN" style="width:30px;height:34px;border:0;background:transparent;color:var(--color-body-subtle);font-size:18px;cursor:pointer;border-radius:8px 0 0 8px;">−</button>
+                <span id="loop-n" style="min-width:30px;text-align:center;font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--color-heading);font-variant-numeric:tabular-nums;">6</span>
+                <button type="button" class="wf-stepbtn" data-act="incN" style="width:30px;height:34px;border:0;background:transparent;color:var(--color-body-subtle);font-size:18px;cursor:pointer;border-radius:0 8px 8px 0;">+</button>
+              </div>
+              <button type="button" data-rev="unitpill" data-act="cycleUnit" id="loop-unit-pill" style="font-family:var(--font-sans);font-size:13.5px;font-weight:600;color:var(--color-fg-accent);background:var(--color-accent-soft);border:1px solid var(--color-copper-400);border-radius:8px;padding:0 13px;height:34px;cursor:pointer;">hours</button>
+              <span data-rev="unitfixed" id="loop-unit-fixed" style="font-size:14px;color:var(--color-heading);font-weight:500;">hours</span>
+              <span data-rev="at" style="font-size:14px;color:var(--color-body-subtle);">at</span>
+              <input data-rev="time" id="loop-time" type="time" value="09:00" style="font-family:var(--font-mono);font-size:13.5px;color:var(--color-heading);background:var(--color-neutral-primary-soft);border:1px solid var(--color-brand-subtle);border-radius:8px;padding:0 10px;height:34px;box-shadow:var(--shadow-inset);">
+            </div>
+
+            <div id="loop-weekday-wrap" style="display:none;margin-top:12px;">
+              <div style="font-size:12px;color:var(--color-body-subtle);margin-bottom:8px;">On which day?</div>
+              <div style="display:flex;gap:6px;">
+                <button type="button" class="wf-daybtn" data-act="setDay" data-day="0" style="width:38px;height:34px;border:1px solid var(--color-default-subtle);border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">M</button>
+                <button type="button" class="wf-daybtn" data-act="setDay" data-day="1" style="width:38px;height:34px;border:1px solid var(--color-default-subtle);border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">T</button>
+                <button type="button" class="wf-daybtn" data-act="setDay" data-day="2" style="width:38px;height:34px;border:1px solid var(--color-default-subtle);border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">W</button>
+                <button type="button" class="wf-daybtn" data-act="setDay" data-day="3" style="width:38px;height:34px;border:1px solid var(--color-default-subtle);border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">T</button>
+                <button type="button" class="wf-daybtn" data-act="setDay" data-day="4" style="width:38px;height:34px;border:1px solid var(--color-default-subtle);border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">F</button>
+                <button type="button" class="wf-daybtn" data-act="setDay" data-day="5" style="width:38px;height:34px;border:1px solid var(--color-default-subtle);border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">S</button>
+                <button type="button" class="wf-daybtn" data-act="setDay" data-day="6" style="width:38px;height:34px;border:1px solid var(--color-default-subtle);border-radius:5px;font-family:var(--font-sans);font-size:12.5px;cursor:pointer;">S</button>
+              </div>
+            </div>
+          </div>
+
+          {# Memory #}
+          <div style="border-top:1px solid var(--color-default-subtle);padding-top:18px;">
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:7px;">
+              <span style="font-size:13.5px;color:var(--color-body-subtle);">Between runs, Wilfred's memory is</span>
+              <button type="button" data-act="toggleMemory" id="loop-memory-btn" style="font-family:var(--font-sans);font-size:13.5px;font-weight:600;color:var(--color-fg-brand);background:transparent;border:0;border-bottom:1.5px dotted var(--color-forest-400);padding:0 1px 1px;cursor:pointer;">wiped clean</button>
+              <span style="font-size:13.5px;color:var(--color-body-subtle);margin-left:-7px;">.</span>
+            </div>
+          </div>
+
+          {# Upcoming runs #}
+          <div style="background:var(--color-brand-softer);border:1px solid var(--color-default-subtle);border-radius:8px;padding:14px 16px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+              <span style="color:var(--color-forest-600);display:inline-flex;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+              <div id="loop-summary-main" style="font-size:13.5px;color:var(--color-heading);font-weight:600;"></div>
+            </div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--color-fg-disabled);margin-bottom:11px;">Upcoming runs · <span id="loop-summary-sub"></span></div>
+            <div id="loop-timeline" style="display:flex;flex-direction:column;"></div>
+          </div>
+        </div>
+
+        {# Footer #}
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <button type="submit" id="loop-submit" style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+              <span id="loop-submit-label">Create loop</span>
+            </button>
+            <button type="button" id="loop-modal-cancel" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
+          </div>
+          {% if model_choices_json %}
+          <div style="position:relative;">
+            <button type="button" data-act="toggleModelMenu" id="loop-model-btn" title="Model this loop runs on" style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-sans);font-size:12.5px;color:var(--color-body-subtle);background:transparent;border:0;cursor:pointer;">
+              <span style="opacity:.85;">Runs on</span><span id="loop-model-label" style="font-weight:600;color:var(--color-body);"></span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <div id="loop-model-menu" style="display:none;position:absolute;bottom:calc(100% + 8px);right:0;z-index:60;min-width:240px;max-height:280px;overflow-y:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default);border-radius:8px;box-shadow:var(--shadow-lg);padding:6px;"></div>
+          </div>
+          {% endif %}
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+(function () {
+  var LOOPS = {{ loops_json|safe }};
+  var DATA_ROOMS = {{ data_rooms_json|safe }};
+  var SKILLS = {{ skills_json|safe }};
+  var MODEL_CHOICES = {{ model_choices_json|safe }};
+  var PREFERRED_MODEL = "{{ preferred_chat_model|escapejs }}";
+  var UUID0 = '00000000-0000-0000-0000-000000000000';
+  var CREATE_URL = "{% url 'loop_create' %}";
+  var EDIT_URL_TPL = "{% url 'loop_edit' loop_id='00000000-0000-0000-0000-000000000000' %}";
+  var LIST_URL = "{% url 'loops_list' %}";
+  var csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+  var modal = document.getElementById('loop-modal');
+  var form = document.getElementById('loop-form');
+  var ta = document.getElementById('loop-prompt');
+  var timeInput = document.getElementById('loop-time');
+  var roomMenu = document.getElementById('loop-room-menu');
+  var skillMenu = document.getElementById('loop-skill-menu');
+  var modelMenu = document.getElementById('loop-model-menu');
+  var submitBtn = document.getElementById('loop-submit');
+  var submitLabel = document.getElementById('loop-submit-label');
+  var segEls = Array.prototype.slice.call(modal.querySelectorAll('.wf-seg'));
+  var dayEls = Array.prototype.slice.call(modal.querySelectorAll('.wf-daybtn'));
+  function el(id) { return document.getElementById(id); }
+  function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+  // ---- state ----
+  var S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: 10, model: PREFERRED_MODEL };
+
+  // ---- schedule math (preview only; server is authoritative) ----
+  function clampN(n) { return Math.max(1, Math.min(99, n)); }
+  function clampRuns(n) { return Math.max(1, Math.min(50, n)); }
+  function unitMs(n, u) { return u === 'minutes' ? n * 60000 : u === 'hours' ? n * 3600000 : n * 86400000; }
+  function unitLabel(n, u) { var b = u === 'minutes' ? 'minute' : u === 'hours' ? 'hour' : 'day'; return n === 1 ? b : b + 's'; }
+  function fmtTime(t) { var p = t.split(':').map(Number), h = p[0], m = p[1]; var ap = h < 12 ? 'AM' : 'PM'; var h12 = h % 12; if (h12 === 0) h12 = 12; return h12 + ':' + String(m).padStart(2, '0') + ' ' + ap; }
+  function fmt(d) { var wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]; var mo = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]; var h = d.getHours(), m = d.getMinutes(); var ap = h < 12 ? 'AM' : 'PM'; var h12 = h % 12; if (h12 === 0) h12 = 12; return wd + ' ' + mo + ' ' + d.getDate() + ' · ' + h12 + ':' + String(m).padStart(2, '0') + ' ' + ap; }
+  function rel(d, now) { var days = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000); if (days === 0) return 'Today'; if (days === 1) return 'Tomorrow'; if (days < 7) return 'In ' + days + ' days'; if (days < 14) return 'Next week'; return 'In ' + Math.round(days / 7) + ' weeks'; }
+  function humanSpan(ms) { var h = ms / 3600000; if (h < 1) return 'about ' + Math.max(1, Math.round(ms / 60000)) + ' minutes'; if (h < 48) return 'about ' + Math.round(h) + ' hours'; var d = ms / 86400000; if (d < 14) return 'about ' + Math.round(d) + ' days'; var w = d / 7; if (w < 10) return 'about ' + Math.round(w) + ' weeks'; return 'about ' + Math.round(d / 30) + ' months'; }
+  function intervalRuns(now, n, unit, count) { var step = unitMs(n, unit); var anchor = new Date(now.getTime() + 4000); var out = []; var lim = Math.min(count, 50); for (var i = 0; i < lim; i++) out.push(new Date(anchor.getTime() + i * step)); return out; }
+  function clockRuns(now, preset, time, weekday, count) { var p = time.split(':').map(Number), h = p[0], m = p[1]; var out = []; var lim = Math.min(count, 50); var cur = new Date(now); cur.setHours(h, m, 0, 0); if (cur <= now) cur.setDate(cur.getDate() + 1); var guard = 0; while (out.length < lim && guard < 500) { var wd = cur.getDay(); var ok = preset === 'Daily' ? true : preset === 'Weekdays' ? (wd >= 1 && wd <= 5) : wd === ((weekday + 1) % 7); if (ok) out.push(new Date(cur)); cur.setDate(cur.getDate() + 1); guard++; } return out; }
+
+  // ---- render ----
+  var REV = { every: 'inline', stepper: 'inline-flex', unitpill: 'inline-flex', unitfixed: 'inline', at: 'inline', time: 'inline-block' };
+  function setRev(name, on) { var e = modal.querySelector('[data-rev="' + name + '"]'); if (e) e.style.display = on ? REV[name] : 'none'; }
+
+  function renderChips() {
+    var h = '';
+    S.rooms.forEach(function (r) { h += chip(r.name, 'var(--color-forest-500)', 'removeRoom', r.id); });
+    if (S.skill) h += chip(S.skill.name, 'var(--color-copper-500)', 'removeSkill', S.skill.id);
+    el('loop-chips').innerHTML = h;
+  }
+  function chip(label, dot, act, id) {
+    return '<span style="display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;color:var(--color-body);background:var(--color-neutral-primary-soft);border:1px solid var(--color-default);border-radius:5px;padding:5px 8px 5px 9px;white-space:nowrap;flex-shrink:0;">'
+      + '<span style="width:7px;height:7px;border-radius:2px;background:' + dot + ';display:inline-block;"></span>' + escapeHtml(label)
+      + '<button type="button" class="wf-chip-x" data-act="' + act + '" data-id="' + escapeHtml(String(id)) + '" aria-label="Remove" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border:0;background:transparent;color:var(--color-fg-disabled);cursor:pointer;border-radius:3px;padding:0;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5l14 14M19 5 5 19"/></svg></button></span>';
+  }
+  function renderPreview() {
+    var now = new Date(); var runs, main;
+    if (S.preset === 'Hourly') { runs = intervalRuns(now, S.n, 'hours', 50); main = 'Every ' + S.n + ' ' + unitLabel(S.n, 'hours'); }
+    else if (S.preset === 'Custom') { runs = intervalRuns(now, S.n, S.unit, 50); main = 'Every ' + S.n + ' ' + unitLabel(S.n, S.unit); }
+    else { runs = clockRuns(now, S.preset, S.time, S.weekday, 50); var dn = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][S.weekday]; main = S.preset === 'Daily' ? ('Every day at ' + fmtTime(S.time)) : S.preset === 'Weekdays' ? ('Weekdays at ' + fmtTime(S.time)) : (dn + 's at ' + fmtTime(S.time)); }
+    // Loops auto-stop after 50 runs or one year, whichever comes first.
+    var yearLimit = now.getTime() + 365 * 86400000;
+    runs = runs.filter(function (d) { return d.getTime() <= yearLimit; });
+    var span = runs.length > 1 ? (runs[runs.length - 1] - runs[0]) : 0;
+    el('loop-summary-main').textContent = main;
+    el('loop-summary-sub').textContent = runs.length + ' runs, ' + humanSpan(span);
+    el('loop-timeline').innerHTML = runs.slice(0, 4).map(function (d, i) {
+      var dot = i === 0 ? 'var(--color-copper-500)' : 'var(--color-forest-400)';
+      return '<div style="display:flex;align-items:flex-start;gap:12px;"><div style="display:flex;flex-direction:column;align-items:center;align-self:stretch;"><span style="width:9px;height:9px;border-radius:50%;background:' + dot + ';margin-top:4px;flex-shrink:0;"></span><span style="width:1px;flex:1;background:var(--color-default);min-height:13px;"></span></div><div style="padding-bottom:12px;"><div style="font-family:var(--font-mono);font-size:12.5px;color:var(--color-heading);font-variant-numeric:tabular-nums;font-weight:500;">' + fmt(d) + '</div><div style="font-size:11px;color:var(--color-body-subtle);">' + rel(d, now) + '</div></div></div>';
+    }).join('');
+  }
+  function updateSubmitDisabled() {
+    var empty = !ta.value.trim();
+    submitBtn.disabled = empty;
+    submitBtn.style.opacity = empty ? '0.48' : '';
+    submitBtn.style.cursor = empty ? 'not-allowed' : 'pointer';
+  }
+  function render() {
+    var isInterval = (S.preset === 'Hourly' || S.preset === 'Custom');
+    segEls.forEach(function (b) {
+      var on = b.dataset.preset === S.preset;
+      b.style.fontWeight = on ? '600' : '500';
+      b.style.color = on ? 'var(--color-heading)' : 'var(--color-body-subtle)';
+      b.style.background = on ? 'var(--color-neutral-primary-soft)' : 'transparent';
+      b.style.boxShadow = on ? 'var(--shadow-xs)' : 'none';
+    });
+    setRev('every', isInterval); setRev('stepper', isInterval);
+    setRev('unitpill', S.preset === 'Custom'); setRev('unitfixed', S.preset === 'Hourly');
+    setRev('at', !isInterval); setRev('time', !isInterval);
+    el('loop-weekday-wrap').style.display = (S.preset === 'Weekly') ? 'block' : 'none';
+    el('loop-n').textContent = S.n;
+    el('loop-unit-pill').textContent = unitLabel(S.n, S.unit);
+    el('loop-unit-fixed').textContent = unitLabel(S.n, 'hours');
+    dayEls.forEach(function (b, i) {
+      var on = i === S.weekday;
+      b.style.fontWeight = on ? '600' : '500';
+      b.style.color = on ? 'var(--color-fg-accent)' : 'var(--color-body-subtle)';
+      b.style.background = on ? 'var(--color-accent-soft)' : 'var(--color-neutral-primary-soft)';
+      b.style.borderColor = on ? 'var(--color-copper-400)' : 'var(--color-default-subtle)';
+    });
+    el('loop-memory-btn').textContent = S.memory === 'fresh' ? 'wiped clean' : 'kept';
+    var lbl = el('loop-model-label');
+    if (lbl) { var mc = MODEL_CHOICES.filter(function (m) { return m.id === S.model; })[0]; lbl.textContent = ' ' + (mc ? mc.display : (S.model || 'default')); }
+    renderChips(); renderPreview(); updateSubmitDisabled();
+  }
+
+  // ---- menus ----
+  function menuItem(act, id, label) { return '<button type="button" class="wf-menuitem" data-act="' + act + '" data-id="' + escapeHtml(String(id)) + '" style="display:block;width:100%;text-align:left;font-family:var(--font-sans);font-size:13px;color:var(--color-body);background:transparent;border:0;border-radius:5px;padding:8px 10px;cursor:pointer;">' + escapeHtml(label) + '</button>'; }
+  function emptyItem(t) { return '<div style="font-size:13px;color:var(--color-body-subtle);padding:8px 10px;">' + escapeHtml(t) + '</div>'; }
+  function menusOpen() { return roomMenu.style.display === 'block' || (skillMenu && skillMenu.style.display === 'block') || (modelMenu && modelMenu.style.display === 'block'); }
+  function closeMenus() { roomMenu.style.display = 'none'; if (skillMenu) skillMenu.style.display = 'none'; if (modelMenu) modelMenu.style.display = 'none'; }
+  function openModelMenu() {
+    closeMenus();
+    modelMenu.innerHTML = MODEL_CHOICES.map(function (m) {
+      var on = m.id === S.model;
+      return '<button type="button" class="wf-menuitem" data-act="setModel" data-id="' + escapeHtml(m.id) + '" style="display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;font-family:var(--font-sans);font-size:13px;color:var(--color-body);background:transparent;border:0;border-radius:5px;padding:8px 10px;cursor:pointer;"><span>' + escapeHtml(m.display) + '</span>' + (on ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-fg-accent)" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>' : '') + '</button>';
+    }).join('');
+    modelMenu.style.display = 'block';
+  }
+  function openRoomMenu() {
+    closeMenus();
+    var avail = DATA_ROOMS.filter(function (r) { return !S.rooms.some(function (x) { return x.id === r.id; }); });
+    roomMenu.innerHTML = avail.length ? avail.map(function (r) { return menuItem('addRoom', r.id, r.name); }).join('') : emptyItem(DATA_ROOMS.length ? 'All data rooms attached' : 'No data rooms yet');
+    roomMenu.style.display = 'block';
+  }
+  function openSkillMenu() {
+    closeMenus();
+    var avail = SKILLS.filter(function (s) { return !S.skill || String(s.id) !== String(S.skill.id); });
+    skillMenu.innerHTML = avail.length ? avail.map(function (s) { return menuItem('addSkill', s.id, (s.emoji ? s.emoji + ' ' : '') + s.name); }).join('') : emptyItem('No other skills');
+    skillMenu.style.display = 'block';
+  }
+
+  // ---- open / close ----
+  function show() { modal.classList.remove('hidden'); }
+  function hide() { modal.classList.add('hidden'); closeMenus(); }
+  function applyInterval(secs) {
+    if (secs % 86400 === 0) { S.preset = 'Custom'; S.unit = 'days'; S.n = secs / 86400; }
+    else if (secs % 3600 === 0) { S.preset = 'Hourly'; S.n = secs / 3600; }
+    else { S.preset = 'Custom'; S.unit = 'minutes'; S.n = Math.max(1, Math.round(secs / 60)); }
+  }
+  function openCreate(prefill) {
+    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: 10, model: PREFERRED_MODEL };
+    form.dataset.loopId = ''; form.dataset.restart = '';
+    el('loop-modal-title').textContent = 'Create new loop';
+    submitLabel.textContent = 'Create loop';
+    ta.value = (prefill && prefill.prompt) || '';
+    if (prefill && prefill.intervalSeconds) applyInterval(prefill.intervalSeconds);
+    timeInput.value = S.time;
+    render(); show();
+  }
+  function openEdit(id) {
+    var d = LOOPS[id]; if (!d) return;
+    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: d.history_mode || 'fresh', maxRuns: d.max_runs || 10, model: d.model || PREFERRED_MODEL };
+    form.dataset.loopId = id;
+    var paused = d.status === 'paused';
+    form.dataset.restart = paused ? '1' : '';
+    el('loop-modal-title').textContent = 'Edit loop';
+    submitLabel.textContent = paused ? 'Restart' : 'Save loop';
+    ta.value = d.prompt || '';
+    if (d.cadence_kind === 'clock') {
+      S.preset = d.clock_frequency === 'weekdays' ? 'Weekdays' : d.clock_frequency === 'weekly' ? 'Weekly' : 'Daily';
+      if (d.clock_time) S.time = d.clock_time;
+      if (d.clock_weekday !== null && d.clock_weekday !== undefined) S.weekday = d.clock_weekday;
+    } else { applyInterval(d.interval_seconds || 3600); }
+    (d.data_room_ids || []).forEach(function (pk) { var r = DATA_ROOMS.find(function (x) { return x.id === pk; }); if (r) S.rooms.push({ id: r.id, name: r.name }); });
+    if (d.skill_id) { var s = SKILLS.find(function (x) { return String(x.id) === String(d.skill_id); }); if (s) S.skill = { id: s.id, name: s.name, emoji: s.emoji }; }
+    timeInput.value = S.time;
+    render(); show();
+  }
+
+  // ---- submit ----
+  function gatherPayload() {
+    var isClock = (S.preset === 'Daily' || S.preset === 'Weekdays' || S.preset === 'Weekly');
+    var isRestart = form.dataset.restart === '1';
+    // The preview computes upcoming runs from now, so saving (create OR edit)
+    // reschedules to match it: clock → next occurrence, interval → ~now.
+    var firstRunMode = isClock ? 'scheduled' : 'now';
+    var p = {
+      prompt: ta.value,
+      history_mode: S.memory,
+      max_runs: 50,
+      skill_id: S.skill ? S.skill.id : '',
+      data_room_ids: S.rooms.map(function (r) { return r.id; }),
+      model: S.model || '',
+      first_run_mode: firstRunMode,
+      restart: isRestart,
+    };
+    if (isClock) {
+      p.cadence_kind = 'clock';
+      p.clock_frequency = S.preset === 'Weekdays' ? 'weekdays' : S.preset === 'Weekly' ? 'weekly' : 'daily';
+      p.clock_time = S.time;
+      p.clock_weekday = S.weekday;
+    } else {
+      p.cadence_kind = 'interval';
+      p.interval_value = S.n;
+      p.interval_unit = (S.preset === 'Hourly') ? 'hours' : S.unit;
+    }
+    return p;
+  }
+  function showError(msg) { var e = el('loop-error'); e.textContent = msg; e.style.display = 'block'; }
+  function busyLabels() {
+    if (form.dataset.restart === '1') return ['Restarting…', 'Restart'];
+    if (form.dataset.loopId) return ['Saving…', 'Save loop'];
+    return ['Creating…', 'Create loop'];
+  }
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!ta.value.trim()) return;
+    el('loop-error').style.display = 'none';
+    var loopId = form.dataset.loopId;
+    var url = loopId ? EDIT_URL_TPL.replace(UUID0, loopId) : CREATE_URL;
+    var labels = busyLabels();
+    submitBtn.disabled = true; submitBtn.style.opacity = '0.6'; submitLabel.textContent = labels[0];
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf }, body: JSON.stringify(gatherPayload()) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (x) {
+        if (!x.ok) { showError(x.j.error || 'Something went wrong.'); submitBtn.disabled = false; submitBtn.style.opacity = ''; submitLabel.textContent = labels[1]; return; }
+        window.location = LIST_URL;
+      })
+      .catch(function () { showError('Network error. Please try again.'); submitBtn.disabled = false; submitBtn.style.opacity = ''; submitLabel.textContent = labels[1]; });
+  });
+
+  // ---- event delegation ----
+  modal.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-act]'); if (!t) return;
+    var a = t.dataset.act;
+    if (a === 'toggleRoomMenu') { var o = roomMenu.style.display === 'block'; closeMenus(); if (!o) openRoomMenu(); return; }
+    if (a === 'toggleSkillMenu') { var os = skillMenu && skillMenu.style.display === 'block'; closeMenus(); if (!os) openSkillMenu(); return; }
+    if (a === 'toggleModelMenu') { var om = modelMenu && modelMenu.style.display === 'block'; closeMenus(); if (!om) openModelMenu(); return; }
+    if (a === 'setModel') { S.model = t.dataset.id; closeMenus(); render(); return; }
+    if (a === 'addRoom') { var r = DATA_ROOMS.find(function (x) { return String(x.id) === t.dataset.id; }); if (r && !S.rooms.some(function (x) { return x.id === r.id; })) S.rooms.push({ id: r.id, name: r.name }); closeMenus(); render(); return; }
+    if (a === 'addSkill') { var s = SKILLS.find(function (x) { return String(x.id) === t.dataset.id; }); if (s) S.skill = { id: s.id, name: s.name, emoji: s.emoji }; closeMenus(); render(); return; }
+    if (a === 'removeRoom') { var id = parseInt(t.dataset.id, 10); S.rooms = S.rooms.filter(function (x) { return x.id !== id; }); render(); return; }
+    if (a === 'removeSkill') { S.skill = null; render(); return; }
+    if (a === 'preset') { S.preset = t.dataset.preset; render(); return; }
+    if (a === 'incN') { S.n = clampN(S.n + 1); render(); return; }
+    if (a === 'decN') { S.n = clampN(S.n - 1); render(); return; }
+    if (a === 'cycleUnit') { var U = ['minutes', 'hours', 'days']; S.unit = U[(U.indexOf(S.unit) + 1) % 3]; render(); return; }
+    if (a === 'setDay') { S.weekday = parseInt(t.dataset.day, 10); render(); return; }
+    if (a === 'toggleMemory') { S.memory = S.memory === 'fresh' ? 'conversational' : 'fresh'; render(); return; }
+  });
+  modal.addEventListener('mousedown', function (e) {
+    if (e.target.hasAttribute('data-loop-scrim') || e.target.hasAttribute('data-loop-overlay')) hide();
+  });
+  // Close an open attach menu when clicking anywhere outside it (or its toggle).
+  document.addEventListener('mousedown', function (e) {
+    if (!menusOpen()) return;
+    if (e.target.closest('#loop-room-menu') || (skillMenu && e.target.closest('#loop-skill-menu')) || (modelMenu && e.target.closest('#loop-model-menu'))
+      || e.target.closest('[data-act="toggleRoomMenu"]') || e.target.closest('[data-act="toggleSkillMenu"]') || e.target.closest('[data-act="toggleModelMenu"]')) return;
+    closeMenus();
+  });
+  ta.addEventListener('input', updateSubmitDisabled);
+  timeInput.addEventListener('change', function () { S.time = timeInput.value || '09:00'; render(); });
+
+  document.querySelectorAll('#new-loop-btn, #new-loop-btn-empty').forEach(function (b) { if (b) b.addEventListener('click', function () { openCreate(null); }); });
+  document.querySelectorAll('.edit-loop-btn').forEach(function (b) { b.addEventListener('click', function () { openEdit(b.dataset.loopId); }); });
+  document.getElementById('loop-modal-close').addEventListener('click', hide);
+  document.getElementById('loop-modal-cancel').addEventListener('click', hide);
+  document.querySelectorAll('.loop-action-btn').forEach(function (b) { b.addEventListener('click', function () { fetch(b.dataset.action, { method: 'POST', headers: { 'X-CSRFToken': csrf } }).then(function () { window.location = LIST_URL; }); }); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (roomMenu.style.display === 'block' || (skillMenu && skillMenu.style.display === 'block')) closeMenus();
+    else if (!modal.classList.contains('hidden')) hide();
+  });
+
+  {% if open_create %}openCreate({ prompt: "{{ prefill_prompt|escapejs }}", intervalSeconds: parseInt("{{ prefill_interval|escapejs }}", 10) || 0 });{% endif %}
+  {% if open_edit_id %}openEdit("{{ open_edit_id|escapejs }}");{% endif %}
+})();
+</script>
+{% endblock %}

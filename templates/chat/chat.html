@@ -43,10 +43,12 @@
             <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
               <a href="{% url 'chat_home' %}?thread={{ t.id }}" class="row{% if thread and t.id == thread.id %} active{% endif %}" data-thread-id="{{ t.id }}" title="{{ t.title|default:t }}">
                 {% if t.emoji %}<span class="row__ic" data-thread-emoji>{{ t.emoji }}</span>{% endif %}
+                {% if t.is_loop %}<span class="row__ic" title="{% if t.loop_paused %}Paused loop{% else %}Loop{% endif %}" aria-label="{% if t.loop_paused %}Paused loop{% else %}Loop{% endif %}">{% if t.loop_paused %}<svg class="w-3.5 h-3.5 text-body-subtle" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>{% else %}<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16 9h4V5M8 15H4v4M19.4 15a8 8 0 0 1-13.8 2M4.6 9a8 8 0 0 1 13.8-2"/></svg>{% endif %}</span>{% endif %}
                 <span class="row__t">{{ t.title|default:t|truncatechars:34 }}</span>
+                {% if t.loop_unread %}<span class="w-2 h-2 rounded-full bg-brand shrink-0" title="New result"></span>{% endif %}
                 <span class="row__time">{{ t.updated_at|compact_timesince }}</span>
               </a>
-              <button type="button" class="thread-menu-btn absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center" data-thread-id="{{ t.id }}" data-archived="false">
+              <button type="button" class="thread-menu-btn absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center" data-thread-id="{{ t.id }}" data-archived="false"{% if t.is_loop %} data-loop-id="{{ t.loop_id }}"{% endif %}>
                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
               </button>
             </li>
@@ -83,6 +85,7 @@
   </div>
   {# Shared thread action dropdown menu #}
   <div id="thread-menu" class="hidden absolute z-50 w-32 bg-neutral-primary border border-default rounded-base shadow-lg py-1" style="top:0;left:0;">
+    <button type="button" data-action="edit-loop" class="hidden w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Edit loop</button>
     <button type="button" data-action="rename" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Rename</button>
     <button type="button" data-action="star" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Star</button>
     <button type="button" data-action="archive" class="w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading">Archive</button>
@@ -755,16 +758,17 @@
   const MODEL_CHOICES = JSON.parse('{{ model_choices_json|escapejs }}');
   const DEFAULT_MODEL = "{{ default_model|escapejs }}";
   const DEFAULT_MODEL_DISPLAY = "{{ default_model_display|escapejs }}";
+  // The user's preferred chat model (from settings) — what a NEW thread resets
+  // to. A loaded thread's own model arrives via the thread.loaded event.
+  const PREFERRED_CHAT_MODEL = "{{ preferred_chat_model|escapejs }}";
+  const PREFERRED_CHAT_MODEL_DISPLAY = "{{ preferred_chat_model_display|escapejs }}";
   let selectedModel = DEFAULT_MODEL;
   let thinkingLevel = "off";
 
-  // Restore from sessionStorage if available
-  (function restoreModelState() {
-    const stored = sessionStorage.getItem("chat_selected_model");
+  // Thinking level still persists per tab; the model now follows the thread
+  // (new threads default to the user's preferred chat model).
+  (function restoreThinkingLevel() {
     const storedLevel = sessionStorage.getItem("chat_thinking_level");
-    if (stored && MODEL_CHOICES.some(function(m) { return m.id === stored; })) {
-      selectedModel = stored;
-    }
     if (storedLevel && ["off", "low", "medium", "high", "max"].indexOf(storedLevel) !== -1) {
       thinkingLevel = storedLevel;
     }
@@ -1588,7 +1592,6 @@
       btn.addEventListener('click', function() {
         selectedModel = m.id;
         modelSelectorLabel.textContent = m.display_name;
-        sessionStorage.setItem('chat_selected_model', selectedModel);
         renderModelOptions();
         updateThinkingVisibility();
         modelSelectorDropdown.classList.add('hidden');
@@ -1884,11 +1887,29 @@
     currentThinkingBlock = null; thinkingStartTime = null;
   }
 
+  function appendLoopUserMessage(text) {
+    // A scheduled loop turn fired while this thread is open: render its prompt
+    // as a user bubble, then let the broadcast assistant stream into a fresh
+    // bubble (currentStreamingElement reset to null).
+    if (!text) return;
+    const userDiv = document.createElement("div");
+    userDiv.className = "umsg"; userDiv.setAttribute("data-role", "user");
+    userDiv.innerHTML = `<div class="umsg__bubble"><div class="umsg__txt whitespace-pre-wrap">${escapeHtml(text)}</div>${COPY_BTN_HTML}</div><span class="wf-avatar" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span>`;
+    const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
+    scrollContainer.classList.add('flex-1');
+    if (scrollContainer.firstElementChild) scrollContainer.firstElementChild.classList.add('py-6');
+    var quickActions = document.getElementById('quick-actions'); if (quickActions) quickActions.remove();
+    messagesContainer.appendChild(userDiv);
+    currentStreamingElement = null; accumulatedContent = "";
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+  }
+
   function handleEvent(data) {
     const et = data.event_type;
     // Reset streaming timeout on any event from the server
     if (currentStreamingElement) startStreamingTimeout();
     if (et === "heartbeat") return;
+    if (et === "loop.user_message") { appendLoopUserMessage(data.content); return; }
     if (et === "command.result") {
       if (data.action === "navigate") { window.location.href = CHAT_HOME; return; }
       if (data.command === "/tag" && data.status === "ok" && data.emoji) {
@@ -2017,6 +2038,13 @@
       // Update thread cost and sub-agent status
       updateThreadCost(data.thread_cost_usd);
       updateSubagentStatusBar(data.active_subagent_count || 0);
+      // Restore the thread's model into the picker.
+      if (data.model) {
+        selectedModel = data.model;
+        if (modelSelectorLabel && data.model_display) modelSelectorLabel.textContent = data.model_display;
+        if (typeof renderModelOptions === 'function') renderModelOptions();
+        if (typeof updateThinkingVisibility === 'function') updateThinkingVisibility();
+      }
       return;
     }
     if (et === "skill.attached") { addSkillPill(data.skill_id, data.skill_name, data.skill_emoji); return; }
@@ -2268,6 +2296,25 @@
       showToast("Message is too long (" + text.length.toLocaleString() + " characters). The limit is " + MESSAGE_MAX_CHARS.toLocaleString() + " characters.");
       return;
     }
+    // /loop is client-only: open the Loops create modal, prefilled. It never
+    // reaches the server-side slash-command path.
+    if (/^\/loop(\s|$)/i.test(text)) {
+      var rest = text.replace(/^\/loop\s*/i, "");
+      // In a thread that is itself a loop, a bare /loop edits that loop.
+      var threadLoopId = "{{ thread_loop_id|escapejs }}";
+      if (!rest && threadLoopId) { window.location = "{% url 'loops_list' %}?edit=" + encodeURIComponent(threadLoopId); return; }
+      var params = new URLSearchParams({ "new": "1" });
+      var m = rest.match(/^(\d+)\s*([smhd])\b\s*(.*)$/i);
+      if (m) {
+        var mult = { s: 1, m: 60, h: 3600, d: 86400 }[m[2].toLowerCase()] || 3600;
+        params.set("interval", String(parseInt(m[1], 10) * mult));
+        if (m[3]) params.set("prompt", m[3]);
+      } else if (rest) {
+        params.set("prompt", rest);
+      }
+      window.location = "{% url 'loops_list' %}?" + params.toString();
+      return;
+    }
     // Slash commands — send without user/assistant bubbles
     if (text.startsWith("/")) {
       input.value = ""; autoResize(input);
@@ -2332,6 +2379,7 @@
     {name: "/tag", desc: "Tag with emoji"},
     {name: "/untag", desc: "Remove emoji tag"},
     {name: "/pii", desc: "Show personal data"},
+    {name: "/loop", desc: "Schedule a recurring run"},
   ];
   var slashMenu = null;
   var slashSelectedIdx = -1;
@@ -2347,6 +2395,7 @@
       item.innerHTML = '<span class="font-medium text-heading">' + escapeHtml(cmd.name) + '</span><span class="text-xs text-body">' + escapeHtml(cmd.desc) + '</span>';
       item.addEventListener("mousedown", function(e) {
         e.preventDefault();
+        if (cmd.name === "/loop") { hideSlashMenu(); var tlid = "{{ thread_loop_id|escapejs }}"; window.location = "{% url 'loops_list' %}?" + (tlid ? "edit=" + encodeURIComponent(tlid) : "new=1"); return; }
         input.value = cmd.name + " ";
         autoResize(input);
         hideSlashMenu();
@@ -2421,6 +2470,7 @@
   const archivedChevron = document.getElementById("archived-chevron");
   let menuThreadId = null;
   let menuIsArchived = false;
+  let menuLoopId = null;
 
   if (archivedToggle) {
     archivedToggle.addEventListener("click", function() {
@@ -2536,6 +2586,9 @@
   function openThreadMenu(btn) {
     menuThreadId = btn.getAttribute("data-thread-id");
     menuIsArchived = btn.getAttribute("data-archived") === "true";
+    menuLoopId = btn.getAttribute("data-loop-id") || "";
+    const editLoopBtn = threadMenu.querySelector('[data-action="edit-loop"]');
+    if (editLoopBtn) editLoopBtn.classList.toggle("hidden", !menuLoopId);
     const archiveBtn = threadMenu.querySelector('[data-action="archive"]');
     archiveBtn.textContent = menuIsArchived ? "Restore" : "Archive";
     const li = btn.closest("[data-thread-li]");
@@ -2561,6 +2614,10 @@
     if (!actionBtn || !menuThreadId) return;
     const action = actionBtn.getAttribute("data-action");
     threadMenu.classList.add("hidden");
+    if (action === "edit-loop") {
+      if (menuLoopId) window.location = "{% url 'loops_list' %}?edit=" + encodeURIComponent(menuLoopId);
+      return;
+    }
     if (action === "rename") {
       var link = document.querySelector('a[data-thread-id="' + menuThreadId + '"]');
       var currentTitle = link ? link.getAttribute("title") : "";

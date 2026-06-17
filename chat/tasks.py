@@ -105,3 +105,39 @@ def expire_stale_subagent_runs() -> int:
             exc_info=True,
         )
         return 0
+
+
+@shared_task(time_limit=600, soft_time_limit=540)
+def run_loop(loop_id: str) -> None:
+    """Execute one scheduled Loop turn headlessly.
+
+    Runs a full agent turn with no connected browser (see
+    ``chat.loop_service.execute_loop_run``). On the default queue for now so it
+    is always consumed; a dedicated lower-priority ``loops`` queue can be added
+    later once every worker is confirmed to consume it.
+    """
+    from chat.loop_service import execute_loop_run
+
+    execute_loop_run(uuid.UUID(loop_id))
+
+
+@shared_task(time_limit=30)
+def tick_and_scan_loops() -> int:
+    """Periodic: enqueue every Loop that is due to fire.
+
+    Tolerates transient database unavailability like the other sweepers — logs
+    and skips this tick rather than raising an unhandled error.
+    """
+    from django.db.utils import InterfaceError, OperationalError
+
+    from chat.loop_service import enqueue_due_loops
+
+    try:
+        return enqueue_due_loops()
+    except (OperationalError, InterfaceError):
+        logger.info(
+            "Skipping loop scan: database temporarily unavailable; "
+            "will retry on next beat tick.",
+            exc_info=True,
+        )
+        return 0

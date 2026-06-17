@@ -24,4 +24,16 @@ def nav_context(request):
         from core.spend import get_cached_budget_status
 
         context["budget_status"] = get_cached_budget_status(request.user)
+
+        # Unread-loop count for the navbar "Loops" badge: loops that produced a
+        # result the owner hasn't opened yet.
+        from django.db.models import F, Q
+
+        from chat.models import Loop
+
+        context["loops_unread_count"] = (
+            Loop.objects.filter(created_by=request.user, last_result_at__isnull=False)
+            .filter(Q(last_seen_at__isnull=True) | Q(last_result_at__gt=F("last_seen_at")))
+            .count()
+        )
     return context

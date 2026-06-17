@@ -71,6 +71,28 @@ FEATURE_DEFAULTS: dict[str, tuple[str, str, str]] = {
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
 
+# Map a model's registry tier to the preference slot used for fallback.
+_TIER_TO_SLOT = {"standard": "primary", "mid": "mid", "cheap": "cheap"}
+
+
+def resolve_thread_model(stored_model: str | None, prefs: ResolvedPreferences) -> str:
+    """Return the model a thread (chat or loop) should run on.
+
+    - If the thread's stored model is still allowed, honor it.
+    - If it's set but no longer allowed (e.g. the org removed it), fall back to
+      the user's *current* model for the same tier (mid→mid_model, etc.).
+    - If the thread has no stored model, use the user's preferred chat model.
+    """
+    if stored_model and stored_model in prefs.allowed_models:
+        return stored_model
+    if stored_model:
+        from llm.model_registry import get_model_tier
+
+        slot = _TIER_TO_SLOT.get(get_model_tier(stored_model) or "")
+        if slot:
+            return getattr(prefs, _SLOT_TO_ATTR[slot])
+    return prefs.feature_models.get("chat", prefs.top_model)
+
 
 def _get_system_model_defaults() -> dict[str, str]:
     """Return system-level default model for each tier from Django settings."""

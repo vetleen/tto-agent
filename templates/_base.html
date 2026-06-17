@@ -47,10 +47,11 @@
           {# Primary nav — left of the bar, collapses into the mobile menu #}
           <div class="hidden order-last w-full md:order-none md:flex md:w-auto" id="navbar-user">
             <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-default rounded-base bg-neutral-secondary-soft md:flex-row md:items-center md:gap-0.5 md:space-x-0 rtl:space-x-reverse md:mt-0 md:border-0 md:bg-transparent">
-              <li><a href="{% url 'chat_home' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':6' == '/chat/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Chat</a></li>
+              <li><a href="{% url 'chat_home' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':6' == '/chat/' and request.path|slice:':12' != '/chat/loops/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Chat</a></li>
               <li><a href="{% url 'agent_skills_list' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':8' == '/skills/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Skills</a></li>
               <li><a href="{% url 'data_room_list' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':12' == '/data-rooms/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Data Rooms</a></li>
               <li><a href="{% url 'meeting_list' %}" class="block rounded-base px-3 py-1.5 {% if request.path|slice:':10' == '/meetings/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Meetings</a></li>
+              <li><a href="{% url 'loops_list' %}" class="flex items-center gap-1.5 rounded-base px-3 py-1.5 {% if request.path|slice:':12' == '/chat/loops/' %}bg-neutral-secondary-soft text-heading font-semibold{% else %}text-body hover:bg-neutral-secondary-soft hover:text-heading{% endif %}">Loops{% if loops_unread_count %}<span class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 text-xs font-semibold rounded-full bg-brand text-on-brand">{{ loops_unread_count }}</span>{% endif %}</a></li>
             </ul>
           </div>
           <div class="flex-1"></div>

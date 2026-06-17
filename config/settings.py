@@ -678,6 +678,11 @@ CELERY_BEAT_SCHEDULE = {
         "task": "meetings.tasks.expire_stale_transcriptions",
         "schedule": 300.0,
     },
+    # Fire scheduled Loops that have come due.
+    "tick-and-scan-loops": {
+        "task": "chat.tasks.tick_and_scan_loops",
+        "schedule": 60.0,
+    },
 }
 
 # Channels / Redis
