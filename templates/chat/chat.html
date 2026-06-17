@@ -2137,6 +2137,7 @@
         canvasSaveVersionPending = false;
         clearTimeout(canvasSaveVersionTimer);
         flashCanvasBtnSuccess(canvasSaveVersionBtn);
+        canvasSetSaveStatus("Version saved", false);
       }
       return;
     }
@@ -2887,6 +2888,18 @@
   var canvasPreviewBtn = document.getElementById("canvas-preview-btn");
   var canvasWordCount = document.getElementById("canvas-word-count");
   var canvasSaveStatus = document.getElementById("canvas-save-status");
+  var canvasSaveStatusTimer = null;
+  // Footer save status. `isError` paints it red; success/neutral uses the muted
+  // body color. Auto-clears so a stale "Save failed!" doesn't linger forever.
+  function canvasSetSaveStatus(text, isError) {
+    if (!canvasSaveStatus) return;
+    canvasSaveStatus.textContent = text;
+    canvasSaveStatus.className = "text-xs " + (isError ? "text-fg-danger" : "text-body");
+    clearTimeout(canvasSaveStatusTimer);
+    canvasSaveStatusTimer = setTimeout(function() {
+      if (canvasSaveStatus) { canvasSaveStatus.textContent = ""; canvasSaveStatus.className = "text-xs text-body"; }
+    }, isError ? 4000 : 2000);
+  }
   var canvasExportLink = document.getElementById("canvas-export-link");
   var canvasImportInput = document.getElementById("canvas-import-input");
   var canvasUpdateBanner = document.getElementById("canvas-update-banner");
@@ -3602,16 +3615,26 @@
           if (canvasSaveVersionPending) {
             canvasSaveVersionPending = false;
             flashCanvasBtnError(canvasSaveVersionBtn);
+            canvasSetSaveStatus("Save failed!", true);
           }
         }, 8000);
+        // Accept/merge bookkeeping only applies once the save is genuinely in
+        // flight. The "Version saved" status is set when canvas.version_saved
+        // arrives (see the event handler) — never optimistically here.
+        canvasDisableMerge();
+        canvasAiUpdatePending = false;
+        canvasAcceptedContent = content;
+        canvasShowBannerIfNeeded();
       } else {
+        // Socket is down: the save can't be sent. Don't claim it worked — show
+        // the failure and kick off a reconnect so the user doesn't have to hunt
+        // for the Reconnect button (and can just click Save again once it's up).
         flashCanvasBtnError(canvasSaveVersionBtn);
+        canvasSetSaveStatus("Not connected — reconnecting…", true);
+        clearTimeout(reconnectTimeout);
+        reconnectAttempts = 0;
+        connect();
       }
-      canvasDisableMerge();
-      canvasAiUpdatePending = false;
-      canvasAcceptedContent = content;
-      canvasShowBannerIfNeeded();
-      if (canvasSaveStatus) { canvasSaveStatus.textContent = "Version saved"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 2000); }
     });
   }
 
