@@ -14,11 +14,17 @@ logger = logging.getLogger(__name__)
 
 
 def _get_accessible_data_rooms(user):
-    """Return data rooms the user owns."""
+    """Return data rooms the user owns, each annotated with its active
+    (non-archived) document count for display in the attach modal."""
+    from django.db.models import Count, Q
+
     return list(
         DataRoom.objects.filter(created_by=user, is_archived=False)
+        .annotate(
+            document_count=Count("documents", filter=Q(documents__is_archived=False))
+        )
         .order_by("-updated_at")
-        .values("pk", "uuid", "name")
+        .values("pk", "uuid", "name", "document_count")
     )
 
 

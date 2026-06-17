@@ -14,8 +14,10 @@
   var textEl = modal.querySelector('#view-document-text');
   var previewEl = modal.querySelector('#view-document-preview');
   var previewBtn = modal.querySelector('#view-document-preview-btn');
+  var downloadBtn = modal.querySelector('#view-document-download');
 
   var currentUrl = '';
+  var currentName = 'Document';
   var rawText = '';
   var previewMode = false;
 
@@ -27,13 +29,7 @@
   }
 
   function updatePreviewButton() {
-    if (previewMode) {
-      previewBtn.classList.add('bg-neutral-tertiary', 'text-heading');
-      previewBtn.classList.remove('text-body');
-    } else {
-      previewBtn.classList.remove('bg-neutral-tertiary', 'text-heading');
-      previewBtn.classList.add('text-body');
-    }
+    previewBtn.classList.toggle('is-active', previewMode);
   }
 
   function fetchChunks(url) {
@@ -90,6 +86,51 @@
     if (currentUrl) fetchChunks(currentUrl);
   });
 
+  // Download the reconstructed document text as a .txt file.
+  if (downloadBtn) {
+    downloadBtn.addEventListener('click', function() {
+      if (!rawText) return;
+      var blob = new Blob([rawText], { type: 'text/plain;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = (currentName || 'document').replace(/\.[^.]+$/, '') + '.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function() { URL.revokeObjectURL(url); }, 0);
+    });
+  }
+
+  var piiEl = modal.querySelector('#view-document-pii');
+
+  // Mirror the document's PII status pills (and their hover tooltips) from the
+  // list row into the modal footer. Clones the row's pills, re-scopes their
+  // tooltip IDs so they don't collide with the originals, and binds Flowbite.
+  function renderPiiPills(row) {
+    if (!piiEl) return;
+    piiEl.innerHTML = '';
+    var src = row && row.querySelector('.pii-pills');
+    if (!src) return;
+    var clone = src.cloneNode(true);
+    clone.classList.remove('hidden', 'ms-3');
+    clone.classList.add('flex');
+    clone.querySelectorAll('[data-tooltip-target]').forEach(function(trigger) {
+      var oldId = trigger.getAttribute('data-tooltip-target');
+      var target = clone.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(oldId) : oldId));
+      var newId = 'vd-' + oldId;
+      trigger.setAttribute('data-tooltip-target', newId);
+      if (!target) return;
+      target.id = newId;
+      if (window.Tooltip) {
+        new window.Tooltip(target, trigger, { placement: 'top', triggerType: 'hover' });
+      } else {
+        trigger.setAttribute('title', target.textContent.trim());
+      }
+    });
+    piiEl.appendChild(clone);
+  }
+
   // Click handler for all view-document buttons
   document.querySelectorAll('.view-document-btn').forEach(function(btn) {
     btn.addEventListener('click', function(e) {
@@ -101,10 +142,12 @@
       // Reset state
       previewMode = false;
       rawText = '';
+      currentName = name;
       updatePreviewButton();
       titleEl.textContent = name;
       textEl.textContent = '';
       previewEl.innerHTML = '';
+      renderPiiPills(btn.closest('[data-doc-id]'));
 
       fetchChunks(url);
       setTimeout(function() { trigger.click(); }, 0);

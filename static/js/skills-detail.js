@@ -170,12 +170,48 @@
   var applyToolPickerBtn = document.getElementById("apply-tool-picker");
   var openToolPickerBtn = document.getElementById("open-tool-picker");
 
+  var toolPickerSearch = document.getElementById("tool-picker-search");
+  var toolPickerCount = document.getElementById("tool-picker-count");
+
+  function updateToolPickerCount() {
+    if (!toolPickerCount) return;
+    var n = document.querySelectorAll(".tool-picker-checkbox:checked").length;
+    toolPickerCount.textContent =
+      n === 0 ? "No tools selected" : n === 1 ? "1 tool selected" : n + " tools selected";
+  }
+
+  function filterToolCards() {
+    var q = toolPickerSearch ? toolPickerSearch.value.trim().toLowerCase() : "";
+    var anyVisible = false;
+    document.querySelectorAll("#tool-picker-list [data-tool-card]").forEach(function (card) {
+      var cb = card.querySelector(".tool-picker-checkbox");
+      var name = cb ? (cb.getAttribute("data-tool-name") || "").toLowerCase() : "";
+      var descEl = card.querySelector("p");
+      var desc = descEl ? descEl.textContent.toLowerCase() : "";
+      var match = name.indexOf(q) !== -1 || desc.indexOf(q) !== -1;
+      card.style.display = match ? "" : "none";
+      if (match) anyVisible = true;
+    });
+    var nr = document.getElementById("tool-picker-noresults");
+    if (nr) nr.style.display = (q !== "" && !anyVisible) ? "" : "none";
+  }
+
+  if (toolPickerSearch) {
+    toolPickerSearch.addEventListener("input", filterToolCards);
+  }
+  document.querySelectorAll(".tool-picker-checkbox").forEach(function (cb) {
+    cb.addEventListener("change", updateToolPickerCount);
+  });
+
   if (openToolPickerBtn) {
     openToolPickerBtn.addEventListener("click", function () {
       // Pre-check existing tools.
       document.querySelectorAll(".tool-picker-checkbox").forEach(function (cb) {
         cb.checked = toolNames.indexOf(cb.getAttribute("data-tool-name")) !== -1;
       });
+      if (toolPickerSearch) toolPickerSearch.value = "";
+      filterToolCards();
+      updateToolPickerCount();
     });
   }
 

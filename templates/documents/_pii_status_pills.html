@@ -6,7 +6,7 @@ Expects in context: `doc` (with `.pii_summary`, `.is_quarantined`,
 Tooltips use Flowbite (auto-initialized on page load); IDs are scoped by doc id.
 {% endcomment %}
 {% if doc.is_quarantined or doc.is_partially_quarantined or doc.pii_summary.has_ordinary or doc.pii_summary.special or doc.pii_summary.criminal %}
-<div class="hidden md:flex items-center gap-1.5 shrink-0 ms-3">
+<div class="pii-pills hidden md:flex items-center gap-1.5 shrink-0 ms-3">
   {% if doc.is_quarantined %}
   <span tabindex="0" data-tooltip-target="pii-tt-quarantine-{{ doc.id }}" class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-fg-danger bg-danger-soft border border-danger-subtle">
     <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/></svg>

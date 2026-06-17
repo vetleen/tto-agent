@@ -196,38 +196,67 @@
     </div>
   </div>
 
-  {# ----- Tool picker modal ----- #}
+  {# ----- Tool picker modal (design-system) ----- #}
+  <style>
+    .wf-toolmodal { animation: wf-toolpop 280ms cubic-bezier(0.16,1,0.3,1) both; }
+    @keyframes wf-toolpop { from { transform: translateY(8px) scale(0.99); } to { transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .wf-toolmodal { animation: none; } }
+    .wf-toollist::-webkit-scrollbar { width: 10px; }
+    .wf-toollist::-webkit-scrollbar-thumb { background: var(--color-paper-300); border-radius: 999px; border: 3px solid var(--color-neutral-primary-soft); }
+    #tool-picker-search:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
+    .wf-tool-card:hover { border-color: var(--color-brand-subtle); }
+    .wf-tool-card:has(.tool-picker-checkbox:checked) { border-color: var(--color-brand-subtle); background: var(--color-brand-softer); }
+    .wf-tool-card:has(.tool-picker-checkbox:focus-visible) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
+    .tool-picker-checkbox {
+      appearance: none; -webkit-appearance: none;
+      width: 18px; height: 18px; border-radius: 3px; flex-shrink: 0; margin: 1px 0 0; cursor: pointer;
+      border: 1.5px solid var(--color-default); background-color: var(--color-neutral-primary-soft);
+      background-repeat: no-repeat; background-position: center; background-size: 13px;
+    }
+    .tool-picker-checkbox:checked {
+      border-color: var(--color-brand); background-color: var(--color-brand);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+    }
+    .tool-picker-checkbox:focus-visible { outline: none; }
+    .wf-toolbtn-primary:hover { background: var(--color-brand-strong); }
+    .wf-toolbtn-ghost:hover { background: var(--color-neutral-secondary-soft); }
+    .wf-toolclose:hover { background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
+  </style>
   <div id="tool-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
-    <div class="relative w-full max-w-2xl max-h-full mx-auto">
-      <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
-        <div class="flex items-center px-6 py-4 border-b border-default">
-          <h3 class="text-lg font-semibold text-heading flex-1">Available tools</h3>
-          <button type="button" data-modal-hide="tool-picker-modal" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Close">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
-          </button>
+    <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+      {# Header #}
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
+        <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Available tools</h2>
+        <button type="button" data-modal-hide="tool-picker-modal" class="wf-toolclose" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+      </div>
+      {# Search #}
+      <div style="padding:18px 22px 6px;">
+        <div style="position:relative;display:flex;align-items:center;">
+          <span style="position:absolute;left:12px;color:var(--color-fg-disabled);display:inline-flex;pointer-events:none;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
+          <input id="tool-picker-search" type="text" placeholder="Search tools" autocomplete="off" style="width:100%;height:38px;font-family:var(--font-sans);font-size:14px;color:var(--color-heading);background:var(--color-neutral-primary-soft);border:1px solid var(--color-brand-subtle);border-radius:8px;padding:0 12px 0 36px;box-shadow:var(--shadow-inset);">
         </div>
-        <div class="px-6 py-4 overflow-y-auto" style="max-height: 60vh;">
-          <ul id="tool-picker-list" class="space-y-3">
-            {% for tool in available_tools %}
-            <li class="flex items-start gap-3 p-3 border border-default rounded-base">
-              <input type="checkbox" data-tool-name="{{ tool.name }}" class="tool-picker-checkbox mt-0.5 w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 shrink-0">
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium text-heading">{{ tool.name }}</div>
-                <p class="text-xs text-body mt-0.5">{{ tool.description }}</p>
-              </div>
-            </li>
-            {% empty %}
-            <li class="text-sm text-body">No tools available yet.</li>
-            {% endfor %}
-          </ul>
-        </div>
-        <div class="flex gap-3 px-6 py-4 border-t border-default">
-          <button type="button" id="apply-tool-picker" class="bg-brand text-on-brand hover:bg-brand-strong font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
-            Apply
-          </button>
-          <button type="button" data-modal-hide="tool-picker-modal" class="text-heading bg-neutral-primary-soft hover:bg-neutral-secondary border border-default shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
-            Cancel
-          </button>
+      </div>
+      {# List #}
+      <div id="tool-picker-list" class="wf-toollist" style="max-height:360px;overflow-y:auto;padding:8px 22px 12px;display:flex;flex-direction:column;gap:8px;">
+        {% for tool in available_tools %}
+        <label class="wf-tool-card" data-tool-card style="display:flex;align-items:flex-start;gap:12px;width:100%;text-align:left;padding:13px 14px;border:1px solid var(--color-default-subtle);background:var(--color-neutral-primary-soft);border-radius:8px;cursor:pointer;">
+          <input type="checkbox" data-tool-name="{{ tool.name }}" class="tool-picker-checkbox">
+          <span style="flex:1;min-width:0;">
+            <span style="display:block;font-family:var(--font-mono);font-size:13px;font-weight:500;color:var(--color-heading);letter-spacing:-0.01em;">{{ tool.name }}</span>
+            <p style="display:block;font-size:12.5px;color:var(--color-body-subtle);line-height:1.45;margin:3px 0 0;">{{ tool.description }}</p>
+          </span>
+        </label>
+        {% empty %}
+        <p style="font-size:13px;color:var(--color-body);padding:6px 2px;">No tools available yet.</p>
+        {% endfor %}
+        <p id="tool-picker-noresults" style="display:none;font-size:13px;color:var(--color-body-subtle);padding:6px 2px;">No tools match your search.</p>
+      </div>
+      {# Footer #}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
+        <span id="tool-picker-count" style="font-size:12px;color:var(--color-body-subtle);">No tools selected</span>
+        <div style="display:flex;gap:10px;">
+          <button type="button" data-modal-hide="tool-picker-modal" class="wf-toolbtn-ghost" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
+          <button type="button" id="apply-tool-picker" class="wf-toolbtn-primary" style="height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">Apply</button>
         </div>
       </div>
     </div>

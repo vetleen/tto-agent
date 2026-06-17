@@ -293,33 +293,58 @@
   </div>
   <!-- Hidden trigger for view document modal -->
   <button type="button" id="view-document-modal-trigger" class="hidden" data-modal-target="view-document-modal" data-modal-show="view-document-modal" aria-label="Open view document modal"></button>
-  <!-- View document modal -->
+  <!-- View document modal (design-system) -->
+  <style>
+    .wf-docmodal { animation: wf-docpop 280ms cubic-bezier(0.16,1,0.3,1) both; }
+    @keyframes wf-docpop { from { transform: translateY(8px) scale(0.99); } to { transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .wf-docmodal { animation: none; } }
+    .wf-doc::-webkit-scrollbar { width: 10px; }
+    .wf-doc::-webkit-scrollbar-thumb { background: var(--color-paper-300); border-radius: 999px; border: 3px solid var(--color-paper-50); }
+    .wf-docicon { color: var(--color-body-subtle); }
+    .wf-docicon:hover { background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
+    #view-document-preview-btn.is-active, #view-document-preview-btn.is-active:hover { background: var(--color-brand-softer); color: var(--color-fg-accent); }
+    .wf-docbtn-ghost:hover { background: var(--color-neutral-secondary-soft); }
+    .wf-docbtn-secondary:hover { border-color: var(--color-default-strong); background: var(--color-neutral-secondary-soft); }
+  </style>
   <div id="view-document-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
-    <div class="relative w-full max-w-5xl max-h-full">
-      <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
-        <div class="flex items-center px-6 py-4 border-b border-default">
-          <h3 id="view-document-title" class="text-lg font-semibold text-heading truncate flex-1"></h3>
-          <button type="button" id="view-document-preview-btn" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand ms-2" title="Toggle markdown preview">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></svg>
+    <div class="wf-docmodal" style="position:relative;width:724px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+      {# Header #}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--color-default-subtle);">
+        <div style="display:flex;align-items:center;gap:11px;min-width:0;">
+          <span style="width:30px;height:30px;border-radius:5px;background:var(--color-accent-soft);border:1px solid var(--color-copper-200);display:inline-flex;align-items:center;justify-content:center;color:var(--color-copper-700);flex-shrink:0;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span>
+          <h2 id="view-document-title" style="margin:0;font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--color-heading);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-0.01em;"></h2>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+          <button type="button" id="view-document-preview-btn" class="wf-docicon" title="Reading view" aria-label="Toggle reading view" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:5px;cursor:pointer;">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
-          <button type="button" data-modal-hide="view-document-modal" class="inline-flex items-center justify-center w-8 h-8 text-body hover:bg-neutral-tertiary rounded-base focus:outline-none focus:ring-2 focus:ring-brand ms-2" aria-label="Close">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+          <button type="button" data-modal-hide="view-document-modal" class="wf-docicon" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
           </button>
         </div>
-        <div class="px-6 py-4 overflow-y-auto" style="max-height: 70vh;">
-          <!-- Loading spinner -->
-          <div id="view-document-loading" class="flex items-center justify-center py-12">
-            <svg class="animate-spin h-8 w-8 text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-          </div>
-          <!-- Error message -->
-          <div id="view-document-error" class="hidden text-center py-12">
-            <p class="text-body text-sm mb-3">{{ assistant_name }} couldn't load this document.</p>
-            <button type="button" id="view-document-retry" class="text-sm text-brand hover:text-brand-strong font-medium">Retry</button>
-          </div>
-          <!-- Plain text view -->
-          <pre id="view-document-text" class="hidden text-sm text-heading" style="white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;"></pre>
-          <!-- Markdown preview -->
-          <div id="view-document-preview" class="hidden markdown-content text-sm text-heading"></div>
+      </div>
+      {# Body #}
+      <div class="wf-doc" style="max-height:430px;overflow-y:auto;padding:24px 28px;background:var(--color-paper-50);">
+        <!-- Loading spinner -->
+        <div id="view-document-loading" class="flex items-center justify-center py-12">
+          <svg class="animate-spin h-8 w-8 text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+        </div>
+        <!-- Error message -->
+        <div id="view-document-error" class="hidden text-center py-12">
+          <p class="text-body text-sm mb-3">{{ assistant_name }} couldn't load this document.</p>
+          <button type="button" id="view-document-retry" class="text-sm text-brand hover:text-brand-strong font-medium">Retry</button>
+        </div>
+        <!-- Plain text view (raw) -->
+        <pre id="view-document-text" class="hidden" style="white-space:pre-wrap;word-break:break-word;max-width:64ch;margin:0;font-family:var(--font-mono);font-size:12.5px;line-height:1.55;color:var(--color-body);"></pre>
+        <!-- Markdown preview (reading view) -->
+        <div id="view-document-preview" class="hidden markdown-content" style="max-width:64ch;font-size:14.5px;line-height:1.7;color:var(--color-body);"></div>
+      </div>
+      {# Footer #}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-top:1px solid var(--color-default-subtle);background:var(--color-neutral-primary-soft);">
+        <div id="view-document-pii" style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;"></div>
+        <div style="display:flex;gap:10px;flex-shrink:0;">
+          <button type="button" data-modal-hide="view-document-modal" class="wf-docbtn-ghost" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Close</button>
+          <button type="button" id="view-document-download" class="wf-docbtn-secondary" style="display:inline-flex;align-items:center;gap:7px;height:40px;padding:0 14px;border:1px solid var(--color-default);border-radius:8px;background:var(--color-neutral-primary-soft);font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-heading);cursor:pointer;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Download</button>
         </div>
       </div>
     </div>
