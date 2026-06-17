@@ -26,6 +26,8 @@ from django.core.files.storage import default_storage
 from django.db import transaction
 from django.utils import timezone
 
+from .transcript_cleanup import collapse_repetitions
+
 logger = logging.getLogger(__name__)
 
 
@@ -236,7 +238,10 @@ def recompute_meeting_transcript(meeting_id: int) -> str:
             .order_by("segment_index")
             .values_list("text", flat=True)
         )
-        joined = "\n\n".join(s for s in segments if s)
+        # Strip within-segment repetition loops (model degeneration on poor
+        # audio) before joining. Raw segment rows are left untouched — only this
+        # denormalized, user-facing transcript is cleaned. See transcript_cleanup.
+        joined = "\n\n".join(c for c in (collapse_repetitions(s) for s in segments if s) if c)
         meeting.transcript = joined
         meeting.transcript_updated_at = timezone.now()
         meeting.save(update_fields=["transcript", "transcript_updated_at", "updated_at"])

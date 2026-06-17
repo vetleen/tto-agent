@@ -185,3 +185,25 @@ class RecomputeTranscriptTests(TestCase):
         recompute_meeting_transcript(self.meeting.id)
         self.meeting.refresh_from_db()
         self.assertEqual(self.meeting.transcript, "ready")
+
+    def test_collapses_within_segment_loop_but_keeps_raw_rows(self):
+        """The denormalized transcript is de-looped; the segment rows stay raw."""
+        looped = "Ja, det er en del penger til å gjøre det. " * 40
+        MeetingTranscriptSegment.objects.create(
+            meeting=self.meeting, segment_index=0, text="Velkommen til møtet.",
+            status=MeetingTranscriptSegment.Status.READY,
+        )
+        seg = MeetingTranscriptSegment.objects.create(
+            meeting=self.meeting, segment_index=1, text=looped,
+            status=MeetingTranscriptSegment.Status.READY,
+        )
+        recompute_meeting_transcript(self.meeting.id)
+        self.meeting.refresh_from_db()
+
+        # Transcript: loop collapsed to a single occurrence, preamble preserved.
+        self.assertEqual(self.meeting.transcript.count("en del penger"), 1)
+        self.assertIn("Velkommen til møtet.", self.meeting.transcript)
+
+        # Raw segment row is untouched and fully recoverable.
+        seg.refresh_from_db()
+        self.assertEqual(seg.text.count("en del penger"), 40)

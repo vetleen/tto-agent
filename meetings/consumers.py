@@ -26,6 +26,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 from django.utils import timezone
 
+from meetings.services.transcript_cleanup import collapse_repetitions
+
 logger = logging.getLogger(__name__)
 
 # Interval at which the consumer sends a ping frame while idle so the socket
@@ -516,10 +518,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         )
         if idx is None:
             return
+        # Push de-looped text for live display; the raw text was persisted on the
+        # segment row above (recompute then cleans the stored transcript too).
         await self.send(text_data=json.dumps({
             "type": "segment.ready",
             "segment_index": idx,
-            "text": completed.text,
+            "text": collapse_repetitions(completed.text),
             "start_offset_seconds": start_offset,
             "transcription_model": self._model_id,
         }))

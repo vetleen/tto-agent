@@ -19,6 +19,7 @@ from celery import shared_task
 from django.utils import timezone
 
 from .services.chunks import cleanup_temp, download_chunk_to_local, recompute_meeting_transcript
+from .services.transcript_cleanup import collapse_repetitions
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,8 @@ def transcribe_meeting_chunk_task(
         _push_to_ws(meeting_uuid, {
             "type": "segment.ready",
             "segment_index": segment_index,
-            "text": text or "",
+            # De-looped for live display; raw text was stored on the segment row.
+            "text": collapse_repetitions(text or ""),
             "start_offset_seconds": start_offset_seconds,
             "transcription_model": model_id,
         })
