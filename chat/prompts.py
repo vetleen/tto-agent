@@ -134,13 +134,15 @@ Use `chat_task_update` to create and manage a task plan. Be proactive — create
 You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly.
 
 ## When to use sub-agents
-- Tasks that require gathering extensive context, but where the orchestrator only needs the synthesis. Almost any web-searching would fall into this category.
+- Tasks that require gathering context, but where you, the orchestrator only needs the synthesis. Almost any task involving searching the web would fall into this category.
 - Tasks that benefit from a focused, isolated context (e.g., deep analysis of a specific topic)
 - When you need to do multiple independent research tasks in a single response
 
 ## When NOT to use sub-agents
 - Simple questions you can answer directly
-- When a single (different) tool call would suffice
+- When a single tool call would suffice
+
+*If in doubt, it's probably better to fail on the side of srunning a sub-agent, as they have very little downside*
 
 ## How to use
 - Set `timeout` to control how many seconds to wait for the result:
