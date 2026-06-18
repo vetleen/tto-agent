@@ -9,6 +9,8 @@ from django.test import TestCase
 
 from chat.prompts import (
     build_dynamic_context,
+    build_last_message_preamble,
+    build_loop_turn_delimiter,
     build_semi_static_prompt,
     build_static_system_prompt,
     build_system_prompt,
@@ -68,7 +70,7 @@ class BuildSystemPromptTests(TestCase):
 
     def test_no_organization_omits_org_name(self):
         prompt = build_system_prompt()
-        self.assertIn("a helpful assistant.", prompt)
+        self.assertIn("an AI assistant.", prompt)
         self.assertNotIn("MIT TTO", prompt)
 
     # ------------------------------------------------------------------ #
@@ -287,7 +289,7 @@ class BuildStaticSystemPromptTests(TestCase):
     def test_contains_identity(self):
         prompt = build_static_system_prompt()
         self.assertIn(settings.ASSISTANT_NAME, prompt)
-        self.assertIn("a helpful assistant.", prompt)
+        self.assertIn("an AI assistant.", prompt)
 
     def test_contains_org_name(self):
         prompt = build_static_system_prompt(organization_name="MIT TTO")
@@ -359,6 +361,81 @@ class BuildStaticSystemPromptTests(TestCase):
             has_subagent_tool=True, parallel_subagents=False
         )
         self.assertIn("Sequential sub-agents only", prompt)
+
+
+# ====================================================================== #
+# build_loop_turn_delimiter tests                                          #
+# ====================================================================== #
+
+class BuildLoopTurnDelimiterTests(TestCase):
+    """The scheduled-Loop framing that replaces the '# User Message' boundary."""
+
+    def test_frames_text_as_standing_loop_instruction(self):
+        delim = build_loop_turn_delimiter()
+        self.assertIn("Scheduled Loop Task", delim)
+        # Ends with the header the actual loop prompt is appended under.
+        last_line = delim.rstrip().splitlines()[-1]
+        self.assertTrue(last_line.startswith("# Loop instructions"))
+
+    def test_pushes_autonomous_completion_and_forbids_pushback(self):
+        lower = build_loop_turn_delimiter().lower()
+        self.assertIn("autonomously", lower)
+        # The exact failure modes seen in production: asking what the real ask
+        # is, restating to confirm, deferring to a later turn.
+        self.assertIn("do not ask for clarification", lower)
+        self.assertIn("no one is watching", lower)
+
+    def test_framing_not_in_static_system_prompt(self):
+        """The framing must live in the last user message, never the cached
+        static system prompt (where it was too easily ignored)."""
+        static = build_static_system_prompt()
+        self.assertNotIn("Scheduled Loop Task", static)
+        self.assertNotIn("Loop instructions", static)
+        # The retired wording must not linger in the static prompt either.
+        self.assertNotIn("Scheduled recurring turn", static)
+
+
+# ====================================================================== #
+# build_last_message_preamble tests                                        #
+# ====================================================================== #
+
+class BuildLastMessagePreambleTests(TestCase):
+    """The preamble text prepended to the last user message each turn."""
+
+    def test_empty_when_nothing_to_inject(self):
+        self.assertEqual(build_last_message_preamble(), "")
+
+    def test_combines_semi_static_and_dynamic_under_one_header(self):
+        preamble = build_last_message_preamble(
+            semi_static_system="SEMI", dynamic_context="DYN",
+        )
+        self.assertEqual(
+            preamble, "# Additional Context\nSEMI\n\nDYN\n\n# User Message",
+        )
+
+    def test_semi_static_only(self):
+        preamble = build_last_message_preamble(semi_static_system="SEMI")
+        self.assertEqual(preamble, "# Additional Context\nSEMI\n\n# User Message")
+
+    def test_dynamic_only(self):
+        preamble = build_last_message_preamble(dynamic_context="DYN")
+        self.assertEqual(preamble, "# Additional Context\nDYN\n\n# User Message")
+
+    def test_loop_turn_replaces_user_message_delimiter_with_framing(self):
+        preamble = build_last_message_preamble(
+            dynamic_context="DYN", is_loop_turn=True,
+        )
+        self.assertIn("# Additional Context\nDYN", preamble)
+        self.assertNotIn("# User Message", preamble)
+        self.assertIn("Scheduled Loop Task", preamble)
+        self.assertTrue(preamble.rstrip().endswith("from the user"))
+
+    def test_loop_turn_framing_applied_even_without_context(self):
+        """A loop turn always gets framed, even with no semi-static/dynamic."""
+        preamble = build_last_message_preamble(is_loop_turn=True)
+        self.assertNotEqual(preamble, "")
+        self.assertNotIn("# Additional Context", preamble)
+        self.assertEqual(preamble, build_loop_turn_delimiter())
 
 
 # ====================================================================== #
@@ -709,10 +786,11 @@ class BuildSystemPromptRegressionTests(TestCase):
 # Dynamic context injection into messages                                  #
 # ====================================================================== #
 
-class DynamicContextInjectionTests(TestCase):
-    """Test the logic that injects dynamic context into the last user message.
+class PreambleInjectionMechanicsTests(TestCase):
+    """The message-list splice in ChatConsumer (last user message, multimodal).
 
-    This mirrors the injection code in ChatConsumer._stream_response().
+    Exercises the real ``_prepend_preamble_to_last_user_message`` helper rather
+    than a replica, so the splice mechanics can't drift from production.
     """
 
     def _make_messages(self, roles_and_contents):
@@ -720,22 +798,9 @@ class DynamicContextInjectionTests(TestCase):
         from llm.types import Message
         return [Message(role=r, content=c) for r, c in roles_and_contents]
 
-    def _inject(self, messages, dynamic_context):
-        """Replicate the injection logic from _stream_response."""
-        if dynamic_context:
-            for i in range(len(messages) - 1, 0, -1):
-                if messages[i].role == "user":
-                    original = messages[i].content
-                    if isinstance(original, str):
-                        messages[i] = messages[i].model_copy(
-                            update={"content": dynamic_context + "\n\n" + original}
-                        )
-                    elif isinstance(original, list):
-                        context_block = {"type": "text", "text": dynamic_context}
-                        messages[i] = messages[i].model_copy(
-                            update={"content": [context_block] + list(original)}
-                        )
-                    break
+    def _inject(self, messages, preamble):
+        from chat.consumers import _prepend_preamble_to_last_user_message
+        _prepend_preamble_to_last_user_message(messages, preamble)
         return messages
 
     def test_injects_into_last_user_message(self):
@@ -751,7 +816,7 @@ class DynamicContextInjectionTests(TestCase):
         # Earlier user message untouched
         self.assertEqual(result[1].content, "first question")
 
-    def test_empty_context_no_modification(self):
+    def test_empty_preamble_no_modification(self):
         messages = self._make_messages([
             ("system", "You are Wilfred."),
             ("user", "hello"),
@@ -815,7 +880,7 @@ class UserOrgContextInSemiStaticPromptTests(TestCase):
 
     def test_identity_without_org(self):
         prompt = build_static_system_prompt()
-        self.assertIn("a helpful assistant.", prompt)
+        self.assertIn("an AI assistant.", prompt)
         self.assertNotIn(" at ", prompt)
 
     def test_user_context_full(self):

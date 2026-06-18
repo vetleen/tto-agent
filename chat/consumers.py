@@ -40,6 +40,34 @@ OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when mode
 MESSAGE_MAX_CHARS = 75_000
 
 
+def _prepend_preamble_to_last_user_message(messages, preamble: str) -> None:
+    """Splice ``preamble`` onto the last user message in ``messages`` in place.
+
+    ``preamble`` carries the per-turn context + delimiter assembled by
+    ``chat.prompts.build_last_message_preamble``; this function only owns the
+    message-list mechanics (which the prompt layer shouldn't know about): find
+    the last user message, and add the preamble as a leading text block for
+    multimodal (list) content or a string prefix otherwise. No-op when
+    ``preamble`` is empty. The system message (index 0) is never touched.
+    """
+    if not preamble:
+        return
+    for i in range(len(messages) - 1, 0, -1):
+        if messages[i].role == "user":
+            original = messages[i].content
+            if isinstance(original, str):
+                messages[i] = messages[i].model_copy(
+                    update={"content": preamble + "\n" + original}
+                )
+            elif isinstance(original, list):
+                # Multimodal content (images): prepend a text block
+                context_block = {"type": "text", "text": preamble}
+                messages[i] = messages[i].model_copy(
+                    update={"content": [context_block] + list(original)}
+                )
+            break
+
+
 class ChatConsumer(AsyncWebsocketConsumer):
     """WebSocket consumer for chat with LLM streaming and optional RAG via data rooms."""
 
@@ -1138,7 +1166,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _assemble_turn_inputs(
         self, thread, content, *,
         model, max_context_tokens,
-        history_mode="conversational", is_loop_turn=False,
+        history_mode="conversational",
     ):
         """Gather history + context and build the layered system prompt.
 
@@ -1198,7 +1226,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             has_subagent_tool=self._has_tool("chat_subagent_create"),
             has_task_tool=self._has_tool("chat_task_update"),
             parallel_subagents=parallel_subagents,
-            is_loop_turn=is_loop_turn,
         )
         available_skills_for_prompt = (
             prefs.allowed_skills
@@ -1251,7 +1278,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._assemble_turn_inputs(
                 thread, content,
                 model=model, max_context_tokens=max_context_tokens,
-                history_mode=history_mode, is_loop_turn=is_loop_turn,
+                history_mode=history_mode,
             )
         )
 
@@ -1316,33 +1343,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.dedup import deduplicate_tool_results
         messages = deduplicate_tool_results(messages, dynamic_context=dynamic_context)
 
-        # Inject semi-static + dynamic context into the last user message.
-        # This keeps the system message (static) + conversation history prefix
-        # fully cacheable. Semi-static content (date, skill, data rooms, canvas
-        # metadata) changes rarely; dynamic content changes every turn.
-        injected_context = ""
-        if semi_static_system and dynamic_context:
-            injected_context = semi_static_system + "\n\n" + dynamic_context
-        elif semi_static_system:
-            injected_context = semi_static_system
-        elif dynamic_context:
-            injected_context = dynamic_context
-
-        if injected_context:
-            for i in range(len(messages) - 1, 0, -1):
-                if messages[i].role == "user":
-                    original = messages[i].content
-                    if isinstance(original, str):
-                        messages[i] = messages[i].model_copy(
-                            update={"content": "# Additional Context\n" + injected_context + "\n\n# User Message\n" + original}
-                        )
-                    elif isinstance(original, list):
-                        # Multimodal content (images): prepend a text block
-                        context_block = {"type": "text", "text": "# Additional Context\n" + injected_context + "\n\n# User Message"}
-                        messages[i] = messages[i].model_copy(
-                            update={"content": [context_block] + list(original)}
-                        )
-                    break
+        # Inject the per-turn preamble (semi-static + dynamic context, then the
+        # delimiter before the user's actual message) into the last user message.
+        # Keeping it out of the system message preserves prefix caching. The
+        # preamble text — including the scheduled-Loop framing — is assembled in
+        # chat.prompts; here we only splice it onto the message list, which must
+        # happen after dedup + attachment enrichment above.
+        from chat.prompts import build_last_message_preamble
+        preamble = build_last_message_preamble(
+            semi_static_system=semi_static_system,
+            dynamic_context=dynamic_context,
+            is_loop_turn=is_loop_turn,
+        )
+        _prepend_preamble_to_last_user_message(messages, preamble)
 
         context = RunContext.create(
             user_id=self.user.pk,

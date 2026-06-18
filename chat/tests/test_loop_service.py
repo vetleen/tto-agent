@@ -120,6 +120,32 @@ class ExecuteLoopRunTests(TransactionTestCase):
         self.assertIn("Summarize today.", blob)
 
     @patch("llm.get_llm_service")
+    def test_loop_framing_rides_on_last_user_message(self, mock_get_service):
+        """A loop turn frames its prompt as an unattended standing instruction
+        in the last user message — not in the cached system prompt — so the
+        model executes instead of pushing back / asking what the real ask is."""
+        captured = {}
+        mock_get_service.return_value = self._capture_service(captured)
+        from chat.loop_service import execute_loop_run
+
+        execute_loop_run(self.loop.id)
+        messages = captured["messages"]
+
+        system = next(m for m in messages if m.role == "system")
+        self.assertNotIn("Scheduled Loop Task", system.content)
+
+        last_user = [m for m in messages if m.role == "user"][-1]
+        self.assertIn("Scheduled Loop Task", last_user.content)
+        self.assertIn("# Loop instructions", last_user.content)
+        self.assertIn("do not ask for clarification", last_user.content.lower())
+        # The actual loop prompt follows the framing.
+        self.assertIn("Summarize today.", last_user.content)
+        self.assertLess(
+            last_user.content.index("# Loop instructions"),
+            last_user.content.index("Summarize today."),
+        )
+
+    @patch("llm.get_llm_service")
     def test_uses_thread_model(self, mock_get_service):
         from core.preferences import get_preferences
 
