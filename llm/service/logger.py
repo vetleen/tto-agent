@@ -239,6 +239,25 @@ def log_stream(
         cached_tokens = end_data.get("cached_tokens")
         cache_write_tokens = end_data.get("cache_write_tokens")
         reasoning_tokens = end_data.get("reasoning_tokens")
+
+        # Interrupted stream (user Stop, repetition-guard abort, or disconnect):
+        # the provider never sent a terminal message_end, so usage is absent.
+        # Estimate output tokens from the text we did stream so cost stays
+        # visible instead of NULL, and flag explicit cancellations distinctly.
+        interrupted = end_event is None and error_event is None
+        if interrupted and output_tokens is None:
+            from core.tokens import count_tokens
+
+            streamed_text = "".join(
+                e.data.get("text", "") for e in events if e.event_type == "token"
+            )
+            if streamed_text:
+                output_tokens = count_tokens(streamed_text)
+        cancel_event = (request.params or {}).get("_cancel_event")
+        was_cancelled = bool(
+            interrupted and cancel_event is not None and cancel_event.is_set()
+        )
+
         cost_raw = end_data.get("cost_usd")
         cost = Decimal(str(cost_raw)) if cost_raw is not None else None
         if cost is None and (input_tokens or output_tokens):
@@ -307,7 +326,10 @@ def log_stream(
             reasoning_tokens=reasoning_tokens,
             cost_usd=cost,
             duration_ms=duration_ms,
-            status=LLMCallLog.Status.SUCCESS,
+            status=(
+                LLMCallLog.Status.CANCELLED if was_cancelled
+                else LLMCallLog.Status.SUCCESS
+            ),
             response_metadata=resp_metadata,
             stop_reason=stop_reason,
             provider_model_id=provider_model_id,

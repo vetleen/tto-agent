@@ -2064,6 +2064,13 @@
     }
     if (et === "subagents.updated") { updateSubagentStatusBar(data.active_count || 0); return; }
     if (et === "stream.cancelled") { finishStreaming("Stopped."); updateSubagentStatusBar(0); enableInput(); return; }
+    if (et === "stream.degenerate") {
+      var degenMsg = (data && data.message) ? data.message : "Wilfred started repeating itself and was stopped. Try rephrasing or resending.";
+      if (currentStreamingElement) { var dc = currentStreamingElement.querySelector(".message-content"); if (dc) dc.innerHTML = '<span class="italic text-body">' + escapeHtml(degenMsg) + '</span>'; }
+      accumulatedContent = "";
+      finishStreaming();
+      updateSubagentStatusBar(0); enableInput(); return;
+    }
     if (et === "tasks.updated" || et === "tasks.loaded") { renderTaskPlan(data.tasks || []); return; }
     if (et === "canvases.loaded") {
       canvasStates = {};

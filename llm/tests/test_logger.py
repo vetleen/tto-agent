@@ -532,6 +532,90 @@ class LogStreamTests(TestCase):
         self.assertEqual(log.cost_usd, Decimal("0.0005"))
 
 
+class CancelledStreamLoggingTests(TestCase):
+    """Interrupted streams (no message_end) estimate output tokens so cost stays
+    visible; explicit user cancellations are logged with status CANCELLED."""
+
+    def _request(self, cancel_event=None, model="gpt-5.4-mini"):
+        params = {}
+        if cancel_event is not None:
+            params["_cancel_event"] = cancel_event
+        return ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            stream=True,
+            model=model,
+            context=RunContext.create(),
+            params=params,
+        )
+
+    def _interrupted_events(self, run_id):
+        # Tokens streamed but NO terminal message_end — the shape of a stream
+        # the consumer stopped mid-flight.
+        return [
+            StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="token", data={"text": "Lets do this. Lets go. "}, sequence=2, run_id=run_id),
+            StreamEvent(event_type="token", data={"text": "Let me know what you think. "}, sequence=3, run_id=run_id),
+        ]
+
+    def test_cancelled_stream_logged_cancelled_with_estimated_usage(self):
+        import threading
+
+        ev = threading.Event()
+        ev.set()
+        request = self._request(cancel_event=ev)
+        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=200)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "cancelled")
+        self.assertIsNotNone(log.output_tokens)
+        self.assertGreater(log.output_tokens, 0)
+        # Priced model → cost computed from the estimated output tokens.
+        self.assertIsNotNone(log.cost_usd)
+
+    def test_interrupted_without_cancel_event_stays_success(self):
+        request = self._request(cancel_event=None)
+        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "success")
+        # Tokens are still estimated so a network-dropped stream isn't free.
+        self.assertIsNotNone(log.output_tokens)
+
+    def test_unset_cancel_event_stays_success(self):
+        import threading
+
+        ev = threading.Event()  # created but NOT set
+        request = self._request(cancel_event=ev)
+        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "success")
+
+    def test_completed_stream_not_marked_cancelled_even_with_cancel_event(self):
+        """A stream that reached message_end is SUCCESS even if a (set)
+        cancel_event is present — cancellation requires a missing terminal."""
+        import threading
+
+        ev = threading.Event()
+        ev.set()
+        request = self._request(cancel_event=ev)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=1, run_id=run_id),
+            StreamEvent(
+                event_type="message_end",
+                data={"input_tokens": 5, "output_tokens": 1},
+                sequence=2,
+                run_id=run_id,
+            ),
+        ]
+        log_stream(request, events, duration_ms=50)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "success")
+        self.assertEqual(log.output_tokens, 1)
+
+
 class LogErrorTests(TestCase):
     """Tests for log_error."""
 

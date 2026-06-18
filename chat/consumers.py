@@ -1426,11 +1426,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
         service = get_llm_service()
+        from chat.repetition_guard import is_degenerate
         accumulated_content = ""
         accumulated_thinking = ""
         pending_tool_calls = []
         pending_tool_results = []
         stream_error = False
+        degenerate_stop = False
+        last_guard_len = 0
         heartbeat_task = (
             asyncio.create_task(self._send_heartbeats())
             if self._sink.wants_heartbeats else None
@@ -1451,6 +1454,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if event.event_type == "token":
                     token_text = event.data.get("text", "")
                     accumulated_content += token_text
+                    # Detect a model degeneration (repetition) loop and stop it
+                    # early. Throttle: scan at most once per ~500 new chars
+                    # beyond a 1000-char floor (cheap, but not worth per-token).
+                    if (
+                        len(accumulated_content) >= 1000
+                        and len(accumulated_content) - last_guard_len >= 500
+                    ):
+                        last_guard_len = len(accumulated_content)
+                        if is_degenerate(accumulated_content):
+                            degenerate_stop = True
+                            await self._sink.send_event({
+                                "event_type": "stream.degenerate",
+                                "data": {
+                                    "message": "Wilfred started repeating itself "
+                                               "and was stopped. Try rephrasing or "
+                                               "resending.",
+                                },
+                            })
+                            turn.cancel_event.set()
+                            break
 
                 # Accumulate thinking/reasoning content
                 elif event.event_type == "thinking":
@@ -1550,9 +1573,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     pending_tool_results = []
                     accumulated_content = ""
                     accumulated_thinking = ""
+                    last_guard_len = 0
 
-            # Don't persist partial content from error-interrupted streams
-            if not stream_error:
+            # Don't persist partial content from error-interrupted or
+            # degeneration-aborted streams.
+            if not stream_error and not degenerate_stop:
                 # Persist any remaining tool loop messages (if stream ends after tools)
                 if pending_tool_calls:
                     await self._persist_tool_loop_messages(
