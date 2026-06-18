@@ -10,7 +10,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from agent_skills.models import AgentSkill
-from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThread
+from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThread, ChatThreadSkill
 from meetings.models import Meeting, MeetingAttachment
 from meetings.services.minutes import (
     create_minutes_thread,
@@ -20,6 +20,13 @@ from meetings.services.minutes import (
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 User = get_user_model()
+
+
+def _thread_skill_ids(thread):
+    """Attached skill ids for a thread, in attach order."""
+    return list(
+        ChatThreadSkill.objects.filter(thread=thread).values_list("skill_id", flat=True)
+    )
 
 
 def _seed_meeting_summarizer():
@@ -53,7 +60,7 @@ class CreateMinutesThreadTests(TestCase):
         thread, err = create_minutes_thread(self.user, self.meeting)
         self.assertIsNone(err)
         self.assertIsNotNone(thread)
-        self.assertEqual(thread.skill_id, self.skill.id)
+        self.assertEqual(_thread_skill_ids(thread), [self.skill.id])
         self.assertEqual(thread.metadata.get("source_meeting_id"), str(self.meeting.uuid))
         self.assertTrue(thread.metadata.get("pending_initial_turn"))
 
@@ -192,7 +199,7 @@ class CreateMinutesThreadWithSkillTests(TestCase):
         )
         thread, err = create_minutes_thread(self.user, self.meeting, summarizer_skill=custom)
         self.assertIsNone(err)
-        self.assertEqual(thread.skill_id, custom.id)
+        self.assertEqual(_thread_skill_ids(thread), [custom.id])
 
     def test_seed_message_uses_custom_skill_name(self):
         custom = AgentSkill.objects.create(
@@ -227,7 +234,7 @@ class MeetingCreateMinutesWithSkillViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 302)
         thread = ChatThread.objects.filter(created_by=self.user).first()
-        self.assertEqual(thread.skill_id, custom.id)
+        self.assertEqual(_thread_skill_ids(thread), [custom.id])
 
     def test_posts_with_invalid_skill_id_uses_default(self):
         response = self.client.post(
@@ -236,7 +243,7 @@ class MeetingCreateMinutesWithSkillViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 302)
         thread = ChatThread.objects.filter(created_by=self.user).first()
-        self.assertEqual(thread.skill_id, self.system_skill.id)
+        self.assertEqual(_thread_skill_ids(thread), [self.system_skill.id])
 
     def test_posts_without_skill_id_uses_default(self):
         response = self.client.post(
@@ -244,7 +251,7 @@ class MeetingCreateMinutesWithSkillViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 302)
         thread = ChatThread.objects.filter(created_by=self.user).first()
-        self.assertEqual(thread.skill_id, self.system_skill.id)
+        self.assertEqual(_thread_skill_ids(thread), [self.system_skill.id])
 
 
 @override_settings(

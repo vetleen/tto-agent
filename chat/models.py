@@ -17,12 +17,11 @@ class ChatThread(models.Model):
         related_name="chat_threads",
         blank=True,
     )
-    skill = models.ForeignKey(
+    skills = models.ManyToManyField(
         "agent_skills.AgentSkill",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
+        through="ChatThreadSkill",
         related_name="chat_threads",
+        blank=True,
     )
     active_canvas = models.ForeignKey(
         "ChatCanvas",
@@ -99,6 +98,31 @@ class ChatThreadDataRoom(models.Model):
 
     def __str__(self) -> str:
         return f"{self.thread_id} ↔ {self.data_room_id}"
+
+
+class ChatThreadSkill(models.Model):
+    thread = models.ForeignKey(
+        ChatThread,
+        on_delete=models.CASCADE,
+        related_name="thread_skills",
+    )
+    skill = models.ForeignKey(
+        "agent_skills.AgentSkill",
+        on_delete=models.CASCADE,
+        related_name="thread_skill_links",
+    )
+    attached_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("thread", "skill")]
+        # Composite ordering: attach order, with id as a deterministic
+        # tie-break when several rows are bulk-created in the same request
+        # (so prompt order, tool-union, and template collision resolution
+        # are stable).
+        ordering = ["attached_at", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.thread_id} ↔ {self.skill_id}"
 
 
 class Loop(models.Model):

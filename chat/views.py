@@ -74,7 +74,7 @@ def chat_home(request):
 
     if request.GET.get("thread"):
         thread_id = request.GET["thread"]
-        thread = ChatThread.objects.select_related("skill").filter(
+        thread = ChatThread.objects.filter(
             id=thread_id, created_by=request.user
         ).first()
         if thread:
@@ -196,13 +196,23 @@ def chat_home(request):
 
     # If thread selected, get its attached data rooms
     thread_data_rooms = []
-    thread_skill = None
+    thread_skills = []
     if thread:
+        from chat.models import ChatThreadSkill
+
         thread_data_rooms = list(
             thread.data_rooms.values("pk", "uuid", "name")
         )
-        if thread.skill_id and thread.skill and thread.skill.is_active:
-            thread_skill = {"id": str(thread.skill_id), "name": thread.skill.name}
+        thread_skills = [
+            {
+                "id": str(r.skill_id),
+                "name": r.skill.name,
+                "emoji": r.skill.emoji,
+            }
+            for r in ChatThreadSkill.objects.filter(
+                thread=thread, skill__is_active=True
+            ).select_related("skill")
+        ]
 
     # Resolve preferences (model choices, allowed skills, etc.)
     from django.conf import settings as django_settings
@@ -261,7 +271,7 @@ def chat_home(request):
             "data_rooms": data_rooms,
             "thread_data_rooms": thread_data_rooms,
             "skills_json": skills_json,
-            "thread_skill": thread_skill,
+            "thread_skills_json": json.dumps(thread_skills),
             "model_choices_json": json.dumps(model_choices),
             "default_model": effective_model,
             "default_model_display": get_display_name(effective_model),

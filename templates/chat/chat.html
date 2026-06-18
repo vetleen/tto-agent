@@ -276,18 +276,8 @@
              accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.pdf,text/plain,.txt,text/markdown,.md,text/csv,.csv,text/html,.html,application/json,.json,text/xml,.xml,application/xml,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" multiple />
       {# Attached items — skills, then data rooms, then files; all on one wrapping row #}
       <div class="flex flex-wrap gap-2 mb-0 has-[span]:mb-2">
-        {# Attached skill pill #}
-        <div id="attached-skill" class="contents">
-          {% if thread_skill %}
-          <span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="{{ thread_skill.id }}">
-            {% if thread_skill.emoji %}<span>{{ thread_skill.emoji }}</span>{% else %}<svg class="w-3.5 h-3.5 shrink-0 text-fg-accent" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg>{% endif %}
-            {{ thread_skill.name }}
-            <button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill">
-              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-          </span>
-          {% endif %}
-        </div>
+        {# Attached skill pills (rendered by renderSkillPills() from activeSkillIds) #}
+        <div id="attached-skill" class="contents"></div>
         {# Attached data room pills #}
         <div id="attached-data-rooms" class="contents">
           {% for dr in thread_data_rooms %}
@@ -588,7 +578,7 @@
   <div class="wfm-modal" style="position:relative;width:516px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
     {# Header #}
     <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
-      <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Use skill</h2>
+      <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Use skills</h2>
       <button type="button" id="close-skill-modal" class="wfm-iconbtn" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
     </div>
     {# Search #}
@@ -605,10 +595,10 @@
     <p id="skill-modal-empty" class="hidden" style="font-size:13px;color:var(--color-body);padding:10px 22px;">No skills available.</p>
     {# Footer #}
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
-      <span id="skill-modal-status" style="font-size:12px;color:var(--color-body-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px;">Select a skill to use in this thread</span>
+      <span id="skill-modal-status" style="font-size:12px;color:var(--color-body-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px;">Select up to 5 skills to use in this thread</span>
       <div style="display:flex;gap:10px;">
         <button type="button" class="wfm-btn-ghost skill-modal-cancel" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
-        <button type="button" id="skill-modal-use" class="wfm-btn-primary" disabled style="height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">Use skill</button>
+        <button type="button" id="skill-modal-use" class="wfm-btn-primary" style="height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">Use skills</button>
       </div>
     </div>
   </div>
@@ -823,9 +813,17 @@
   let attachedDataRoomIds = [{% for dr in thread_data_rooms %}{{ dr.pk }}{% if not forloop.last %}, {% endif %}{% endfor %}];
 
   // -- Skill state --
+  // Up to MAX_THREAD_SKILLS skills may be attached. activeSkillIds is the
+  // ordered set of attached ids; attachedSkillsById maps id -> {id,name,emoji}
+  // so pills can render without re-looking-up the catalogue.
+  const MAX_THREAD_SKILLS = 5;
   const AVAILABLE_SKILLS = JSON.parse('{{ skills_json|escapejs }}');
-  let activeSkillId = {% if thread_skill %}"{{ thread_skill.id|escapejs }}"{% else %}null{% endif %};
-  let activeSkillName = {% if thread_skill %}"{{ thread_skill.name|escapejs }}"{% else %}null{% endif %};
+  let activeSkillIds = [];
+  let attachedSkillsById = {};
+  (JSON.parse('{{ thread_skills_json|escapejs }}') || []).forEach(function(s) {
+    activeSkillIds.push(String(s.id));
+    attachedSkillsById[String(s.id)] = { id: String(s.id), name: s.name, emoji: s.emoji || "" };
+  });
 
   // -- Sub-agent status bar state --
   let activeSubagentCount = {{ active_subagent_count|default:"0" }};
@@ -1223,66 +1221,101 @@
   // -- Skill pill helpers --
   var attachedSkillContainer = document.getElementById('attached-skill');
 
-  function addSkillPill(id, name, emoji) {
-    activeSkillId = id;
-    activeSkillName = name;
-    var iconHtml = emoji
+  function skillPillIconHtml(emoji) {
+    return emoji
       ? '<span>' + escapeHtml(emoji) + '</span>'
       : '<svg class="w-3.5 h-3.5 shrink-0 text-fg-accent" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.9 9 18.75l-.813-2.85a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.81a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.85a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.81a4.5 4.5 0 00-3.09 3.09z"/></svg>';
-    attachedSkillContainer.innerHTML = '<span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="' + escapeHtml(id) + '">' +
-      iconHtml +
-      escapeHtml(name) +
-      '<button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></button></span>';
+  }
+
+  // Rebuild every attached-skill pill from activeSkillIds / attachedSkillsById.
+  function renderSkillPills() {
+    var html = '';
+    activeSkillIds.forEach(function(id) {
+      var s = attachedSkillsById[id] || { id: id, name: id, emoji: '' };
+      html += '<span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="' + escapeHtml(id) + '">' +
+        skillPillIconHtml(s.emoji) +
+        escapeHtml(s.name) +
+        '<button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></button></span>';
+    });
+    attachedSkillContainer.innerHTML = html;
     updateSkillModalChecks();
   }
 
-  function removeSkillPill() {
-    activeSkillId = null;
-    activeSkillName = null;
-    attachedSkillContainer.innerHTML = '';
-    updateSkillModalChecks();
+  // Replace the attached-skill state from a list of {id,name,emoji} (the shape
+  // used by the skills.set event, thread.loaded, and the attach tool result).
+  function setActiveSkills(skills) {
+    activeSkillIds = [];
+    attachedSkillsById = {};
+    (skills || []).forEach(function(s) {
+      var id = String(s.id);
+      if (activeSkillIds.indexOf(id) !== -1) return;
+      activeSkillIds.push(id);
+      attachedSkillsById[id] = { id: id, name: s.name, emoji: s.emoji || '' };
+    });
+    renderSkillPills();
   }
 
-  // The skill currently highlighted inside the modal (select-then-confirm).
-  // Kept in sync with the attached skill whenever a pill is added/removed.
-  var selectedSkillId = activeSkillId != null ? String(activeSkillId) : null;
+  // Send the current attached set to the server (declarative: the list IS the
+  // desired state). Used by detach buttons and the modal's apply.
+  function sendSetSkills() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "chat.set_skills",
+        skill_ids: activeSkillIds,
+        thread_id: activeThreadId || "",
+      }));
+    }
+  }
+
+  // The skills selected inside the modal (select-then-confirm), as a Set.
+  // Kept in sync with the attached set whenever pills change.
+  var selectedSkillIds = new Set(activeSkillIds);
 
   function refreshSkillSelection() {
+    var atCap = selectedSkillIds.size >= MAX_THREAD_SKILLS;
     document.querySelectorAll('.skill-select-btn').forEach(function(btn) {
       var id = btn.getAttribute('data-skill-id');
-      var sel = (selectedSkillId !== null && selectedSkillId === id);
+      var sel = selectedSkillIds.has(id);
       btn.classList.toggle('is-selected', sel);
+      // At the cap, unselected rows can't be added — dim and disable them.
+      btn.disabled = (!sel && atCap);
+      btn.style.opacity = (!sel && atCap) ? '0.4' : '';
       var tag = btn.querySelector('.skill-selected-tag');
       if (tag) tag.style.display = sel ? '' : 'none';
     });
     var statusEl = document.getElementById('skill-modal-status');
     var useBtn = document.getElementById('skill-modal-use');
-    var chosen = null;
-    if (selectedSkillId !== null) {
-      for (var i = 0; i < AVAILABLE_SKILLS.length; i++) {
-        if (String(AVAILABLE_SKILLS[i].id) === selectedSkillId) { chosen = AVAILABLE_SKILLS[i]; break; }
-      }
+    var n = selectedSkillIds.size;
+    if (statusEl) {
+      statusEl.textContent = n === 0
+        ? 'Select up to ' + MAX_THREAD_SKILLS + ' skills to use in this thread'
+        : n + ' of ' + MAX_THREAD_SKILLS + ' selected';
     }
-    if (statusEl) statusEl.textContent = chosen ? chosen.name : 'Select a skill to use in this thread';
-    if (useBtn) useBtn.disabled = (selectedSkillId === null);
+    if (useBtn) useBtn.disabled = false;
   }
 
   function updateSkillModalChecks() {
-    // Called when the attached skill changes outside the modal — keep the
+    // Called when the attached set changes outside the modal — keep the
     // modal's pending selection aligned with reality.
-    selectedSkillId = activeSkillId != null ? String(activeSkillId) : null;
+    selectedSkillIds = new Set(activeSkillIds);
     refreshSkillSelection();
   }
 
-  // -- Detach skill click handler --
+  // -- Detach skill click handler (one pill at a time) --
   attachedSkillContainer.addEventListener('click', function(e) {
     var btn = e.target.closest('.detach-skill-btn');
     if (!btn) return;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "chat.detach_skill", thread_id: activeThreadId || "" }));
-    }
-    removeSkillPill();
+    var pill = btn.closest('.skill-pill');
+    if (!pill) return;
+    var id = String(pill.getAttribute('data-skill-id'));
+    activeSkillIds = activeSkillIds.filter(function(x) { return x !== id; });
+    delete attachedSkillsById[id];
+    renderSkillPills();
+    sendSetSkills();
   });
+
+  // Render any skills the page loaded with (server passes thread_skills_json).
+  renderSkillPills();
 
   // -- Detach pill click handler --
   attachedRoomsContainer.addEventListener('click', function(e) {
@@ -1391,7 +1424,7 @@
     });
   });
 
-  // -- Skill modal (single-select, confirm with "Use skill") --
+  // -- Skill modal (multi-select up to MAX_THREAD_SKILLS, confirm with "Use skills") --
   var skillModal = document.getElementById('skill-modal');
   var openSkillModalBtn = document.getElementById('open-skill-modal-btn');
   var closeSkillModalBtn = document.getElementById('close-skill-modal');
@@ -1428,7 +1461,11 @@
         '<svg class="skill-selected-tag" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none;color:var(--color-fg-success);flex-shrink:0;"><path d="M20 6 9 17l-5-5"/></svg>';
       btn.addEventListener('click', function() {
         var id = String(s.id);
-        selectedSkillId = (selectedSkillId === id) ? null : id;
+        if (selectedSkillIds.has(id)) {
+          selectedSkillIds.delete(id);
+        } else if (selectedSkillIds.size < MAX_THREAD_SKILLS) {
+          selectedSkillIds.add(id);
+        }
         refreshSkillSelection();
       });
       li.appendChild(btn);
@@ -1461,24 +1498,25 @@
   function closeSkillModal() { skillModal.classList.add('hidden'); }
 
   function applySkillSelection() {
-    if (selectedSkillId === null) return;
-    var s = null;
-    for (var i = 0; i < AVAILABLE_SKILLS.length; i++) {
-      if (String(AVAILABLE_SKILLS[i].id) === selectedSkillId) { s = AVAILABLE_SKILLS[i]; break; }
-    }
-    if (!s) { closeSkillModal(); return; }
-    if (String(activeSkillId) !== selectedSkillId) {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "chat.attach_skill", skill_id: s.id, thread_id: activeThreadId || "" }));
+    // Build the desired attached set (catalogue order) from the modal's
+    // selection, then push it declaratively to the server.
+    var byId = {};
+    AVAILABLE_SKILLS.forEach(function(s) { byId[String(s.id)] = s; });
+    var desired = [];
+    AVAILABLE_SKILLS.forEach(function(s) {
+      var id = String(s.id);
+      if (selectedSkillIds.has(id)) {
+        desired.push({ id: id, name: s.name, emoji: s.emoji || '' });
       }
-      addSkillPill(s.id, s.name, s.emoji);
-    }
+    });
+    setActiveSkills(desired);
+    sendSetSkills();
     closeSkillModal();
   }
 
   if (openSkillModalBtn) {
     openSkillModalBtn.addEventListener('click', function() {
-      selectedSkillId = activeSkillId != null ? String(activeSkillId) : null;
+      selectedSkillIds = new Set(activeSkillIds);
       if (skillModalSearch) { skillModalSearch.value = ''; }
       renderSkillModal();
       skillModal.classList.remove('hidden');
@@ -2171,8 +2209,8 @@
       attachedRoomsContainer.innerHTML = "";
       attachedDataRoomIds = [];
       if (data.data_rooms) { data.data_rooms.forEach(function(r) { addDataRoomPill(r.id, r.name); }); }
-      // Restore or clear skill pill
-      if (data.skill && data.skill.skill_id) { addSkillPill(data.skill.skill_id, data.skill.skill_name, data.skill.skill_emoji); } else { removeSkillPill(); }
+      // Restore the thread's attached skills
+      setActiveSkills(data.skills || []);
       // Reset multi-canvas state (will be populated by canvases.loaded event)
       canvasStates = {};
       activeCanvasId = null;
@@ -2192,8 +2230,7 @@
       }
       return;
     }
-    if (et === "skill.attached") { addSkillPill(data.skill_id, data.skill_name, data.skill_emoji); return; }
-    if (et === "skill.detached") { removeSkillPill(); return; }
+    if (et === "skills.set") { setActiveSkills(data.skills || []); return; }
     if (et === "data_room.attached") { addDataRoomPill(data.data_room_id, data.data_room_name); return; }
     if (et === "data_room.detached") { removeDataRoomPill(data.data_room_id); return; }
     if (et === "error") {
@@ -2286,7 +2323,7 @@
         else if (toolName === "skill_tool_inspect") displayText = "Inspecting tool...";
         else if (toolName === "chat_subagent_create") displayText = "Running sub-agent...";
         else if (toolName === "chat_task_update") displayText = "Updating task plan...";
-        else if (toolName === "chat_skill_attach") displayText = "Attaching skill...";
+        else if (toolName === "chat_skill_attach") displayText = "Updating attached skills...";
         else if (toolName === "chat_loop_create") displayText = "Creating loop...";
         else if (toolName === "chat_loop_list") displayText = "Listing loops...";
         else if (toolName === "chat_loop_stop") displayText = "Stopping loop...";
@@ -2340,7 +2377,7 @@
           else if (toolName === "skill_tool_inspect") doneLabel = "Inspected tool";
           else if (toolName === "chat_subagent_create") doneLabel = "Sub-agent dispatched";
           else if (toolName === "chat_task_update") doneLabel = "Updated task plan";
-          else if (toolName === "chat_skill_attach") doneLabel = "Updated attached skill";
+          else if (toolName === "chat_skill_attach") doneLabel = "Updated attached skills";
           else if (toolName === "chat_loop_create") doneLabel = "Created loop";
           else if (toolName === "chat_loop_list") doneLabel = "Listed loops";
           else if (toolName === "chat_loop_stop") doneLabel = "Stopped loop";
@@ -2495,7 +2532,7 @@
           type: "chat.message", content: text,
           thread_id: activeThreadId || "",
           data_room_ids: attachedDataRoomIds,
-          skill_id: activeSkillId || "",
+          skill_ids: activeSkillIds,
           model: selectedModel, thinking_level: thinkingLevel
         }));
       }
@@ -2531,7 +2568,7 @@
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
     if (ws && ws.readyState === WebSocket.OPEN) {
       canvasAutoSaveBeforeChat();
-      var payload = { type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_id: activeSkillId || "", model: selectedModel, thinking_level: thinkingLevel };
+      var payload = { type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_ids: activeSkillIds, model: selectedModel, thinking_level: thinkingLevel };
       if (sendAttachmentIds.length > 0) payload.attachment_ids = sendAttachmentIds;
       ws.send(JSON.stringify(payload));
     }

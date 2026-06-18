@@ -1,15 +1,14 @@
-"""Tests for agent_skills.tools.AttachSkillsTool."""
+"""Tests for agent_skills.tools.AttachSkillsTool (declarative multi-skill set)."""
 
 import json
-import uuid
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from accounts.models import Membership, Organization
-from agent_skills.models import AgentSkill
+from agent_skills.models import MAX_THREAD_SKILLS, AgentSkill
 from agent_skills.tools import AttachSkillsTool
-from chat.models import ChatThread
+from chat.models import ChatThread, ChatThreadSkill
 from llm.types import RunContext
 
 User = get_user_model()
@@ -17,6 +16,16 @@ User = get_user_model()
 
 def _ctx(user, thread):
     return RunContext.create(user_id=user.pk, conversation_id=str(thread.id))
+
+
+def _attached_ids(thread):
+    """Attached skill ids in attach order (the through-model ordering)."""
+    return [
+        str(sid)
+        for sid in ChatThreadSkill.objects.filter(thread=thread).values_list(
+            "skill_id", flat=True
+        )
+    ]
 
 
 class AttachSkillsToolTests(TestCase):
@@ -31,60 +40,97 @@ class AttachSkillsToolTests(TestCase):
         self.tool = AttachSkillsTool()
         self.tool.context = _ctx(self.user, self.thread)
 
-    def test_attach_single_slug_updates_thread(self):
-        result = json.loads(self.tool._run(skill_slugs=["my-skill"]))
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["attached_skill_name"], "My Skill")
-        self.assertEqual(result["attached_skill_id"], str(self.skill.id))
-        self.assertFalse(result.get("detached"))
-        self.thread.refresh_from_db()
-        self.assertEqual(self.thread.skill_id, self.skill.id)
+    def _attach(self, *slugs):
+        return json.loads(self.tool._run(skill_slugs=list(slugs)))
 
-    def test_empty_list_detaches(self):
-        self.thread.skill = self.skill
-        self.thread.save(update_fields=["skill"])
-        result = json.loads(self.tool._run(skill_slugs=[]))
+    def test_attach_single_slug_updates_thread(self):
+        result = self._attach("my-skill")
         self.assertEqual(result["status"], "ok")
-        self.assertTrue(result["detached"])
-        self.assertIsNone(result["attached_skill_id"])
-        self.assertEqual(result["previous_skill_name"], "My Skill")
-        self.thread.refresh_from_db()
-        self.assertIsNone(self.thread.skill_id)
+        self.assertEqual(result["skills"], [
+            {"id": str(self.skill.id), "name": "My Skill", "emoji": self.skill.emoji},
+        ])
+        self.assertEqual(result["added"], [str(self.skill.id)])
+        self.assertEqual(result["removed"], [])
+        self.assertFalse(result["no_change"])
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
+
+    def test_attach_multiple_up_to_cap(self):
+        slugs = ["my-skill"]
+        ids = [str(self.skill.id)]
+        for i in range(1, MAX_THREAD_SKILLS):
+            s = AgentSkill.objects.create(
+                slug=f"s{i}", name=f"S{i}", instructions="x",
+                level="user", created_by=self.user,
+            )
+            slugs.append(s.slug)
+            ids.append(str(s.id))
+        result = self._attach(*slugs)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([s["id"] for s in result["skills"]], ids)
+        self.assertEqual(_attached_ids(self.thread), ids)
+
+    def test_over_cap_rejected(self):
+        slugs = ["my-skill"]
+        for i in range(MAX_THREAD_SKILLS):  # one too many overall
+            s = AgentSkill.objects.create(
+                slug=f"x{i}", name=f"X{i}", instructions="x",
+                level="user", created_by=self.user,
+            )
+            slugs.append(s.slug)
+        result = self._attach(*slugs)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(_attached_ids(self.thread), [])
+
+    def test_empty_list_detaches_all(self):
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
+        result = self._attach()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["skills"], [])
+        self.assertEqual(result["removed"], [str(self.skill.id)])
+        self.assertEqual(_attached_ids(self.thread), [])
 
     def test_empty_list_when_nothing_attached_is_noop(self):
-        result = json.loads(self.tool._run(skill_slugs=[]))
+        result = self._attach()
         self.assertEqual(result["status"], "ok")
-        self.assertFalse(result["detached"])
-        self.assertIsNone(result["attached_skill_id"])
-        self.thread.refresh_from_db()
-        self.assertIsNone(self.thread.skill_id)
+        self.assertTrue(result["no_change"])
+        self.assertEqual(result["skills"], [])
+        self.assertEqual(_attached_ids(self.thread), [])
 
-    def test_len_greater_than_one_returns_error(self):
-        other = AgentSkill.objects.create(
-            slug="other", name="Other", instructions="x",
+    def test_declarative_replace_diffs_added_and_removed(self):
+        second = AgentSkill.objects.create(
+            slug="second", name="Second", instructions="x",
             level="user", created_by=self.user,
         )
-        result = json.loads(self.tool._run(skill_slugs=["my-skill", "other"]))
-        self.assertEqual(result["status"], "error")
-        self.thread.refresh_from_db()
-        self.assertIsNone(self.thread.skill_id)
-        # Touch var so linters don't complain
-        self.assertIsNotNone(other.id)
+        self._attach("my-skill")
+        result = self._attach("second")  # full replace, not additive
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["added"], [str(second.id)])
+        self.assertEqual(result["removed"], [str(self.skill.id)])
+        self.assertEqual(_attached_ids(self.thread), [str(second.id)])
+
+    def test_same_set_is_noop(self):
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
+        result = self._attach("my-skill")
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["no_change"])
+        self.assertEqual([s["id"] for s in result["skills"]], [str(self.skill.id)])
+
+    def test_duplicate_slugs_deduped(self):
+        result = self._attach("my-skill", "my-skill")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
 
     def test_unknown_slug_returns_error_with_available_slugs(self):
-        result = json.loads(self.tool._run(skill_slugs=["does-not-exist"]))
+        result = self._attach("does-not-exist")
         self.assertEqual(result["status"], "error")
         self.assertIn("my-skill", result["available_slugs"])
-        self.thread.refresh_from_db()
-        self.assertIsNone(self.thread.skill_id)
+        self.assertEqual(_attached_ids(self.thread), [])
 
-    def test_same_slug_reattach_is_noop(self):
-        self.thread.skill = self.skill
-        self.thread.save(update_fields=["skill"])
-        result = json.loads(self.tool._run(skill_slugs=["my-skill"]))
-        self.assertEqual(result["status"], "ok")
-        self.assertTrue(result.get("no_change"))
-        self.assertEqual(result["attached_skill_id"], str(self.skill.id))
+    def test_one_unknown_slug_rejects_whole_set(self):
+        result = self._attach("my-skill", "nope")
+        self.assertEqual(result["status"], "error")
+        # Nothing persisted — the set is rejected atomically.
+        self.assertEqual(_attached_ids(self.thread), [])
 
     def test_other_users_user_skill_not_attachable(self):
         other_user = User.objects.create_user(email="other@example.com", password="pass")
@@ -92,10 +138,9 @@ class AttachSkillsToolTests(TestCase):
             slug="private", name="Private", instructions="x",
             level="user", created_by=other_user,
         )
-        result = json.loads(self.tool._run(skill_slugs=["private"]))
+        result = self._attach("private")
         self.assertEqual(result["status"], "error")
-        self.thread.refresh_from_db()
-        self.assertIsNone(self.thread.skill_id)
+        self.assertEqual(_attached_ids(self.thread), [])
 
     def test_org_disabled_slug_not_attachable(self):
         org = Organization.objects.create(name="Org")
@@ -106,13 +151,13 @@ class AttachSkillsToolTests(TestCase):
         )
         org.preferences = {"skills": {"org-skill": {"enabled": False}}}
         org.save(update_fields=["preferences"])
-        result = json.loads(self.tool._run(skill_slugs=["org-skill"]))
+        result = self._attach("org-skill")
         self.assertEqual(result["status"], "error")
         self.assertNotIn("org-skill", result["available_slugs"])
 
     def test_missing_context_returns_error(self):
         self.tool.context = None
-        result = json.loads(self.tool._run(skill_slugs=["my-skill"]))
+        result = self._attach("my-skill")
         self.assertEqual(result["status"], "error")
 
     def test_thread_belonging_to_other_user_not_attachable(self):
@@ -121,33 +166,18 @@ class AttachSkillsToolTests(TestCase):
         self.tool.context = RunContext.create(
             user_id=self.user.pk, conversation_id=str(other_thread.id),
         )
-        result = json.loads(self.tool._run(skill_slugs=["my-skill"]))
+        result = self._attach("my-skill")
         self.assertEqual(result["status"], "error")
-
-    def test_attach_then_swap(self):
-        second = AgentSkill.objects.create(
-            slug="second", name="Second", instructions="x",
-            level="user", created_by=self.user,
-        )
-        json.loads(self.tool._run(skill_slugs=["my-skill"]))
-        result = json.loads(self.tool._run(skill_slugs=["second"]))
-        self.assertEqual(result["status"], "ok")
-        self.assertTrue(result["detached"])
-        self.assertEqual(result["previous_skill_name"], "My Skill")
-        self.assertEqual(result["attached_skill_id"], str(second.id))
-        self.thread.refresh_from_db()
-        self.assertEqual(self.thread.skill_id, second.id)
 
     def test_whitespace_in_slug_stripped(self):
         result = json.loads(self.tool._run(skill_slugs=["  my-skill  "]))
         self.assertEqual(result["status"], "ok")
-        self.thread.refresh_from_db()
-        self.assertEqual(self.thread.skill_id, self.skill.id)
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
 
     def test_none_slugs_treated_as_empty(self):
         result = json.loads(self.tool._run(skill_slugs=None))
         self.assertEqual(result["status"], "ok")
-        self.assertFalse(result["detached"])
+        self.assertTrue(result["no_change"])
 
     def test_tool_registered(self):
         from llm.tools.registry import get_tool_registry

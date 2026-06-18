@@ -18,6 +18,11 @@ MAX_INSTRUCTIONS_CHARS = 75_000
 # view_template returns content into the LLM context.
 MAX_TEMPLATE_CHARS = MAX_INSTRUCTIONS_CHARS
 
+# Hard cap on how many skills may be attached to a single chat thread.
+# Enforced in three places: the chat_skill_attach tool (hard error), the
+# WebSocket consumer (trim), and the chat UI (disable adding past the cap).
+MAX_THREAD_SKILLS = 5
+
 
 class AgentSkill(models.Model):
     class Level(models.TextChoices):

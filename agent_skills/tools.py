@@ -6,6 +6,7 @@ import json
 import logging
 from pydantic import BaseModel, Field
 
+from agent_skills.models import MAX_THREAD_SKILLS
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -628,40 +629,68 @@ class DeleteSkillTool(ContextAwareTool):
         return json.dumps({"status": "ok", "deleted": skill_slug})
 
 
+def _resolve_thread_template(thread_id, template_name):
+    """Resolve a template by name across every skill attached to a thread.
+
+    Returns ``(template, note)``. ``template`` is None when nothing matches,
+    in which case ``note`` is a user-facing error message. When several
+    attached skills each define a template with this name, the one from the
+    earliest-attached skill wins (deterministic, via the ChatThreadSkill
+    ``attached_at, id`` ordering) and ``note`` describes the collision. The
+    note is a tool-result field for the model's awareness — it is not prompt
+    text and carries no conflict-resolution instructions.
+    """
+    from agent_skills.models import SkillTemplate
+    from chat.models import ChatThreadSkill
+
+    skill_ids = list(
+        ChatThreadSkill.objects.filter(thread_id=thread_id).values_list(
+            "skill_id", flat=True
+        )
+    )
+    if not skill_ids:
+        return None, "No skills attached to this thread."
+
+    matches = list(
+        SkillTemplate.objects.filter(
+            skill_id__in=skill_ids, name=template_name
+        ).select_related("skill")
+    )
+    if not matches:
+        return None, f"Template '{template_name}' not found on any attached skill."
+    if len(matches) == 1:
+        return matches[0], None
+
+    order = {sid: i for i, sid in enumerate(skill_ids)}
+    matches.sort(key=lambda t: order.get(t.skill_id, len(order)))
+    winner = matches[0]
+    others = ", ".join(t.skill.name for t in matches[1:])
+    note = (
+        f"Multiple attached skills define a template named '{template_name}'. "
+        f"Using the one from '{winner.skill.name}' (attached first); also on: {others}."
+    )
+    return winner, note
+
+
 class ViewTemplateTool(ContextAwareTool):
-    """View the content of a template from the active skill."""
+    """View the content of a template from an attached skill."""
 
     name: str = "skill_template_view"
     description: str = (
-        "View the full content of a named template from the current skill. "
+        "View the full content of a named template from an attached skill. "
         "Returns the template text so you can reference it when generating output."
     )
     args_schema: type[BaseModel] = ViewTemplateInput
     section: str = "skills"
 
     def _run(self, template_name: str, **kwargs) -> str:
-        from agent_skills.models import SkillTemplate
-        from chat.models import ChatThread
-
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context."})
 
-        try:
-            thread = ChatThread.objects.select_related("skill").get(pk=thread_id)
-        except ChatThread.DoesNotExist:
-            return json.dumps({"status": "error", "message": "Thread not found."})
-
-        if not thread.skill_id:
-            return json.dumps({"status": "error", "message": "No skill attached to this thread."})
-
-        try:
-            tmpl = SkillTemplate.objects.get(skill_id=thread.skill_id, name=template_name)
-        except SkillTemplate.DoesNotExist:
-            return json.dumps({
-                "status": "error",
-                "message": f"Template '{template_name}' not found on the active skill.",
-            })
+        tmpl, note = _resolve_thread_template(thread_id, template_name)
+        if tmpl is None:
+            return json.dumps({"status": "error", "message": note})
 
         # Bound what goes into the LLM context. Write paths now cap content at
         # MAX_TEMPLATE_CHARS, so this only fires for pre-existing oversized rows.
@@ -677,21 +706,24 @@ class ViewTemplateTool(ContextAwareTool):
             "template_name": tmpl.name,
             "content": content,
         }
+        notes = [note] if note else []
         if truncated:
             result["truncated"] = True
-            result["note"] = (
+            notes.append(
                 f"Template content exceeded {MAX_TEMPLATE_CHARS} characters "
                 "and was truncated."
             )
+        if notes:
+            result["note"] = " ".join(notes)
         return json.dumps(result)
 
 
 class LoadTemplateToCanvasTool(ContextAwareTool):
-    """Load a template from the active skill into the canvas."""
+    """Load a template from an attached skill into the canvas."""
 
     name: str = "skill_template_load"
     description: str = (
-        "Load a named template from the current skill into the canvas. "
+        "Load a named template from an attached skill into the canvas. "
         "Use this to give the user a starting point they can edit. "
         "This replaces the current canvas content."
     )
@@ -701,29 +733,16 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     def _run(self, template_name: str, canvas_name: str = "", **kwargs) -> str:
         from django.db import IntegrityError
 
-        from agent_skills.models import SkillTemplate
-        from chat.models import ChatCanvas, ChatThread
+        from chat.models import ChatCanvas
         from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint, set_active_canvas
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context."})
 
-        try:
-            thread = ChatThread.objects.select_related("skill").get(pk=thread_id)
-        except ChatThread.DoesNotExist:
-            return json.dumps({"status": "error", "message": "Thread not found."})
-
-        if not thread.skill_id:
-            return json.dumps({"status": "error", "message": "No skill attached to this thread."})
-
-        try:
-            tmpl = SkillTemplate.objects.get(skill_id=thread.skill_id, name=template_name)
-        except SkillTemplate.DoesNotExist:
-            return json.dumps({
-                "status": "error",
-                "message": f"Template '{template_name}' not found on the active skill.",
-            })
+        tmpl, note = _resolve_thread_template(thread_id, template_name)
+        if tmpl is None:
+            return json.dumps({"status": "error", "message": note})
 
         content = tmpl.content[:CANVAS_MAX_CHARS]
         title = canvas_name or tmpl.name
@@ -756,11 +775,14 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
 
         set_active_canvas(thread_id, canvas)
 
-        return json.dumps({
+        result = {
             "status": "ok",
             "title": title,
             "canvas_id": str(canvas.pk),
-        })
+        }
+        if note:
+            result["note"] = note
+        return json.dumps(result)
 
 
 class ListSkillToolsTool(ContextAwareTool):
@@ -826,9 +848,10 @@ class AttachSkillsInput(ReasonBaseModel):
     skill_slugs: list[str] = Field(
         default_factory=list,
         description=(
-            "Slugs of skills to attach. Pass an empty list to detach the "
-            "current skill. Currently only one skill may be attached per "
-            "thread — pass at most one slug."
+            "The complete set of skill slugs that should be attached to this "
+            f"thread (up to {MAX_THREAD_SKILLS}). This REPLACES whatever is "
+            "currently attached, so pass every slug you want attached — not "
+            "just new ones. Pass an empty list to detach all skills."
         ),
     )
 
@@ -836,30 +859,39 @@ class AttachSkillsInput(ReasonBaseModel):
 class AttachSkillsTool(ContextAwareTool):
     name: str = "chat_skill_attach"
     description: str = (
-        "Attach a skill from the available skills list to this chat thread, "
-        "replacing any skill currently attached. Pass an empty list to "
-        "detach. Skill-declared tools become available on your next turn, "
-        "not the turn you attach."
+        "Set the skills attached to this chat thread to the given set of "
+        f"slugs (up to {MAX_THREAD_SKILLS}), replacing whatever is currently "
+        "attached. Pass an empty list to detach all. Skill-declared tools "
+        "become available on your next turn, not the turn you attach."
     )
     args_schema: type[BaseModel] = AttachSkillsInput
     section: str = "chat"
 
     def _run(self, skill_slugs: list[str] | None = None, **kwargs) -> str:
         from django.contrib.auth import get_user_model
+        from django.db import transaction
 
         from agent_skills.services import get_available_skills
-        from chat.models import ChatThread
+        from chat.models import ChatThread, ChatThreadSkill
 
         user_id = self.context.user_id if self.context else None
         thread_id = self.context.conversation_id if self.context else None
         if not user_id or not thread_id:
             return json.dumps({"status": "error", "message": "No context available."})
 
-        slugs = [s.strip() for s in (skill_slugs or []) if s and s.strip()]
-        if len(slugs) > 1:
+        # Dedupe slugs, preserving the order the caller asked for.
+        slugs: list[str] = []
+        for raw in (skill_slugs or []):
+            slug = raw.strip()
+            if slug and slug not in slugs:
+                slugs.append(slug)
+        if len(slugs) > MAX_THREAD_SKILLS:
             return json.dumps({
                 "status": "error",
-                "message": "Only one skill can be attached per thread. Pass at most one slug.",
+                "message": (
+                    f"At most {MAX_THREAD_SKILLS} skills can be attached per "
+                    f"thread; you passed {len(slugs)}."
+                ),
             })
 
         User = get_user_model()
@@ -869,64 +901,53 @@ class AttachSkillsTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "User not found."})
 
         try:
-            thread = ChatThread.objects.select_related("skill").get(
-                pk=thread_id, created_by=user,
-            )
+            thread = ChatThread.objects.get(pk=thread_id, created_by=user)
         except ChatThread.DoesNotExist:
             return json.dumps({"status": "error", "message": "Thread not found."})
 
-        previous_skill_id = str(thread.skill_id) if thread.skill_id else None
-        previous_skill_name = thread.skill.name if thread.skill else None
-
-        if not slugs:
-            if thread.skill_id is None:
-                return json.dumps({
-                    "status": "ok",
-                    "detached": False,
-                    "attached_skill_id": None,
-                    "attached_skill_name": None,
-                    "message": "No skill was attached; nothing to detach.",
-                })
-            ChatThread.objects.filter(pk=thread_id).update(skill=None)
-            return json.dumps({
-                "status": "ok",
-                "detached": True,
-                "previous_skill_id": previous_skill_id,
-                "previous_skill_name": previous_skill_name,
-                "attached_skill_id": None,
-                "attached_skill_name": None,
-            })
-
-        slug = slugs[0]
+        # Resolve each slug against the access-gated available set, preserving order.
         available = get_available_skills(user)
-        chosen = next((s for s in available if s.slug == slug), None)
-        if chosen is None:
-            return json.dumps({
-                "status": "error",
-                "message": f"Skill '{slug}' is not available to this user.",
-                "available_slugs": [s.slug for s in available],
-            })
+        by_slug = {s.slug: s for s in available}
+        chosen = []
+        for slug in slugs:
+            skill = by_slug.get(slug)
+            if skill is None:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Skill '{slug}' is not available to this user.",
+                    "available_slugs": [s.slug for s in available],
+                })
+            chosen.append(skill)
 
-        if thread.skill_id == chosen.id:
-            return json.dumps({
-                "status": "ok",
-                "detached": False,
-                "no_change": True,
-                "attached_skill_id": str(chosen.id),
-                "attached_skill_name": chosen.name,
-                "attached_skill_emoji": chosen.emoji,
-            })
+        previous_ids = [
+            str(i) for i in ChatThreadSkill.objects.filter(
+                thread=thread
+            ).values_list("skill_id", flat=True)
+        ]
+        desired_ids = [str(s.id) for s in chosen]
+        no_change = previous_ids == desired_ids
 
-        ChatThread.objects.filter(pk=thread_id).update(skill_id=chosen.id)
+        if not no_change:
+            # Declarative full replace: the new set IS the desired state, in
+            # the caller's order (the ChatThreadSkill id tie-break preserves
+            # insertion order for the prompt / tool-union / template lookups).
+            with transaction.atomic():
+                ChatThreadSkill.objects.filter(thread=thread).delete()
+                ChatThreadSkill.objects.bulk_create(
+                    [ChatThreadSkill(thread=thread, skill=s) for s in chosen]
+                )
 
+        prev_set = set(previous_ids)
+        desired_set = set(desired_ids)
         return json.dumps({
             "status": "ok",
-            "detached": bool(previous_skill_id),
-            "previous_skill_id": previous_skill_id,
-            "previous_skill_name": previous_skill_name,
-            "attached_skill_id": str(chosen.id),
-            "attached_skill_name": chosen.name,
-            "attached_skill_emoji": chosen.emoji,
+            "no_change": no_change,
+            "skills": [
+                {"id": str(s.id), "name": s.name, "emoji": s.emoji}
+                for s in chosen
+            ],
+            "added": [i for i in desired_ids if i not in prev_set],
+            "removed": [i for i in previous_ids if i not in desired_set],
         })
 
 

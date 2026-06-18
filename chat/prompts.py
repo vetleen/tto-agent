@@ -249,12 +249,40 @@ def build_last_message_preamble(
     return prefix + delimiter
 
 
+def _render_one_skill(skill: Any) -> str:
+    """Render one attached skill as a ``## {name}`` sub-block for the prompt.
+
+    The skill's own headings are deepened by two levels so they nest under the
+    ``## {name}`` heading instead of competing with the prompt's top-level
+    sections. Used for each entry of the ``# Relevant skills`` section, so the
+    rendering is identical whether one or several skills are attached.
+    """
+    deepened = re.sub(r"^(#+)", r"##\1", skill.instructions, flags=re.MULTILINE)
+    block = f"## {skill.name}\n"
+    if skill.description:
+        block += f"## Skill description:\n{skill.description}\n"
+    block += f"## Skill instructions:\n{deepened}\n"
+
+    templates = list(skill.templates.all())
+    if templates:
+        block += (
+            "\n## Skill templates\n\n"
+            "This skill has the following templates available. "
+            "Use `skill_template_view` to read a template's content, "
+            "or `skill_template_load` to load one into the canvas "
+            "as a starting point.\n\n"
+        )
+        for tmpl in templates:
+            block += f"- **{tmpl.name}**\n"
+    return block
+
+
 def build_semi_static_prompt(
     *,
     data_rooms: list[dict[str, Any]] | None = None,
     canvas: Any = None,
     canvases: list | None = None,
-    skill: Any = None,
+    skills: list | None = None,
     soul: str | None = None,
     organization_name: str | None = None,
     organization_description: str | None = None,
@@ -322,8 +350,10 @@ def build_semi_static_prompt(
         prompt += (
             "\n# Skills available to this user\n"
             "The following skills are available. Call "
-            "`chat_skill_attach(skill_slugs=[\"<slug>\"])` to attach one when it "
-            "fits the user's request. Pass an empty list to detach.\n"
+            "`chat_skill_attach(skill_slugs=[\"<slug>\", ...])` with the full set "
+            "of slugs you want attached (up to 5) when they fit the user's "
+            "request. The list replaces whatever is currently attached; pass an "
+            "empty list to detach all.\n"
         )
         for s in available_skills:
             desc = (s.get("description") or "").strip().replace("\n", " ")
@@ -336,36 +366,15 @@ def build_semi_static_prompt(
                 line += f": {desc}"
             prompt += line + "\n"
 
-    # -- Skill section --
-    if skill:
-        deepened = re.sub(r"^(#+)", r"##\1", skill.instructions, flags=re.MULTILINE)
-        prompt += f"""\
-
-# Relevant skill
-Below is a predefined SKILL explaining in detail how to handle \
-the user's request. Follow it to the best of your ability.
-
-## {skill.name}
-{f'## Skill description:{chr(10)}{skill.description}{chr(10)}' if skill.description else ''}
-## Skill instructions:
-{deepened}
-
-"""
-
-        templates = list(skill.templates.all())
-        if templates:
-            prompt += """\
-## Skill templates
-
-This skill has the following templates available. \
-Use `skill_template_view` to read a template's content, \
-or `skill_template_load` to load one into the canvas \
-as a starting point.
-
-"""
-            for tmpl in templates:
-                prompt += f"- **{tmpl.name}**\n"
-            prompt += "\n"
+    # -- Attached skills section --
+    if skills:
+        prompt += (
+            "\n# Relevant skills\n"
+            "Below are predefined SKILLS explaining in detail how to handle "
+            "the user's request. Follow them to the best of your ability.\n"
+        )
+        for skill in skills:
+            prompt += "\n" + _render_one_skill(skill)
 
     # -- Data rooms section --
     if data_rooms:
@@ -616,7 +625,7 @@ def build_system_prompt(
     canvas: Any = None,
     canvases: list | None = None,
     active_canvas: Any = None,
-    skill: Any = None,
+    skills: list | None = None,
     available_skills: list[dict[str, Any]] | None = None,
     has_subagent_tool: bool = False,
     subagent_runs: list[dict] | None = None,
@@ -652,7 +661,7 @@ def build_system_prompt(
         data_rooms=data_rooms,
         canvas=canvas,
         canvases=canvases,
-        skill=skill,
+        skills=skills,
         soul=soul,
         organization_name=organization_name,
         organization_description=organization_description,

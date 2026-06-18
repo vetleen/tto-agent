@@ -250,7 +250,8 @@
   function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
   // ---- state ----
-  var S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', model: PREFERRED_MODEL };
+  var MAX_LOOP_SKILLS = 5;
+  var S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', model: PREFERRED_MODEL };
 
   // ---- schedule math (preview only; server is authoritative) ----
   function clampN(n) { return Math.max(1, Math.min(99, n)); }
@@ -270,7 +271,7 @@
   function renderChips() {
     var h = '';
     S.rooms.forEach(function (r) { h += chip(r.name, 'var(--color-forest-500)', 'removeRoom', r.id); });
-    if (S.skill) h += chip(S.skill.name, 'var(--color-copper-500)', 'removeSkill', S.skill.id);
+    S.skills.forEach(function (s) { h += chip(s.name, 'var(--color-copper-500)', 'removeSkill', s.id); });
     el('loop-chips').innerHTML = h;
   }
   function chip(label, dot, act, id) {
@@ -350,7 +351,14 @@
   }
   function openSkillMenu() {
     closeMenus();
-    var avail = SKILLS.filter(function (s) { return !S.skill || String(s.id) !== String(S.skill.id); });
+    if (S.skills.length >= MAX_LOOP_SKILLS) {
+      skillMenu.innerHTML = emptyItem('Up to ' + MAX_LOOP_SKILLS + ' skills');
+      skillMenu.style.display = 'block';
+      return;
+    }
+    var avail = SKILLS.filter(function (s) {
+      return !S.skills.some(function (x) { return String(x.id) === String(s.id); });
+    });
     skillMenu.innerHTML = avail.length ? avail.map(function (s) { return menuItem('addSkill', s.id, (s.emoji ? s.emoji + ' ' : '') + s.name); }).join('') : emptyItem('No other skills');
     skillMenu.style.display = 'block';
   }
@@ -364,7 +372,7 @@
     else { S.preset = 'Custom'; S.unit = 'minutes'; S.n = Math.max(1, Math.round(secs / 60)); }
   }
   function openCreate(prefill) {
-    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', model: PREFERRED_MODEL };
+    S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', model: PREFERRED_MODEL };
     form.dataset.loopId = ''; form.dataset.restart = '';
     el('loop-modal-title').textContent = 'Create new loop';
     submitLabel.textContent = 'Create loop';
@@ -375,7 +383,7 @@
   }
   function openEdit(id) {
     var d = LOOPS[id]; if (!d) return;
-    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: d.history_mode || 'fresh', model: d.model || PREFERRED_MODEL };
+    S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: d.history_mode || 'fresh', model: d.model || PREFERRED_MODEL };
     form.dataset.loopId = id;
     var paused = d.status === 'paused';
     form.dataset.restart = paused ? '1' : '';
@@ -388,7 +396,7 @@
       if (d.clock_weekday !== null && d.clock_weekday !== undefined) S.weekday = d.clock_weekday;
     } else { applyInterval(d.interval_seconds || 3600); }
     (d.data_room_ids || []).forEach(function (pk) { var r = DATA_ROOMS.find(function (x) { return x.id === pk; }); if (r) S.rooms.push({ id: r.id, name: r.name }); });
-    if (d.skill_id) { var s = SKILLS.find(function (x) { return String(x.id) === String(d.skill_id); }); if (s) S.skill = { id: s.id, name: s.name, emoji: s.emoji }; }
+    (d.skill_ids || []).forEach(function (sid) { var s = SKILLS.find(function (x) { return String(x.id) === String(sid); }); if (s && S.skills.length < MAX_LOOP_SKILLS) S.skills.push({ id: s.id, name: s.name, emoji: s.emoji }); });
     timeInput.value = S.time;
     render(); show();
   }
@@ -403,7 +411,7 @@
     var p = {
       prompt: ta.value,
       history_mode: S.memory,
-      skill_id: S.skill ? S.skill.id : '',
+      skill_ids: S.skills.map(function (s) { return s.id; }),
       data_room_ids: S.rooms.map(function (r) { return r.id; }),
       model: S.model || '',
       first_run_mode: firstRunMode,
@@ -453,9 +461,9 @@
     if (a === 'toggleModelMenu') { var om = modelMenu && modelMenu.style.display === 'block'; closeMenus(); if (!om) openModelMenu(); return; }
     if (a === 'setModel') { S.model = t.dataset.id; closeMenus(); render(); return; }
     if (a === 'addRoom') { var r = DATA_ROOMS.find(function (x) { return String(x.id) === t.dataset.id; }); if (r && !S.rooms.some(function (x) { return x.id === r.id; })) S.rooms.push({ id: r.id, name: r.name }); closeMenus(); render(); return; }
-    if (a === 'addSkill') { var s = SKILLS.find(function (x) { return String(x.id) === t.dataset.id; }); if (s) S.skill = { id: s.id, name: s.name, emoji: s.emoji }; closeMenus(); render(); return; }
+    if (a === 'addSkill') { var s = SKILLS.find(function (x) { return String(x.id) === t.dataset.id; }); if (s && S.skills.length < MAX_LOOP_SKILLS && !S.skills.some(function (x) { return String(x.id) === String(s.id); })) S.skills.push({ id: s.id, name: s.name, emoji: s.emoji }); closeMenus(); render(); return; }
     if (a === 'removeRoom') { var id = parseInt(t.dataset.id, 10); S.rooms = S.rooms.filter(function (x) { return x.id !== id; }); render(); return; }
-    if (a === 'removeSkill') { S.skill = null; render(); return; }
+    if (a === 'removeSkill') { S.skills = S.skills.filter(function (x) { return String(x.id) !== String(t.dataset.id); }); render(); return; }
     if (a === 'preset') { S.preset = t.dataset.preset; render(); return; }
     if (a === 'incN') { S.n = clampN(S.n + 1); render(); return; }
     if (a === 'decN') { S.n = clampN(S.n - 1); render(); return; }

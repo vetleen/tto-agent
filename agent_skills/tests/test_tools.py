@@ -541,9 +541,10 @@ class ViewTemplateToolTests(TestCase):
         SkillTemplate.objects.create(
             skill=self.skill, name="Report Format", content="# Title\n## Summary\n## Details",
         )
-        from chat.models import ChatThread
+        from chat.models import ChatThread, ChatThreadSkill
 
-        self.thread = ChatThread.objects.create(created_by=self.user, skill=self.skill)
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
         self.tool = ViewTemplateTool()
         self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
 
@@ -552,6 +553,42 @@ class ViewTemplateToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["template_name"], "Report Format")
         self.assertEqual(result["content"], "# Title\n## Summary\n## Details")
+
+    def test_view_template_from_second_attached_skill(self):
+        """A template on any attached skill resolves, not just the first."""
+        from chat.models import ChatThreadSkill
+
+        other = AgentSkill.objects.create(
+            slug="vt-skill-2", name="VT Skill 2", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=other, name="Other Tmpl", content="other body",
+        )
+        ChatThreadSkill.objects.create(thread=self.thread, skill=other)
+        result = json.loads(self.tool._run(template_name="Other Tmpl"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["content"], "other body")
+
+    def test_view_template_collision_picks_first_attached_with_note(self):
+        """When two attached skills share a template name, the earliest-attached
+        skill wins and a note flags the collision."""
+        from chat.models import ChatThreadSkill
+
+        other = AgentSkill.objects.create(
+            slug="vt-skill-3", name="VT Skill 3", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=other, name="Report Format", content="LOSER body",
+        )
+        ChatThreadSkill.objects.create(thread=self.thread, skill=other)
+        result = json.loads(self.tool._run(template_name="Report Format"))
+        self.assertEqual(result["status"], "ok")
+        # self.skill was attached first in setUp, so its template wins.
+        self.assertEqual(result["content"], "# Title\n## Summary\n## Details")
+        self.assertIn("note", result)
+        self.assertIn("VT Skill 3", result["note"])
 
     def test_view_nonexistent_template(self):
         result = json.loads(self.tool._run(template_name="No Such"))
@@ -598,9 +635,10 @@ class LoadTemplateToCanvasToolTests(TestCase):
             skill=self.skill, name="Claim Template",
             content="1. A method comprising:\n   a) step one\n   b) step two",
         )
-        from chat.models import ChatThread
+        from chat.models import ChatThread, ChatThreadSkill
 
-        self.thread = ChatThread.objects.create(created_by=self.user, skill=self.skill)
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
         self.tool = LoadTemplateToCanvasTool()
         self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
 

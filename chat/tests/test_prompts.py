@@ -155,8 +155,8 @@ class BuildSystemPromptTests(TestCase):
 
     def test_skill_instructions_injected(self):
         skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
-        prompt = build_system_prompt(skill=skill)
-        self.assertIn("# Relevant skill", prompt)
+        prompt = build_system_prompt(skills=[skill])
+        self.assertIn("# Relevant skills", prompt)
         self.assertIn("## Patent Drafter", prompt)
         self.assertIn("Draft patents carefully.", prompt)
 
@@ -166,12 +166,12 @@ class BuildSystemPromptTests(TestCase):
             "Draft patents carefully.",
             description="Helps draft patent applications.",
         )
-        prompt = build_system_prompt(skill=skill)
+        prompt = build_system_prompt(skills=[skill])
         self.assertIn("Helps draft patent applications.", prompt)
 
     def test_skill_no_description_no_blank(self):
         skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
-        prompt = build_system_prompt(skill=skill)
+        prompt = build_system_prompt(skills=[skill])
         # The description is empty so it should not leave an extra blank line
         self.assertNotIn("## Patent Drafter\n\n\n", prompt)
 
@@ -184,14 +184,14 @@ class BuildSystemPromptTests(TestCase):
             "Draft patents carefully.",
             description="Helps draft patent applications.",
         )
-        prompt = build_system_prompt(skill=skill)
+        prompt = build_system_prompt(skills=[skill])
         self.assertNotIn("chr(10)", prompt)
         self.assertNotIn("produces a newline", prompt)
 
     def test_skill_appears_after_instructions_before_data_rooms(self):
         skill = self._make_skill("Test Skill", "Do the test.")
-        prompt = build_system_prompt(skill=skill, data_rooms=[self.data_room])
-        skill_pos = prompt.index("# Relevant skill")
+        prompt = build_system_prompt(skills=[skill], data_rooms=[self.data_room])
+        skill_pos = prompt.index("# Relevant skills")
         instructions_pos = prompt.index("# General instructions")
         data_rooms_pos = prompt.index("# Attached Data Rooms")
         self.assertGreater(skill_pos, instructions_pos)
@@ -202,7 +202,7 @@ class BuildSystemPromptTests(TestCase):
             "Deep Skill",
             "# Top heading\nSome text\n## Sub heading\nMore text",
         )
-        prompt = build_system_prompt(skill=skill)
+        prompt = build_system_prompt(skills=[skill])
         self.assertIn("### Top heading", prompt)
         self.assertIn("#### Sub heading", prompt)
         # Original single-# should not appear outside of the skill name line
@@ -214,6 +214,31 @@ class BuildSystemPromptTests(TestCase):
     def test_no_skill_no_skill_section(self):
         prompt = build_system_prompt()
         self.assertNotIn("# Relevant skill", prompt)
+
+    def test_empty_skills_list_no_section(self):
+        prompt = build_system_prompt(skills=[])
+        self.assertNotIn("# Relevant skill", prompt)
+
+    def test_multiple_skills_each_rendered(self):
+        a = self._make_skill("Alpha", "Do alpha.", description="Alpha desc.")
+        b = self._make_skill("Beta", "Do beta.")
+        prompt = build_system_prompt(skills=[a, b])
+        # Single pluralized header, one sub-block per skill.
+        self.assertEqual(prompt.count("# Relevant skills"), 1)
+        self.assertIn("## Alpha", prompt)
+        self.assertIn("## Beta", prompt)
+        self.assertIn("Do alpha.", prompt)
+        self.assertIn("Do beta.", prompt)
+        self.assertIn("Alpha desc.", prompt)
+        # Order is preserved: Alpha before Beta.
+        self.assertLess(prompt.index("## Alpha"), prompt.index("## Beta"))
+
+    def test_multiple_skills_headers_deepened_per_skill(self):
+        a = self._make_skill("Alpha", "# A head\ntext")
+        b = self._make_skill("Beta", "# B head\ntext")
+        prompt = build_system_prompt(skills=[a, b])
+        self.assertIn("### A head", prompt)
+        self.assertIn("### B head", prompt)
 
     # ------------------------------------------------------------------ #
     # Task planning prompt                                                 #
@@ -465,8 +490,8 @@ class BuildSemiStaticPromptTests(TestCase):
         skill.description = ""
         skill.instructions = "Draft carefully."
         skill.templates.all.return_value = []
-        prompt = build_semi_static_prompt(skill=skill)
-        self.assertIn("# Relevant skill", prompt)
+        prompt = build_semi_static_prompt(skills=[skill])
+        self.assertIn("# Relevant skills", prompt)
         self.assertIn("Draft carefully.", prompt)
 
     def test_canvas_metadata_listed(self):

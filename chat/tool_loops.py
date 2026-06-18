@@ -111,7 +111,10 @@ class LoopCreateInput(ReasonBaseModel):
         default_factory=list,
         description="Data room IDs to attach to the loop. Omit to run with no data rooms.",
     )
-    skill_id: str = Field(default="", description="Skill ID to attach. Omit for none.")
+    skill_ids: list[str] = Field(
+        default_factory=list,
+        description="Skill IDs to attach to the loop (up to 5). Omit for none.",
+    )
     model: str = Field(default="", description="Model ID for the loop's turns. Omit for the preferred chat model.")
 
 
@@ -135,7 +138,7 @@ class LoopCreateTool(ContextAwareTool):
         interval_unit: str = "hours", clock_time: str = "", clock_frequency: str = "daily",
         clock_weekday: int = 0, history_mode: str = "fresh",
         first_run_mode: str = "now", first_run_at: str = "", tz: str = "",
-        data_room_ids: list | None = None, skill_id: str = "", model: str = "", **kwargs,
+        data_room_ids: list | None = None, skill_ids: list | None = None, model: str = "", **kwargs,
     ) -> str:
         from chat.loop_service import create_loop
 
@@ -155,7 +158,7 @@ class LoopCreateTool(ContextAwareTool):
             "first_run_mode": first_run_mode,
             "first_run_at": first_run_at,
             "data_room_ids": data_room_ids or [],
-            "skill_id": skill_id,
+            "skill_ids": skill_ids or [],
             "model": model,
         }
         loop, was_reduced, errors = create_loop(
@@ -275,7 +278,10 @@ class LoopEditInput(ReasonBaseModel):
     )
     first_run_at: str | None = Field(default=None, description="For first_run_mode='custom': 'YYYY-MM-DDTHH:MM'.")
     data_room_ids: list[int] | None = Field(default=None, description="Replace attached data rooms.")
-    skill_id: str | None = Field(default=None, description="Replace the attached skill ('' to clear).")
+    skill_ids: list[str] | None = Field(
+        default=None,
+        description="Replace the attached skills (up to 5; omit to keep, [] to clear).",
+    )
     model: str | None = Field(default=None, description="Replace the loop's model ('' for preferred).")
     restart: bool = Field(
         default=False,
@@ -304,7 +310,7 @@ class LoopEditTool(ContextAwareTool):
         self, loop_id: str, prompt=None, cadence_kind=None, interval_value=None,
         interval_unit=None, clock_time=None, clock_frequency=None, clock_weekday=None,
         history_mode=None, first_run_mode=None, first_run_at=None,
-        data_room_ids=None, skill_id=None, model=None, restart: bool = False,
+        data_room_ids=None, skill_ids=None, model=None, restart: bool = False,
         resume: bool = False, **kwargs,
     ) -> str:
         from chat.loop_service import _loop_form_json, resume_loop, update_loop
@@ -342,7 +348,7 @@ class LoopEditTool(ContextAwareTool):
             "clock_frequency": seed["clock_frequency"] or "daily",
             "clock_weekday": seed["clock_weekday"] if seed["clock_weekday"] is not None else 0,
             "data_room_ids": seed["data_room_ids"],
-            "skill_id": seed["skill_id"],
+            "skill_ids": seed["skill_ids"],
             "model": seed["model"],
             "first_run_mode": "keep",
         }
@@ -353,7 +359,7 @@ class LoopEditTool(ContextAwareTool):
             "clock_time": clock_time, "clock_frequency": clock_frequency,
             "clock_weekday": clock_weekday,
             "first_run_mode": first_run_mode, "first_run_at": first_run_at,
-            "data_room_ids": data_room_ids, "skill_id": skill_id, "model": model,
+            "data_room_ids": data_room_ids, "skill_ids": skill_ids, "model": model,
         }
         for key, val in overrides.items():
             if val is not None:

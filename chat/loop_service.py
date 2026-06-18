@@ -47,7 +47,7 @@ class HeadlessTurnRunner(ChatConsumer):
         self.user = user
         self.resolved_prefs = None
         self.data_room_ids = []
-        self.active_skill_id = None
+        self.active_skill_ids = []
         self._cancel_event = None
         self._turn = None
         self._guardrail_task = None
@@ -64,14 +64,14 @@ class HeadlessTurnRunner(ChatConsumer):
         self.channel_layer = get_channel_layer()
         self.channel_name = None
 
-    async def run_loop_turn(self, thread, content, *, history_mode, data_room_ids, active_skill_id):
+    async def run_loop_turn(self, thread, content, *, history_mode, data_room_ids, active_skill_ids):
         """Populate context, persist the loop prompt, and run one full turn."""
         # Resolve org customization + preferences for this user (same helpers
         # the live consumer uses on connect / per message).
         await self._load_membership()
         self.resolved_prefs = await self._resolve_preferences()
         self.data_room_ids = data_room_ids
-        self.active_skill_id = active_skill_id
+        self.active_skill_ids = active_skill_ids
 
         # Persist the loop's prompt as a real, visible user message and let any
         # connected viewer render it before the assistant turn begins.
@@ -125,7 +125,7 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
     the fire time (so cadence doesn't drift with run duration), auto-pauses at
     the run cap, and auto-pauses after too many consecutive errors.
     """
-    from chat.models import Loop
+    from chat.models import ChatThreadSkill, Loop
 
     loop = Loop.objects.select_related("thread", "created_by").get(pk=loop_id)
     fire_time = timezone.now()
@@ -136,13 +136,17 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
             user=loop.created_by, thread_id=loop.thread_id, sink=sink,
         )
         data_room_ids = list(loop.thread.data_rooms.values_list("pk", flat=True))
-        active_skill_id = str(loop.thread.skill_id) if loop.thread.skill_id else None
+        active_skill_ids = [
+            str(sid) for sid in ChatThreadSkill.objects.filter(
+                thread=loop.thread
+            ).values_list("skill_id", flat=True)
+        ]
 
         async_to_sync(runner.run_loop_turn)(
             loop.thread, loop.prompt,
             history_mode=loop.history_mode,
             data_room_ids=data_room_ids,
-            active_skill_id=active_skill_id,
+            active_skill_ids=active_skill_ids,
         )
 
         loop.runs_completed += 1
@@ -313,9 +317,10 @@ def _build_loop_fields(body, *, now, tz_name):
     return fields, was_reduced, errors
 
 
-def _link_loop_resources(thread, user, data_room_ids, skill_id, model=None):
-    """Attach validated data rooms + skill + model to a loop's thread (idempotent)."""
-    from chat.models import ChatThreadDataRoom
+def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
+    """Attach validated data rooms + skills + model to a loop's thread (idempotent)."""
+    from agent_skills.models import MAX_THREAD_SKILLS
+    from chat.models import ChatThreadDataRoom, ChatThreadSkill
     from core.preferences import get_preferences
     from documents.models import DataRoom
 
@@ -330,20 +335,29 @@ def _link_loop_resources(thread, user, data_room_ids, skill_id, model=None):
         [ChatThreadDataRoom(thread=thread, data_room_id=pk) for pk in valid_pks]
     )
 
-    resolved_skill_id = None
-    if skill_id:
-        allowed = {str(s["id"]) for s in prefs.allowed_skills}
-        if str(skill_id) in allowed:
-            resolved_skill_id = skill_id
-    thread.skill_id = resolved_skill_id
+    # Validate each requested skill against the user's allowed set, preserving
+    # order and dropping duplicates, then cap. Replace the thread's skill set.
+    allowed = {str(s["id"]) for s in prefs.allowed_skills}
+    resolved_skill_ids: list[str] = []
+    for sid in (skill_ids or []):
+        sid = str(sid)
+        if sid in allowed and sid not in resolved_skill_ids:
+            resolved_skill_ids.append(sid)
+    resolved_skill_ids = resolved_skill_ids[:MAX_THREAD_SKILLS]
+    ChatThreadSkill.objects.filter(thread=thread).delete()
+    ChatThreadSkill.objects.bulk_create(
+        [ChatThreadSkill(thread=thread, skill_id=sid) for sid in resolved_skill_ids]
+    )
+
     # Per-thread model: store only an allowed model; otherwise clear so it
     # resolves to the user's preferred chat model.
     thread.model = model if (model and model in prefs.allowed_models) else ""
-    thread.save(update_fields=["skill", "model"])
+    thread.save(update_fields=["model"])
 
 
 def _loop_form_json(loop, prefs):
     """Serialize a loop's editable fields for the create/edit modal prefill."""
+    from chat.models import ChatThreadSkill
     from core.preferences import resolve_thread_model
 
     return {
@@ -358,7 +372,11 @@ def _loop_form_json(loop, prefs):
         "clock_weekday": loop.clock_weekday,
         "max_runs": loop.max_runs,
         "data_room_ids": list(loop.thread.data_rooms.values_list("pk", flat=True)),
-        "skill_id": str(loop.thread.skill_id) if loop.thread.skill_id else "",
+        "skill_ids": [
+            str(sid) for sid in ChatThreadSkill.objects.filter(
+                thread=loop.thread
+            ).values_list("skill_id", flat=True)
+        ],
         "model": resolve_thread_model(loop.thread.model, prefs),
     }
 
@@ -384,7 +402,7 @@ def create_loop(*, user, body, now, tz_name):
             created_by=user, title=fields["prompt"][:80] or "Scheduled loop",
         )
         _link_loop_resources(
-            thread, user, body.get("data_room_ids"), body.get("skill_id"),
+            thread, user, body.get("data_room_ids"), body.get("skill_ids"),
             model=body.get("model"),
         )
         loop = Loop.objects.create(thread=thread, created_by=user, **fields)
@@ -405,7 +423,7 @@ def update_loop(*, loop, user, body, now, tz_name):
         return None, was_reduced, errors
 
     _link_loop_resources(
-        loop.thread, user, body.get("data_room_ids"), body.get("skill_id"),
+        loop.thread, user, body.get("data_room_ids"), body.get("skill_ids"),
         model=body.get("model"),
     )
     for key, val in fields.items():

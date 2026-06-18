@@ -75,7 +75,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.user = self.scope.get("user")
         self.resolved_prefs = None
         self.data_room_ids: list[int] = []
-        self.active_skill_id: str | None = None
+        self.active_skill_ids: list[str] = []
         self._cancel_event: threading.Event | None = None
         self._turn: _TurnState | None = None  # current turn's shared state
         self._guardrail_task: asyncio.Task | None = None
@@ -271,10 +271,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_detach_data_room(data)
         elif msg_type == "chat.load_thread":
             await self._handle_load_thread(data)
-        elif msg_type == "chat.attach_skill":
-            await self._handle_attach_skill(data)
-        elif msg_type == "chat.detach_skill":
-            await self._handle_detach_skill(data)
+        elif msg_type == "chat.set_skills":
+            await self._handle_set_skills(data)
         elif msg_type == "chat.canvas_save":
             await self._handle_canvas_save(data)
         elif msg_type == "chat.canvas_open":
@@ -349,42 +347,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "data_room_id": data_room_id,
         }))
 
-    async def _handle_attach_skill(self, data):
-        """Attach a skill to the current session."""
-        skill_id = data.get("skill_id")
+    async def _handle_set_skills(self, data):
+        """Set the thread's attached skills to a declared set (up to the cap).
+
+        The ``skill_ids`` list IS the full desired set — an empty list detaches
+        all. Each id is access-gated, the list is deduped and capped, then the
+        session and (if a thread is loaded) the DB are updated to match, and a
+        single ``skills.set`` event carries the resolved set back to the UI.
+        """
+        from agent_skills.models import MAX_THREAD_SKILLS
+
         thread_id = data.get("thread_id")
-        if not skill_id:
-            await self.send(text_data=json.dumps({"error": "skill_id required"}))
-            return
+        skill_ids = data.get("skill_ids") or []
 
-        skill = await self._validate_skill(skill_id)
-        if not skill:
-            await self.send(text_data=json.dumps({"error": "Skill not found or access denied"}))
-            return
+        skills = await self._validate_skills(skill_ids)
+        skills = skills[:MAX_THREAD_SKILLS]
 
-        self.active_skill_id = str(skill["id"])
+        self.active_skill_ids = [s["id"] for s in skills]
 
         if thread_id:
-            await self._persist_thread_skill(thread_id, skill["id"])
+            await self._persist_thread_skills(thread_id, self.active_skill_ids)
 
         await self.send(text_data=json.dumps({
-            "event_type": "skill.attached",
-            "skill_id": str(skill["id"]),
-            "skill_name": skill["name"],
-            "skill_emoji": skill.get("emoji", ""),
-        }))
-
-    async def _handle_detach_skill(self, data):
-        """Detach the skill from the current session."""
-        thread_id = data.get("thread_id")
-
-        self.active_skill_id = None
-
-        if thread_id:
-            await self._persist_thread_skill(thread_id, None)
-
-        await self.send(text_data=json.dumps({
-            "event_type": "skill.detached",
+            "event_type": "skills.set",
+            "skills": skills,
         }))
 
     async def _handle_load_thread(self, data):
@@ -419,15 +405,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if thread_data is not None:
             self.data_room_ids = thread_data["data_room_ids"]
 
-            # Fetch skill, cost, canvases, tasks, and active subagents in parallel
-            skill_data, thread_cost, canvases_data, task_list, active_subagent_count = await asyncio.gather(
-                self._load_thread_skill(thread_id),
+            # Fetch skills, cost, canvases, tasks, and active subagents in parallel
+            skills_data, thread_cost, canvases_data, task_list, active_subagent_count = await asyncio.gather(
+                self._load_thread_skills(thread_id),
                 self._get_thread_cost(thread_id),
                 self._load_all_canvases(thread_id),
                 self._get_thread_tasks(thread_id),
                 self._get_active_subagent_count(thread_id),
             )
-            self.active_skill_id = skill_data["skill_id"] if skill_data else None
+            self.active_skill_ids = [s["id"] for s in skills_data]
 
             # Effective model for the picker (honors the thread's stored model,
             # with tier fallback if it's no longer allowed).
@@ -444,7 +430,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "event_type": "thread.loaded",
                 "thread_id": thread_id,
                 "data_rooms": thread_data["data_rooms"],
-                "skill": skill_data,
+                "skills": skills_data,
                 "thread_cost_usd": thread_cost,
                 "active_subagent_count": active_subagent_count,
                 "model": effective_model,
@@ -831,15 +817,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     validated.append(room["id"])
             self.data_room_ids = validated
 
-        # Allow payload to specify skill_id — resolved after thread
-        # creation so the payload value can override DB state when needed.
-        payload_skill_id = data.get("skill_id")
-        payload_skill_validated: str | None = None
-        if payload_skill_id:
-            validated_skill = await self._validate_skill(payload_skill_id)
-            if validated_skill:
-                payload_skill_validated = str(validated_skill["id"])
-        payload_wants_clear = payload_skill_id == ""
+        # Allow payload to specify skill_ids — resolved after thread creation
+        # so the payload value can override DB state when needed. None (key
+        # absent) = keep whatever the thread has; a list (including empty) = the
+        # desired full set, access-gated, deduped, and capped.
+        payload_skill_ids = data.get("skill_ids")
+        payload_skills_validated: list[str] | None = None
+        if isinstance(payload_skill_ids, list):
+            from agent_skills.models import MAX_THREAD_SKILLS
+
+            validated_skills = await self._validate_skills(payload_skill_ids)
+            payload_skills_validated = [
+                s["id"] for s in validated_skills
+            ][:MAX_THREAD_SKILLS]
 
         try:
             # Get or create thread
@@ -864,13 +854,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # Persist session data_room_ids as M2M for new threads
                 if self.data_room_ids:
                     await self._persist_data_room_links(thread.id, self.data_room_ids)
-                # Apply payload skill to memory (and persist for new threads)
-                if payload_skill_validated:
-                    self.active_skill_id = payload_skill_validated
-                elif payload_wants_clear:
-                    self.active_skill_id = None
-                if self.active_skill_id:
-                    await self._persist_thread_skill(str(thread.id), self.active_skill_id)
+                # Apply payload skills to memory (and persist for new threads)
+                if payload_skills_validated is not None:
+                    self.active_skill_ids = payload_skills_validated
+                if self.active_skill_ids:
+                    await self._persist_thread_skills(str(thread.id), self.active_skill_ids)
 
                 await self.send(text_data=json.dumps({
                     "event_type": "thread.created",
@@ -879,23 +867,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
             else:
                 # Sync session state from the thread's persisted data to
                 # prevent stale values leaking from a previously loaded thread.
-                thread_dr, skill_data = await asyncio.gather(
+                thread_dr, skills_data = await asyncio.gather(
                     self._load_thread_data_rooms(str(thread.id)),
-                    self._load_thread_skill(str(thread.id)),
+                    self._load_thread_skills(str(thread.id)),
                 )
                 self.data_room_ids = thread_dr["data_room_ids"] if thread_dr else []
-                self.active_skill_id = skill_data["skill_id"] if skill_data else None
+                self.active_skill_ids = [s["id"] for s in skills_data]
 
-                # Payload skill overrides DB state — handles the case where
-                # the thread was created without a skill (e.g. by file upload)
-                # but the user attached one in the UI before sending.
-                if payload_skill_validated:
-                    self.active_skill_id = payload_skill_validated
-                    if not skill_data or skill_data["skill_id"] != payload_skill_validated:
-                        await self._persist_thread_skill(str(thread.id), payload_skill_validated)
-                elif payload_wants_clear and self.active_skill_id:
-                    self.active_skill_id = None
-                    await self._persist_thread_skill(str(thread.id), None)
+                # Payload skills override DB state — handles the case where the
+                # thread was created without skills (e.g. by file upload) but the
+                # user attached some in the UI before sending. An empty list
+                # clears; None (key absent) leaves the DB state untouched.
+                if (
+                    payload_skills_validated is not None
+                    and payload_skills_validated != self.active_skill_ids
+                ):
+                    self.active_skill_ids = payload_skills_validated
+                    await self._persist_thread_skills(
+                        str(thread.id), payload_skills_validated
+                    )
 
             # Persist user message (skipped in seed mode — caller pre-persisted it)
             user_message = None
@@ -1215,9 +1205,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except Exception:
             logger.exception("Failed to load canvases for thread %s", thread.id)
             canvases_info = None
-        skill_obj = None
-        if self.active_skill_id:
-            skill_obj = await self._load_skill(self.active_skill_id)
+        skill_objs = []
+        for sid in self.active_skill_ids:
+            skill_obj = await self._load_skill(sid)
+            if skill_obj is not None:
+                skill_objs.append(skill_obj)
         tasks = await self._get_thread_tasks(str(thread.id))
         subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("chat_subagent_create") else None
         parallel_subagents = prefs.parallel_subagents if prefs else True
@@ -1235,7 +1227,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         semi_static_system = build_semi_static_prompt(
             data_rooms=data_rooms,
             canvases=canvases_info["canvases"] if canvases_info else None,
-            skill=skill_obj,
+            skills=skill_objs,
             soul=self._soul,
             organization_name=org_name,
             organization_description=self._org_description or None,
@@ -1388,27 +1380,31 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             tools = [t for t in all_tools if t not in doc_tools]
 
-        # Extend with skill-specific tools (filtered through prefs.allowed_skills).
-        # Whenever prefs exist, trust the org-filtered allowed_skills list — even
-        # when it's empty. The raw tool_names fallback is reserved for the case
-        # where there are genuinely no prefs (no org/membership), so it can never
-        # bypass org per-skill tool toggles.
-        if self.active_skill_id and prefs is not None:
-            for s in prefs.allowed_skills:
-                if s["id"] == self.active_skill_id:
-                    for t in s["tool_names"]:
-                        if t not in tools:
-                            tools.append(t)
-                    break
-            # If the skill is not in allowed_skills, it was disabled by the
-            # org — do NOT fall back to raw tool_names as that would bypass
-            # org-level filtering.
-        elif self.active_skill_id:
+        # Extend with skill-specific tools, unioned across every attached skill
+        # (filtered through prefs.allowed_skills). Whenever prefs exist, trust
+        # the org-filtered allowed_skills list — even when it's empty. The raw
+        # tool_names fallback is reserved for the case where there are genuinely
+        # no prefs (no org/membership), so it can never bypass org per-skill
+        # tool toggles.
+        if self.active_skill_ids and prefs is not None:
+            allowed_by_id = {s["id"]: s for s in prefs.allowed_skills}
+            for sid in self.active_skill_ids:
+                s = allowed_by_id.get(sid)
+                # A skill missing from allowed_skills was disabled by the org —
+                # do NOT fall back to raw tool_names as that would bypass
+                # org-level filtering.
+                if s is None:
+                    continue
+                for t in s["tool_names"]:
+                    if t not in tools:
+                        tools.append(t)
+        elif self.active_skill_ids:
             # No prefs available (e.g. no org) — fall back to raw tool_names.
-            skill_tool_names = await self._get_skill_tool_names(self.active_skill_id)
-            for t in skill_tool_names:
-                if t not in tools:
-                    tools.append(t)
+            for sid in self.active_skill_ids:
+                skill_tool_names = await self._get_skill_tool_names(sid)
+                for t in skill_tool_names:
+                    if t not in tools:
+                        tools.append(t)
 
         # Strip chat_skill_attach when the user has disabled agent-driven skill
         # attachment (the catalogue is also omitted from the prompt above).
@@ -1546,28 +1542,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 })
                         except (json.JSONDecodeError, AttributeError):
                             pass
-                    # Intercept chat_skill_attach results: mirror on self.active_skill_id
-                    # and emit the existing skill.attached / skill.detached events
-                    # so the frontend pill UI updates automatically.
+                    # Intercept chat_skill_attach results: mirror the resolved
+                    # set on self.active_skill_ids and emit a single skills.set
+                    # event so the frontend pill UI updates automatically.
                     if tool_name == "chat_skill_attach":
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
-                                new_id = result.get("attached_skill_id")
-                                if new_id:
-                                    self.active_skill_id = str(new_id)
-                                    await self._sink.send_event({
-                                        "event_type": "skill.attached",
-                                        "skill_id": str(new_id),
-                                        "skill_name": result.get("attached_skill_name", ""),
-                                        "skill_emoji": result.get("attached_skill_emoji", ""),
-                                    })
-                                elif result.get("detached"):
-                                    self.active_skill_id = None
-                                    await self._sink.send_event({
-                                        "event_type": "skill.detached",
-                                    })
-                        except (json.JSONDecodeError, AttributeError):
+                                skills = result.get("skills", [])
+                                self.active_skill_ids = [
+                                    str(s["id"]) for s in skills
+                                ]
+                                await self._sink.send_event({
+                                    "event_type": "skills.set",
+                                    "skills": skills,
+                                })
+                        except (json.JSONDecodeError, AttributeError, KeyError):
                             pass
                 elif event.event_type == "error":
                     stream_error = True
@@ -2333,39 +2323,66 @@ class ChatConsumer(AsyncWebsocketConsumer):
     # -- Skill helpers --
 
     @database_sync_to_async
-    def _validate_skill(self, skill_id):
+    def _validate_skills(self, skill_ids):
+        """Access-gate a list of skill ids, dedupe, and preserve order.
+
+        Returns a list of ``{id, name, emoji}`` dicts for the ids the user can
+        actually access; unknown or inaccessible ids are silently dropped (the
+        same guarantee the payload path relied on for single skills).
+        """
         from agent_skills.services import get_skill_for_user
 
-        skill = get_skill_for_user(self.user, skill_id)
-        if not skill:
-            return None
-        return {"id": str(skill.pk), "name": skill.name, "emoji": skill.emoji}
+        out = []
+        seen = set()
+        for raw in (skill_ids or []):
+            sid = str(raw)
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            skill = get_skill_for_user(self.user, sid)
+            if skill is None:
+                continue
+            out.append({"id": str(skill.pk), "name": skill.name, "emoji": skill.emoji})
+        return out
 
     @database_sync_to_async
-    def _persist_thread_skill(self, thread_id, skill_id):
-        from chat.models import ChatThread
+    def _persist_thread_skills(self, thread_id, skill_ids):
+        from django.db import transaction
 
-        ChatThread.objects.filter(pk=thread_id, created_by=self.user).update(
-            skill_id=skill_id
-        )
+        from chat.models import ChatThread, ChatThreadSkill
 
-    @database_sync_to_async
-    def _load_thread_skill(self, thread_id):
-        from chat.models import ChatThread
-
-        try:
-            thread = ChatThread.objects.select_related("skill").get(
-                pk=thread_id, created_by=self.user
+        thread = ChatThread.objects.filter(
+            pk=thread_id, created_by=self.user
+        ).first()
+        if thread is None:
+            return
+        with transaction.atomic():
+            ChatThreadSkill.objects.filter(thread=thread).delete()
+            ChatThreadSkill.objects.bulk_create(
+                [ChatThreadSkill(thread=thread, skill_id=sid) for sid in skill_ids]
             )
-        except ChatThread.DoesNotExist:
-            return None
-        if thread.skill and thread.skill.is_active:
-            return {
-                "skill_id": str(thread.skill.pk),
-                "skill_name": thread.skill.name,
-                "skill_emoji": thread.skill.emoji,
-            }
-        return None
+
+    @database_sync_to_async
+    def _load_thread_skills(self, thread_id):
+        """Return the thread's attached skills (active only), in attach order.
+
+        Each entry is ``{id, name, emoji}`` — the same shape the skills.set
+        event and the chat_skill_attach tool result use, so the frontend has a
+        single skill shape to render.
+        """
+        from chat.models import ChatThreadSkill
+
+        rows = (
+            ChatThreadSkill.objects.filter(
+                thread_id=thread_id,
+                thread__created_by=self.user,
+                skill__is_active=True,
+            ).select_related("skill")
+        )
+        return [
+            {"id": str(r.skill.pk), "name": r.skill.name, "emoji": r.skill.emoji}
+            for r in rows
+        ]
 
     @database_sync_to_async
     def _load_skill(self, skill_id):
@@ -2387,7 +2404,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Re-check access: a thread can retain a skill the user has since lost
         # access to (left the org, or an admin disabled it). Resolve through the
         # access gate and allow-list to skills-section tools so a stale
-        # active_skill_id can't surface tools the user shouldn't get.
+        # attached-skill id can't surface tools the user shouldn't get.
         skill = get_skill_for_user(self.user, skill_id)
         if skill is None:
             return []

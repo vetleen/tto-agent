@@ -20,7 +20,7 @@ from agent_skills.tools import (
     SaveCanvasToSkillFieldTool,
     resolve_skill_for_thread_edit,
 )
-from chat.models import ChatCanvas, ChatMessage, ChatThread
+from chat.models import ChatCanvas, ChatMessage, ChatThread, ChatThreadSkill
 from llm.types import RunContext
 
 User = get_user_model()
@@ -84,7 +84,9 @@ class EditInChatViewTests(TestCase):
         self.assertIn("thread=", response["Location"])
 
         thread = ChatThread.objects.get(created_by=self.user)
-        self.assertEqual(thread.skill_id, self.skill_creator.id)
+        self.assertEqual(
+            list(thread.skills.values_list("id", flat=True)), [self.skill_creator.id],
+        )
         self.assertEqual(thread.title, "Editing User X")
         self.assertEqual(thread.metadata.get("source_skill_id"), str(self.user_skill.id))
         self.assertTrue(thread.metadata.get("pending_initial_turn"))
@@ -160,11 +162,12 @@ class ResolveSkillForThreadEditTests(TestCase):
         )
 
     def _make_thread(self, source_skill_id):
-        return ChatThread.objects.create(
+        thread = ChatThread.objects.create(
             created_by=self.user,
-            skill=self.skill_creator,
             metadata={"source_skill_id": str(source_skill_id)},
         )
+        ChatThreadSkill.objects.create(thread=thread, skill=self.skill_creator)
+        return thread
 
     def test_editable_source_returned_in_place(self):
         thread = self._make_thread(self.editable.id)
@@ -200,16 +203,18 @@ class ResolveSkillForThreadEditTests(TestCase):
     def test_no_source_falls_back_to_slug(self):
         # Thread without source_skill_id uses legacy slug-based lookup.
         thread = ChatThread.objects.create(
-            created_by=self.user, skill=self.skill_creator, metadata={},
+            created_by=self.user, metadata={},
         )
+        ChatThreadSkill.objects.create(thread=thread, skill=self.skill_creator)
         skill, err = resolve_skill_for_thread_edit(self.user, thread.id, "mine")
         self.assertIsNone(err)
         self.assertEqual(skill.pk, self.editable.pk)
 
     def test_no_source_unknown_slug_errors(self):
         thread = ChatThread.objects.create(
-            created_by=self.user, skill=self.skill_creator, metadata={},
+            created_by=self.user, metadata={},
         )
+        ChatThreadSkill.objects.create(thread=thread, skill=self.skill_creator)
         skill, err = resolve_skill_for_thread_edit(self.user, thread.id, "unknown")
         self.assertIsNone(skill)
         self.assertIn("not found", err)
@@ -252,9 +257,9 @@ class SaveCanvasForkOnWriteTests(TestCase):
         )
         self.thread = ChatThread.objects.create(
             created_by=self.user,
-            skill=self.skill_creator,
             metadata={"source_skill_id": str(self.system.id)},
         )
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill_creator)
         _make_canvas(self.thread, "Sys Save \u2014 instructions", "edited content")
 
         self.tool = SaveCanvasToSkillFieldTool()
@@ -301,9 +306,9 @@ class EditSkillToolForkOnWriteTests(TestCase):
         )
         self.thread = ChatThread.objects.create(
             created_by=self.user,
-            skill=self.skill_creator,
             metadata={"source_skill_id": str(self.system.id)},
         )
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill_creator)
         self.tool = EditSkillTool()
         self.tool.context = RunContext.create(
             user_id=self.user.pk,

@@ -750,7 +750,7 @@ def skills_edit_in_chat(request, skill_id):
     from django.urls import reverse
 
     from agent_skills.tools import load_skill_field_into_canvas
-    from chat.models import ChatMessage, ChatThread
+    from chat.models import ChatMessage, ChatThread, ChatThreadSkill
 
     target = get_skill_for_user(request.user, str(skill_id))
     if target is None:
@@ -770,13 +770,13 @@ def skills_edit_in_chat(request, skill_id):
 
     thread = ChatThread.objects.create(
         created_by=request.user,
-        skill=skill_creator,
         title=f"Editing {target.name}",
         metadata={
             "source_skill_id": str(target.id),
             "pending_initial_turn": True,
         },
     )
+    ChatThreadSkill.objects.create(thread=thread, skill=skill_creator)
 
     load_skill_field_into_canvas(thread.id, target, "description")
     # Load instructions LAST so it ends up as the active canvas (set_active_canvas

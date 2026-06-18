@@ -160,7 +160,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
     *summarizer_skill* overrides the cascade resolution when provided.
     Returns ``(thread, error_message)``: exactly one is non-None.
     """
-    from chat.models import ChatCanvas, ChatMessage, ChatThread
+    from chat.models import ChatCanvas, ChatMessage, ChatThread, ChatThreadSkill
     from chat.services import (
         CANVAS_MAX_CHARS,
         create_canvas_checkpoint,
@@ -181,13 +181,13 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
 
     thread = ChatThread.objects.create(
         created_by=user,
-        skill=summarizer_skill,
         title=f"Minutes for {meeting.name}",
         metadata={
             "source_meeting_id": str(meeting.uuid),
             "pending_initial_turn": True,
         },
     )
+    ChatThreadSkill.objects.create(thread=thread, skill=summarizer_skill)
 
     # Preload the transcript into a canvas so Wilfred sees it as the active
     # canvas (its content is injected into the per-turn prompt). Truncate to

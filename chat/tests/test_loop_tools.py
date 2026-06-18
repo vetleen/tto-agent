@@ -91,7 +91,28 @@ class CreateLoopToolTests(TestCase):
         result = _invoke(LoopCreateTool, {"prompt": "Nothing attached."}, self.ctx)
         loop = Loop.objects.get(id=result["loop_id"])
         self.assertEqual(loop.thread.data_rooms.count(), 0)
-        self.assertEqual(loop.thread.skill_id, None)
+        self.assertEqual(loop.thread.skills.count(), 0)
+
+    def test_create_attaches_explicit_skills(self):
+        from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
+
+        s1 = AgentSkill.objects.create(
+            slug="loop-s1", name="S1", instructions="x", level="user", created_by=self.user,
+        )
+        s2 = AgentSkill.objects.create(
+            slug="loop-s2", name="S2", instructions="x", level="user", created_by=self.user,
+        )
+        result = _invoke(LoopCreateTool, {
+            "prompt": "Use skills.", "skill_ids": [str(s1.id), str(s2.id)],
+        }, self.ctx)
+        loop = Loop.objects.get(id=result["loop_id"])
+        attached = [
+            str(sid) for sid in ChatThreadSkill.objects.filter(
+                thread=loop.thread
+            ).values_list("skill_id", flat=True)
+        ]
+        self.assertEqual(attached, [str(s1.id), str(s2.id)])
 
     def test_create_requires_prompt(self):
         result = _invoke(LoopCreateTool, {"prompt": "   "}, self.ctx)

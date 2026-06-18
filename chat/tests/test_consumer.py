@@ -920,7 +920,7 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
 
     @patch("llm.get_llm_service")
     async def test_inaccessible_skill_id_not_attached_from_payload(self, mock_get_service):
-        """skill_id in payload must be validated — inaccessible skills must not be attached."""
+        """skill_ids in payload must be validated — inaccessible skills must not be attached."""
         mock_service = MagicMock()
 
         async def mock_astream(*args, **kwargs):
@@ -931,6 +931,7 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
         mock_get_service.return_value = mock_service
 
         from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
 
         # Create an org-level skill that belongs to a different org
         other_org = await database_sync_to_async(Organization.objects.create)(
@@ -946,7 +947,7 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
         await communicator.send_json_to({
             "type": "chat.message",
             "content": "Hello",
-            "skill_id": str(skill.pk),
+            "skill_ids": [str(skill.pk)],
         })
 
         resp = await communicator.receive_json_from(timeout=5)
@@ -954,10 +955,61 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
         thread_id = resp["thread_id"]
 
         # Verify the skill was NOT attached to the thread
-        thread_skill = await database_sync_to_async(
-            lambda: ChatThread.objects.get(pk=thread_id).skill_id
+        attached = await database_sync_to_async(
+            lambda: list(
+                ChatThreadSkill.objects.filter(thread_id=thread_id).values_list(
+                    "skill_id", flat=True
+                )
+            )
         )()
-        self.assertIsNone(thread_skill)
+        self.assertEqual(attached, [])
+
+        await communicator.disconnect()
+
+    async def test_set_skills_round_trip(self):
+        """chat.set_skills attaches the declared set, emits skills.set, and
+        an empty list detaches all."""
+        from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
+
+        skill = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Mine", slug="mine-skill", level="user",
+            created_by=self.user, instructions="Do it.",
+        )
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+
+        async def attached_ids():
+            return await database_sync_to_async(
+                lambda: [
+                    str(s) for s in ChatThreadSkill.objects.filter(
+                        thread=thread
+                    ).values_list("skill_id", flat=True)
+                ]
+            )()
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.set_skills",
+            "skill_ids": [str(skill.pk)],
+            "thread_id": str(thread.id),
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "skills.set")
+        self.assertEqual([s["id"] for s in resp["skills"]], [str(skill.pk)])
+        self.assertEqual(await attached_ids(), [str(skill.pk)])
+
+        # Empty list detaches all.
+        await communicator.send_json_to({
+            "type": "chat.set_skills",
+            "skill_ids": [],
+            "thread_id": str(thread.id),
+        })
+        resp2 = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp2["event_type"], "skills.set")
+        self.assertEqual(resp2["skills"], [])
+        self.assertEqual(await attached_ids(), [])
 
         await communicator.disconnect()
 
