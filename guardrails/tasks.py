@@ -24,6 +24,19 @@ _BATCH_CHAR_BUDGET = 40_000
 _MAX_CHUNKS_PER_BATCH = 12
 _MAX_CHUNK_CHARS = _BATCH_CHAR_BUDGET
 
+# Per-version ceiling on Layer-2 reviewer calls. The reviewer (a standard-tier
+# model) only fires on classifier-flagged chunks, which are rare on legitimate
+# documents — but a document engineered so most chunks trip the cheap classifier
+# could otherwise force one expensive call per chunk. Beyond this cap, remaining
+# flagged chunks fall back to the classifier-confidence threshold (and the overflow
+# is logged), bounding both cost and cross-chunk blast radius.
+_MAX_REVIEWER_CALLS_PER_VERSION = 25
+
+# Classifier confidence at/above which a flagged chunk is quarantined when the
+# Layer-2 reviewer is unavailable (no model, budget exhausted, or it errored).
+# When the reviewer IS available its allow/quarantine verdict governs instead.
+_CLASSIFIER_QUARANTINE_THRESHOLD = 0.7
+
 
 def _batch_chunks_by_budget(chunks: list[dict]) -> list[list[dict]]:
     """Group chunks into batches bounded by _BATCH_CHAR_BUDGET and _MAX_CHUNKS_PER_BATCH."""
@@ -226,10 +239,23 @@ def _scan_chunks_for_version(version) -> None:
         )
         return
 
+    # Layer 2 reviewer (standard-tier) makes the final allow/quarantine call on
+    # every classifier-flagged chunk. Resolved once and shared — with a per-version
+    # call budget — across all batches. When it is unavailable the classifier
+    # confidence threshold governs instead (see _decide_flagged_chunk).
+    reviewer_model = resolve_org_feature_model(org_id, "guardrails_reviewer")
+    reviewer_budget = {"remaining": _MAX_REVIEWER_CALLS_PER_VERSION, "overflowed": False}
+
     failed_batches = 0
     for batch in _batch_chunks_by_budget(remaining_chunks):
         try:
-            _classify_chunk_batch(doc, batch, cheap_model)
+            _classify_chunk_batch(
+                doc, batch, cheap_model,
+                version=version,
+                reviewer_model=reviewer_model,
+                org_id=org_id,
+                reviewer_budget=reviewer_budget,
+            )
         except Exception:
             failed_batches += 1
             logger.exception(
@@ -239,6 +265,13 @@ def _scan_chunks_for_version(version) -> None:
         else:
             # Batch fully processed — exclude it from any retry.
             _set_chunk_scan_state([c["id"] for c in batch], ScanState.DONE)
+
+    if reviewer_budget["overflowed"]:
+        logger.warning(
+            "scan_document_chunks: document_id=%s exceeded the per-version reviewer "
+            "budget (%s); remaining flagged chunks fell back to the confidence threshold",
+            document_id, _MAX_REVIEWER_CALLS_PER_VERSION,
+        )
 
     # Persist what the successful batches found before deciding the outcome.
     _refresh_partial_quarantine(version)
@@ -257,7 +290,11 @@ def _scan_chunks_for_version(version) -> None:
     )
 
 
-def _classify_chunk_batch(doc, chunks: list[dict], model: str) -> None:
+def _classify_chunk_batch(
+    doc, chunks: list[dict], model: str, *,
+    version=None, reviewer_model: str | None = None,
+    org_id: int | None = None, reviewer_budget: dict | None = None,
+) -> None:
     """Classify a batch of chunks using the given model.
 
     Chunks are passed as a JSON array of ``{chunk_index, text}`` objects and the
@@ -349,32 +386,172 @@ def _classify_chunk_batch(doc, chunks: list[dict], model: str) -> None:
         if not result.is_suspicious:
             continue
         chunk = chunk_by_index[chunk_index]
-        if result.confidence >= 0.7:
-            _quarantine_chunk(
-                chunk["id"],
-                reason=f"Classifier: {', '.join(result.concern_tags)} (confidence: {result.confidence:.2f})",
-            )
-            _log_chunk_event(
-                document=doc,
+        _decide_flagged_chunk(
+            doc=doc,
+            version=version,
+            chunk=chunk,
+            result=result,
+            reviewer_model=reviewer_model,
+            org_id=org_id,
+            reviewer_budget=reviewer_budget,
+        )
+
+
+def _decide_flagged_chunk(
+    *, doc, version, chunk: dict, result,
+    reviewer_model: str | None, org_id: int | None, reviewer_budget: dict | None,
+) -> None:
+    """Decide whether a classifier-flagged chunk is quarantined.
+
+    When a reviewer model is configured and the per-version budget is not yet
+    exhausted, escalate to the Layer-2 reviewer (a standard-tier model that sees
+    the chunk in document context) and apply its allow/quarantine verdict. The
+    classifier ``escalated`` event and the reviewer's terminal event are linked via
+    ``related_event``, and an allow is recorded as a ``dismissed`` ``llm_review``
+    event so false positives stay auditable for tuning.
+
+    Otherwise — no reviewer model, budget exhausted, or the reviewer errored — fall
+    back to the classifier confidence threshold (the prior behaviour): quarantine at
+    or above ``_CLASSIFIER_QUARANTINE_THRESHOLD``, else log without acting. This keeps
+    the reviewer purely additive — it can only refine the threshold decision, never
+    strand a document.
+    """
+    tags = result.concern_tags
+    can_review = (
+        bool(reviewer_model)
+        and reviewer_budget is not None
+        and reviewer_budget["remaining"] > 0
+    )
+
+    escalation_event = None
+    if can_review:
+        escalation_event = _log_chunk_event(
+            document=doc,
+            chunk_text=chunk["text"],
+            check_type="classifier",
+            tags=tags,
+            confidence=result.confidence,
+            severity="medium",
+            action_taken="escalated",
+            reviewer_output=result.reasoning,
+        )
+        reviewer_budget["remaining"] -= 1
+        neighbor_context = (
+            _build_neighbor_context(version.id, chunk["chunk_index"]) if version else ""
+        )
+        try:
+            from guardrails.reviewer import review_flagged_chunk
+
+            decision = review_flagged_chunk(
                 chunk_text=chunk["text"],
-                check_type="classifier",
-                tags=result.concern_tags,
-                confidence=result.confidence,
-                severity="medium",
-                action_taken="blocked",
+                classifier_result=result,
+                document_title=getattr(doc, "display_name", "") or "",
+                neighbor_context=neighbor_context,
+                org_id=org_id,
+                user_id=doc.uploaded_by_id,
             )
-        else:
-            # Below the quarantine threshold: record without acting, so the
-            # threshold can be tuned on real borderline data later.
-            _log_chunk_event(
-                document=doc,
-                chunk_text=chunk["text"],
-                check_type="classifier",
-                tags=result.concern_tags,
-                confidence=result.confidence,
-                severity="low",
-                action_taken="logged",
+        except Exception:
+            logger.exception(
+                "scan_document_chunks: reviewer errored for chunk_index=%s; "
+                "falling back to confidence threshold",
+                chunk["chunk_index"],
             )
+            decision = None
+
+        if decision is not None:
+            if decision.action == "quarantine":
+                _quarantine_chunk(
+                    chunk["id"],
+                    reason=f"Reviewer: {', '.join(tags)} (confidence: {decision.confidence:.2f})",
+                )
+                _log_chunk_event(
+                    document=doc,
+                    chunk_text=chunk["text"],
+                    check_type="llm_review",
+                    tags=tags,
+                    confidence=decision.confidence,
+                    severity=decision.severity,
+                    action_taken="blocked",
+                    related_event=escalation_event,
+                    reviewer_output=decision.reasoning,
+                )
+            else:
+                # Reviewer overruled the classifier — keep the chunk retrievable,
+                # but log the dismissal so the classifier can be tuned on it later.
+                _log_chunk_event(
+                    document=doc,
+                    chunk_text=chunk["text"],
+                    check_type="llm_review",
+                    tags=tags,
+                    confidence=decision.confidence,
+                    severity="low",
+                    action_taken="dismissed",
+                    related_event=escalation_event,
+                    reviewer_output=decision.reasoning,
+                )
+            return
+        # decision is None -> reviewer errored; fall through to the threshold below.
+    elif reviewer_model and reviewer_budget is not None:
+        # Reviewer is configured but the per-version call budget is spent.
+        reviewer_budget["overflowed"] = True
+
+    # Threshold fallback (reviewer unavailable, budget exhausted, or it errored).
+    if result.confidence >= _CLASSIFIER_QUARANTINE_THRESHOLD:
+        _quarantine_chunk(
+            chunk["id"],
+            reason=f"Classifier: {', '.join(tags)} (confidence: {result.confidence:.2f})",
+        )
+        _log_chunk_event(
+            document=doc,
+            chunk_text=chunk["text"],
+            check_type="classifier",
+            tags=tags,
+            confidence=result.confidence,
+            severity="medium",
+            action_taken="blocked",
+            related_event=escalation_event,
+        )
+    else:
+        # Below the quarantine threshold: record without acting, so the threshold
+        # can be tuned on real borderline data later.
+        _log_chunk_event(
+            document=doc,
+            chunk_text=chunk["text"],
+            check_type="classifier",
+            tags=tags,
+            confidence=result.confidence,
+            severity="low",
+            action_taken="logged",
+            related_event=escalation_event,
+        )
+
+
+def _build_neighbor_context(version_id: int, chunk_index: int, snippet_chars: int = 800) -> str:
+    """Build a short context string from a flagged chunk's immediate neighbours.
+
+    The cheap classifier judges each chunk in isolation, which is the main source
+    of false positives; the reviewer is given the immediately preceding/following
+    chunks (heading + a bounded snippet) so it can judge intent in context. The
+    returned text is wrapped as untrusted data by the reviewer.
+    """
+    from documents.models import DataRoomDocumentChunk
+
+    neighbors = list(
+        DataRoomDocumentChunk.objects.filter(
+            version_id=version_id, chunk_index__in=[chunk_index - 1, chunk_index + 1],
+        )
+        .order_by("chunk_index")
+        .values("chunk_index", "heading", "text")
+    )
+    if not neighbors:
+        return ""
+    parts = []
+    for n in neighbors:
+        label = "preceding" if n["chunk_index"] < chunk_index else "following"
+        heading = (n["heading"] or "").strip()
+        head = f" (heading: {heading})" if heading else ""
+        parts.append(f"[{label} chunk{head}]\n{n['text'][:snippet_chars]}")
+    return "\n\n".join(parts)
 
 
 def _mark_scan_failed(version_id: int) -> None:
@@ -446,11 +623,17 @@ def _refresh_partial_quarantine(version) -> None:
 def _log_chunk_event(
     document, chunk_text: str, check_type: str, tags: list[str],
     confidence: float, severity: str, action_taken: str,
-) -> None:
-    """Create a GuardrailEvent for a document chunk scan."""
+    related_event=None, reviewer_output: str | None = None,
+):
+    """Create and return a GuardrailEvent for a document chunk scan.
+
+    ``related_event`` links a terminal reviewer/threshold event back to the
+    classifier ``escalated`` event it resolves; ``reviewer_output`` stores the
+    classifier or reviewer reasoning for audit/tuning.
+    """
     from guardrails.models import GuardrailEvent
 
-    GuardrailEvent.objects.create(
+    return GuardrailEvent.objects.create(
         user_id=document.uploaded_by_id,
         trigger_source="document_chunk",
         check_type=check_type,
@@ -459,4 +642,6 @@ def _log_chunk_event(
         severity=severity,
         action_taken=action_taken,
         raw_input=chunk_text[:2000],
+        related_event=related_event,
+        reviewer_output=reviewer_output,
     )

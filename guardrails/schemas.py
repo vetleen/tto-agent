@@ -71,6 +71,28 @@ class ReviewerDecision(BaseModel):
     )
 
 
+class ChunkReviewDecision(BaseModel):
+    """Layer 2 top-model judge output for a flagged document chunk.
+
+    Distinct from ``ReviewerDecision`` (the chat-message reviewer): a document
+    chunk has no live user to message and the only meaningful outcomes are
+    keep-it-retrievable vs. exclude-it-from-retrieval, so the action collapses to
+    ``allow``/``quarantine`` and there is no ``user_message``/``warn``/``suspend``.
+    """
+
+    action: Literal["allow", "quarantine"] = Field(
+        description="Decision: allow (false positive — keep the chunk retrievable) or quarantine (exclude it)"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="How confident you are in your chosen action (0.0 = uncertain, 1.0 = certain)",
+    )
+    severity: Literal["low", "medium", "high", "critical"] = Field(
+        description="Severity level of the concern"
+    )
+    reasoning: str = Field(description="Explanation of the decision")
+
+
 class HeuristicResult(BaseModel):
     """Layer 0 heuristic scan output."""
 
