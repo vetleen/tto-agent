@@ -71,7 +71,7 @@
           <div id="dropdown-paused-loop-{{ loop.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
             <a href="{% url 'chat_home' %}?thread={{ loop.thread_id }}" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">View in chat</a>
             <button type="button" class="edit-loop-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-loop-id="{{ loop.id }}">Edit</button>
-            <button type="button" class="loop-action-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-action="{% url 'loop_resume' loop_id=loop.id %}">Resume</button>
+            <button type="button" class="loop-action-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-action="{% url 'loop_restart' loop_id=loop.id %}">Restart</button>
           </div>
         </div>
       </div>
@@ -250,11 +250,10 @@
   function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
   // ---- state ----
-  var S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: 10, model: PREFERRED_MODEL };
+  var S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', model: PREFERRED_MODEL };
 
   // ---- schedule math (preview only; server is authoritative) ----
   function clampN(n) { return Math.max(1, Math.min(99, n)); }
-  function clampRuns(n) { return Math.max(1, Math.min(50, n)); }
   function unitMs(n, u) { return u === 'minutes' ? n * 60000 : u === 'hours' ? n * 3600000 : n * 86400000; }
   function unitLabel(n, u) { var b = u === 'minutes' ? 'minute' : u === 'hours' ? 'hour' : 'day'; return n === 1 ? b : b + 's'; }
   function fmtTime(t) { var p = t.split(':').map(Number), h = p[0], m = p[1]; var ap = h < 12 ? 'AM' : 'PM'; var h12 = h % 12; if (h12 === 0) h12 = 12; return h12 + ':' + String(m).padStart(2, '0') + ' ' + ap; }
@@ -365,7 +364,7 @@
     else { S.preset = 'Custom'; S.unit = 'minutes'; S.n = Math.max(1, Math.round(secs / 60)); }
   }
   function openCreate(prefill) {
-    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: 10, model: PREFERRED_MODEL };
+    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', model: PREFERRED_MODEL };
     form.dataset.loopId = ''; form.dataset.restart = '';
     el('loop-modal-title').textContent = 'Create new loop';
     submitLabel.textContent = 'Create loop';
@@ -376,7 +375,7 @@
   }
   function openEdit(id) {
     var d = LOOPS[id]; if (!d) return;
-    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: d.history_mode || 'fresh', maxRuns: d.max_runs || 10, model: d.model || PREFERRED_MODEL };
+    S = { rooms: [], skill: null, preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: d.history_mode || 'fresh', model: d.model || PREFERRED_MODEL };
     form.dataset.loopId = id;
     var paused = d.status === 'paused';
     form.dataset.restart = paused ? '1' : '';
@@ -404,7 +403,6 @@
     var p = {
       prompt: ta.value,
       history_mode: S.memory,
-      max_runs: 50,
       skill_id: S.skill ? S.skill.id : '',
       data_room_ids: S.rooms.map(function (r) { return r.id; }),
       model: S.model || '',

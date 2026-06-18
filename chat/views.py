@@ -701,7 +701,7 @@ def search_threads(request):
 # Loops
 # ---------------------------------------------------------------------------
 
-# Loop payload validation, resource linking, and create/edit/pause/resume
+# Loop payload validation, resource linking, and create/edit/pause/restart
 # orchestration live in ``chat/loop_service.py`` (shared with the agent tools in
 # ``chat/tool_loops.py``). The views below are thin request wrappers around them.
 
@@ -841,13 +841,17 @@ def loop_pause(request, loop_id):
 
 @login_required
 @require_POST
-def loop_resume(request, loop_id):
-    """Resume a paused loop: fire on the next tick, then continue the cadence."""
+def loop_restart(request, loop_id):
+    """Restart a paused loop: reset the run count and fire on the next tick.
+
+    This is the user-facing revive action. (The agent's "resume where it left
+    off" path lives in the loop tools, not here.)
+    """
     from django.utils import timezone
 
-    from chat.loop_service import resume_loop
+    from chat.loop_service import restart_loop
     from chat.models import Loop
 
     loop = get_object_or_404(Loop, id=loop_id, created_by=request.user)
-    resume_loop(loop, timezone.now())
+    restart_loop(loop, timezone.now())
     return JsonResponse({"ok": True})

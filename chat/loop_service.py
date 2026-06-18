@@ -181,7 +181,7 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
 #
 # The payload-validation helpers (``_build_loop_fields`` etc.) and the
 # high-level ``create_loop`` / ``update_loop`` / ``pause_loop`` / ``resume_loop``
-# functions are the single source of truth shared by the HTTP views
+# / ``restart_loop`` functions are the single source of truth shared by the HTTP views
 # (``chat/views.py``) and the agent tools (``chat/tool_loops.py``). They take
 # resolved primitives (a user, a parsed ``body`` dict, ``now``, ``tz_name``) and
 # never touch an HTTP request.
@@ -228,7 +228,7 @@ def _build_loop_fields(body, *, now, tz_name):
     splat onto a Loop; ``errors`` is a list of user-facing strings.
     """
     from chat.loop_schedule import (
-        DEFAULT_MAX_RUNS, MAX_RUNS_CAP, clamp_max_runs, compute_next_run,
+        DEFAULT_MAX_RUNS, clamp_max_runs, compute_next_run,
     )
     from chat.models import Loop
 
@@ -288,8 +288,11 @@ def _build_loop_fields(body, *, now, tz_name):
     else:
         next_run = now
 
-    requested = _parse_int(body.get("max_runs"), default=DEFAULT_MAX_RUNS, lo=1, hi=MAX_RUNS_CAP)
-    effective_max, was_reduced = clamp_max_runs(requested, now, **sched)
+    # Run count is fixed policy (DEFAULT_MAX_RUNS), not taken from the payload —
+    # customization was removed. clamp_max_runs still trims it so the last run
+    # lands within a year; ``was_reduced`` then reflects only that year-horizon
+    # trim.
+    effective_max, was_reduced = clamp_max_runs(DEFAULT_MAX_RUNS, now, **sched)
 
     fields = {
         "prompt": prompt,
@@ -424,7 +427,11 @@ def update_loop(*, loop, user, body, now, tz_name):
 
 
 def pause_loop(loop):
-    """Pause a loop so it stops firing (reversible via :func:`resume_loop`)."""
+    """Pause a loop so it stops firing.
+
+    Reversible via :func:`restart_loop` (the user-facing action — resets the run
+    count) or :func:`resume_loop` (the agent's resume-where-it-left-off path).
+    """
     from chat.models import Loop
 
     loop.status = Loop.Status.PAUSED
@@ -433,7 +440,13 @@ def pause_loop(loop):
 
 
 def resume_loop(loop, now):
-    """Resume a paused loop: fire on the next tick, then continue the cadence."""
+    """Resume a paused loop where it left off: fire on the next tick, keep the
+    completed-run count, then continue the cadence.
+
+    This preserves ``runs_completed``; it is the agent-only ``resume=true``
+    behaviour. The user-facing revive action is :func:`restart_loop`, which
+    starts the run count over.
+    """
     from chat.models import Loop
 
     loop.status = Loop.Status.ACTIVE
@@ -446,6 +459,28 @@ def resume_loop(loop, now):
         loop.max_runs = loop.runs_completed + 1
     loop.save(update_fields=[
         "status", "next_run", "running", "locked_at", "max_runs", "updated_at",
+    ])
+    return loop
+
+
+def restart_loop(loop, now):
+    """Restart a paused loop from scratch: re-activate, reset the run count to 0,
+    clear any error streak, and fire on the next tick.
+
+    This is the single user-facing revive action (the Loops page "Restart"
+    control) and matches the ``restart`` branch of :func:`update_loop`.
+    """
+    from chat.models import Loop
+
+    loop.status = Loop.Status.ACTIVE
+    loop.next_run = now
+    loop.running = False
+    loop.locked_at = None
+    loop.runs_completed = 0
+    loop.consecutive_errors = 0
+    loop.save(update_fields=[
+        "status", "next_run", "running", "locked_at",
+        "runs_completed", "consecutive_errors", "updated_at",
     ])
     return loop
 

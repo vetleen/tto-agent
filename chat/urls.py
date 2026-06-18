@@ -24,5 +24,5 @@ urlpatterns = [
     path("api/loops/create/", views.loop_create, name="loop_create"),
     path("api/loops/<uuid:loop_id>/edit/", views.loop_edit, name="loop_edit"),
     path("api/loops/<uuid:loop_id>/pause/", views.loop_pause, name="loop_pause"),
-    path("api/loops/<uuid:loop_id>/resume/", views.loop_resume, name="loop_resume"),
+    path("api/loops/<uuid:loop_id>/restart/", views.loop_restart, name="loop_restart"),
 ]

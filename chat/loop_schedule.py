@@ -10,7 +10,11 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-DEFAULT_MAX_RUNS = 10
+# Run count is fixed policy (not user-configurable): a loop runs 50 times, or
+# fewer if a year elapses first (see clamp_max_runs / MAX_HORIZON_DAYS). The cap
+# and the default are intentionally equal; they diverge only if per-loop run
+# counts are reintroduced.
+DEFAULT_MAX_RUNS = 50
 MAX_RUNS_CAP = 50
 MAX_HORIZON_DAYS = 365
 

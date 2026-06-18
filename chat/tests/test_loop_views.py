@@ -1,4 +1,4 @@
-"""Tests for the Loops page + create/edit/pause/resume views."""
+"""Tests for the Loops page + create/edit/pause/restart views."""
 
 import json
 
@@ -27,7 +27,6 @@ class LoopViewTests(TestCase):
             "cadence_kind": "interval",
             "interval_value": 6, "interval_unit": "hours",
             "first_run_mode": "now",
-            "max_runs": 10,
         }
         payload.update(overrides)
         return self.client.post(
@@ -53,9 +52,10 @@ class LoopViewTests(TestCase):
         self.assertFalse(data["was_reduced"])
 
     def test_create_clamps_runs_and_returns_notice(self):
+        # The fixed 50-run default over a 30-day interval would span ~4 years;
+        # it's trimmed to fit within one year and the response says so.
         resp = self._create(
             cadence_kind="interval", interval_value=30, interval_unit="days",
-            max_runs=50,
         )
         data = resp.json()
         self.assertTrue(data["was_reduced"])
@@ -91,7 +91,7 @@ class LoopViewTests(TestCase):
             data=json.dumps({
                 "prompt": "New prompt.", "history_mode": "conversational",
                 "cadence_kind": "interval", "interval_value": 2,
-                "interval_unit": "hours", "first_run_mode": "now", "max_runs": 5,
+                "interval_unit": "hours", "first_run_mode": "now",
             }),
             content_type="application/json",
         )
@@ -110,7 +110,7 @@ class LoopViewTests(TestCase):
             data=json.dumps({
                 "prompt": "Tweaked.", "history_mode": "fresh",
                 "cadence_kind": "interval", "interval_value": 6,
-                "interval_unit": "hours", "first_run_mode": "keep", "max_runs": 10,
+                "interval_unit": "hours", "first_run_mode": "keep",
             }),
             content_type="application/json",
         )
@@ -133,7 +133,7 @@ class LoopViewTests(TestCase):
                 "prompt": "Restarted.", "history_mode": "fresh",
                 "cadence_kind": "interval", "interval_value": 6,
                 "interval_unit": "hours", "first_run_mode": "keep",
-                "max_runs": 10, "restart": True,
+                "restart": True,
             }),
             content_type="application/json",
         )
@@ -145,15 +145,20 @@ class LoopViewTests(TestCase):
         self.assertGreaterEqual(loop.next_run, before)  # keep + restart → now
         self.assertFalse(loop.running)
 
-    def test_pause_and_resume(self):
+    def test_pause_and_restart(self):
         loop_id = self._create().json()["loop_id"]
         self.client.post(reverse("loop_pause", args=[loop_id]))
-        self.assertEqual(Loop.objects.get(id=loop_id).status, Loop.Status.PAUSED)
-
-        before = timezone.now()
-        self.client.post(reverse("loop_resume", args=[loop_id]))
         loop = Loop.objects.get(id=loop_id)
+        self.assertEqual(loop.status, Loop.Status.PAUSED)
+        loop.runs_completed = 4
+        loop.save(update_fields=["runs_completed"])
+
+        # The user-facing revive action restarts: re-activate and reset the count.
+        before = timezone.now()
+        self.client.post(reverse("loop_restart", args=[loop_id]))
+        loop.refresh_from_db()
         self.assertEqual(loop.status, Loop.Status.ACTIVE)
+        self.assertEqual(loop.runs_completed, 0)
         self.assertGreaterEqual(loop.next_run, before)
         self.assertFalse(loop.running)
 

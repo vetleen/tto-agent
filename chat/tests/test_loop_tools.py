@@ -99,10 +99,11 @@ class CreateLoopToolTests(TestCase):
         self.assertEqual(Loop.objects.count(), 0)
 
     def test_create_clamps_max_runs(self):
+        # Run count is the fixed 50-run default; over a 30-day interval that
+        # would span years, so it's trimmed to fit within one year.
         result = _invoke(LoopCreateTool, {
             "prompt": "Long horizon.",
             "cadence_kind": "interval", "interval_value": 30, "interval_unit": "days",
-            "max_runs": 50,
         }, self.ctx)
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["was_reduced"])

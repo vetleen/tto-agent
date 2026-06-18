@@ -96,10 +96,6 @@ class LoopCreateInput(ReasonBaseModel):
         default="fresh",
         description="'fresh' (each run starts clean) or 'conversational' (keeps the loop thread's prior turns).",
     )
-    max_runs: int = Field(
-        default=10,
-        description="Total runs before the loop auto-pauses (1-50; auto-trimmed so the last run stays within a year).",
-    )
     first_run_mode: str = Field(
         default="now",
         description="When the first run fires: 'now', 'scheduled' (next clock occurrence), or 'custom'.",
@@ -137,7 +133,7 @@ class LoopCreateTool(ContextAwareTool):
     def _run(
         self, prompt: str, cadence_kind: str = "interval", interval_value: int = 1,
         interval_unit: str = "hours", clock_time: str = "", clock_frequency: str = "daily",
-        clock_weekday: int = 0, history_mode: str = "fresh", max_runs: int = 10,
+        clock_weekday: int = 0, history_mode: str = "fresh",
         first_run_mode: str = "now", first_run_at: str = "", tz: str = "",
         data_room_ids: list | None = None, skill_id: str = "", model: str = "", **kwargs,
     ) -> str:
@@ -158,7 +154,6 @@ class LoopCreateTool(ContextAwareTool):
             "clock_weekday": clock_weekday,
             "first_run_mode": first_run_mode,
             "first_run_at": first_run_at,
-            "max_runs": max_runs,
             "data_room_ids": data_room_ids or [],
             "skill_id": skill_id,
             "model": model,
@@ -190,7 +185,7 @@ class LoopListTool(ContextAwareTool):
 
     name: str = "chat_loop_list"
     description: str = (
-        "List the user's loops (active and paused), with each loop's id, prompt, schedule, status, "
+        "List the current user's loops (active and paused), with each loop's id, prompt, schedule, status, "
         "next run time, run progress, and backing thread id. Use this to find a loop's id before "
         "stopping or editing it, or to report what automations are set up."
     )
@@ -274,7 +269,6 @@ class LoopEditInput(ReasonBaseModel):
     clock_frequency: str | None = Field(default=None, description="Clock cadence: 'daily', 'weekdays', 'weekly'.")
     clock_weekday: int | None = Field(default=None, description="Weekly clock cadence: 0=Mon .. 6=Sun.")
     history_mode: str | None = Field(default=None, description="'fresh' or 'conversational'.")
-    max_runs: int | None = Field(default=None, description="New total run count (1-50).")
     first_run_mode: str | None = Field(
         default=None,
         description="Reschedule the next run: 'keep' (default), 'now', 'scheduled', or 'custom'.",
@@ -309,7 +303,7 @@ class LoopEditTool(ContextAwareTool):
     def _run(
         self, loop_id: str, prompt=None, cadence_kind=None, interval_value=None,
         interval_unit=None, clock_time=None, clock_frequency=None, clock_weekday=None,
-        history_mode=None, max_runs=None, first_run_mode=None, first_run_at=None,
+        history_mode=None, first_run_mode=None, first_run_at=None,
         data_room_ids=None, skill_id=None, model=None, restart: bool = False,
         resume: bool = False, **kwargs,
     ) -> str:
@@ -347,7 +341,6 @@ class LoopEditTool(ContextAwareTool):
             "clock_time": seed["clock_time"],
             "clock_frequency": seed["clock_frequency"] or "daily",
             "clock_weekday": seed["clock_weekday"] if seed["clock_weekday"] is not None else 0,
-            "max_runs": seed["max_runs"],
             "data_room_ids": seed["data_room_ids"],
             "skill_id": seed["skill_id"],
             "model": seed["model"],
@@ -358,7 +351,7 @@ class LoopEditTool(ContextAwareTool):
             "prompt": prompt, "history_mode": history_mode, "cadence_kind": cadence_kind,
             "interval_value": interval_value, "interval_unit": interval_unit,
             "clock_time": clock_time, "clock_frequency": clock_frequency,
-            "clock_weekday": clock_weekday, "max_runs": max_runs,
+            "clock_weekday": clock_weekday,
             "first_run_mode": first_run_mode, "first_run_at": first_run_at,
             "data_room_ids": data_room_ids, "skill_id": skill_id, "model": model,
         }
