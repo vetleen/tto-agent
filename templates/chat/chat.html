@@ -195,8 +195,7 @@
               <span class="wf-avatar" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
             </div>
           {% elif m.role == "assistant" and m.is_intermediate %}
-            {# Hidden tool-loop message carrying narration/thinking — render as
-               collapsed blocks, matching the live-streaming "Thought further" UI #}
+            {# Hidden tool-loop message carrying narration/thinking — render as collapsed blocks, matching the live-streaming "Thought further" UI #}
             <div class="wmsg" data-role="assistant">
               <span class="wmsg__av" style="visibility:hidden">{{ assistant_name|first|upper }}</span>
               <div class="wmsg__body">
