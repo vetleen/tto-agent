@@ -63,10 +63,10 @@ class AgentSkillModelTests(TestCase):
             name="Tools Test",
             instructions="Instructions.",
             level="system",
-            tool_names=["search_documents", "read_document"],
+            tool_names=["document_search", "document_read"],
         )
         skill.refresh_from_db()
-        self.assertEqual(skill.tool_names, ["search_documents", "read_document"])
+        self.assertEqual(skill.tool_names, ["document_search", "document_read"])
 
     def test_tool_names_default_empty_list(self):
         skill = AgentSkill.objects.create(
@@ -245,7 +245,7 @@ class SeedSystemSkillsTests(TestCase):
         self.assertIn("Phase 4", skill.instructions)
         self.assertIn("triggering effect", skill.instructions.lower())
         self.assertEqual(
-            skill.tool_names, ["view_template", "load_template_to_canvas"]
+            skill.tool_names, ["skill_template_view", "skill_template_load"]
         )
         # Verify both templates were created
         self.assertTrue(skill.templates.filter(name="Disposition").exists())
@@ -273,7 +273,7 @@ class SeedSystemSkillsTests(TestCase):
         self.assertIn("Phase 4", skill.instructions)
         self.assertIn("triggering effect", skill.instructions.lower())
         self.assertEqual(
-            skill.tool_names, ["view_template", "load_template_to_canvas"]
+            skill.tool_names, ["skill_template_view", "skill_template_load"]
         )
         # Verify both templates were created
         self.assertTrue(skill.templates.filter(name="Disposition").exists())

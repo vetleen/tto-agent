@@ -38,7 +38,7 @@ are fully and demonstrably met.**
 ### Phase 1 — Evidence Gathering
 
 Systematically search the attached data room and other provided docs for evidence against each \
-dimension's criteria. Use `search_documents` and `read_document` for data rooms.
+dimension's criteria. Use `document_search` and `document_read` for data rooms.
 
 For each dimension (CRL, TRL, BRL, IPRL, TeRL, FRL):
 1. Search for evidence relevant to that dimension's criteria.
@@ -52,7 +52,7 @@ all relevant information or whether to proceed with what is available.
 ### Phase 2 — Scoring & Gap Analysis
 
 Load the "IRL Assessment Report" template to the canvas using \
-`load_template_to_canvas`. Then fill in the report:
+`skill_template_load`. Then fill in the report:
 
 For each dimension:
 1. Walk through levels 1–9 and determine the highest level where ALL \
@@ -365,7 +365,7 @@ multiple licensing deals signed (if licensing path)
 - Revenue-funded growth or profitable operations
 - Access to capital markets or follow-on funding established
 - Financial sustainability demonstrated or clearly projected""",
-    "tool_names": ["view_template", "load_template_to_canvas"],
+    "tool_names": ["skill_template_view", "skill_template_load"],
     "templates": {
         "IRL Assessment Report": """\
 # IRL Assessment Report — [Project Name]

@@ -51,7 +51,7 @@ class EditCanvasInput(ReasonBaseModel):
 class ActiveCanvasTool(ContextAwareTool):
     """Set which canvases are active (visible in your context)."""
 
-    name: str = "active_canvas"
+    name: str = "canvas_activate"
     description: str = (
         "Set which canvases are active. Active canvases have their full "
         "content included in your prompt context (up to 3). When called, "
@@ -89,11 +89,11 @@ class ActiveCanvasTool(ContextAwareTool):
 class WriteCanvasTool(ContextAwareTool):
     """Create or completely rewrite the canvas document."""
 
-    name: str = "write_canvas"
+    name: str = "canvas_write"
     description: str = (
         "Create or completely rewrite the canvas document for this conversation. "
         "Use this when starting a document from scratch or doing a full rewrite. "
-        "For targeted changes to an existing document, prefer the edit_canvas tool instead."
+        "For targeted changes to an existing document, prefer the canvas_edit tool instead."
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
@@ -168,14 +168,14 @@ class WriteCanvasTool(ContextAwareTool):
 class EditCanvasTool(ContextAwareTool):
     """Apply targeted find-replace edits to the existing canvas document."""
 
-    name: str = "edit_canvas"
+    name: str = "canvas_edit"
     description: str = (
         "Make targeted find-replace edits to the existing canvas document. "
-        "Prefer this over write_canvas when the document already exists and you "
+        "Prefer this over canvas_write when the document already exists and you "
         "only need to change specific parts. Each edit specifies old_text to find "
         "and new_text to replace it with. The old_text must match exactly once in "
         "the document — if it appears multiple times, include more surrounding "
-        "context to make it unique. If no canvas exists yet, use write_canvas first."
+        "context to make it unique. If no canvas exists yet, use canvas_write first."
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
@@ -190,7 +190,7 @@ class EditCanvasTool(ContextAwareTool):
         if err:
             return json.dumps({
                 "status": "error",
-                "message": err if canvas_name else "No canvas exists for this thread. Use write_canvas to create one first.",
+                "message": err if canvas_name else "No canvas exists for this thread. Use canvas_write to create one first.",
             })
 
         # Preserve any uncommitted user edits before applying AI edits

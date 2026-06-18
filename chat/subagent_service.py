@@ -33,18 +33,18 @@ def resolve_subagent_tools(
     - Removes document tools if no data rooms attached
     """
     excluded = {
-        "active_canvas", "write_canvas", "edit_canvas",
-        "save_canvas_to_data_room",
-        "create_subagent",
-        "attach_skills", "create_skill", "edit_skill", "delete_skill",
-        "save_canvas_to_skill_field", "show_skill_field_in_canvas",
-        "view_template", "load_template_to_canvas",
-        "list_skill_tools", "inspect_tool",
+        "canvas_activate", "canvas_write", "canvas_edit",
+        "canvas_save_to_document",
+        "chat_subagent_create",
+        "chat_skill_attach", "skill_create", "skill_edit", "skill_delete",
+        "skill_field_save", "skill_field_load",
+        "skill_template_view", "skill_template_load",
+        "skill_tool_list", "skill_tool_inspect",
     }
     tools = [t for t in prefs.allowed_tools if t not in excluded]
 
     if not data_room_ids:
-        doc_tools = {"search_documents", "read_document"}
+        doc_tools = {"document_search", "document_read"}
         tools = [t for t in tools if t not in doc_tools]
 
     return tools
@@ -109,7 +109,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             .values("id", "title", "status")
         )
 
-        has_task_tool = "update_tasks" in (tool_list or [])
+        has_task_tool = "chat_task_update" in (tool_list or [])
         system_prompt = build_subagent_system_prompt(
             data_rooms=data_rooms_info,
             organization_name=org_name,

@@ -28,7 +28,7 @@ class UpdateTasksInput(ReasonBaseModel):
 class UpdateTasksTool(ContextAwareTool):
     """Create, update, or replace the task plan for this conversation."""
 
-    name: str = "update_tasks"
+    name: str = "chat_task_update"
     description: str = (
         "Create or update the task plan for this conversation. Use proactively "
         "whenever work involves multiple steps — do not wait to be asked. "

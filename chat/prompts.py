@@ -73,7 +73,7 @@ This message was sent automatically by a scheduled Loop — not typed by a perso
 
     prompt += """
 # Canvas
-You have a canvas workspace for text processing. Use **write_canvas** to create or overwrite documents and **edit_canvas** for targeted edits.
+You have a canvas workspace for text processing. Use **canvas_write** to create or overwrite documents and **canvas_edit** for targeted edits.
 
 ## Diagrams
 You can include Mermaid diagrams in the canvas using fenced code blocks with the `mermaid` language tag. These render as visual diagrams in preview mode and export as images in .docx. Example:
@@ -107,7 +107,7 @@ Do not use markdown formatting (e.g. **bold**, *italic*) in email subjects or bo
     if has_task_tool:
         prompt += """
 # Task Planning
-Use `update_tasks` to create and manage a task plan. Be proactive — create a plan before starting work, not after being asked.
+Use `chat_task_update` to create and manage a task plan. Be proactive — create a plan before starting work, not after being asked.
 
 ## When to create a task plan
 - Any request involving 3 or more distinct steps
@@ -137,7 +137,7 @@ Use `update_tasks` to create and manage a task plan. Be proactive — create a p
     if has_subagent_tool:
         prompt += """
 # Sub-agents
-You can delegate tasks to sub-agents using the `create_subagent` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly.
+You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly.
 
 ## When to use sub-agents
 - Tasks that require gathering extensive context, but where the orchestrator only needs the synthesis. Almost any web-searching would fall into this category.
@@ -249,7 +249,7 @@ def build_semi_static_prompt(
         prompt += (
             "\n# Skills available to this user\n"
             "The following skills are available. Call "
-            "`attach_skills(skill_slugs=[\"<slug>\"])` to attach one when it "
+            "`chat_skill_attach(skill_slugs=[\"<slug>\"])` to attach one when it "
             "fits the user's request. Pass an empty list to detach.\n"
         )
         for s in available_skills:
@@ -285,8 +285,8 @@ the user's request. Follow it to the best of your ability.
 ## Skill templates
 
 This skill has the following templates available. \
-Use `view_template` to read a template's content, \
-or `load_template_to_canvas` to load one into the canvas \
+Use `skill_template_view` to read a template's content, \
+or `skill_template_load` to load one into the canvas \
 as a starting point.
 
 """
@@ -306,14 +306,15 @@ as a starting point.
             else:
                 prompt += f'- "{r["name"]}"{count_str}\n'
         prompt += (
-            "\nData room documents are versioned and you can manage them: `list_documents` to "
-            "browse, `open_document_to_canvas` to edit a filed document (then `save_document` "
-            "with mode='overwrite' to file a new version), `write_document`/`edit_document` to "
-            "update one directly (e.g. in automated loops), `archive_document`, `rename_document`, "
-            "`list_versions`/`restore_version` to roll back, and `get_document_status` to check "
-            "processing. Saving re-runs the pipeline (chunk → embed → guardrails → PII), so save "
-            "only when a document is complete; the previous version stays live until the new one "
-            "finishes. Use `save_document` with mode='new' (or `save_canvas_to_data_room`) to file "
+            "\nData room documents are versioned and you can manage them: `document_list` to "
+            "browse, `document_open_to_canvas` to edit a filed document (then "
+            "`canvas_save_to_document` with mode='overwrite' to file a new version), `document_edit` "
+            "to update one directly — mode='edit' for targeted find/replace, mode='rewrite' for a "
+            "full overwrite (e.g. in automated loops) — `document_archive`, `document_rename`, "
+            "`document_version_list`/`document_version_restore` to roll back, and `document_status` "
+            "to check processing. Saving re-runs the pipeline (chunk → embed → guardrails → PII), so "
+            "save only when a document is complete; the previous version stays live until the new one "
+            "finishes. Use `canvas_save_to_document` with mode='new' to file "
             "a canvas as a brand-new document.\n"
         )
         prompt += (
@@ -341,9 +342,9 @@ as a starting point.
             active_marker = " ← in context" if c.get("is_active") else ""
             prompt += f'- **{c["title"]}** ({c["chars"]} chars){active_marker}\n'
         prompt += """\
-\nUse `write_canvas(title="...", content="...")` to create a new canvas tab or rewrite an existing one.
-Use `edit_canvas(canvas_name="...", edits=[...])` to make targeted edits. When canvas_name is omitted, the most recently activated canvas is used.
-Use `active_canvas(canvas_names=["..."])` to choose which canvases (up to 3) are in your context.
+\nUse `canvas_write(title="...", content="...")` to create a new canvas tab or rewrite an existing one.
+Use `canvas_edit(canvas_name="...", edits=[...])` to make targeted edits. When canvas_name is omitted, the most recently activated canvas is used.
+Use `canvas_activate(canvas_names=["..."])` to choose which canvases (up to 3) are in your context.
 After using canvas tools, don't reproduce the content in chat.
 """
     elif canvas:
@@ -351,9 +352,9 @@ After using canvas tools, don't reproduce the content in chat.
 
 # Canvas workspace
 This chat already has an active canvas document titled "{canvas.title}".
-When there is text in the canvas, prefer to use the canvas tools for any request that can be construed as an addition or edit. Use **edit_canvas** to make targeted changes to specific sections of this document.
+When there is text in the canvas, prefer to use the canvas tools for any request that can be construed as an addition or edit. Use **canvas_edit** to make targeted changes to specific sections of this document.
 
-Be careful with **write_canvas**, as it deletes pre-existing text. Only use this if it's clear that a complete rewrite is needed. Usually, this will be because the user asks you directly.
+Be careful with **canvas_write**, as it deletes pre-existing text. Only use this if it's clear that a complete rewrite is needed. Usually, this will be because the user asks you directly.
 
 After using either canvas tool, do not repeat or reproduce the changes in chat. Simply refer to the canvas (e.g. "I've updated the canvas with…").
 """
@@ -361,7 +362,7 @@ After using either canvas tool, do not repeat or reproduce the changes in chat. 
         prompt += """\
 
 # Canvas workspace
-Each unique title creates a new canvas tab. This is a core feature! If the user's request is for you to generate a text (use your sound judgement to ascertain if this is the case), use **write_canvas** to create the initial text in the canvas. The canvas will appear as a panel alongside the chat, and is a user friendly way to deliver the request.
+Each unique title creates a new canvas tab. This is a core feature! If the user's request is for you to generate a text (use your sound judgement to ascertain if this is the case), use **canvas_write** to create the initial text in the canvas. The canvas will appear as a panel alongside the chat, and is a user friendly way to deliver the request.
 
 You should be eager to use the canvas.
 
@@ -471,7 +472,7 @@ def build_dynamic_context(
     # -- Current task plan status --
     if tasks:
         status_icons = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
-        section = "# Current Task Plan\nYou are tracking the following task plan for this conversation. Update it using `update_tasks` as you make progress.\n\n"
+        section = "# Current Task Plan\nYou are tracking the following task plan for this conversation. Update it using `chat_task_update` as you make progress.\n\n"
         for t in tasks:
             icon = status_icons.get(t.get("status", "pending"), "[ ]")
             section += f"{icon} {t['title']}\n"

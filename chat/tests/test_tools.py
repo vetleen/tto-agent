@@ -56,7 +56,7 @@ class SearchDocumentsToolTests(TestCase):
         return json.loads(result)
 
     def test_has_required_attributes(self):
-        self.assertEqual(self.tool.name, "search_documents")
+        self.assertEqual(self.tool.name, "document_search")
         self.assertIsInstance(self.tool.description, str)
         self.assertTrue(len(self.tool.description) > 0)
         # args_schema should produce a valid JSON schema
@@ -177,9 +177,9 @@ class SearchDocumentsToolTests(TestCase):
         from llm.tools import get_tool_registry
 
         registry = get_tool_registry()
-        tool = registry.get_tool("search_documents")
+        tool = registry.get_tool("document_search")
         self.assertIsNotNone(tool)
-        self.assertEqual(tool.name, "search_documents")
+        self.assertEqual(tool.name, "document_search")
 
     def test_denies_access_to_other_users_data_room(self):
         other_user = User.objects.create_user(email="other@test.com", password="pass")
@@ -300,9 +300,9 @@ class ReadDocumentToolTests(TestCase):
         from llm.tools import get_tool_registry
 
         registry = get_tool_registry()
-        tool = registry.get_tool("read_document")
+        tool = registry.get_tool("document_read")
         self.assertIsNotNone(tool)
-        self.assertEqual(tool.name, "read_document")
+        self.assertEqual(tool.name, "document_read")
 
     def test_quarantined_document_returns_error(self):
         doc = DataRoomDocument.objects.create(
@@ -422,7 +422,7 @@ class ReadDocumentToolTests(TestCase):
         self.assertNotIn("chunk_range", d)
 
     def test_quarantined_chunks_excluded(self):
-        """Quarantined chunks must not be returned by read_document."""
+        """Quarantined chunks must not be returned by document_read."""
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="guarded.txt", status=DataRoomDocument.Status.READY,
@@ -466,16 +466,16 @@ class ReadDocumentToolTests(TestCase):
         self.assertEqual(set(usages.values_list("chunk_id", flat=True)), {c1.id, c2.id})
 
 
-class SaveCanvasToDataRoomToolTests(TestCase):
-    """Tests for SaveCanvasToDataRoomTool — saving a canvas as a .md document."""
+class CanvasSaveToDocumentToolTests(TestCase):
+    """Tests for CanvasSaveToDocumentTool (mode='new') — saving a canvas as a .md document."""
 
     def setUp(self):
         from django.utils import timezone
 
         from chat.models import ChatCanvas, ChatThread
-        from chat.tools import SaveCanvasToDataRoomTool
+        from chat.tools import CanvasSaveToDocumentTool
 
-        self.tool = SaveCanvasToDataRoomTool()
+        self.tool = CanvasSaveToDocumentTool()
         self.user = User.objects.create_user(email="canvassaver@test.com", password="pass")
         self.data_room = DataRoom.objects.create(
             name="Owner Room", slug="save-canvas", created_by=self.user,
@@ -499,14 +499,20 @@ class SaveCanvasToDataRoomToolTests(TestCase):
         return json.loads(tool.invoke(args))
 
     def test_has_required_attributes(self):
-        self.assertEqual(self.tool.name, "save_canvas_to_data_room")
+        self.assertEqual(self.tool.name, "canvas_save_to_document")
         schema = self.tool.args_schema.model_json_schema()
+        self.assertIn("mode", schema["properties"])
         self.assertIn("canvas_name", schema["properties"])
         self.assertIn("data_room_name", schema["properties"])
 
+    def test_invalid_mode_returns_error(self):
+        result = self._invoke_json({"mode": "sideways"}, self._ctx())
+        self.assertIn("error", result)
+        self.assertFalse(DataRoomDocument.objects.exists())
+
     @patch("documents.tasks.process_document_version_task.delay")
     def test_saves_active_canvas_as_md_document(self, mock_delay):
-        result = self._invoke_json({}, self._ctx())
+        result = self._invoke_json({"mode": "new"}, self._ctx())
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["filename"], "Memo.md")
@@ -525,20 +531,20 @@ class SaveCanvasToDataRoomToolTests(TestCase):
         mock_delay.assert_called_once_with(doc.current_version_id)
 
     def test_no_data_room_returns_error(self):
-        result = self._invoke_json({}, self._ctx(data_room_pks=[]))
+        result = self._invoke_json({"mode": "new"}, self._ctx(data_room_pks=[]))
         self.assertIn("error", result)
         self.assertFalse(DataRoomDocument.objects.exists())
 
     def test_blank_canvas_returns_error(self):
         self.canvas.content = "   "
         self.canvas.save(update_fields=["content"])
-        result = self._invoke_json({}, self._ctx())
+        result = self._invoke_json({"mode": "new"}, self._ctx())
         self.assertIn("error", result)
         self.assertIn("empty", result["error"].lower())
         self.assertFalse(DataRoomDocument.objects.exists())
 
     def test_unknown_canvas_name_returns_error(self):
-        result = self._invoke_json({"canvas_name": "Nope"}, self._ctx())
+        result = self._invoke_json({"mode": "new", "canvas_name": "Nope"}, self._ctx())
         self.assertIn("error", result)
         self.assertFalse(DataRoomDocument.objects.exists())
 
@@ -547,7 +553,7 @@ class SaveCanvasToDataRoomToolTests(TestCase):
             name="Second Room", slug="save-canvas-2", created_by=self.user,
         )
         result = self._invoke_json(
-            {}, self._ctx(data_room_pks=[self.data_room.pk, second.pk])
+            {"mode": "new"}, self._ctx(data_room_pks=[self.data_room.pk, second.pk])
         )
         self.assertIn("error", result)
         self.assertIn("Second Room", result["error"])
@@ -559,7 +565,7 @@ class SaveCanvasToDataRoomToolTests(TestCase):
             name="Second Room", slug="save-canvas-2", created_by=self.user,
         )
         result = self._invoke_json(
-            {"data_room_name": "Second Room"},
+            {"mode": "new", "data_room_name": "Second Room"},
             self._ctx(data_room_pks=[self.data_room.pk, second.pk]),
         )
         self.assertEqual(result["status"], "ok")
@@ -571,6 +577,6 @@ class SaveCanvasToDataRoomToolTests(TestCase):
         other_room = DataRoom.objects.create(
             name="Other Room", slug="other-room", created_by=other,
         )
-        result = self._invoke_json({}, self._ctx(data_room_pks=[other_room.pk]))
+        result = self._invoke_json({"mode": "new"}, self._ctx(data_room_pks=[other_room.pk]))
         self.assertIn("error", result)
         self.assertFalse(DataRoomDocument.objects.exists())

@@ -440,7 +440,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Kick off the seed assistant turn if one was pending, or if
             # subagents completed while the user was disconnected.
             needs_seed = pending_consumed
-            if not needs_seed and self._has_tool("create_subagent"):
+            if not needs_seed and self._has_tool("chat_subagent_create"):
                 needs_seed = await self._claim_unreported_subagents(thread_id)
             if needs_seed:
                 await self._handle_chat_message(
@@ -1127,7 +1127,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Check for subagent results that arrived while the stream was running
             if (
                 not self._stopped
-                and self._has_tool("create_subagent")
+                and self._has_tool("chat_subagent_create")
                 and await self._claim_unreported_subagents(str(thread.id))
             ):
                 await self._handle_chat_message(
@@ -1191,12 +1191,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if self.active_skill_id:
             skill_obj = await self._load_skill(self.active_skill_id)
         tasks = await self._get_thread_tasks(str(thread.id))
-        subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("create_subagent") else None
+        subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("chat_subagent_create") else None
         parallel_subagents = prefs.parallel_subagents if prefs else True
         static_system = build_static_system_prompt(
             organization_name=org_name,
-            has_subagent_tool=self._has_tool("create_subagent"),
-            has_task_tool=self._has_tool("update_tasks"),
+            has_subagent_tool=self._has_tool("chat_subagent_create"),
+            has_task_tool=self._has_tool("chat_task_update"),
             parallel_subagents=parallel_subagents,
             is_loop_turn=is_loop_turn,
         )
@@ -1363,10 +1363,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
         doc_tools = {
-            "search_documents", "read_document", "save_canvas_to_data_room",
-            "list_documents", "open_document_to_canvas", "save_document",
-            "write_document", "edit_document", "archive_document", "rename_document",
-            "list_versions", "restore_version", "get_document_status",
+            "document_search", "document_read", "canvas_save_to_document",
+            "document_list", "document_open_to_canvas", "document_edit",
+            "document_archive", "document_rename",
+            "document_version_list", "document_version_restore", "document_status",
         }
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
@@ -1396,10 +1396,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if t not in tools:
                     tools.append(t)
 
-        # Strip attach_skills when the user has disabled agent-driven skill
+        # Strip chat_skill_attach when the user has disabled agent-driven skill
         # attachment (the catalogue is also omitted from the prompt above).
         if prefs and not prefs.allow_agent_attach_skills:
-            tools = [t for t in tools if t != "attach_skills"]
+            tools = [t for t in tools if t != "chat_skill_attach"]
 
         if turn is None:
             # Defensive: direct callers (tests) may not provide a turn.
@@ -1460,7 +1460,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     pending_tool_results.append(event.data)
                     # Intercept canvas tool results and broadcast canvas.updated
                     tool_name = event.data.get("tool_name", "")
-                    if tool_name in ("write_canvas", "edit_canvas", "show_skill_field_in_canvas", "load_template_to_canvas"):
+                    if tool_name in ("canvas_write", "canvas_edit", "skill_field_load", "skill_template_load"):
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok" and result.get("canvas_id"):
@@ -1482,7 +1482,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     await self._sink.send_event(canvas_event)
                         except (json.JSONDecodeError, AttributeError):
                             pass
-                    if tool_name == "active_canvas":
+                    if tool_name == "canvas_activate":
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
@@ -1493,7 +1493,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     # Intercept task tool results and broadcast tasks.updated
-                    if tool_name == "update_tasks":
+                    if tool_name == "chat_task_update":
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
@@ -1503,10 +1503,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 })
                         except (json.JSONDecodeError, AttributeError):
                             pass
-                    # Intercept attach_skills results: mirror on self.active_skill_id
+                    # Intercept chat_skill_attach results: mirror on self.active_skill_id
                     # and emit the existing skill.attached / skill.detached events
                     # so the frontend pill UI updates automatically.
-                    if tool_name == "attach_skills":
+                    if tool_name == "chat_skill_attach":
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":

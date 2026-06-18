@@ -1,6 +1,6 @@
 """Deduplicate tool results to reduce token consumption.
 
-When the LLM calls both search_documents and read_document for the same
+When the LLM calls both document_search and document_read for the same
 document, the same chunk content can appear multiple times.  This module
 provides a stateless pass that redacts duplicate content from *older* tool
 results (keeping the newest copy intact) and redacts descriptions already
@@ -46,8 +46,8 @@ def deduplicate_tool_results(
 ) -> list[Message]:
     """Return a new message list with duplicate tool-result content redacted.
 
-    - Scans ``role="tool"`` messages for ``search_documents`` /
-      ``read_document`` results.
+    - Scans ``role="tool"`` messages for ``document_search`` /
+      ``document_read`` results.
     - Tracks chunk coverage per ``doc_index``.
     - If ALL chunks in an older result are covered by newer results for the
       same doc_index, replaces chunk content with a short placeholder.
@@ -62,9 +62,9 @@ def deduplicate_tool_results(
 
     # Parse coverage for each tool result
     for info in tool_infos:
-        if info.tool_name == "search_documents":
+        if info.tool_name == "document_search":
             info.coverage = _parse_search_coverage(info.content)
-        elif info.tool_name == "read_document":
+        elif info.tool_name == "document_read":
             info.coverage = _parse_read_coverage(info.content)
 
     # Build "seen" coverage scanning newest-first
@@ -96,14 +96,14 @@ def deduplicate_tool_results(
     result = list(messages)  # shallow copy of list
     for info in tool_infos:
         chunk_docs = chunk_redact.get(info.msg_index, set())
-        desc_docs = context_doc_indices if info.tool_name == "search_documents" else set()
+        desc_docs = context_doc_indices if info.tool_name == "document_search" else set()
 
         if not chunk_docs and not desc_docs:
             continue
 
-        if info.tool_name == "search_documents":
+        if info.tool_name == "document_search":
             new_content = _redact_search_content(info.content, chunk_docs, desc_docs)
-        elif info.tool_name == "read_document":
+        elif info.tool_name == "document_read":
             new_content = _redact_read_content(info.content, chunk_docs)
         else:
             continue
@@ -122,7 +122,7 @@ def deduplicate_tool_results(
 
 
 def _identify_tool_messages(messages: list[Message]) -> list[_ToolResultInfo]:
-    """Find tool-result messages for search_documents / read_document.
+    """Find tool-result messages for document_search / document_read.
 
     Correlates ``role="tool"`` messages to their tool names by matching
     ``tool_call_id`` against preceding assistant messages' ``tool_calls[].id``.
@@ -134,7 +134,7 @@ def _identify_tool_messages(messages: list[Message]) -> list[_ToolResultInfo]:
             for tc in msg.tool_calls:
                 call_id_to_name[tc.id] = tc.name
 
-    target_tools = {"search_documents", "read_document"}
+    target_tools = {"document_search", "document_read"}
     infos: list[_ToolResultInfo] = []
 
     for idx, msg in enumerate(messages):
@@ -154,7 +154,7 @@ def _identify_tool_messages(messages: list[Message]) -> list[_ToolResultInfo]:
 
 
 def _parse_search_coverage(content: str) -> dict[int, set[int]]:
-    """Parse search_documents markdown output to extract chunk coverage.
+    """Parse document_search markdown output to extract chunk coverage.
 
     Returns ``{doc_index: set(chunk_indices)}`` for each result block.
     """
@@ -188,7 +188,7 @@ def _parse_search_coverage(content: str) -> dict[int, set[int]]:
 
 
 def _parse_read_coverage(content: str) -> dict[int, set[int]]:
-    """Parse read_document JSON output to extract chunk coverage.
+    """Parse document_read JSON output to extract chunk coverage.
 
     Returns ``{doc_index: set(chunk_indices)}`` for each document entry.
     """
@@ -234,7 +234,7 @@ def _redact_search_content(
     chunk_redact_doc_indices: set[int],
     desc_redact_doc_indices: set[int],
 ) -> str:
-    """Redact chunk content and/or descriptions from search_documents output.
+    """Redact chunk content and/or descriptions from document_search output.
 
     Keeps all metadata lines (Document, Type, Description header, Data room,
     Section, chunk label) but replaces the actual chunk text with a placeholder.
@@ -322,7 +322,7 @@ def _redact_search_block_content(body: str) -> str:
 
 
 def _redact_read_content(content: str, doc_indices_to_redact: set[int]) -> str:
-    """Replace content field in read_document JSON for matching doc_indices."""
+    """Replace content field in document_read JSON for matching doc_indices."""
     try:
         data = json.loads(content)
     except (json.JSONDecodeError, TypeError):

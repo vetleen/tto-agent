@@ -78,7 +78,7 @@ stakeholders/partners, key resources
 
 ## Phase 2 — Gap analysis disposition
 
-Load the "Disposition" template to the canvas using `load_template_to_canvas`. \
+Load the "Disposition" template to the canvas using `skill_template_load`. \
 Fill in each row:
 
 - **Status:** ✅ Covered, ⚠️ Partial, ❌ Missing
@@ -104,7 +104,7 @@ Continue until the user is satisfied or explicitly moves to drafting.
 ## Phase 4 — Project description drafting
 
 Load the "Project Description" template to the canvas using \
-`load_template_to_canvas`. Draft the full 5-page project description following \
+`skill_template_load`. Draft the full 5-page project description following \
 the three-section RCN template structure.
 
 ### RCN-specific writing principles
@@ -140,7 +140,7 @@ comparisons — should cite its source inline (e.g., "(Kilde: Report Name, \
 user can always remove unnecessary ones later. Unreferenced claims weaken \
 credibility with evaluators. Prefer original sources, so let's say a market \
 report cites a market size from a webpage, cite that webpage, as the market report did.""",
-    "tool_names": ["view_template", "load_template_to_canvas"],
+    "tool_names": ["skill_template_view", "skill_template_load"],
     "templates": {
         "Disposition": """\
 # Qualification Project — Gap Analysis Disposition

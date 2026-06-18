@@ -30,7 +30,7 @@ class NoOrgPreferencesTest(TestCase):
     @patch("llm.tools.registry.get_tool_registry")
     def test_system_defaults(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {
-            "search_documents": None, "read_document": None,
+            "document_search": None, "document_read": None,
         }
         user = _create_user()
         prefs = get_preferences(user)
@@ -41,8 +41,8 @@ class NoOrgPreferencesTest(TestCase):
         self.assertEqual(prefs.allowed_models, [
             "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         ])
-        self.assertIn("search_documents", prefs.allowed_tools)
-        self.assertIn("read_document", prefs.allowed_tools)
+        self.assertIn("document_search", prefs.allowed_tools)
+        self.assertIn("document_read", prefs.allowed_tools)
 
 
 class OrgRestrictsModelsTest(TestCase):
@@ -148,19 +148,19 @@ class OrgDisablesToolTest(TestCase):
     @patch("llm.tools.registry.get_tool_registry")
     def test_org_disables_tool(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {
-            "search_documents": None,
-            "read_document": None,
+            "document_search": None,
+            "document_read": None,
         }
 
         user = _create_user()
         org = Organization.objects.create(name="TestOrg", slug="testorg", preferences={
-            "tools": {"read_document": False},
+            "tools": {"document_read": False},
         })
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
-        self.assertIn("search_documents", prefs.allowed_tools)
-        self.assertNotIn("read_document", prefs.allowed_tools)
+        self.assertIn("document_search", prefs.allowed_tools)
+        self.assertNotIn("document_read", prefs.allowed_tools)
 
 
 class ThemeFromPreferencesTest(TestCase):
@@ -301,14 +301,14 @@ class SectionAwareToolFilteringTest(TestCase):
         proc_tool = MagicMock(section="document_processing")
 
         mock_registry.return_value.list_tools.return_value = {
-            "search_documents": chat_tool,
+            "document_search": chat_tool,
             "normalize_document": proc_tool,
         }
 
         user = _create_user(email="section@example.com")
         prefs = get_preferences(user)
 
-        self.assertIn("search_documents", prefs.allowed_tools)
+        self.assertIn("document_search", prefs.allowed_tools)
         self.assertNotIn("normalize_document", prefs.allowed_tools)
 
 

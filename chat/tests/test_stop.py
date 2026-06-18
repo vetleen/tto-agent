@@ -25,8 +25,8 @@ def _prefs(**overrides):
         cheap_model="openai/gpt-5-nano",
         allowed_models=["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano"],
         allowed_tools=[
-            "search_documents", "read_document", "web_fetch", "brave_search",
-            "write_canvas", "edit_canvas", "create_subagent",
+            "document_search", "document_read", "web_fetch", "web_search",
+            "canvas_write", "canvas_edit", "chat_subagent_create",
         ],
         allowed_skills=[],
         theme="light",

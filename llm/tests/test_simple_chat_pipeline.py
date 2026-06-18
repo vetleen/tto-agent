@@ -21,7 +21,7 @@ class _MockInput(BaseModel):
 
 
 class _MockToolImpl(ContextAwareTool):
-    name: str = "search_documents"
+    name: str = "document_search"
     description: str = "A mock tool"
     args_schema: type[BaseModel] = _MockInput
     _return_value: str = '{"result": 5}'
@@ -73,15 +73,15 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_run_tool_loop_executes_tool_and_returns_final_response(self):
         """Model returns tool_calls on first call, then text on second; tool is executed."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="What is 2 + 3?")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="call_1", name="search_documents", arguments={"a": 2, "b": 3})
+        tool_call = ToolCall(id="call_1", name="document_search", arguments={"a": 2, "b": 3})
         response_with_tool = ChatResponse(
             message=Message(
                 role="assistant",
@@ -209,15 +209,15 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_run_max_iterations_strips_tools_and_returns(self):
         """When model keeps returning tool_calls, cap at max_tool_iterations then final generate."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Loop")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -253,12 +253,12 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(resolved, [])
 
     def test_resolve_tools_keeps_known_drops_unknown(self):
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         with self._patch_tool_registry(mock_tool):
             resolved = SimpleChatPipeline()._resolve_tools(
-                ["search_documents", "nonexistent_tool"]
+                ["document_search", "nonexistent_tool"]
             )
-        self.assertEqual([t.name for t in resolved], ["search_documents"])
+        self.assertEqual([t.name for t in resolved], ["document_search"])
 
     def test_run_with_only_unknown_tool_completes(self):
         """A skill whose only declared tool no longer exists still completes."""
@@ -286,7 +286,7 @@ class SimpleChatPipelineTests(TestCase):
         """When tool._run() raises, error JSON is appended as tool message and LLM gets another turn."""
         # Create a tool that raises
         class _ErrorTool(ContextAwareTool):
-            name: str = "search_documents"
+            name: str = "document_search"
             description: str = "A tool that errors"
             args_schema: type[BaseModel] = _MockInput
             def _run(self, a: float, b: float) -> str:
@@ -297,10 +297,10 @@ class SimpleChatPipelineTests(TestCase):
             messages=[Message(role="user", content="Use bad tool")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 0, "b": 0})
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 0, "b": 0})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -331,13 +331,13 @@ class SimpleChatPipelineTests(TestCase):
     def test_stream_with_tools_emits_tool_start_and_tool_end(self):
         """When model returns tool_calls in stream path, tool_start/tool_end events are
         emitted and the final response streams tokens in real-time."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         mock_tool._return_value = '{"result": 3}'
         request = ChatRequest(
             messages=[Message(role="user", content="Add 1 and 2")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
 
@@ -345,7 +345,7 @@ class SimpleChatPipelineTests(TestCase):
             yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
             yield StreamEvent(event_type="message_end", data={
                 "content": "",
-                "tool_calls": [{"id": "s1", "name": "search_documents", "arguments": {"a": 1, "b": 2}}],
+                "tool_calls": [{"id": "s1", "name": "document_search", "arguments": {"a": 1, "b": 2}}],
             }, sequence=2, run_id="")
 
         def fake_final_stream(req):
@@ -366,10 +366,10 @@ class SimpleChatPipelineTests(TestCase):
         tool_ends = [e for e in events if e.event_type == "tool_end"]
         self.assertEqual(len(tool_starts), 1)
         self.assertEqual(len(tool_ends), 1)
-        self.assertEqual(tool_starts[0].data["tool_name"], "search_documents")
+        self.assertEqual(tool_starts[0].data["tool_name"], "document_search")
         self.assertEqual(tool_starts[0].data["tool_call_id"], "s1")
         self.assertEqual(tool_starts[0].data["arguments"], {"a": 1, "b": 2})
-        self.assertEqual(tool_ends[0].data["tool_name"], "search_documents")
+        self.assertEqual(tool_ends[0].data["tool_name"], "document_search")
         self.assertIn("3", tool_ends[0].data["result"])
 
         # Verify stream() was called (not generate()) for all iterations
@@ -386,7 +386,7 @@ class SimpleChatPipelineTests(TestCase):
         execution_log = []
 
         class _TimingTool(ContextAwareTool):
-            name: str = "search_documents"
+            name: str = "document_search"
             description: str = "Records execution order"
             args_schema: type[BaseModel] = _MockInput
             def _run(self, a: float, b: float) -> str:
@@ -398,7 +398,7 @@ class SimpleChatPipelineTests(TestCase):
             messages=[Message(role="user", content="test")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
 
@@ -406,7 +406,7 @@ class SimpleChatPipelineTests(TestCase):
             yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
             yield StreamEvent(event_type="message_end", data={
                 "content": "",
-                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+                "tool_calls": [{"id": "t1", "name": "document_search", "arguments": {"a": 1, "b": 1}}],
             }, sequence=2, run_id="")
 
         def fake_final_stream(req):
@@ -439,16 +439,16 @@ class SimpleChatPipelineTests(TestCase):
             messages=[Message(role="user", content="test")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
 
         def fake_tool_stream(req):
             yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
             yield StreamEvent(event_type="message_end", data={
                 "content": "",
-                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+                "tool_calls": [{"id": "t1", "name": "document_search", "arguments": {"a": 1, "b": 1}}],
             }, sequence=2, run_id="")
 
         def fake_final_stream(req):
@@ -470,12 +470,12 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_stream_respects_per_request_max_iterations(self):
         """Per-request max_tool_iterations override should work in streaming mode."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Loop")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
             params={"max_tool_iterations": 2},
         )
@@ -484,7 +484,7 @@ class SimpleChatPipelineTests(TestCase):
             yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
             yield StreamEvent(event_type="message_end", data={
                 "content": "",
-                "tool_calls": [{"id": "c1", "name": "search_documents", "arguments": {"a": 1, "b": 2}}],
+                "tool_calls": [{"id": "c1", "name": "document_search", "arguments": {"a": 1, "b": 2}}],
             }, sequence=2, run_id="")
 
         def fake_final_stream(req):
@@ -537,15 +537,15 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_run_tool_loop_aggregates_usage_across_iterations(self):
         """Usage from all tool loop iterations should be summed, not just the last."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Multi-step")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
 
         iter1 = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
@@ -583,12 +583,12 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_stream_tool_loop_aggregates_usage_across_iterations(self):
         """Streaming tool loop should aggregate usage from all iterations into message_end."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Multi-step stream")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
 
@@ -596,7 +596,7 @@ class SimpleChatPipelineTests(TestCase):
             yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
             yield StreamEvent(event_type="message_end", data={
                 "content": "",
-                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+                "tool_calls": [{"id": "t1", "name": "document_search", "arguments": {"a": 1, "b": 1}}],
                 "input_tokens": 500, "output_tokens": 100, "total_tokens": 600, "cost_usd": 0.01,
             }, sequence=2, run_id="")
 
@@ -627,12 +627,12 @@ class SimpleChatPipelineTests(TestCase):
     def test_stream_error_event_suppresses_message_end(self):
         """A provider error event must end the stream without a synthetic
         message_end — otherwise log_stream records the failed turn as SUCCESS."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
 
@@ -659,12 +659,12 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_stream_error_in_final_exhaustion_stream_suppresses_message_end(self):
         """Same guarantee for the tool-stripped final stream after exhaustion."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
             params={"max_tool_iterations": 0},  # skip straight to the final stream
         )
@@ -688,15 +688,15 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_run_tool_loop_aggregates_cache_and_reasoning_tokens(self):
         """cache_write and reasoning tokens must aggregate across iterations too."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Multi-step")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
-        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
         iter1 = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -729,12 +729,12 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_stream_tool_loop_aggregates_cache_and_reasoning_tokens(self):
         """Streaming loop: cached/cache_write/reasoning tokens summed into message_end."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Multi-step stream")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=RunContext.create(),
         )
 
@@ -742,7 +742,7 @@ class SimpleChatPipelineTests(TestCase):
             yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
             yield StreamEvent(event_type="message_end", data={
                 "content": "",
-                "tool_calls": [{"id": "t1", "name": "search_documents", "arguments": {"a": 1, "b": 1}}],
+                "tool_calls": [{"id": "t1", "name": "document_search", "arguments": {"a": 1, "b": 1}}],
                 "input_tokens": 500, "output_tokens": 100, "total_tokens": 600,
                 "cached_tokens": 100, "cache_write_tokens": 300, "reasoning_tokens": 40,
             }, sequence=2, run_id="")
@@ -774,15 +774,15 @@ class SimpleChatPipelineTests(TestCase):
         from llm.pipelines.simple_chat import MAX_TOOL_RESULT_CHARS
 
         class _HugeTool(ContextAwareTool):
-            name: str = "search_documents"
+            name: str = "document_search"
             description: str = "Returns a huge result"
             args_schema: type[BaseModel] = _MockInput
             def _run(self, a: float, b: float) -> str:
                 return "x" * (MAX_TOOL_RESULT_CHARS + 50_000)
 
-        tc = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        tc = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
         results = SimpleChatPipeline._execute_tool_calls(
-            [tc], {"search_documents": _HugeTool()}
+            [tc], {"document_search": _HugeTool()}
         )
         _, result_str = results[0]
         self.assertIn("[TOOL RESULT TRUNCATED", result_str)
@@ -793,9 +793,9 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_normal_tool_result_not_truncated(self):
         """Results under the cap pass through untouched."""
-        tc = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        tc = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
         results = SimpleChatPipeline._execute_tool_calls(
-            [tc], {"search_documents": self._make_mock_tool("search_documents")}
+            [tc], {"document_search": self._make_mock_tool("document_search")}
         )
         _, result_str = results[0]
         self.assertEqual(result_str, '{"result": 5}')
@@ -803,7 +803,7 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_run_tool_loop_respects_deadline(self):
         """Tool loop should break early when the RunContext deadline is exceeded."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         # Context with started_at in the past so the deadline is already expired
         ctx = RunContext.create(deadline_seconds=60)
         ctx.started_at = datetime.now(timezone.utc) - timedelta(seconds=120)
@@ -812,10 +812,10 @@ class SimpleChatPipelineTests(TestCase):
             messages=[Message(role="user", content="Loop")],
             stream=False,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=ctx,
         )
-        tool_call = ToolCall(id="c1", name="search_documents", arguments={"a": 1, "b": 2})
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
             model="gpt-4o-mini",
@@ -844,7 +844,7 @@ class SimpleChatPipelineTests(TestCase):
 
     def test_stream_tool_loop_respects_deadline(self):
         """Streaming tool loop should break early when the RunContext deadline is exceeded."""
-        mock_tool = self._make_mock_tool("search_documents")
+        mock_tool = self._make_mock_tool("document_search")
         ctx = RunContext.create(deadline_seconds=60)
         ctx.started_at = datetime.now(timezone.utc) - timedelta(seconds=120)
 
@@ -852,7 +852,7 @@ class SimpleChatPipelineTests(TestCase):
             messages=[Message(role="user", content="Stream loop")],
             stream=True,
             model="gpt-4o-mini",
-            tools=["search_documents"],
+            tools=["document_search"],
             context=ctx,
         )
 

@@ -79,12 +79,12 @@ def _format_search_and_read(query: str, enriched: list[dict]) -> str:
 class WebSearchAndReadTool(ContextAwareTool):
     """Search the web and read the content of each result page."""
 
-    name: str = "web_search_and_read"
+    name: str = "web_search_read"
     description: str = (
         "Search the web and read the full content of each result page. "
         "Use this when you need to research a topic in depth — it searches "
         "and fetches all result pages in one step. For quick fact checks "
-        "where snippets suffice, use brave_search instead. "
+        "where snippets suffice, use web_search instead. "
         "Use freshness to restrict results to a recent period."
     )
     args_schema: type[BaseModel] = WebSearchAndReadInput

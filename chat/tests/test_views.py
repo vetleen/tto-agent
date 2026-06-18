@@ -40,7 +40,7 @@ class ChatHomeIntermediateMessagesTests(TestCase):
         narration = ChatMessage.objects.create(
             thread=self.thread, role="assistant",
             content="Let me search the documents...",
-            metadata={"tool_calls": [{"id": "c1", "name": "brave_search", "arguments": {}}]},
+            metadata={"tool_calls": [{"id": "c1", "name": "web_search", "arguments": {}}]},
             is_hidden_from_user=True,
         )
         ChatMessage.objects.create(
@@ -60,7 +60,7 @@ class ChatHomeIntermediateMessagesTests(TestCase):
         )
         empty_hidden = ChatMessage.objects.create(
             thread=self.thread, role="assistant", content="",
-            metadata={"tool_calls": [{"id": "c1", "name": "brave_search", "arguments": {}}]},
+            metadata={"tool_calls": [{"id": "c1", "name": "web_search", "arguments": {}}]},
             is_hidden_from_user=True,
         )
 

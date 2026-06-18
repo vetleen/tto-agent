@@ -34,7 +34,7 @@ Infer which one fits from the meeting type. Ask only if genuinely ambiguous.
 actual shape — decision-making, status update, brainstorm, interview, pitch. \
 That shape determines the right structure, not a fixed template.
 
-2. **Draft to a new canvas** using `write_canvas` with a title like \
+2. **Draft to a new canvas** using `canvas_write` with a title like \
 `Meeting minutes — <meeting name>` (or `Meeting summary — <meeting name>`). \
 A new title creates a new tab — do not overwrite the transcript canvas.
 

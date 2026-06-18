@@ -241,7 +241,7 @@ class InspectToolInput(ReasonBaseModel):
 class CreateSkillTool(ContextAwareTool):
     """Create a new user-level skill."""
 
-    name: str = "create_skill"
+    name: str = "skill_create"
     description: str = (
         "Create a new user-level skill. Returns the slug and ID of the created skill."
     )
@@ -298,7 +298,7 @@ class CreateSkillTool(ContextAwareTool):
 class SaveCanvasToSkillFieldTool(ContextAwareTool):
     """Save the current canvas content to a skill field or template."""
 
-    name: str = "save_canvas_to_skill_field"
+    name: str = "skill_field_save"
     description: str = (
         "Save the current canvas content into a skill's instructions, description, "
         "or a named template. The canvas content is saved verbatim."
@@ -376,7 +376,7 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
 class ShowSkillFieldInCanvasTool(ContextAwareTool):
     """Load a skill field or template into the canvas for viewing/editing."""
 
-    name: str = "show_skill_field_in_canvas"
+    name: str = "skill_field_load"
     description: str = (
         "Load a skill's instructions, description, or a named template into "
         "the canvas. This allows the user to view and edit the content."
@@ -430,7 +430,7 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
 class EditSkillTool(ContextAwareTool):
     """Edit a skill's metadata or text fields."""
 
-    name: str = "edit_skill"
+    name: str = "skill_edit"
     description: str = (
         "Edit a skill's name, slug, tool_names, is_active, or apply "
         "find-replace edits to text fields like description."
@@ -597,7 +597,7 @@ class EditSkillTool(ContextAwareTool):
 class DeleteSkillTool(ContextAwareTool):
     """Delete a user or org skill."""
 
-    name: str = "delete_skill"
+    name: str = "skill_delete"
     description: str = "Delete a skill that the user owns. System skills cannot be deleted."
     args_schema: type[BaseModel] = DeleteSkillInput
     section: str = "skills"
@@ -631,7 +631,7 @@ class DeleteSkillTool(ContextAwareTool):
 class ViewTemplateTool(ContextAwareTool):
     """View the content of a template from the active skill."""
 
-    name: str = "view_template"
+    name: str = "skill_template_view"
     description: str = (
         "View the full content of a named template from the current skill. "
         "Returns the template text so you can reference it when generating output."
@@ -689,7 +689,7 @@ class ViewTemplateTool(ContextAwareTool):
 class LoadTemplateToCanvasTool(ContextAwareTool):
     """Load a template from the active skill into the canvas."""
 
-    name: str = "load_template_to_canvas"
+    name: str = "skill_template_load"
     description: str = (
         "Load a named template from the current skill into the canvas. "
         "Use this to give the user a starting point they can edit. "
@@ -766,7 +766,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
 class ListSkillToolsTool(ContextAwareTool):
     """List skill-specific tools that can be attached to a skill."""
 
-    name: str = "list_skill_tools"
+    name: str = "skill_tool_list"
     description: str = (
         "List all skill-specific tools — the tools that must be explicitly "
         "attached to a skill via tool_names. Use this to discover which "
@@ -795,7 +795,7 @@ class ListSkillToolsTool(ContextAwareTool):
 class InspectToolTool(ContextAwareTool):
     """Inspect a tool to see its description and determine if it's appropriate for a skill."""
 
-    name: str = "inspect_tool"
+    name: str = "skill_tool_inspect"
     description: str = (
         "Get the description of a specific tool by name. Use this to "
         "understand what a tool does before adding it to a skill's tool_names."
@@ -834,7 +834,7 @@ class AttachSkillsInput(ReasonBaseModel):
 
 
 class AttachSkillsTool(ContextAwareTool):
-    name: str = "attach_skills"
+    name: str = "chat_skill_attach"
     description: str = (
         "Attach a skill from the available skills list to this chat thread, "
         "replacing any skill currently attached. Pass an empty list to "

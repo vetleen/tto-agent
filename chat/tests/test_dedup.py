@@ -206,9 +206,9 @@ class DeduplicateToolResultsTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
-            _assistant_msg([("call_2", "read_document")]),
+            _assistant_msg([("call_2", "document_read")]),
             _tool_msg("call_2", read_content),
         ]
 
@@ -228,9 +228,9 @@ class DeduplicateToolResultsTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "read_document")]),
+            _assistant_msg([("call_1", "document_read")]),
             _tool_msg("call_1", read_content),
-            _assistant_msg([("call_2", "search_documents")]),
+            _assistant_msg([("call_2", "document_search")]),
             _tool_msg("call_2", search_content),
         ]
 
@@ -251,9 +251,9 @@ class DeduplicateToolResultsTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
-            _assistant_msg([("call_2", "read_document")]),
+            _assistant_msg([("call_2", "document_read")]),
             _tool_msg("call_2", read_content),
         ]
 
@@ -273,9 +273,9 @@ class DeduplicateToolResultsTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
-            _assistant_msg([("call_2", "read_document")]),
+            _assistant_msg([("call_2", "document_read")]),
             _tool_msg("call_2", read_content),
         ]
 
@@ -294,11 +294,11 @@ class DeduplicateToolResultsTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
-            _assistant_msg([("call_2", "read_document")]),
+            _assistant_msg([("call_2", "document_read")]),
             _tool_msg("call_2", read1),
-            _assistant_msg([("call_3", "read_document")]),
+            _assistant_msg([("call_3", "document_read")]),
             _tool_msg("call_3", read2),
         ]
 
@@ -321,9 +321,9 @@ class DeduplicateToolResultsTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search1),
-            _assistant_msg([("call_2", "search_documents")]),
+            _assistant_msg([("call_2", "document_search")]),
             _tool_msg("call_2", search2),
         ]
 
@@ -354,7 +354,7 @@ class DescriptionDedupTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
         ]
 
@@ -372,7 +372,7 @@ class DescriptionDedupTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
         ]
 
@@ -391,7 +391,7 @@ class DescriptionDedupTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
         ]
 
@@ -416,9 +416,9 @@ class OutputQualityTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
-            _assistant_msg([("call_2", "read_document")]),
+            _assistant_msg([("call_2", "document_read")]),
             _tool_msg("call_2", read_content),
         ]
 
@@ -445,9 +445,9 @@ class OutputQualityTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "read_document")]),
+            _assistant_msg([("call_1", "document_read")]),
             _tool_msg("call_1", read_content),
-            _assistant_msg([("call_2", "search_documents")]),
+            _assistant_msg([("call_2", "document_search")]),
             _tool_msg("call_2", search_content),
         ]
 
@@ -462,7 +462,7 @@ class OutputQualityTests(SimpleTestCase):
     def test_non_doc_tool_results_untouched(self):
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "update_tasks")]),
+            _assistant_msg([("call_1", "chat_task_update")]),
             _tool_msg("call_1", '{"status": "ok"}'),
         ]
 
@@ -491,9 +491,9 @@ class OutputQualityTests(SimpleTestCase):
 
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "search_documents")]),
+            _assistant_msg([("call_1", "document_search")]),
             _tool_msg("call_1", search_content),
-            _assistant_msg([("call_2", "read_document")]),
+            _assistant_msg([("call_2", "document_read")]),
             _tool_msg("call_2", read_content),
         ]
 
@@ -519,11 +519,11 @@ class EdgeCaseTests(SimpleTestCase):
         self.assertEqual(result, [])
 
     def test_error_json_tool_result(self):
-        """read_document returning an error should not crash."""
+        """document_read returning an error should not crash."""
         content = json.dumps({"error": "No data rooms attached", "documents": []})
         messages = [
             _user_msg(),
-            _assistant_msg([("call_1", "read_document")]),
+            _assistant_msg([("call_1", "document_read")]),
             _tool_msg("call_1", content),
         ]
 

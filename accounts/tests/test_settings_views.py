@@ -124,7 +124,7 @@ class SettingsPageTests(TestCase):
             mid_model="openai/gpt-5-mini",
             cheap_model="",
             allowed_models=["openai/gpt-5", "openai/gpt-5-mini"],
-            allowed_tools=["search_documents"],
+            allowed_tools=["document_search"],
             theme="light",
         )
         self.client.login(email=self.user.email, password=self.password)
@@ -274,7 +274,7 @@ class OrgSettingsAccessTests(TestCase):
         skills_tool = MagicMock(section="skills", description="Create a skill")
         mock_reg.return_value.list_tools.return_value = {
             "web_fetch": chat_tool,
-            "create_skill": skills_tool,
+            "skill_create": skills_tool,
         }
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.get(self.url)
@@ -304,14 +304,14 @@ class OrgSettingsAccessTests(TestCase):
     @patch("llm.tools.registry.get_tool_registry")
     def test_globally_disabled_tool_in_org_tools_json(self, mock_reg, mock_models):
         mock_reg.return_value.list_tools.return_value = {}
-        self.org.preferences = {"tools": {"create_skill": False}}
+        self.org.preferences = {"tools": {"skill_create": False}}
         self.org.save(update_fields=["preferences"])
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         import json
         org_tools = json.loads(response.context["org_tools_json"])
-        self.assertFalse(org_tools["create_skill"])
+        self.assertFalse(org_tools["skill_create"])
 
     def test_member_gets_403(self):
         self.client.login(email=self.member_user.email, password=self.password)
@@ -405,12 +405,12 @@ class OrgToolsUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"name": "read_document", "enabled": False}),
+            json.dumps({"name": "document_read", "enabled": False}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
-        self.assertFalse(self.org.preferences["tools"]["read_document"])
+        self.assertFalse(self.org.preferences["tools"]["document_read"])
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -447,13 +447,13 @@ class OrgSkillsUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"slug": "skill-creator", "tool": "create_skill", "enabled": False}),
+            json.dumps({"slug": "skill-creator", "tool": "skill_create", "enabled": False}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertFalse(
-            self.org.preferences["skills"]["skill-creator"]["tools"]["create_skill"]
+            self.org.preferences["skills"]["skill-creator"]["tools"]["skill_create"]
         )
 
     def test_non_admin_gets_403(self):
@@ -503,7 +503,7 @@ class PreferencesSkillCascadeTests(TestCase):
 
         self.skill = AgentSkill.objects.create(
             slug="test-skill", name="Test Skill", instructions="Inst.",
-            level="system", tool_names=["create_skill", "edit_skill"],
+            level="system", tool_names=["skill_create", "skill_edit"],
         )
 
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
@@ -560,10 +560,10 @@ class PreferencesSkillCascadeTests(TestCase):
         # and keeps only section == "skills" tools.
         skills_tool = MagicMock(section="skills")
         mock_reg.return_value.get_tool.side_effect = (
-            lambda name: skills_tool if name in ("create_skill", "edit_skill") else None
+            lambda name: skills_tool if name in ("skill_create", "skill_edit") else None
         )
         self.org.preferences = {
-            "skills": {"test-skill": {"enabled": True, "tools": {"create_skill": False}}}
+            "skills": {"test-skill": {"enabled": True, "tools": {"skill_create": False}}}
         }
         self.org.save(update_fields=["preferences"])
 
@@ -571,8 +571,8 @@ class PreferencesSkillCascadeTests(TestCase):
 
         prefs = get_preferences(self.user)
         skill_entry = next(s for s in prefs.allowed_skills if s["slug"] == "test-skill")
-        self.assertNotIn("create_skill", skill_entry["tool_names"])
-        self.assertIn("edit_skill", skill_entry["tool_names"])
+        self.assertNotIn("skill_create", skill_entry["tool_names"])
+        self.assertIn("skill_edit", skill_entry["tool_names"])
 
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")
@@ -584,7 +584,7 @@ class PreferencesSkillCascadeTests(TestCase):
         # and keeps only section == "skills" tools.
         skills_tool = MagicMock(section="skills")
         mock_reg.return_value.get_tool.side_effect = (
-            lambda name: skills_tool if name in ("create_skill", "edit_skill") else None
+            lambda name: skills_tool if name in ("skill_create", "skill_edit") else None
         )
         self.org.preferences = {"skills": {"test-skill": {"enabled": True}}}
         self.org.save(update_fields=["preferences"])
@@ -594,12 +594,12 @@ class PreferencesSkillCascadeTests(TestCase):
         prefs = get_preferences(self.user)
         # Skill tools should NOT be in the base allowed_tools — they are
         # only injected at chat time when the skill is active
-        self.assertNotIn("create_skill", prefs.allowed_tools)
-        self.assertNotIn("edit_skill", prefs.allowed_tools)
+        self.assertNotIn("skill_create", prefs.allowed_tools)
+        self.assertNotIn("skill_edit", prefs.allowed_tools)
         # But they should be listed in the skill's allowed_skills entry
         skill_entry = next(s for s in prefs.allowed_skills if s["slug"] == "test-skill")
-        self.assertIn("create_skill", skill_entry["tool_names"])
-        self.assertIn("edit_skill", skill_entry["tool_names"])
+        self.assertIn("skill_create", skill_entry["tool_names"])
+        self.assertIn("skill_edit", skill_entry["tool_names"])
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -1840,7 +1840,7 @@ class OrgAdminForbiddenNegotiationTests(TestCase):
     def test_fetch_post_receives_json_403(self):
         response = self.client.post(
             reverse("accounts:org_tools_update"),
-            json.dumps({"name": "read_document", "enabled": False}),
+            json.dumps({"name": "document_read", "enabled": False}),
             content_type="application/json",
             HTTP_ACCEPT="*/*",
         )

@@ -29,8 +29,8 @@ A skill is a database record with these fields:
 - **name** — Human-readable title (e.g. "Patent Claim Drafter")
 - **description** — 1-1024 chars. This is the ONLY text the system sees when deciding whether to activate the skill. It is the primary trigger mechanism. Keep it short.
 - **instructions** — The full playbook injected into your system prompt when the skill is active. This is where the skill's logic lives.
-- **tool_names** — List of tool names the skill needs (e.g. `["search_documents", "read_document"]`). These tools become available only when they are attached to ab active skill.
-- **templates** — Named text templates associated with the skill (e.g. a patent claim format, a report skeleton). When the skill is active, template names are listed in the system prompt; the agent accesses their content on demand via `view_template` or `load_template_to_canvas`.
+- **tool_names** — List of tool names the skill needs (e.g. `["document_search", "document_read"]`). These tools become available only when they are attached to ab active skill.
+- **templates** — Named text templates associated with the skill (e.g. a patent claim format, a report skeleton). When the skill is active, template names are listed in the system prompt; the agent accesses their content on demand via `skill_template_view` or `skill_template_load`.
 
 Skills exist at three levels: **system** (built-in, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it for the user by default, but user may toggle which version is active in the settings.
 
@@ -40,9 +40,9 @@ Each skill field lives in its own canvas tab:
 
 | Canvas tab title | Skill field | Persist with |
 |---|---|---|
-| `Description` | `description` | `save_canvas_to_skill_field(canvas_name="Description", field_name="description")` |
-| `Instructions` | `instructions` | `save_canvas_to_skill_field(canvas_name="Instructions", field_name="instructions")` |
-| `Template: <name>` | template `<name>` | `save_canvas_to_skill_field(canvas_name="Template: <name>", field_name="<name>")` |
+| `Description` | `description` | `skill_field_save(canvas_name="Description", field_name="description")` |
+| `Instructions` | `instructions` | `skill_field_save(canvas_name="Instructions", field_name="instructions")` |
+| `Template: <name>` | template `<name>` | `skill_field_save(canvas_name="Template: <name>", field_name="<name>")` |
 
 ## Workflow
 
@@ -50,8 +50,8 @@ You guide the user through a repeating loop:
 
 1. **Capture intent** — understand what the skill should do
 2. **Draft in canvas** — each field (description, instructions, and any templates) gets its own canvas tab. Iterate with the user.
-3. **Create & persist** — `create_skill` to create the DB record, then `save_canvas_to_skill_field` for each tab
-4. **Attach tools** — choose which existing tools the skill needs via `edit_skill` with `tool_names`
+3. **Create & persist** — `skill_create` to create the DB record, then `skill_field_save` for each tab
+4. **Attach tools** — choose which existing tools the skill needs via `skill_edit` with `tool_names`
 5. **Test** — have the user try the skill in a fresh conversation
 6. **Review & improve** — revise based on feedback, optimize the description for trigger accuracy
 
@@ -188,8 +188,8 @@ Use templates when the skill should produce output in a very specific format
 When adding a template to the skill, draft it in its own canvas tab (`Template: <name>`), iterate with
 the user, then persist alongside the other fields in Step 3.
 
-**Important:** When a skill has templates, add `view_template` and
-`load_template_to_canvas` to the skill's `tool_names` — otherwise the agent
+**Important:** When a skill has templates, add `skill_template_view` and
+`skill_template_load` to the skill's `tool_names` — otherwise the agent
 won't be able to access the templates at runtime.
 
 ---
@@ -198,23 +198,23 @@ won't be able to access the templates at runtime.
 
 Once the user is happy with the drafts:
 
-1. `create_skill` to create the DB record
-2. `save_canvas_to_skill_field` for each canvas tab (Description, Instructions, and any Templates)
+1. `skill_create` to create the DB record
+2. `skill_field_save` for each canvas tab (Description, Instructions, and any Templates)
 
 ---
 
 ## Step 4: Attach tools
 
-Use `list_skill_tools` to see the tools that can be attached to a skill.
+Use `skill_tool_list` to see the tools that can be attached to a skill.
 These are skill-specific tools — they are only available when a skill explicitly
 lists them in its `tool_names`. Standard tools (web search, canvas, document
 search, sub-agents, etc.) are always available and do not need to be attached.
 
 To discover and attach tools:
-1. Use `list_skill_tools` to see available skill-specific tools
-2. Use `inspect_tool` to inspect a specific tool in more detail
+1. Use `skill_tool_list` to see available skill-specific tools
+2. Use `skill_tool_inspect` to inspect a specific tool in more detail
 3. Discuss with the user which tools the skill actually needs
-4. Save the list via `edit_skill`, e.g. `updates={{"tool_names": ["view_template", "load_template_to_canvas"]}}`
+4. Save the list via `skill_edit`, e.g. `updates={{"tool_names": ["skill_template_view", "skill_template_load"]}}`
 
 ---
 
@@ -237,9 +237,9 @@ attached. They can then come back to this conversation to give feedback.
 
 Based on test results, iterate on the skill:
 
-1. Use `show_skill_field_in_canvas` to load fields into canvas tabs, if they are not already loaded.
+1. Use `skill_field_load` to load fields into canvas tabs, if they are not already loaded.
 2. Edit with the user
-3. Save back with `save_canvas_to_skill_field`
+3. Save back with `skill_field_save`
 
 **How to think about improvements:**
 
@@ -253,7 +253,7 @@ Based on test results, iterate on the skill:
 
 - **Revisit the description.** Did the skill trigger correctly? Were there
   false positives or negatives? Are there keywords users might use that
-  aren't captured? Update via `edit_skill`.
+  aren't captured? Update via `skill_edit`.
 
 Repeat until the user is satisfied.
 
@@ -288,12 +288,12 @@ Repeat until the user is satisfied.
    of problem, not specific instances.
    """,
     "tool_names": [
-        "create_skill",
-        "edit_skill",
-        "delete_skill",
-        "save_canvas_to_skill_field",
-        "show_skill_field_in_canvas",
-        "list_skill_tools",
-        "inspect_tool",
+        "skill_create",
+        "skill_edit",
+        "skill_delete",
+        "skill_field_save",
+        "skill_field_load",
+        "skill_tool_list",
+        "skill_tool_inspect",
     ],
 }

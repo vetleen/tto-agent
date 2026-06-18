@@ -2254,44 +2254,42 @@
       if (container) {
         const card = document.createElement("div"); card.className = "tool-card tool"; card.setAttribute("data-tool-id", toolId);
         let displayText = "Working...";
-        if (toolName === "search_documents") displayText = "Searching documents...";
-        else if (toolName === "read_document") displayText = "Reading document...";
-        else if (toolName === "active_canvas") displayText = "Switching active canvases...";
-        else if (toolName === "write_canvas") displayText = "Writing document...";
-        else if (toolName === "edit_canvas") displayText = "Editing document...";
+        if (toolName === "document_search") displayText = "Searching documents...";
+        else if (toolName === "document_read") displayText = "Reading document...";
+        else if (toolName === "canvas_activate") displayText = "Switching active canvases...";
+        else if (toolName === "canvas_write") displayText = "Writing document...";
+        else if (toolName === "canvas_edit") displayText = "Editing document...";
         else if (toolName === "web_fetch") displayText = "Fetching web page...";
-        else if (toolName === "brave_search") displayText = "Searching the web...";
-        else if (toolName === "web_search_and_read") displayText = "Searching and reading web pages...";
-        else if (toolName === "create_skill") displayText = "Creating skill...";
-        else if (toolName === "save_canvas_to_skill_field") displayText = "Saving to skill...";
-        else if (toolName === "show_skill_field_in_canvas") displayText = "Loading skill field...";
-        else if (toolName === "edit_skill") displayText = "Editing skill...";
-        else if (toolName === "delete_skill") displayText = "Deleting skill...";
+        else if (toolName === "web_search") displayText = "Searching the web...";
+        else if (toolName === "web_search_read") displayText = "Searching and reading web pages...";
+        else if (toolName === "skill_create") displayText = "Creating skill...";
+        else if (toolName === "skill_field_save") displayText = "Saving to skill...";
+        else if (toolName === "skill_field_load") displayText = "Loading skill field...";
+        else if (toolName === "skill_edit") displayText = "Editing skill...";
+        else if (toolName === "skill_delete") displayText = "Deleting skill...";
         // Removed in commit 5fd4ef5 — template editing now goes through
-        // save_canvas_to_skill_field and edit_skill's delete_templates param.
+        // skill_field_save and skill_edit's delete_templates param.
         // else if (toolName === "add_skill_template") displayText = "Adding template...";
         // else if (toolName === "edit_skill_template") displayText = "Editing template...";
         // else if (toolName === "delete_skill_template") displayText = "Deleting template...";
-        else if (toolName === "view_template") displayText = "Loading template...";
-        else if (toolName === "load_template_to_canvas") displayText = "Loading template to canvas...";
-        else if (toolName === "list_skill_tools") displayText = "Listing skill tools...";
-        else if (toolName === "inspect_tool") displayText = "Inspecting tool...";
-        else if (toolName === "create_subagent") displayText = "Running sub-agent...";
-        else if (toolName === "update_tasks") displayText = "Updating task plan...";
-        else if (toolName === "attach_skills") displayText = "Attaching skill...";
-        else if (toolName === "save_canvas_to_data_room") displayText = "Saving canvas to data room...";
-        else if (toolName === "list_documents") displayText = "Listing documents...";
-        else if (toolName === "open_document_to_canvas") displayText = "Opening document...";
-        else if (toolName === "save_document") displayText = "Saving document...";
-        else if (toolName === "write_document") displayText = "Writing document...";
-        else if (toolName === "edit_document") displayText = "Editing document...";
-        else if (toolName === "archive_document") displayText = "Archiving document...";
-        else if (toolName === "rename_document") displayText = "Renaming document...";
-        else if (toolName === "list_versions") displayText = "Listing versions...";
-        else if (toolName === "restore_version") displayText = "Restoring version...";
-        else if (toolName === "get_document_status") displayText = "Checking document status...";
+        else if (toolName === "skill_template_view") displayText = "Loading template...";
+        else if (toolName === "skill_template_load") displayText = "Loading template to canvas...";
+        else if (toolName === "skill_tool_list") displayText = "Listing skill tools...";
+        else if (toolName === "skill_tool_inspect") displayText = "Inspecting tool...";
+        else if (toolName === "chat_subagent_create") displayText = "Running sub-agent...";
+        else if (toolName === "chat_task_update") displayText = "Updating task plan...";
+        else if (toolName === "chat_skill_attach") displayText = "Attaching skill...";
+        else if (toolName === "canvas_save_to_document") displayText = "Saving canvas to data room...";
+        else if (toolName === "document_list") displayText = "Listing documents...";
+        else if (toolName === "document_open_to_canvas") displayText = "Opening document...";
+        else if (toolName === "document_edit") displayText = "Editing document...";
+        else if (toolName === "document_archive") displayText = "Archiving document...";
+        else if (toolName === "document_rename") displayText = "Renaming document...";
+        else if (toolName === "document_version_list") displayText = "Listing versions...";
+        else if (toolName === "document_version_restore") displayText = "Restoring version...";
+        else if (toolName === "document_status") displayText = "Checking document status...";
         const toolArgs = (data.data && data.data.arguments) || {}; const reasonText = (typeof toolArgs === "object" && toolArgs.reason) ? ' <span class="italic">(' + escapeHtml(toolArgs.reason) + ')</span>' : '';
-        if (toolName === "create_subagent" && toolId && typeof toolArgs === "object" && toolArgs.reason) subagentReasons[toolId] = toolArgs.reason;
+        if (toolName === "chat_subagent_create" && toolId && typeof toolArgs === "object" && toolArgs.reason) subagentReasons[toolId] = toolArgs.reason;
         card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + reasonText + '</span>';
         container.appendChild(card);
       }
@@ -2305,44 +2303,42 @@
         const card = currentStreamingElement.querySelector('.tool-card[data-tool-id="' + toolId + '"]');
         if (card) {
           let doneLabel = "Done";
-          try { const result = JSON.parse(resultStr); if (toolName === "search_documents" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "read_document" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); else if (toolName === "attach_skills" && result && result.status === "ok") { if (result.attached_skill_name) doneLabel = "Attached skill: " + result.attached_skill_name; else if (result.detached) doneLabel = "Detached skill"; else if (result.no_change) doneLabel = "Skill already attached"; else doneLabel = "No skill attached"; } else if (toolName === "create_subagent" && result.status) { if (result.status === "queued") doneLabel = "Sub-agent queued"; else if (result.status === "started") doneLabel = "Sub-agent dispatched"; else if (result.status === "completed") doneLabel = "Sub-agent finished"; else if (result.status === "timeout") doneLabel = "Sub-agent dispatched"; else if (result.status === "error") doneLabel = "Sub-agent failed"; else doneLabel = "Sub-agent dispatched"; if (result.status === "queued" || result.status === "started" || result.status === "timeout") { var reason = subagentReasons[toolId] || null; delete subagentReasons[toolId]; updateSubagentStatusBar(activeSubagentCount + 1, reason); } } else if (toolName === "save_canvas_to_data_room" && result.status === "ok") doneLabel = "Saved \"" + result.canvas_title + "\" to " + result.data_room_name; } catch (e) {}
-          if (doneLabel === "Done") { if (toolName === "search_documents") doneLabel = "Searched documents";
-          else if (toolName === "read_document") doneLabel = "Read document";
-          else if (toolName === "active_canvas") doneLabel = "Updated active canvases";
-          else if (toolName === "write_canvas") doneLabel = "Rewrote the canvas text from scratch";
-          else if (toolName === "edit_canvas") doneLabel = "Edited the canvas text";
+          try { const result = JSON.parse(resultStr); if (toolName === "document_search" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "document_read" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); else if (toolName === "chat_skill_attach" && result && result.status === "ok") { if (result.attached_skill_name) doneLabel = "Attached skill: " + result.attached_skill_name; else if (result.detached) doneLabel = "Detached skill"; else if (result.no_change) doneLabel = "Skill already attached"; else doneLabel = "No skill attached"; } else if (toolName === "chat_subagent_create" && result.status) { if (result.status === "queued") doneLabel = "Sub-agent queued"; else if (result.status === "started") doneLabel = "Sub-agent dispatched"; else if (result.status === "completed") doneLabel = "Sub-agent finished"; else if (result.status === "timeout") doneLabel = "Sub-agent dispatched"; else if (result.status === "error") doneLabel = "Sub-agent failed"; else doneLabel = "Sub-agent dispatched"; if (result.status === "queued" || result.status === "started" || result.status === "timeout") { var reason = subagentReasons[toolId] || null; delete subagentReasons[toolId]; updateSubagentStatusBar(activeSubagentCount + 1, reason); } } else if (toolName === "canvas_save_to_document" && result.status === "ok") doneLabel = "Saved \"" + result.canvas_title + "\" to " + result.data_room_name; } catch (e) {}
+          if (doneLabel === "Done") { if (toolName === "document_search") doneLabel = "Searched documents";
+          else if (toolName === "document_read") doneLabel = "Read document";
+          else if (toolName === "canvas_activate") doneLabel = "Updated active canvases";
+          else if (toolName === "canvas_write") doneLabel = "Rewrote the canvas text from scratch";
+          else if (toolName === "canvas_edit") doneLabel = "Edited the canvas text";
           else if (toolName === "web_fetch") doneLabel = "Fetched web page";
-          else if (toolName === "brave_search") doneLabel = "Searched the web";
-          else if (toolName === "web_search_and_read") doneLabel = "Searched and read web pages";
-          else if (toolName === "create_skill") doneLabel = "Created skill";
-          else if (toolName === "save_canvas_to_skill_field") doneLabel = "Saved to skill";
-          else if (toolName === "show_skill_field_in_canvas") doneLabel = "Loaded skill field to canvas";
-          else if (toolName === "edit_skill") doneLabel = "Updated skill";
-          else if (toolName === "delete_skill") doneLabel = "Deleted skill";
+          else if (toolName === "web_search") doneLabel = "Searched the web";
+          else if (toolName === "web_search_read") doneLabel = "Searched and read web pages";
+          else if (toolName === "skill_create") doneLabel = "Created skill";
+          else if (toolName === "skill_field_save") doneLabel = "Saved to skill";
+          else if (toolName === "skill_field_load") doneLabel = "Loaded skill field to canvas";
+          else if (toolName === "skill_edit") doneLabel = "Updated skill";
+          else if (toolName === "skill_delete") doneLabel = "Deleted skill";
           // Removed in commit 5fd4ef5 — template editing now goes through
-          // save_canvas_to_skill_field and edit_skill's delete_templates param.
+          // skill_field_save and skill_edit's delete_templates param.
           // else if (toolName === "add_skill_template") doneLabel = "Added template";
           // else if (toolName === "edit_skill_template") doneLabel = "Updated template";
           // else if (toolName === "delete_skill_template") doneLabel = "Deleted template";
-          else if (toolName === "view_template") doneLabel = "Viewed template";
-          else if (toolName === "load_template_to_canvas") doneLabel = "Loaded template to canvas";
-          else if (toolName === "list_skill_tools") doneLabel = "Listed skill tools";
-          else if (toolName === "inspect_tool") doneLabel = "Inspected tool";
-          else if (toolName === "create_subagent") doneLabel = "Sub-agent dispatched";
-          else if (toolName === "update_tasks") doneLabel = "Updated task plan";
-          else if (toolName === "attach_skills") doneLabel = "Updated attached skill";
-          else if (toolName === "save_canvas_to_data_room") doneLabel = "Saved canvas to data room";
-          else if (toolName === "list_documents") doneLabel = "Listed documents";
-          else if (toolName === "open_document_to_canvas") doneLabel = "Opened document";
-          else if (toolName === "save_document") doneLabel = "Saved document";
-          else if (toolName === "write_document") doneLabel = "Wrote document";
-          else if (toolName === "edit_document") doneLabel = "Edited document";
-          else if (toolName === "archive_document") doneLabel = "Archived document";
-          else if (toolName === "rename_document") doneLabel = "Renamed document";
-          else if (toolName === "list_versions") doneLabel = "Listed versions";
-          else if (toolName === "restore_version") doneLabel = "Restored version";
-          else if (toolName === "get_document_status") doneLabel = "Checked document status"; }
-          var isSubagentActive = toolName === "create_subagent" && (doneLabel === "Sub-agent queued" || doneLabel === "Sub-agent dispatched");
+          else if (toolName === "skill_template_view") doneLabel = "Viewed template";
+          else if (toolName === "skill_template_load") doneLabel = "Loaded template to canvas";
+          else if (toolName === "skill_tool_list") doneLabel = "Listed skill tools";
+          else if (toolName === "skill_tool_inspect") doneLabel = "Inspected tool";
+          else if (toolName === "chat_subagent_create") doneLabel = "Sub-agent dispatched";
+          else if (toolName === "chat_task_update") doneLabel = "Updated task plan";
+          else if (toolName === "chat_skill_attach") doneLabel = "Updated attached skill";
+          else if (toolName === "canvas_save_to_document") doneLabel = "Saved canvas to data room";
+          else if (toolName === "document_list") doneLabel = "Listed documents";
+          else if (toolName === "document_open_to_canvas") doneLabel = "Opened document";
+          else if (toolName === "document_edit") doneLabel = "Edited document";
+          else if (toolName === "document_archive") doneLabel = "Archived document";
+          else if (toolName === "document_rename") doneLabel = "Renamed document";
+          else if (toolName === "document_version_list") doneLabel = "Listed versions";
+          else if (toolName === "document_version_restore") doneLabel = "Restored version";
+          else if (toolName === "document_status") doneLabel = "Checked document status"; }
+          var isSubagentActive = toolName === "chat_subagent_create" && (doneLabel === "Sub-agent queued" || doneLabel === "Sub-agent dispatched");
           var iconSvg = isSubagentActive
             ? '<svg class="w-3 h-3 shrink-0 text-fg-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'
             : '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';

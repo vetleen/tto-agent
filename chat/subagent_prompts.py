@@ -44,7 +44,7 @@ You have been given a specific task. Complete it thoroughly and return your find
     if has_task_tool:
         prompt += """
 # Task Planning
-Use `update_tasks` to create and manage a task plan. Be proactive — create a plan before starting work, not after being asked.
+Use `chat_task_update` to create and manage a task plan. Be proactive — create a plan before starting work, not after being asked.
 
 ## When to create a task plan
 - Any request involving 3 or more distinct steps
@@ -95,7 +95,7 @@ Use `update_tasks` to create and manage a task plan. Be proactive — create a p
 
     if tasks:
         status_icons = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
-        prompt += "\n# Current Task Plan\nYou are tracking the following task plan. Update it using `update_tasks` as you make progress.\n\n"
+        prompt += "\n# Current Task Plan\nYou are tracking the following task plan. Update it using `chat_task_update` as you make progress.\n\n"
         for t in tasks:
             icon = status_icons.get(t.get("status", "pending"), "[ ]")
             prompt += f"{icon} {t['title']}\n"

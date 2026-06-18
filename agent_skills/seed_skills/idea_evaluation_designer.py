@@ -745,14 +745,14 @@ an activity can only confirm, it isn't worth the time it takes.
 ## Phase 4 — Output the plan
 
 Load the **"Idea Evaluation Plan"** template to the canvas using \
-`load_template_to_canvas`. Fill every section. The plan must be a \
+`skill_template_load`. Fill every section. The plan must be a \
 standalone document — the user should be able to execute it without \
 opening this conversation again.
 
 If the hypothesis was not ready in Phase 2, the plan is short and \
 focused: produce a usable hypothesis, then rerun this skill. Don't \
 pad with work that depends on an unformed hypothesis.""",
-    "tool_names": ["view_template", "load_template_to_canvas"],
+    "tool_names": ["skill_template_view", "skill_template_load"],
     "templates": {
         "Idea Evaluation Plan": """\
 # Idea Evaluation Plan — [Idea name]

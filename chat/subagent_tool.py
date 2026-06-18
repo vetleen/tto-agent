@@ -33,7 +33,7 @@ class CreateSubagentInput(ReasonBaseModel):
 class CreateSubagentTool(ContextAwareTool):
     """Create a sub-agent to handle a delegated task."""
 
-    name: str = "create_subagent"
+    name: str = "chat_subagent_create"
     description: str = (
         "Delegate a task to an independent sub-agent that runs with its own context and tools. "
         "Use for tasks requiring extensive research, parallel analysis, or focused work. "

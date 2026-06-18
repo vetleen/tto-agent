@@ -253,7 +253,7 @@ class EditCanvasToolTests(TestCase):
             "edits": [{"old_text": "x", "new_text": "y", "reason": ""}]
         }, _ctx(self.user.pk, self.thread.id))
         self.assertEqual(result["status"], "error")
-        self.assertIn("write_canvas", result["message"])
+        self.assertIn("canvas_write", result["message"])
 
     def test_edit_snapshots_uncommitted_user_edits(self):
         """AI edits over user content that isn't checkpointed yet must
@@ -882,7 +882,7 @@ class EditCanvasToolCheckpointTests(TestCase):
         self.assertIn("Bye", cps[1].content)
 
     def test_write_after_edit_creates_separate_checkpoints(self):
-        """A write_canvas after edit_canvas should NOT coalesce (different tool, still ai_edit source though)."""
+        """A canvas_write after canvas_edit should NOT coalesce (different tool, still ai_edit source though)."""
         self._setup_canvas("Hello world.")
         ctx = _ctx(self.user.pk, self.thread.id)
         _invoke(EditCanvasTool, {
@@ -892,7 +892,7 @@ class EditCanvasToolCheckpointTests(TestCase):
         _invoke(WriteCanvasTool, {"title": "Doc", "content": "Brand new"}, ctx)
         canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
         cps = list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
-        # original + ai_edit (from edit) — but write_canvas on existing canvas
+        # original + ai_edit (from edit) — but canvas_write on existing canvas
         # also produces ai_edit, which coalesces with the previous ai_edit
         self.assertEqual(len(cps), 2)
         self.assertEqual(cps[1].content, "Brand new")

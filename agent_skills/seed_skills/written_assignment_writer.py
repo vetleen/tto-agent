@@ -87,7 +87,7 @@ lacking analysis.
 3. **Coherence check:** Verify every paragraph opening signals how it \
 connects to the previous one.
 
-Apply edits using `edit_canvas`, explaining each change.
+Apply edits using `canvas_edit`, explaining each change.
 
 ### 5. Edit and format
 

@@ -151,19 +151,19 @@ class EditSkillToolTests(TestCase):
         """Standard (chat-section) tools are silently removed from tool_names."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["view_template", "write_canvas", "search_documents"]},
+            updates={"tool_names": ["skill_template_view", "canvas_write", "document_search"]},
         ))
         self.assertEqual(result["status"], "ok")
-        # write_canvas and search_documents are chat-section tools — silently removed
-        self.assertEqual(result["tool_names"], ["view_template"])
+        # canvas_write and document_search are chat-section tools — silently removed
+        self.assertEqual(result["tool_names"], ["skill_template_view"])
         self.skill.refresh_from_db()
-        self.assertEqual(self.skill.tool_names, ["view_template"])
+        self.assertEqual(self.skill.tool_names, ["skill_template_view"])
 
     def test_tool_names_all_standard_results_in_empty_list(self):
         """If only standard tools are passed, tool_names becomes empty."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["write_canvas", "edit_canvas"]},
+            updates={"tool_names": ["canvas_write", "canvas_edit"]},
         ))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["tool_names"], [])
@@ -172,12 +172,12 @@ class EditSkillToolTests(TestCase):
         """Unknown tool names are dropped (allow-list), not passed through."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["view_template", "totally_made_up_tool"]},
+            updates={"tool_names": ["skill_template_view", "totally_made_up_tool"]},
         ))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["tool_names"], ["view_template"])
+        self.assertEqual(result["tool_names"], ["skill_template_view"])
         self.skill.refresh_from_db()
-        self.assertEqual(self.skill.tool_names, ["view_template"])
+        self.assertEqual(self.skill.tool_names, ["skill_template_view"])
 
     def test_find_replace_caps_instructions(self):
         """A find-replace that would grow instructions past the cap is clamped."""
@@ -500,10 +500,10 @@ class ListSkillToolsToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIn("tools", result)
         tool_names = [t["name"] for t in result["tools"]]
-        self.assertIn("create_skill", tool_names)
-        self.assertIn("inspect_tool", tool_names)
-        self.assertNotIn("write_canvas", tool_names)
-        self.assertNotIn("edit_canvas", tool_names)
+        self.assertIn("skill_create", tool_names)
+        self.assertIn("skill_tool_inspect", tool_names)
+        self.assertNotIn("canvas_write", tool_names)
+        self.assertNotIn("canvas_edit", tool_names)
 
     def test_each_entry_has_name_and_description(self):
         result = json.loads(self.tool._run())
@@ -519,9 +519,9 @@ class InspectToolToolTests(TestCase):
         self.tool.context = _make_context(self.user)
 
     def test_inspect_existing_tool(self):
-        result = json.loads(self.tool._run(tool_name="create_skill"))
+        result = json.loads(self.tool._run(tool_name="skill_create"))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["name"], "create_skill")
+        self.assertEqual(result["name"], "skill_create")
         self.assertIn("description", result)
         self.assertTrue(len(result["description"]) > 0)
 

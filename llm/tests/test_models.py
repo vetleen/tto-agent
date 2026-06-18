@@ -107,8 +107,8 @@ class LLMCallLogModelTests(TestCase):
 
     def test_tools_stores_list_of_tool_dicts(self):
         tools = [
-            {"name": "search_documents", "description": "Search docs"},
-            {"name": "read_document", "description": "Read a doc"},
+            {"name": "document_search", "description": "Search docs"},
+            {"name": "document_read", "description": "Read a doc"},
         ]
         log = LLMCallLog.objects.create(
             model="gpt-4o-mini",
@@ -118,7 +118,7 @@ class LLMCallLogModelTests(TestCase):
         )
         log.refresh_from_db()
         self.assertEqual(log.tools, tools)
-        self.assertEqual(log.tools[0]["name"], "search_documents")
+        self.assertEqual(log.tools[0]["name"], "document_search")
 
     def test_status_choices(self):
         self.assertEqual(LLMCallLog.Status.SUCCESS, "success")

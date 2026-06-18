@@ -100,7 +100,7 @@ mitigation plan
 
 ## Phase 2 — Gap analysis disposition
 
-Load the "Disposition" template to the canvas using `load_template_to_canvas`. \
+Load the "Disposition" template to the canvas using `skill_template_load`. \
 Fill in each row:
 
 - **Status:** ✅ Covered, ⚠️ Partial, ❌ Missing
@@ -141,7 +141,7 @@ Continue until the user is satisfied or explicitly moves to drafting.
 ## Phase 4 — Application form drafting
 
 Load the "Application Form" template to the canvas using \
-`load_template_to_canvas`. Draft all fields following the NFR web form \
+`skill_template_load`. Draft all fields following the NFR web form \
 structure. Each section header and character limit corresponds to a field \
 in the portal.
 
@@ -191,7 +191,7 @@ enforced by the portal. Draft within these limits. If content exceeds the \
 limit, flag it so the user can trim.
 - **Aim for automatic approval.** Frame content to be unambiguously strong \
 on each of the three criteria (≥4.0 average, no sub-score ≤3).""",
-    "tool_names": ["view_template", "load_template_to_canvas"],
+    "tool_names": ["skill_template_view", "skill_template_load"],
     "templates": {
         "Disposition": """\
 # Verification Project — Gap Analysis Disposition

@@ -25,7 +25,7 @@ from llm.types.streaming import StreamEvent
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _fake_tool(name="search_documents", description="Search docs"):
+def _fake_tool(name="document_search", description="Search docs"):
     """Return a ContextAwareTool instance for schema tests."""
     from pydantic import BaseModel, Field
     from llm.tools.interfaces import ContextAwareTool
@@ -91,7 +91,7 @@ class GenerateNoRawPromptTests(TestCase):
         model, client, bound_client = _make_model_with_mock_client()
         bound_client.invoke.side_effect = _invoke_side_effect(_make_lc_ai_message("OK"))
 
-        schemas = [_fake_tool("search_documents")]
+        schemas = [_fake_tool("document_search")]
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=False,
@@ -132,7 +132,7 @@ class StreamNoRawPromptTests(TestCase):
         chunk.content = "Hello"
         bound_client.stream.side_effect = _stream_side_effect([chunk])
 
-        schemas = [_fake_tool("search_documents")]
+        schemas = [_fake_tool("document_search")]
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=True,
@@ -172,8 +172,8 @@ class LogCallToolsTests(TestCase):
     """Verify log_call stores tools from request.tool_schemas."""
 
     def test_tools_populated_with_tool_schemas(self):
-        tool1 = _fake_tool("search_documents", "Search docs")
-        tool2 = _fake_tool("read_document", "Read a doc")
+        tool1 = _fake_tool("document_search", "Search docs")
+        tool2 = _fake_tool("document_read", "Read a doc")
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=False,
@@ -191,8 +191,8 @@ class LogCallToolsTests(TestCase):
 
         log = LLMCallLog.objects.get(run_id=request.context.run_id)
         self.assertEqual(len(log.tools), 2)
-        self.assertEqual(log.tools[0]["name"], "search_documents")
-        self.assertEqual(log.tools[1]["name"], "read_document")
+        self.assertEqual(log.tools[0]["name"], "document_search")
+        self.assertEqual(log.tools[1]["name"], "document_read")
 
     def test_tools_none_without_tool_schemas(self):
         request = ChatRequest(
@@ -217,7 +217,7 @@ class LogStreamToolsTests(TestCase):
     """Verify log_stream stores tools from request.tool_schemas."""
 
     def test_tools_populated_in_stream_log(self):
-        tool = _fake_tool("search_documents", "Search docs")
+        tool = _fake_tool("document_search", "Search docs")
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=True,
@@ -235,7 +235,7 @@ class LogStreamToolsTests(TestCase):
 
         log = LLMCallLog.objects.get(run_id=run_id)
         self.assertEqual(len(log.tools), 1)
-        self.assertEqual(log.tools[0]["name"], "search_documents")
+        self.assertEqual(log.tools[0]["name"], "document_search")
 
     def test_tools_none_in_stream_log_without_schemas(self):
         request = ChatRequest(
@@ -259,7 +259,7 @@ class LogErrorToolsTests(TestCase):
     """Verify log_error stores tools from request.tool_schemas."""
 
     def test_tools_populated_in_error_log(self):
-        tool = _fake_tool("search_documents", "Search docs")
+        tool = _fake_tool("document_search", "Search docs")
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
             stream=False,
@@ -271,7 +271,7 @@ class LogErrorToolsTests(TestCase):
 
         log = LLMCallLog.objects.get(run_id=request.context.run_id)
         self.assertEqual(len(log.tools), 1)
-        self.assertEqual(log.tools[0]["name"], "search_documents")
+        self.assertEqual(log.tools[0]["name"], "document_search")
 
     def test_tools_none_in_error_log_without_schemas(self):
         request = ChatRequest(

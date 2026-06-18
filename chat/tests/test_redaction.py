@@ -256,7 +256,7 @@ class RedactCanvasTests(TransactionTestCase):
         return list(CanvasCheckpoint.objects.filter(canvas=canvas).order_by("order"))
 
     async def test_canvas_created_during_blocked_turn_is_redacted(self):
-        """Canvas created via write_canvas during a blocked turn gets content replaced."""
+        """Canvas created via canvas_write during a blocked turn gets content replaced."""
         user_msg = await self._make_msg("attack prompt", role="user")
         canvas = await self._make_canvas(content="fabricated legal letter")
         cp = await self._make_checkpoint(canvas, source="original", content="fabricated legal letter")

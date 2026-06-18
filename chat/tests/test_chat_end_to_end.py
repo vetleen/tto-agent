@@ -54,7 +54,7 @@ class _FakeChatModel:
             tool_calls = [
                 ToolCall(
                     id="tc1",
-                    name="search_documents",
+                    name="document_search",
                     arguments={"query": "foo", "k": 1},
                 )
             ]
@@ -78,7 +78,7 @@ class _FakeChatModel:
             tool_calls = [
                 ToolCall(
                     id="tc1",
-                    name="search_documents",
+                    name="document_search",
                     arguments={"query": "foo", "k": 1},
                 )
             ]
@@ -226,9 +226,9 @@ class ChatEndToEndTests(TransactionTestCase):
         msg_end = await communicator.receive_json_from(timeout=5)
 
         self.assertEqual(tool_start["event_type"], "tool_start")
-        self.assertEqual(tool_start["data"]["tool_name"], "search_documents")
+        self.assertEqual(tool_start["data"]["tool_name"], "document_search")
         self.assertEqual(tool_end["event_type"], "tool_end")
-        self.assertEqual(tool_end["data"]["tool_name"], "search_documents")
+        self.assertEqual(tool_end["data"]["tool_name"], "document_search")
         self.assertEqual(msg_start["event_type"], "message_start")
         self.assertEqual(token_ev["event_type"], "token")
         self.assertEqual(token_ev["data"].get("text"), "Done")

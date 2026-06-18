@@ -151,4 +151,4 @@ class AttachSkillsToolTests(TestCase):
 
     def test_tool_registered(self):
         from llm.tools.registry import get_tool_registry
-        self.assertIn("attach_skills", get_tool_registry().list_tools())
+        self.assertIn("chat_skill_attach", get_tool_registry().list_tools())

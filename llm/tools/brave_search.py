@@ -365,7 +365,7 @@ class BraveSearchInput(ReasonBaseModel):
 class BraveSearchTool(ContextAwareTool):
     """Search the web using the Brave Search API."""
 
-    name: str = "brave_search"
+    name: str = "web_search"
     description: str = (
         "Search the web for current information using Brave Search. "
         "Use this when you need up-to-date information, facts, or data "

@@ -85,14 +85,25 @@ class ReadDocumentInput(ReasonBaseModel):
     )
 
 
-class SaveCanvasToDataRoomInput(ReasonBaseModel):
+class CanvasSaveToDocumentInput(ReasonBaseModel):
+    mode: str = Field(
+        description="Required: 'new' to create a brand-new document, or 'overwrite' to file the canvas as a new version of an existing document.",
+    )
     canvas_name: str = Field(
         default="",
         description="Title of the canvas to save. Defaults to the active canvas if omitted.",
     )
+    doc_index: Optional[int] = Field(
+        default=None,
+        description="Index of the document to overwrite (required when mode='overwrite').",
+    )
     data_room_name: str = Field(
         default="",
-        description="Name of the attached data room to save into. Required only when more than one data room is attached.",
+        description="Target data room name when mode='new' and more than one data room is attached.",
+    )
+    new_name: str = Field(
+        default="",
+        description="Name for the new document when mode='new'.",
     )
 
 
@@ -108,21 +119,6 @@ class OpenDocumentInput(ReasonBaseModel):
     canvas_name: str = Field(default="", description="Optional canvas title; defaults to the document name.")
 
 
-class SaveDocumentInput(ReasonBaseModel):
-    doc_index: Optional[int] = Field(default=None, description="Index of the document to overwrite. Required when mode='overwrite'.")
-    canvas_name: str = Field(default="", description="Canvas to save. Defaults to the active canvas.")
-    mode: str = Field(default="overwrite", description="'overwrite' the existing document as a new version, or 'new' to create a new document.")
-    data_room_name: str = Field(default="", description="Target data room name when mode='new' and multiple are attached.")
-    new_name: str = Field(default="", description="Name for the new document when mode='new'.")
-
-
-class WriteDocumentInput(ReasonBaseModel):
-    doc_index: int = Field(description="Index of the document to overwrite with new content (creates a new version).")
-    content: str = Field(description="Full markdown content for the new version.")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
-    reason: str = Field(default="", description="Brief reason for the change.")
-
-
 class DocEditItem(BaseModel):
     old_text: str = Field(description="Exact text to find and replace (must match exactly once).")
     new_text: str = Field(description="Replacement text.")
@@ -130,7 +126,18 @@ class DocEditItem(BaseModel):
 
 class EditDocumentInput(ReasonBaseModel):
     doc_index: int = Field(description="Index of the document to edit (creates a new version).")
-    edits: list[DocEditItem] = Field(description="Targeted find-replace edits applied to the document's working content.")
+    mode: str = Field(
+        default="edit",
+        description="'edit' (default) to apply targeted find-replace edits, or 'rewrite' to replace the whole document with new content.",
+    )
+    edits: list[DocEditItem] = Field(
+        default_factory=list,
+        description="Targeted find-replace edits (mode='edit'). Each old_text must match exactly once.",
+    )
+    content: str = Field(
+        default="",
+        description="Full markdown content for the new version (mode='rewrite').",
+    )
     data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
     reason: str = Field(default="", description="Brief reason for the change.")
 
@@ -205,7 +212,7 @@ def _get_user(user_id):
 _PROCESSING_NOTE = (
     "Saving triggers re-processing (chunk → embed → guardrails → PII). The new version "
     "becomes the live searchable document only once it finishes and clears the scans; until "
-    "then the previously live version stays in retrieval. Use get_document_status to check. "
+    "then the previously live version stays in retrieval. Use document_status to check. "
     "Only save when the document is complete."
 )
 
@@ -215,7 +222,7 @@ _PROCESSING_NOTE = (
 class SearchDocumentsTool(ContextAwareTool):
     """Search data room documents using semantic similarity."""
 
-    name: str = "search_documents"
+    name: str = "document_search"
     description: str = (
         "Search the attached data rooms' documents for information relevant to a query, using "
         "hybrid retrieval and reranking to find the most relevant passages. "
@@ -402,7 +409,7 @@ class SearchDocumentsTool(ContextAwareTool):
 class ReadDocumentTool(ContextAwareTool):
     """Read the full text content of one or more documents by index number."""
 
-    name: str = "read_document"
+    name: str = "document_read"
     description: str = (
         "Read content from one or more documents by their index number — "
         "either the full text or a specific chunk range (via chunk_start/chunk_end). "
@@ -573,41 +580,34 @@ class ReadDocumentTool(ContextAwareTool):
         })
 
 
-class SaveCanvasToDataRoomTool(ContextAwareTool):
-    """Save the current canvas into an attached data room as a markdown document."""
+class CanvasSaveToDocumentTool(ContextAwareTool):
+    """Save a canvas into a data room — as a new document or a new version of an existing one."""
 
-    name: str = "save_canvas_to_data_room"
+    name: str = "canvas_save_to_document"
     description: str = (
-        "Save the current canvas into one of the attached data rooms as a markdown (.md) document. "
-        "The saved document is processed like any upload — chunked, embedded, and scanned for safety "
-        "and PII — and becomes searchable via search_documents. Use this when the user wants to file "
-        "or store a canvas in their data room. Only available when a data room is attached."
+        "Save a canvas into one of the attached data rooms. mode='new' creates a brand-new document; "
+        "mode='overwrite' files the canvas as a NEW VERSION of an existing document (give its doc_index) "
+        "— the document keeps its history and can be rolled back. The saved document is processed like "
+        "any upload (chunked, embedded, and scanned for safety and PII) and becomes searchable via "
+        "document_search. Saving triggers the full processing pipeline, so use it only when the document "
+        "is complete. Only available when a data room is attached."
     )
-    args_schema: type[BaseModel] = SaveCanvasToDataRoomInput
+    args_schema: type[BaseModel] = CanvasSaveToDocumentInput
 
-    def _run(self, canvas_name: str = "", data_room_name: str = "", **kwargs) -> str:
-        from django.contrib.auth import get_user_model
-
+    def _run(self, mode: str, canvas_name: str = "", doc_index: int | None = None,
+             data_room_name: str = "", new_name: str = "", **kwargs) -> str:
         from chat.services import resolve_canvas, save_canvas_to_data_room
-        from documents.models import DataRoom
+        from documents.models import DataRoom, DataRoomDocumentVersion
+        from documents.services.versioning import create_version
+
+        if mode not in ("new", "overwrite"):
+            return json.dumps({"error": "mode is required and must be 'new' or 'overwrite'."})
 
         context = self.context
         thread_id = context.conversation_id if context else None
         user_id = context.user_id if context else None
-        data_room_ids = context.data_room_ids if context else []
-
         if not thread_id:
             return json.dumps({"error": "No thread context available."})
-        if not data_room_ids:
-            return json.dumps({
-                "error": "No data rooms attached. Attach a data room to save canvases into it.",
-            })
-
-        # Verify the user owns the attached rooms (fails closed without a user).
-        try:
-            data_room_ids = _filter_accessible_rooms(data_room_ids, user_id)
-        except ValueError as exc:
-            return json.dumps({"error": str(exc)})
 
         # Resolve the canvas (named or active) and require non-empty content.
         canvas, err = resolve_canvas(thread_id, canvas_name or None)
@@ -616,50 +616,75 @@ class SaveCanvasToDataRoomTool(ContextAwareTool):
         if not (canvas.content or "").strip():
             return json.dumps({"error": f"Canvas '{canvas.title}' is empty; nothing to save."})
 
-        # Resolve the target data room from the attached, accessible rooms.
-        rooms = list(DataRoom.objects.filter(pk__in=data_room_ids))
-        room_names = ", ".join(f'"{r.name}"' for r in rooms)
-        if data_room_name:
-            matches = [r for r in rooms if r.name == data_room_name]
-            if not matches:
-                return json.dumps({
-                    "error": f"No attached data room named '{data_room_name}'. Attached: {room_names}.",
-                })
-            if len(matches) > 1:
-                return json.dumps({
-                    "error": f"Multiple attached data rooms are named '{data_room_name}'; cannot disambiguate.",
-                })
-            target = matches[0]
-        elif len(rooms) == 1:
-            target = rooms[0]
-        else:
-            return json.dumps({
-                "error": f"Multiple data rooms are attached ({room_names}). Specify which with data_room_name.",
-            })
-
-        User = get_user_model()
-        try:
-            user = User.objects.get(pk=user_id)
-        except User.DoesNotExist:
+        user = _get_user(user_id)
+        if user is None:
             return json.dumps({"error": "User not found."})
 
-        doc = save_canvas_to_data_room(canvas, target, user)
+        if mode == "new":
+            data_room_ids = context.data_room_ids if context else []
+            try:
+                data_room_ids = _filter_accessible_rooms(data_room_ids, user_id)
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)})
+
+            # Resolve the target data room from the attached, accessible rooms.
+            rooms = list(DataRoom.objects.filter(pk__in=data_room_ids))
+            room_names = ", ".join(f'"{r.name}"' for r in rooms)
+            if data_room_name:
+                matches = [r for r in rooms if r.name == data_room_name]
+                if not matches:
+                    return json.dumps({
+                        "error": f"No attached data room named '{data_room_name}'. Attached: {room_names}.",
+                    })
+                if len(matches) > 1:
+                    return json.dumps({
+                        "error": f"Multiple attached data rooms are named '{data_room_name}'; cannot disambiguate.",
+                    })
+                target = matches[0]
+            elif len(rooms) == 1:
+                target = rooms[0]
+            else:
+                return json.dumps({
+                    "error": f"Multiple data rooms are attached ({room_names}). Specify which with data_room_name.",
+                })
+
+            if new_name:
+                canvas.title = new_name[:255]
+            doc = save_canvas_to_data_room(canvas, target, user)
+            return json.dumps({
+                "status": "ok",
+                "mode": "new",
+                "doc_index": doc.doc_index,
+                "filename": doc.original_filename,
+                "data_room_name": target.name,
+                "canvas_title": canvas.title,
+                "note": _PROCESSING_NOTE,
+            })
+
+        # mode == "overwrite"
+        if doc_index is None:
+            return json.dumps({"error": "doc_index is required for mode='overwrite'."})
+        doc, err = _resolve_document(context, doc_index)
+        if err:
+            return json.dumps({"error": err})
+        version = create_version(
+            doc, content=canvas.content,
+            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT, created_by=user,
+        )
         return json.dumps({
             "status": "ok",
-            "filename": doc.original_filename,
-            "data_room_name": target.name,
-            "canvas_title": canvas.title,
-            "note": (
-                "The document is being processed in the background (chunked, embedded, and scanned "
-                "for safety and PII) and will appear in the data room shortly."
-            ),
+            "mode": "overwrite",
+            "doc_index": doc_index,
+            "version": version.version_index,
+            "processing": True,
+            "note": _PROCESSING_NOTE,
         })
 
 
 class ListDocumentsTool(ContextAwareTool):
     """List documents in the attached data rooms (paginated)."""
 
-    name: str = "list_documents"
+    name: str = "document_list"
     description: str = (
         "List the documents in the attached data rooms, paginated. Returns each document's "
         "index number, name, origin, processing status, version count and dates. Use this to "
@@ -710,11 +735,11 @@ class ListDocumentsTool(ContextAwareTool):
 class OpenDocumentToCanvasTool(ContextAwareTool):
     """Open a data room document's working content into a canvas for editing."""
 
-    name: str = "open_document_to_canvas"
+    name: str = "document_open_to_canvas"
     description: str = (
         "Open a data room document's working content into a canvas so you can edit it and save it "
         "back. Reads the document's editable markdown directly (works even if the latest version is "
-        "quarantined, so you can remediate it). After editing, use save_document with mode='overwrite' "
+        "quarantined, so you can remediate it). After editing, use canvas_save_to_document with mode='overwrite' "
         "to file a new version."
     )
     args_schema: type[BaseModel] = OpenDocumentInput
@@ -771,122 +796,21 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         return json.dumps(result)
 
 
-class SaveDocumentTool(ContextAwareTool):
-    """Save a canvas back over an existing document (new version) or as a new document."""
-
-    name: str = "save_document"
-    description: str = (
-        "Save a canvas into a data room. mode='overwrite' files the canvas as a NEW VERSION of an "
-        "existing document (give its doc_index) — the document keeps its history and can be rolled "
-        "back. mode='new' creates a brand-new document. Saving triggers the full processing pipeline, "
-        "so use it only when the document is complete."
-    )
-    args_schema: type[BaseModel] = SaveDocumentInput
-
-    def _run(self, doc_index: int | None = None, canvas_name: str = "", mode: str = "overwrite",
-             data_room_name: str = "", new_name: str = "", **kwargs) -> str:
-        from chat.services import resolve_canvas, save_canvas_to_data_room
-        from documents.models import DataRoom, DataRoomDocumentVersion
-        from documents.services.versioning import create_version
-
-        context = self.context
-        thread_id = context.conversation_id if context else None
-        user_id = context.user_id if context else None
-        if not thread_id:
-            return json.dumps({"error": "No thread context available."})
-
-        canvas, err = resolve_canvas(thread_id, canvas_name or None)
-        if err:
-            return json.dumps({"error": err})
-        if not (canvas.content or "").strip():
-            return json.dumps({"error": f"Canvas '{canvas.title}' is empty; nothing to save."})
-
-        user = _get_user(user_id)
-        if user is None:
-            return json.dumps({"error": "User not found."})
-
-        if mode == "new":
-            data_room_ids = context.data_room_ids if context else []
-            try:
-                data_room_ids = _filter_accessible_rooms(data_room_ids, user_id)
-            except ValueError as exc:
-                return json.dumps({"error": str(exc)})
-            rooms = list(DataRoom.objects.filter(pk__in=data_room_ids))
-            if data_room_name:
-                rooms = [r for r in rooms if r.name == data_room_name]
-            if not rooms:
-                return json.dumps({"error": "No matching attached data room."})
-            if len(rooms) > 1:
-                names = ", ".join(f'"{r.name}"' for r in rooms)
-                return json.dumps({"error": f"Multiple data rooms attached ({names}); specify data_room_name."})
-            if new_name:
-                canvas.title = new_name[:255]
-            doc = save_canvas_to_data_room(canvas, rooms[0], user)
-            return json.dumps({
-                "status": "ok", "mode": "new", "doc_index": doc.doc_index,
-                "filename": doc.original_filename, "data_room_name": rooms[0].name, "note": _PROCESSING_NOTE,
-            })
-
-        # overwrite
-        if doc_index is None:
-            return json.dumps({"error": "doc_index is required for mode='overwrite'."})
-        doc, err = _resolve_document(context, doc_index)
-        if err:
-            return json.dumps({"error": err})
-        version = create_version(
-            doc, content=canvas.content,
-            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT, created_by=user,
-        )
-        return json.dumps({
-            "status": "ok", "mode": "overwrite", "doc_index": doc_index,
-            "version": version.version_index, "processing": True, "note": _PROCESSING_NOTE,
-        })
-
-
-class WriteDocumentTool(ContextAwareTool):
-    """Overwrite a document with new content programmatically (creates a new version)."""
-
-    name: str = "write_document"
-    description: str = (
-        "Overwrite a data room document with full new markdown content, creating a new version, "
-        "without going through a canvas. Use this in automated loops (e.g. refreshing a document with "
-        "fresh information). Saving triggers the full processing pipeline — use only when the document "
-        "is complete and a single write finishes the job."
-    )
-    args_schema: type[BaseModel] = WriteDocumentInput
-
-    def _run(self, doc_index: int, content: str, data_room_id: int | None = None, reason: str = "", **kwargs) -> str:
-        from documents.models import DataRoomDocumentVersion
-        from documents.services.versioning import create_version
-
-        context = self.context
-        doc, err = _resolve_document(context, doc_index, data_room_id)
-        if err:
-            return json.dumps({"error": err})
-        if not (content or "").strip():
-            return json.dumps({"error": "content is empty; nothing to save."})
-        user = _get_user(context.user_id if context else None)
-        version = create_version(
-            doc, content=content, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
-        )
-        return json.dumps({
-            "status": "ok", "doc_index": doc_index, "version": version.version_index,
-            "processing": True, "note": _PROCESSING_NOTE,
-        })
-
-
 class EditDocumentTool(ContextAwareTool):
-    """Apply targeted find-replace edits to a document (creates a new version)."""
+    """Edit a data room document — targeted find-replace, or a full rewrite (creates a new version)."""
 
-    name: str = "edit_document"
+    name: str = "document_edit"
     description: str = (
-        "Make targeted find-replace edits to a data room document's working content, creating a new "
-        "version, without a canvas. Each edit's old_text must match exactly once. Saving triggers the "
-        "full processing pipeline — use only when the result is complete."
+        "Edit a data room document, creating a new version, without going through a canvas. "
+        "mode='edit' (default) applies targeted find-replace edits — each edit's old_text must match "
+        "exactly once. mode='rewrite' replaces the document's entire content with new markdown (use in "
+        "automated loops, e.g. refreshing a document with fresh information). Saving triggers the full "
+        "processing pipeline — use only when the result is complete."
     )
     args_schema: type[BaseModel] = EditDocumentInput
 
-    def _run(self, doc_index: int, edits: list, data_room_id: int | None = None, reason: str = "", **kwargs) -> str:
+    def _run(self, doc_index: int, mode: str = "edit", edits: list | None = None,
+             content: str = "", data_room_id: int | None = None, reason: str = "", **kwargs) -> str:
         from documents.models import DataRoomDocumentVersion
         from documents.services.versioning import create_version, open_working_version
 
@@ -895,8 +819,28 @@ class EditDocumentTool(ContextAwareTool):
         if err:
             return json.dumps({"error": err})
 
-        content, _version, _warning = open_working_version(doc)
-        if not (content or "").strip():
+        user = _get_user(context.user_id if context else None)
+
+        if mode == "rewrite":
+            if not (content or "").strip():
+                return json.dumps({"error": "content is empty; provide full markdown content for mode='rewrite'."})
+            version = create_version(
+                doc, content=content, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
+            )
+            return json.dumps({
+                "status": "ok", "doc_index": doc_index, "mode": "rewrite",
+                "version": version.version_index, "processing": True, "note": _PROCESSING_NOTE,
+            })
+
+        # mode == "edit" (default): targeted find-replace
+        edits = edits or []
+        if not edits:
+            return json.dumps({
+                "error": "No edits provided. Pass 'edits' for mode='edit', or use mode='rewrite' with 'content'.",
+            })
+
+        working, _version, _warning = open_working_version(doc)
+        if not (working or "").strip():
             return json.dumps({"error": "Document has no editable content."})
 
         applied = 0
@@ -904,9 +848,9 @@ class EditDocumentTool(ContextAwareTool):
         for edit in edits:
             old_text = edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text
             new_text = edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text
-            count = content.count(old_text)
+            count = working.count(old_text)
             if count == 1:
-                content = content.replace(old_text, new_text, 1)
+                working = working.replace(old_text, new_text, 1)
                 applied += 1
             elif count > 1:
                 failed.append({"old_text": old_text[:80], "error": f"Found {count} matches — add more context."})
@@ -916,12 +860,11 @@ class EditDocumentTool(ContextAwareTool):
         if applied == 0:
             return json.dumps({"status": "error", "applied": 0, "failed": failed, "message": "No edits applied."})
 
-        user = _get_user(context.user_id if context else None)
         version = create_version(
-            doc, content=content, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
+            doc, content=working, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
         )
         return json.dumps({
-            "status": "ok", "doc_index": doc_index, "applied": applied, "failed": failed,
+            "status": "ok", "doc_index": doc_index, "mode": "edit", "applied": applied, "failed": failed,
             "version": version.version_index, "processing": True, "note": _PROCESSING_NOTE,
         })
 
@@ -929,7 +872,7 @@ class EditDocumentTool(ContextAwareTool):
 class ArchiveDocumentTool(ContextAwareTool):
     """Archive (soft-delete) or restore a document."""
 
-    name: str = "archive_document"
+    name: str = "document_archive"
     description: str = (
         "Archive (soft-delete) a data room document so it no longer appears in listings or retrieval, "
         "or restore a previously archived one (archive=false). Reversible."
@@ -952,7 +895,7 @@ class ArchiveDocumentTool(ContextAwareTool):
 class RenameDocumentTool(ContextAwareTool):
     """Rename a document's display name."""
 
-    name: str = "rename_document"
+    name: str = "document_rename"
     description: str = (
         "Rename a data room document's display name. The original upload filename is preserved as "
         "provenance; this only changes the shown name."
@@ -975,11 +918,11 @@ class RenameDocumentTool(ContextAwareTool):
 class ListVersionsTool(ContextAwareTool):
     """List a document's version history."""
 
-    name: str = "list_versions"
+    name: str = "document_version_list"
     description: str = (
         "List a data room document's version history — each version's index, origin, status, whether "
         "it is the live (searchable) and/or current working version, chunk count and date. Use before "
-        "restore_version to pick a version to roll back to."
+        "document_version_restore to pick a version to roll back to."
     )
     args_schema: type[BaseModel] = ListVersionsInput
 
@@ -1006,7 +949,7 @@ class ListVersionsTool(ContextAwareTool):
 class RestoreVersionTool(ContextAwareTool):
     """Roll a document back to a prior version (instant — no reprocessing)."""
 
-    name: str = "restore_version"
+    name: str = "document_version_restore"
     description: str = (
         "Roll a data room document back to a prior version, making it the live searchable document "
         "again. Instant — no reprocessing. Only READY, non-quarantined versions can be restored."
@@ -1036,7 +979,7 @@ class RestoreVersionTool(ContextAwareTool):
 class GetDocumentStatusTool(ContextAwareTool):
     """Report a document's processing/searchability status (incl. async quarantine verdict)."""
 
-    name: str = "get_document_status"
+    name: str = "document_status"
     description: str = (
         "Check a data room document's current state: ready, processing, quarantined, or failed — and "
         "whether the working version differs from the live searchable version. Use this after saving "
@@ -1058,11 +1001,9 @@ class GetDocumentStatusTool(ContextAwareTool):
 _registry = get_tool_registry()
 _registry.register_tool(SearchDocumentsTool())
 _registry.register_tool(ReadDocumentTool())
-_registry.register_tool(SaveCanvasToDataRoomTool())
+_registry.register_tool(CanvasSaveToDocumentTool())
 _registry.register_tool(ListDocumentsTool())
 _registry.register_tool(OpenDocumentToCanvasTool())
-_registry.register_tool(SaveDocumentTool())
-_registry.register_tool(WriteDocumentTool())
 _registry.register_tool(EditDocumentTool())
 _registry.register_tool(ArchiveDocumentTool())
 _registry.register_tool(RenameDocumentTool())

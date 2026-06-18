@@ -261,11 +261,11 @@ class SkillsSaveViewTests(TestCase):
     def test_save_strips_non_skill_tool_names(self):
         self.client.force_login(self.user)
         self._post("save", tool_names_json=json.dumps(
-            ["view_template", "search_documents", "totally_made_up"]
+            ["skill_template_view", "document_search", "totally_made_up"]
         ))
         self.skill.refresh_from_db()
         # Only the skills-section tool survives.
-        self.assertEqual(self.skill.tool_names, ["view_template"])
+        self.assertEqual(self.skill.tool_names, ["skill_template_view"])
 
     def test_save_caps_oversized_instructions(self):
         self.client.force_login(self.user)
@@ -441,7 +441,7 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
             name="Rich Source",
             description="A rich source skill.",
             instructions="Do the rich thing.",
-            tool_names=["create_skill"],
+            tool_names=["skill_create"],
             level="system",
         )
         self.t1 = SkillTemplate.objects.create(
@@ -492,7 +492,7 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         self.assertEqual(copy.name, "Rich Source")
         self.assertEqual(copy.instructions, "Do the rich thing.")
         self.assertEqual(copy.description, "A rich source skill.")
-        self.assertEqual(copy.tool_names, ["create_skill"])
+        self.assertEqual(copy.tool_names, ["skill_create"])
         self.assertEqual(copy.parent, self.source)
 
         templates = list(copy.templates.order_by("name"))
@@ -523,7 +523,7 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         self.assertEqual(copy.name, "Rich Source")
         self.assertEqual(copy.instructions, "Do the rich thing.")
         self.assertEqual(copy.description, "A rich source skill.")
-        self.assertEqual(copy.tool_names, ["create_skill"])
+        self.assertEqual(copy.tool_names, ["skill_create"])
         self.assertEqual(copy.parent, self.source)
 
         templates = list(copy.templates.order_by("name"))

@@ -36,8 +36,8 @@ def _prefs(**overrides):
         cheap_model="openai/gpt-5-nano",
         allowed_models=["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano"],
         allowed_tools=[
-            "search_documents", "read_document", "web_fetch", "brave_search",
-            "write_canvas", "edit_canvas", "create_subagent",
+            "document_search", "document_read", "web_fetch", "web_search",
+            "canvas_write", "canvas_edit", "chat_subagent_create",
         ],
         allowed_skills=[],
         theme="light",
@@ -110,11 +110,11 @@ class SubAgentRunModelTests(TestCase):
             user=self.user,
             prompt="task",
             data_room_ids=[1, 2, 3],
-            tool_names=["search_documents", "web_fetch"],
+            tool_names=["document_search", "web_fetch"],
         )
         run.refresh_from_db()
         self.assertEqual(run.data_room_ids, [1, 2, 3])
-        self.assertEqual(run.tool_names, ["search_documents", "web_fetch"])
+        self.assertEqual(run.tool_names, ["document_search", "web_fetch"])
 
     def test_str_representation(self):
         run = SubAgentRun.objects.create(
@@ -154,44 +154,44 @@ class ResolveSubagentModelTests(TestCase):
 class ResolveSubagentToolsTests(TestCase):
     def test_removes_canvas_and_subagent_tools(self):
         prefs = _prefs(allowed_tools=[
-            "active_canvas", "write_canvas", "edit_canvas",
-            "save_canvas_to_data_room", "create_subagent", "search_documents",
+            "canvas_activate", "canvas_write", "canvas_edit",
+            "canvas_save_to_document", "chat_subagent_create", "document_search",
         ])
         tools = resolve_subagent_tools(prefs, data_room_ids=[1])
-        self.assertNotIn("active_canvas", tools)
-        self.assertNotIn("write_canvas", tools)
-        self.assertNotIn("edit_canvas", tools)
-        self.assertNotIn("save_canvas_to_data_room", tools)
-        self.assertNotIn("create_subagent", tools)
+        self.assertNotIn("canvas_activate", tools)
+        self.assertNotIn("canvas_write", tools)
+        self.assertNotIn("canvas_edit", tools)
+        self.assertNotIn("canvas_save_to_document", tools)
+        self.assertNotIn("chat_subagent_create", tools)
 
     def test_removes_skill_and_template_tools(self):
         prefs = _prefs()
         tools = resolve_subagent_tools(prefs, data_room_ids=[])
         for name in [
-            "attach_skills", "create_skill", "edit_skill", "delete_skill",
-            "save_canvas_to_skill_field", "show_skill_field_in_canvas",
-            "view_template", "load_template_to_canvas",
-            "list_skill_tools", "inspect_tool",
+            "chat_skill_attach", "skill_create", "skill_edit", "skill_delete",
+            "skill_field_save", "skill_field_load",
+            "skill_template_view", "skill_template_load",
+            "skill_tool_list", "skill_tool_inspect",
         ]:
             self.assertNotIn(name, tools)
 
     def test_keeps_doc_tools_with_data_rooms(self):
         prefs = _prefs()
         tools = resolve_subagent_tools(prefs, data_room_ids=[1])
-        self.assertIn("search_documents", tools)
-        self.assertIn("read_document", tools)
+        self.assertIn("document_search", tools)
+        self.assertIn("document_read", tools)
 
     def test_removes_doc_tools_without_data_rooms(self):
         prefs = _prefs()
         tools = resolve_subagent_tools(prefs, data_room_ids=[])
-        self.assertNotIn("search_documents", tools)
-        self.assertNotIn("read_document", tools)
+        self.assertNotIn("document_search", tools)
+        self.assertNotIn("document_read", tools)
 
     def test_keeps_web_tools(self):
         prefs = _prefs()
         tools = resolve_subagent_tools(prefs, data_room_ids=[])
         self.assertIn("web_fetch", tools)
-        self.assertIn("brave_search", tools)
+        self.assertIn("web_search", tools)
 
     def test_skill_tools_not_added(self):
         """Sub-agents never get skill-specific tools."""
@@ -264,7 +264,7 @@ class BuildSubagentSystemPromptTests(TestCase):
     def test_task_planning_included_when_tool_available(self):
         prompt = build_subagent_system_prompt(has_task_tool=True)
         self.assertIn("# Task Planning", prompt)
-        self.assertIn("update_tasks", prompt)
+        self.assertIn("chat_task_update", prompt)
 
     def test_task_planning_excluded_without_tool(self):
         prompt = build_subagent_system_prompt(has_task_tool=False)
@@ -975,7 +975,7 @@ class RunSubagentServiceTests(TestCase):
         mock_prefs.return_value = _prefs()
         mock_response = MagicMock()
         mock_response.message.content = ""
-        mock_response.message.tool_calls = [{"id": "c1", "name": "brave_search"}]
+        mock_response.message.tool_calls = [{"id": "c1", "name": "web_search"}]
         mock_response.usage.total_tokens = 200
         mock_response.usage.cost_usd = 0.002
         mock_svc.return_value.run.return_value = mock_response

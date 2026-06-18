@@ -25,8 +25,8 @@ class BuildSystemPromptTests(TestCase):
 
     def test_no_data_rooms_omits_tools(self):
         prompt = build_system_prompt()
-        self.assertNotIn("search_documents", prompt)
-        self.assertNotIn("read_document", prompt)
+        self.assertNotIn("document_search", prompt)
+        self.assertNotIn("document_read", prompt)
 
     def test_no_metadata_no_history_note(self):
         prompt = build_system_prompt(data_rooms=[self.data_room])
@@ -220,7 +220,7 @@ class BuildSystemPromptTests(TestCase):
     def test_task_planning_section_with_tool(self):
         prompt = build_system_prompt(has_task_tool=True)
         self.assertIn("# Task Planning", prompt)
-        self.assertIn("update_tasks", prompt)
+        self.assertIn("chat_task_update", prompt)
 
     def test_task_planning_includes_when_to_use(self):
         prompt = build_system_prompt(has_task_tool=True)
@@ -351,7 +351,7 @@ class BuildStaticSystemPromptTests(TestCase):
 
     def test_subagent_boilerplate_included(self):
         prompt = build_static_system_prompt(has_subagent_tool=True)
-        self.assertIn("create_subagent", prompt)
+        self.assertIn("chat_subagent_create", prompt)
         self.assertIn("up to 4 sub-agents", prompt)
 
     def test_sequential_subagents(self):
@@ -884,7 +884,7 @@ class AvailableSkillsSectionTests(TestCase):
         self.assertIn("**patent** — Patent Drafter", prompt)
         self.assertIn("Drafts patents.", prompt)
         self.assertIn("**licensing** — Licensing Helper", prompt)
-        self.assertIn("attach_skills", prompt)
+        self.assertIn("chat_skill_attach", prompt)
 
     def test_section_omitted_when_available_skills_none(self):
         prompt = build_semi_static_prompt(available_skills=None)

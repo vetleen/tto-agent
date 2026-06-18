@@ -363,7 +363,7 @@ class ForkSkillTests(TestCase):
         source = AgentSkill.objects.create(
             slug="source", name="Source", emoji="🧪", instructions="Do stuff.",
             description="A source skill.", level="system",
-            tool_names=["search_documents"],
+            tool_names=["document_search"],
         )
         SkillTemplate.objects.create(skill=source, name="Template A", content="Content A")
         SkillTemplate.objects.create(skill=source, name="Template B", content="Content B")
@@ -375,7 +375,7 @@ class ForkSkillTests(TestCase):
         self.assertEqual(forked.emoji, "🧪")
         self.assertEqual(forked.instructions, "Do stuff.")
         self.assertEqual(forked.description, "A source skill.")
-        self.assertEqual(forked.tool_names, ["search_documents"])
+        self.assertEqual(forked.tool_names, ["document_search"])
         self.assertEqual(forked.level, "user")
         self.assertEqual(forked.created_by, self.user)
         self.assertEqual(forked.parent, source)
@@ -630,26 +630,26 @@ class FilterToSkillToolsTests(TestCase):
     """The allow-list keeps only registered skills-section tools.
 
     Relies on the real tool registry, populated at startup: agent_skills.tools
-    registers the skills-section tools (view_template, ...) and chat.tools
-    registers the chat-section doc tools (search_documents, read_document).
+    registers the skills-section tools (skill_template_view, ...) and chat.tools
+    registers the chat-section doc tools (document_search, document_read).
     """
 
     def test_keeps_skills_section_tools(self):
         self.assertEqual(
-            filter_to_skill_tools(["view_template", "load_template_to_canvas"]),
-            ["view_template", "load_template_to_canvas"],
+            filter_to_skill_tools(["skill_template_view", "skill_template_load"]),
+            ["skill_template_view", "skill_template_load"],
         )
 
     def test_drops_chat_section_and_unknown_tools(self):
         result = filter_to_skill_tools(
-            ["view_template", "search_documents", "read_document", "totally_made_up"]
+            ["skill_template_view", "document_search", "document_read", "totally_made_up"]
         )
-        self.assertEqual(result, ["view_template"])
+        self.assertEqual(result, ["skill_template_view"])
 
     def test_preserves_order(self):
         self.assertEqual(
-            filter_to_skill_tools(["load_template_to_canvas", "view_template"]),
-            ["load_template_to_canvas", "view_template"],
+            filter_to_skill_tools(["skill_template_load", "skill_template_view"]),
+            ["skill_template_load", "skill_template_view"],
         )
 
     def test_handles_none_and_non_strings(self):

@@ -176,10 +176,10 @@ class LogCallTests(TestCase):
         from unittest.mock import MagicMock
 
         tool1 = MagicMock()
-        tool1.name = "search_documents"
+        tool1.name = "document_search"
         tool1.description = "Search docs"
         tool2 = MagicMock()
-        tool2.name = "read_document"
+        tool2.name = "document_read"
         tool2.description = "Read a doc"
 
         request = ChatRequest(
@@ -199,8 +199,8 @@ class LogCallTests(TestCase):
 
         log = _get_log(request)
         self.assertEqual(len(log.tools), 2)
-        self.assertEqual(log.tools[0]["name"], "search_documents")
-        self.assertEqual(log.tools[1]["name"], "read_document")
+        self.assertEqual(log.tools[0]["name"], "document_search")
+        self.assertEqual(log.tools[1]["name"], "document_read")
 
     def test_tools_none_when_no_tool_schemas(self):
         request = _make_request()
@@ -330,7 +330,7 @@ class LogStreamTests(TestCase):
         from unittest.mock import MagicMock
 
         tool = MagicMock()
-        tool.name = "search_documents"
+        tool.name = "document_search"
         tool.description = "Search docs"
 
         request = ChatRequest(
@@ -350,7 +350,7 @@ class LogStreamTests(TestCase):
 
         log = _get_log(request)
         self.assertEqual(len(log.tools), 1)
-        self.assertEqual(log.tools[0]["name"], "search_documents")
+        self.assertEqual(log.tools[0]["name"], "document_search")
 
     def test_tools_none_when_no_tool_schemas_in_stream(self):
         request = _make_request(stream=True)
