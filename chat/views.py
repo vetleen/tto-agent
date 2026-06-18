@@ -78,17 +78,21 @@ def chat_home(request):
             id=thread_id, created_by=request.user
         ).first()
         if thread:
-            # Auto-restore archived threads when opened
-            if thread.is_archived:
-                thread.is_archived = False
-                thread.save(update_fields=["is_archived"])
-            # If this thread is a loop, mark it seen (clears the unread badge) and
-            # expose its id so /loop in this thread opens the edit modal.
             from django.utils import timezone
 
             from chat.models import Loop
 
             loop = Loop.objects.filter(thread=thread).first()
+            # Auto-restore archived threads when opened — except paused loops,
+            # whose archived state mirrors their paused state (revive them from
+            # the Loops page or the restore action, not by merely opening).
+            if thread.is_archived and not (
+                loop and loop.status == Loop.Status.PAUSED
+            ):
+                thread.is_archived = False
+                thread.save(update_fields=["is_archived"])
+            # If this thread is a loop, mark it seen (clears the unread badge) and
+            # expose its id so /loop in this thread opens the edit modal.
             if loop:
                 loop.last_seen_at = timezone.now()
                 loop.save(update_fields=["last_seen_at"])
@@ -135,13 +139,14 @@ def chat_home(request):
 
     # Annotate threads that are loops so the sidebar can show a loop icon + an
     # unread dot when a scheduled run produced a result the user hasn't opened.
+    # Paused loops live in the Archived section, so annotate those too.
     from chat.models import Loop
 
     loop_map = {
         loop.thread_id: loop
-        for loop in Loop.objects.filter(thread__in=threads)
+        for loop in Loop.objects.filter(thread__in=all_threads)
     }
-    for t in threads:
+    for t in [*threads, *archived_threads]:
         loop = loop_map.get(t.id)
         t.is_loop = loop is not None
         t.loop_unread = loop.is_unread if loop else False
@@ -290,6 +295,21 @@ def thread_archive(request, thread_id):
     )
     thread.is_archived = not thread.is_archived
     thread.save(update_fields=["is_archived"])
+    # A loop thread's archived state mirrors its paused state: archiving a live
+    # loop pauses it; restoring a paused loop restarts it.
+    from chat.models import Loop
+
+    loop = Loop.objects.filter(thread=thread).first()
+    if loop is not None:
+        from django.utils import timezone
+
+        from chat.loop_service import pause_loop, restart_loop
+
+        loop.thread = thread  # reuse the already-saved instance
+        if thread.is_archived and loop.status == Loop.Status.ACTIVE:
+            pause_loop(loop)
+        elif not thread.is_archived and loop.status == Loop.Status.PAUSED:
+            restart_loop(loop, timezone.now())
     return JsonResponse({"ok": True, "is_archived": thread.is_archived})
 
 

@@ -157,6 +157,8 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
             loop.status = Loop.Status.PAUSED
             update_fields.append("status")
         loop.save(update_fields=update_fields)
+        if loop.status == Loop.Status.PAUSED:
+            _mirror_archive_to_thread(loop, True)
 
     except Exception:
         logger.exception("Loop %s run failed", loop_id)
@@ -170,6 +172,8 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
             loop.next_run = next_run_for_loop(loop, fire_time)
             update_fields.append("next_run")
         loop.save(update_fields=update_fields)
+        if loop.status == Loop.Status.PAUSED:
+            _mirror_archive_to_thread(loop, True)
         raise
 
     finally:
@@ -423,19 +427,38 @@ def update_loop(*, loop, user, body, now, tz_name):
     loop.thread.title = fields["prompt"][:80] or loop.thread.title
     loop.thread.save(update_fields=["title"])
     loop.save()
+    if body.get("restart"):
+        _mirror_archive_to_thread(loop, False)
     return loop, was_reduced, []
 
 
+def _mirror_archive_to_thread(loop, archived):
+    """Keep a loop's backing thread archived iff the loop is paused.
+
+    A loop's paused state and its thread's archived state move together: a
+    paused loop reads as archived in the chat sidebar, and reviving it restores
+    the thread. Pausing archives; resuming / restarting unarchives. The guard
+    makes this idempotent so callers that already toggled the thread (e.g. the
+    archive view) don't re-save it.
+    """
+    thread = loop.thread
+    if thread.is_archived != archived:
+        thread.is_archived = archived
+        thread.save(update_fields=["is_archived"])
+
+
 def pause_loop(loop):
-    """Pause a loop so it stops firing.
+    """Pause a loop so it stops firing, and archive its thread.
 
     Reversible via :func:`restart_loop` (the user-facing action — resets the run
-    count) or :func:`resume_loop` (the agent's resume-where-it-left-off path).
+    count) or :func:`resume_loop` (the agent's resume-where-it-left-off path),
+    both of which unarchive the thread again.
     """
     from chat.models import Loop
 
     loop.status = Loop.Status.PAUSED
     loop.save(update_fields=["status", "updated_at"])
+    _mirror_archive_to_thread(loop, True)
     return loop
 
 
@@ -460,6 +483,7 @@ def resume_loop(loop, now):
     loop.save(update_fields=[
         "status", "next_run", "running", "locked_at", "max_runs", "updated_at",
     ])
+    _mirror_archive_to_thread(loop, False)
     return loop
 
 
@@ -482,6 +506,7 @@ def restart_loop(loop, now):
         "status", "next_run", "running", "locked_at",
         "runs_completed", "consecutive_errors", "updated_at",
     ])
+    _mirror_archive_to_thread(loop, False)
     return loop
 
 

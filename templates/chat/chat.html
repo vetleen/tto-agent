@@ -70,10 +70,12 @@
           <li class="relative group" data-thread-li="{{ t.id }}" data-emoji="{{ t.emoji }}">
             <a href="{% url 'chat_home' %}?thread={{ t.id }}" class="row" data-thread-id="{{ t.id }}" title="{{ t.title|default:t }}">
               {% if t.emoji %}<span class="row__ic" data-thread-emoji>{{ t.emoji }}</span>{% endif %}
+              {% if t.is_loop %}<span class="row__ic" title="{% if t.loop_paused %}Paused loop{% else %}Loop{% endif %}" aria-label="{% if t.loop_paused %}Paused loop{% else %}Loop{% endif %}">{% if t.loop_paused %}<svg class="w-3.5 h-3.5 text-body-subtle" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>{% else %}<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16 9h4V5M8 15H4v4M19.4 15a8 8 0 0 1-13.8 2M4.6 9a8 8 0 0 1 13.8-2"/></svg>{% endif %}</span>{% endif %}
               <span class="row__t">{{ t.title|default:t|truncatechars:34 }}</span>
+              {% if t.loop_unread %}<span class="w-2 h-2 rounded-full bg-brand shrink-0" title="New result"></span>{% endif %}
               <span class="row__time">{{ t.updated_at|compact_timesince }}</span>
             </a>
-            <button type="button" class="thread-menu-btn absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center" data-thread-id="{{ t.id }}" data-archived="true">
+            <button type="button" class="thread-menu-btn absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft hidden group-hover:flex items-center justify-center" data-thread-id="{{ t.id }}" data-archived="true"{% if t.is_loop %} data-loop-id="{{ t.loop_id }}"{% endif %}>
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
             </button>
           </li>

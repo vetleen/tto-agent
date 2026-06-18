@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from chat.models import ChatMessage, ChatThread, Loop
@@ -77,6 +77,9 @@ class ExecuteLoopRunTests(TransactionTestCase):
         self.assertEqual(self.loop.runs_completed, 1)
         self.assertEqual(self.loop.status, Loop.Status.PAUSED)
         self.assertFalse(self.loop.running)
+        # Auto-pausing at the cap archives the thread (paused ⇔ archived).
+        self.thread.refresh_from_db()
+        self.assertTrue(self.thread.is_archived)
 
     def _capture_service(self, captured):
         service = MagicMock()
@@ -182,3 +185,58 @@ class ExecuteLoopRunTests(TransactionTestCase):
         self.assertEqual(self.loop.consecutive_errors, 1)
         self.assertFalse(self.loop.running)  # lock released even on error
         self.assertIsNone(self.loop.locked_at)
+
+    def test_error_auto_pause_archives_thread(self):
+        from chat import loop_service
+
+        self.loop.consecutive_errors = loop_service.LOOP_MAX_CONSECUTIVE_ERRORS - 1
+        self.loop.save(update_fields=["consecutive_errors"])
+        with patch.object(
+            loop_service.HeadlessTurnRunner, "run_loop_turn",
+            new_callable=AsyncMock, side_effect=RuntimeError("boom"),
+        ):
+            with self.assertRaises(Exception):
+                loop_service.execute_loop_run(self.loop.id)
+
+        self.loop.refresh_from_db()
+        self.assertEqual(self.loop.status, Loop.Status.PAUSED)
+        self.thread.refresh_from_db()
+        self.assertTrue(self.thread.is_archived)
+
+
+class LoopArchiveCouplingTests(TestCase):
+    """A loop's paused state and its thread's archived state move together."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="couple@example.com", password="pass123",
+        )
+        self.thread = ChatThread.objects.create(created_by=self.user, title="L")
+        self.loop = Loop.objects.create(
+            thread=self.thread, created_by=self.user, prompt="x",
+            cadence_kind=Loop.Cadence.INTERVAL, interval_seconds=3600,
+            next_run=timezone.now(), max_runs=10,
+        )
+
+    def test_pause_archives_thread(self):
+        from chat.loop_service import pause_loop
+
+        pause_loop(self.loop)
+        self.thread.refresh_from_db()
+        self.assertTrue(self.thread.is_archived)
+
+    def test_restart_unarchives_thread(self):
+        from chat.loop_service import pause_loop, restart_loop
+
+        pause_loop(self.loop)
+        restart_loop(self.loop, timezone.now())
+        self.thread.refresh_from_db()
+        self.assertFalse(self.thread.is_archived)
+
+    def test_resume_unarchives_thread(self):
+        from chat.loop_service import pause_loop, resume_loop
+
+        pause_loop(self.loop)
+        resume_loop(self.loop, timezone.now())
+        self.thread.refresh_from_db()
+        self.assertFalse(self.thread.is_archived)

@@ -150,6 +150,8 @@ class LoopViewTests(TestCase):
         self.client.post(reverse("loop_pause", args=[loop_id]))
         loop = Loop.objects.get(id=loop_id)
         self.assertEqual(loop.status, Loop.Status.PAUSED)
+        # Pausing archives the backing thread.
+        self.assertTrue(loop.thread.is_archived)
         loop.runs_completed = 4
         loop.save(update_fields=["runs_completed"])
 
@@ -161,6 +163,20 @@ class LoopViewTests(TestCase):
         self.assertEqual(loop.runs_completed, 0)
         self.assertGreaterEqual(loop.next_run, before)
         self.assertFalse(loop.running)
+        # Restarting unarchives it again.
+        loop.thread.refresh_from_db()
+        self.assertFalse(loop.thread.is_archived)
+
+    def test_opening_paused_loop_thread_keeps_it_archived(self):
+        loop_id = self._create().json()["loop_id"]
+        self.client.post(reverse("loop_pause", args=[loop_id]))
+        loop = Loop.objects.get(id=loop_id)
+
+        # Merely opening the thread to read results must not unarchive/revive it.
+        self.client.get(reverse("chat_home") + f"?thread={loop.thread_id}")
+        loop.refresh_from_db()
+        self.assertEqual(loop.status, Loop.Status.PAUSED)
+        self.assertTrue(loop.thread.is_archived)
 
     def test_open_loop_thread_clears_unread_and_nav_badge(self):
         loop_id = self._create().json()["loop_id"]

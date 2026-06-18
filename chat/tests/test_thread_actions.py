@@ -7,7 +7,9 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from chat.models import ChatThread, ChatMessage
+from django.utils import timezone
+
+from chat.models import ChatThread, ChatMessage, Loop
 
 User = get_user_model()
 
@@ -103,6 +105,45 @@ class ThreadArchiveTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.thread.refresh_from_db()
         self.assertFalse(self.thread.is_archived)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class LoopArchiveCouplingViewTests(TestCase):
+    """Archiving a loop thread pauses its loop; restoring it restarts the loop."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="testpass")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.thread = ChatThread.objects.create(created_by=self.user, title="Loop thread")
+        self.loop = Loop.objects.create(
+            thread=self.thread, created_by=self.user, prompt="Summarize.",
+            cadence_kind=Loop.Cadence.INTERVAL, interval_seconds=3600,
+            next_run=timezone.now(), max_runs=10,
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse("thread_archive", kwargs={"thread_id": self.thread.id})
+
+    def test_archiving_loop_thread_pauses_loop(self):
+        response = self.client.post(self._url())
+        self.assertTrue(response.json()["is_archived"])
+        self.loop.refresh_from_db()
+        self.assertEqual(self.loop.status, Loop.Status.PAUSED)
+
+    def test_restoring_paused_loop_thread_restarts_loop(self):
+        self.thread.is_archived = True
+        self.thread.save(update_fields=["is_archived"])
+        self.loop.status = Loop.Status.PAUSED
+        self.loop.runs_completed = 7
+        self.loop.save(update_fields=["status", "runs_completed"])
+
+        response = self.client.post(self._url())
+        self.assertFalse(response.json()["is_archived"])
+        self.loop.refresh_from_db()
+        self.assertEqual(self.loop.status, Loop.Status.ACTIVE)
+        self.assertEqual(self.loop.runs_completed, 0)  # restart resets the count
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
