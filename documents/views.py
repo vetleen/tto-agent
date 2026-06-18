@@ -211,17 +211,22 @@ def data_room_documents(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return redirect("data_room_list")
-    all_docs = list(
-        data_room.documents.order_by("-uploaded_at").prefetch_related(
-            Prefetch(
-                "tags",
-                queryset=DataRoomDocumentTag.objects.filter(key__startswith="pii_"),
-                to_attr="pii_tags",
-            )
-        )
-    )
+    all_docs = list(data_room.documents.order_by("-uploaded_at"))
+    # PII tags live on versions now; summarise from each document's active (or
+    # current) version for the per-document badge.
+    from collections import defaultdict
+
+    version_ids = [d.active_searchable_version_id or d.current_version_id for d in all_docs]
+    version_ids = [v for v in version_ids if v]
+    pii_by_version: dict[int, list[str]] = defaultdict(list)
+    if version_ids:
+        for vid, key in DataRoomDocumentTag.objects.filter(
+            version_id__in=version_ids, key__startswith="pii_",
+        ).values_list("version_id", "key"):
+            pii_by_version[vid].append(key)
     for doc in all_docs:
-        doc.pii_summary = summarize_pii_keys([t.key for t in doc.pii_tags])
+        vid = doc.active_searchable_version_id or doc.current_version_id
+        doc.pii_summary = summarize_pii_keys(pii_by_version.get(vid, []))
     documents = _annotate_relative_dates([d for d in all_docs if not d.is_archived])
     archived_documents = _annotate_relative_dates([d for d in all_docs if d.is_archived])
     return render(
@@ -372,10 +377,8 @@ def document_upload(request, data_room_id):
         )
         created_docs.append(doc)
 
-    if created_docs:
-        DataRoomDocumentTag.objects.bulk_create(
-            [DataRoomDocumentTag(document=doc, key="source", value="user_uploaded") for doc in created_docs]
-        )
+    # Provenance is recorded by the v0 version's origin=uploaded (set when
+    # process_document creates it); no separate "source" tag is needed.
 
     for doc in created_docs:
         # No synchronous fallback: processing a document inline would tie up the
@@ -485,8 +488,9 @@ def document_rename(request, data_room_id, document_id):
     if not name:
         messages.error(request, "Document name cannot be empty.")
         return redirect("data_room_documents", data_room_id=data_room.uuid)
-    doc.original_filename = _safe_original_filename(name, max_length=75)
-    doc.save(update_fields=["original_filename", "updated_at"])
+    # Sets the mutable display name; original_filename (provenance) is preserved.
+    from documents.services.versioning import rename_document
+    rename_document(doc, name)
     messages.success(request, "Document renamed.")
     return redirect("data_room_documents", data_room_id=data_room.uuid)
 
@@ -514,27 +518,41 @@ def document_rescan(request, data_room_id, document_id):
     if not _user_can_modify_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
-    if doc.status not in (DataRoomDocument.Status.SCANNING, DataRoomDocument.Status.SCAN_FAILED):
+    from documents.models import DataRoomDocumentVersion
+
+    version = doc.current_version
+    if version is None or version.status not in (
+        DataRoomDocument.Status.SCANNING, DataRoomDocument.Status.SCAN_FAILED,
+    ):
         return JsonResponse({"error": "This document is not waiting on a scan."}, status=409)
-    doc.status = DataRoomDocument.Status.SCANNING
-    doc.processing_error = None
-    doc.save(update_fields=["status", "processing_error", "updated_at"])
+    version.status = DataRoomDocument.Status.SCANNING
+    version.processing_error = None
+    version.save(update_fields=["status", "processing_error", "updated_at"])
+    # Mirror onto the document only when this version is the live/fresh one.
+    if doc.active_searchable_version_id in (None, version.id):
+        doc.status = DataRoomDocument.Status.SCANNING
+        doc.processing_error = None
+        doc.save(update_fields=["status", "processing_error", "updated_at"])
     try:
         # Re-run the full gate: the guardrail chunk scan first, which hands off to
         # finalize (the sole releaser). Dispatching finalize directly would release
-        # the document with unscanned chunks, reopening the guardrail gap.
-        from guardrails.tasks import scan_document_chunks
+        # the version with unscanned chunks, reopening the guardrail gap.
+        from guardrails.tasks import scan_document_version
 
-        scan_document_chunks.delay(doc.id)
+        scan_document_version.delay(version.id)
     except Exception:
         from documents.services.pii_scan import SCAN_FAILED_MESSAGE
 
-        logger.exception("document_rescan: failed to enqueue scan for document_id=%s", doc.id)
-        doc.status = DataRoomDocument.Status.SCAN_FAILED
-        doc.processing_error = SCAN_FAILED_MESSAGE
-        doc.save(update_fields=["status", "processing_error", "updated_at"])
+        logger.exception("document_rescan: failed to enqueue scan for version_id=%s", version.id)
+        version.status = DataRoomDocument.Status.SCAN_FAILED
+        version.processing_error = SCAN_FAILED_MESSAGE
+        version.save(update_fields=["status", "processing_error", "updated_at"])
+        if doc.active_searchable_version_id in (None, version.id):
+            doc.status = DataRoomDocument.Status.SCAN_FAILED
+            doc.processing_error = SCAN_FAILED_MESSAGE
+            doc.save(update_fields=["status", "processing_error", "updated_at"])
         return JsonResponse({"error": "The scan couldn't be started. Please try again."}, status=500)
-    return JsonResponse({"status": "ok", "document": {"id": doc.id, "status": doc.status}})
+    return JsonResponse({"status": "ok", "document": {"id": doc.id, "status": DataRoomDocument.Status.SCANNING}})
 
 
 @login_required
@@ -545,7 +563,9 @@ def document_chunks(request, data_room_id, document_id):
         return JsonResponse({"error": "Forbidden"}, status=403)
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     chunks = []
-    for c in doc.chunks.filter(is_quarantined=False).order_by("chunk_index"):
+    version = doc.active_searchable_version or doc.current_version
+    version_chunks = version.chunks.filter(is_quarantined=False).order_by("chunk_index") if version else []
+    for c in version_chunks:
         chunks.append({
             "id": c.id,
             "chunk_index": c.chunk_index,

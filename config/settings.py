@@ -663,10 +663,18 @@ if _celery_broker_url.startswith("rediss://"):
 else:
     CELERY_BROKER_URL = _celery_broker_url
 
+from celery.schedules import crontab
+
 CELERY_BEAT_SCHEDULE = {
     "expire-stale-subagent-runs": {
         "task": "chat.tasks.expire_stale_subagent_runs",
         "schedule": 120.0,
+    },
+    # Prune old document versions nightly (kept off round-number minutes so it
+    # doesn't collide with user-scheduled automations). See documents.tasks.
+    "prune-document-versions": {
+        "task": "documents.tasks.prune_document_versions",
+        "schedule": crontab(hour=3, minute=22),
     },
     # Recover work stranded by worker restarts (Heroku cycles dynos daily;
     # Celery acks early, so in-flight tasks are silently dropped).

@@ -176,27 +176,17 @@ class ArchivedDocumentsExcludedFromRAGTests(TestCase):
     """Verify archived documents are excluded from retrieval and tool access."""
 
     def setUp(self):
+        from documents.tests._helpers import make_document
+
         self.user = User.objects.create_user(email="user@example.com", password="testpass")
         self.data_room = DataRoom.objects.create(name="Test", slug="test", created_by=self.user)
-        self.active_doc = DataRoomDocument.objects.create(
-            data_room=self.data_room,
-            uploaded_by=self.user,
-            original_filename="active.txt",
-            status=DataRoomDocument.Status.READY,
+        self.active_doc = make_document(
+            self.data_room, self.user, original_filename="active.txt",
+            chunks=[{"text": "Active content", "token_count": 2}],
         )
-        self.archived_doc = DataRoomDocument.objects.create(
-            data_room=self.data_room,
-            uploaded_by=self.user,
-            original_filename="archived.txt",
-            status=DataRoomDocument.Status.READY,
-            is_archived=True,
-        )
-        # Create chunks for both docs
-        DataRoomDocumentChunk.objects.create(
-            document=self.active_doc, chunk_index=0, text="Active content", token_count=2,
-        )
-        DataRoomDocumentChunk.objects.create(
-            document=self.archived_doc, chunk_index=0, text="Archived content", token_count=2,
+        self.archived_doc = make_document(
+            self.data_room, self.user, original_filename="archived.txt", is_archived=True,
+            chunks=[{"text": "Archived content", "token_count": 2}],
         )
 
     def test_get_chunks_by_data_room_excludes_archived(self):
@@ -239,7 +229,7 @@ class ArchivedDocumentsExcludedFromRAGTests(TestCase):
         # Simulate pgvector returning a chunk from the archived doc
         mock_semantic_doc = MagicMock()
         mock_semantic_doc.metadata = {
-            "chunk_id": self.archived_doc.chunks.first().pk,
+            "chunk_id": self.archived_doc.active_searchable_version.chunks.first().pk,
             "document_id": self.archived_doc.pk,
             "chunk_index": 0,
         }

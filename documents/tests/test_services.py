@@ -33,6 +33,17 @@ from documents.services.retrieval import (
 
 User = get_user_model()
 
+
+def _doc_chunk(doc, **kw):
+    """Create a chunk on doc's working version (lazily making one searchable per status)."""
+    from documents.models import DataRoomDocumentChunk
+    from documents.tests._helpers import make_version
+    v = (
+        doc.current_version if doc.current_version_id
+        else make_version(doc, status=doc.status, is_quarantined=doc.is_quarantined)
+    )
+    return DataRoomDocumentChunk.objects.create(version=v, **kw)
+
 try:
     import langchain_core  # noqa: F401
     LANGCHAIN_AVAILABLE = True
@@ -197,7 +208,7 @@ class VectorStoreTests(TestCase):
         similarity_search(data_room_ids=[1], query="hello", k=500, document_id=9)
 
         self.assertEqual(store.similarity_search.call_args.kwargs["k"], 50)
-        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"data_room_id": {"$in": [1]}, "document_id": 9})
+        self.assertEqual(store.similarity_search.call_args.kwargs["filter"], {"data_room_id": {"$in": [1]}, "is_searchable": True, "document_id": 9})
 
 
 class RRFScoreTests(TestCase):
@@ -233,12 +244,14 @@ class HybridSearchTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="hybrid.txt", status=DataRoomDocument.Status.READY,
         )
+        from documents.tests._helpers import make_version
+        self.version = make_version(self.document)  # READY + searchable + active
         self._next_chunk_index = 0
 
     def _make_chunk(self, chunk_id, text="chunk text"):
         self._next_chunk_index += 1
         return DataRoomDocumentChunk.objects.create(
-            id=chunk_id, document=self.document,
+            id=chunk_id, version=self.version,
             chunk_index=self._next_chunk_index, text=text, token_count=5,
         )
 
@@ -421,12 +434,12 @@ class ProcessDocumentServiceTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hello world")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("guardrails.tasks.scan_document_chunks.delay"):
+                     patch("guardrails.tasks.scan_document_version.delay"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
-                self.assertEqual(doc.chunks.count(), 2)
+                self.assertEqual(doc.current_version.chunks.count(), 2)
                 self.assertEqual(doc.token_count, 22)
                 self.assertEqual(doc.chunking_strategy, "semantic")
                 self.assertIsNotNone(doc.processed_at)
@@ -569,15 +582,15 @@ class ProcessDocumentSemanticTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="test content")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("guardrails.tasks.scan_document_chunks.delay"):
+                     patch("guardrails.tasks.scan_document_version.delay"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
-                self.assertEqual(doc.chunks.count(), 5)
+                self.assertEqual(doc.current_version.chunks.count(), 5)
 
                 # All chunks should have sequential indexes
-                indexes = list(doc.chunks.order_by("chunk_index").values_list("chunk_index", flat=True))
+                indexes = list(doc.current_version.chunks.order_by("chunk_index").values_list("chunk_index", flat=True))
                 self.assertEqual(indexes, [0, 1, 2, 3, 4])
 
 
@@ -596,8 +609,8 @@ class RetrievalServiceTests(TestCase):
 
     def test_get_chunks_by_document_returns_ordered(self):
         """Chunks are returned in chunk_index order regardless of insertion order."""
-        DataRoomDocumentChunk.objects.create(document=self.doc, chunk_index=1, text="Second", token_count=2)
-        DataRoomDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="First", token_count=1)
+        _doc_chunk(self.doc, chunk_index=1, text="Second", token_count=2)
+        _doc_chunk(self.doc, chunk_index=0, text="First", token_count=1)
 
         result = get_chunks_by_document(self.doc.id)
 
@@ -611,7 +624,7 @@ class RetrievalServiceTests(TestCase):
 
     def test_get_chunks_by_data_room_excludes_failed_documents(self):
         """Chunks from FAILED documents are not returned."""
-        DataRoomDocumentChunk.objects.create(document=self.doc, chunk_index=0, text="Ready chunk", token_count=5)
+        _doc_chunk(self.doc, chunk_index=0, text="Ready chunk", token_count=5)
 
         failed_doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
@@ -619,7 +632,7 @@ class RetrievalServiceTests(TestCase):
             original_filename="fail.txt",
             status=DataRoomDocument.Status.FAILED,
         )
-        DataRoomDocumentChunk.objects.create(document=failed_doc, chunk_index=0, text="Failed chunk", token_count=5)
+        _doc_chunk(failed_doc, chunk_index=0, text="Failed chunk", token_count=5)
 
         result = get_chunks_by_data_room(self.data_room.id)
 
@@ -657,16 +670,14 @@ class QuarantineRetrievalTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="clean.txt", status=DataRoomDocument.Status.READY,
         )
-        self.clean_chunk = DataRoomDocumentChunk.objects.create(
-            document=self.clean, chunk_index=0, text="Clean content", token_count=5,
+        self.clean_chunk = _doc_chunk(self.clean, chunk_index=0, text="Clean content", token_count=5,
         )
         self.quarantined = DataRoomDocument.objects.create(
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="quar.txt", status=DataRoomDocument.Status.READY,
             is_quarantined=True, quarantine_reason="Contains GDPR Article 9 (special category) personal data.",
         )
-        self.quar_chunk = DataRoomDocumentChunk.objects.create(
-            document=self.quarantined, chunk_index=0, text="Sensitive content", token_count=5,
+        self.quar_chunk = _doc_chunk(self.quarantined, chunk_index=0, text="Sensitive content", token_count=5,
         )
 
     def test_get_chunks_by_document_excludes_quarantined_doc(self):
@@ -695,15 +706,14 @@ class QuarantineRetrievalTests(TestCase):
     @patch("documents.services.retrieval.vs.similarity_search")
     def test_hybrid_semantic_path_drops_quarantined_chunk(self, mock_sem, _mock_fts):
         """The semantic side must enforce chunk-level quarantine like the FTS side does in SQL."""
-        bad_chunk = DataRoomDocumentChunk.objects.create(
-            document=self.clean, chunk_index=1, text="Injected content", token_count=5,
+        bad_chunk = _doc_chunk(self.clean, chunk_index=1, text="Injected content", token_count=5,
             is_quarantined=True, quarantine_reason="Adversarial content",
         )
 
         def _sem_doc(chunk):
             doc = MagicMock()
             doc.page_content = chunk.text
-            doc.metadata = {"chunk_id": chunk.id, "document_id": chunk.document_id,
+            doc.metadata = {"chunk_id": chunk.id, "document_id": chunk.version.document_id,
                             "data_room_id": self.data_room.id, "chunk_index": chunk.chunk_index}
             return doc
 
@@ -734,8 +744,7 @@ class ScanningStatusRetrievalTests(TestCase):
         )
 
     def _chunk(self, doc, text):
-        return DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=0, text=text, token_count=5,
+        return _doc_chunk(doc, chunk_index=0, text=text, token_count=5,
         )
 
     def test_get_chunks_by_document_requires_ready(self):
@@ -761,7 +770,7 @@ class ScanningStatusRetrievalTests(TestCase):
         def _sem_doc(chunk):
             doc = MagicMock()
             doc.page_content = chunk.text
-            doc.metadata = {"chunk_id": chunk.id, "document_id": chunk.document_id,
+            doc.metadata = {"chunk_id": chunk.id, "document_id": chunk.version.document_id,
                             "data_room_id": self.data_room.id, "chunk_index": 0}
             return doc
 
@@ -1135,8 +1144,7 @@ class MergedContextWindowTests(TestCase):
         chunks = []
         for i in range(count):
             text = f"Chunk {i} content. " * max(1, tokens_each // 5)
-            c = DataRoomDocumentChunk.objects.create(
-                document=doc,
+            c = _doc_chunk(doc,
                 chunk_index=i,
                 text=text,
                 token_count=tokens_each,
@@ -2004,7 +2012,7 @@ class EmailLoaderTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
                      patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
-                     patch("guardrails.tasks.scan_document_chunks.delay"), \
+                     patch("guardrails.tasks.scan_document_version.delay"), \
                      patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
@@ -2039,7 +2047,7 @@ class EmailLoaderTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="email content")]), \
                      patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
-                     patch("guardrails.tasks.scan_document_chunks.delay"), \
+                     patch("guardrails.tasks.scan_document_version.delay"), \
                      patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
@@ -2087,7 +2095,7 @@ class ProcessDocumentAudioTests(TestCase):
                 with patch("core.preferences.get_preferences", return_value=mock_prefs), \
                      patch("documents.services.transcription.transcribe_audio", return_value="This is a transcript.") as mock_transcribe, \
                      patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks) as mock_chunk, \
-                     patch("guardrails.tasks.scan_document_chunks.delay"), \
+                     patch("guardrails.tasks.scan_document_version.delay"), \
                      patch("documents.services.pii_scan.pii_gate_applies", return_value=False):
                     process_document(doc.id)
 
@@ -2099,7 +2107,7 @@ class ProcessDocumentAudioTests(TestCase):
                 self.assertEqual(doc.parser_type, "audio")
                 self.assertEqual(doc.transcript, "This is a transcript.")
                 self.assertEqual(doc.transcription_model, "openai/gpt-4o-mini-transcribe")
-                self.assertEqual(doc.chunks.count(), 1)
+                self.assertEqual(doc.current_version.chunks.count(), 1)
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_audio_transcription_disabled(self):

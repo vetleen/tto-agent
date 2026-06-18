@@ -76,7 +76,10 @@ class DataRoomDocument(models.Model):
         blank=True,
         max_length=500,
     )
+    # Immutable provenance: what the file was literally called when uploaded.
     original_filename = models.CharField(max_length=255)
+    # Mutable display name (renaming sets this; original_filename is preserved).
+    name = models.CharField(max_length=255, blank=True, default="")
     mime_type = models.CharField(max_length=128, blank=True)
     size_bytes = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(
@@ -108,6 +111,29 @@ class DataRoomDocument(models.Model):
     processed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Two-pointer versioning. ``current_version`` is the working/editing head
+    # (advances immediately on save); ``active_searchable_version`` is what
+    # retrieval reads (advances only when a version finishes processing+scan as
+    # READY and not quarantined). Both nullable for migration safety.
+    current_version = models.ForeignKey(
+        "DataRoomDocumentVersion",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    active_searchable_version = models.ForeignKey(
+        "DataRoomDocumentVersion",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    @property
+    def display_name(self) -> str:
+        return self.name or self.original_filename
+
     class Meta:
         ordering = ["-uploaded_at"]
         constraints = [
@@ -138,6 +164,97 @@ class DataRoomDocument(models.Model):
         return self.original_filename or f"Document {self.pk}"
 
 
+class DataRoomDocumentVersion(models.Model):
+    """An immutable point-in-time version of a document's working content.
+
+    v0 is the original upload (native bytes + extracted markdown); later
+    versions are markdown edits. Each *processed* version owns its own chunks
+    and embeddings, so a rollback is a cheap pointer flip (no re-processing).
+    Mirrors the canvas checkpoint pattern (chat.CanvasCheckpoint).
+
+    Version lifecycle is owned by the prune task (documents.tasks); there is no
+    per-version retention sweep — GDPR erasure happens by CASCADE when the parent
+    document or data room is deleted.
+    """
+
+    class Origin(models.TextChoices):
+        UPLOADED = "uploaded", "Uploaded"
+        AGENT_CREATED = "agent_created", "Agent created"
+        CANVAS_EXPORT = "canvas_export", "Canvas export"
+        USER_EDIT = "user_edit", "User edit"
+        RESTORE = "restore", "Restore"
+
+    document = models.ForeignKey(
+        DataRoomDocument,
+        on_delete=models.CASCADE,
+        related_name="versions",
+    )
+    # 0 == the original upload; later versions increment. Assigned by the
+    # versioning service under a parent-row lock (see services/versioning.py).
+    version_index = models.PositiveIntegerField(default=0)
+    origin = models.CharField(
+        max_length=20, choices=Origin.choices, default=Origin.UPLOADED,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=DataRoomDocument.Status.choices,
+        default=DataRoomDocument.Status.UPLOADED,
+        db_index=True,
+    )
+    # Working content (markdown). Empty for legacy v0 backfilled from existing
+    # chunks — readers fall back to joined chunk text in that case.
+    content = models.TextField(blank=True, default="")
+    # Native source bytes — only set for upload-origin versions (e.g. v0).
+    native_blob = models.FileField(
+        upload_to="documents/%Y/%m/", blank=True, max_length=500,
+    )
+    native_filename = models.CharField(max_length=255, blank=True)
+    mime_type = models.CharField(max_length=128, blank=True)
+    size_bytes = models.PositiveIntegerField(null=True, blank=True)
+
+    # Retrieval pointer mirror — only the document's active_searchable_version
+    # has is_searchable=True. The app-DB pointer is authoritative; this flag and
+    # the pgvector cmetadata mirror it for fast filtering.
+    is_searchable = models.BooleanField(default=False, db_index=True)
+    is_quarantined = models.BooleanField(default=False, db_index=True)
+    is_partially_quarantined = models.BooleanField(default=False, db_index=True)
+    quarantine_reason = models.TextField(blank=True, default="")
+
+    processing_error = models.TextField(null=True, blank=True)
+    requeue_count = models.PositiveSmallIntegerField(default=0)
+    token_count = models.PositiveIntegerField(null=True, blank=True)
+    parser_type = models.CharField(max_length=64, blank=True)
+    chunking_strategy = models.CharField(max_length=64, blank=True)
+    embedding_model = models.CharField(max_length=128, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["document", "version_index"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["document", "version_index"],
+                name="documents_version_unique_per_document",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["document", "version_index"]),
+            models.Index(fields=["document", "is_searchable"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"v{self.version_index} of document {self.document_id}"
+
+
 class DataRoomDocumentChunk(models.Model):
     class GuardrailScanState(models.TextChoices):
         # Progress marker for the adversarial-content scan (guardrails.tasks).
@@ -147,8 +264,9 @@ class DataRoomDocumentChunk(models.Model):
         HEURISTIC_DONE = "heuristic_done", "Heuristic Done"  # awaiting classifier
         DONE = "done", "Done"  # fully scanned (or heuristic-blocked)
 
-    document = models.ForeignKey(
-        DataRoomDocument,
+    # Chunks belong to a version. Reach the document via ``version.document``.
+    version = models.ForeignKey(
+        "DataRoomDocumentVersion",
         on_delete=models.CASCADE,
         related_name="chunks",
     )
@@ -171,24 +289,31 @@ class DataRoomDocumentChunk(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["document", "chunk_index"]
+        ordering = ["version", "chunk_index"]
         constraints = [
             models.UniqueConstraint(
-                fields=["document", "chunk_index"],
-                name="documents_chunk_unique_per_document",
+                fields=["version", "chunk_index"],
+                name="documents_chunk_unique_per_version",
             ),
         ]
         indexes = [
-            models.Index(fields=["document", "chunk_index"]),
+            models.Index(fields=["version", "chunk_index"], name="documents_chunk_version_idx"),
             GinIndex(fields=["search_vector"], name="chunk_search_vector_gin"),
         ]
 
     def __str__(self) -> str:
-        return f"Chunk {self.chunk_index} of {self.document_id}"
+        return f"Chunk {self.chunk_index} of version {self.version_id}"
 
 
 class DataRoomDocumentTag(models.Model):
-    document = models.ForeignKey(DataRoomDocument, on_delete=models.CASCADE, related_name="tags")
+    # Classifications attach to the version that was scanned. Reach the document
+    # via ``version.document``. Document-level sensitivity is the union over
+    # retained versions (see services/versioning.recompute_document_sensitivity).
+    version = models.ForeignKey(
+        "DataRoomDocumentVersion",
+        on_delete=models.CASCADE,
+        related_name="tags",
+    )
     key = models.CharField(max_length=100)
     value = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -196,11 +321,11 @@ class DataRoomDocumentTag(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["document", "key"],
-                name="documents_tag_unique_per_document",
+                fields=["version", "key"],
+                name="documents_tag_unique_per_version",
             ),
         ]
         ordering = ["key"]
 
     def __str__(self) -> str:
-        return f"{self.key}={self.value} (doc={self.document_id})"
+        return f"{self.key}={self.value} (version={self.version_id})"

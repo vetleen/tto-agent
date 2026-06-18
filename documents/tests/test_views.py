@@ -18,6 +18,23 @@ from documents.views import _relative_upload_date
 User = get_user_model()
 
 
+def _doc_version(doc):
+    from documents.tests._helpers import make_version
+    if doc.current_version_id:
+        return doc.current_version
+    return make_version(doc, status=doc.status, is_quarantined=doc.is_quarantined)
+
+
+def _doc_chunk(doc, **kw):
+    from documents.models import DataRoomDocumentChunk
+    return DataRoomDocumentChunk.objects.create(version=_doc_version(doc), **kw)
+
+
+def _doc_tag(doc, **kw):
+    from documents.models import DataRoomDocumentTag
+    return DataRoomDocumentTag.objects.create(version=_doc_version(doc), **kw)
+
+
 class RelativeUploadDateTests(SimpleTestCase):
     """Unit tests for _relative_upload_date() covering every branch."""
 
@@ -123,7 +140,7 @@ class DocumentViewsTests(TestCase):
             (DataRoomDocument.Status.UPLOADED, DataRoomDocument.Status.READY, DataRoomDocument.Status.FAILED),
         )
 
-    def test_document_upload_tags_source_user_uploaded(self):
+    def test_document_upload_creates_document_without_source_tag(self):
         self.client.force_login(self.user)
         f = BytesIO(b"Hello world")
         f.name = "tagged.txt"
@@ -133,8 +150,12 @@ class DocumentViewsTests(TestCase):
             follow=True,
         )
         doc = DataRoomDocument.objects.get(data_room=self.data_room)
-        tag = DataRoomDocumentTag.objects.get(document=doc, key="source")
-        self.assertEqual(tag.value, "user_uploaded")
+        self.assertEqual(doc.original_filename, "tagged.txt")
+        # Provenance is the v0 version's origin=uploaded (set during async
+        # processing), not a "source" tag.
+        self.assertFalse(
+            DataRoomDocumentTag.objects.filter(key="source", value="user_uploaded").exists()
+        )
 
     def test_documents_page_scanning_doc_shows_state_without_view_button(self):
         """A SCANNING doc renders its status for the JS layer and no View button."""
@@ -389,8 +410,8 @@ class DocumentViewsTests(TestCase):
             original_filename="x.txt",
             status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="A", token_count=1)
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="B", token_count=1)
+        _doc_chunk(doc, chunk_index=0, text="A", token_count=1)
+        _doc_chunk(doc, chunk_index=1, text="B", token_count=1)
         response = self.client.get(
             reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
         )
@@ -498,7 +519,7 @@ class DocumentViewsTests(TestCase):
     # document_rename                                                      #
     # ------------------------------------------------------------------ #
 
-    def test_document_rename_updates_filename(self):
+    def test_document_rename_updates_name(self):
         self.client.force_login(self.user)
         doc = self._make_doc()
         self.client.post(
@@ -506,7 +527,9 @@ class DocumentViewsTests(TestCase):
             {"name": "renamed.txt"},
         )
         doc.refresh_from_db()
-        self.assertEqual(doc.original_filename, "renamed.txt")
+        # Rename now sets the display name; original_filename (provenance) is kept.
+        self.assertEqual(doc.name, "renamed.txt")
+        self.assertEqual(doc.original_filename, "doc.txt")
 
     def test_document_rename_rejects_empty_name(self):
         self.client.force_login(self.user)
@@ -573,11 +596,9 @@ class DocumentViewsTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="guarded.txt", status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=0, text="Safe chunk", token_count=2,
+        _doc_chunk(doc, chunk_index=0, text="Safe chunk", token_count=2,
         )
-        DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=1, text="Quarantined chunk",
+        _doc_chunk(doc, chunk_index=1, text="Quarantined chunk",
             token_count=3, is_quarantined=True,
         )
         response = self.client.get(
@@ -899,8 +920,8 @@ class DocumentViewsTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="pii.txt", status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentTag.objects.create(document=doc, key="pii_ordinary_identity", value="true")
-        DataRoomDocumentTag.objects.create(document=doc, key="pii_special_category", value="true")
+        _doc_tag(doc, key="pii_ordinary_identity", value="true")
+        _doc_tag(doc, key="pii_special_category", value="true")
 
         response = self.client.get(
             reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
@@ -1175,13 +1196,17 @@ class DocumentRescanTests(TestCase):
         self.other = User.objects.create_user(email="rescan-other@example.com", password="testpass")
 
     def _make_doc(self, status):
-        return DataRoomDocument.objects.create(
+        doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="doc.txt",
             status=status,
             processing_error="old error",
         )
+        # Rescan operates on the working version; give it one in the same state.
+        from documents.tests._helpers import make_version
+        make_version(doc, status=status, make_active=False)
+        return doc
 
     def _url(self, doc):
         return reverse("document_rescan", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.pk})
@@ -1202,10 +1227,10 @@ class DocumentRescanTests(TestCase):
         # finalize), NOT finalize directly — else the doc would release unscanned.
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
         self.client.force_login(self.user)
-        with patch("guardrails.tasks.scan_document_chunks.delay") as mock_delay:
+        with patch("guardrails.tasks.scan_document_version.delay") as mock_delay:
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 200)
-        mock_delay.assert_called_once_with(doc.pk)
+        mock_delay.assert_called_once_with(doc.current_version_id)
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
         self.assertIsNone(doc.processing_error)
@@ -1213,15 +1238,15 @@ class DocumentRescanTests(TestCase):
     def test_rescan_allowed_for_stuck_scanning_doc(self):
         doc = self._make_doc(DataRoomDocument.Status.SCANNING)
         self.client.force_login(self.user)
-        with patch("guardrails.tasks.scan_document_chunks.delay") as mock_delay:
+        with patch("guardrails.tasks.scan_document_version.delay") as mock_delay:
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 200)
-        mock_delay.assert_called_once_with(doc.pk)
+        mock_delay.assert_called_once_with(doc.current_version_id)
 
     def test_rescan_rejected_for_ready_doc(self):
         doc = self._make_doc(DataRoomDocument.Status.READY)
         self.client.force_login(self.user)
-        with patch("guardrails.tasks.scan_document_chunks.delay") as mock_delay:
+        with patch("guardrails.tasks.scan_document_version.delay") as mock_delay:
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 409)
         mock_delay.assert_not_called()
@@ -1231,7 +1256,7 @@ class DocumentRescanTests(TestCase):
 
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
         self.client.force_login(self.user)
-        with patch("guardrails.tasks.scan_document_chunks.delay", side_effect=RuntimeError("broker down")):
+        with patch("guardrails.tasks.scan_document_version.delay", side_effect=RuntimeError("broker down")):
             response = self.client.post(self._url(doc))
         self.assertEqual(response.status_code, 500)
         doc.refresh_from_db()
@@ -1255,8 +1280,7 @@ class DocumentDeleteCheckTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="check.txt", status=DataRoomDocument.Status.READY,
         )
-        self.chunk = DataRoomDocumentChunk.objects.create(
-            document=self.doc, chunk_index=0, text="data", token_count=1,
+        self.chunk = _doc_chunk(self.doc, chunk_index=0, text="data", token_count=1,
         )
 
     def _check_url(self):

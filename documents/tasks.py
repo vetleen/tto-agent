@@ -6,7 +6,7 @@ import logging
 
 from celery import shared_task
 
-from documents.services.process_document import process_document
+from documents.services.process_document import process_document, process_document_version
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +19,24 @@ logger = logging.getLogger(__name__)
     soft_time_limit=540,
 )
 def process_document_task(document_id: int) -> None:
+    # Back-compat entry (upload path + stale sweeper): ensures v0 then processes it.
     process_document(document_id)
 
 
-# Sweeper staleness thresholds. UPLOADED uses the same window as the
-# PROCESSING stale guard in documents/services/process_document.py; SCANNING
-# gets a wider one because it spans the guardrail chunk scan plus
-# finalize_document_metadata, each with a 600s limit and retries with backoff.
+@shared_task(
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 5},
+    time_limit=600,
+    soft_time_limit=540,
+)
+def process_document_version_task(version_id: int) -> None:
+    process_document_version(version_id)
+
+
+# Sweeper staleness thresholds (mirror process_document.STALE_PROCESSING_MINUTES
+# for UPLOADED/PROCESSING; SCANNING gets a wider one spanning the guardrail scan
+# plus finalize).
 STALE_UPLOADED_MINUTES = 15
 STALE_SCANNING_MINUTES = 60
 MAX_REQUEUES = 3
@@ -33,24 +44,15 @@ MAX_REQUEUES = 3
 
 @shared_task(time_limit=60)
 def requeue_stale_documents() -> int:
-    """Periodic recovery of documents stranded by a worker restart.
+    """Periodic recovery of *versions* stranded by a worker restart.
 
-    Celery acks tasks early, so a dyno restart (Heroku cycles dynos daily)
-    silently drops any in-flight task: documents stay UPLOADED (enqueue lost),
-    PROCESSING (worker died mid-pipeline), or SCANNING (guardrail scan or
-    finalize lost) forever.
+    With versioning the processing unit is a ``DataRoomDocumentVersion``, so the
+    sweeper operates on versions: UPLOADED/PROCESSING past the stale window are
+    re-enqueued (capped at MAX_REQUEUES via the version's ``requeue_count``);
+    SCANNING past its window fails closed to SCAN_FAILED. Document-level status is
+    mirrored for fresh uploads (no active version yet) so the UI isn't stuck.
 
-    - UPLOADED/PROCESSING past the stale window are re-enqueued — safe because
-      process_document uses select_for_update(skip_locked=True) plus its own
-      stale-PROCESSING guard. ``requeue_count`` caps this at MAX_REQUEUES so a
-      poison document (e.g. one that OOMs the worker) becomes FAILED instead
-      of crash-looping forever.
-    - SCANNING past its window fails closed to SCAN_FAILED (the document never
-      reached retrieval), matching guardrails' own failure path; the user
-      recovers via the existing rescan button.
-
-    Like chat.tasks.expire_stale_subagent_runs, transient DB unavailability is
-    logged at INFO and skipped — the next beat tick retries.
+    Transient DB unavailability is logged at INFO and skipped — the next tick retries.
     """
     from datetime import timedelta
 
@@ -58,7 +60,7 @@ def requeue_stale_documents() -> int:
     from django.db.utils import InterfaceError, OperationalError
     from django.utils import timezone
 
-    from documents.models import DataRoomDocument
+    from documents.models import DataRoomDocument, DataRoomDocumentVersion
     from documents.services.process_document import STALE_PROCESSING_MINUTES
     from documents.services.pii_scan import SCAN_FAILED_MESSAGE
 
@@ -75,63 +77,61 @@ def requeue_stale_documents() -> int:
             updated_at__lt=now - timedelta(minutes=STALE_PROCESSING_MINUTES),
         )
 
-        # Requeue cap reached → permanent FAILED so the user sees a state
-        # they can act on (re-upload) instead of an eternal spinner.
-        exhausted = DataRoomDocument.objects.filter(
-            stale_pipeline, requeue_count__gte=MAX_REQUEUES,
-        ).update(
-            status=Status.FAILED,
-            processing_error=(
-                "Processing was interrupted repeatedly and has been stopped."
-            ),
-            updated_at=now,
+        # Requeue cap reached → permanent FAILED.
+        exhausted_ids = list(
+            DataRoomDocumentVersion.objects.filter(
+                stale_pipeline, requeue_count__gte=MAX_REQUEUES,
+            ).values_list("pk", flat=True)
         )
-        if exhausted:
-            logger.warning(
-                "requeue_stale_documents: %s document(s) exceeded %s requeues, marked FAILED",
-                exhausted, MAX_REQUEUES,
+        if exhausted_ids:
+            DataRoomDocumentVersion.objects.filter(pk__in=exhausted_ids).update(
+                status=Status.FAILED,
+                processing_error="Processing was interrupted repeatedly and has been stopped.",
+                updated_at=now,
             )
-            handled += exhausted
+            _mirror_terminal_doc_status(exhausted_ids, Status.FAILED, now)
+            logger.warning(
+                "requeue_stale_documents: %s version(s) exceeded %s requeues, marked FAILED",
+                len(exhausted_ids), MAX_REQUEUES,
+            )
+            handled += len(exhausted_ids)
 
         requeue_ids = list(
-            DataRoomDocument.objects.filter(
+            DataRoomDocumentVersion.objects.filter(
                 stale_pipeline, requeue_count__lt=MAX_REQUEUES,
             ).values_list("pk", flat=True)
         )
-        for doc_id in requeue_ids:
-            # Conditional per-row update: a no-op if the document moved on
-            # (or was requeued by a concurrent tick) since the list query.
-            # Deliberately leaves updated_at stale so process_document's
-            # stale-PROCESSING guard force-reprocesses instead of skipping.
-            updated = DataRoomDocument.objects.filter(
-                stale_pipeline, pk=doc_id, requeue_count__lt=MAX_REQUEUES,
+        for version_id in requeue_ids:
+            updated = DataRoomDocumentVersion.objects.filter(
+                stale_pipeline, pk=version_id, requeue_count__lt=MAX_REQUEUES,
             ).update(requeue_count=F("requeue_count") + 1)
             if updated:
                 logger.warning(
-                    "requeue_stale_documents: document_id=%s stale, re-enqueueing", doc_id,
+                    "requeue_stale_documents: version_id=%s stale, re-enqueueing", version_id,
                 )
-                process_document_task.delay(doc_id)
+                process_document_version_task.delay(version_id)
                 handled += 1
 
-        # Stuck SCANNING → fail closed (same terminal state guardrails uses
-        # when the chunk scan exhausts retries). Staleness is measured from
-        # processed_at (when processing handed off to the scan); updated_at
-        # is only a fallback — description generation refreshes it mid-scan.
+        # Stuck SCANNING → fail closed.
         scan_cutoff = now - timedelta(minutes=STALE_SCANNING_MINUTES)
-        stuck_scans = DataRoomDocument.objects.filter(status=Status.SCANNING).filter(
-            Q(processed_at__lt=scan_cutoff)
-            | Q(processed_at__isnull=True, updated_at__lt=scan_cutoff)
-        ).update(
-            status=Status.SCAN_FAILED,
-            processing_error=SCAN_FAILED_MESSAGE,
-            updated_at=now,
+        stuck_ids = list(
+            DataRoomDocumentVersion.objects.filter(status=Status.SCANNING).filter(
+                Q(processed_at__lt=scan_cutoff)
+                | Q(processed_at__isnull=True, updated_at__lt=scan_cutoff)
+            ).values_list("pk", flat=True)
         )
-        if stuck_scans:
-            logger.warning(
-                "requeue_stale_documents: %s document(s) stuck in SCANNING marked SCAN_FAILED",
-                stuck_scans,
+        if stuck_ids:
+            DataRoomDocumentVersion.objects.filter(pk__in=stuck_ids).update(
+                status=Status.SCAN_FAILED,
+                processing_error=SCAN_FAILED_MESSAGE,
+                updated_at=now,
             )
-            handled += stuck_scans
+            _mirror_terminal_doc_status(stuck_ids, Status.SCAN_FAILED, now, error=SCAN_FAILED_MESSAGE)
+            logger.warning(
+                "requeue_stale_documents: %s version(s) stuck in SCANNING marked SCAN_FAILED",
+                len(stuck_ids),
+            )
+            handled += len(stuck_ids)
     except (OperationalError, InterfaceError):
         logger.info(
             "Skipping stale document sweep: database temporarily unavailable; "
@@ -143,91 +143,115 @@ def requeue_stale_documents() -> int:
     return handled
 
 
+def _mirror_terminal_doc_status(version_ids, status, now, error=None):
+    """Mirror a terminal version status onto documents that have no live version yet.
+
+    Only fresh uploads (active_searchable_version is None) whose current_version is
+    one of these versions are mirrored — an edit that fails leaves the previously
+    live version untouched, so the document is not "stuck".
+    """
+    from documents.models import DataRoomDocument
+
+    fields = {"status": status, "updated_at": now}
+    if error is not None:
+        fields["processing_error"] = error
+    DataRoomDocument.objects.filter(
+        active_searchable_version__isnull=True,
+        current_version_id__in=version_ids,
+    ).update(**fields)
+
+
 @shared_task(bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
-def finalize_document_metadata(self, document_id: int) -> None:
-    """Generate the document description + tags and run the full-document PII scan.
+def finalize_document_metadata(self, version_id: int) -> None:
+    """Generate description + tags, run the PII scan, and release a held version.
 
-    Dispatched (fire-and-forget) by ``scan_document_chunks`` once the guardrail chunk
-    scan completes, so the heavy ``process_document`` frame can return and free every
-    copy of the document text before any LLM work begins. Reads the text back from the
-    persisted chunks — head/tail for the description, the full document in windows for
-    PII — so the worker never holds the whole document in memory here.
+    Dispatched by ``scan_document_version`` once the guardrail chunk scan completes.
+    Operates on a single version: tags (description + PII) attach to the version,
+    quarantine sets the version's flag, and the document-level sensitivity union is
+    recomputed. This task is the SOLE releaser of SCANNING and the only place
+    ``active_searchable_version`` advances:
 
-    Documents arrive here held in SCANNING (the guardrail chunk scan hands off to
-    this task after it completes) — held out of retrieval — and this task is the sole
-    releaser: READY on a completed scan (quarantine flags applied as needed),
-    SCAN_FAILED when the *PII quarantine gate* is active and its scan can't complete
-    so the user can retry from the document list. When PII scanning is informational
-    only (or absent), a scan failure still releases the document rather than stranding
-    it. Transient gated-scan failures retry (max 3 with backoff); config/policy errors
-    won't self-heal and fail immediately. Description generation stays best-effort.
-
-    Imports are kept inside the function (like ``guardrails/tasks.py``) so importing
-    this module at Celery autodiscover stays cheap.
+    - On a clean scan the version is released READY and becomes the active searchable
+      version (pgvector ``is_searchable`` flipped on — no re-embed).
+    - A quarantined version is released READY but NOT made searchable; the previously
+      active version stays live, so the bad draft is invisible to every other thread.
     """
     from celery.exceptions import MaxRetriesExceededError
     from django.utils import timezone
 
     from core.preferences import resolve_org_feature_model
-    from documents.models import DataRoomDocument, DataRoomDocumentTag
+    from documents.models import (
+        DataRoomDocument,
+        DataRoomDocumentTag,
+        DataRoomDocumentVersion,
+    )
     from documents.services.chunk_access import build_head_tail_text
     from documents.services.description import generate_description_and_tags_from_text
     from documents.services.pii_scan import (
         SCAN_FAILED_MESSAGE,
         org_id_for_document,
         resolve_pii_gate,
-        scan_pii_categories_for_document,
+        scan_pii_categories_for_version,
     )
+    from documents.services.versioning import advance_active_to, recompute_document_sensitivity
     from llm.service.errors import LLMAuthError, LLMConfigurationError, LLMPolicyDenied
 
+    Status = DataRoomDocument.Status
+
     try:
-        doc = DataRoomDocument.objects.get(pk=document_id)
-    except DataRoomDocument.DoesNotExist:
-        # Document was deleted between processing and this task — expected, not an error.
-        logger.info("finalize_document_metadata: document_id=%s not found (deleted before finalize)", document_id)
+        version = DataRoomDocumentVersion.objects.select_related("document").get(pk=version_id)
+    except DataRoomDocumentVersion.DoesNotExist:
+        logger.info("finalize_document_metadata: version_id=%s not found (deleted before finalize)", version_id)
         return
 
-    # Every document now arrives held in SCANNING (the guardrail chunk scan hands off
-    # here after it completes) and must leave as READY or SCAN_FAILED — never stuck.
-    # ``held`` is the release responsibility; whether a *PII* scan failure must fail
-    # the doc closed is a separate question answered by ``pii_must_gate`` below.
-    held = doc.status == DataRoomDocument.Status.SCANNING
+    doc = version.document
+    document_id = doc.id
+    held = version.status == Status.SCANNING
 
-    def _release_to_ready():
-        # Conditional update: a no-op if the document was deleted or changed since.
-        DataRoomDocument.objects.filter(
-            pk=doc.pk, status=DataRoomDocument.Status.SCANNING,
-        ).update(status=DataRoomDocument.Status.READY, updated_at=timezone.now())
+    def _finish_release():
+        """Release the held version: READY, and advance the active pointer if clean."""
+        if not held:
+            return
+        DataRoomDocumentVersion.objects.filter(pk=version_id, status=Status.SCANNING).update(
+            status=Status.READY, updated_at=timezone.now()
+        )
+        is_q = DataRoomDocumentVersion.objects.filter(pk=version_id).values_list(
+            "is_quarantined", flat=True
+        ).first()
+        if not is_q:
+            advance_active_to(document_id, version)
+        else:
+            # Quarantined: do not advance active. For a fresh upload (no prior active
+            # version) mark the document READY so the UI shows processing finished;
+            # retrieval still surfaces nothing because active stays None.
+            if doc.active_searchable_version_id is None:
+                DataRoomDocument.objects.filter(pk=document_id).update(
+                    status=Status.READY, updated_at=timezone.now()
+                )
+            recompute_document_sensitivity(document_id)
 
     def _mark_scan_failed():
-        DataRoomDocument.objects.filter(
-            pk=doc.pk, status=DataRoomDocument.Status.SCANNING,
-        ).update(
-            status=DataRoomDocument.Status.SCAN_FAILED,
-            processing_error=SCAN_FAILED_MESSAGE,
-            updated_at=timezone.now(),
-        )
+        updated = DataRoomDocumentVersion.objects.filter(
+            pk=version_id, status=Status.SCANNING,
+        ).update(status=Status.SCAN_FAILED, processing_error=SCAN_FAILED_MESSAGE, updated_at=timezone.now())
+        if updated and doc.active_searchable_version_id in (None, version_id):
+            DataRoomDocument.objects.filter(pk=document_id).update(
+                status=Status.SCAN_FAILED, processing_error=SCAN_FAILED_MESSAGE, updated_at=timezone.now()
+            )
 
     org_id = org_id_for_document(doc)
     desc_model = resolve_org_feature_model(org_id, "document_description")
     pii_model, pii_enabled, pii_quarantine_enabled = resolve_pii_gate(org_id)
-    # The PII *quarantine* gate (GDPR Art. 9/10): only when this is active must a PII
-    # scan failure fail the held document closed. An informational-only scan that
-    # fails must still release the document, not strand it in SCANNING.
     pii_must_gate = bool(pii_model and pii_enabled and pii_quarantine_enabled)
 
-    # Nothing to do — skip the chunk reads entirely. A held document is still
-    # released (the org may have disabled the scan since processing started).
     if not desc_model and not (pii_enabled and pii_model):
-        if held:
-            _release_to_ready()
+        _finish_release()
         return
 
-    # --- Description + tags (head/tail text is all the relevance gist needs) ---
-    # Skipped when a description already exists so scan retries don't burn LLM calls.
+    # --- Description + tags (only generated once, on the first version) ---
     if desc_model and not doc.description:
         try:
-            text = build_head_tail_text(document_id)
+            text = build_head_tail_text(version_id)
             if text.strip():
                 result = generate_description_and_tags_from_text(
                     text, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=org_id,
@@ -240,86 +264,67 @@ def finalize_document_metadata(self, document_id: int) -> None:
                 doc.save(update_fields=update_fields)
                 for tag_key, tag_value in result.get("tags", {}).items():
                     DataRoomDocumentTag.objects.update_or_create(
-                        document=doc, key=tag_key, defaults={"value": tag_value},
+                        version=version, key=tag_key, defaults={"value": tag_value},
                     )
         except DataRoomDocument.NotUpdated:
-            # Document was deleted during description generation — expected, not an error.
             logger.info(
-                "finalize_document_metadata: document_id=%s deleted during description generation, skipping",
-                document_id,
+                "finalize_document_metadata: version_id=%s document deleted during description generation, skipping",
+                version_id,
             )
         except (LLMPolicyDenied, LLMConfigurationError, LLMAuthError):
-            # Config/policy errors won't self-heal — surface as a distinct Sentry issue.
             logger.exception(
-                "finalize_document_metadata: document_id=%s description generation blocked by LLM config/policy",
-                document_id,
+                "finalize_document_metadata: version_id=%s description blocked by LLM config/policy",
+                version_id,
             )
         except Exception:
             logger.exception(
-                "finalize_document_metadata: document_id=%s description generation failed (non-critical)",
-                document_id,
+                "finalize_document_metadata: version_id=%s description generation failed (non-critical)",
+                version_id,
             )
 
-    # --- PII category scan (entire document, windowed) ---
+    # --- PII category scan (entire version, windowed) ---
     pii_result: dict[str, bool] = {}
     if pii_enabled and pii_model:
         try:
-            pii_result = scan_pii_categories_for_document(
-                document_id, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=org_id,
+            pii_result = scan_pii_categories_for_version(
+                version_id, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=org_id,
             )
-            # NOTE: detections are union-only — categories are added here but never
-            # cleared, and is_quarantined is never un-set by a later scan. That's the
-            # right bias while document content is immutable, but if a rescan-after-edit
-            # feature is ever added (e.g. the user edits and resaves a document), it must
-            # first clear existing pii_* tags and re-evaluate quarantine from scratch,
-            # or stale detections from the old content will stick forever.
             for category in pii_result:
                 DataRoomDocumentTag.objects.update_or_create(
-                    document=doc, key=category, defaults={"value": "true"},
+                    version=version, key=category, defaults={"value": "true"},
                 )
         except (LLMPolicyDenied, LLMConfigurationError, LLMAuthError):
-            # Config/policy errors won't self-heal — retrying won't help.
             logger.exception(
-                "finalize_document_metadata: document_id=%s PII scan blocked by LLM config/policy",
-                document_id,
+                "finalize_document_metadata: version_id=%s PII scan blocked by LLM config/policy", version_id,
             )
             if held and pii_must_gate:
                 _mark_scan_failed()
             elif held:
-                # Informational scan — don't strand the held document.
-                _release_to_ready()
+                _finish_release()
             return
         except Exception:
             if not (held and pii_must_gate):
-                # Best-effort: either we don't own this doc's release (not held) or
-                # the PII scan is informational. Log, and release if we're holding it.
                 logger.exception(
-                    "finalize_document_metadata: document_id=%s PII scan failed (non-critical)",
-                    document_id,
+                    "finalize_document_metadata: version_id=%s PII scan failed (non-critical)", version_id,
                 )
                 if held:
-                    _release_to_ready()
+                    _finish_release()
                 return
             logger.exception(
-                "finalize_document_metadata: document_id=%s PII scan failed (attempt %s/%s)",
-                document_id, self.request.retries + 1, self.max_retries + 1,
+                "finalize_document_metadata: version_id=%s PII scan failed (attempt %s/%s)",
+                version_id, self.request.retries + 1, self.max_retries + 1,
             )
             try:
-                # Raises Retry to hand the task back to the worker; raises
-                # MaxRetriesExceededError once attempts are exhausted.
                 raise self.retry(countdown=30 * (2 ** self.request.retries))
             except MaxRetriesExceededError:
                 logger.warning(
-                    "finalize_document_metadata: document_id=%s scan retries exhausted; marking scan_failed",
-                    document_id,
+                    "finalize_document_metadata: version_id=%s scan retries exhausted; marking scan_failed",
+                    version_id,
                 )
                 _mark_scan_failed()
                 return
 
-    # --- Quarantine on GDPR Article 9 / 10 detection ---
-    # Special category (Art. 9) and criminal offence (Art. 10) data must never reach
-    # the LLM. Flag the document; read-time filters in documents/services/retrieval.py
-    # keep its chunks out of every retrieval path.
+    # --- Quarantine on GDPR Article 9 / 10 detection (version-scoped) ---
     if pii_quarantine_enabled:
         articles = []
         if pii_result.get("pii_special_category"):
@@ -327,24 +332,105 @@ def finalize_document_metadata(self, document_id: int) -> None:
         if pii_result.get("pii_criminal_offence"):
             articles.append("Article 10 (criminal offence)")
         if articles:
-            try:
-                doc.is_quarantined = True
-                doc.quarantine_reason = "Contains GDPR " + " and ".join(articles) + " personal data."
-                doc.save(update_fields=["is_quarantined", "quarantine_reason", "updated_at"])
-                logger.warning(
-                    "finalize_document_metadata: document_id=%s quarantined (%s)",
-                    document_id,
-                    ", ".join(articles),
-                )
-            except DataRoomDocument.NotUpdated:
-                # Document was deleted before quarantine could be applied — expected, not an error.
-                logger.info(
-                    "finalize_document_metadata: document_id=%s deleted before quarantine, skipping",
-                    document_id,
-                )
-                return
+            DataRoomDocumentVersion.objects.filter(pk=version_id).update(
+                is_quarantined=True,
+                quarantine_reason="Contains GDPR " + " and ".join(articles) + " personal data.",
+            )
+            recompute_document_sensitivity(document_id)
+            logger.warning(
+                "finalize_document_metadata: version_id=%s quarantined (%s)",
+                version_id, ", ".join(articles),
+            )
 
-    # Scan complete (quarantine flags applied where needed) — release the
-    # held document to retrieval.
-    if held:
-        _release_to_ready()
+    _finish_release()
+
+
+# --- Version pruning -------------------------------------------------------
+
+# Keep at most this many versions per document; beyond it the oldest non-protected
+# versions are dropped. Always-protected: v0 (original), current, and active.
+MAX_VERSIONS_PER_DOCUMENT = 10
+
+
+@shared_task(time_limit=300)
+def prune_document_versions() -> int:
+    """Nightly prune of old document versions.
+
+    Per document, keep: v0 (the original), current_version, active_searchable_version,
+    and — among the rest — at most one per calendar day (the newest of that day). If
+    more than MAX_VERSIONS_PER_DOCUMENT remain, drop the oldest non-protected until the
+    cap is met. Dropped versions delete their chunks/tags (CASCADE), their pgvector
+    rows, and their native blob; the document-level sensitivity union is recomputed.
+    """
+    from django.db.utils import InterfaceError, OperationalError
+
+    from documents.models import DataRoomDocument, DataRoomDocumentVersion
+    from documents.services.vector_store import delete_vectors_for_version
+    from documents.services.versioning import recompute_document_sensitivity
+
+    pruned = 0
+    try:
+        doc_iter = list(
+            DataRoomDocument.objects.all()
+            .only("pk", "current_version_id", "active_searchable_version_id")
+            .iterator(chunk_size=200)
+        )
+    except (OperationalError, InterfaceError):
+        logger.info("prune_document_versions: DB unavailable; will retry next tick.", exc_info=True)
+        return 0
+
+    for doc in doc_iter:
+        versions = list(
+            DataRoomDocumentVersion.objects.filter(document_id=doc.pk)
+            .order_by("-version_index")
+            .values("pk", "version_index", "created_at")
+        )
+        if len(versions) <= 1:
+            continue
+
+        protected: set[int] = set()
+        # v0 (lowest version_index)
+        v0 = min(versions, key=lambda v: v["version_index"])
+        protected.add(v0["pk"])
+        if doc.current_version_id:
+            protected.add(doc.current_version_id)
+        if doc.active_searchable_version_id:
+            protected.add(doc.active_searchable_version_id)
+
+        # Among the non-protected, keep the newest one per calendar day.
+        kept_days: set = set()
+        droppable: list[int] = []
+        for v in versions:  # newest first
+            if v["pk"] in protected:
+                continue
+            day = v["created_at"].date() if v["created_at"] else None
+            if day is not None and day not in kept_days:
+                kept_days.add(day)
+                continue  # keep the newest of this day
+            droppable.append(v["pk"])
+
+        # Enforce the hard cap: total kept must be <= MAX. Drop more (oldest first)
+        # from the day-survivors if needed, never the always-protected set.
+        total_kept = len(versions) - len(droppable)
+        if total_kept > MAX_VERSIONS_PER_DOCUMENT:
+            day_survivors = [
+                v["pk"] for v in sorted(versions, key=lambda v: v["version_index"])
+                if v["pk"] not in protected and v["pk"] not in droppable
+            ]
+            overflow = total_kept - MAX_VERSIONS_PER_DOCUMENT
+            droppable.extend(day_survivors[:overflow])
+
+        for vid in droppable:
+            try:
+                delete_vectors_for_version(vid)
+                DataRoomDocumentVersion.objects.filter(pk=vid).delete()
+                pruned += 1
+            except Exception:
+                logger.exception("prune_document_versions: failed to drop version_id=%s", vid)
+
+        if droppable:
+            recompute_document_sensitivity(doc.pk)
+
+    if pruned:
+        logger.info("prune_document_versions: dropped %s version(s)", pruned)
+    return pruned

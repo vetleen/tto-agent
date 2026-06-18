@@ -13,9 +13,18 @@ from typing import Any
 
 from django.conf import settings as django_settings
 from django.contrib.postgres.search import SearchQuery, SearchRank
+from django.db.models import F
 
 from documents.models import DataRoomDocumentChunk, DataRoomDocument
 from documents.services import vector_store as vs
+
+# Retrieval gate: a chunk is retrievable iff it belongs to its document's active
+# searchable version (``version__is_searchable=True`` — only that version carries
+# the flag, and finalize only advances it for a READY, non-quarantined version),
+# is not itself guardrail-quarantined, and its document is not archived. This is
+# version-scoped on purpose: a clean active version stays retrievable even when an
+# *older* version was quarantined (so editing out Article-9 data un-hides the doc,
+# but the original staying quarantined never leaks).
 
 logger = logging.getLogger(__name__)
 
@@ -88,16 +97,14 @@ def rerank_chunks(
 
 
 def get_chunks_by_document(document_id: int) -> list[dict[str, Any]]:
-    """Return chunks for a READY document in order (from DB)."""
+    """Return the active searchable version's chunks for a document, in order."""
     chunks = (
         DataRoomDocumentChunk.objects.filter(
-            document_id=document_id,
+            version__document_id=document_id,
+            version__is_searchable=True,
             is_quarantined=False,
-            # READY means processed AND cleared by the PII scan when the org's
-            # quarantine gate is active — never surface earlier statuses.
-            document__status=DataRoomDocument.Status.READY,
+            version__document__is_archived=False,
         )
-        .exclude(document__is_quarantined=True)
         .order_by("chunk_index")
     )
     return [
@@ -122,19 +129,18 @@ def get_chunks_by_data_room(data_room_id: int) -> list[dict[str, Any]]:
     """
     chunks = (
         DataRoomDocumentChunk.objects.filter(
-            document__data_room_id=data_room_id,
+            version__document__data_room_id=data_room_id,
+            version__is_searchable=True,
             is_quarantined=False,
-            document__status=DataRoomDocument.Status.READY,
+            version__document__is_archived=False,
         )
-        .exclude(document__is_archived=True)
-        .exclude(document__is_quarantined=True)
-        .select_related("document")
-        .order_by("document_id", "chunk_index")
+        .select_related("version")
+        .order_by("version__document_id", "chunk_index")
     )
     return [
         {
             "id": c.id,
-            "document_id": c.document_id,
+            "document_id": c.version.document_id,
             "chunk_index": c.chunk_index,
             "heading": c.heading,
             "text": c.text,
@@ -158,19 +164,18 @@ def fulltext_search_chunks(
     search_query = SearchQuery(query, config="english", search_type="websearch")
     qs = (
         DataRoomDocumentChunk.objects.filter(
-            document__data_room_id__in=data_room_ids,
+            version__document__data_room_id__in=data_room_ids,
             search_vector__isnull=False,
             is_quarantined=False,
-            document__status=DataRoomDocument.Status.READY,
+            version__is_searchable=True,
+            version__document__is_archived=False,
         )
-        .exclude(document__is_archived=True)
-        .exclude(document__is_quarantined=True)
-        .annotate(rank=SearchRank("search_vector", search_query))
+        .annotate(rank=SearchRank("search_vector", search_query), doc_pk=F("version__document_id"))
         .filter(rank__gt=0)
         .order_by("-rank")
     )
     if document_id is not None:
-        qs = qs.filter(document_id=document_id)
+        qs = qs.filter(version__document_id=document_id)
     qs = qs[: max(1, min(k, 50))]
     return [
         {
@@ -178,7 +183,7 @@ def fulltext_search_chunks(
             "chunk_index": c.chunk_index,
             "text": c.text,
             "heading": c.heading,
-            "document_id": c.document_id,
+            "document_id": c.doc_pk,
             "rank": float(c.rank),
         }
         for c in qs
@@ -236,10 +241,11 @@ def hybrid_search_chunks(
             logger.exception("hybrid_search: fulltext search failed, continuing with semantic only")
 
     # ---- Drop semantic hits that fail read-time filters -----------------------
-    # The vector store knows nothing about quarantine, archive, or scan status,
-    # so the semantic side must enforce the same filters the FTS query applies
-    # in SQL: chunk-level quarantine, document-level quarantine/archive, and
-    # READY status (documents still scanning or failed never surface).
+    # The vector store's is_searchable cmetadata flag is only a recall optimization;
+    # this app-DB check is the AUTHORITATIVE gate. It enforces the same version-scoped
+    # filter as every other path: only the active searchable version's chunks, not
+    # guardrail-quarantined, document not archived. This corrects any stale pgvector
+    # flag (e.g. a rollback whose cmetadata flip lagged).
     if semantic_results:
         candidate_ids = {
             (getattr(doc, "metadata", {}) or {}).get("chunk_id")
@@ -250,9 +256,8 @@ def hybrid_search_chunks(
             DataRoomDocumentChunk.objects.filter(
                 pk__in=candidate_ids,
                 is_quarantined=False,
-                document__is_archived=False,
-                document__is_quarantined=False,
-                document__status=DataRoomDocument.Status.READY,
+                version__is_searchable=True,
+                version__document__is_archived=False,
             ).values_list("pk", flat=True)
         )
         semantic_results = [
@@ -416,7 +421,7 @@ def get_merged_context_windows(
 
     # Fetch hit chunks to get their document_id and chunk_index
     hit_chunks = DataRoomDocumentChunk.objects.filter(pk__in=chunk_ids).values(
-        "id", "document_id", "chunk_index"
+        "id", "chunk_index", document_id=F("version__document_id")
     )
     # Group by document
     doc_hits: dict[int, list[dict]] = defaultdict(list)
@@ -431,12 +436,11 @@ def get_merged_context_windows(
         # documents not yet released by the PII scan (or failed/archived).
         all_chunks = list(
             DataRoomDocumentChunk.objects.filter(
-                document_id=doc_id,
+                version__document_id=doc_id,
+                version__is_searchable=True,
                 is_quarantined=False,
-                document__status=DataRoomDocument.Status.READY,
+                version__document__is_archived=False,
             )
-            .exclude(document__is_quarantined=True)
-            .exclude(document__is_archived=True)
             .order_by("chunk_index")
             .values("id", "chunk_index", "text", "token_count")
         )

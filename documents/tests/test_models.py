@@ -2,7 +2,13 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
 
-from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
+from documents.models import (
+    DataRoom,
+    DataRoomDocument,
+    DataRoomDocumentChunk,
+    DataRoomDocumentTag,
+    DataRoomDocumentVersion,
+)
 
 User = get_user_model()
 
@@ -76,10 +82,11 @@ class DataRoomDocumentChunkModelTests(TestCase):
             original_filename="x.txt",
             status=DataRoomDocument.Status.READY,
         )
+        self.version = DataRoomDocumentVersion.objects.create(document=self.doc, version_index=0)
 
     def test_create_chunk(self):
         chunk = DataRoomDocumentChunk.objects.create(
-            document=self.doc,
+            version=self.version,
             chunk_index=0,
             text="Hello world",
             token_count=2,
@@ -87,16 +94,16 @@ class DataRoomDocumentChunkModelTests(TestCase):
         self.assertEqual(chunk.chunk_index, 0)
         self.assertEqual(chunk.text, "Hello world")
 
-    def test_unique_chunk_index_per_document(self):
+    def test_unique_chunk_index_per_version(self):
         DataRoomDocumentChunk.objects.create(
-            document=self.doc,
+            version=self.version,
             chunk_index=0,
             text="First",
             token_count=1,
         )
         with self.assertRaises(Exception):
             DataRoomDocumentChunk.objects.create(
-                document=self.doc,
+                version=self.version,
                 chunk_index=0,
                 text="Second",
                 token_count=1,
@@ -104,7 +111,7 @@ class DataRoomDocumentChunkModelTests(TestCase):
 
     def test_chunk_str(self):
         chunk = DataRoomDocumentChunk.objects.create(
-            document=self.doc,
+            version=self.version,
             chunk_index=0,
             text="Some text",
             token_count=2,
@@ -141,41 +148,39 @@ class DataRoomDocumentTagTests(TestCase):
             original_filename="x.txt",
             status=DataRoomDocument.Status.READY,
         )
+        self.version = DataRoomDocumentVersion.objects.create(document=self.doc, version_index=0)
 
     def test_create_tag(self):
-        tag = DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+        tag = DataRoomDocumentTag.objects.create(version=self.version, key="document_type", value="Agreement")
         self.assertEqual(tag.key, "document_type")
         self.assertEqual(tag.value, "Agreement")
-        self.assertEqual(tag.document_id, self.doc.pk)
+        self.assertEqual(tag.version_id, self.version.pk)
 
     def test_tag_str(self):
-        tag = DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Patent")
+        tag = DataRoomDocumentTag.objects.create(version=self.version, key="document_type", value="Patent")
         self.assertIn("document_type=Patent", str(tag))
 
-    def test_unique_constraint_per_document_key(self):
-        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+    def test_unique_constraint_per_version_key(self):
+        DataRoomDocumentTag.objects.create(version=self.version, key="document_type", value="Agreement")
         with self.assertRaises(Exception):
-            DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Report")
+            DataRoomDocumentTag.objects.create(version=self.version, key="document_type", value="Report")
 
-    def test_same_key_different_documents(self):
-        doc2 = DataRoomDocument.objects.create(
-            data_room=self.data_room, uploaded_by=self.user,
-            original_filename="y.txt", status=DataRoomDocument.Status.READY,
-        )
-        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
-        DataRoomDocumentTag.objects.create(document=doc2, key="document_type", value="Report")
+    def test_same_key_different_versions(self):
+        version2 = DataRoomDocumentVersion.objects.create(document=self.doc, version_index=1)
+        DataRoomDocumentTag.objects.create(version=self.version, key="document_type", value="Agreement")
+        DataRoomDocumentTag.objects.create(version=version2, key="document_type", value="Report")
         self.assertEqual(DataRoomDocumentTag.objects.count(), 2)
 
     def test_cascade_delete_with_document(self):
-        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
+        DataRoomDocumentTag.objects.create(version=self.version, key="document_type", value="Agreement")
         self.assertEqual(DataRoomDocumentTag.objects.count(), 1)
-        self.doc.delete()
+        self.doc.delete()  # cascades document -> version -> tag
         self.assertEqual(DataRoomDocumentTag.objects.count(), 0)
 
     def test_related_name_tags(self):
-        DataRoomDocumentTag.objects.create(document=self.doc, key="document_type", value="Agreement")
-        DataRoomDocumentTag.objects.create(document=self.doc, key="category", value="Legal")
-        self.assertEqual(self.doc.tags.count(), 2)
+        DataRoomDocumentTag.objects.create(version=self.version, key="document_type", value="Agreement")
+        DataRoomDocumentTag.objects.create(version=self.version, key="category", value="Legal")
+        self.assertEqual(self.version.tags.count(), 2)
 
 
 class DataRoomDocumentDocIndexTests(TestCase):

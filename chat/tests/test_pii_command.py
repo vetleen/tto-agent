@@ -38,13 +38,15 @@ class PiiCommandTests(TransactionTestCase):
         return consumer
 
     def _doc_with_tags(self, *keys):
+        from documents.tests._helpers import make_version
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="d.txt", status=DataRoomDocument.Status.READY,
         )
-        chunk = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="x", token_count=1)
+        version = make_version(doc, chunks=[{"text": "x", "token_count": 1}])
+        chunk = version.chunks.first()
         for key in keys:
-            DataRoomDocumentTag.objects.create(document=doc, key=key, value="true")
+            DataRoomDocumentTag.objects.create(version=version, key=key, value="true")
         return doc, chunk
 
     def _thread_using(self, doc, chunk):

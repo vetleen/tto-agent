@@ -53,6 +53,10 @@ class Command(BaseCommand):
         success = 0
         for doc in docs:
             try:
+                version = doc.active_searchable_version or doc.current_version
+                if version is None:
+                    self.stdout.write(f"  doc {doc.id}: skipped (no version)")
+                    continue
                 text = ""
                 if doc.original_file:
                     try:
@@ -64,7 +68,7 @@ class Command(BaseCommand):
                     except Exception:
                         text = ""
                 if not text:
-                    chunks = doc.chunks.order_by("chunk_index")
+                    chunks = version.chunks.order_by("chunk_index")
                     text = "\n\n".join(c.text for c in chunks)
 
                 if not text.strip():
@@ -82,7 +86,7 @@ class Command(BaseCommand):
                 doc.save(update_fields=update_fields)
                 for tag_key, tag_value in result.get("tags", {}).items():
                     DataRoomDocumentTag.objects.update_or_create(
-                        document=doc, key=tag_key,
+                        version=version, key=tag_key,
                         defaults={"value": tag_value},
                     )
                 success += 1

@@ -47,66 +47,60 @@ def _batch_chunks_by_budget(chunks: list[dict]) -> list[list[dict]]:
 
 
 @shared_task(bind=True, max_retries=3, time_limit=600, soft_time_limit=570)
-def scan_document_chunks(self, document_id: int) -> None:
-    """Scan all chunks of a document for adversarial content, then release it.
+def scan_document_version(self, version_id: int) -> None:
+    """Scan all chunks of a version for adversarial content, then release it.
 
-    Documents are held in SCANNING by ``process_document`` (and ``document_rescan``)
-    until this scan completes — retrieval only surfaces READY documents, so an
-    adversarial chunk cannot reach the LLM during the scan window. On success this
-    task hands off to ``finalize_document_metadata`` (the SOLE releaser of
-    SCANNING -> READY); on its own failure it fails the document closed (SCAN_FAILED)
-    so a held document is never stranded.
-
-    1. Run each chunk through heuristic_scan() (fast pre-filter)
-    2. Batch remaining chunks through cheap model classifier
-    3. Flag/quarantine suspicious chunks
-    4. Hand off to finalize (release) or mark SCAN_FAILED
+    Versions are held in SCANNING by ``process_document_version`` (and
+    ``document_rescan``) until this scan completes — retrieval only surfaces the
+    document's active searchable version, so an adversarial chunk cannot reach the
+    LLM during the scan window. On success this hands off to
+    ``finalize_document_metadata`` (the SOLE releaser of SCANNING and the only place
+    ``active_searchable_version`` advances); on its own failure it fails the version
+    closed (SCAN_FAILED) so a held version is never stranded.
     """
     from celery.exceptions import MaxRetriesExceededError
 
-    from documents.models import DataRoomDocument
+    from documents.models import DataRoomDocumentVersion
 
     try:
-        doc = DataRoomDocument.objects.get(pk=document_id)
-    except DataRoomDocument.DoesNotExist:
-        # Document was deleted between enqueue and scan — nothing to scan or release.
-        logger.info("scan_document_chunks: document_id=%s not found (deleted before scan)", document_id)
+        version = DataRoomDocumentVersion.objects.select_related("document").get(pk=version_id)
+    except DataRoomDocumentVersion.DoesNotExist:
+        logger.info("scan_document_version: version_id=%s not found (deleted before scan)", version_id)
         return
 
     try:
-        _scan_chunks_for_document(doc, document_id)
+        _scan_chunks_for_version(version)
     except Exception as exc:
-        # Fail closed: a held document must end READY or SCAN_FAILED, never stuck.
         logger.exception(
-            "scan_document_chunks: scan failed document_id=%s (attempt %s/%s)",
-            document_id, self.request.retries + 1, self.max_retries + 1,
+            "scan_document_version: scan failed version_id=%s (attempt %s/%s)",
+            version_id, self.request.retries + 1, self.max_retries + 1,
         )
         try:
             raise self.retry(countdown=30 * (2 ** self.request.retries), exc=exc)
         except MaxRetriesExceededError:
             logger.warning(
-                "scan_document_chunks: document_id=%s scan retries exhausted; marking scan_failed",
-                document_id,
+                "scan_document_version: version_id=%s scan retries exhausted; marking scan_failed",
+                version_id,
             )
-            _mark_scan_failed(document_id)
+            _mark_scan_failed(version_id)
             return
 
     # Scan complete — hand off to finalize_document_metadata, the sole releaser of
-    # SCANNING -> READY. Isolate the dispatch so a broker hiccup marks the doc
-    # SCAN_FAILED instead of re-running the whole scan (which would double-write events).
+    # SCANNING. Isolate the dispatch so a broker hiccup marks scan_failed instead of
+    # re-running the whole scan (which would double-write events).
     try:
         from documents.tasks import finalize_document_metadata
-        finalize_document_metadata.delay(document_id)
+        finalize_document_metadata.delay(version_id)
     except Exception:
         logger.exception(
-            "scan_document_chunks: finalize hand-off failed document_id=%s; marking scan_failed",
-            document_id,
+            "scan_document_version: finalize hand-off failed version_id=%s; marking scan_failed",
+            version_id,
         )
-        _mark_scan_failed(document_id)
+        _mark_scan_failed(version_id)
 
 
-def _scan_chunks_for_document(doc, document_id: int) -> None:
-    """Heuristic + classifier scan of a document's chunks; quarantines suspicious ones.
+def _scan_chunks_for_version(version) -> None:
+    """Heuristic + classifier scan of a version's chunks; quarantines suspicious ones.
 
     Returns normally on completion (including the no-chunks and no-classifier-model
     cases) so the caller can hand off to finalize. Raises on unexpected errors
@@ -124,16 +118,18 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
     from guardrails.heuristics import heuristic_scan
 
     ScanState = DataRoomDocumentChunk.GuardrailScanState
+    doc = version.document
+    document_id = version.document_id
 
     chunks = list(
-        doc.chunks.exclude(guardrail_scan_state=ScanState.DONE)
+        version.chunks.exclude(guardrail_scan_state=ScanState.DONE)
         .order_by("chunk_index")
         .values("id", "chunk_index", "text", "guardrail_scan_state")
     )
     if not chunks:
-        # Nothing left to scan (empty document, or a retry after every chunk
+        # Nothing left to scan (empty version, or a retry after every chunk
         # completed) — make sure the doc-level flag reflects prior quarantines.
-        _refresh_partial_quarantine(document_id)
+        _refresh_partial_quarantine(version)
         return
 
     logger.info(
@@ -214,7 +210,7 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
         # would brick uploads. Chunks stay HEURISTIC_DONE so a later rescan
         # with a model configured still classifies them. WARNING so Sentry
         # surfaces the misconfiguration.
-        _refresh_partial_quarantine(document_id)
+        _refresh_partial_quarantine(version)
         logger.warning(
             "scan_document_chunks: document_id=%s released without classifier scan "
             "(no model resolves for guardrail_chunk_scan); heuristic_flagged=%s",
@@ -223,7 +219,7 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
         return
     if not remaining_chunks:
         # Heuristic phase alone may have quarantined chunks — reflect that at the doc level.
-        _refresh_partial_quarantine(document_id)
+        _refresh_partial_quarantine(version)
         logger.info(
             "scan_document_chunks: document_id=%s done heuristic_flagged=%s",
             document_id, len(flagged_chunk_ids),
@@ -245,7 +241,7 @@ def _scan_chunks_for_document(doc, document_id: int) -> None:
             _set_chunk_scan_state([c["id"] for c in batch], ScanState.DONE)
 
     # Persist what the successful batches found before deciding the outcome.
-    _refresh_partial_quarantine(document_id)
+    _refresh_partial_quarantine(version)
 
     # Fail closed: a skipped batch means unclassified chunks, and releasing the
     # document would let them straight past the guardrail. Raising hands control
@@ -381,22 +377,31 @@ def _classify_chunk_batch(doc, chunks: list[dict], model: str) -> None:
             )
 
 
-def _mark_scan_failed(document_id: int) -> None:
-    """Fail a held document closed. Conditional update — a no-op if the document
+def _mark_scan_failed(version_id: int) -> None:
+    """Fail a held version closed. Conditional update — a no-op if the version
     already left SCANNING (deleted, or released by another path), mirroring
     ``finalize_document_metadata._mark_scan_failed``."""
     from django.utils import timezone
 
-    from documents.models import DataRoomDocument
+    from documents.models import DataRoomDocument, DataRoomDocumentVersion
     from documents.services.pii_scan import SCAN_FAILED_MESSAGE
 
-    DataRoomDocument.objects.filter(
-        pk=document_id, status=DataRoomDocument.Status.SCANNING,
+    updated = DataRoomDocumentVersion.objects.filter(
+        pk=version_id, status=DataRoomDocument.Status.SCANNING,
     ).update(
         status=DataRoomDocument.Status.SCAN_FAILED,
         processing_error=SCAN_FAILED_MESSAGE,
         updated_at=timezone.now(),
     )
+    if updated:
+        # Mirror onto the document only when this is the live/active version.
+        version = DataRoomDocumentVersion.objects.filter(pk=version_id).select_related("document").first()
+        if version and version.document.active_searchable_version_id in (None, version_id):
+            DataRoomDocument.objects.filter(pk=version.document_id).update(
+                status=DataRoomDocument.Status.SCAN_FAILED,
+                processing_error=SCAN_FAILED_MESSAGE,
+                updated_at=timezone.now(),
+            )
 
 
 def _quarantine_chunk(chunk_id: int, reason: str) -> None:
@@ -418,22 +423,24 @@ def _set_chunk_scan_state(chunk_ids: list[int], state: str) -> None:
     )
 
 
-def _refresh_partial_quarantine(document_id: int) -> None:
-    """Reflect chunk-level quarantine at the document level.
+def _refresh_partial_quarantine(version) -> None:
+    """Reflect chunk-level quarantine at the version level, then roll up to the document.
 
-    Sets ``is_partially_quarantined`` to whether any of the document's chunks are
-    quarantined. This is independent of full-document quarantine (GDPR Art. 9/10):
-    a document can have individual chunks quarantined by guardrails without being
-    fully quarantined. Uses ``.update()`` so a deleted document is a silent no-op.
+    Sets the version's ``is_partially_quarantined`` to whether any of its chunks are
+    quarantined (independent of full quarantine, GDPR Art. 9/10), then recomputes the
+    document-level sensitivity union. Uses ``.update()`` so a deleted version is a
+    silent no-op.
     """
-    from documents.models import DataRoomDocument, DataRoomDocumentChunk
+    from documents.models import DataRoomDocumentChunk, DataRoomDocumentVersion
+    from documents.services.versioning import recompute_document_sensitivity
 
     has_quarantined = DataRoomDocumentChunk.objects.filter(
-        document_id=document_id, is_quarantined=True
+        version_id=version.id, is_quarantined=True
     ).exists()
-    DataRoomDocument.objects.filter(pk=document_id).update(
+    DataRoomDocumentVersion.objects.filter(pk=version.id).update(
         is_partially_quarantined=has_quarantined
     )
+    recompute_document_sensitivity(version.document_id)
 
 
 def _log_chunk_event(

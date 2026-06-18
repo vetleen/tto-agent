@@ -173,11 +173,11 @@ def meeting_detail(request, meeting_uuid):
         DataRoomDocument.objects.filter(
             data_room__created_by=request.user,
             is_archived=False,
-            tags__key="meeting_uuid",
-            tags__value=str(meeting.uuid),
+            versions__tags__key="meeting_uuid",
+            versions__tags__value=str(meeting.uuid),
         )
         .select_related("data_room")
-        .prefetch_related("tags")
+        .prefetch_related("versions__tags")
         .order_by("data_room__name", "-uploaded_at")
         .distinct()
     )
@@ -185,7 +185,8 @@ def meeting_detail(request, meeting_uuid):
     saved_groups_by_room: dict = {}
     transcript_currently_saved = False
     for doc in saved_docs_qs:
-        tag_map = {t.key: t.value for t in doc.tags.all()}
+        # Tags live on versions; collapse across versions for this doc's tag map.
+        tag_map = {t.key: t.value for v in doc.versions.all() for t in v.tags.all()}
         is_transcript = tag_map.get("source") == "meeting_export"
         is_stale = bool(
             is_transcript
@@ -567,17 +568,20 @@ def meeting_save_to_data_room(request, meeting_uuid):
     existing_pks = list(
         DataRoomDocument.objects.filter(
             data_room=data_room,
-            tags__key="meeting_uuid",
-            tags__value=str(meeting.uuid),
+            versions__tags__key="meeting_uuid",
+            versions__tags__value=str(meeting.uuid),
         ).filter(
-            tags__key="source",
-            tags__value="meeting_export",
+            versions__tags__key="source",
+            versions__tags__value="meeting_export",
         ).values_list("pk", flat=True).distinct()
     )
     if existing_pks:
         DataRoomDocument.objects.filter(pk__in=existing_pks).delete()
 
     from django.core.files.base import ContentFile
+
+    from documents.models import DataRoomDocumentVersion
+    from documents.services.versioning import create_version
 
     payload = body.encode("utf-8")
     safe_filename = _safe_filename(filename, max_length=180)
@@ -591,21 +595,23 @@ def meeting_save_to_data_room(request, meeting_uuid):
         size_bytes=len(payload),
         status=DataRoomDocument.Status.UPLOADED,
     )
-    DataRoomDocumentTag.objects.create(document=doc, key="source", value="meeting_export")
-    DataRoomDocumentTag.objects.create(document=doc, key="meeting_uuid", value=str(meeting.uuid))
-    # No synchronous fallback (same rationale as document_upload): if the broker
-    # is down, fail the document with a clear message instead of processing
-    # inline on the web dyno.
+    # v0 carries the transcript markdown; create_version enqueues processing
+    # (chunk → embed → guardrails → PII). Tags attach to that version.
     try:
-        from documents.tasks import process_document_task
-        process_document_task.delay(doc.id)
+        version = create_version(
+            doc, content=body, origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT,
+            created_by=request.user, native_filename=safe_filename, mime_type=mime,
+            size_bytes=len(payload), enqueue=True,
+        )
     except Exception as exc:
-        logger.exception("meeting_save_to_data_room: failed to enqueue processing for doc %s", doc.id)
+        logger.exception("meeting_save_to_data_room: failed to create version for doc %s", doc.id)
         doc.status = DataRoomDocument.Status.FAILED
         doc.processing_error = str(exc)[:2000]
         doc.save(update_fields=["status", "processing_error", "updated_at"])
         messages.error(request, "Could not start processing the saved document.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+    DataRoomDocumentTag.objects.create(version=version, key="source", value="meeting_export")
+    DataRoomDocumentTag.objects.create(version=version, key="meeting_uuid", value=str(meeting.uuid))
 
     if existing_pks:
         messages.success(request, f"Resaved to data room: {data_room.name}.")

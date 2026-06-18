@@ -30,8 +30,10 @@ class BackfillSearchVectorsCommandTests(TestCase):
             original_filename="indexed.txt",
             status=DataRoomDocument.Status.READY,
         )
+        from documents.tests._helpers import make_version
+        version = make_version(doc)
         chunk = DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=0, text="Already indexed", token_count=3
+            version=version, chunk_index=0, text="Already indexed", token_count=3
         )
         # Set search_vector to a non-null value using DB-agnostic raw SQL.
         # On Postgres the column type is tsvector; on SQLite it's stored as text.

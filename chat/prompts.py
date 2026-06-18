@@ -299,14 +299,22 @@ as a starting point.
         prompt += "\n# Attached Data Rooms\n"
         for r in data_rooms:
             desc = r.get("description", "")
+            count = r.get("document_count")
+            count_str = f" ({count} document{'s' if count != 1 else ''})" if count is not None else ""
             if desc:
-                prompt += f'- **"{r["name"]}"**: {desc}\n'
+                prompt += f'- **"{r["name"]}"**{count_str}: {desc}\n'
             else:
-                prompt += f'- "{r["name"]}"\n'
+                prompt += f'- "{r["name"]}"{count_str}\n'
         prompt += (
-            "\nWhen the user wants to file or store a canvas as a document, use "
-            "`save_canvas_to_data_room(...)` to save it into one of the attached data "
-            "rooms (specify which room by name when more than one is attached).\n"
+            "\nData room documents are versioned and you can manage them: `list_documents` to "
+            "browse, `open_document_to_canvas` to edit a filed document (then `save_document` "
+            "with mode='overwrite' to file a new version), `write_document`/`edit_document` to "
+            "update one directly (e.g. in automated loops), `archive_document`, `rename_document`, "
+            "`list_versions`/`restore_version` to roll back, and `get_document_status` to check "
+            "processing. Saving re-runs the pipeline (chunk → embed → guardrails → PII), so save "
+            "only when a document is complete; the previous version stays live until the new one "
+            "finishes. Use `save_document` with mode='new' (or `save_canvas_to_data_room`) to file "
+            "a canvas as a brand-new document.\n"
         )
         prompt += (
             "\n# Content Safety\n"

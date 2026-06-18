@@ -610,7 +610,7 @@ class MeetingSaveToDataRoomTests(TestCase):
         self.foreign_room = DataRoom.objects.create(name="Theirs", slug="theirs-save", created_by=self.other)
         self.client.force_login(self.user)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_save_transcript_to_owned_data_room(self, mock_delay):
         from documents.models import DataRoomDocument
         response = self.client.post(
@@ -621,10 +621,10 @@ class MeetingSaveToDataRoomTests(TestCase):
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.my_room).count(), 1)
         mock_delay.assert_called_once()
 
-    @patch("documents.services.process_document.process_document")
-    @patch("documents.tasks.process_document_task.delay", side_effect=RuntimeError("broker down"))
-    def test_save_marks_failed_when_delay_fails(self, mock_delay, mock_sync):
-        """No synchronous fallback: a failed enqueue marks the export FAILED."""
+    @patch("documents.services.process_document.process_document_version")
+    @patch("documents.tasks.process_document_version_task.delay", side_effect=RuntimeError("broker down"))
+    def test_save_marks_version_failed_when_enqueue_fails(self, mock_delay, mock_sync):
+        """A failed enqueue marks the v0 version FAILED (no synchronous fallback)."""
         from documents.models import DataRoomDocument
         response = self.client.post(
             reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
@@ -633,10 +633,11 @@ class MeetingSaveToDataRoomTests(TestCase):
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_not_called()
         doc = DataRoomDocument.objects.get(data_room=self.my_room)
-        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
-        self.assertIn("broker down", doc.processing_error)
+        version = doc.current_version
+        self.assertEqual(version.status, DataRoomDocument.Status.FAILED)
+        self.assertIn("broker down", version.processing_error)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_save_saves_raw_transcript(self, mock_delay):
         """The button saves the raw transcript content."""
         from documents.models import DataRoomDocument
@@ -647,7 +648,7 @@ class MeetingSaveToDataRoomTests(TestCase):
         doc = DataRoomDocument.objects.get(data_room=self.my_room)
         self.assertIn("transcript", doc.original_filename)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_resave_overwrites_existing_transcript_export(self, mock_delay):
         """Resaving to a data room that already holds a transcript export for
         this meeting should replace it — only one transcript export per
@@ -672,7 +673,7 @@ class MeetingSaveToDataRoomTests(TestCase):
         self.assertEqual(len(docs), 1)
         self.assertNotEqual(docs[0].pk, first_pk)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_resave_does_not_touch_other_meeting_documents(self, mock_delay):
         """A non-transcript document tagged with the same meeting_uuid (e.g. a
         future Wilfred summary saved to the data room) must survive a
@@ -687,6 +688,7 @@ class MeetingSaveToDataRoomTests(TestCase):
         # but NOT as meeting_export — simulating what a future Wilfred tool
         # would produce.
         from django.core.files.base import ContentFile
+        from documents.tests._helpers import make_version
         summary = DataRoomDocument.objects.create(
             data_room=self.my_room,
             uploaded_by=self.user,
@@ -696,8 +698,9 @@ class MeetingSaveToDataRoomTests(TestCase):
             size_bytes=12,
             status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentTag.objects.create(document=summary, key="meeting_uuid", value=str(self.meeting.uuid))
-        DataRoomDocumentTag.objects.create(document=summary, key="source", value="wilfred_summary")
+        summary_v = make_version(summary)
+        DataRoomDocumentTag.objects.create(version=summary_v, key="meeting_uuid", value=str(self.meeting.uuid))
+        DataRoomDocumentTag.objects.create(version=summary_v, key="source", value="wilfred_summary")
         # Resave the transcript.
         self.client.post(
             reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
@@ -707,8 +710,8 @@ class MeetingSaveToDataRoomTests(TestCase):
         self.assertTrue(DataRoomDocument.objects.filter(pk=summary.pk).exists())
         transcript_count = DataRoomDocument.objects.filter(
             data_room=self.my_room,
-            tags__key="source",
-            tags__value="meeting_export",
+            versions__tags__key="source",
+            versions__tags__value="meeting_export",
         ).distinct().count()
         self.assertEqual(transcript_count, 1)
 
@@ -729,7 +732,7 @@ class MeetingSaveToDataRoomTests(TestCase):
         )
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.my_room).count(), 0)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_detail_view_lists_saved_transcript_and_marks_stale(self, mock_delay):
         """After saving and then updating the transcript, the detail view
         should mark the saved doc as not up to date and revert the button."""

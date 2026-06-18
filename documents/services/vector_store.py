@@ -121,6 +121,8 @@ def add_chunk_vectors(
     document_id: int,
     data_room_id: int,
     *,
+    version_id: int,
+    is_searchable: bool = False,
     batch_size: int | None = None,
 ) -> None:
     """
@@ -129,6 +131,11 @@ def add_chunk_vectors(
     generator can be passed to bound memory. Documents are embedded and inserted in
     batches of ``batch_size`` (default ``EMBEDDING_BATCH_SIZE``) so neither all chunk
     text nor all vectors are ever materialized at once.
+
+    ``version_id`` and ``is_searchable`` are written into cmetadata so retrieval can
+    filter to the document's active searchable version. New versions are embedded
+    with ``is_searchable=False``; the flag is flipped to True (via
+    ``set_searchable_for_version``) only once the version becomes the active one.
     """
     conn = _get_connection_string()
     if not conn:
@@ -147,6 +154,8 @@ def add_chunk_vectors(
             "chunk_id": chunk["id"],
             "document_id": document_id,
             "data_room_id": data_room_id,
+            "version_id": version_id,
+            "is_searchable": bool(is_searchable),
             "chunk_index": chunk.get("chunk_index", i),
         }
         batch.append(Document(page_content=chunk["text"], metadata=meta))
@@ -155,6 +164,75 @@ def add_chunk_vectors(
             batch = []
     if batch:
         store.add_documents(batch)
+
+
+def delete_vectors_for_version(version_id: int) -> None:
+    """Remove from the vector store all chunks belonging to a single version.
+
+    Called by the prune task when an old version is dropped. Scoped by the
+    ``version_id`` cmetadata key (written by ``add_chunk_vectors``).
+    """
+    conn = _get_connection_string()
+    if not conn:
+        return
+    store = _get_vector_store()
+    if not store:
+        return
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
+
+    stmt = text(
+        "DELETE FROM langchain_pg_embedding AS emb "
+        "USING langchain_pg_collection AS col "
+        "WHERE emb.collection_id = col.uuid "
+        "  AND col.name = :collection "
+        "  AND emb.cmetadata->>'version_id' = :version_id"
+    )
+    try:
+        with store.session_maker() as session:
+            session.execute(
+                stmt,
+                {"collection": COLLECTION_NAME, "version_id": str(version_id)},
+            )
+            session.commit()
+    except ProgrammingError:
+        logger.debug("langchain_pg_embedding table does not exist yet, skipping delete")
+
+
+def set_searchable_for_version(version_id: int, value: bool) -> None:
+    """Flip the ``is_searchable`` cmetadata flag for a version's vectors.
+
+    This is the rollback / pointer-advance mechanism: a cheap in-place jsonb
+    update, never a re-embed. The app-DB pointer
+    (DataRoomDocument.active_searchable_version) remains the authoritative gate;
+    this only keeps the pgvector filter in sync for recall.
+    """
+    conn = _get_connection_string()
+    if not conn:
+        return
+    store = _get_vector_store()
+    if not store:
+        return
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
+
+    stmt = text(
+        "UPDATE langchain_pg_embedding AS emb "
+        "SET cmetadata = jsonb_set(emb.cmetadata, '{is_searchable}', to_jsonb(:value)) "
+        "FROM langchain_pg_collection AS col "
+        "WHERE emb.collection_id = col.uuid "
+        "  AND col.name = :collection "
+        "  AND emb.cmetadata->>'version_id' = :version_id"
+    )
+    try:
+        with store.session_maker() as session:
+            session.execute(
+                stmt,
+                {"collection": COLLECTION_NAME, "version_id": str(version_id), "value": bool(value)},
+            )
+            session.commit()
+    except ProgrammingError:
+        logger.debug("langchain_pg_embedding table does not exist yet, skipping flag flip")
 
 
 def similarity_search(
@@ -176,7 +254,10 @@ def similarity_search(
     if not store:
         return []
 
-    filt: dict[str, Any] = {"data_room_id": {"$in": data_room_ids}}
+    # Only the active searchable version of each document carries
+    # is_searchable=True; this keeps stale-version embeddings out of the
+    # candidate set (the app-DB post-filter is the authoritative gate).
+    filt: dict[str, Any] = {"data_room_id": {"$in": data_room_ids}, "is_searchable": True}
     if document_id is not None:
         filt["document_id"] = document_id
     return store.similarity_search(query, k=k, filter=filt)

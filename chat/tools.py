@@ -23,7 +23,7 @@ def _record_chunk_usage(conversation_id: str, chunk_ids: list[int]) -> None:
 
         thread_uuid = _uuid.UUID(conversation_id)
         chunk_doc_map = dict(
-            DataRoomDocumentChunk.objects.filter(pk__in=chunk_ids).values_list("pk", "document_id")
+            DataRoomDocumentChunk.objects.filter(pk__in=chunk_ids).values_list("pk", "version__document_id")
         )
         usages = [
             ThreadChunkUsage(
@@ -94,6 +94,120 @@ class SaveCanvasToDataRoomInput(ReasonBaseModel):
         default="",
         description="Name of the attached data room to save into. Required only when more than one data room is attached.",
     )
+
+
+class ListDocumentsInput(ReasonBaseModel):
+    limit: int = Field(default=25, description="Maximum number of documents to list (1-100, default 25).")
+    offset: int = Field(default=0, description="Number of documents to skip, for paging (default 0).")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to scope the listing.")
+
+
+class OpenDocumentInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index number of the document to open into a canvas for editing.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    canvas_name: str = Field(default="", description="Optional canvas title; defaults to the document name.")
+
+
+class SaveDocumentInput(ReasonBaseModel):
+    doc_index: Optional[int] = Field(default=None, description="Index of the document to overwrite. Required when mode='overwrite'.")
+    canvas_name: str = Field(default="", description="Canvas to save. Defaults to the active canvas.")
+    mode: str = Field(default="overwrite", description="'overwrite' the existing document as a new version, or 'new' to create a new document.")
+    data_room_name: str = Field(default="", description="Target data room name when mode='new' and multiple are attached.")
+    new_name: str = Field(default="", description="Name for the new document when mode='new'.")
+
+
+class WriteDocumentInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index of the document to overwrite with new content (creates a new version).")
+    content: str = Field(description="Full markdown content for the new version.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    reason: str = Field(default="", description="Brief reason for the change.")
+
+
+class DocEditItem(BaseModel):
+    old_text: str = Field(description="Exact text to find and replace (must match exactly once).")
+    new_text: str = Field(description="Replacement text.")
+
+
+class EditDocumentInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index of the document to edit (creates a new version).")
+    edits: list[DocEditItem] = Field(description="Targeted find-replace edits applied to the document's working content.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    reason: str = Field(default="", description="Brief reason for the change.")
+
+
+class ArchiveDocumentInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index of the document to archive (or restore).")
+    archive: bool = Field(default=True, description="True to archive, False to restore.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+
+
+class RenameDocumentInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index of the document to rename.")
+    name: str = Field(description="New display name for the document.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+
+
+class ListVersionsInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index of the document whose version history to list.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+
+
+class RestoreVersionInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index of the document to roll back.")
+    version_index: int = Field(description="The version_index to restore as the live document.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    reason: str = Field(default="", description="Brief reason for the rollback.")
+
+
+class DocumentStatusInput(ReasonBaseModel):
+    doc_index: int = Field(description="Index of the document to check processing/searchability status for.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+
+
+def _resolve_document(context, doc_index: int, data_room_id: int | None = None, *, include_archived: bool = False):
+    """Resolve a DataRoomDocument by doc_index within the thread's accessible rooms.
+
+    Returns ``(doc, error_msg)`` — exactly one is None.
+    """
+    from documents.models import DataRoomDocument
+
+    data_room_ids = context.data_room_ids if context else []
+    if not data_room_ids:
+        return None, "No data rooms attached."
+    try:
+        data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
+    except ValueError as exc:
+        return None, str(exc)
+    if data_room_id and data_room_id in data_room_ids:
+        data_room_ids = [data_room_id]
+
+    qs = DataRoomDocument.objects.filter(data_room_id__in=data_room_ids, doc_index=doc_index)
+    if not include_archived:
+        qs = qs.filter(is_archived=False)
+    doc = qs.select_related("current_version", "active_searchable_version").first()
+    if doc is None:
+        return None, f"No document with index {doc_index} found."
+    return doc, None
+
+
+def _get_user(user_id):
+    from django.contrib.auth import get_user_model
+
+    if not user_id:
+        return None
+    try:
+        return get_user_model().objects.get(pk=user_id)
+    except Exception:
+        return None
+
+
+# A note appended to save/edit/write results: re-processing is async and costly.
+_PROCESSING_NOTE = (
+    "Saving triggers re-processing (chunk → embed → guardrails → PII). The new version "
+    "becomes the live searchable document only once it finishes and clears the scans; until "
+    "then the previously live version stays in retrieval. Use get_document_status to check. "
+    "Only save when the document is complete."
+)
 
 
 # --- Tools ---
@@ -168,18 +282,20 @@ class SearchDocumentsTool(ContextAwareTool):
         )
         doc_meta = {r["pk"]: r for r in doc_rows}
 
-        # Document tags (document_type)
+        # Document tags (document_type) — scoped to each doc's active searchable version
         tag_rows = DataRoomDocumentTag.objects.filter(
-            document_id__in=doc_pks, key="document_type",
-        ).values_list("document_id", "value")
+            version__document_id__in=doc_pks, version__is_searchable=True, key="document_type",
+        ).values_list("version__document_id", "value")
         doc_type_map = dict(tag_rows)
 
-        # Total chunk counts per document
+        # Total chunk counts per document (active searchable version only)
         chunk_counts = dict(
-            DataRoomDocumentChunk.objects.filter(document_id__in=doc_pks)
-            .values("document_id")
+            DataRoomDocumentChunk.objects.filter(
+                version__document_id__in=doc_pks, version__is_searchable=True,
+            )
+            .values("version__document_id")
             .annotate(total=Count("id"))
-            .values_list("document_id", "total")
+            .values_list("version__document_id", "total")
         )
 
         # Chunk headings for the first chunk in each window (single batched query)
@@ -193,9 +309,11 @@ class SearchDocumentsTool(ContextAwareTool):
 
             q_filter = Q()
             for doc_id, ci in first_chunk_indices:
-                q_filter |= Q(document_id=doc_id, chunk_index=ci)
-            for doc_id, ci, heading in DataRoomDocumentChunk.objects.filter(q_filter).values_list(
-                "document_id", "chunk_index", "heading",
+                q_filter |= Q(version__document_id=doc_id, chunk_index=ci)
+            for doc_id, ci, heading in DataRoomDocumentChunk.objects.filter(
+                q_filter, version__is_searchable=True,
+            ).values_list(
+                "version__document_id", "chunk_index", "heading",
             ):
                 if heading:
                     heading_map[(doc_id, ci)] = heading
@@ -288,7 +406,10 @@ class ReadDocumentTool(ContextAwareTool):
     description: str = (
         "Read content from one or more documents by their index number — "
         "either the full text or a specific chunk range (via chunk_start/chunk_end). "
-        "Use this when you need the actual document content rather than search excerpts."
+        "Use this when you need the actual document content rather than search excerpts. "
+        "Output is capped at ~32k characters total across all requested documents; when a "
+        "document is truncated, read the rest by calling again with chunk_start/chunk_end to "
+        "page through its chunks."
     )
     args_schema: type[BaseModel] = ReadDocumentInput
 
@@ -363,30 +484,23 @@ class ReadDocumentTool(ContextAwareTool):
                 })
                 continue
 
-            chunks_qs = doc.chunks.filter(is_quarantined=False).order_by("chunk_index")
+            version = doc.active_searchable_version
+            if version is None:
+                documents.append({
+                    "doc_index": idx,
+                    "error": f"No document with index {idx} found.",
+                })
+                continue
 
+            chunks_qs = version.chunks.filter(is_quarantined=False).order_by("chunk_index")
+            total_chunk_count = chunks_qs.count()
             if use_chunk_range:
-                total_chunk_count = chunks_qs.count()
                 chunks_qs = chunks_qs.filter(
                     chunk_index__gte=chunk_start,
                     chunk_index__lte=chunk_end,
                 )
 
             chunk_list = list(chunks_qs.values_list("id", "chunk_index", "heading", "text"))
-            if not use_chunk_range:
-                total_chunk_count = len(chunk_list)
-            content_parts = []
-            headings = []
-            read_chunk_ids = []
-            for chunk_pk, ci, heading, text in chunk_list:
-                read_chunk_ids.append(chunk_pk)
-                content_parts.append(text)
-                if heading:
-                    headings.append(heading)
-            content = "\n\n".join(content_parts)
-
-            if read_chunk_ids and context and context.conversation_id:
-                _record_chunk_usage(context.conversation_id, read_chunk_ids)
 
             remaining = self._MAX_TOTAL_CHARS - total_chars
             if remaining <= 0:
@@ -397,10 +511,41 @@ class ReadDocumentTool(ContextAwareTool):
                 })
                 continue
 
-            if len(content) > remaining:
-                content = content[:remaining] + "\n\n[... truncated due to size limit ...]"
+            # Accumulate WHOLE chunks until the next would exceed the cap, so the
+            # next_chunk_start we report is exact (always return at least one chunk
+            # to guarantee progress).
+            content_parts: list[str] = []
+            headings = []
+            read_chunk_ids = []
+            used = 0
+            first_returned = None
+            last_returned = None
+            truncated_at = None
+            for chunk_pk, ci, heading, text in chunk_list:
+                add = len(text) + (2 if content_parts else 0)  # 2 = "\n\n" separator
+                if content_parts and used + add > remaining:
+                    truncated_at = ci
+                    break
+                content_parts.append(text)
+                used += add
+                read_chunk_ids.append(chunk_pk)
+                if first_returned is None:
+                    first_returned = ci
+                last_returned = ci
+                if heading:
+                    headings.append(heading)
+            content = "\n\n".join(content_parts)
+            total_chars += used
 
-            total_chars += len(content)
+            if read_chunk_ids and context and context.conversation_id:
+                _record_chunk_usage(context.conversation_id, read_chunk_ids)
+
+            if truncated_at is not None:
+                content += (
+                    f"\n\n[... truncated at output cap. This document has {total_chunk_count} chunks; "
+                    f"you've read chunks {first_returned}–{last_returned}. To continue, call "
+                    f"read_document with chunk_start={truncated_at}, chunk_end={total_chunk_count - 1}. ...]"
+                )
             doc_entry = {
                 "doc_index": idx,
                 "filename": doc.original_filename,
@@ -511,8 +656,416 @@ class SaveCanvasToDataRoomTool(ContextAwareTool):
         })
 
 
+class ListDocumentsTool(ContextAwareTool):
+    """List documents in the attached data rooms (paginated)."""
+
+    name: str = "list_documents"
+    description: str = (
+        "List the documents in the attached data rooms, paginated. Returns each document's "
+        "index number, name, origin, processing status, version count and dates. Use this to "
+        "see what is in a data room before reading, opening, or editing a document."
+    )
+    args_schema: type[BaseModel] = ListDocumentsInput
+
+    def _run(self, limit: int = 25, offset: int = 0, data_room_id: int | None = None, **kwargs) -> str:
+        from documents.models import DataRoomDocument
+
+        context = self.context
+        data_room_ids = context.data_room_ids if context else []
+        if not data_room_ids:
+            return json.dumps({"error": "No data rooms attached."})
+        try:
+            data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        if data_room_id and data_room_id in data_room_ids:
+            data_room_ids = [data_room_id]
+
+        limit = max(1, min(int(limit or 25), 100))
+        offset = max(0, int(offset or 0))
+
+        qs = (
+            DataRoomDocument.objects.filter(data_room_id__in=data_room_ids, is_archived=False)
+            .select_related("active_searchable_version", "current_version")
+            .order_by("doc_index")
+        )
+        total = qs.count()
+        rows = []
+        for d in qs[offset:offset + limit]:
+            version = d.active_searchable_version or d.current_version
+            rows.append({
+                "doc_index": d.doc_index,
+                "name": d.display_name,
+                "origin": version.origin if version else None,
+                "status": d.status,
+                "versions": d.versions.count(),
+                "total_chunks": version.chunks.count() if version else 0,
+                "upload_date": d.uploaded_at.strftime("%Y-%m-%d") if d.uploaded_at else None,
+            })
+        upper = min(offset + limit, total)
+        header = f"Showing documents {offset + 1}–{upper} of {total}" if total else "No documents."
+        return json.dumps({"header": header, "count": total, "documents": rows})
+
+
+class OpenDocumentToCanvasTool(ContextAwareTool):
+    """Open a data room document's working content into a canvas for editing."""
+
+    name: str = "open_document_to_canvas"
+    description: str = (
+        "Open a data room document's working content into a canvas so you can edit it and save it "
+        "back. Reads the document's editable markdown directly (works even if the latest version is "
+        "quarantined, so you can remediate it). After editing, use save_document with mode='overwrite' "
+        "to file a new version."
+    )
+    args_schema: type[BaseModel] = OpenDocumentInput
+
+    def _run(self, doc_index: int, data_room_id: int | None = None, canvas_name: str = "", **kwargs) -> str:
+        from chat.models import ChatCanvas
+        from chat.services import (
+            CANVAS_MAX_CHARS,
+            MAX_CANVASES_PER_THREAD,
+            activate_canvas,
+            create_canvas_checkpoint,
+        )
+        from documents.services.versioning import open_working_version
+
+        context = self.context
+        thread_id = context.conversation_id if context else None
+        if not thread_id:
+            return json.dumps({"error": "No thread context available."})
+
+        doc, err = _resolve_document(context, doc_index, data_room_id)
+        if err:
+            return json.dumps({"error": err})
+
+        content, version, warning = open_working_version(doc)
+        title = (canvas_name or doc.display_name or f"Document {doc_index}")[:255]
+        content = (content or "")[:CANVAS_MAX_CHARS]
+
+        try:
+            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=title)
+            canvas.content = content
+            canvas.save(update_fields=["content", "updated_at"])
+            created = False
+        except ChatCanvas.DoesNotExist:
+            if ChatCanvas.objects.filter(thread_id=thread_id).count() >= MAX_CANVASES_PER_THREAD:
+                return json.dumps({"error": f"Maximum of {MAX_CANVASES_PER_THREAD} canvases per thread reached."})
+            canvas = ChatCanvas.objects.create(thread_id=thread_id, title=title, content=content)
+            created = True
+
+        cp = create_canvas_checkpoint(canvas, source="import", description=f"Opened document #{doc_index}")
+        if created:
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+        activate_canvas(thread_id, canvas)
+
+        result = {
+            "status": "ok",
+            "canvas_title": canvas.title,
+            "canvas_id": str(canvas.pk),
+            "doc_index": doc_index,
+            "opened_version": version.version_index if version else None,
+        }
+        if warning:
+            result["warning"] = warning
+        return json.dumps(result)
+
+
+class SaveDocumentTool(ContextAwareTool):
+    """Save a canvas back over an existing document (new version) or as a new document."""
+
+    name: str = "save_document"
+    description: str = (
+        "Save a canvas into a data room. mode='overwrite' files the canvas as a NEW VERSION of an "
+        "existing document (give its doc_index) — the document keeps its history and can be rolled "
+        "back. mode='new' creates a brand-new document. Saving triggers the full processing pipeline, "
+        "so use it only when the document is complete."
+    )
+    args_schema: type[BaseModel] = SaveDocumentInput
+
+    def _run(self, doc_index: int | None = None, canvas_name: str = "", mode: str = "overwrite",
+             data_room_name: str = "", new_name: str = "", **kwargs) -> str:
+        from chat.services import resolve_canvas, save_canvas_to_data_room
+        from documents.models import DataRoom, DataRoomDocumentVersion
+        from documents.services.versioning import create_version
+
+        context = self.context
+        thread_id = context.conversation_id if context else None
+        user_id = context.user_id if context else None
+        if not thread_id:
+            return json.dumps({"error": "No thread context available."})
+
+        canvas, err = resolve_canvas(thread_id, canvas_name or None)
+        if err:
+            return json.dumps({"error": err})
+        if not (canvas.content or "").strip():
+            return json.dumps({"error": f"Canvas '{canvas.title}' is empty; nothing to save."})
+
+        user = _get_user(user_id)
+        if user is None:
+            return json.dumps({"error": "User not found."})
+
+        if mode == "new":
+            data_room_ids = context.data_room_ids if context else []
+            try:
+                data_room_ids = _filter_accessible_rooms(data_room_ids, user_id)
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)})
+            rooms = list(DataRoom.objects.filter(pk__in=data_room_ids))
+            if data_room_name:
+                rooms = [r for r in rooms if r.name == data_room_name]
+            if not rooms:
+                return json.dumps({"error": "No matching attached data room."})
+            if len(rooms) > 1:
+                names = ", ".join(f'"{r.name}"' for r in rooms)
+                return json.dumps({"error": f"Multiple data rooms attached ({names}); specify data_room_name."})
+            if new_name:
+                canvas.title = new_name[:255]
+            doc = save_canvas_to_data_room(canvas, rooms[0], user)
+            return json.dumps({
+                "status": "ok", "mode": "new", "doc_index": doc.doc_index,
+                "filename": doc.original_filename, "data_room_name": rooms[0].name, "note": _PROCESSING_NOTE,
+            })
+
+        # overwrite
+        if doc_index is None:
+            return json.dumps({"error": "doc_index is required for mode='overwrite'."})
+        doc, err = _resolve_document(context, doc_index)
+        if err:
+            return json.dumps({"error": err})
+        version = create_version(
+            doc, content=canvas.content,
+            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT, created_by=user,
+        )
+        return json.dumps({
+            "status": "ok", "mode": "overwrite", "doc_index": doc_index,
+            "version": version.version_index, "processing": True, "note": _PROCESSING_NOTE,
+        })
+
+
+class WriteDocumentTool(ContextAwareTool):
+    """Overwrite a document with new content programmatically (creates a new version)."""
+
+    name: str = "write_document"
+    description: str = (
+        "Overwrite a data room document with full new markdown content, creating a new version, "
+        "without going through a canvas. Use this in automated loops (e.g. refreshing a document with "
+        "fresh information). Saving triggers the full processing pipeline — use only when the document "
+        "is complete and a single write finishes the job."
+    )
+    args_schema: type[BaseModel] = WriteDocumentInput
+
+    def _run(self, doc_index: int, content: str, data_room_id: int | None = None, reason: str = "", **kwargs) -> str:
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.versioning import create_version
+
+        context = self.context
+        doc, err = _resolve_document(context, doc_index, data_room_id)
+        if err:
+            return json.dumps({"error": err})
+        if not (content or "").strip():
+            return json.dumps({"error": "content is empty; nothing to save."})
+        user = _get_user(context.user_id if context else None)
+        version = create_version(
+            doc, content=content, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
+        )
+        return json.dumps({
+            "status": "ok", "doc_index": doc_index, "version": version.version_index,
+            "processing": True, "note": _PROCESSING_NOTE,
+        })
+
+
+class EditDocumentTool(ContextAwareTool):
+    """Apply targeted find-replace edits to a document (creates a new version)."""
+
+    name: str = "edit_document"
+    description: str = (
+        "Make targeted find-replace edits to a data room document's working content, creating a new "
+        "version, without a canvas. Each edit's old_text must match exactly once. Saving triggers the "
+        "full processing pipeline — use only when the result is complete."
+    )
+    args_schema: type[BaseModel] = EditDocumentInput
+
+    def _run(self, doc_index: int, edits: list, data_room_id: int | None = None, reason: str = "", **kwargs) -> str:
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.versioning import create_version, open_working_version
+
+        context = self.context
+        doc, err = _resolve_document(context, doc_index, data_room_id)
+        if err:
+            return json.dumps({"error": err})
+
+        content, _version, _warning = open_working_version(doc)
+        if not (content or "").strip():
+            return json.dumps({"error": "Document has no editable content."})
+
+        applied = 0
+        failed = []
+        for edit in edits:
+            old_text = edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text
+            new_text = edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text
+            count = content.count(old_text)
+            if count == 1:
+                content = content.replace(old_text, new_text, 1)
+                applied += 1
+            elif count > 1:
+                failed.append({"old_text": old_text[:80], "error": f"Found {count} matches — add more context."})
+            else:
+                failed.append({"old_text": old_text[:80], "error": "Text not found."})
+
+        if applied == 0:
+            return json.dumps({"status": "error", "applied": 0, "failed": failed, "message": "No edits applied."})
+
+        user = _get_user(context.user_id if context else None)
+        version = create_version(
+            doc, content=content, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
+        )
+        return json.dumps({
+            "status": "ok", "doc_index": doc_index, "applied": applied, "failed": failed,
+            "version": version.version_index, "processing": True, "note": _PROCESSING_NOTE,
+        })
+
+
+class ArchiveDocumentTool(ContextAwareTool):
+    """Archive (soft-delete) or restore a document."""
+
+    name: str = "archive_document"
+    description: str = (
+        "Archive (soft-delete) a data room document so it no longer appears in listings or retrieval, "
+        "or restore a previously archived one (archive=false). Reversible."
+    )
+    args_schema: type[BaseModel] = ArchiveDocumentInput
+
+    def _run(self, doc_index: int, archive: bool = True, data_room_id: int | None = None, **kwargs) -> str:
+        context = self.context
+        doc, err = _resolve_document(context, doc_index, data_room_id, include_archived=True)
+        if err:
+            return json.dumps({"error": err})
+        doc.is_archived = bool(archive)
+        doc.save(update_fields=["is_archived", "updated_at"])
+        return json.dumps({
+            "status": "ok", "doc_index": doc_index,
+            "archived": doc.is_archived, "name": doc.display_name,
+        })
+
+
+class RenameDocumentTool(ContextAwareTool):
+    """Rename a document's display name."""
+
+    name: str = "rename_document"
+    description: str = (
+        "Rename a data room document's display name. The original upload filename is preserved as "
+        "provenance; this only changes the shown name."
+    )
+    args_schema: type[BaseModel] = RenameDocumentInput
+
+    def _run(self, doc_index: int, name: str, data_room_id: int | None = None, **kwargs) -> str:
+        from documents.services.versioning import rename_document
+
+        context = self.context
+        if not (name or "").strip():
+            return json.dumps({"error": "name cannot be empty."})
+        doc, err = _resolve_document(context, doc_index, data_room_id)
+        if err:
+            return json.dumps({"error": err})
+        rename_document(doc, name)
+        return json.dumps({"status": "ok", "doc_index": doc_index, "name": doc.display_name})
+
+
+class ListVersionsTool(ContextAwareTool):
+    """List a document's version history."""
+
+    name: str = "list_versions"
+    description: str = (
+        "List a data room document's version history — each version's index, origin, status, whether "
+        "it is the live (searchable) and/or current working version, chunk count and date. Use before "
+        "restore_version to pick a version to roll back to."
+    )
+    args_schema: type[BaseModel] = ListVersionsInput
+
+    def _run(self, doc_index: int, data_room_id: int | None = None, **kwargs) -> str:
+        context = self.context
+        doc, err = _resolve_document(context, doc_index, data_room_id)
+        if err:
+            return json.dumps({"error": err})
+        rows = []
+        for v in doc.versions.order_by("version_index"):
+            rows.append({
+                "version_index": v.version_index,
+                "origin": v.origin,
+                "status": v.status,
+                "is_live": v.id == doc.active_searchable_version_id,
+                "is_current": v.id == doc.current_version_id,
+                "is_quarantined": v.is_quarantined,
+                "total_chunks": v.chunks.count(),
+                "created_at": v.created_at.strftime("%Y-%m-%d %H:%M") if v.created_at else None,
+            })
+        return json.dumps({"doc_index": doc_index, "versions": rows})
+
+
+class RestoreVersionTool(ContextAwareTool):
+    """Roll a document back to a prior version (instant — no reprocessing)."""
+
+    name: str = "restore_version"
+    description: str = (
+        "Roll a data room document back to a prior version, making it the live searchable document "
+        "again. Instant — no reprocessing. Only READY, non-quarantined versions can be restored."
+    )
+    args_schema: type[BaseModel] = RestoreVersionInput
+
+    def _run(self, doc_index: int, version_index: int, data_room_id: int | None = None, reason: str = "", **kwargs) -> str:
+        from documents.services.versioning import restore_version
+
+        context = self.context
+        doc, err = _resolve_document(context, doc_index, data_room_id)
+        if err:
+            return json.dumps({"error": err})
+        target = doc.versions.filter(version_index=version_index).first()
+        if target is None:
+            return json.dumps({"error": f"No version {version_index} for this document."})
+        try:
+            restore_version(doc, target)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({
+            "status": "ok", "doc_index": doc_index, "restored_version": version_index,
+            "note": "This version is now the live searchable document.",
+        })
+
+
+class GetDocumentStatusTool(ContextAwareTool):
+    """Report a document's processing/searchability status (incl. async quarantine verdict)."""
+
+    name: str = "get_document_status"
+    description: str = (
+        "Check a data room document's current state: ready, processing, quarantined, or failed — and "
+        "whether the working version differs from the live searchable version. Use this after saving "
+        "to learn the async processing/quarantine outcome."
+    )
+    args_schema: type[BaseModel] = DocumentStatusInput
+
+    def _run(self, doc_index: int, data_room_id: int | None = None, **kwargs) -> str:
+        from documents.services.versioning import document_status
+
+        context = self.context
+        doc, err = _resolve_document(context, doc_index, data_room_id)
+        if err:
+            return json.dumps({"error": err})
+        return json.dumps({"doc_index": doc_index, **document_status(doc)})
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(SearchDocumentsTool())
 _registry.register_tool(ReadDocumentTool())
 _registry.register_tool(SaveCanvasToDataRoomTool())
+_registry.register_tool(ListDocumentsTool())
+_registry.register_tool(OpenDocumentToCanvasTool())
+_registry.register_tool(SaveDocumentTool())
+_registry.register_tool(WriteDocumentTool())
+_registry.register_tool(EditDocumentTool())
+_registry.register_tool(ArchiveDocumentTool())
+_registry.register_tool(RenameDocumentTool())
+_registry.register_tool(ListVersionsTool())
+_registry.register_tool(RestoreVersionTool())
+_registry.register_tool(GetDocumentStatusTool())

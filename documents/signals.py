@@ -5,9 +5,31 @@ import logging
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 
-from documents.models import DataRoomDocument
+from documents.models import DataRoomDocument, DataRoomDocumentVersion
 
 logger = logging.getLogger(__name__)
+
+
+@receiver(post_delete, sender=DataRoomDocumentVersion)
+def delete_native_blob_on_version_delete(sender, instance, **kwargs):
+    """Remove a version's native source bytes from storage when the version is deleted.
+
+    Fires for prune drops and for the document/data-room CASCADE — without it a
+    pruned or erased version's native file would linger in S3.
+    """
+    file_field = instance.native_blob
+    if not file_field:
+        return
+    name = file_field.name
+    if not name:
+        return
+    try:
+        file_field.storage.delete(name)
+    except Exception:
+        logger.exception(
+            "Failed to delete native blob for DataRoomDocumentVersion id=%s path=%s",
+            instance.pk, name,
+        )
 
 
 @receiver(post_delete, sender=DataRoomDocument)

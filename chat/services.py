@@ -192,7 +192,8 @@ def save_canvas_to_data_room(canvas, data_room, user):
     """
     from django.core.files.base import ContentFile
 
-    from documents.models import DataRoomDocument, DataRoomDocumentTag
+    from documents.models import DataRoomDocument, DataRoomDocumentTag, DataRoomDocumentVersion
+    from documents.services.versioning import create_version
 
     title = canvas.title or "Untitled document"
     content = canvas.content or ""
@@ -209,39 +210,26 @@ def save_canvas_to_data_room(canvas, data_room, user):
         uploaded_by=user,
         original_file=file_content,
         original_filename=filename,
+        name=title,
         mime_type="text/markdown",
         size_bytes=len(file_bytes),
         status=DataRoomDocument.Status.UPLOADED,
     )
-    DataRoomDocumentTag.objects.create(
-        document=doc, key="source", value="canvas_export"
+    # v0 carries the canvas markdown as working content; create_version advances
+    # current_version and enqueues processing (chunk → embed → guardrails → PII).
+    version = create_version(
+        doc,
+        content=content,
+        origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT,
+        created_by=user,
+        native_filename=filename,
+        mime_type="text/markdown",
+        size_bytes=len(file_bytes),
+        enqueue=True,
     )
-
-    try:
-        from documents.tasks import process_document_task
-
-        process_document_task.delay(doc.id)
-    except ImportError:
-        try:
-            from documents.services.process_document import process_document
-
-            process_document(doc.id)
-        except Exception as exc:
-            logger.exception(
-                "save_canvas_to_data_room: failed to process document_id=%s (sync fallback)",
-                doc.id,
-            )
-            doc.status = DataRoomDocument.Status.FAILED
-            doc.processing_error = str(exc)[:2000]
-            doc.save(update_fields=["status", "processing_error", "updated_at"])
-    except Exception as exc:
-        logger.exception(
-            "save_canvas_to_data_room: failed to enqueue processing for document_id=%s",
-            doc.id,
-        )
-        doc.status = DataRoomDocument.Status.FAILED
-        doc.processing_error = str(exc)[:2000]
-        doc.save(update_fields=["status", "processing_error", "updated_at"])
+    DataRoomDocumentTag.objects.create(
+        version=version, key="source", value="canvas_export"
+    )
 
     return doc
 

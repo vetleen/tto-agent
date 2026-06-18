@@ -3,7 +3,7 @@
 - ``finalize_document_metadata`` task (description + windowed PII, dispatched after READY)
 - ``vector_store.add_chunk_vectors`` batching
 - ``chunk_access`` keyset streaming + head/tail reconstruction
-- ``pii_scan.scan_pii_categories_for_document`` windowed full-document scan
+- ``pii_scan.scan_pii_categories_for_version`` windowed full-document scan
 - ``process_document`` dispatching the finalize task
 """
 import tempfile
@@ -40,6 +40,7 @@ class FinalizeDocumentMetadataTests(TestCase):
         self.data_room = DataRoom.objects.create(name="FinProject", slug="fin-project", created_by=self.user)
 
     def _ready_doc(self, texts=("Some content about Acme Corp.",), token_each=10):
+        from documents.tests._helpers import make_version
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
             uploaded_by=self.user,
@@ -47,8 +48,11 @@ class FinalizeDocumentMetadataTests(TestCase):
             status=DataRoomDocument.Status.READY,
             token_count=token_each * len(texts),
         )
-        for i, t in enumerate(texts):
-            DataRoomDocumentChunk.objects.create(document=doc, chunk_index=i, text=t, token_count=token_each)
+        # These tests exercise description/PII/quarantine on a READY (non-held)
+        # version; the held-release path is covered by ScanGateTransitionTests.
+        make_version(
+            doc, chunks=[{"text": t, "token_count": token_each} for t in texts],
+        )
         return doc
 
     @override_settings(**_MODELS)
@@ -58,12 +62,12 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "A description", "tags": {"document_type": "Report"}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document", return_value={}):
-            finalize_document_metadata(doc.id)
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertEqual(doc.description, "A description")
-        self.assertEqual(DataRoomDocumentTag.objects.get(document=doc, key="document_type").value, "Report")
+        self.assertEqual(DataRoomDocumentTag.objects.get(version__document=doc, key="document_type").value, "Report")
 
     @override_settings(**_MODELS)
     def test_description_failure_doesnt_raise(self):
@@ -72,8 +76,8 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    side_effect=RuntimeError("LLM down")), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document", return_value={}):
-            finalize_document_metadata(doc.id)  # must not raise
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+            finalize_document_metadata(doc.current_version_id)  # must not raise
 
         doc.refresh_from_db()
         self.assertFalse(doc.description)
@@ -93,10 +97,10 @@ class FinalizeDocumentMetadataTests(TestCase):
 
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "A description", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document", return_value={}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}), \
              patch.object(DataRoomDocument, "save", save_raising_notupdated):
             with self.assertLogs("documents.tasks", level="INFO") as cm:
-                finalize_document_metadata(doc.id)
+                finalize_document_metadata(doc.current_version_id)
 
         log_output = "\n".join(cm.output)
         self.assertIn("deleted during description generation", log_output)
@@ -109,12 +113,12 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    return_value={"pii_ordinary_identity": True, "pii_special_category": True}):
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         tags = dict(
-            DataRoomDocumentTag.objects.filter(document=doc, key__startswith="pii_").values_list("key", "value")
+            DataRoomDocumentTag.objects.filter(version__document=doc, key__startswith="pii_").values_list("key", "value")
         )
         self.assertEqual(tags.get("pii_ordinary_identity"), "true")
         self.assertEqual(tags.get("pii_special_category"), "true")
@@ -126,10 +130,10 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document", side_effect=RuntimeError("boom")):
-            finalize_document_metadata(doc.id)  # must not raise
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", side_effect=RuntimeError("boom")):
+            finalize_document_metadata(doc.current_version_id)  # must not raise
 
-        self.assertFalse(DataRoomDocumentTag.objects.filter(document=doc, key__startswith="pii_").exists())
+        self.assertFalse(DataRoomDocumentTag.objects.filter(version__document=doc, key__startswith="pii_").exists())
 
     @override_settings(**_MODELS)
     def test_pii_respects_org_toggle(self):
@@ -142,11 +146,11 @@ class FinalizeDocumentMetadataTests(TestCase):
 
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document") as mock_scan:
-            finalize_document_metadata(doc.id)
+             patch("documents.services.pii_scan.scan_pii_categories_for_version") as mock_scan:
+            finalize_document_metadata(doc.current_version_id)
             mock_scan.assert_not_called()
 
-        self.assertFalse(DataRoomDocumentTag.objects.filter(document=doc, key__startswith="pii_").exists())
+        self.assertFalse(DataRoomDocumentTag.objects.filter(version__document=doc, key__startswith="pii_").exists())
 
     @override_settings(**_MODELS)
     def test_quarantine_on_special_category(self):
@@ -155,9 +159,9 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    return_value={"pii_ordinary_identity": True, "pii_special_category": True}):
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertTrue(doc.is_quarantined)
@@ -170,9 +174,9 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    return_value={"pii_criminal_offence": True}):
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertTrue(doc.is_quarantined)
@@ -185,9 +189,9 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    return_value={"pii_ordinary_identity": True}):
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertFalse(doc.is_quarantined)
@@ -207,14 +211,14 @@ class FinalizeDocumentMetadataTests(TestCase):
 
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    return_value={"pii_special_category": True}):
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertFalse(doc.is_quarantined)
         self.assertTrue(
-            DataRoomDocumentTag.objects.filter(document=doc, key="pii_special_category").exists()
+            DataRoomDocumentTag.objects.filter(version__document=doc, key="pii_special_category").exists()
         )
 
     def test_skips_when_no_models_configured(self):
@@ -224,8 +228,8 @@ class FinalizeDocumentMetadataTests(TestCase):
         # No feature models resolved -> finalize returns before touching chunks/LLMs.
         with patch("core.preferences.resolve_org_feature_model", return_value=""), \
              patch("documents.services.description.generate_description_and_tags_from_text") as mock_desc, \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document") as mock_pii:
-            finalize_document_metadata(doc.id)
+             patch("documents.services.pii_scan.scan_pii_categories_for_version") as mock_pii:
+            finalize_document_metadata(doc.current_version_id)
             mock_desc.assert_not_called()
             mock_pii.assert_not_called()
 
@@ -249,7 +253,7 @@ class AddChunkVectorsBatchingTests(TestCase):
 
         store = MagicMock()
         mock_get_store.return_value = store
-        add_chunk_vectors(self._chunks(5), document_id=1, data_room_id=2, batch_size=4)
+        add_chunk_vectors(self._chunks(5), document_id=1, data_room_id=2, version_id=3, batch_size=4)
 
         self.assertEqual(store.add_documents.call_count, 2)
         sizes = [len(call.args[0]) for call in store.add_documents.call_args_list]
@@ -262,7 +266,7 @@ class AddChunkVectorsBatchingTests(TestCase):
 
         store = MagicMock()
         mock_get_store.return_value = store
-        add_chunk_vectors(self._chunks(4), document_id=1, data_room_id=2, batch_size=4)
+        add_chunk_vectors(self._chunks(4), document_id=1, data_room_id=2, version_id=3, batch_size=4)
         self.assertEqual(store.add_documents.call_count, 1)
 
     @patch("documents.services.vector_store._get_vector_store")
@@ -272,7 +276,7 @@ class AddChunkVectorsBatchingTests(TestCase):
 
         store = MagicMock()
         mock_get_store.return_value = store
-        add_chunk_vectors([], document_id=1, data_room_id=2, batch_size=4)
+        add_chunk_vectors([], document_id=1, data_room_id=2, version_id=3, batch_size=4)
         store.add_documents.assert_not_called()
 
     @patch("documents.services.vector_store._get_vector_store")
@@ -282,7 +286,7 @@ class AddChunkVectorsBatchingTests(TestCase):
 
         store = MagicMock()
         mock_get_store.return_value = store
-        add_chunk_vectors(self._chunks(7), document_id=11, data_room_id=22, batch_size=3)
+        add_chunk_vectors(self._chunks(7), document_id=11, data_room_id=22, version_id=33, batch_size=3)
 
         all_docs = [d for call in store.add_documents.call_args_list for d in call.args[0]]
         self.assertEqual(len(all_docs), 7)
@@ -301,7 +305,7 @@ class AddChunkVectorsBatchingTests(TestCase):
         store = MagicMock()
         mock_get_store.return_value = store
         gen = (c for c in self._chunks(5))
-        add_chunk_vectors(gen, document_id=1, data_room_id=2, batch_size=2)
+        add_chunk_vectors(gen, document_id=1, data_room_id=2, version_id=3, batch_size=2)
         self.assertEqual(store.add_documents.call_count, 3)  # 2 + 2 + 1
 
     @override_settings(EMBEDDING_BATCH_SIZE=2)
@@ -312,7 +316,7 @@ class AddChunkVectorsBatchingTests(TestCase):
 
         store = MagicMock()
         mock_get_store.return_value = store
-        add_chunk_vectors(self._chunks(5), document_id=1, data_room_id=2)  # no batch_size -> setting (2)
+        add_chunk_vectors(self._chunks(5), document_id=1, data_room_id=2, version_id=3)  # no batch_size -> setting (2)
         self.assertEqual(store.add_documents.call_count, 3)
 
 
@@ -324,31 +328,34 @@ class ChunkAccessTests(TestCase):
         self.data_room = DataRoom.objects.create(name="CAProject", slug="ca-project", created_by=self.user)
 
     def _doc(self, token_count=0):
-        return DataRoomDocument.objects.create(
+        from documents.tests._helpers import make_version
+        doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
             uploaded_by=self.user,
             original_filename="ca.txt",
             status=DataRoomDocument.Status.READY,
             token_count=token_count,
         )
+        make_version(doc)
+        return doc
 
-    def test_iter_document_chunks_pages_in_order(self):
-        from documents.services.chunk_access import iter_document_chunks
+    def test_iter_version_chunks_pages_in_order(self):
+        from documents.services.chunk_access import iter_version_chunks
 
         doc = self._doc()
         for i in range(7):
-            DataRoomDocumentChunk.objects.create(document=doc, chunk_index=i, text=f"t{i}", token_count=5)
+            DataRoomDocumentChunk.objects.create(version=doc.current_version, chunk_index=i, text=f"t{i}", token_count=5)
 
-        rows = list(iter_document_chunks(doc.id, fields=("id", "text", "chunk_index"), page_size=3))
+        rows = list(iter_version_chunks(doc.current_version_id, fields=("id", "text", "chunk_index"), page_size=3))
         self.assertEqual([r["chunk_index"] for r in rows], [0, 1, 2, 3, 4, 5, 6])
         self.assertEqual(len({r["id"] for r in rows}), 7)  # no duplicates / skips
 
-    def test_iter_document_chunks_includes_index_zero_and_forces_key(self):
-        from documents.services.chunk_access import iter_document_chunks
+    def test_iter_version_chunks_includes_index_zero_and_forces_key(self):
+        from documents.services.chunk_access import iter_version_chunks
 
         doc = self._doc()
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="zero", token_count=5)
-        rows = list(iter_document_chunks(doc.id, fields=("text",), page_size=10))
+        DataRoomDocumentChunk.objects.create(version=doc.current_version, chunk_index=0, text="zero", token_count=5)
+        rows = list(iter_version_chunks(doc.current_version_id, fields=("text",), page_size=10))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["chunk_index"], 0)  # chunk_index always selected even if omitted
 
@@ -357,9 +364,9 @@ class ChunkAccessTests(TestCase):
 
         doc = self._doc(token_count=30)  # <= _MAX_INPUT_TOKENS
         for i in range(3):
-            DataRoomDocumentChunk.objects.create(document=doc, chunk_index=i, text=f"AlphaContent{i}", token_count=10)
+            DataRoomDocumentChunk.objects.create(version=doc.current_version, chunk_index=i, text=f"AlphaContent{i}", token_count=10)
 
-        text = build_head_tail_text(doc.id)
+        text = build_head_tail_text(doc.current_version_id)
         self.assertIn("AlphaContent0", text)
         self.assertIn("AlphaContent2", text)
         self.assertNotIn("omitted", text)
@@ -369,9 +376,9 @@ class ChunkAccessTests(TestCase):
 
         doc = self._doc(token_count=30000)  # > _MAX_INPUT_TOKENS (10000)
         for i in range(30):
-            DataRoomDocumentChunk.objects.create(document=doc, chunk_index=i, text=f"Para{i}Body", token_count=1000)
+            DataRoomDocumentChunk.objects.create(version=doc.current_version, chunk_index=i, text=f"Para{i}Body", token_count=1000)
 
-        text = build_head_tail_text(doc.id)
+        text = build_head_tail_text(doc.current_version_id)
         self.assertIn("Para0Body", text)        # head (first ~5k tokens)
         self.assertIn("Para29Body", text)       # tail (last ~2k tokens)
         self.assertNotIn("Para15Body", text)    # middle omitted
@@ -386,6 +393,7 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         self.data_room = DataRoom.objects.create(name="PIIDocProject", slug="piidoc-project", created_by=self.user)
 
     def _doc_with_chunks(self, n, token_each=10):
+        from documents.tests._helpers import make_version
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
             uploaded_by=self.user,
@@ -393,41 +401,43 @@ class ScanPIICategoriesForDocumentTests(TestCase):
             status=DataRoomDocument.Status.READY,
             token_count=token_each * n,
         )
-        for i in range(n):
-            DataRoomDocumentChunk.objects.create(document=doc, chunk_index=i, text=f"window text {i}", token_count=token_each)
+        make_version(
+            doc,
+            chunks=[{"text": f"window text {i}", "token_count": token_each} for i in range(n)],
+        )
         return doc
 
     @override_settings(PII_SCAN_WINDOW_TOKENS=10)
     def test_multiple_windows_union_categories(self):
-        from documents.services.pii_scan import scan_pii_categories_for_document
+        from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)  # each chunk fills its own window
         with patch("documents.services.pii_scan.scan_pii_categories",
                    side_effect=[{"pii_ordinary_identity": True}, {"pii_special_category": True}]) as mock_scan:
-            result = scan_pii_categories_for_document(doc.id)
+            result = scan_pii_categories_for_version(doc.current_version_id)
 
         self.assertEqual(mock_scan.call_count, 2)
         self.assertEqual(result, {"pii_ordinary_identity": True, "pii_special_category": True})
 
     def test_single_window_one_call(self):
-        from documents.services.pii_scan import scan_pii_categories_for_document
+        from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)  # default budget (6000) -> one window
         with patch("documents.services.pii_scan.scan_pii_categories",
                    return_value={"pii_ordinary_identity": True}) as mock_scan:
-            result = scan_pii_categories_for_document(doc.id)
+            result = scan_pii_categories_for_version(doc.current_version_id)
 
         self.assertEqual(mock_scan.call_count, 1)
         self.assertEqual(result, {"pii_ordinary_identity": True})
 
     @override_settings(PII_SCAN_WINDOW_TOKENS=10)
     def test_early_exit_when_all_categories_found(self):
-        from documents.services.pii_scan import PII_CATEGORIES, scan_pii_categories_for_document
+        from documents.services.pii_scan import PII_CATEGORIES, scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(5, token_each=10)  # 5 windows available
         all_true = {cat: True for cat in PII_CATEGORIES}
         with patch("documents.services.pii_scan.scan_pii_categories", return_value=all_true) as mock_scan:
-            result = scan_pii_categories_for_document(doc.id)
+            result = scan_pii_categories_for_version(doc.current_version_id)
 
         self.assertEqual(mock_scan.call_count, 1)  # first window found everything -> stop
         self.assertEqual(len(result), len(PII_CATEGORIES))
@@ -437,13 +447,13 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         """A failed window must raise — a silently skipped window would let a
         document go READY without ever being fully scanned (the caller retries
         and marks the document SCAN_FAILED when retries are exhausted)."""
-        from documents.services.pii_scan import scan_pii_categories_for_document
+        from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)
         with patch("documents.services.pii_scan.scan_pii_categories",
                    side_effect=[RuntimeError("boom"), {"pii_ordinary_identity": True}]):
             with self.assertRaises(RuntimeError):
-                scan_pii_categories_for_document(doc.id)
+                scan_pii_categories_for_version(doc.current_version_id)
 
 
 class PIIGateTests(TestCase):
@@ -537,14 +547,14 @@ class ProcessDocumentDispatchTests(TestCase):
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hi")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
                      patch("documents.tasks.finalize_document_metadata.delay") as mock_finalize, \
-                     patch("guardrails.tasks.scan_document_chunks.delay") as mock_scan:
+                     patch("guardrails.tasks.scan_document_version.delay") as mock_scan:
                     process_document(doc.id)
 
                 # The guardrail scan is dispatched (it hands off to finalize); the doc
                 # is held in SCANNING, not released to READY here.
-                mock_scan.assert_called_once_with(doc.id)
-                mock_finalize.assert_not_called()
                 doc.refresh_from_db()
+                mock_scan.assert_called_once_with(doc.current_version_id)
+                mock_finalize.assert_not_called()
                 self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
 
 
@@ -572,7 +582,7 @@ class ProcessDocumentGateTests(TestCase):
 
                 with patch("documents.services.process_document.load_documents", return_value=[Mock(page_content="hi")]), \
                      patch("documents.services.process_document.semantic_chunk", return_value=sample_chunks), \
-                     patch("guardrails.tasks.scan_document_chunks.delay", mock_scan_delay):
+                     patch("guardrails.tasks.scan_document_version.delay", mock_scan_delay):
                     process_document(doc.id)
                 doc.refresh_from_db()
                 return doc
@@ -602,6 +612,7 @@ class ScanGateTransitionTests(TestCase):
         self.data_room = DataRoom.objects.create(name="ScanGate", slug="scan-gate", created_by=self.user)
 
     def _scanning_doc(self, description=""):
+        from documents.tests._helpers import make_version
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
             uploaded_by=self.user,
@@ -610,7 +621,10 @@ class ScanGateTransitionTests(TestCase):
             description=description,
             token_count=10,
         )
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="text", token_count=10)
+        make_version(
+            doc, status=DataRoomDocument.Status.SCANNING, make_active=False,
+            chunks=[{"text": "text", "token_count": 10}],
+        )
         return doc
 
     @override_settings(**_MODELS)
@@ -620,8 +634,8 @@ class ScanGateTransitionTests(TestCase):
         doc = self._scanning_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document", return_value={}):
-            finalize_document_metadata(doc.id)
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.READY)
@@ -634,9 +648,9 @@ class ScanGateTransitionTests(TestCase):
         doc = self._scanning_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    return_value={"pii_special_category": True}):
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.READY)
@@ -652,10 +666,10 @@ class ScanGateTransitionTests(TestCase):
         doc = self._scanning_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    side_effect=LLMConfigurationError("no api key")), \
              patch.object(finalize_document_metadata, "retry") as mock_retry:
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         mock_retry.assert_not_called()
         doc.refresh_from_db()
@@ -670,11 +684,11 @@ class ScanGateTransitionTests(TestCase):
         doc = self._scanning_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    side_effect=RuntimeError("LLM hiccup")), \
              patch.object(finalize_document_metadata, "retry", side_effect=Retry("will retry")) as mock_retry:
             with self.assertRaises(Retry):
-                finalize_document_metadata(doc.id)
+                finalize_document_metadata(doc.current_version_id)
 
         mock_retry.assert_called_once()
         doc.refresh_from_db()
@@ -689,10 +703,10 @@ class ScanGateTransitionTests(TestCase):
         doc = self._scanning_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    side_effect=RuntimeError("LLM down")), \
              patch.object(finalize_document_metadata, "retry", side_effect=MaxRetriesExceededError()):
-            finalize_document_metadata(doc.id)  # must not raise
+            finalize_document_metadata(doc.current_version_id)  # must not raise
 
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.SCAN_FAILED)
@@ -704,14 +718,18 @@ class ScanGateTransitionTests(TestCase):
         from documents.tasks import finalize_document_metadata
 
         doc = self._scanning_doc()
+        # Ungated/already-released: the document AND its version are READY (not held).
         doc.status = DataRoomDocument.Status.READY
         doc.save(update_fields=["status"])
+        v = doc.current_version
+        v.status = DataRoomDocument.Status.READY
+        v.save(update_fields=["status"])
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document",
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
                    side_effect=RuntimeError("boom")), \
              patch.object(finalize_document_metadata, "retry") as mock_retry:
-            finalize_document_metadata(doc.id)  # must not raise
+            finalize_document_metadata(doc.current_version_id)  # must not raise
 
         mock_retry.assert_not_called()
         doc.refresh_from_db()
@@ -723,7 +741,7 @@ class ScanGateTransitionTests(TestCase):
 
         doc = self._scanning_doc()
         with patch("core.preferences.resolve_org_feature_model", return_value=""):
-            finalize_document_metadata(doc.id)
+            finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.READY)
@@ -735,8 +753,8 @@ class ScanGateTransitionTests(TestCase):
 
         doc = self._scanning_doc(description="Already described")
         with patch("documents.services.description.generate_description_and_tags_from_text") as mock_desc, \
-             patch("documents.services.pii_scan.scan_pii_categories_for_document", return_value={}):
-            finalize_document_metadata(doc.id)
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+            finalize_document_metadata(doc.current_version_id)
 
         mock_desc.assert_not_called()
         doc.refresh_from_db()

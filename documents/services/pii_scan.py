@@ -239,34 +239,33 @@ def _scan_window(window, detected, user_id, data_room_id, org_id) -> None:
             detected[category] = True
 
 
-def scan_pii_categories_for_document(
-    document_id: int,
+def scan_pii_categories_for_version(
+    version_id: int,
     user_id: int | None = None,
     data_room_id: int | None = None,
     org_id: int | None = None,
 ) -> dict[str, bool]:
-    """Classify an entire document into GDPR PII categories, scanning all of it.
+    """Classify an entire version into GDPR PII categories, scanning all of it.
 
-    Reads the document's chunks in memory-safe windows (so a long document never
+    Reads the version's chunks in memory-safe windows (so a long document never
     materializes all its text at once) and unions the categories detected in each
     window. Returns early once every category has been found — further scanning
-    cannot change the result. A document that fits in one window is a single
-    ``scan_pii_categories`` call (the same cost as before, minus the old head/tail
-    truncation that silently skipped the middle of long documents).
+    cannot change the result. A version that fits in one window is a single
+    ``scan_pii_categories`` call.
 
     Returns a dict of only the categories detected as ``True``.
     """
     from django.conf import settings
 
-    from documents.services.chunk_access import iter_document_chunks
+    from documents.services.chunk_access import iter_version_chunks
 
     budget = getattr(settings, "PII_SCAN_WINDOW_TOKENS", 6000)
     detected: dict[str, bool] = {}
     window: list[dict] = []
     window_tokens = 0
 
-    for chunk in iter_document_chunks(
-        document_id, fields=("text", "heading", "token_count", "chunk_index")
+    for chunk in iter_version_chunks(
+        version_id, fields=("text", "heading", "token_count", "chunk_index")
     ):
         window.append(chunk)
         window_tokens += chunk.get("token_count") or 0

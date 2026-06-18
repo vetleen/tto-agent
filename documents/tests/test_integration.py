@@ -53,7 +53,7 @@ class UploadProcessRetrieveIntegrationTest(TestCase):
 
         doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="integration.txt")
         self.assertEqual(doc.status, DataRoomDocument.Status.READY, doc.processing_error or "expected READY")
-        self.assertGreater(doc.chunks.count(), 0, "chunks should be created")
+        self.assertGreater(doc.current_version.chunks.count(), 0, "chunks should be created")
 
         chunks_response = self.client.get(
             reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
@@ -61,5 +61,5 @@ class UploadProcessRetrieveIntegrationTest(TestCase):
         self.assertEqual(chunks_response.status_code, 200)
         data = chunks_response.json()
         self.assertIn("chunks", data)
-        self.assertEqual(len(data["chunks"]), doc.chunks.count())
+        self.assertEqual(len(data["chunks"]), doc.current_version.chunks.count())
         self.assertTrue(data["chunks"][0]["text"].startswith("First paragraph."))

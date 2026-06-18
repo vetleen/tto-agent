@@ -31,7 +31,7 @@ class Command(BaseCommand):
         else:
             already_tagged = DataRoomDocumentTag.objects.filter(
                 key__in=PII_CATEGORIES,
-            ).values_list("document_id", flat=True)
+            ).values_list("version__document_id", flat=True)
             qs = qs.exclude(pk__in=already_tagged)
 
         docs = list(qs.order_by("id"))
@@ -49,6 +49,10 @@ class Command(BaseCommand):
         success = 0
         for doc in docs:
             try:
+                version = doc.active_searchable_version or doc.current_version
+                if version is None:
+                    self.stdout.write(f"  doc {doc.id}: skipped (no version)")
+                    continue
                 text = ""
                 if doc.original_file:
                     try:
@@ -60,7 +64,7 @@ class Command(BaseCommand):
                     except Exception:
                         text = ""
                 if not text:
-                    chunks = doc.chunks.order_by("chunk_index")
+                    chunks = version.chunks.order_by("chunk_index")
                     text = "\n\n".join(c.text for c in chunks)
 
                 if not text.strip():
@@ -77,7 +81,7 @@ class Command(BaseCommand):
                 )
                 for category in result:
                     DataRoomDocumentTag.objects.update_or_create(
-                        document=doc, key=category,
+                        version=version, key=category,
                         defaults={"value": "true"},
                     )
                 success += 1

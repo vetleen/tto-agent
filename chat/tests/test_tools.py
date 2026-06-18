@@ -9,6 +9,21 @@ from django.test import TestCase
 
 from chat.tools import ReadDocumentTool, SearchDocumentsTool
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
+
+
+def _doc_version(doc):
+    from documents.tests._helpers import make_version
+    if doc.current_version_id:
+        return doc.current_version
+    return make_version(doc, status=doc.status, is_quarantined=doc.is_quarantined)
+
+
+def _doc_chunk(doc, **kw):
+    return DataRoomDocumentChunk.objects.create(version=_doc_version(doc), **kw)
+
+
+def _doc_tag(doc, **kw):
+    return DataRoomDocumentTag.objects.create(version=_doc_version(doc), **kw)
 from llm.types.context import RunContext
 
 User = get_user_model()
@@ -90,9 +105,8 @@ class SearchDocumentsToolTests(TestCase):
             original_filename="License.pdf", description="A license agreement",
             status=DataRoomDocument.Status.READY, doc_index=1,
         )
-        DataRoomDocumentTag.objects.create(document=doc, key="document_type", value="Agreement")
-        chunk = DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=0, text="Grant of license...", token_count=10,
+        _doc_tag(doc, key="document_type", value="Agreement")
+        chunk = _doc_chunk(doc, chunk_index=0, text="Grant of license...", token_count=10,
             heading="Grant of License",
         )
 
@@ -127,8 +141,7 @@ class SearchDocumentsToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="doc.pdf", status=DataRoomDocument.Status.READY, doc_index=1,
         )
-        chunk = DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=0, text="Some text", token_count=5,
+        chunk = _doc_chunk(doc, chunk_index=0, text="Some text", token_count=5,
         )
 
         mock_doc = MagicMock()
@@ -176,9 +189,10 @@ class SearchDocumentsToolTests(TestCase):
 
     def test_denies_access_without_user_id(self):
         ctx = RunContext.create(data_room_ids=[self.data_room.pk])
-        # Without a user_id the tool skips the ownership check and proceeds
-        result = self._invoke({"query": "test"}, ctx)
-        self.assertIsInstance(result, str)
+        # Fail closed: without a user_id the ownership check cannot pass, so access
+        # is denied (the tool raises rather than leaking another tenant's rooms).
+        with self.assertRaises(Exception):
+            self._invoke({"query": "test"}, ctx)
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     @patch("documents.services.retrieval.get_merged_context_windows")
@@ -190,8 +204,8 @@ class SearchDocumentsToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="usage.pdf", status=DataRoomDocument.Status.READY, doc_index=1,
         )
-        c1 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="A", token_count=1)
-        c2 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="B", token_count=1)
+        c1 = _doc_chunk(doc, chunk_index=0, text="A", token_count=1)
+        c2 = _doc_chunk(doc, chunk_index=1, text="B", token_count=1)
 
         mock_doc1 = MagicMock()
         mock_doc1.metadata = {"chunk_id": c1.id, "doc_index": 1, "data_room_id": self.data_room.pk, "chunk_index": 0}
@@ -226,7 +240,7 @@ class SearchDocumentsToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="dup.pdf", status=DataRoomDocument.Status.READY, doc_index=1,
         )
-        chunk = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="X", token_count=1)
+        chunk = _doc_chunk(doc, chunk_index=0, text="X", token_count=1)
 
         mock_doc = MagicMock()
         mock_doc.metadata = {"chunk_id": chunk.id, "doc_index": 1, "data_room_id": self.data_room.pk, "chunk_index": 0}
@@ -297,7 +311,7 @@ class ReadDocumentToolTests(TestCase):
             is_quarantined=True,
             quarantine_reason="Contains GDPR Article 9 (special category) personal data.",
         )
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="Sensitive", token_count=2)
+        _doc_chunk(doc, chunk_index=0, text="Sensitive", token_count=2)
 
         result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
         self.assertEqual(len(result["documents"]), 1)
@@ -314,7 +328,7 @@ class ReadDocumentToolTests(TestCase):
                 data_room=self.data_room, uploaded_by=self.user,
                 original_filename=f"{status}.txt", status=status,
             )
-            DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="Unscanned", token_count=2)
+            _doc_chunk(doc, chunk_index=0, text="Unscanned", token_count=2)
 
             result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
             d = result["documents"][0]
@@ -327,9 +341,9 @@ class ReadDocumentToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="test.txt", status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="Chunk 0", token_count=2)
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="Chunk 1", token_count=2)
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=2, text="Chunk 2", token_count=2)
+        _doc_chunk(doc, chunk_index=0, text="Chunk 0", token_count=2)
+        _doc_chunk(doc, chunk_index=1, text="Chunk 1", token_count=2)
+        _doc_chunk(doc, chunk_index=2, text="Chunk 2", token_count=2)
 
         result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
         self.assertEqual(len(result["documents"]), 1)
@@ -346,8 +360,7 @@ class ReadDocumentToolTests(TestCase):
             original_filename="range.txt", status=DataRoomDocument.Status.READY,
         )
         for i in range(5):
-            DataRoomDocumentChunk.objects.create(
-                document=doc, chunk_index=i, text=f"Chunk {i}", token_count=2,
+            _doc_chunk(doc, chunk_index=i, text=f"Chunk {i}", token_count=2,
                 heading=f"Section {i}" if i % 2 == 0 else None,
             )
 
@@ -373,11 +386,9 @@ class ReadDocumentToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="headings.txt", status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=0, text="text0", token_count=2, heading="Intro",
+        _doc_chunk(doc, chunk_index=0, text="text0", token_count=2, heading="Intro",
         )
-        DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=1, text="text1", token_count=2, heading="Body",
+        _doc_chunk(doc, chunk_index=1, text="text1", token_count=2, heading="Body",
         )
 
         result = self._invoke({
@@ -396,8 +407,8 @@ class ReadDocumentToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="partial.txt", status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="A", token_count=1)
-        DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="B", token_count=1)
+        _doc_chunk(doc, chunk_index=0, text="A", token_count=1)
+        _doc_chunk(doc, chunk_index=1, text="B", token_count=1)
 
         result = self._invoke({
             "doc_indices": [doc.doc_index],
@@ -416,15 +427,12 @@ class ReadDocumentToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="guarded.txt", status=DataRoomDocument.Status.READY,
         )
-        DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=0, text="Safe content", token_count=2,
+        _doc_chunk(doc, chunk_index=0, text="Safe content", token_count=2,
         )
-        DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=1, text="Dangerous injected content",
+        _doc_chunk(doc, chunk_index=1, text="Dangerous injected content",
             token_count=3, is_quarantined=True,
         )
-        DataRoomDocumentChunk.objects.create(
-            document=doc, chunk_index=2, text="More safe content", token_count=2,
+        _doc_chunk(doc, chunk_index=2, text="More safe content", token_count=2,
         )
 
         result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
@@ -442,8 +450,8 @@ class ReadDocumentToolTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="read-usage.txt", status=DataRoomDocument.Status.READY,
         )
-        c1 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=0, text="AA", token_count=1)
-        c2 = DataRoomDocumentChunk.objects.create(document=doc, chunk_index=1, text="BB", token_count=1)
+        c1 = _doc_chunk(doc, chunk_index=0, text="AA", token_count=1)
+        c2 = _doc_chunk(doc, chunk_index=1, text="BB", token_count=1)
 
         thread = ChatThread.objects.create(created_by=self.user, title="Read usage test")
         ctx = RunContext.create(
@@ -496,7 +504,7 @@ class SaveCanvasToDataRoomToolTests(TestCase):
         self.assertIn("canvas_name", schema["properties"])
         self.assertIn("data_room_name", schema["properties"])
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_saves_active_canvas_as_md_document(self, mock_delay):
         result = self._invoke_json({}, self._ctx())
 
@@ -510,10 +518,11 @@ class SaveCanvasToDataRoomToolTests(TestCase):
         self.assertEqual(doc.status, DataRoomDocument.Status.UPLOADED)
         self.assertTrue(
             DataRoomDocumentTag.objects.filter(
-                document=doc, key="source", value="canvas_export"
+                version__document=doc, key="source", value="canvas_export"
             ).exists()
         )
-        mock_delay.assert_called_once_with(doc.id)
+        # Save goes through create_version -> processes the v0 version.
+        mock_delay.assert_called_once_with(doc.current_version_id)
 
     def test_no_data_room_returns_error(self):
         result = self._invoke_json({}, self._ctx(data_room_pks=[]))

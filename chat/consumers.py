@@ -1362,7 +1362,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
-        doc_tools = {"search_documents", "read_document", "save_canvas_to_data_room"}
+        doc_tools = {
+            "search_documents", "read_document", "save_canvas_to_data_room",
+            "list_documents", "open_document_to_canvas", "save_document",
+            "write_document", "edit_document", "archive_document", "rename_document",
+            "list_versions", "restore_version", "get_document_status",
+        }
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
             tools = list(all_tools)
@@ -1856,8 +1861,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Fetch document_type tags
             doc_type_map = dict(
                 DataRoomDocumentTag.objects.filter(
-                    document_id__in=seen_doc_ids, key="document_type",
-                ).values_list("document_id", "value")
+                    version__document_id__in=seen_doc_ids,
+                    version__is_searchable=True,
+                    key="document_type",
+                ).values_list("version__document_id", "value")
             )
 
             multi_room = len(data_room_ids) > 1
@@ -1907,12 +1914,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_data_room_info(self, data_room_ids):
+        from django.db.models import Count, Q
+
         from documents.models import DataRoom
         from documents.views import _user_can_access_data_room
 
-        rooms = DataRoom.objects.filter(pk__in=data_room_ids)
+        rooms = DataRoom.objects.filter(pk__in=data_room_ids).annotate(
+            document_count=Count("documents", filter=Q(documents__is_archived=False)),
+        )
         return [
-            {"id": r.pk, "name": r.name, "description": r.description or ""}
+            {
+                "id": r.pk,
+                "name": r.name,
+                "description": r.description or "",
+                "document_count": r.document_count,
+            }
             for r in rooms
             if _user_can_access_data_room(self.user, r)
         ]
@@ -2967,7 +2983,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         return list(
             DataRoomDocumentTag.objects.filter(
-                document__thread_usages__thread_id=thread_id,
+                version__document__thread_usages__thread_id=thread_id,
                 key__startswith="pii_",
             )
             .values_list("key", flat=True)

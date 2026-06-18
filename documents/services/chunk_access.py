@@ -11,23 +11,27 @@ DB connections through an in-dyno PgBouncer in transaction-pooling mode, so
 ``DISABLE_SERVER_SIDE_CURSORS=True`` is set (see ``config/settings.py``). With
 server-side cursors disabled, ``.iterator()`` does NOT stream from Postgres — psycopg
 fetches the entire result set client-side. Keyset pagination over the indexed
-``(document, chunk_index)`` keeps each query bounded to a single page.
+``(version, chunk_index)`` keeps each query bounded to a single page.
+
+All access is scoped to a single ``DataRoomDocumentVersion`` — chunks belong to a
+version, and the embedding/description/PII pipelines always operate on the one
+version they are processing.
 """
 from __future__ import annotations
 
 import logging
 
-from documents.models import DataRoomDocument, DataRoomDocumentChunk
+from documents.models import DataRoomDocumentChunk, DataRoomDocumentVersion
 
 logger = logging.getLogger(__name__)
 
 
-def _keyset_pages(document_id, fields, page_size, *, reverse=False):
+def _keyset_pages(version_id, fields, page_size, *, reverse=False):
     """Yield chunk dicts in chunk_index order (ascending, or descending if reverse).
 
-    Pages through the chunks with a keyset cursor on ``chunk_index`` so at most
-    ``page_size`` rows are held at a time. ``chunk_index`` is always selected (it is
-    the cursor) even when the caller omits it from ``fields``.
+    Pages through one version's chunks with a keyset cursor on ``chunk_index`` so at
+    most ``page_size`` rows are held at a time. ``chunk_index`` is always selected (it
+    is the cursor) even when the caller omits it from ``fields``.
     """
     select = tuple(fields)
     if "chunk_index" not in select:
@@ -36,7 +40,7 @@ def _keyset_pages(document_id, fields, page_size, *, reverse=False):
     bound = "chunk_index__lt" if reverse else "chunk_index__gt"
     cursor = None
     while True:
-        qs = DataRoomDocumentChunk.objects.filter(document_id=document_id)
+        qs = DataRoomDocumentChunk.objects.filter(version_id=version_id)
         if cursor is not None:
             qs = qs.filter(**{bound: cursor})
         page = list(qs.order_by(order).values(*select)[:page_size])
@@ -48,14 +52,14 @@ def _keyset_pages(document_id, fields, page_size, *, reverse=False):
             return
 
 
-def iter_document_chunks(document_id, *, fields=("id", "text", "chunk_index"), page_size=1000):
-    """Yield a document's chunks as dicts in ascending chunk_index order.
+def iter_version_chunks(version_id, *, fields=("id", "text", "chunk_index"), page_size=1000):
+    """Yield a version's chunks as dicts in ascending chunk_index order.
 
     Never holds more than ``page_size`` rows in memory at once. Includes every chunk
     (no quarantine filter) so embedding, description, and PII all see the full
-    document — matching the pre-refactor behaviour that fed them the whole text.
+    version — matching the pre-refactor behaviour that fed them the whole text.
     """
-    yield from _keyset_pages(document_id, fields, page_size, reverse=False)
+    yield from _keyset_pages(version_id, fields, page_size, reverse=False)
 
 
 def _join_chunks(chunks) -> str:
@@ -68,27 +72,26 @@ def _join_chunks(chunks) -> str:
     return "\n\n".join(parts)
 
 
-def _document_token_total(document_id) -> int:
-    """Total token count for a document — from the stored field, or summed from chunks."""
-    row = DataRoomDocument.objects.filter(pk=document_id).values("token_count").first()
+def _version_token_total(version_id) -> int:
+    """Total token count for a version — from the stored field, or summed from chunks."""
+    row = DataRoomDocumentVersion.objects.filter(pk=version_id).values("token_count").first()
     total = (row or {}).get("token_count") or 0
     if total:
         return total
     return sum(
         (c["token_count"] or 0)
-        for c in iter_document_chunks(document_id, fields=("token_count",), page_size=1000)
+        for c in iter_version_chunks(version_id, fields=("token_count",), page_size=1000)
     )
 
 
-def build_head_tail_text(document_id, head_tokens=None, tail_tokens=None) -> str:
-    """Reconstruct document text for the description LLM, bounded to head + tail.
+def build_head_tail_text(version_id, head_tokens=None, tail_tokens=None) -> str:
+    """Reconstruct a version's text for the description LLM, bounded to head + tail.
 
-    Small documents (<= ``_MAX_INPUT_TOKENS``) are returned whole. Larger ones return
+    Small versions (<= ``_MAX_INPUT_TOKENS``) are returned whole. Larger ones return
     the first ``head_tokens`` + last ``tail_tokens`` worth of chunks with the middle
     omitted — the same slice ``_prepare_document_text`` would keep, but without ever
-    materializing the full document text. Chunks are reconstructed with headings
-    prepended, so the result differs slightly from the original cleaned text
-    (acceptable for a relevance gist).
+    materializing the full text. Chunks are reconstructed with headings prepended, so
+    the result differs slightly from the original cleaned text (acceptable for a gist).
     """
     from documents.services.description import _HEAD_TOKENS, _MAX_INPUT_TOKENS, _TAIL_TOKENS
 
@@ -98,14 +101,14 @@ def build_head_tail_text(document_id, head_tokens=None, tail_tokens=None) -> str
         tail_tokens = _TAIL_TOKENS
 
     fields = ("heading", "text", "chunk_index", "token_count")
-    total = _document_token_total(document_id)
+    total = _version_token_total(version_id)
 
     if total <= _MAX_INPUT_TOKENS:
-        return _join_chunks(iter_document_chunks(document_id, fields=fields, page_size=1000))
+        return _join_chunks(iter_version_chunks(version_id, fields=fields, page_size=1000))
 
     # Head: forward-scan until the head budget is reached.
     head, head_tok, head_indexes = [], 0, set()
-    for c in iter_document_chunks(document_id, fields=fields, page_size=128):
+    for c in iter_version_chunks(version_id, fields=fields, page_size=128):
         head.append(c)
         head_tok += c["token_count"] or 0
         head_indexes.add(c["chunk_index"])
@@ -115,7 +118,7 @@ def build_head_tail_text(document_id, head_tokens=None, tail_tokens=None) -> str
     # Tail: reverse-scan until the tail budget is reached, skipping any chunk already
     # in the head (defensive against a pathological single huge chunk straddling both).
     tail, tail_tok = [], 0
-    for c in _keyset_pages(document_id, fields, 128, reverse=True):
+    for c in _keyset_pages(version_id, fields, 128, reverse=True):
         if c["chunk_index"] in head_indexes:
             continue
         tail.append(c)
