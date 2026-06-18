@@ -36,6 +36,7 @@ def resolve_subagent_tools(
         "canvas_activate", "canvas_write", "canvas_edit",
         "canvas_save_to_document",
         "chat_subagent_create",
+        "chat_loop_create", "chat_loop_edit", "chat_loop_stop", "chat_loop_list",
         "chat_skill_attach", "skill_create", "skill_edit", "skill_delete",
         "skill_field_save", "skill_field_load",
         "skill_template_view", "skill_template_load",

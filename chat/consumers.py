@@ -1267,6 +1267,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             dynamic_context=dynamic_context,
             requested_model=requested_model, thinking_level=thinking_level,
             resolved_model=model, turn=turn, seed_mode=False,
+            is_loop_turn=is_loop_turn,
         )
 
         if history_mode == "conversational" and meta.get("needs_summary"):
@@ -1279,7 +1280,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         semi_static_system="",
         dynamic_context="",
         requested_model=None, thinking_level="off", resolved_model=None,
-        turn=None, seed_mode=False,
+        turn=None, seed_mode=False, is_loop_turn=False,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
@@ -1400,6 +1401,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # attachment (the catalogue is also omitted from the prompt above).
         if prefs and not prefs.allow_agent_attach_skills:
             tools = [t for t in tools if t != "chat_skill_attach"]
+
+        # A loop's own headless turn must not spawn or reschedule loops, or a
+        # loop whose prompt mentions automations could fork itself indefinitely.
+        # Listing/stopping stay available (read-only / only pause).
+        if is_loop_turn:
+            tools = [t for t in tools if t not in ("chat_loop_create", "chat_loop_edit")]
 
         if turn is None:
             # Defensive: direct callers (tests) may not provide a turn.

@@ -174,3 +174,293 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
 
     finally:
         Loop.objects.filter(pk=loop_id).update(running=False, locked_at=None)
+
+
+# ---------------------------------------------------------------------------
+# Create / edit / lifecycle orchestration
+#
+# The payload-validation helpers (``_build_loop_fields`` etc.) and the
+# high-level ``create_loop`` / ``update_loop`` / ``pause_loop`` / ``resume_loop``
+# functions are the single source of truth shared by the HTTP views
+# (``chat/views.py``) and the agent tools (``chat/tool_loops.py``). They take
+# resolved primitives (a user, a parsed ``body`` dict, ``now``, ``tz_name``) and
+# never touch an HTTP request.
+# ---------------------------------------------------------------------------
+
+
+def _parse_int(value, *, default, lo, hi):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(n, hi))
+
+
+def _parse_hhmm(value):
+    """Parse 'HH:MM' into a datetime.time, or None."""
+    from datetime import time as _time
+
+    try:
+        hh, mm = str(value).split(":")
+        return _time(int(hh), int(mm))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _parse_local_dt(value, tz_name, now):
+    """Parse a 'YYYY-MM-DDTHH:MM' datetime-local string in tz into aware UTC."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    if not value:
+        return None
+    try:
+        naive = _dt.strptime(value[:16], "%Y-%m-%dT%H:%M")
+    except (ValueError, TypeError):
+        return None
+    return naive.replace(tzinfo=ZoneInfo(tz_name)).astimezone(ZoneInfo("UTC"))
+
+
+def _build_loop_fields(body, *, now, tz_name):
+    """Validate + normalize a loop create/edit payload into model field values.
+
+    Returns ``(fields, was_reduced, errors)``. ``fields`` is a dict ready to
+    splat onto a Loop; ``errors`` is a list of user-facing strings.
+    """
+    from chat.loop_schedule import (
+        DEFAULT_MAX_RUNS, MAX_RUNS_CAP, clamp_max_runs, compute_next_run,
+    )
+    from chat.models import Loop
+
+    errors = []
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        errors.append("Please enter a prompt for the loop to run.")
+
+    history_mode = body.get("history_mode")
+    if history_mode not in (Loop.HistoryMode.FRESH, Loop.HistoryMode.CONVERSATIONAL):
+        history_mode = Loop.HistoryMode.FRESH
+
+    cadence_kind = body.get("cadence_kind")
+    interval_seconds = None
+    clock_time = None
+    clock_frequency = ""
+    clock_weekday = None
+
+    if cadence_kind == "clock":
+        clock_frequency = body.get("clock_frequency")
+        if clock_frequency not in ("daily", "weekdays", "weekly"):
+            clock_frequency = "daily"
+        clock_time = _parse_hhmm(body.get("clock_time"))
+        if clock_time is None:
+            errors.append("Please choose a valid time of day.")
+            from datetime import time as _time
+            clock_time = _time(9, 0)
+        if clock_frequency == "weekly":
+            clock_weekday = _parse_int(body.get("clock_weekday"), default=0, lo=0, hi=6)
+    else:
+        cadence_kind = "interval"
+        unit = body.get("interval_unit", "hours")
+        value = _parse_int(body.get("interval_value"), default=1, lo=1, hi=100000)
+        mult = {"minutes": 60, "hours": 3600, "days": 86400}.get(unit, 3600)
+        interval_seconds = max(60, value * mult)  # floor at 1 minute
+
+    sched = {
+        "cadence_kind": cadence_kind,
+        "interval_seconds": interval_seconds,
+        "clock_time": clock_time,
+        "clock_frequency": clock_frequency or None,
+        "clock_weekday": clock_weekday,
+        "tz": tz_name,
+    }
+
+    # First run: keep existing (edit only), Now (default), the next scheduled
+    # occurrence, or a custom time.
+    first_run_mode = body.get("first_run_mode", "now")
+    if first_run_mode == "keep":
+        next_run = None  # caller preserves the loop's existing next_run
+    elif first_run_mode == "custom":
+        next_run = _parse_local_dt(body.get("first_run_at"), tz_name, now) or now
+        if next_run < now:
+            next_run = now
+    elif first_run_mode == "scheduled" and cadence_kind == "clock":
+        next_run = compute_next_run(now, **sched)
+    else:
+        next_run = now
+
+    requested = _parse_int(body.get("max_runs"), default=DEFAULT_MAX_RUNS, lo=1, hi=MAX_RUNS_CAP)
+    effective_max, was_reduced = clamp_max_runs(requested, now, **sched)
+
+    fields = {
+        "prompt": prompt,
+        "history_mode": history_mode,
+        "cadence_kind": cadence_kind,
+        "interval_seconds": interval_seconds,
+        "clock_time": clock_time,
+        "clock_frequency": clock_frequency or "",
+        "clock_weekday": clock_weekday,
+        "tz": tz_name,
+        "next_run": next_run,
+        "max_runs": effective_max,
+    }
+    return fields, was_reduced, errors
+
+
+def _link_loop_resources(thread, user, data_room_ids, skill_id, model=None):
+    """Attach validated data rooms + skill + model to a loop's thread (idempotent)."""
+    from chat.models import ChatThreadDataRoom
+    from core.preferences import get_preferences
+    from documents.models import DataRoom
+
+    prefs = get_preferences(user)
+    valid_pks = list(
+        DataRoom.objects.filter(
+            created_by=user, pk__in=data_room_ids or [], is_archived=False,
+        ).values_list("pk", flat=True)
+    )
+    ChatThreadDataRoom.objects.filter(thread=thread).delete()
+    ChatThreadDataRoom.objects.bulk_create(
+        [ChatThreadDataRoom(thread=thread, data_room_id=pk) for pk in valid_pks]
+    )
+
+    resolved_skill_id = None
+    if skill_id:
+        allowed = {str(s["id"]) for s in prefs.allowed_skills}
+        if str(skill_id) in allowed:
+            resolved_skill_id = skill_id
+    thread.skill_id = resolved_skill_id
+    # Per-thread model: store only an allowed model; otherwise clear so it
+    # resolves to the user's preferred chat model.
+    thread.model = model if (model and model in prefs.allowed_models) else ""
+    thread.save(update_fields=["skill", "model"])
+
+
+def _loop_form_json(loop, prefs):
+    """Serialize a loop's editable fields for the create/edit modal prefill."""
+    from core.preferences import resolve_thread_model
+
+    return {
+        "id": str(loop.id),
+        "status": loop.status,
+        "prompt": loop.prompt,
+        "history_mode": loop.history_mode,
+        "cadence_kind": loop.cadence_kind,
+        "interval_seconds": loop.interval_seconds,
+        "clock_time": loop.clock_time.strftime("%H:%M") if loop.clock_time else "",
+        "clock_frequency": loop.clock_frequency,
+        "clock_weekday": loop.clock_weekday,
+        "max_runs": loop.max_runs,
+        "data_room_ids": list(loop.thread.data_rooms.values_list("pk", flat=True)),
+        "skill_id": str(loop.thread.skill_id) if loop.thread.skill_id else "",
+        "model": resolve_thread_model(loop.thread.model, prefs),
+    }
+
+
+def create_loop(*, user, body, now, tz_name):
+    """Validate a payload, create a backing thread + Loop for ``user``.
+
+    Returns ``(loop, was_reduced, errors)``. On validation error ``loop`` is
+    ``None`` and ``errors`` is non-empty.
+    """
+    from django.db import transaction
+
+    from chat.models import ChatThread, Loop
+
+    fields, was_reduced, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
+    if errors:
+        return None, was_reduced, errors
+    if fields["next_run"] is None:  # "keep" has no meaning on create
+        fields["next_run"] = now
+
+    with transaction.atomic():
+        thread = ChatThread.objects.create(
+            created_by=user, title=fields["prompt"][:80] or "Scheduled loop",
+        )
+        _link_loop_resources(
+            thread, user, body.get("data_room_ids"), body.get("skill_id"),
+            model=body.get("model"),
+        )
+        loop = Loop.objects.create(thread=thread, created_by=user, **fields)
+    return loop, was_reduced, []
+
+
+def update_loop(*, loop, user, body, now, tz_name):
+    """Validate a payload and apply it to an existing ``loop``.
+
+    The caller is responsible for fetching ``loop`` and checking ownership.
+    Honors ``body['restart']`` (re-activate + reset run count). Returns
+    ``(loop, was_reduced, errors)``; ``loop`` is ``None`` on validation error.
+    """
+    from chat.models import Loop
+
+    fields, was_reduced, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
+    if errors:
+        return None, was_reduced, errors
+
+    _link_loop_resources(
+        loop.thread, user, body.get("data_room_ids"), body.get("skill_id"),
+        model=body.get("model"),
+    )
+    for key, val in fields.items():
+        if key == "next_run" and val is None:
+            continue  # "keep" — preserve the existing schedule time
+        setattr(loop, key, val)
+
+    # Restarting a paused loop: re-activate, start the run count over, release
+    # any stale lock.
+    if body.get("restart"):
+        loop.status = Loop.Status.ACTIVE
+        loop.running = False
+        loop.locked_at = None
+        loop.runs_completed = 0
+        loop.consecutive_errors = 0
+        if fields["next_run"] is None:  # "keep" → start now on restart
+            loop.next_run = now
+
+    loop.thread.title = fields["prompt"][:80] or loop.thread.title
+    loop.thread.save(update_fields=["title"])
+    loop.save()
+    return loop, was_reduced, []
+
+
+def pause_loop(loop):
+    """Pause a loop so it stops firing (reversible via :func:`resume_loop`)."""
+    from chat.models import Loop
+
+    loop.status = Loop.Status.PAUSED
+    loop.save(update_fields=["status", "updated_at"])
+    return loop
+
+
+def resume_loop(loop, now):
+    """Resume a paused loop: fire on the next tick, then continue the cadence."""
+    from chat.models import Loop
+
+    loop.status = Loop.Status.ACTIVE
+    loop.next_run = now
+    loop.running = False
+    loop.locked_at = None
+    # A resumed loop that already hit its cap would re-pause immediately; give it
+    # at least one more run.
+    if loop.runs_completed >= loop.max_runs:
+        loop.max_runs = loop.runs_completed + 1
+    loop.save(update_fields=[
+        "status", "next_run", "running", "locked_at", "max_runs", "updated_at",
+    ])
+    return loop
+
+
+def list_loops_for_user(user):
+    """Return the user's active + paused loops, most-recent-result first."""
+    from django.db.models import F
+
+    from chat.models import Loop
+
+    return list(
+        Loop.objects.filter(
+            created_by=user,
+            status__in=[Loop.Status.ACTIVE, Loop.Status.PAUSED],
+        )
+        .select_related("thread")
+        .order_by(F("last_result_at").desc(nulls_last=True), "-created_at")
+    )
