@@ -7,6 +7,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from core.styles import FOOTNOTE_MARKER
 from llm.core.model_factory import detect_provider
 
 if TYPE_CHECKING:
@@ -20,6 +21,109 @@ CANVAS_MAX_CHARS = 75_000
 MAX_CANVASES_PER_THREAD = 10
 MAX_ACTIVE_CANVASES = 3
 EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
+
+# ATX heading (up to 3 leading spaces, 1-6 hashes, then a space or end-of-line).
+# `#hashtag` / `###Bad` (no space) are intentionally not headings.
+_ATX_HEADING_RE = re.compile(r"^( {0,3})(#{1,6})(\s.*|)$")
+# Fenced code delimiter: 3+ backticks or tildes, optionally indented/with info.
+_CODE_FENCE_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
+
+
+def _iter_markdown_lines_skipping_code(lines):
+    """Yield ``(line, in_code)`` tracking fenced code blocks.
+
+    A fence opens on the first ``` ``` ``` / ``~~~`` run and closes on a later
+    run of the same character that is at least as long, mirroring CommonMark.
+    """
+    fence_char = None
+    fence_len = 0
+    for line in lines:
+        fence = _CODE_FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(2)
+            if fence_char is None:
+                fence_char, fence_len = marker[0], len(marker)
+                yield line, True  # the fence line itself is "in code"
+                continue
+            if marker[0] == fence_char and len(marker) >= fence_len:
+                fence_char, fence_len = None, 0
+            yield line, True
+            continue
+        yield line, fence_char is not None
+
+
+def normalize_heading_levels(markdown: str) -> str:
+    """Promote ATX headings so the shallowest level present becomes ``#`` (H1).
+
+    The whole document is shifted by the same delta, preserving the relative
+    hierarchy (``## / ###`` → ``# / ##``). Fenced code blocks are skipped so a
+    ``#`` comment inside code is never mistaken for a heading. Returns the input
+    unchanged when there are no headings or the top level is already ``#``.
+    """
+    if not markdown or "#" not in markdown:
+        return markdown
+
+    lines = markdown.split("\n")
+
+    min_level = 7
+    for line, in_code in _iter_markdown_lines_skipping_code(lines):
+        if in_code:
+            continue
+        m = _ATX_HEADING_RE.match(line)
+        if m:
+            min_level = min(min_level, len(m.group(2)))
+
+    if min_level >= 7 or min_level == 1:
+        return markdown
+
+    shift = min_level - 1
+    out = []
+    for line, in_code in _iter_markdown_lines_skipping_code(lines):
+        m = None if in_code else _ATX_HEADING_RE.match(line)
+        if m:
+            indent, hashes, rest = m.group(1), m.group(2), m.group(3)
+            new_level = max(1, len(hashes) - shift)
+            out.append(f"{indent}{'#' * new_level}{rest}")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+# Markdown footnote citations: inline reference `[^id]` and definition `[^id]: text`.
+_FOOTNOTE_DEF_RE = re.compile(r"^(\s*)\[\^([^\]]+)\]:\s?(.*)$")
+_FOOTNOTE_REF_RE = re.compile(r"\[\^([^\]]+)\]")
+
+
+def render_citations(markdown: str) -> str:
+    """Turn Markdown footnote citations into export-friendly markup.
+
+    LLM canvases use footnote syntax (``text.[^1]`` plus a ``[^1]: source``
+    list), which the stock ``markdown`` render leaves as literal ``[^1]`` text.
+    We can't use the ``footnotes`` extension: these docs reuse labels per
+    section (each section has its own Sources list), which the extension would
+    collide and relocate. Instead, line by line: inline references become
+    ``<sup>`` superscripts and definitions become numbered list items, keeping
+    each Sources list where it is. Fenced code blocks are skipped.
+    """
+    if not markdown or "[^" not in markdown:
+        return markdown
+
+    out = []
+    for line, in_code in _iter_markdown_lines_skipping_code(markdown.split("\n")):
+        if in_code:
+            out.append(line)
+            continue
+        definition = _FOOTNOTE_DEF_RE.match(line)
+        if definition:
+            label, rest = definition.group(2), definition.group(3)
+            # Numeric labels → a real ordered-list item (clean references list);
+            # non-numeric labels can't start an <ol>, so keep a bracketed marker.
+            # The marker after the number tags the item so the export can shrink
+            # the sources list (see core.styles.FOOTNOTE_MARKER).
+            out.append(f"{label}. {FOOTNOTE_MARKER}{rest}" if label.isdigit() else f"\\[{label}\\] {rest}")
+        else:
+            out.append(_FOOTNOTE_REF_RE.sub(lambda m: f"<sup>{m.group(1)}</sup>", line))
+    return "\n".join(out)
 
 
 def resolve_canvas(thread_id, canvas_name=None):

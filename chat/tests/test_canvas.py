@@ -424,6 +424,167 @@ class CanvasExportViewTests(TestCase):
                     tcW = cell._tc.tcPr.find(qn("w:tcW"))
                     self.assertGreater(int(tcW.get(qn("w:w"))), 0)
 
+    def test_export_applies_org_styles(self):
+        """The export should apply the exporting user's org styles to the .docx."""
+        from accounts.models import Membership, Organization
+
+        org = Organization.objects.create(name="StyleCo", slug="styleco")
+        org.preferences = {"styles": {"body_font": "Georgia", "body_size": 13}}
+        org.save(update_fields=["preferences"])
+        Membership.objects.create(user=self.user, org=org, role=Membership.Role.MEMBER)
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        self.assertEqual(doc.styles["Normal"].font.name, "Georgia")
+        self.assertEqual(doc.styles["Normal"].font.size.pt, 13)
+
+    def test_export_keeps_single_spacer_after_tables(self):
+        """html2docx emits a clump of blank paragraphs after tables; we keep
+        exactly one spacer (for spacing + to avoid table merges)."""
+        self.canvas.content = "| A | B |\n| --- | --- |\n| 1 | 2 |\n\nAfter the table."
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        blanks = [p for p in doc.paragraphs if not p.text.strip()]
+        self.assertEqual(len(blanks), 1, "expected exactly one spacer paragraph")
+        # The following text should survive intact, without a leading space.
+        self.assertIn("After the table.", [p.text for p in doc.paragraphs])
+
+    def test_export_heading_after_table_keeps_heading_style(self):
+        """A real heading right after a table should stay a heading (html2docx
+        otherwise leaks its text into a Normal paragraph)."""
+        self.canvas.content = "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n### After Heading\n\nBody."
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        matches = [p for p in doc.paragraphs if p.text.strip() == "After Heading"]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0].style.name.startswith("Heading"))
+        # no empty heading paragraph left behind
+        empties = [p for p in doc.paragraphs if p.style.name.startswith("Heading") and not p.text.strip()]
+        self.assertEqual(empties, [])
+
+    def test_export_keeps_adjacent_tables_separate(self):
+        """Two tables in a row must stay separated by a paragraph, else Word
+        merges them into one."""
+        self.canvas.content = "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n| C | D |\n| --- | --- |\n| 3 | 4 |"
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+        from docx.oxml.ns import qn
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        tags = [c.tag.split("}")[-1] for c in doc.element.body.iterchildren()]
+        tbl_positions = [i for i, t in enumerate(tags) if t == "tbl"]
+        self.assertEqual(len(tbl_positions), 2)
+        self.assertIn("p", tags[tbl_positions[0] + 1:tbl_positions[1]])
+
+    def test_export_normalizes_top_heading_to_h1(self):
+        """A canvas whose top heading is ## should export with the top as H1."""
+        self.canvas.content = "## Title\n\nBody.\n\n### Section"
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        headings = {p.text: p.style.name for p in doc.paragraphs if p.style.name.startswith("Heading")}
+        self.assertEqual(headings.get("Title"), "Heading 1")
+        self.assertEqual(headings.get("Section"), "Heading 2")
+
+    def test_export_renders_footnote_citations(self):
+        """[^1] citations should export as superscripts + a numbered Sources list."""
+        self.canvas.content = "Growth is strong.[^1]\n\n### Sources\n[^1]: BCC Research — https://x.test/a"
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertNotIn("[^1]", full_text)  # no literal footnote markers
+        # inline marker is a real superscript run
+        supers = [r.text for p in doc.paragraphs for r in p.runs if r.font.superscript]
+        self.assertIn("1", supers)
+        # the source became a numbered list item, shrunk to body size - 2 (11 -> 9)
+        sources = [p for p in doc.paragraphs if p.style.name == "List Number" and "BCC Research" in p.text]
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].runs[0].font.size.pt, 9)
+
+    def test_export_strips_leading_space_after_hard_breaks(self):
+        """Hard-wrapped lines (a 'Prepared for: / Platform:' block) must not pick
+        up a leading space on each continued line."""
+        self.canvas.content = (
+            "**Prepared for:** Project  \n**Platform:** Nanoparticle  \n**Status:** Ready"
+        )
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        full = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("Platform:", full)
+        self.assertNotIn("\n ", full, "continued lines should not start with a space")
+
+    def test_export_renders_hr_as_divider_rule(self):
+        """`---` thematic breaks (dropped by html2docx) should become a divider:
+        an empty bordered paragraph between the sections."""
+        self.canvas.content = "Section one.\n\n---\n\nSection two."
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+        from docx.oxml.ns import qn
+
+        from chat.views import _HR_DIVIDER_MARKER
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        dividers = [
+            p for p in doc.paragraphs
+            if p._p.find(qn("w:pPr")) is not None
+            and p._p.find(qn("w:pPr")).find(qn("w:pBdr")) is not None
+        ]
+        self.assertEqual(len(dividers), 1)
+        self.assertEqual(dividers[0].text, "")  # marker text cleared
+        full = "".join(p.text for p in doc.paragraphs)
+        self.assertNotIn(_HR_DIVIDER_MARKER, full)
+        self.assertIn("Section one.", full)
+        self.assertIn("Section two.", full)
+
     def test_export_404_no_canvas(self):
         other_thread = ChatThread.objects.create(created_by=self.user)
         url = f"/chat/threads/{other_thread.id}/canvas/export/"

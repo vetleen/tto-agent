@@ -425,8 +425,15 @@ def org_settings_page(request):
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
     )
 
+    from core.styles import FONT_CHOICES, get_org_styles
+
+    org_styles = get_org_styles(org)
+
     return render(request, "accounts/org_settings.html", {
         "org": org,
+        "styles": org_styles,
+        "styles_json": json.dumps(org_styles),
+        "font_choices": FONT_CHOICES,
         "monthly_budget_per_user": org_prefs.get("monthly_budget_per_user", 0),
         "monthly_budget_org": org_prefs.get("monthly_budget_org", 0),
         "system_models": system_models,
@@ -486,6 +493,31 @@ def org_allowed_models_update(request):
     update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "allowed_models": models})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_styles_update(request):
+    """Set the org's document export styles (fonts/colours)."""
+    from core.styles import validate_styles
+
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    clean, error = validate_styles(data)
+    if error:
+        return JsonResponse({"error": error}, status=400)
+
+    def mutate(prefs):
+        prefs["styles"] = clean
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, "styles": clean})
 
 
 @login_required

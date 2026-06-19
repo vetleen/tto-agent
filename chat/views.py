@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import re
 
 from django.contrib.auth.decorators import login_required
 from django.http import FileResponse, HttpResponseBadRequest, JsonResponse
@@ -357,6 +358,142 @@ def thread_emoji(request, thread_id):
     return JsonResponse({"ok": True, "emoji": thread.emoji})
 
 
+def _fix_table_trailing_content(doc):
+    """Repair html2docx's broken output after each table.
+
+    html2docx emits several blank ``" "`` paragraphs after a table and leaks the
+    next block's text into the last one; when that block is a heading it also
+    leaves the heading element empty, so the heading silently renders as body
+    text. For each table we: (1) move a heading's text back out of the Normal
+    paragraph it leaked into, (2) drop the spurious blanks, and (3) keep exactly
+    one empty paragraph after the table — for spacing, and so Word won't merge
+    two otherwise-adjacent tables. Image/drawing paragraphs are preserved.
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    body = doc.element.body
+    P, TBL = qn("w:p"), qn("w:tbl")
+
+    def is_blank(p):
+        if p.findall(".//" + qn("w:drawing")) or p.findall(".//" + qn("w:pict")):
+            return False
+        return "".join(t.text or "" for t in p.iter(qn("w:t"))).strip() == ""
+
+    def is_heading(p):
+        pPr = p.find(qn("w:pPr"))
+        ps = pPr.find(qn("w:pStyle")) if pPr is not None else None
+        return ps is not None and (ps.get(qn("w:val")) or "").startswith("Heading")
+
+    def lstrip_para(p):
+        for t in p.iter(qn("w:t")):
+            t.text = (t.text or "").lstrip()
+            if t.text:
+                break
+
+    for table in list(doc.tables):
+        tbl = table._tbl
+
+        # Collect the run of paragraphs immediately following the table.
+        run = []
+        sib = tbl.getnext()
+        while sib is not None and sib.tag == P:
+            run.append(sib)
+            sib = sib.getnext()
+
+        # Split into leading blanks and the first text-bearing ("leaked") para.
+        blanks, leaked = [], None
+        for p in run:
+            if is_blank(p):
+                blanks.append(p)
+            else:
+                leaked = p
+                break
+
+        if leaked is not None:
+            after = leaked.getnext()
+            if (after is not None and after.tag == P and is_blank(after)
+                    and is_heading(after) and not is_heading(leaked)):
+                # Heading text leaked into a Normal paragraph — move it back.
+                for r in leaked.findall(qn("w:r")):
+                    after.append(r)
+                lstrip_para(after)
+                body.remove(leaked)
+            else:
+                lstrip_para(leaked)
+
+        for blank in blanks:
+            body.remove(blank)
+
+        # One spacer after the table (skip if the table ends the document).
+        if leaked is not None or (sib is not None and sib.tag == TBL):
+            tbl.addnext(OxmlElement("w:p"))
+
+
+# html2docx drops <hr>, so we swap each one for a paragraph carrying this
+# private-use marker, then render it as a divider rule in _render_dividers.
+_HR_DIVIDER_MARKER = "\uE000"  # private-use char, never in real content
+_HR_RE = re.compile(r"<hr\s*/?>")
+
+
+def _render_dividers(doc):
+    """Turn the assistant's ``---`` thematic breaks into a divider rule.
+
+    Markdown ``---`` becomes ``<hr>``, which html2docx silently drops. We
+    replaced each one with a marker paragraph (see ``canvas_export``); here we
+    clear the marker and render the paragraph as a thin light-grey rule with
+    breathing room above and below — a clean section break.
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    for para in doc.paragraphs:
+        if para.text.strip() != _HR_DIVIDER_MARKER:
+            continue
+        for run in list(para.runs):
+            run._r.getparent().remove(run._r)
+        para.paragraph_format.space_before = Pt(10)
+        para.paragraph_format.space_after = Pt(10)
+        pPr = para._p.get_or_add_pPr()
+        old = pPr.find(qn("w:pBdr"))
+        if old is not None:
+            pPr.remove(old)
+        pBdr = OxmlElement("w:pBdr")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "6")  # ~0.75pt
+        bottom.set(qn("w:space"), "1")
+        bottom.set(qn("w:color"), "CCCCCC")
+        pBdr.append(bottom)
+        # pBdr precedes shd/spacing/ind/jc/rPr in the pPr schema order.
+        pPr.insert_element_before(pBdr, "w:shd", "w:tabs", "w:spacing", "w:ind",
+                                  "w:jc", "w:rPr", "w:sectPr")
+
+
+def _strip_space_after_line_breaks(doc):
+    """Drop the leading space html2docx adds after a markdown hard break.
+
+    A markdown hard break becomes ``<br/>`` followed by the source newline;
+    html2docx turns that newline into a leading space on the continued line, so
+    a hard-wrapped block (e.g. a "Prepared for: / Platform: / Status:" header)
+    renders with a stray space at the start of every line but the first. We
+    strip the whitespace of the first text run after each break.
+    """
+    from docx.oxml.ns import qn
+
+    BR, T = qn("w:br"), qn("w:t")
+    for para in doc.element.body.iter(qn("w:p")):
+        after_break = False
+        for el in para.iter():
+            if el.tag == BR:
+                after_break = True
+            elif el.tag == T:
+                if after_break and el.text:
+                    el.text = el.text.lstrip()
+                after_break = False
+
+
 @login_required
 @require_http_methods(["POST"])
 async def canvas_export(request, thread_id, canvas_id=None):
@@ -377,7 +514,7 @@ async def canvas_export(request, thread_id, canvas_id=None):
     import markdown as md
     from html2docx import html2docx
 
-    from chat.services import replace_email_with_html
+    from chat.services import normalize_heading_levels, render_citations, replace_email_with_html
 
     # Client already replaced mermaid blocks with <img> tags.
     try:
@@ -386,8 +523,14 @@ async def canvas_export(request, thread_id, canvas_id=None):
         return HttpResponseBadRequest("Invalid JSON")
     content = body.get("content", canvas.content)
 
+    # Promote headings so the doc's top level is H1 (LLMs often start at ##).
+    content = normalize_heading_levels(content)
+    # Footnote citations [^1] → superscripts + numbered Sources list.
+    content = render_citations(content)
     content = replace_email_with_html(content)
     html_content = md.markdown(content, extensions=["tables", "fenced_code"])
+    # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.
+    html_content = _HR_RE.sub(f"<p>{_HR_DIVIDER_MARKER}</p>", html_content)
     full_html = f"<html><body>{html_content}</body></html>"
     buf = html2docx(full_html, title=canvas.title)
 
@@ -415,6 +558,22 @@ async def canvas_export(request, thread_id, canvas_id=None):
                     if tcW is not None:
                         tcW.set(qn("w:w"), str(col_widths[i]))
                         tcW.set(qn("w:type"), "dxa")
+
+    # Repair html2docx's post-table output (leaked headings, junk blanks, spacing).
+    _fix_table_trailing_content(doc)
+    # Drop the leading space html2docx adds after each markdown hard break.
+    _strip_space_after_line_breaks(doc)
+    # Render `---` thematic breaks as a divider rule (html2docx drops <hr>).
+    _render_dividers(doc)
+
+    # Apply the org's configured document styles (fonts/colours). Read at
+    # export time so the look follows the org, not whoever wrote the canvas.
+    from accounts.models import get_membership
+    from core.styles import apply_doc_styles, get_org_styles
+
+    membership = await sync_to_async(get_membership)(request.user)
+    apply_doc_styles(doc, get_org_styles(membership.org if membership else None))
+
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)

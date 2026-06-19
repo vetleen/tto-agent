@@ -389,6 +389,64 @@ class OrgAllowedModelsUpdateTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgStylesUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="styleadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="stylemember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="StyleOrg", slug="styleorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_styles_update")
+
+    def _payload(self, **over):
+        data = {
+            "body_font": "Georgia", "body_size": 12, "heading_font": "Cambria",
+            "heading_color": "#112233", "body_color": "#000000", "accent_color": "#2563EB",
+        }
+        data.update(over)
+        return data
+
+    def _post(self, payload):
+        return self.client.post(self.url, json.dumps(payload), content_type="application/json")
+
+    def test_admin_can_set_styles(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self._post(self._payload())
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["styles"]["body_font"], "Georgia")
+        self.assertEqual(self.org.preferences["styles"]["accent_color"], "#2563EB")
+
+    def test_custom_font_round_trips(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self._post(self._payload(body_font="PT Sans"))
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["styles"]["body_font"], "PT Sans")
+
+    def test_invalid_color_rejected(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self._post(self._payload(heading_color="nope"))
+        self.assertEqual(response.status_code, 400)
+        self.org.refresh_from_db()
+        self.assertNotIn("styles", self.org.preferences)
+
+    def test_member_forbidden(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self._post(self._payload())
+        self.assertEqual(response.status_code, 403)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class OrgToolsUpdateTests(TestCase):
     def setUp(self):
         self.password = "test-pass-123"

@@ -20,6 +20,7 @@
         <li><a href="#pii" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">PII classification</a></li>
         <li><a href="#context" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
         <li><a href="#skills" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Skills</a></li>
+        <li><a href="#styles" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Styles</a></li>
       </ul>
     </nav>
 
@@ -433,9 +434,153 @@
         </div>
       </section>
 
+      <!-- Styles -->
+      <section id="styles" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Styles</h2>
+          <p class="mt-0.5 text-sm text-body">Design settings used when exporting documents (e.g. a canvas to Word). Applies to everyone in this organization.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+
+            <!-- Body font + size -->
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="style-body-font">Body font</label>
+              <p class="text-xs text-body mt-0.5">Font and size for normal paragraph text.</p>
+              <div class="mt-2 flex gap-3">
+                <select
+                  id="style-body-font"
+                  data-style-font="body_font"
+                  class="style-font-select flex-1 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                >
+                  {% for grp in font_choices %}
+                  <optgroup label="{{ grp.group }}">
+                    {% for f in grp.fonts %}<option value="{{ f }}">{{ f }}</option>{% endfor %}
+                  </optgroup>
+                  {% endfor %}
+                  <option value="__custom__">Custom&hellip;</option>
+                </select>
+                <input
+                  type="number"
+                  id="style-body-size"
+                  data-style="body_size"
+                  min="8" max="24" step="1"
+                  value="{{ styles.body_size }}"
+                  aria-label="Body font size in points"
+                  class="wf-mono w-24 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                >
+              </div>
+            </div>
+
+            <!-- Heading font -->
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="style-heading-font">Heading font</label>
+              <p class="text-xs text-body mt-0.5">Font for headings (Heading 1&ndash;6). Can differ from the body font.</p>
+              <select
+                id="style-heading-font"
+                data-style-font="heading_font"
+                class="style-font-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                {% for grp in font_choices %}
+                <optgroup label="{{ grp.group }}">
+                  {% for f in grp.fonts %}<option value="{{ f }}">{{ f }}</option>{% endfor %}
+                </optgroup>
+                {% endfor %}
+                <option value="__custom__">Custom&hellip;</option>
+              </select>
+            </div>
+
+            <!-- Heading colour -->
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="style-heading-color-text">Heading colour</label>
+              <p class="text-xs text-body mt-0.5">Colour applied to all headings.</p>
+              <div class="mt-2 flex items-center gap-2">
+                <input type="color" id="style-heading-color" value="{{ styles.heading_color }}" aria-label="Heading colour swatch" class="h-9 w-12 rounded-base border border-default bg-neutral-primary p-1 cursor-pointer">
+                <input type="text" id="style-heading-color-text" data-style-color="heading_color" data-style-picker="style-heading-color" value="{{ styles.heading_color }}" maxlength="7" class="wf-mono w-32 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+              </div>
+            </div>
+
+            <!-- Body text colour -->
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="style-body-color-text">Body text colour</label>
+              <p class="text-xs text-body mt-0.5">Colour for normal paragraph text. Usually left near-black.</p>
+              <div class="mt-2 flex items-center gap-2">
+                <input type="color" id="style-body-color" value="{{ styles.body_color }}" aria-label="Body text colour swatch" class="h-9 w-12 rounded-base border border-default bg-neutral-primary p-1 cursor-pointer">
+                <input type="text" id="style-body-color-text" data-style-color="body_color" data-style-picker="style-body-color" value="{{ styles.body_color }}" maxlength="7" class="wf-mono w-32 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+              </div>
+            </div>
+
+            <!-- Accent colour -->
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="style-accent-color-text">Accent colour</label>
+              <p class="text-xs text-body mt-0.5">Shades table header rows. Leave blank for none.</p>
+              <div class="mt-2 flex items-center gap-2">
+                <input type="color" id="style-accent-color" value="{{ styles.accent_color|default:'#2563EB' }}" aria-label="Accent colour swatch" class="h-9 w-12 rounded-base border border-default bg-neutral-primary p-1 cursor-pointer">
+                <input type="text" id="style-accent-color-text" data-style-color="accent_color" data-style-picker="style-accent-color" value="{{ styles.accent_color }}" placeholder="none" maxlength="7" class="wf-mono w-32 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+                <button type="button" id="style-accent-clear" class="text-sm text-fg-accent hover:underline">Clear</button>
+              </div>
+            </div>
+
+            <!-- Tables subheading -->
+            <div class="px-5 py-3 bg-neutral-secondary-soft">
+              <h3 class="text-sm font-semibold text-heading">Tables</h3>
+              <p class="text-xs text-body mt-0.5">Header rows use the accent colour above. Header text is bolded and repeats across page breaks automatically.</p>
+            </div>
+
+            <!-- Table borders -->
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="style-table-border-style">Borders</label>
+              <p class="text-xs text-body mt-0.5">Which gridlines to draw, and their colour.</p>
+              <div class="mt-2 flex items-center gap-2">
+                <select id="style-table-border-style" class="flex-1 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+                  <option value="all">All borders</option>
+                  <option value="horizontal">Horizontal lines only</option>
+                  <option value="header">Header rule only</option>
+                  <option value="none">No borders</option>
+                </select>
+                <input type="color" id="style-table-border-color" value="{{ styles.table_border_color }}" aria-label="Border colour swatch" class="h-9 w-12 rounded-base border border-default bg-neutral-primary p-1 cursor-pointer">
+                <input type="text" id="style-table-border-color-text" data-style-color="table_border_color" data-style-picker="style-table-border-color" value="{{ styles.table_border_color }}" maxlength="7" aria-label="Border colour hex" class="wf-mono w-32 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+              </div>
+            </div>
+
+            <!-- Banded rows -->
+            <div class="px-5 py-4">
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="style-table-banded" {% if styles.table_banded %}checked{% endif %} class="mt-0.5 rounded border-default text-brand focus:ring-brand-medium">
+                <span>
+                  <span class="block text-sm font-medium text-heading">Banded rows</span>
+                  <span class="block text-xs text-body mt-0.5">Tint every other row for readability.</span>
+                </span>
+              </label>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
     </div>
   </div>
 </main>
+
+<!-- Custom font modal -->
+<div id="custom-font-modal" tabindex="-1" aria-hidden="true" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+  <div class="relative w-full max-w-md rounded-base border border-default bg-neutral-primary shadow-lg">
+    <div class="flex items-center justify-between border-b border-default px-5 py-3">
+      <h3 class="text-base font-semibold text-heading">Custom font</h3>
+      <button type="button" class="custom-font-cancel text-2xl leading-none text-body hover:text-heading" aria-label="Close">&times;</button>
+    </div>
+    <div class="px-5 py-4">
+      <label class="block text-sm font-medium text-heading" for="custom-font-input">Font name</label>
+      <input type="text" id="custom-font-input" placeholder="e.g. PT Sans" maxlength="64" class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
+      <p class="mt-2 text-xs text-body">Type any font name. It will be used only if that font is installed on the device opening the document; otherwise the reader's app substitutes a default. Letters, numbers, spaces and hyphens only.</p>
+      <p id="custom-font-error" class="mt-2 hidden text-xs text-danger"></p>
+    </div>
+    <div class="flex justify-end gap-2 border-t border-default px-5 py-3">
+      <button type="button" class="custom-font-cancel rounded-base border border-default px-3 py-1.5 text-sm text-body hover:bg-neutral-secondary-soft">Cancel</button>
+      <button type="button" id="custom-font-apply" class="rounded-base bg-brand text-on-brand text-sm px-4 py-1.5 hover:bg-brand-strong focus:outline-none focus:ring-2 focus:ring-brand-medium">Apply</button>
+    </div>
+  </div>
+</div>
 
 <script nonce="{{ request.csp_nonce }}">
 (function() {
@@ -815,6 +960,167 @@
       });
     });
   });
+})();
+</script>
+
+<script nonce="{{ request.csp_nonce }}">
+(function() {
+  // --- Styles section ---
+  var section = document.getElementById('styles');
+  if (!section) return;
+  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var url = '{% url "accounts:org_styles_update" %}';
+  var state = JSON.parse('{{ styles_json|escapejs }}');
+
+  var bodyFontSel = document.getElementById('style-body-font');
+  var headingFontSel = document.getElementById('style-heading-font');
+  var bodySizeInput = document.getElementById('style-body-size');
+  var colorTextInputs = section.querySelectorAll('input[data-style-color]');
+
+  var HEX_RE = /^#[0-9A-Fa-f]{6}$/;
+  var FONT_RE = /^[A-Za-z0-9 \-]+$/;
+
+  // Select the stored font; if it isn't a curated option (a custom value),
+  // inject it as a selected option ahead of "Custom…".
+  function ensureOption(sel, value) {
+    var match = Array.prototype.filter.call(sel.options, function(o) { return o.value === value; })[0];
+    if (match) { sel.value = value; return; }
+    var opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value + ' (custom)';
+    sel.insertBefore(opt, sel.querySelector('option[value="__custom__"]'));
+    sel.value = value;
+  }
+  ensureOption(bodyFontSel, state.body_font);
+  ensureOption(headingFontSel, state.heading_font);
+
+  var borderStyleSel = document.getElementById('style-table-border-style');
+  var bandedToggle = document.getElementById('style-table-banded');
+  borderStyleSel.value = state.table_border_style;
+
+  function collect() {
+    return {
+      body_font: state.body_font,
+      heading_font: state.heading_font,
+      body_size: parseInt(bodySizeInput.value, 10),
+      heading_color: document.getElementById('style-heading-color-text').value.trim(),
+      body_color: document.getElementById('style-body-color-text').value.trim(),
+      accent_color: document.getElementById('style-accent-color-text').value.trim(),
+      table_border_style: borderStyleSel.value,
+      table_border_color: document.getElementById('style-table-border-color-text').value.trim(),
+      table_banded: bandedToggle.checked,
+    };
+  }
+
+  function save() {
+    fetch(url, {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify(collect()),
+      credentials: 'same-origin',
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data.error) { alert(data.error); return; }
+      if (data.styles) { state = data.styles; }
+    });
+  }
+
+  // Body size
+  bodySizeInput.addEventListener('change', function() {
+    var v = parseInt(this.value, 10);
+    if (isNaN(v) || v < 8) v = 8;
+    if (v > 24) v = 24;
+    this.value = v;
+    save();
+  });
+
+  // Colour pickers <-> hex text inputs
+  colorTextInputs.forEach(function(text) {
+    var picker = document.getElementById(text.dataset.stylePicker);
+    var key = text.dataset.styleColor;
+    var allowBlank = (key === 'accent_color');
+    text.addEventListener('change', function() {
+      var v = this.value.trim();
+      if (v === '' && allowBlank) { save(); return; }
+      if (!HEX_RE.test(v)) {
+        alert('Enter a hex colour like #1A1A1A.');
+        this.value = state[key] || '';
+        return;
+      }
+      this.value = v.toUpperCase();
+      if (picker) picker.value = this.value;
+      save();
+    });
+    if (picker) {
+      picker.addEventListener('input', function() { text.value = this.value.toUpperCase(); });
+      picker.addEventListener('change', function() {
+        text.value = this.value.toUpperCase();
+        save();
+      });
+    }
+  });
+
+  var accentClear = document.getElementById('style-accent-clear');
+  if (accentClear) {
+    accentClear.addEventListener('click', function() {
+      document.getElementById('style-accent-color-text').value = '';
+      save();
+    });
+  }
+
+  borderStyleSel.addEventListener('change', save);
+  bandedToggle.addEventListener('change', save);
+
+  // Font selects + custom-font modal
+  var modal = document.getElementById('custom-font-modal');
+  var customInput = document.getElementById('custom-font-input');
+  var customError = document.getElementById('custom-font-error');
+  var customApply = document.getElementById('custom-font-apply');
+  var pendingSel = null;   // select that opened the modal
+  var prevValue = null;    // value to revert to on cancel
+
+  function openModal(sel) {
+    pendingSel = sel;
+    customInput.value = '';
+    customError.classList.add('hidden');
+    modal.classList.remove('hidden');
+    customInput.focus();
+  }
+  function closeModal() { modal.classList.add('hidden'); pendingSel = null; }
+  function cancelModal() {
+    if (pendingSel) ensureOption(pendingSel, prevValue);
+    closeModal();
+  }
+
+  [bodyFontSel, headingFontSel].forEach(function(sel) {
+    sel.addEventListener('change', function() {
+      var key = this.dataset.styleFont;
+      if (this.value === '__custom__') {
+        prevValue = state[key];
+        openModal(this);
+      } else {
+        state[key] = this.value;
+        save();
+      }
+    });
+  });
+
+  customApply.addEventListener('click', function() {
+    var name = customInput.value.trim();
+    if (!name || name.length > 64 || !FONT_RE.test(name)) {
+      customError.textContent = 'Use letters, numbers, spaces and hyphens (max 64 characters).';
+      customError.classList.remove('hidden');
+      return;
+    }
+    ensureOption(pendingSel, name);
+    state[pendingSel.dataset.styleFont] = name;
+    closeModal();
+    save();
+  });
+
+  modal.querySelectorAll('.custom-font-cancel').forEach(function(btn) {
+    btn.addEventListener('click', cancelModal);
+  });
+  modal.addEventListener('click', function(e) { if (e.target === modal) cancelModal(); });
 })();
 </script>
 
