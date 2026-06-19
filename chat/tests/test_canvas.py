@@ -585,6 +585,27 @@ class CanvasExportViewTests(TestCase):
         self.assertIn("Section one.", full)
         self.assertIn("Section two.", full)
 
+    def test_export_applies_org_header_footer(self):
+        """The exporting user's org header/footer + page numbers should appear."""
+        from accounts.models import Membership, Organization
+
+        org = Organization.objects.create(name="HF Co", slug="hf-co")
+        org.preferences = {"styles": {"header_text": "Confidential Brief", "footer_page_numbers": True}}
+        org.save(update_fields=["preferences"])
+        Membership.objects.create(user=self.user, org=org, role=Membership.Role.MEMBER)
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+        from docx.oxml.ns import qn
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        section = doc.sections[0]
+        self.assertEqual(section.header.paragraphs[0].text, "Confidential Brief")
+        self.assertEqual(len(section.footer.paragraphs[0]._p.findall(qn("w:fldSimple"))), 2)
+
     def test_export_404_no_canvas(self):
         other_thread = ChatThread.objects.create(created_by=self.user)
         url = f"/chat/threads/{other_thread.id}/canvas/export/"

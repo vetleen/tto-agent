@@ -411,6 +411,11 @@ class OrgStylesUpdateTests(TestCase):
         data = {
             "body_font": "Georgia", "body_size": 12, "heading_font": "Cambria",
             "heading_color": "#112233", "body_color": "#000000", "accent_color": "#2563EB",
+            "header_text": "Confidential", "header_font": "Georgia", "header_size": 9,
+            "header_color": "#333333", "header_bold": False, "header_italic": True,
+            "footer_text": "Draft", "footer_font": "Georgia", "footer_size": 9,
+            "footer_color": "#333333", "footer_bold": False, "footer_italic": False,
+            "footer_page_numbers": True,
         }
         data.update(over)
         return data
@@ -425,6 +430,8 @@ class OrgStylesUpdateTests(TestCase):
         self.org.refresh_from_db()
         self.assertEqual(self.org.preferences["styles"]["body_font"], "Georgia")
         self.assertEqual(self.org.preferences["styles"]["accent_color"], "#2563EB")
+        self.assertEqual(self.org.preferences["styles"]["header_text"], "Confidential")
+        self.assertIs(self.org.preferences["styles"]["footer_page_numbers"], True)
 
     def test_custom_font_round_trips(self):
         self.client.login(email=self.admin_user.email, password=self.password)

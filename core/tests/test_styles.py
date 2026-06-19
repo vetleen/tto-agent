@@ -44,6 +44,19 @@ class ValidateStylesTests(SimpleTestCase):
             "table_border_style": "horizontal",
             "table_border_color": "#999999",
             "table_banded": True,
+            "header_text": "Confidential",
+            "header_font": "Georgia",
+            "header_size": 10,
+            "header_color": "#333333",
+            "header_bold": False,
+            "header_italic": True,
+            "footer_text": "Draft",
+            "footer_font": "Garamond",
+            "footer_size": 8,
+            "footer_color": "#444444",
+            "footer_bold": True,
+            "footer_italic": False,
+            "footer_page_numbers": True,
         }
         data.update(over)
         return data
@@ -97,6 +110,30 @@ class ValidateStylesTests(SimpleTestCase):
 
     def test_banded_must_be_bool(self):
         self.assertIsNone(validate_styles(self._valid(table_banded="yes"))[0])
+
+    def test_header_footer_round_trip(self):
+        clean, err = validate_styles(self._valid())
+        self.assertIsNone(err)
+        self.assertEqual(clean["header_text"], "Confidential")
+        self.assertEqual(clean["header_font"], "Georgia")
+        self.assertEqual(clean["header_size"], 10)
+        self.assertIs(clean["header_italic"], True)
+        self.assertEqual(clean["footer_font"], "Garamond")
+        self.assertEqual(clean["footer_size"], 8)
+        self.assertIs(clean["footer_bold"], True)
+        self.assertIs(clean["footer_page_numbers"], True)
+
+    def test_header_text_too_long_rejected(self):
+        self.assertIsNone(validate_styles(self._valid(header_text="x" * 201))[0])
+
+    def test_bad_header_color_rejected(self):
+        self.assertIsNone(validate_styles(self._valid(header_color="grey"))[0])
+
+    def test_footer_size_out_of_range_rejected(self):
+        self.assertIsNone(validate_styles(self._valid(footer_size=40))[0])
+
+    def test_page_numbers_must_be_bool(self):
+        self.assertIsNone(validate_styles(self._valid(footer_page_numbers="yes"))[0])
 
     def test_missing_keys_fall_back_to_defaults(self):
         clean, err = validate_styles({})
@@ -204,3 +241,40 @@ class ApplyDocStylesTests(SimpleTestCase):
         self.assertIsNone(self._cell_shd(table.rows[1].cells[0]))   # 1st body row
         self.assertIsNotNone(self._cell_shd(table.rows[2].cells[0]))  # 2nd body row banded
         self.assertIsNone(self._cell_shd(table.rows[3].cells[0]))   # 3rd body row
+
+    def test_header_footer_applied(self):
+        doc = Document()
+        doc.add_paragraph("Body")
+        apply_doc_styles(doc, {
+            **STYLE_DEFAULTS,
+            "header_text": "My Header",
+            "header_bold": True,
+            "header_size": 12,
+            "footer_text": "My Footer",
+            "footer_italic": True,
+            "footer_size": 8,
+            "footer_page_numbers": True,
+        })
+        section = doc.sections[0]
+        self.assertEqual(section.header.paragraphs[0].text, "My Header")
+        footer_p = section.footer.paragraphs[0]
+        self.assertIn("My Footer", footer_p.text)
+        # PAGE + NUMPAGES fields for the "3 / 12" indicator
+        self.assertEqual(len(footer_p._p.findall(qn("w:fldSimple"))), 2)
+        # header and footer carry independent typography
+        self.assertTrue(doc.styles["Header"].font.bold)
+        self.assertEqual(doc.styles["Header"].font.size.pt, 12)
+        self.assertTrue(doc.styles["Footer"].font.italic)
+        self.assertEqual(doc.styles["Footer"].font.size.pt, 8)
+        # page number is pushed flush-right by a single right-aligned tab stop
+        from docx.enum.text import WD_TAB_ALIGNMENT
+        tabs = list(doc.styles["Footer"].paragraph_format.tab_stops)
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0].alignment, WD_TAB_ALIGNMENT.RIGHT)
+
+    def test_no_header_footer_when_unconfigured(self):
+        doc = Document()
+        doc.add_paragraph("Body")
+        apply_doc_styles(doc, {**STYLE_DEFAULTS, "footer_page_numbers": False})
+        self.assertEqual(doc.sections[0].header.paragraphs[0].text, "")
+        self.assertEqual(doc.sections[0].footer.paragraphs[0].text, "")

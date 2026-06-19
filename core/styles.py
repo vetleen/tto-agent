@@ -49,9 +49,25 @@ STYLE_DEFAULTS = {
     "table_border_style": "all",      # all | horizontal | header | none
     "table_border_color": "#CCCCCC",
     "table_banded": False,
+    # Page header & footer (independent typography each). Empty text means "no
+    # text"; the page number ("3 / 12") sits bottom-right of the footer.
+    "header_text": "",
+    "header_font": "Calibri",
+    "header_size": 9,
+    "header_color": "#1A1A1A",
+    "header_bold": False,
+    "header_italic": False,
+    "footer_text": "",
+    "footer_font": "Calibri",
+    "footer_size": 9,
+    "footer_color": "#1A1A1A",
+    "footer_bold": False,
+    "footer_italic": False,
+    "footer_page_numbers": True,
 }
 
 TABLE_BORDER_STYLES = ("all", "horizontal", "header", "none")
+HEADER_FOOTER_TEXT_MAX = 200
 
 _FONT_RE = re.compile(r"^[A-Za-z0-9 \-]+$")  # curated + custom like "PT Sans"
 _HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -131,6 +147,46 @@ def validate_styles(data) -> tuple[dict | None, str | None]:
     if not isinstance(banded, bool):
         return None, "Banded rows must be true or false."
     clean["table_banded"] = banded
+
+    for prefix in ("header", "footer"):
+        text = data.get(f"{prefix}_text", clean[f"{prefix}_text"])
+        if not isinstance(text, str):
+            return None, f"{prefix.title()} text must be text."
+        text = text.strip()
+        if len(text) > HEADER_FOOTER_TEXT_MAX:
+            return None, f"{prefix.title()} text must be {HEADER_FOOTER_TEXT_MAX} characters or fewer."
+        clean[f"{prefix}_text"] = text
+
+        font = data.get(f"{prefix}_font", clean[f"{prefix}_font"])
+        font = font.strip() if isinstance(font, str) else ""
+        if not font or len(font) > 64 or not _FONT_RE.match(font):
+            return None, f"{prefix.title()} font names may use letters, numbers, spaces and hyphens (max 64 chars)."
+        clean[f"{prefix}_font"] = font
+
+        size = data.get(f"{prefix}_size", clean[f"{prefix}_size"])
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            return None, f"{prefix.title()} size must be a number."
+        if not (6 <= size <= 24):
+            return None, f"{prefix.title()} size must be between 6 and 24."
+        clean[f"{prefix}_size"] = size
+
+        color = data.get(f"{prefix}_color", clean[f"{prefix}_color"])
+        if not isinstance(color, str) or not _HEX_RE.match(color.strip()):
+            return None, f"{prefix.title()} colour must be a hex colour like #1A1A1A."
+        clean[f"{prefix}_color"] = color.strip().upper()
+
+        for suffix in ("bold", "italic"):
+            val = data.get(f"{prefix}_{suffix}", clean[f"{prefix}_{suffix}"])
+            if not isinstance(val, bool):
+                return None, f"{prefix.title()} {suffix} must be true or false."
+            clean[f"{prefix}_{suffix}"] = val
+
+    page_numbers = data.get("footer_page_numbers", clean["footer_page_numbers"])
+    if not isinstance(page_numbers, bool):
+        return None, "Page numbers must be true or false."
+    clean["footer_page_numbers"] = page_numbers
 
     return clean, None
 
@@ -318,13 +374,106 @@ def _resize_footnote_sources(doc, size_pt: int) -> None:
         rPr.append(sz)
 
 
+def _add_page_field(paragraph, instr: str) -> None:
+    """Append a simple field (e.g. ``PAGE`` / ``NUMPAGES``) to a paragraph.
+
+    python-docx has no field API, so we drop in ``<w:fldSimple>`` with a cached
+    "1" the reader recomputes. Inherits the paragraph's (Footer) style.
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    fld = OxmlElement("w:fldSimple")
+    fld.set(qn("w:instr"), f" {instr} ")
+    run = OxmlElement("w:r")
+    text = OxmlElement("w:t")
+    text.text = "1"
+    run.append(text)
+    fld.append(run)
+    paragraph._p.append(fld)
+
+
+def _style_hf(doc, style_name: str, styles: dict, prefix: str) -> None:
+    """Apply one of the ``Header``/``Footer`` styles from ``{prefix}_*`` keys."""
+    from docx.shared import Pt, RGBColor
+
+    try:
+        style = doc.styles[style_name]
+    except KeyError:
+        return
+    _set_style_font(style, styles.get(f"{prefix}_font") or STYLE_DEFAULTS[f"{prefix}_font"])
+    try:
+        style.font.size = Pt(int(styles.get(f"{prefix}_size")))
+    except (TypeError, ValueError):
+        style.font.size = Pt(STYLE_DEFAULTS[f"{prefix}_size"])
+    color = _norm_hex(styles.get(f"{prefix}_color"))
+    if color:
+        style.font.color.rgb = RGBColor.from_string(color)
+    style.font.bold = bool(styles.get(f"{prefix}_bold"))
+    style.font.italic = bool(styles.get(f"{prefix}_italic"))
+
+
+def _apply_header_footer(doc, styles: dict) -> None:
+    """Add the org's page header/footer with independent typography.
+
+    Header and footer each take their own font/size/colour/bold/italic, applied
+    via the built-in ``Header``/``Footer`` styles so every run — including the
+    page-number field — inherits the formatting. The footer lays out
+    ``footer_text`` on the left and a ``3 / 12`` page indicator on the right via
+    a right-aligned tab stop.
+    """
+    from docx.enum.text import WD_TAB_ALIGNMENT
+
+    header_text = (styles.get("header_text") or "").strip()
+    footer_text = (styles.get("footer_text") or "").strip()
+    page_numbers = bool(styles.get("footer_page_numbers"))
+    if not header_text and not footer_text and not page_numbers:
+        return
+
+    if header_text:
+        _style_hf(doc, "Header", styles, "header")
+    if footer_text or page_numbers:
+        _style_hf(doc, "Footer", styles, "footer")
+
+    section = doc.sections[0]
+
+    if header_text:
+        section.header.is_linked_to_previous = False
+        section.header.paragraphs[0].text = header_text
+
+    if footer_text or page_numbers:
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        para = footer.paragraphs[0]
+        para.text = ""
+        if page_numbers:
+            # The built-in Footer style ships with center + right tabs sized for
+            # 1" margins, so a single \t lands the page number at center. Replace
+            # them with one right tab at this doc's content width so it sits flush
+            # right regardless of margins.
+            content_width = section.page_width - section.left_margin - section.right_margin
+            try:
+                tab_stops = doc.styles["Footer"].paragraph_format.tab_stops
+                tab_stops.clear_all()
+                tab_stops.add_tab_stop(content_width, WD_TAB_ALIGNMENT.RIGHT)
+            except KeyError:
+                para.paragraph_format.tab_stops.add_tab_stop(content_width, WD_TAB_ALIGNMENT.RIGHT)
+        if footer_text:
+            para.add_run(footer_text)
+        if page_numbers:
+            para.add_run("\t")
+            _add_page_field(para, "PAGE")
+            para.add_run(" / ")
+            _add_page_field(para, "NUMPAGES")
+
+
 def apply_doc_styles(doc, styles: dict) -> None:
     """Apply resolved org styles to a python-docx ``Document`` in place.
 
     Sets the ``Normal`` style (body font/size/colour) and ``Heading 1``–``6``
-    (font + colour), then styles tables (borders, header shading/bold, optional
-    banding) via :func:`_style_tables`. Tolerant of missing styles and malformed
-    values (falls back to defaults).
+    (font + colour), styles tables (borders, header shading/bold, optional
+    banding), shrinks the footnote/source list, and adds the page header/footer.
+    Tolerant of missing styles and malformed values (falls back to defaults).
     """
     from docx.shared import Pt, RGBColor
 
@@ -357,3 +506,4 @@ def apply_doc_styles(doc, styles: dict) -> None:
 
     _style_tables(doc, styles)
     _resize_footnote_sources(doc, max(1, body_size - FOOTNOTE_SIZE_DELTA))
+    _apply_header_footer(doc, styles)
