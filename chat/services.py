@@ -444,6 +444,20 @@ def extract_docx_text(file_bytes: bytes, *, user=None) -> str:
     return docx_to_markdown(file_bytes, image_sink=sink)
 
 
+def extract_pdf_text(file_bytes: bytes) -> str:
+    """Extract plain text from a PDF — the fallback when the chat model has no
+    native PDF input support."""
+    import io
+
+    try:
+        from pypdf import PdfReader
+    except ImportError:  # pragma: no cover
+        from PyPDF2 import PdfReader  # type: ignore
+
+    reader = PdfReader(io.BytesIO(file_bytes))
+    return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+
+
 async def generate_summary(
     messages: list[ChatMessage],
     existing_summary: str = "",

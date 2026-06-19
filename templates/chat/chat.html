@@ -868,6 +868,22 @@
     }
   });
 
+  // Inline highlight: ==text== -> <mark>text</mark>. tokens/parseInline keep
+  // nested formatting working (==**bold**==); inline code is unaffected because
+  // marked's codespan tokenizer consumes the span before this rule sees the ==.
+  marked.use({
+    extensions: [{
+      name: 'mark',
+      level: 'inline',
+      start(src) { var i = src.indexOf('=='); return i < 0 ? undefined : i; },
+      tokenizer(src) {
+        var m = /^==(.+?)==/.exec(src);
+        if (m) return { type: 'mark', raw: m[0], text: m[1], tokens: this.lexer.inlineTokens(m[1]) };
+      },
+      renderer(token) { return '<mark>' + this.parser.parseInline(token.tokens) + '</mark>'; }
+    }]
+  });
+
   // -- Emoji shortcodes --
   const emojiMap = {':sparkles:':'\u2728',':tada:':'\ud83c\udf89',':smile:':'\ud83d\ude04',':heart:':'\u2764\ufe0f',':thumbsup:':'\ud83d\udc4d',':thumbsdown:':'\ud83d\udc4e',':fire:':'\ud83d\udd25',':rocket:':'\ud83d\ude80',':star:':'\u2b50',':check:':'\u2705',':x:':'\u274c',':warning:':'\u26a0\ufe0f',':bulb:':'\ud83d\udca1',':muscle:':'\ud83d\udcaa',':clap:':'\ud83d\udc4f',':eyes:':'\ud83d\udc40',':thinking:':'\ud83e\udd14',':party:':'\ud83c\udf89',':confetti:':'\ud83c\udf8a',':trophy:':'\ud83c\udfc6',':zap:':'\u26a1',':boom:':'\ud83d\udca5',':100:':'\ud83d\udcaf',':ok_hand:':'\ud83d\udc4c',':raised_hands:':'\ud83d\ude4c',':pray:':'\ud83d\ude4f',':coffee:':'\u2615',':pizza:':'\ud83c\udf55',':cake:':'\ud83c\udf82',':gift:':'\ud83c\udf81',':balloon:':'\ud83c\udf88'};
 
@@ -875,12 +891,39 @@
     if (!text) return "";
     try {
       text = text.replace(/:[a-z_]+:/g, function(match) { return emojiMap[match] || match; });
+      // Image asset tokens [[image:<uuid>|<label>]] -> placeholder spans that
+      // renderImageBlocks() turns into <img> after sanitization (never raw
+      // <img> through DOMPurify).
+      text = text.replace(/\[\[image:([0-9a-fA-F-]{36})\|([^\]]*)\]\]/g, function(m, uuid, label) {
+        var safe = label.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return '<span class="image-placeholder" data-image-uuid="' + uuid + '" data-image-desc="' + safe + '"></span>';
+      });
       const html = marked.parse(text);
       return DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td','div','span','sup','section'],
-        ALLOWED_ATTR: ['href','title','target','class','data-mermaid','data-email','id']
+        ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td','div','span','sup','section','mark'],
+        ALLOWED_ATTR: ['href','title','target','class','data-mermaid','data-email','data-image-uuid','data-image-desc','id']
       });
     } catch (e) { return escapeHtml(text).replace(/\n/g, "<br>"); }
+  }
+
+  // Image asset placeholders -> <img> served via the access-checked endpoint.
+  function renderImageBlocks(container) {
+    var placeholders = container.querySelectorAll('.image-placeholder[data-image-uuid]');
+    placeholders.forEach(function(el) {
+      if (el.dataset.imageRendered) return;
+      var uuid = el.getAttribute('data-image-uuid');
+      if (!uuid) return;
+      var img = document.createElement('img');
+      img.src = '/chat/asset/' + encodeURIComponent(uuid) + '/';
+      img.alt = el.getAttribute('data-image-desc') || '';
+      img.loading = 'lazy';
+      img.style.maxWidth = '100%';
+      img.style.height = 'auto';
+      img.style.borderRadius = '0.375rem';
+      el.innerHTML = '';
+      el.appendChild(img);
+      el.dataset.imageRendered = '1';
+    });
   }
 
   function escapeHtml(text) { const div = document.createElement("div"); div.textContent = text; return div.innerHTML; }
@@ -1129,7 +1172,7 @@
 
   function renderServerMarkdown() {
     const els = messagesContainer.querySelectorAll('.markdown-content');
-    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); renderEmailBlocks(el); } });
+    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); renderEmailBlocks(el); renderImageBlocks(el); } });
     // Server-rendered "Thought further"/"Thoughts" blocks need their toggle
     // wired up (live-streamed blocks get it in createThinkingBlock).
     messagesContainer.querySelectorAll('[data-server-thinking] .thinking-toggle').forEach(function(btn) {
@@ -2163,7 +2206,7 @@
       canvasAcceptedContent = data.accepted_content;
       if (data.canvas_id && canvasStates[data.canvas_id]) canvasStates[data.canvas_id].acceptedContent = data.accepted_content;
       canvasShowBannerIfNeeded();
-      if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); }
+      if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); renderImageBlocks(canvasPreview); }
       return;
     }
     if (et === "canvas.reverted") {
@@ -2301,6 +2344,7 @@
         let displayText = "Working...";
         if (toolName === "document_search") displayText = "Searching documents...";
         else if (toolName === "document_read") displayText = "Reading document...";
+        else if (toolName === "show_image") displayText = "Viewing image...";
         else if (toolName === "canvas_activate") displayText = "Switching active canvases...";
         else if (toolName === "canvas_write") displayText = "Writing document...";
         else if (toolName === "canvas_edit") displayText = "Editing document...";
@@ -2355,6 +2399,7 @@
           try { const result = JSON.parse(resultStr); if (toolName === "document_search" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "document_read" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); else if (toolName === "chat_skill_attach" && result && result.status === "ok") { if (result.attached_skill_name) doneLabel = "Attached skill: " + result.attached_skill_name; else if (result.detached) doneLabel = "Detached skill"; else if (result.no_change) doneLabel = "Skill already attached"; else doneLabel = "No skill attached"; } else if (toolName === "chat_subagent_create" && result.status) { if (result.status === "queued") doneLabel = "Sub-agent queued"; else if (result.status === "started") doneLabel = "Sub-agent dispatched"; else if (result.status === "completed") doneLabel = "Sub-agent finished"; else if (result.status === "timeout") doneLabel = "Sub-agent dispatched"; else if (result.status === "error") doneLabel = "Sub-agent failed"; else doneLabel = "Sub-agent dispatched"; if (result.status === "queued" || result.status === "started" || result.status === "timeout") { var reason = subagentReasons[toolId] || null; delete subagentReasons[toolId]; updateSubagentStatusBar(activeSubagentCount + 1, reason); } } else if (toolName === "canvas_save_to_document" && result.status === "ok") doneLabel = "Saved \"" + result.canvas_title + "\" to " + result.data_room_name; else if (toolName === "chat_loop_create" && result.status === "ok") doneLabel = "Created loop" + (result.schedule_label ? " · " + result.schedule_label : ""); else if (toolName === "chat_loop_list" && result.count !== undefined) doneLabel = "Found " + result.count + " loop" + (result.count !== 1 ? "s" : ""); else if (toolName === "chat_loop_stop" && result.status === "ok") doneLabel = "Stopped loop"; else if (toolName === "chat_loop_edit" && result.status === "ok") doneLabel = "Updated loop" + (result.schedule_label ? " · " + result.schedule_label : ""); } catch (e) {}
           if (doneLabel === "Done") { if (toolName === "document_search") doneLabel = "Searched documents";
           else if (toolName === "document_read") doneLabel = "Read document";
+          else if (toolName === "show_image") doneLabel = "Viewed image";
           else if (toolName === "canvas_activate") doneLabel = "Updated active canvases";
           else if (toolName === "canvas_write") doneLabel = "Rewrote the canvas text from scratch";
           else if (toolName === "canvas_edit") doneLabel = "Edited the canvas text";
@@ -2452,7 +2497,7 @@
     if (et === "message_end") {
       if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {
-        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
+        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); }
         const toolCards = currentStreamingElement.querySelector(".tool-cards"); if (toolCards && toolCards.children.length > 0) toolCards.classList.add("tool-cards-done");
         currentStreamingElement = null; accumulatedContent = "";
       }
@@ -2463,7 +2508,7 @@
   function finishStreaming(suffix) {
     if (!currentStreamingElement) return; if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
     const contentEl = currentStreamingElement.querySelector(".message-content");
-    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); }
+    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { locked = false; clearHandoff(); stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = SEND_BTN_HTML; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } syncSendReady(); renderTaskPlan(); }
@@ -3475,7 +3520,7 @@
       canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
     }
     renderMermaidBlocks(canvasPreview);
-    renderEmailBlocks(canvasPreview);
+    renderEmailBlocks(canvasPreview); renderImageBlocks(canvasPreview);
   }
 
   // Inline per-hunk diff of an applied AI update against the accepted baseline.

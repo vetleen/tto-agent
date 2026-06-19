@@ -173,6 +173,42 @@ class SimpleChatPipeline(BasePipeline):
             futures = [pool.submit(_run_one, tc) for tc in tool_calls]
             return [f.result() for f in futures]
 
+    @staticmethod
+    def _append_pending_images(new_messages: List[Message], req: ChatRequest) -> None:
+        """Drain context.pending_image_assets into a user message so the model
+        can view them on its next turn.
+
+        Native image blocks are used when the model accepts image input; a
+        non-vision model gets the text descriptions instead. No-op when no tool
+        queued any images this turn (the common case), so blast radius is small.
+        """
+        ctx = req.context
+        pending = list(getattr(ctx, "pending_image_assets", None) or [])
+        if not pending:
+            return
+        ctx.pending_image_assets.clear()
+
+        from llm.display import supports_modality
+
+        blocks: list = [{"type": "text", "text": "Here are the image(s) you requested to view:"}]
+        if req.model and supports_modality(req.model, "image"):
+            from chat.services import build_image_content_block
+            from llm.core.model_factory import detect_provider
+
+            provider = detect_provider(req.model)
+            for item in pending:
+                blocks.append(build_image_content_block(item["b64"], item["media_type"], provider))
+                desc = item.get("description")
+                if desc:
+                    blocks.append({"type": "text", "text": f"(above: {desc})"})
+        else:
+            for item in pending:
+                blocks.append({
+                    "type": "text",
+                    "text": f"[Image not shown — model has no vision. Description: {item.get('description', '')}]",
+                })
+        new_messages.append(Message(role="user", content=blocks))
+
     def _run_tool_loop(
         self,
         chat_model: ChatModel,
@@ -282,6 +318,7 @@ class SimpleChatPipeline(BasePipeline):
                     ),
                 ))
 
+            self._append_pending_images(new_messages, req)
             req = req.model_copy(update={"messages": new_messages})
         else:
             logger.warning(
@@ -502,6 +539,7 @@ class SimpleChatPipeline(BasePipeline):
                     ),
                 ))
 
+            self._append_pending_images(new_messages, req)
             req = req.model_copy(update={"messages": new_messages})
         else:
             logger.warning(

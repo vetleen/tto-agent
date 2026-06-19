@@ -1373,6 +1373,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "document_list", "document_open_to_canvas", "document_edit",
             "document_archive", "document_rename",
             "document_version_list", "document_version_restore", "document_status",
+            "show_image",
         }
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
@@ -2634,7 +2635,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             build_text_content_block,
             detect_provider,
             extract_docx_text,
+            extract_pdf_text,
         )
+        from llm.display import supports_modality
 
         # Collect all attachment IDs from history
         all_ids = []
@@ -2675,11 +2678,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     ct = att.content_type
 
                     if ct in SUPPORTED_IMAGE_TYPES:
-                        b64 = base64.b64encode(file_bytes).decode("ascii")
-                        block = build_image_content_block(b64, ct, provider)
+                        # Prefer the native image block; fall back to a note when
+                        # the chat model can't see images.
+                        if supports_modality(model or "", "image"):
+                            b64 = base64.b64encode(file_bytes).decode("ascii")
+                            block = build_image_content_block(b64, ct, provider)
+                        else:
+                            block = build_text_content_block(
+                                "(The current model cannot view images; this attachment was not shown.)",
+                                att.original_filename,
+                            )
                     elif ct in SUPPORTED_PDF_TYPES:
-                        b64 = base64.b64encode(file_bytes).decode("ascii")
-                        block = build_pdf_content_block(b64, att.original_filename, provider)
+                        # Prefer the native PDF document block; fall back to
+                        # extracted text when the model lacks native PDF support.
+                        if supports_modality(model or "", "pdf"):
+                            b64 = base64.b64encode(file_bytes).decode("ascii")
+                            block = build_pdf_content_block(b64, att.original_filename, provider)
+                        else:
+                            extracted = await database_sync_to_async(extract_pdf_text)(file_bytes)
+                            block = build_text_content_block(extracted, att.original_filename)
                     elif ct in SUPPORTED_DOCX_TYPES:
                         extracted = await database_sync_to_async(
                             extract_docx_text

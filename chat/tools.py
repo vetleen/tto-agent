@@ -998,8 +998,93 @@ class GetDocumentStatusTool(ContextAwareTool):
 
 
 # Register on import
+class ShowImageInput(ReasonBaseModel):
+    doc_indices: list[int] = Field(
+        description="Document index number(s) of the image(s) to view, from an attached data room."
+    )
+    data_room_id: Optional[int] = Field(
+        default=None, description="Optional data room id to disambiguate the document indices."
+    )
+
+
+def _collect_doc_images(doc, max_images: int = 4):
+    """Return ``[(bytes, media_type, description)]`` of a document's viewable images.
+
+    Covers the native image of an image-as-document and any embedded ImageAssets
+    on the current version, limited to vision-supported types.
+    """
+    from chat.models import ImageAsset
+    from chat.services import SUPPORTED_IMAGE_TYPES
+
+    out: list = []
+    version = getattr(doc, "current_version", None)
+    if version is None:
+        return out
+    if getattr(version, "parser_type", "") == "image" and version.native_blob:
+        ct = doc.mime_type or "image/png"
+        if ct in SUPPORTED_IMAGE_TYPES:
+            with version.native_blob.open("rb") as f:
+                out.append((f.read(), ct, doc.description or doc.original_filename))
+    if len(out) < max_images:
+        for asset in ImageAsset.objects.filter(version=version):
+            if asset.content_type in SUPPORTED_IMAGE_TYPES and asset.blob:
+                with asset.blob.open("rb") as f:
+                    out.append((f.read(), asset.content_type, asset.description))
+            if len(out) >= max_images:
+                break
+    return out[:max_images]
+
+
+class ShowImageTool(ContextAwareTool):
+    """Attach data-room image(s) to the conversation so the model can view them."""
+
+    name: str = "show_image"
+    description: str = (
+        "View image(s) from an attached data room by document index so you can see and reason "
+        "about them (charts, diagrams, screenshots, photos). The image(s) are attached to the "
+        "conversation for you to inspect. Use after document_search / document_list reveals an "
+        "image document, or to inspect an uploaded image."
+    )
+    args_schema: type[BaseModel] = ShowImageInput
+
+    def _run(self, doc_indices: list[int], data_room_id: int | None = None, **kwargs) -> str:
+        import base64
+
+        if not doc_indices or not isinstance(doc_indices, list):
+            raise ValueError("show_image requires a non-empty 'doc_indices' list")
+        context = self.context
+        results = []
+        attached = 0
+        for idx in doc_indices:
+            doc, err = _resolve_document(context, idx, data_room_id)
+            if err:
+                results.append(f"Document #{idx}: {err}")
+                continue
+            images = _collect_doc_images(doc)
+            if not images:
+                results.append(f"Document #{idx} ('{doc.original_filename}'): no viewable image found.")
+                continue
+            for img_bytes, media_type, description in images:
+                if attached >= 4:
+                    break
+                context.pending_image_assets.append({
+                    "asset_id": "",
+                    "b64": base64.b64encode(img_bytes).decode("ascii"),
+                    "media_type": media_type,
+                    "description": description or "",
+                })
+                attached += 1
+            results.append(
+                f"Document #{idx} ('{doc.original_filename}'): attached {min(len(images), 4)} image(s)."
+            )
+        if attached == 0:
+            return "\n".join(results) or "No images were attached."
+        return "\n".join(results) + "\n\n(The image(s) are now visible to you below.)"
+
+
 _registry = get_tool_registry()
 _registry.register_tool(SearchDocumentsTool())
+_registry.register_tool(ShowImageTool())
 _registry.register_tool(ReadDocumentTool())
 _registry.register_tool(CanvasSaveToDocumentTool())
 _registry.register_tool(ListDocumentsTool())
