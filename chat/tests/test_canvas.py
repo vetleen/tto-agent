@@ -842,6 +842,17 @@ class CanvasImportTitleIntegrationTests(TestCase):
         self.assertEqual(data["title"], "contract")
 
 
+def _minimal_docx_bytes() -> bytes:
+    """A valid (tiny) .docx zip — enough to pass docx_to_markdown's zip-bomb
+    guard when mammoth.convert_to_html is mocked."""
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+    return buf.getvalue()
+
+
 class ImportDocxToCanvasTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="imp2@test.com", password="pass")
@@ -855,8 +866,8 @@ class ImportDocxToCanvasTests(TestCase):
         mock_result.value = "<h1>Hello</h1><p>World</p>"
         mock_convert.return_value = mock_result
 
-        fake_file = MagicMock()
-        fake_file.name = "report.docx"
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        fake_file = SimpleUploadedFile("report.docx", _minimal_docx_bytes())
 
         title, content, truncated = import_docx_to_canvas(fake_file, self.user)
         self.assertEqual(title, "report")
@@ -879,8 +890,8 @@ class ImportDocxToCanvasTests(TestCase):
         )
         mock_convert.return_value = mock_result
 
-        fake_file = MagicMock()
-        fake_file.name = "data.docx"
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        fake_file = SimpleUploadedFile("data.docx", _minimal_docx_bytes())
 
         title, content, truncated = import_docx_to_canvas(fake_file, self.user)
         self.assertEqual(title, "data")

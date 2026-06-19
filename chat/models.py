@@ -500,3 +500,74 @@ class ThreadChunkUsage(models.Model):
 
     def __str__(self) -> str:
         return f"Thread {self.thread_id} used chunk {self.chunk_id}"
+
+
+class ImageAsset(models.Model):
+    """A persisted image: the native bytes plus a text description.
+
+    Scoped to exactly one owner — a data-room document version, a canvas, or a
+    chat message — via the nullable FKs below (enforced by a CheckConstraint).
+    Lives in the chat app (not documents) so every FK points chat -> documents
+    or within chat, avoiding a migration cycle (documents must not depend on chat).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Exactly one owner is set (see Meta.constraints).
+    version = models.ForeignKey(
+        "documents.DataRoomDocumentVersion",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="image_assets",
+    )
+    canvas = models.ForeignKey(
+        "ChatCanvas",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="image_assets",
+    )
+    message = models.ForeignKey(
+        "ChatMessage",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="image_assets",
+    )
+
+    blob = models.FileField(upload_to="image_assets/%Y/%m/", max_length=500)
+    content_type = models.CharField(max_length=100)
+    size_bytes = models.PositiveIntegerField(default=0)
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    # Hex SHA-256 of the bytes — lets the same image dedupe across owners later.
+    sha256 = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    description = models.TextField(blank=True, default="")
+    alt_text = models.CharField(max_length=1024, blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["version"]),
+            models.Index(fields=["canvas"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name="imageasset_exactly_one_owner",
+                condition=(
+                    models.Q(version__isnull=False, canvas__isnull=True, message__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=False, message__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=False)
+                ),
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"ImageAsset {self.id} ({self.content_type})"

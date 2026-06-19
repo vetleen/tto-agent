@@ -4,7 +4,7 @@ import logging
 import re
 
 from django.contrib.auth.decorators import login_required
-from django.http import FileResponse, HttpResponseBadRequest, JsonResponse
+from django.http import FileResponse, Http404, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods, require_POST
 
@@ -27,6 +27,51 @@ def _get_accessible_data_rooms(user):
         .order_by("-updated_at")
         .values("pk", "uuid", "name", "document_count")
     )
+
+
+def _user_can_access_image_asset(user, asset) -> bool:
+    """Re-derive access from the asset's owner (version / canvas / message).
+
+    Returns False for orphans. This is the only gate on serving image bytes —
+    never a presigned S3 URL.
+    """
+    if asset.canvas_id:
+        return asset.canvas.thread.created_by_id == user.id
+    if asset.message_id:
+        return asset.message.thread.created_by_id == user.id
+    if asset.version_id:
+        from documents.views import _user_can_access_data_room
+
+        return _user_can_access_data_room(user, asset.version.document.data_room)
+    return False
+
+
+@login_required
+@require_http_methods(["GET"])
+def serve_image_asset(request, asset_id):
+    """Stream an ImageAsset's bytes when the user may access its owner.
+
+    Access is re-checked on every request. Only known-safe image types are
+    served inline (so an <img> can render them); anything else is forced to
+    download with a generic content type.
+    """
+    from chat.models import ImageAsset
+    from core.file_types import KIND_IMAGE, kind_for_mime
+
+    asset = get_object_or_404(ImageAsset, id=asset_id)
+    if not _user_can_access_image_asset(request.user, asset):
+        raise Http404
+
+    ct = asset.content_type or "application/octet-stream"
+    displayable = kind_for_mime(ct) == KIND_IMAGE
+    resp = FileResponse(
+        asset.blob.open("rb"),
+        content_type=ct if displayable else "application/octet-stream",
+    )
+    disposition = "inline" if displayable else "attachment"
+    resp["Content-Disposition"] = f'{disposition}; filename="{asset.id}"'
+    resp["X-Content-Type-Options"] = "nosniff"
+    return resp
 
 
 def _group_threads_by_time(threads):

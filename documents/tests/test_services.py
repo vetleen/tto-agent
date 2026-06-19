@@ -615,6 +615,46 @@ class ProcessDocumentServiceTests(TestCase):
                 self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
                 self.assertIn("Image description is not enabled", doc.processing_error)
 
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_docx_embedded_images_become_assets(self):
+        """Embedded docx images are stored as version-scoped ImageAssets with an
+        inline [[image:uuid|...]] token left in the searchable content."""
+        from django.core.files.base import ContentFile
+
+        from chat.models import ImageAsset
+        from chat.tests.test_attachments import _docx_with_image
+        from documents.services.process_document import process_document
+
+        docx_bytes = _docx_with_image()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="deck.docx",
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("deck.docx", ContentFile(docx_bytes), save=True)
+
+                with patch("chat.services.describe_image", return_value="A revenue chart"), \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+                version = doc.current_version
+                assets = list(ImageAsset.objects.filter(version=version))
+                self.assertEqual(len(assets), 1)
+                self.assertEqual(assets[0].description, "A revenue chart")
+                self.assertTrue(assets[0].sha256)
+                token = f"[[image:{assets[0].id}|"
+                self.assertTrue(
+                    any(token in c.text for c in version.chunks.all()),
+                    "asset token should appear in the extracted/chunked content",
+                )
+
 
 class ProcessDocumentSemanticTests(TestCase):
     """Tests specific to the semantic chunking pipeline."""

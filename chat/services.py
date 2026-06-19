@@ -429,50 +429,19 @@ DOCX_MAX_DESCRIBED_IMAGES = 10
 
 
 def extract_docx_text(file_bytes: bytes, *, user=None) -> str:
-    """Extract text from a .docx file as markdown using mammoth + markdownify.
+    """Extract text from a .docx file as markdown.
 
-    Images are replaced with ``[Image N: <description>]`` placeholders.  When
-    *user* is provided, the first :data:`DOCX_MAX_DESCRIBED_IMAGES` images are
-    described via a vision-capable LLM; remaining images get a format-only
-    label.  Without a user, all images get a simple ``[Image N]`` placeholder.
+    Without *user*, images become simple ``[Image N]`` placeholders. With a
+    user, the first :data:`DOCX_MAX_DESCRIBED_IMAGES` images are described via a
+    vision-capable model and the rest get a format-only label.
     """
-    import io
+    from core.docx import docx_to_markdown, placeholder_image_sink
 
-    import mammoth
-    from markdownify import markdownify as md
-
-    image_counter = 0
-
-    def convert_image(image):
-        nonlocal image_counter
-        image_counter += 1
-        idx = image_counter
-
-        if user is not None and idx <= DOCX_MAX_DESCRIBED_IMAGES:
-            with image.open() as img_file:
-                img_bytes = img_file.read()
-            description = describe_image(
-                img_bytes, image.content_type, user, alt_text=image.alt_text,
-            )
-            if description:
-                return {"alt": f"[Image {idx}: {description}]", "src": "#"}
-
-        # Fallback: format-only label or simple placeholder
-        if user is not None:
-            fmt = (image.content_type or "").split("/")[-1].upper().lstrip("X-")
-            label = f"{fmt} image" if fmt else "image"
-            return {"alt": f"[Image {idx}: {label}]", "src": "#"}
-        return {"alt": f"[Image {idx}]", "src": "#"}
-
-    result = mammoth.convert_to_html(
-        io.BytesIO(file_bytes),
-        convert_image=mammoth.images.img_element(convert_image),
-    )
-    content = md(result.value, heading_style="ATX").strip()
-
-    # Clean up markdown image syntax: ![placeholder](#) → placeholder
-    content = re.sub(r"!\[(\[Image \d+[^\]]*\])\]\([^)]*\)", r"\1", content)
-    return content
+    if user is None:
+        sink = placeholder_image_sink
+    else:
+        sink = describe_image_sink(user, max_described=DOCX_MAX_DESCRIBED_IMAGES)
+    return docx_to_markdown(file_bytes, image_sink=sink)
 
 
 async def generate_summary(
@@ -608,6 +577,35 @@ def describe_image(
         return None
 
 
+def describe_image_sink(user, *, max_described=None, model=None, over_limit_label=None):
+    """Return a docx ``image_sink`` that describes embedded images.
+
+    The first *max_described* images (all when ``None``) are described via a
+    vision-capable model, yielding ``[Image N: <description>]``. Beyond the
+    limit, *over_limit_label* is used if given, else a format-only label. On a
+    failed/empty description the format-only label is used too.
+    """
+
+    def sink(image, idx: int) -> str:
+        over_limit = max_described is not None and idx > max_described
+        if over_limit and over_limit_label is not None:
+            return f"[Image {idx}: {over_limit_label}]"
+        if not over_limit:
+            with image.open() as img_file:
+                img_bytes = img_file.read()
+            description = describe_image(
+                img_bytes, image.content_type, user, alt_text=image.alt_text, model=model
+            )
+            if description:
+                return f"[Image {idx}: {description}]"
+        # Fallback: label with the image format (e.g. "TIFF image", "EMF image").
+        fmt = (image.content_type or "").split("/")[-1].upper().lstrip("X-")
+        label = f"{fmt} image" if fmt else "image"
+        return f"[Image {idx}: {label}]"
+
+    return sink
+
+
 def generate_canvas_title(doc_title: str, doc_content: str, user) -> str | None:
     """Generate a short title for an imported canvas document using the cheap LLM.
 
@@ -648,53 +646,14 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, 
 
     Returns (title, content, truncated).
     """
-    import mammoth
+    from core.docx import docx_to_markdown
 
-    image_counter = 0
-
-    def convert_image(image):
-        nonlocal image_counter
-        image_counter += 1
-        idx = image_counter
-
-        if idx > CANVAS_MAX_IMAGES:
-            placeholder = f"[Image {idx}: image skipped – import limit reached]"
-            return {"alt": placeholder, "src": "#"}
-
-        with image.open() as img_file:
-            img_bytes = img_file.read()
-
-        description = describe_image(
-            img_bytes, image.content_type, user, alt_text=image.alt_text
-        )
-        if description:
-            placeholder = f"[Image {idx}: {description}]"
-        else:
-            # Fallback: label with the image format (e.g. "TIFF image", "EMF image")
-            fmt = (image.content_type or "").split("/")[-1].upper().lstrip("X-")
-            label = f"{fmt} image" if fmt else "unsupported format"
-            placeholder = f"[Image {idx}: {label}]"
-
-        # mammoth.images.img_element uses these as <img> HTML attributes;
-        # markdownify converts <img alt="placeholder" src="#"> to ![placeholder](#).
-        return {"alt": placeholder, "src": "#"}
-
-    from markdownify import markdownify as md
-
-    result = mammoth.convert_to_html(
-        uploaded_file, convert_image=mammoth.images.img_element(convert_image)
+    sink = describe_image_sink(
+        user,
+        max_described=CANVAS_MAX_IMAGES,
+        over_limit_label="image skipped – import limit reached",
     )
-    html = result.value
-
-    # Convert HTML (with proper tables) to markdown
-    content = md(html, heading_style="ATX")
-
-    # Replace image HTML remnants with our placeholders
-    content = re.sub(
-        r"!\[(\[Image \d+[^\]]*\])\]\([^)]*\)",
-        r"\1",
-        content,
-    )
+    content = docx_to_markdown(uploaded_file, image_sink=sink)
 
     # Truncate to character limit
     truncated = len(content) > CANVAS_MAX_CHARS

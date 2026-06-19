@@ -176,7 +176,13 @@ def _extract_native(version, doc):
                 version.parser_type = "text"
 
             logger.info("process_document_version: version_id=%s stage=extracting", version.id)
-            docs = load_documents(file_path, ext)
+            image_sink = None
+            if ext == "docx":
+                # Embedded images become ImageAssets (bytes preserved) + inline
+                # [[image:uuid|...]] tokens (searchable descriptions).
+                from documents.services.image_assets import docx_asset_sink
+                image_sink = docx_asset_sink(version, doc)
+            docs = load_documents(file_path, ext, image_sink=image_sink)
             combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
             cleaned = clean_extracted_text(combined)
             del docs, combined

@@ -148,50 +148,20 @@ def _extract_attachment_content(
             tmp_path.unlink(missing_ok=True)
 
 
-def _load_docx_as_markdown(path: Path) -> list[Any]:
-    """Extract DOCX content as Markdown using mammoth + markdownify.
+def _load_docx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
+    """Extract DOCX content as Markdown using the shared converter.
 
-    Produces much richer text than docx2txt: headings, lists, tables and
-    bold/italic are preserved as Markdown, which the structure-aware chunker
-    can then split on.  Images are replaced with a simple placeholder.
+    Headings, lists, tables and bold/italic survive as Markdown for the
+    structure-aware chunker. ``image_sink`` controls how embedded images are
+    rendered; when omitted they become simple ``[Image N]`` placeholders. The
+    data-room extraction path passes an asset sink so images are preserved (see
+    documents.services.image_assets.docx_asset_sink).
     """
-    import zipfile
-
-    import mammoth
-    from django.conf import settings
     from langchain_core.documents import Document
-    from markdownify import markdownify as md
 
-    # Decompression-bomb guard: a small .docx can expand to gigabytes and OOM
-    # the worker. Check the declared uncompressed size before mammoth unzips.
-    max_uncompressed = getattr(settings, "DOCX_MAX_UNCOMPRESSED_BYTES", 250_000_000)
-    try:
-        with zipfile.ZipFile(path) as zf:
-            total_uncompressed = sum(info.file_size for info in zf.infolist())
-    except zipfile.BadZipFile as exc:
-        raise ValueError("This .docx file is corrupt or not a valid Word document.") from exc
-    if total_uncompressed > max_uncompressed:
-        raise ValueError(
-            "This .docx file expands to an unusually large size and can't be processed."
-        )
+    from core.docx import docx_to_markdown, placeholder_image_sink
 
-    image_counter = 0
-
-    def _image_placeholder(image):
-        nonlocal image_counter
-        image_counter += 1
-        return {"alt": f"[Image {image_counter}]", "src": "#"}
-
-    with open(path, "rb") as f:
-        result = mammoth.convert_to_html(
-            f, convert_image=mammoth.images.img_element(_image_placeholder)
-        )
-
-    content = md(result.value, heading_style="ATX")
-
-    # Clean up markdownify image syntax — ![alt](#) → just alt
-    content = re.sub(r"!\[(\[Image \d+\])\]\([^)]*\)", r"\1", content)
-
+    content = docx_to_markdown(path, image_sink=image_sink or placeholder_image_sink)
     return [Document(page_content=content.strip())]
 
 
@@ -344,10 +314,11 @@ def _load_eml_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
     return [Document(page_content=content)]
 
 
-def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
+def load_documents(file_path: str | Path, file_extension: str, *, image_sink=None) -> list[Any]:
     """
     Load a file into a list of LangChain Document objects.
     file_extension should be lowercased (e.g. 'pdf', 'txt', 'md', 'html').
+    ``image_sink`` (docx only) controls how embedded images are rendered.
     """
     path = Path(file_path)
     if not path.exists():
@@ -363,7 +334,7 @@ def load_documents(file_path: str | Path, file_extension: str) -> list[Any]:
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "docx":
-        docs = _load_docx_as_markdown(path)
+        docs = _load_docx_as_markdown(path, image_sink=image_sink)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "msg":
