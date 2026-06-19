@@ -94,6 +94,7 @@
   #loop-prompt:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px rgba(22,67,44,0.18); }
   #loop-submit:not(:disabled):hover { background: var(--color-brand-strong); }
   #loop-modal-close:hover, #loop-modal-cancel:hover { background: var(--color-neutral-secondary-soft); }
+  #loop-pause:not(:disabled):hover { border-color: var(--color-default-medium); background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
 </style>
 <div id="loop-modal" class="fixed inset-0 z-50 hidden" style="overflow-y:auto;">
   <div data-loop-scrim style="position:absolute;inset:0;background:radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55));"></div>
@@ -200,18 +201,22 @@
 
         {# Footer #}
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
-          <div style="display:flex;align-items:center;gap:12px;">
-            <button type="submit" id="loop-submit" style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">
+          <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;">
+            <button type="submit" id="loop-submit" style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;white-space:nowrap;">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
               <span id="loop-submit-label">Create loop</span>
+            </button>
+            <button type="button" id="loop-pause" style="display:none;align-items:center;gap:7px;height:40px;padding:0 14px;border:1px solid var(--color-default-subtle);border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-body);cursor:pointer;">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+              Pause
             </button>
             <button type="button" id="loop-modal-cancel" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
           </div>
           {% if model_choices_json %}
-          <div style="position:relative;">
-            <button type="button" data-act="toggleModelMenu" id="loop-model-btn" title="Model this loop runs on" style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-sans);font-size:12.5px;color:var(--color-body-subtle);background:transparent;border:0;cursor:pointer;">
-              <span style="opacity:.85;">Runs on</span><span id="loop-model-label" style="font-weight:600;color:var(--color-body);"></span>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+          <div style="position:relative;min-width:0;">
+            <button type="button" data-act="toggleModelMenu" id="loop-model-btn" title="Model this loop runs on" style="display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0;font-family:var(--font-sans);font-size:12.5px;color:var(--color-body-subtle);background:transparent;border:0;cursor:pointer;">
+              <span id="loop-model-label" style="font-weight:600;color:var(--color-body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;"></span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
             </button>
             <div id="loop-model-menu" style="display:none;position:absolute;bottom:calc(100% + 8px);right:0;z-index:60;min-width:240px;max-height:280px;overflow-y:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default);border-radius:8px;box-shadow:var(--shadow-lg);padding:6px;"></div>
           </div>
@@ -232,6 +237,7 @@
   var UUID0 = '00000000-0000-0000-0000-000000000000';
   var CREATE_URL = "{% url 'loop_create' %}";
   var EDIT_URL_TPL = "{% url 'loop_edit' loop_id='00000000-0000-0000-0000-000000000000' %}";
+  var PAUSE_URL_TPL = "{% url 'loop_pause' loop_id='00000000-0000-0000-0000-000000000000' %}";
   var LIST_URL = "{% url 'loops_list' %}";
   var csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
 
@@ -244,6 +250,7 @@
   var modelMenu = document.getElementById('loop-model-menu');
   var submitBtn = document.getElementById('loop-submit');
   var submitLabel = document.getElementById('loop-submit-label');
+  var pauseBtn = document.getElementById('loop-pause');
   var segEls = Array.prototype.slice.call(modal.querySelectorAll('.wf-seg'));
   var dayEls = Array.prototype.slice.call(modal.querySelectorAll('.wf-daybtn'));
   function el(id) { return document.getElementById(id); }
@@ -326,7 +333,7 @@
     });
     el('loop-memory-btn').textContent = S.memory === 'fresh' ? 'wiped clean' : 'kept';
     var lbl = el('loop-model-label');
-    if (lbl) { var mc = MODEL_CHOICES.filter(function (m) { return m.id === S.model; })[0]; lbl.textContent = ' ' + (mc ? mc.display : (S.model || 'default')); }
+    if (lbl) { var mc = MODEL_CHOICES.filter(function (m) { return m.id === S.model; })[0]; lbl.textContent = mc ? mc.display : (S.model || 'default'); lbl.title = lbl.textContent; }
     renderChips(); renderPreview(); updateSubmitDisabled();
   }
 
@@ -376,6 +383,7 @@
     form.dataset.loopId = ''; form.dataset.restart = '';
     el('loop-modal-title').textContent = 'Create new loop';
     submitLabel.textContent = 'Create loop';
+    pauseBtn.style.display = 'none';
     ta.value = (prefill && prefill.prompt) || '';
     if (prefill && prefill.intervalSeconds) applyInterval(prefill.intervalSeconds);
     timeInput.value = S.time;
@@ -389,6 +397,9 @@
     form.dataset.restart = paused ? '1' : '';
     el('loop-modal-title').textContent = 'Edit loop';
     submitLabel.textContent = paused ? 'Restart' : 'Save loop';
+    // An active loop can be paused right from here; a paused loop is restarted
+    // via the submit button, so no pause action is offered.
+    pauseBtn.style.display = paused ? 'none' : 'inline-flex';
     ta.value = d.prompt || '';
     if (d.cadence_kind === 'clock') {
       S.preset = d.clock_frequency === 'weekdays' ? 'Weekdays' : d.clock_frequency === 'weekly' ? 'Weekly' : 'Daily';
@@ -488,6 +499,18 @@
   document.querySelectorAll('.edit-loop-btn').forEach(function (b) { b.addEventListener('click', function () { openEdit(b.dataset.loopId); }); });
   document.getElementById('loop-modal-close').addEventListener('click', hide);
   document.getElementById('loop-modal-cancel').addEventListener('click', hide);
+  pauseBtn.addEventListener('click', function () {
+    var loopId = form.dataset.loopId;
+    if (!loopId) return;
+    el('loop-error').style.display = 'none';
+    pauseBtn.disabled = true; pauseBtn.style.opacity = '0.6'; pauseBtn.style.cursor = 'default';
+    fetch(PAUSE_URL_TPL.replace(UUID0, loopId), { method: 'POST', headers: { 'X-CSRFToken': csrf } })
+      .then(function (r) { if (!r.ok) throw new Error(); window.location = LIST_URL; })
+      .catch(function () {
+        showError('Could not pause the loop. Please try again.');
+        pauseBtn.disabled = false; pauseBtn.style.opacity = ''; pauseBtn.style.cursor = 'pointer';
+      });
+  });
   document.querySelectorAll('.loop-action-btn').forEach(function (b) { b.addEventListener('click', function () { fetch(b.dataset.action, { method: 'POST', headers: { 'X-CSRFToken': csrf } }).then(function () { window.location = LIST_URL; }); }); });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
