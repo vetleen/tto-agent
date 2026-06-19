@@ -271,7 +271,8 @@ def preferences_feature_model_update(request):
     if feature not in FEATURE_DEFAULTS:
         return JsonResponse({"error": "Unknown feature"}, status=400)
 
-    _default_slot, min_tier, scope = FEATURE_DEFAULTS[feature]
+    _fdef = FEATURE_DEFAULTS[feature]
+    min_tier, scope = _fdef.min_tier, _fdef.scope
     if scope != "user":
         return JsonResponse({"error": "This feature is not user-configurable"}, status=400)
 
@@ -417,6 +418,7 @@ def org_settings_page(request):
         "guardrails_classifier": ("Guardrails classifier", "Screens every user message and profile description for adversarial or policy-violating content. A cheap, fast model is ideal here since it only flags content for further review."),
         "guardrails_reviewer": ("Guardrails reviewer", "Reviews content flagged by the classifier and decides whether action is needed (warn, block message, ban user, etc.). A stronger model is recommended since it actually makes the final decision."),
         "document_description": ("Document description", f"Generates a short description of uploaded documents to help {django_settings.ASSISTANT_NAME} judge relevance."),
+        "document_image_description": ("Image description", "Describes images uploaded to data rooms so they become searchable. Requires a vision-capable model; if none is allowed, image uploads are disabled."),
         "skill_emoji": ("Skill emoji", "Picks an emoji for newly created skills."),
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
         "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),
@@ -928,7 +930,8 @@ def org_feature_model_update(request):
     if feature not in FEATURE_DEFAULTS:
         return JsonResponse({"error": "Unknown feature"}, status=400)
 
-    _default_slot, min_tier, scope = FEATURE_DEFAULTS[feature]
+    _fdef = FEATURE_DEFAULTS[feature]
+    min_tier, scope = _fdef.min_tier, _fdef.scope
     if scope != "org":
         return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
 

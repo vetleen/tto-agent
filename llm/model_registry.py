@@ -29,13 +29,23 @@ class ModelInfo:
     api_model: str  # name sent to API (no prefix)
     tier: str = TIER_STANDARD
     supports_thinking: bool = False
-    supports_vision: bool = False
+    # Modalities the model accepts as input and can produce as output. "image"
+    # implies vision (see the supports_vision property); "pdf" means the provider
+    # accepts a native PDF document block. output_modalities is reserved for
+    # future image generation — every current model is text-out only.
+    input_modalities: tuple[str, ...] = ("text",)
+    output_modalities: tuple[str, ...] = ("text",)
     context_window: int = 128_000
     input_price: Decimal | None = None
     cached_input_price: Decimal | None = None
     cache_write_price: Decimal | None = None  # 5m-TTL cache writes (1.25x input)
     cache_write_1h_price: Decimal | None = None  # 1h-TTL cache writes (2x input)
     output_price: Decimal | None = None
+
+    @property
+    def supports_vision(self) -> bool:
+        """Back-compat accessor: vision == accepts image input."""
+        return "image" in self.input_modalities
 
 
 # Keyed by full model ID (e.g. "openai/gpt-5.4")
@@ -47,7 +57,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gpt-5.5",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
         cached_input_price=Decimal("0.50"),
@@ -59,7 +69,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gpt-5.4",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("1.75"),
         cached_input_price=Decimal("0.175"),
@@ -71,7 +81,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gpt-5.4-mini",
         tier=TIER_MID,
         supports_thinking=False,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("0.25"),
         cached_input_price=Decimal("0.025"),
@@ -83,7 +93,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gpt-5.4-nano",
         tier=TIER_CHEAP,
         supports_thinking=False,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=128_000,
         input_price=Decimal("0.05"),
         cached_input_price=Decimal("0.005"),
@@ -96,7 +106,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-opus-4-8",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
         cached_input_price=Decimal("0.50"),
@@ -110,7 +120,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-opus-4-7",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
         cached_input_price=Decimal("0.50"),
@@ -124,7 +134,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-opus-4-6",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
         cached_input_price=Decimal("0.50"),
@@ -138,7 +148,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-sonnet-4-6",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("3.00"),
         cached_input_price=Decimal("0.30"),
@@ -152,7 +162,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-haiku-4-5",
         tier=TIER_MID,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=200_000,
         input_price=Decimal("1.00"),
         cached_input_price=Decimal("0.10"),
@@ -167,7 +177,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gemini-3.1-pro-preview",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("2.00"),
         cached_input_price=Decimal("0.20"),
@@ -179,7 +189,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gemini-3.5-flash",
         tier=TIER_STANDARD,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("1.50"),
         cached_input_price=Decimal("0.15"),
@@ -191,7 +201,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gemini-3.1-flash-lite",
         tier=TIER_CHEAP,
         supports_thinking=True,
-        supports_vision=True,
+        input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("0.25"),
         cached_input_price=Decimal("0.025"),

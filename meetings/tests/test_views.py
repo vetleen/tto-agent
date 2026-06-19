@@ -285,6 +285,24 @@ class MeetingAttachmentViewTests(TestCase):
         # Still 2 — the 3rd was rejected.
         self.assertEqual(MeetingAttachment.objects.filter(meeting=self.meeting).count(), 2)
 
+    def test_attachment_rejects_unsupported_type(self):
+        f = SimpleUploadedFile("archive.zip", b"PK\x03\x04 fake", content_type="application/zip")
+        response = self.client.post(
+            reverse("meeting_upload_attachment", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(MeetingAttachment.objects.filter(meeting=self.meeting).count(), 0)
+
+    def test_attachment_accepts_image(self):
+        f = SimpleUploadedFile("photo.png", b"\x89PNG fake", content_type="image/png")
+        response = self.client.post(
+            reverse("meeting_upload_attachment", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(MeetingAttachment.objects.filter(meeting=self.meeting).count(), 1)
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingMetadataUpdateTests(TestCase):

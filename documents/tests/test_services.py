@@ -551,6 +551,70 @@ class ProcessDocumentServiceTests(TestCase):
 
         self.assertTrue(any("not found" in line for line in cm.output))
 
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_image_uses_description_as_content(self):
+        """An uploaded image is described by a vision model; the description
+        becomes the document's searchable text and parser_type='image'."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        sample_chunks = [
+            {"text": "A bar chart of quarterly revenue.", "heading": None,
+             "token_count": 8, "chunk_index": 0,
+             "source_page_start": None, "source_page_end": None,
+             "source_offset_start": 0, "source_offset_end": 33},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="chart.png",
+                    mime_type="image/png",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("chart.png", ContentFile(b"\x89PNG\r\n\x1a\nfakebytes"), save=True)
+
+                with patch("chat.services.describe_image", return_value="A bar chart of quarterly revenue.") as mock_describe, \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+                self.assertEqual(doc.current_version.parser_type, "image")
+                self.assertEqual(doc.current_version.chunks.count(), 1)
+                self.assertTrue(mock_describe.called)
+                # The org-resolved describer model is threaded through.
+                _, kwargs = mock_describe.call_args
+                self.assertEqual(kwargs.get("model"), "anthropic/claude-opus-4-8")
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_image_fails_without_vision_model(self):
+        """With no vision-capable describer resolved, the image doc fails with a
+        clear error instead of producing empty content."""
+        from django.core.files.base import ContentFile
+        from documents.services.process_document import process_document
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="chart.png",
+                    mime_type="image/png",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("chart.png", ContentFile(b"\x89PNGfake"), save=True)
+
+                with patch("core.preferences.resolve_org_feature_model", return_value=""):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+                self.assertIn("Image description is not enabled", doc.processing_error)
+
 
 class ProcessDocumentSemanticTests(TestCase):
     """Tests specific to the semantic chunking pipeline."""

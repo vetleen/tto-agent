@@ -41,18 +41,27 @@ def build_feature_rows(
     from llm.model_registry import get_models_at_or_above_tier
 
     rows = []
-    for fkey, (default_slot, min_tier, fscope) in FEATURE_DEFAULTS.items():
-        if fscope != scope:
+    for fkey, fdef in FEATURE_DEFAULTS.items():
+        if fdef.scope != scope:
             continue
+        eligible = [m for m in get_models_at_or_above_tier(fdef.min_tier) if m in eligible_allowed]
+        if fdef.required_modality:
+            from llm.display import supports_modality
+
+            eligible = [m for m in eligible if supports_modality(m, fdef.required_modality)]
+            # No capable model in the allow-list → feature unavailable; omit the
+            # row entirely (matches core.preferences.feature_is_available()).
+            if not eligible:
+                continue
         label, desc = meta.get(fkey, (fkey.replace("_", " ").title(), ""))
-        eligible = [m for m in get_models_at_or_above_tier(min_tier) if m in eligible_allowed]
         row = {
             "key": fkey,
             "label": label,
             "desc": desc,
-            "default_slot": default_slot,
+            "default_slot": fdef.default_slot,
             "current": current_overrides.get(fkey) or "",
             "eligible_models": eligible,
+            "required_modality": fdef.required_modality,
         }
         if resolved is not None:
             row["resolved"] = resolved.get(fkey, "")

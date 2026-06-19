@@ -7,6 +7,14 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from core.file_types import (
+    CHAT_KINDS,
+    KIND_DOCX,
+    KIND_IMAGE,
+    KIND_PDF,
+    KIND_TEXT,
+    canonical_mimes_for_kinds,
+)
 from core.styles import FOOTNOTE_MARKER
 from llm.core.model_factory import detect_provider
 
@@ -341,18 +349,16 @@ def save_canvas_to_data_room(canvas, data_room, user):
 CANVAS_MAX_IMAGES = 25
 SUMMARY_TARGET_TOKENS = 2_000
 
-SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-SUPPORTED_PDF_TYPES = {"application/pdf"}
-SUPPORTED_TEXT_TYPES = {
-    "text/plain", "text/markdown", "text/csv", "text/html",
-    "application/json", "text/xml", "application/xml",
-}
-SUPPORTED_DOCX_TYPES = {
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-}
-SUPPORTED_ATTACHMENT_TYPES = (
-    SUPPORTED_IMAGE_TYPES | SUPPORTED_PDF_TYPES | SUPPORTED_TEXT_TYPES | SUPPORTED_DOCX_TYPES
-)
+# Derived from the unified capability table (core/file_types.py). Chat accepts
+# image/pdf/docx/text kinds (no audio, no .msg/.eml email formats). Uses the
+# canonical (official) MIME per type — not the broader browser-variant set used
+# for data-room cross-checks — so e.g. a real .xls labelled application/vnd.ms-
+# excel isn't silently accepted as text.
+SUPPORTED_IMAGE_TYPES = frozenset(canonical_mimes_for_kinds({KIND_IMAGE}))
+SUPPORTED_PDF_TYPES = frozenset(canonical_mimes_for_kinds({KIND_PDF}))
+SUPPORTED_TEXT_TYPES = frozenset(canonical_mimes_for_kinds({KIND_TEXT}))
+SUPPORTED_DOCX_TYPES = frozenset(canonical_mimes_for_kinds({KIND_DOCX}))
+SUPPORTED_ATTACHMENT_TYPES = frozenset(canonical_mimes_for_kinds(CHAT_KINDS))
 
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_PDF_ATTACHMENT_SIZE = 30 * 1024 * 1024  # 30 MB
@@ -532,24 +538,31 @@ def describe_image(
     content_type: str,
     user,
     alt_text: str | None = None,
+    model: str | None = None,
 ) -> str | None:
     """Use a vision-capable model to describe an image.
 
-    Cascades through cheap → mid → primary model tiers, picking the first
-    that supports vision.  Returns description text, or None on failure.
+    When *model* is given it is used directly (the caller must have picked a
+    vision-capable model, e.g. via ``resolve_org_feature_model`` for data-room
+    ingestion). Otherwise this cascades through the user's cheap → mid → primary
+    models, picking the first that supports vision. Returns the description text,
+    or None on failure / when no vision model is available.
     """
     from core.preferences import get_preferences
     from llm import get_llm_service
     from llm.display import supports_vision
     from llm.types import ChatRequest, Message, RunContext
 
-    prefs = get_preferences(user)
-    preferred = prefs.feature_models.get("image_description", prefs.cheap_model)
-    model = None
-    for candidate in [preferred, prefs.cheap_model, prefs.mid_model, prefs.top_model]:
-        if supports_vision(candidate):
-            model = candidate
-            break
+    if model is not None:
+        if not supports_vision(model):
+            return None
+    else:
+        prefs = get_preferences(user)
+        preferred = prefs.feature_models.get("image_description", prefs.cheap_model)
+        for candidate in [preferred, prefs.cheap_model, prefs.mid_model, prefs.top_model]:
+            if supports_vision(candidate):
+                model = candidate
+                break
 
     if model is None:
         return None

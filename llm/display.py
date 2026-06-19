@@ -128,3 +128,26 @@ def supports_vision(model_id: str) -> bool:
         return True
 
     return False
+
+
+def input_modalities(model_id: str) -> tuple[str, ...]:
+    """Return the input modalities a model accepts (e.g. ("text", "image", "pdf")).
+
+    Registry models report their declared modalities; unknown models fall back
+    to heuristics (every current-gen vision model also accepts native PDF).
+    """
+    info = get_model_info(model_id)
+    if info is not None:
+        return tuple(info.input_modalities)
+
+    mods = ["text"]
+    if supports_vision(model_id):
+        mods += ["image", "pdf"]
+    return tuple(mods)
+
+
+def supports_modality(model_id: str, modality: str) -> bool:
+    """Return True if the model accepts *modality* (e.g. "image", "pdf") as input."""
+    if modality == "text":
+        return True
+    return modality in input_modalities(model_id)

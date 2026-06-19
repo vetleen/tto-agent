@@ -808,6 +808,51 @@ class FeatureModelOverrideTest(TestCase):
             self.assertIn(fkey, prefs.feature_models, f"feature_models missing key: {fkey}")
 
 
+class ModalityFeatureResolutionTest(TestCase):
+    """Capability-gated features (required_modality) resolve to capable models
+    and report availability correctly."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_image_feature_resolves_to_vision_model(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+        from core.preferences import feature_is_available
+
+        user = _create_user(email="modality-ok@example.com")
+        prefs = get_preferences(user)
+        # default_slot="mid" and the mid model is vision-capable.
+        self.assertEqual(prefs.feature_models["document_image_description"], "openai/gpt-5.4-mini")
+        self.assertTrue(feature_is_available(user, "document_image_description"))
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/whisper-1",
+        LLM_DEFAULT_MID_MODEL="openai/whisper-1",
+        LLM_DEFAULT_CHEAP_MODEL="openai/whisper-1",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/whisper-1"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_image_feature_unavailable_without_vision_model(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+        from core.preferences import feature_is_available, resolve_org_feature_model
+
+        user = _create_user(email="modality-none@example.com")
+        prefs = get_preferences(user)
+        # No vision-capable model in the allow-list → feature disabled (empty).
+        self.assertEqual(prefs.feature_models["document_image_description"], "")
+        self.assertFalse(feature_is_available(user, "document_image_description"))
+        # Features without a required modality are always available.
+        self.assertTrue(feature_is_available(user, "document_description"))
+        # The org resolver also yields "" when no capable model exists.
+        self.assertEqual(resolve_org_feature_model(None, "document_image_description"), "")
+
+
 class ResolveOrgFeatureModelTest(TestCase):
     """Tests for resolve_org_feature_model()."""
 

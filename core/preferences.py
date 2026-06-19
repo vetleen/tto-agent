@@ -50,23 +50,40 @@ class ResolvedPreferences:
     warnings: list[str] = field(default_factory=list)
 
 
-# Per-feature model catalog: feature_key -> (default_slot, min_tier, scope).
-# default_slot: which tier to use by default ("primary", "mid", "cheap").
-# min_tier: minimum model tier allowed ("cheap", "mid", "standard").
-# scope: "user" = user can override, "org" = org admin can override.
-FEATURE_DEFAULTS: dict[str, tuple[str, str, str]] = {
-    "chat": ("primary", "standard", "user"),
-    "thread_title": ("cheap", "cheap", "user"),
-    "thread_emoji": ("cheap", "cheap", "user"),
-    "canvas_title": ("cheap", "cheap", "user"),
-    "image_description": ("cheap", "cheap", "user"),
-    "message_summary": ("mid", "mid", "org"),
-    "guardrails_classifier": ("cheap", "cheap", "org"),
-    "guardrails_reviewer": ("primary", "standard", "org"),
-    "document_description": ("mid", "mid", "org"),
-    "skill_emoji": ("cheap", "cheap", "org"),
-    "guardrail_chunk_scan": ("cheap", "cheap", "org"),
-    "pii_scan": ("mid", "mid", "org"),
+@dataclass(frozen=True)
+class FeatureDefault:
+    """Per-feature model-selection policy.
+
+    default_slot: tier used by default ("primary", "mid", "cheap").
+    min_tier: minimum model tier allowed ("cheap", "mid", "standard").
+    scope: "user" = user can override, "org" = org admin can override.
+    required_modality: when set (e.g. "image"), only models whose input
+        modalities include it are eligible, and the feature is *unavailable*
+        when the effective allow-list has no capable model.
+    """
+
+    default_slot: str
+    min_tier: str
+    scope: str
+    required_modality: str | None = None
+
+
+# Per-feature model catalog.
+FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
+    "chat": FeatureDefault("primary", "standard", "user"),
+    "thread_title": FeatureDefault("cheap", "cheap", "user"),
+    "thread_emoji": FeatureDefault("cheap", "cheap", "user"),
+    "canvas_title": FeatureDefault("cheap", "cheap", "user"),
+    "image_description": FeatureDefault("cheap", "cheap", "user"),
+    "message_summary": FeatureDefault("mid", "mid", "org"),
+    "guardrails_classifier": FeatureDefault("cheap", "cheap", "org"),
+    "guardrails_reviewer": FeatureDefault("primary", "standard", "org"),
+    "document_description": FeatureDefault("mid", "mid", "org"),
+    # Describes images uploaded to data rooms; needs a vision-capable model.
+    "document_image_description": FeatureDefault("mid", "mid", "org", required_modality="image"),
+    "skill_emoji": FeatureDefault("cheap", "cheap", "org"),
+    "guardrail_chunk_scan": FeatureDefault("cheap", "cheap", "org"),
+    "pii_scan": FeatureDefault("mid", "mid", "org"),
 }
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
@@ -316,6 +333,7 @@ def get_preferences(user) -> ResolvedPreferences:
     max_context_tokens = max(max_context_tokens, MIN_CONTEXT_TOKENS)
 
     # Resolve per-feature model overrides
+    from llm.display import supports_modality
     from llm.model_registry import TIER_ORDER, get_model_tier
 
     slot_model = {"primary": top_model, "mid": mid_model, "cheap": cheap_model}
@@ -323,20 +341,32 @@ def get_preferences(user) -> ResolvedPreferences:
     org_feature_prefs = org_prefs.get("feature_models") or {}
 
     feature_models: dict[str, str] = {}
-    for fkey, (default_slot, min_tier, scope) in FEATURE_DEFAULTS.items():
+    for fkey, fdef in FEATURE_DEFAULTS.items():
+        # Eligible pool: the effective allow-list, narrowed to the feature's
+        # required modality (if any). Features without one use the full list.
+        if fdef.required_modality:
+            pool = [m for m in effective_allowed if supports_modality(m, fdef.required_modality)]
+        else:
+            pool = effective_allowed
+
         override = None
-        if scope == "user":
+        if fdef.scope == "user":
             override = user_feature_prefs.get(fkey)
         if not override:
             override = org_feature_prefs.get(fkey)
 
-        if override and override in effective_allowed:
+        if override and override in pool:
             tier = get_model_tier(override)
-            if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(min_tier, 0):
+            if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(fdef.min_tier, 0):
                 feature_models[fkey] = override
                 continue
 
-        feature_models[fkey] = slot_model.get(default_slot, top_model)
+        default_model = slot_model.get(fdef.default_slot, top_model)
+        if fdef.required_modality and default_model not in pool:
+            # The tier model can't handle the modality — fall to the first
+            # capable model, or "" when none qualifies (feature disabled).
+            default_model = pool[0] if pool else ""
+        feature_models[fkey] = default_model
 
     return ResolvedPreferences(
         top_model=top_model,
@@ -482,9 +512,18 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
     if not feature_def:
         return getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
 
-    default_slot, min_tier, _scope = feature_def
+    default_slot = feature_def.default_slot
+    min_tier = feature_def.min_tier
     sys_models = _get_system_model_defaults()
     system_allowed = get_allowed_models()
+
+    # Narrow to models satisfying the feature's required modality (if any) so
+    # every downstream pick — override, org/system default, first-allowed — is
+    # capability-safe. An empty result means no eligible model (feature off).
+    if feature_def.required_modality:
+        from llm.display import supports_modality
+
+        system_allowed = [m for m in system_allowed if supports_modality(m, feature_def.required_modality)]
 
     # System-level default for this feature's tier
     sys_default = sys_models.get(default_slot, sys_models.get("primary", ""))
@@ -521,3 +560,22 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
         system_allowed=system_allowed,
         slot=default_slot,
     )
+
+
+def feature_is_available(user, feature_key: str) -> bool:
+    """Whether *feature_key* can run for *user*.
+
+    A feature with a ``required_modality`` is available only when the user's
+    effective allow-list contains at least one model that supports that
+    modality. Features without a required modality are always available.
+
+    Used by upload validation and the settings UI so both agree on whether a
+    capability-gated feature (e.g. image description) is offered.
+    """
+    fdef = FEATURE_DEFAULTS.get(feature_key)
+    if not fdef or not fdef.required_modality:
+        return True
+    from llm.display import supports_modality
+
+    prefs = get_preferences(user)
+    return any(supports_modality(m, fdef.required_modality) for m in prefs.allowed_models)

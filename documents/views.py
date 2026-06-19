@@ -328,6 +328,7 @@ def document_upload(request, data_room_id):
         messages.error(request, "No file selected. Please choose a file to upload.")
         return redirect("data_room_documents", data_room_id=data_room.uuid)
 
+    from core.file_types import is_image_extension
     from llm.transcription_registry import AUDIO_EXTENSIONS
 
     max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
@@ -339,6 +340,7 @@ def document_upload(request, data_room_id):
         safe_filename = _safe_original_filename(file_obj.name, max_length=75)
         file_ext = (safe_filename.rsplit(".", 1)[-1].lower()) if "." in safe_filename else ""
         is_audio = file_ext in AUDIO_EXTENSIONS
+        is_image = is_image_extension(file_ext)
 
         if file_obj.size <= 0:
             errors.append(f"{safe_filename}: file is empty.")
@@ -363,6 +365,11 @@ def document_upload(request, data_room_id):
             prefs = get_preferences(request.user)
             if not prefs.allowed_transcription_models:
                 errors.append(f"{safe_filename}: audio transcription is not enabled for your organization.")
+                continue
+        if is_image:
+            from core.preferences import feature_is_available
+            if not feature_is_available(request.user, "document_image_description"):
+                errors.append(f"{safe_filename}: image uploads require a vision-capable model, which isn't enabled for your organization.")
                 continue
         stored_filename = _safe_original_filename(file_obj.name, max_length=180)
         file_obj.name = stored_filename

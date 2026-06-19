@@ -507,71 +507,23 @@ WEB_FETCH_MAX_RESPONSE_BYTES = int(os.environ.get("WEB_FETCH_MAX_RESPONSE_BYTES"
 # Document upload and chunking (MVP)
 DATA_UPLOAD_MAX_NUMBER_FILES = 100
 DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000"))  # 50 MB
-DOCUMENT_ALLOWED_EXTENSIONS = {
-    "pdf", "txt", "md", "html", "docx",
-    "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log",
-    "msg", "eml",
-    # Audio formats (transcription)
-    "mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "flac", "ogg",
-}
-DOCUMENT_ALLOWED_MIME_TYPES = frozenset([
-    "application/pdf",
-    "text/plain",
-    "text/markdown",
-    "text/html",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "text/csv",
-    "application/json",
-    "application/xml",
-    "text/xml",
-    "text/x-rst",
-    "application/x-tex",
-    "application/x-yaml",
-    "text/yaml",
-    "application/vnd.ms-outlook",
-    "message/rfc822",
-    "application/octet-stream",
-    # Audio formats (transcription)
-    "audio/mpeg",
-    "audio/mp4",
-    "audio/x-m4a",
-    "audio/wav",
-    "audio/x-wav",
-    "audio/webm",
-    "audio/flac",
-    "audio/ogg",
-])
-# Per-extension MIME allowlist: when the browser supplies a specific MIME type
-# for a mapped extension it must match one of these (empty and
-# application/octet-stream always pass — browsers send those for unfamiliar
-# types, so this is a consistency check, not the primary gate). Unmapped
+# Upload file-type allow-lists are derived from the single capability table in
+# core/file_types.py — data rooms accept every kind, including images and audio.
+# Edit that table (not these constants) to change supported types; chat and
+# meetings derive their own (narrower) allow-lists from the same table.
+from core.file_types import DATA_ROOM_KINDS  # noqa: E402
+from core.file_types import allowed_extensions as _allowed_extensions_for_kinds  # noqa: E402
+from core.file_types import extension_mime_map as _extension_mime_map_for_kinds  # noqa: E402
+from core.file_types import global_allowed_mimes as _global_allowed_mimes_for_kinds  # noqa: E402
+
+DOCUMENT_ALLOWED_EXTENSIONS = _allowed_extensions_for_kinds(DATA_ROOM_KINDS)
+# Includes "application/octet-stream" (generic) so the per-extension cross-check
+# in documents.views._mime_matches_extension behaves as before.
+DOCUMENT_ALLOWED_MIME_TYPES = _global_allowed_mimes_for_kinds(DATA_ROOM_KINDS)
+# Per-extension MIME allowlist: a mapped extension's browser-supplied MIME must
+# match one of these (empty / application/octet-stream always pass). Unmapped
 # extensions fall back to DOCUMENT_ALLOWED_MIME_TYPES.
-DOCUMENT_EXTENSION_MIME_MAP = {
-    "pdf": {"application/pdf"},
-    "txt": {"text/plain"},
-    "md": {"text/markdown", "text/plain"},
-    "html": {"text/html"},
-    "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-    "csv": {"text/csv", "application/csv", "application/vnd.ms-excel", "text/plain"},
-    "json": {"application/json", "text/plain"},
-    "xml": {"application/xml", "text/xml", "text/plain"},
-    "rst": {"text/x-rst", "text/plain"},
-    "tex": {"application/x-tex", "text/x-tex", "text/plain"},
-    "yaml": {"application/x-yaml", "text/yaml", "text/plain"},
-    "yml": {"application/x-yaml", "text/yaml", "text/plain"},
-    "log": {"text/plain"},
-    "msg": {"application/vnd.ms-outlook"},
-    "eml": {"message/rfc822"},
-    "mp3": {"audio/mpeg", "audio/mp3"},
-    "mpeg": {"audio/mpeg", "video/mpeg"},
-    "mpga": {"audio/mpeg"},
-    "mp4": {"audio/mp4", "video/mp4"},
-    "m4a": {"audio/x-m4a", "audio/mp4", "audio/m4a"},
-    "wav": {"audio/wav", "audio/x-wav", "audio/wave"},
-    "webm": {"audio/webm", "video/webm"},
-    "flac": {"audio/flac", "audio/x-flac"},
-    "ogg": {"audio/ogg", "application/ogg"},
-}
+DOCUMENT_EXTENSION_MIME_MAP = _extension_mime_map_for_kinds(DATA_ROOM_KINDS)
 # Per-request upload cap, enforced from Content-Length BEFORE the body is
 # parsed/spooled to disk (fits one 50 MB audio file plus multipart overhead;
 # the upload UI sends one file per request). Per-file caps still apply.

@@ -811,6 +811,20 @@ def meeting_upload_attachment(request, meeting_uuid):
         messages.error(request, f"Attachment is too large (max {max_bytes // (1024 * 1024)} MB).")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
+    # Validate file type against the unified capability table. Meeting
+    # attachments are copied into the "minutes with Wilfred" chat thread, so
+    # they accept exactly what chat can consume (images, PDFs, Word docs, text).
+    from core.file_types import MEETING_ATTACHMENT_KINDS, allowed_extensions
+
+    name = file_obj.name or ""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext not in allowed_extensions(MEETING_ATTACHMENT_KINDS):
+        messages.error(
+            request,
+            "Unsupported attachment type. Allowed: images, PDFs, Word documents, and text files.",
+        )
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
     safe_name = _safe_filename(file_obj.name, max_length=255)
     MeetingAttachment.objects.create(
         meeting=meeting,
