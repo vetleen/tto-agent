@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Iterator, List, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from channels.db import database_sync_to_async
 from channels.routing import URLRouter
@@ -181,7 +181,8 @@ class ChatEndToEndTests(TransactionTestCase):
         req = fake.stream_requests[0]
         roles = [m.role for m in req.messages]
         self.assertEqual(roles[0], "system")
-        self.assertIn("helpful assistant", req.messages[0].content.lower())
+        # The system prompt is the Wilfred identity prompt.
+        self.assertIn("wilfred", req.messages[0].content.lower())
         self.assertEqual(req.messages[-1].role, "user")
         # User message has semi-static/dynamic context prepended for caching;
         # the original user text should still be present at the end.
@@ -239,7 +240,17 @@ class ChatEndToEndTests(TransactionTestCase):
         mock_search.assert_called_once_with(data_room_ids=[self.data_room.pk], query="foo", k=1)
 
     @patch.dict(os.environ, {"LLM_ALLOWED_MODELS": "", "DEFAULT_LLM_MODEL": ""}, clear=False)
-    async def test_missing_llm_allowed_models_surfaces_as_error_event(self):
+    @patch("guardrails.service.run_classifier_pipeline", new_callable=AsyncMock)
+    @patch("guardrails.service.check_heuristics", new_callable=AsyncMock)
+    async def test_missing_llm_allowed_models_surfaces_as_error_event(self, mock_heuristics, mock_classifier):
+        # Bypass the guardrail (both layers fail-close to "block" without a model)
+        # so this test exercises the missing-model error path it's actually about.
+        from guardrails.service import GuardrailVerdict
+
+        mock_heuristics.return_value = GuardrailVerdict(
+            action="allow", heuristic_result=MagicMock(is_suspicious=False)
+        )
+        mock_classifier.return_value = GuardrailVerdict(action="allow")
         # Intentionally do not register any model; resolve_model should fail before factory.
         communicator = await self._connect()
         await communicator.send_json_to({"type": "chat.message", "content": "Hi"})
