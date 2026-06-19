@@ -2,7 +2,15 @@
 
 from django.test import TestCase
 
-from llm.display import get_display_name, get_thinking_levels, supports_thinking, supports_vision
+from llm.display import (
+    get_capability_level,
+    get_display_name,
+    get_model_meta_tooltip,
+    get_price_level,
+    get_thinking_levels,
+    supports_thinking,
+    supports_vision,
+)
 
 
 class GetDisplayNameTests(TestCase):
@@ -163,3 +171,73 @@ class GetThinkingLevelsTests(TestCase):
 
     def test_unknown_model_empty(self):
         self.assertEqual(get_thinking_levels("custom/unknown"), [])
+
+
+class GetPriceLevelTests(TestCase):
+
+    def test_nano_is_one_dollar(self):
+        # output $0.40 -> bucket 1
+        self.assertEqual(get_price_level("openai/gpt-5.4-nano"), 1)
+
+    def test_mid_priced_models(self):
+        # $1.50 and $2.00 and $5.00 all fall in bucket 2 (<= $5)
+        self.assertEqual(get_price_level("gemini/gemini-3.1-flash-lite"), 2)
+        self.assertEqual(get_price_level("openai/gpt-5.4-mini"), 2)
+        self.assertEqual(get_price_level("anthropic/claude-haiku-4-5"), 2)  # $5 upper-inclusive
+
+    def test_standard_models(self):
+        # $9, $12, $14, $15 all fall in bucket 3 (<= $15)
+        self.assertEqual(get_price_level("gemini/gemini-3.5-flash"), 3)
+        self.assertEqual(get_price_level("gemini/gemini-3.1-pro-preview"), 3)
+        self.assertEqual(get_price_level("openai/gpt-5.4"), 3)
+        self.assertEqual(get_price_level("anthropic/claude-sonnet-4-6"), 3)  # $15 upper-inclusive
+
+    def test_premium_models(self):
+        # $25 and $30 fall in bucket 4 (<= $50)
+        self.assertEqual(get_price_level("anthropic/claude-opus-4-8"), 4)
+        self.assertEqual(get_price_level("openai/gpt-5.5"), 4)
+
+    def test_unknown_model_is_zero(self):
+        self.assertEqual(get_price_level("custom/unknown"), 0)
+
+
+class GetCapabilityLevelTests(TestCase):
+
+    def test_cheap_tier_one_star(self):
+        self.assertEqual(get_capability_level("openai/gpt-5.4-nano"), 1)
+        self.assertEqual(get_capability_level("gemini/gemini-3.1-flash-lite"), 1)
+
+    def test_mid_tier_two_stars(self):
+        self.assertEqual(get_capability_level("openai/gpt-5.4-mini"), 2)
+        self.assertEqual(get_capability_level("anthropic/claude-haiku-4-5"), 2)
+
+    def test_standard_tier_three_stars(self):
+        self.assertEqual(get_capability_level("anthropic/claude-opus-4-8"), 3)
+        self.assertEqual(get_capability_level("openai/gpt-5.5"), 3)
+
+    def test_unknown_model_is_zero(self):
+        self.assertEqual(get_capability_level("custom/unknown"), 0)
+
+
+class GetModelMetaTooltipTests(TestCase):
+
+    def test_whole_dollar_price(self):
+        self.assertEqual(
+            get_model_meta_tooltip("anthropic/claude-opus-4-8"),
+            "Standard · $25 / 1M output tokens",
+        )
+
+    def test_fractional_price_keeps_cents(self):
+        self.assertEqual(
+            get_model_meta_tooltip("openai/gpt-5.4-nano"),
+            "Cheap · $0.40 / 1M output tokens",
+        )
+
+    def test_mid_tier_label(self):
+        self.assertEqual(
+            get_model_meta_tooltip("anthropic/claude-haiku-4-5"),
+            "Mid · $5 / 1M output tokens",
+        )
+
+    def test_unknown_model_is_none(self):
+        self.assertIsNone(get_model_meta_tooltip("custom/unknown"))

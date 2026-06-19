@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
-from llm.model_registry import get_model_info
+from llm.model_registry import TIER_ORDER, get_model_info
 
 
 def get_display_name(model_id: str) -> str:
@@ -151,3 +152,62 @@ def supports_modality(model_id: str, modality: str) -> bool:
     if modality == "text":
         return True
     return modality in input_modalities(model_id)
+
+
+# Output-price buckets (USD per 1M output tokens) -> "$" count (1-5).
+# Upper-inclusive: $ <= $1, $$ <= $5, $$$ <= $15, $$$$ <= $50, $$$$$ > $50.
+_PRICE_THRESHOLDS = (
+    (Decimal("1"), 1),
+    (Decimal("5"), 2),
+    (Decimal("15"), 3),
+    (Decimal("50"), 4),
+)
+
+
+def get_price_level(model_id: str) -> int:
+    """Return a 1-5 cost rating from a model's output price (0 if unknown).
+
+    Buckets are upper-inclusive on USD per 1M output tokens:
+    ``<=1 -> 1``, ``<=5 -> 2``, ``<=15 -> 3``, ``<=50 -> 4``, ``>50 -> 5``.
+    Drives the ``$``-``$$$$$`` glyphs in the chat model picker.
+    """
+    info = get_model_info(model_id)
+    if info is None or info.output_price is None:
+        return 0
+    for threshold, level in _PRICE_THRESHOLDS:
+        if info.output_price <= threshold:
+            return level
+    return 5
+
+
+def get_capability_level(model_id: str) -> int:
+    """Return a 1-3 capability rating from a model's tier (0 if unknown).
+
+    ``cheap -> 1``, ``mid -> 2``, ``standard -> 3``. Drives the star glyphs in
+    the chat model picker.
+    """
+    info = get_model_info(model_id)
+    if info is None:
+        return 0
+    return TIER_ORDER.get(info.tier, 0) + 1
+
+
+def _format_output_price(price: Decimal) -> str:
+    """Format an output price as ``$25`` (whole) or ``$0.40`` (fractional)."""
+    if price == price.to_integral_value():
+        return f"${int(price)}"
+    return f"${price:.2f}"
+
+
+def get_model_meta_tooltip(model_id: str) -> str | None:
+    """Hover text combining tier and output price, or None if unknown.
+
+    Example: ``"Standard - $25 / 1M output tokens"``.
+    """
+    info = get_model_info(model_id)
+    if info is None or info.output_price is None:
+        return None
+    return (
+        f"{info.tier.capitalize()} · "
+        f"{_format_output_price(info.output_price)} / 1M output tokens"
+    )

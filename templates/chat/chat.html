@@ -1798,6 +1798,26 @@
   var thinkingSlider = document.getElementById('thinking-slider');
   var thinkingStops = document.querySelectorAll('.thinking-stop');
 
+  // Build the muted capability (★) + price ($) glyphs shown on the right of
+  // each model row. Stars are filled-of-3 (empty ones dimmed) so the scale is
+  // self-evident; price is 1-5 filled "$" right-aligned in a fixed column.
+  function modelMetaHtml(m) {
+    var html = '';
+    if (m.capability_level > 0) {
+      var stars = '';
+      for (var i = 0; i < 3; i++) {
+        stars += (i < m.capability_level) ? '★' : '<span style="opacity:.4">☆</span>';
+      }
+      html += '<span style="letter-spacing:.06em;white-space:nowrap">' + stars + '</span>';
+    }
+    if (m.price_level > 0) {
+      html += '<span style="display:inline-block;min-width:2.75rem;text-align:right">' +
+        '$'.repeat(m.price_level) + '</span>';
+    }
+    if (!html) return '';
+    return '<span class="flex items-center gap-2 text-xs text-body-subtle">' + html + '</span>';
+  }
+
   function renderModelOptions() {
     modelOptionsContainer.innerHTML = '';
     MODEL_CHOICES.forEach(function(m) {
@@ -1805,8 +1825,12 @@
       btn.type = 'button';
       btn.className = 'flex items-center justify-between w-full px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading';
       btn.setAttribute('data-model-id', m.id);
-      btn.innerHTML = '<span>' + escapeHtml(m.display_name) + '</span>' +
-        '<svg class="w-4 h-4 model-check ' + (m.id === selectedModel ? '' : 'hidden') + '" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>';
+      if (m.meta_tooltip) btn.title = m.meta_tooltip;
+      btn.innerHTML = '<span class="truncate min-w-0">' + escapeHtml(m.display_name) + '</span>' +
+        '<span class="flex items-center gap-2 shrink-0">' +
+        modelMetaHtml(m) +
+        '<svg class="w-4 h-4 model-check" style="visibility:' + (m.id === selectedModel ? 'visible' : 'hidden') + '" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>' +
+        '</span>';
       btn.addEventListener('click', function() {
         selectedModel = m.id;
         modelSelectorLabel.textContent = m.display_name;
