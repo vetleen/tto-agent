@@ -458,6 +458,30 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
 
 
+def _attachment_markers(messages) -> dict:
+    """Map message-id -> a marker noting files shared on that message.
+
+    Attachments live in message metadata (and are enriched into the LLM request
+    only transiently), so they're invisible to the summariser. Surfacing the
+    filenames keeps the rolling summary aware that the user shared an image/file
+    even after the original message is folded away.
+    """
+    from chat.models import ChatAttachment
+
+    ids: list = []
+    for m in messages:
+        ids.extend((getattr(m, "metadata", None) or {}).get("attachment_ids") or [])
+    if not ids:
+        return {}
+
+    grouped: dict = {}
+    for message_id, filename in ChatAttachment.objects.filter(id__in=ids).values_list(
+        "message_id", "original_filename"
+    ):
+        grouped.setdefault(str(message_id), []).append(filename or "file")
+    return {mid: f"[shared file(s): {', '.join(names)}]" for mid, names in grouped.items()}
+
+
 async def generate_summary(
     messages: list[ChatMessage],
     existing_summary: str = "",
@@ -482,9 +506,16 @@ async def generate_summary(
         parts.append(
             f"Previous conversation summary:\n{existing_summary}\n"
         )
+    from asgiref.sync import sync_to_async
+
+    att_markers = await sync_to_async(_attachment_markers)(messages)
     parts.append("Messages to summarise:")
     for msg in messages:
-        parts.append(f"[{msg.role}]: {msg.content}")
+        line = f"[{msg.role}]: {msg.content}"
+        marker = att_markers.get(str(msg.id))
+        if marker:
+            line += f" {marker}"
+        parts.append(line)
 
     user_prompt = "\n".join(parts)
 
@@ -655,18 +686,26 @@ def generate_canvas_title(doc_title: str, doc_content: str, user) -> str | None:
         return None
 
 
-def import_docx_to_canvas(uploaded_file: UploadedFile, user) -> tuple[str, str, bool]:
-    """Convert a .docx upload to markdown with LLM-described image placeholders.
+def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, bool]:
+    """Convert a .docx upload to markdown for a canvas.
 
-    Returns (title, content, truncated).
+    When *canvas* is given, embedded images are stored as canvas-scoped
+    ImageAssets and referenced by ``[[image:uuid|...]]`` tokens (so they survive
+    into the canvas and its export). Without a canvas, images are described
+    inline as ``[Image N: ...]`` text. Returns (title, content, truncated).
     """
     from core.docx import docx_to_markdown
 
-    sink = describe_image_sink(
-        user,
-        max_described=CANVAS_MAX_IMAGES,
-        over_limit_label="image skipped – import limit reached",
-    )
+    if canvas is not None:
+        from chat.image_assets import canvas_asset_sink
+
+        sink = canvas_asset_sink(canvas, user, max_described=CANVAS_MAX_IMAGES)
+    else:
+        sink = describe_image_sink(
+            user,
+            max_described=CANVAS_MAX_IMAGES,
+            over_limit_label="image skipped – import limit reached",
+        )
     content = docx_to_markdown(uploaded_file, image_sink=sink)
 
     # Truncate to character limit

@@ -105,3 +105,39 @@ class ShowImageToolTests(TestCase):
         result = tool._run([1])
         self.assertEqual(tool.context.pending_image_assets, [])
         self.assertNotIn("attached", result.lower())
+
+
+@override_settings(MEDIA_ROOT=_MEDIA)
+class AttachmentMarkersTests(TestCase):
+    """The summariser surfaces shared-file markers so compression doesn't
+    silently lose that the user shared an image."""
+
+    def test_marks_messages_with_attachments(self):
+        from django.core.files.base import ContentFile
+
+        from chat.models import ChatAttachment, ChatMessage, ChatThread
+        from chat.services import _attachment_markers
+
+        user = User.objects.create_user(email="amk@test.com", password="pw")
+        thread = ChatThread.objects.create(created_by=user)
+        msg = ChatMessage.objects.create(thread=thread, role="user", content="look at this")
+        att = ChatAttachment.objects.create(
+            thread=thread, message=msg, uploaded_by=user,
+            file=ContentFile(b"x", name="chart.png"),
+            original_filename="chart.png", content_type="image/png", size_bytes=1,
+        )
+        msg.metadata = {"attachment_ids": [str(att.id)]}
+        msg.save(update_fields=["metadata"])
+
+        markers = _attachment_markers([msg])
+        self.assertIn(str(msg.id), markers)
+        self.assertIn("chart.png", markers[str(msg.id)])
+
+    def test_no_attachments_is_empty(self):
+        from chat.models import ChatMessage, ChatThread
+        from chat.services import _attachment_markers
+
+        user = User.objects.create_user(email="amk2@test.com", password="pw")
+        thread = ChatThread.objects.create(created_by=user)
+        msg = ChatMessage.objects.create(thread=thread, role="user", content="hi")
+        self.assertEqual(_attachment_markers([msg]), {})

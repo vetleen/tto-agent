@@ -74,6 +74,38 @@ def serve_image_asset(request, asset_id):
     return resp
 
 
+_IMAGE_TOKEN_RE = re.compile(r"\[\[image:([0-9a-fA-F-]{36})\|([^\]]*)\]\]")
+
+
+def _embed_image_tokens(content: str, user) -> str:
+    """Replace ``[[image:<uuid>|label]]`` tokens with ``<img>`` data-URLs for
+    docx export. Only assets the user may access are embedded; unknown or
+    forbidden tokens are dropped. Runs server-side (sync)."""
+    import base64
+
+    from chat.models import ImageAsset
+
+    def repl(m):
+        uuid, label = m.group(1), m.group(2)
+        try:
+            asset = ImageAsset.objects.get(id=uuid)
+        except (ImageAsset.DoesNotExist, ValueError):
+            return ""
+        if not _user_can_access_image_asset(user, asset):
+            return ""
+        try:
+            with asset.blob.open("rb") as f:
+                data = f.read()
+        except Exception:
+            return ""
+        b64 = base64.b64encode(data).decode("ascii")
+        ct = asset.content_type or "image/png"
+        alt = (label or "").replace('"', "'").replace("<", "").replace(">", "")
+        return f'<img src="data:{ct};base64,{b64}" alt="{alt}" />'
+
+    return _IMAGE_TOKEN_RE.sub(repl, content)
+
+
 def _group_threads_by_time(threads):
     """Bucket threads (already ordered by ``-updated_at``) into Today / Yesterday /
     Earlier by their ``updated_at`` in the active local timezone.
@@ -264,7 +296,15 @@ def chat_home(request):
     from django.conf import settings as django_settings
 
     from core.preferences import get_preferences
-    from llm.display import get_display_name, get_thinking_levels, supports_thinking, supports_vision
+    from llm.display import (
+        get_capability_level,
+        get_display_name,
+        get_model_meta_tooltip,
+        get_price_level,
+        get_thinking_levels,
+        supports_thinking,
+        supports_vision,
+    )
 
     prefs = get_preferences(request.user)
 
@@ -286,6 +326,9 @@ def chat_home(request):
             "supports_thinking": supports_thinking(m),
             "supports_vision": supports_vision(m),
             "thinking_levels": get_thinking_levels(m),
+            "price_level": get_price_level(m),
+            "capability_level": get_capability_level(m),
+            "meta_tooltip": get_model_meta_tooltip(m),
         }
         for m in prefs.allowed_models
     ]
@@ -573,6 +616,9 @@ async def canvas_export(request, thread_id, canvas_id=None):
     # Footnote citations [^1] → superscripts + numbered Sources list.
     content = render_citations(content)
     content = replace_email_with_html(content)
+    # Resolve image-asset tokens to embedded <img> data-URLs (same path mermaid
+    # images take), so exported docs keep their images.
+    content = await sync_to_async(_embed_image_tokens)(content, request.user)
     html_content = md.markdown(content, extensions=["tables", "fenced_code", MarkExtension()])
     # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.
     html_content = _HR_RE.sub(f"<p>{_HR_DIVIDER_MARKER}</p>", html_content)
@@ -658,28 +704,27 @@ def canvas_import(request, thread_id, canvas_id=None):
             status=400,
         )
 
-    title, content, truncated = import_docx_to_canvas(uploaded, request.user)
+    # Derive the title from the filename (matches import_docx_to_canvas) so the
+    # target canvas exists *before* import — embedded images attach to it.
+    original_name = uploaded.name or "document"
+    title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
     if canvas_id:
         canvas = get_object_or_404(ChatCanvas, pk=canvas_id, thread=thread)
         canvas.title = title
-        canvas.content = content
-        canvas.save(update_fields=["title", "content", "updated_at"])
     else:
         from django.db import IntegrityError
         try:
             canvas = ChatCanvas.objects.get(thread=thread, title=title)
-            canvas.content = content
-            canvas.save(update_fields=["content", "updated_at"])
         except ChatCanvas.DoesNotExist:
             try:
-                canvas = ChatCanvas.objects.create(
-                    thread=thread, title=title, content=content,
-                )
+                canvas = ChatCanvas.objects.create(thread=thread, title=title, content="")
             except IntegrityError:
                 canvas = ChatCanvas.objects.get(thread=thread, title=title)
-                canvas.content = content
-                canvas.save(update_fields=["content", "updated_at"])
+
+    _title, content, truncated = import_docx_to_canvas(uploaded, request.user, canvas=canvas)
+    canvas.content = content
+    canvas.save(update_fields=["title", "content", "updated_at"])
 
     from chat.services import create_canvas_checkpoint
     cp = create_canvas_checkpoint(canvas, source="import", description="Imported from .docx")
