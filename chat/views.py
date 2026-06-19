@@ -557,8 +557,8 @@ async def canvas_export(request, thread_id, canvas_id=None):
         canvas = await sync_to_async(get_object_or_404)(ChatCanvas, pk=thread.active_canvas_id, thread=thread)
 
     import markdown as md
-    from html2docx import html2docx
 
+    from chat.markdown_export import MarkExtension, html2docx_with_highlight as html2docx
     from chat.services import normalize_heading_levels, render_citations, replace_email_with_html
 
     # Client already replaced mermaid blocks with <img> tags.
@@ -573,7 +573,7 @@ async def canvas_export(request, thread_id, canvas_id=None):
     # Footnote citations [^1] → superscripts + numbered Sources list.
     content = render_citations(content)
     content = replace_email_with_html(content)
-    html_content = md.markdown(content, extensions=["tables", "fenced_code"])
+    html_content = md.markdown(content, extensions=["tables", "fenced_code", MarkExtension()])
     # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.
     html_content = _HR_RE.sub(f"<p>{_HR_DIVIDER_MARKER}</p>", html_content)
     full_html = f"<html><body>{html_content}</body></html>"

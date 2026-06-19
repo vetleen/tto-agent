@@ -211,6 +211,7 @@ function cmdPlainBlock(view) {
 const cmdBold = wrapCmd("**", "**");
 const cmdItalic = wrapCmd("*", "*");
 const cmdStrike = wrapCmd("~~", "~~");
+const cmdHighlight = wrapCmd("==", "==");
 const cmdLink = linkCmd;
 const cmdHeading = headingCmd;
 const cmdUl = prefixCmd("- ");
@@ -233,6 +234,8 @@ const SVG_UL =
   '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>';
 const SVG_PLAINBLOCK =
   '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M7 9.5h7M7 12.5h10M7 15.5h5"/></svg>';
+const SVG_HIGHLIGHT =
+  '<svg style="width:1rem;height:1rem" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 11l4 4M5 20h4L20 9a2.5 2.5 0 10-3.5-3.5L5.5 16 5 20z"/></svg>';
 
 // Right-side action icons. The save button swaps between four states by toggling
 // `.hidden` on these siblings — the exact floppy/spinner/check/cross set the chat
@@ -252,6 +255,7 @@ const TB = [
   { title: "Bold", mod: "b", run: cmdBold, html: glyph("B", "font-weight:700") },
   { title: "Italic", mod: "i", run: cmdItalic, html: glyph("I", "font-style:italic;font-weight:600") },
   { title: "Strikethrough", run: cmdStrike, html: glyph("S", "text-decoration:line-through;font-weight:600") },
+  { title: "Highlight", run: cmdHighlight, html: SVG_HIGHLIGHT },
   { sep: true },
   { title: "Link", mod: "k", run: cmdLink, html: SVG_LINK },
   { title: "Heading", run: cmdHeading, html: glyph("H", "font-weight:700") },

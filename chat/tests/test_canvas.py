@@ -424,6 +424,26 @@ class CanvasExportViewTests(TestCase):
                     tcW = cell._tc.tcPr.find(qn("w:tcW"))
                     self.assertGreater(int(tcW.get(qn("w:w"))), 0)
 
+    def test_export_handles_highlight_markup(self):
+        """==text== should export as a yellow Word highlight on that run only."""
+        self.canvas.content = "This is ==highlighted== text."
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+        from docx.enum.text import WD_COLOR_INDEX
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        highlighted = [r for r in runs if r.font.highlight_color == WD_COLOR_INDEX.YELLOW]
+        self.assertEqual(len(highlighted), 1, "Exactly one run should be highlighted")
+        self.assertEqual(highlighted[0].text.strip(), "highlighted")
+        # The literal == markers must not survive into the document text.
+        self.assertNotIn("==", "".join(r.text for r in runs))
+
     def test_export_applies_org_styles(self):
         """The export should apply the exporting user's org styles to the .docx."""
         from accounts.models import Membership, Organization
