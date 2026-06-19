@@ -106,6 +106,42 @@ def _embed_image_tokens(content: str, user) -> str:
     return _IMAGE_TOKEN_RE.sub(repl, content)
 
 
+@login_required
+@require_POST
+def reattach_attachment(request, thread_id, attachment_id):
+    """Re-attach a previously-uploaded file to the user's next message.
+
+    Copies the stored bytes into a fresh ChatAttachment (message=NULL) so it
+    rides along on the next message like a new upload. We copy rather than share
+    the file because the per-attachment file-delete signal would otherwise take
+    the original's bytes with it.
+    """
+    from django.core.files.base import ContentFile
+
+    thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
+    old = get_object_or_404(ChatAttachment, id=attachment_id, thread=thread)
+    try:
+        with old.file.open("rb") as f:
+            data = f.read()
+    except Exception:
+        return JsonResponse({"error": "That file is no longer available."}, status=404)
+
+    new = ChatAttachment(
+        thread=thread,
+        uploaded_by=request.user,
+        original_filename=old.original_filename,
+        content_type=old.content_type,
+        size_bytes=old.size_bytes,
+    )
+    new.file.save(old.original_filename[:255] or "file", ContentFile(data), save=True)
+    return JsonResponse({
+        "id": str(new.id),
+        "filename": new.original_filename,
+        "content_type": new.content_type,
+        "size_bytes": new.size_bytes,
+    })
+
+
 def _group_threads_by_time(threads):
     """Bucket threads (already ordered by ``-updated_at``) into Today / Yesterday /
     Earlier by their ``updated_at`` in the active local timezone.
@@ -149,6 +185,7 @@ def chat_home(request):
     thread = None
     chat_messages = []
     thread_loop_id = None
+    history_compressed_above = False
 
     if request.GET.get("thread"):
         thread_id = request.GET["thread"]
@@ -198,18 +235,43 @@ def chat_home(request):
                 filtered.append(m)
             chat_messages = filtered
 
-            # Annotate user messages with attachment filenames for rendering
+            # Annotate user messages with attachments (id used for re-attach)
             msg_ids = [m.pk for m in chat_messages if m.role == "user"]
             if msg_ids:
                 from collections import defaultdict
                 att_qs = ChatAttachment.objects.filter(
                     message_id__in=msg_ids
-                ).values_list("message_id", "original_filename", "content_type")
+                ).values("id", "message_id", "original_filename", "content_type")
                 att_map = defaultdict(list)
-                for mid, fname, ctype in att_qs:
-                    att_map[mid].append((fname, ctype))
+                for a in att_qs:
+                    att_map[a["message_id"]].append({
+                        "id": str(a["id"]),
+                        "name": a["original_filename"],
+                        "content_type": a["content_type"],
+                    })
                 for m in chat_messages:
-                    m.attachment_names = att_map.get(m.pk, [])
+                    m.attachment_items = att_map.get(m.pk, [])
+
+            # Mark which shown messages fall before the compression boundary, so
+            # the UI can show a divider and flag attachments that are no longer
+            # re-sent to the model on each turn.
+            if thread.summary_up_to_message_id:
+                from chat.models import ChatMessage
+
+                boundary = ChatMessage.objects.filter(
+                    pk=thread.summary_up_to_message_id
+                ).only("created_at").first()
+                boundary_dt = boundary.created_at if boundary else None
+                if boundary_dt:
+                    summarized = []
+                    for m in chat_messages:
+                        m.is_summarized = m.created_at <= boundary_dt
+                        if m.is_summarized:
+                            summarized.append(m)
+                    if summarized:
+                        summarized[-1].is_boundary = True
+                    elif chat_messages:
+                        history_compressed_above = True
 
     all_threads = ChatThread.objects.filter(created_by=request.user).order_by("-updated_at")
     threads = [t for t in all_threads if not t.is_archived]
@@ -357,6 +419,7 @@ def chat_home(request):
             "thread_groups": thread_groups,
             "archived_threads": archived_threads,
             "messages": chat_messages,
+            "history_compressed_above": history_compressed_above,
             "data_rooms": data_rooms,
             "thread_data_rooms": thread_data_rooms,
             "skills_json": skills_json,

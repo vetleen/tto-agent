@@ -157,6 +157,13 @@
   <div class="{% if messages %}flex-1 {% endif %}min-h-0 overflow-y-auto" id="messages-scroll-container">
     <div class="max-w-4xl mx-auto w-full px-4 {% if messages %}py-6{% endif %}">
       <div id="chat-messages" class="space-y-6">
+        {% if history_compressed_above %}
+        <div class="compression-divider flex items-center gap-2 text-xs text-body/40 select-none" data-compression-divider>
+          <span class="flex-1 border-t border-neutral-quaternary"></span>
+          <span>Earlier messages summarized to fit the context window</span>
+          <span class="flex-1 border-t border-neutral-quaternary"></span>
+        </div>
+        {% endif %}
         {% for m in messages %}
           {% if m.is_redacted and m.role == "tool" %}
             {# Skip redacted tool messages entirely #}
@@ -178,16 +185,19 @@
             <div class="umsg" data-role="user">
               <div class="umsg__bubble">
                 <div class="umsg__txt whitespace-pre-wrap">{{ m.content }}</div>
-                {% if m.attachment_names %}
+                {% if m.attachment_items %}
                 <div class="flex flex-wrap gap-1 mt-2">
-                  {% for att_tuple in m.attachment_names %}
-                  <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-body bg-neutral-tertiary rounded-full">
-                    {% if att_tuple.1|slice:":6" == "image/" %}
+                  {% for att in m.attachment_items %}
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full {% if m.is_summarized %}text-body/40 bg-neutral-tertiary/50{% else %}text-body bg-neutral-tertiary{% endif %}"{% if m.is_summarized %} title="No longer re-sent to {{ assistant_name }} each turn — click ↻ to re-attach"{% endif %}>
+                    {% if att.content_type|slice:":6" == "image/" %}
                     <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                     {% else %}
                     <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                     {% endif %}
-                    {{ att_tuple.0 }}
+                    <span {% if m.is_summarized %}class="line-through"{% endif %}>{{ att.name }}</span>
+                    {% if m.is_summarized %}
+                    <button type="button" class="reattach-btn ml-0.5 -mr-1 p-0.5 text-body/40 hover:text-heading cursor-pointer" data-attachment-id="{{ att.id }}" data-attachment-name="{{ att.name }}" data-content-type="{{ att.content_type }}" title="Re-attach to your next message"><svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M5.5 9a7 7 0 0111.9-2.1L20 9M18.5 15a7 7 0 01-11.9 2.1L4 15"/></svg></button>
+                    {% endif %}
                   </span>
                   {% endfor %}
                 </div>
@@ -229,6 +239,13 @@
                 <button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
               </div>
             </div>
+          {% endif %}
+          {% if m.is_boundary %}
+          <div class="compression-divider flex items-center gap-2 text-xs text-body/40 select-none" data-compression-divider>
+            <span class="flex-1 border-t border-neutral-quaternary"></span>
+            <span>Earlier messages summarized to fit the context window</span>
+            <span class="flex-1 border-t border-neutral-quaternary"></span>
+          </div>
           {% endif %}
         {% empty %}
           <div class="flex flex-col items-center text-center pb-2" data-placeholder="true">
@@ -966,6 +983,32 @@
   document.addEventListener('click', function(e) {
     var btn = e.target.closest('.copy-msg-btn');
     if (btn) window.copyMessage(btn);
+  });
+  // Delegated re-attach handler: re-attach a dropped (pre-compression) file to
+  // the next message. Mirrors the upload flow (pendingAttachment* + pill).
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.reattach-btn');
+    if (!btn || btn.disabled) return;
+    e.preventDefault();
+    var attId = btn.getAttribute('data-attachment-id');
+    if (!attId || !THREAD_ID) return;
+    btn.disabled = true;
+    fetch('/chat/api/threads/' + THREAD_ID + '/attachments/' + attId + '/reattach/', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': getCSRFToken() },
+    }).then(function(r) {
+      if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Could not re-attach.'); });
+      return r.json();
+    }).then(function(att) {
+      pendingAttachmentIds.push(att.id);
+      pendingAttachmentNames.push(att.filename);
+      pendingAttachmentTypes.push(att.content_type);
+      addAttachmentPill(att.id, att.filename, att.content_type);
+      btn.disabled = false;
+    }).catch(function(err) {
+      btn.disabled = false;
+      if (typeof showToast === 'function') showToast(err.message || 'Could not re-attach.');
+    });
   });
   var COPY_BTN_HTML = '<button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>';
 
