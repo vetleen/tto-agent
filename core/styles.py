@@ -19,8 +19,9 @@ import re
 # (a normal numbered list is untouched). Stripped during export.
 FOOTNOTE_MARKER = "​"
 
-# Footnote/source list renders this many points below the body text.
+# Footnote/source list and table text each render this many points below body.
 FOOTNOTE_SIZE_DELTA = 2
+TABLE_SIZE_DELTA = 2
 
 # Curated, near-universal fonts (ship with Office/Windows/macOS). A ``.docx``
 # stores only the font *name*; the reader's app substitutes if it isn't
@@ -246,13 +247,18 @@ def _style_tables(doc, styles: dict) -> None:
     """
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
-    from docx.shared import RGBColor
+    from docx.shared import Pt, RGBColor
 
     accent = _norm_hex(styles.get("accent_color"))
     border_style = styles.get("table_border_style") or "all"
     border_color = _norm_hex(styles.get("table_border_color")) or "CCCCCC"
     banded = bool(styles.get("table_banded"))
     band_hex = _tint(accent, 0.85) if accent else "F2F2F2"
+    try:
+        body_size = int(styles.get("body_size"))
+    except (TypeError, ValueError):
+        body_size = STYLE_DEFAULTS["body_size"]
+    table_size = Pt(max(1, body_size - TABLE_SIZE_DELTA))
 
     def make(tag, **attrs):
         el = OxmlElement(f"w:{tag}")
@@ -319,6 +325,13 @@ def _style_tables(doc, styles: dict) -> None:
         cell_margins(table)
         if not table.rows:
             continue
+
+        # Table text renders a couple of points below body, like the sources list.
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    for run in para.runs:
+                        run.font.size = table_size
 
         header = table.rows[0]
         repeat_header(header)

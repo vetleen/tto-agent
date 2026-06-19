@@ -208,6 +208,15 @@ class ApplyDocStylesTests(SimpleTestCase):
         self.assertIsNotNone(borders.find(qn("w:insideH")))
         self.assertEqual(borders.find(qn("w:top")).get(qn("w:color")), "999999")
 
+    def test_table_text_two_points_below_body(self):
+        doc = Document()
+        table = doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Header"
+        table.cell(1, 0).text = "Body cell"
+        apply_doc_styles(doc, {**STYLE_DEFAULTS, "body_size": 11})
+        self.assertEqual(table.cell(0, 0).paragraphs[0].runs[0].font.size.pt, 9)
+        self.assertEqual(table.cell(1, 0).paragraphs[0].runs[0].font.size.pt, 9)
+
     def test_table_border_style_none(self):
         doc = Document()
         doc.add_table(rows=2, cols=2)
