@@ -212,8 +212,15 @@ class GetCapabilityLevelTests(TestCase):
         self.assertEqual(get_capability_level("anthropic/claude-haiku-4-5"), 2)
 
     def test_standard_tier_three_stars(self):
-        self.assertEqual(get_capability_level("anthropic/claude-opus-4-8"), 3)
-        self.assertEqual(get_capability_level("openai/gpt-5.5"), 3)
+        # Standard tier WITHOUT the cutting_edge flag = 3 stars.
+        self.assertEqual(get_capability_level("openai/gpt-5.4"), 3)
+        self.assertEqual(get_capability_level("anthropic/claude-opus-4-6"), 3)
+        self.assertEqual(get_capability_level("anthropic/claude-sonnet-4-6"), 3)
+
+    def test_cutting_edge_four_stars(self):
+        # The manually-curated cutting_edge flag awards a 4th star.
+        self.assertEqual(get_capability_level("openai/gpt-5.5"), 4)
+        self.assertEqual(get_capability_level("anthropic/claude-opus-4-8"), 4)
 
     def test_unknown_model_is_zero(self):
         self.assertEqual(get_capability_level("custom/unknown"), 0)
@@ -222,9 +229,20 @@ class GetCapabilityLevelTests(TestCase):
 class GetModelMetaTooltipTests(TestCase):
 
     def test_whole_dollar_price(self):
+        # Standard (non-cutting-edge) model leads with its tier.
+        self.assertEqual(
+            get_model_meta_tooltip("anthropic/claude-opus-4-6"),
+            "Standard · $25 / 1M output tokens",
+        )
+
+    def test_cutting_edge_leads_with_label(self):
         self.assertEqual(
             get_model_meta_tooltip("anthropic/claude-opus-4-8"),
-            "Standard · $25 / 1M output tokens",
+            "Cutting edge · $25 / 1M output tokens",
+        )
+        self.assertEqual(
+            get_model_meta_tooltip("openai/gpt-5.5"),
+            "Cutting edge · $30 / 1M output tokens",
         )
 
     def test_fractional_price_keeps_cents(self):

@@ -28,6 +28,10 @@ class ModelInfo:
     provider: str  # "openai" | "anthropic" | "google_genai"
     api_model: str  # name sent to API (no prefix)
     tier: str = TIER_STANDARD
+    # Manually curated flagship marker. The chat model picker derives the first
+    # three capability stars from `tier`; this flag awards a 4th. Reserve True
+    # for only the very best models of the moment.
+    cutting_edge: bool = False
     supports_thinking: bool = False
     # Modalities the model accepts as input and can produce as output. "image"
     # implies vision (see the supports_vision property); "pdf" means the provider
@@ -56,6 +60,7 @@ _MODELS: dict[str, ModelInfo] = {
         provider="openai",
         api_model="gpt-5.5",
         tier=TIER_STANDARD,
+        cutting_edge=True,
         supports_thinking=True,
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
@@ -105,6 +110,7 @@ _MODELS: dict[str, ModelInfo] = {
         provider="anthropic",
         api_model="claude-opus-4-8",
         tier=TIER_STANDARD,
+        cutting_edge=True,
         supports_thinking=True,
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,

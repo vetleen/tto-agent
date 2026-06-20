@@ -91,6 +91,22 @@ class GetModelInfoTests(TestCase):
         self.assertEqual(info.cached_input_price, Decimal("0.50"))
         self.assertEqual(info.output_price, Decimal("30.00"))
 
+    def test_cutting_edge_curated_set(self):
+        # Cutting edge is a hand-curated flagship marker that awards a 4th
+        # capability star. Exactly these two carry it today; this guards
+        # against an accidental flag elsewhere.
+        from llm.model_registry import _MODELS
+
+        cutting_edge = {mid for mid, info in _MODELS.items() if info.cutting_edge}
+        self.assertEqual(
+            cutting_edge,
+            {"openai/gpt-5.5", "anthropic/claude-opus-4-8"},
+        )
+
+    def test_cutting_edge_defaults_false(self):
+        self.assertFalse(get_model_info("anthropic/claude-opus-4-6").cutting_edge)
+        self.assertFalse(get_model_info("openai/gpt-5.4").cutting_edge)
+
     def test_context_windows(self):
         self.assertEqual(get_model_info("openai/gpt-5.5").context_window, 1_000_000)
         self.assertEqual(get_model_info("openai/gpt-5.4").context_window, 1_000_000)

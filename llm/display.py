@@ -181,15 +181,16 @@ def get_price_level(model_id: str) -> int:
 
 
 def get_capability_level(model_id: str) -> int:
-    """Return a 1-3 capability rating from a model's tier (0 if unknown).
+    """Return a 1-4 capability rating (0 if unknown).
 
-    ``cheap -> 1``, ``mid -> 2``, ``standard -> 3``. Drives the star glyphs in
-    the chat model picker.
+    The first three stars come from tier (``cheap -> 1``, ``mid -> 2``,
+    ``standard -> 3``); the manually-curated ``cutting_edge`` registry flag
+    awards a 4th. Drives the star glyphs in the chat model picker.
     """
     info = get_model_info(model_id)
     if info is None:
         return 0
-    return TIER_ORDER.get(info.tier, 0) + 1
+    return TIER_ORDER.get(info.tier, 0) + 1 + (1 if info.cutting_edge else 0)
 
 
 def _format_output_price(price: Decimal) -> str:
@@ -200,14 +201,16 @@ def _format_output_price(price: Decimal) -> str:
 
 
 def get_model_meta_tooltip(model_id: str) -> str | None:
-    """Hover text combining tier and output price, or None if unknown.
+    """Hover text combining standing and output price, or None if unknown.
 
-    Example: ``"Standard - $25 / 1M output tokens"``.
+    Cutting-edge models lead with "Cutting edge" (explaining their 4th star);
+    others show their tier. Example: ``"Cutting edge · $30 / 1M output tokens"``.
     """
     info = get_model_info(model_id)
     if info is None or info.output_price is None:
         return None
+    label = "Cutting edge" if info.cutting_edge else info.tier.capitalize()
     return (
-        f"{info.tier.capitalize()} · "
+        f"{label} · "
         f"{_format_output_price(info.output_price)} / 1M output tokens"
     )
