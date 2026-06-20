@@ -1818,14 +1818,17 @@ class InsertCanvasImageToolTests(TestCase):
         self.thread = ChatThread.objects.create(created_by=self.user)
         self.data_room = DataRoom.objects.create(name="DR", created_by=self.user)
 
-        # An image-as-document: bytes live on the version's native_blob.
+        # An image-as-document exactly as a fresh upload stores it: bytes on
+        # doc.original_file, parser_type="image", and native_blob EMPTY (this is
+        # the production shape — _collect_doc_images must read original_file).
         self.doc = DataRoomDocument.objects.create(
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="chart.png", mime_type="image/png",
         )
+        self.doc.original_file.save("chart.png", ContentFile(b"\x89PNG fake-bytes"), save=True)
         v = make_version(self.doc, status=DataRoomDocument.Status.READY)
         v.parser_type = "image"
-        v.native_blob.save("chart.png", ContentFile(b"\x89PNG fake-bytes"), save=True)
+        v.save(update_fields=["parser_type"])
         self.doc.refresh_from_db()
 
         from django.utils import timezone
@@ -1853,6 +1856,21 @@ class InsertCanvasImageToolTests(TestCase):
         self.canvas.refresh_from_db()
         self.assertIn(f"[[image:{assets[0].id}|", self.canvas.content)
         self.assertEqual(result["image_token"], f"[[image:{assets[0].id}|chart.png]]")
+
+    def test_embeds_from_native_blob_when_present(self):
+        # A re-uploaded version keeps its bytes on native_blob, which takes
+        # precedence over original_file.
+        from django.core.files.base import ContentFile
+
+        from chat.models import ImageAsset
+
+        v = self.doc.current_version
+        v.native_blob.save("v.png", ContentFile(b"\x89PNG native-bytes"), save=True)
+        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
+        self.assertEqual(result["status"], "ok")
+        asset = ImageAsset.objects.filter(canvas=self.canvas).first()
+        with asset.blob.open("rb") as f:
+            self.assertEqual(f.read(), b"\x89PNG native-bytes")
 
     def test_anchor_places_image_after_heading(self):
         result = _invoke(

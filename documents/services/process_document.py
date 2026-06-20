@@ -140,8 +140,10 @@ def _extract_native(version, doc):
         elif is_image_extension(ext):
             # --- Image description branch ---
             # The vision-generated description becomes the document's searchable
-            # text; the original image bytes stay in native_blob for later
-            # viewing. GDPR NOTE: only this description flows through the
+            # text; the original image bytes stay on the source file (native_blob
+            # for a re-uploaded version, else doc.original_file for a fresh v0)
+            # for later viewing — see _collect_doc_images, which reads them back
+            # with the same precedence. GDPR NOTE: only this description flows through the
             # guardrail + PII text scanners — the raw image bytes are NOT
             # independently PII-scanned (description-only for v1; a vision-based
             # PII signal is a planned follow-up).

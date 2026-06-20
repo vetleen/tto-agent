@@ -1020,10 +1020,15 @@ def _collect_doc_images(doc, max_images: int = 4):
     version = getattr(doc, "current_version", None)
     if version is None:
         return out
-    if getattr(version, "parser_type", "") == "image" and version.native_blob:
+    if getattr(version, "parser_type", "") == "image":
+        # For a fresh upload (v0) the image bytes live on doc.original_file and
+        # native_blob is empty — mirror _extract_native's source precedence
+        # (native_blob else original_file) so an uploaded image is actually
+        # viewable, not just describable.
+        source = version.native_blob if version.native_blob else doc.original_file
         ct = doc.mime_type or "image/png"
-        if ct in SUPPORTED_IMAGE_TYPES:
-            with version.native_blob.open("rb") as f:
+        if source and ct in SUPPORTED_IMAGE_TYPES:
+            with source.open("rb") as f:
                 out.append((f.read(), ct, doc.description or doc.original_filename))
     if len(out) < max_images:
         for asset in ImageAsset.objects.filter(version=version):

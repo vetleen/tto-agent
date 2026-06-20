@@ -106,6 +106,31 @@ class ShowImageToolTests(TestCase):
         self.assertEqual(tool.context.pending_image_assets, [])
         self.assertNotIn("attached", result.lower())
 
+    def test_attaches_image_from_original_file_when_native_blob_empty(self):
+        # Production shape: a freshly-uploaded image keeps its bytes on
+        # doc.original_file with an EMPTY native_blob. show_image (and
+        # canvas_insert_image) must still find the image, not report "no
+        # viewable image".
+        doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.user,
+            original_filename="photo.jpg", mime_type="image/jpeg",
+            doc_index=2, status=DataRoomDocument.Status.READY,
+        )
+        doc.original_file.save("photo.jpg", ContentFile(b"\xff\xd8\xff real-jpeg"), save=True)
+        version = DataRoomDocumentVersion.objects.create(
+            document=doc, parser_type="image", mime_type="image/jpeg",
+        )
+        doc.current_version = version
+        doc.save(update_fields=["current_version"])
+
+        tool = self._tool([self.room.pk])
+        result = tool._run([2])
+        self.assertIn("attached", result.lower())
+        pending = tool.context.pending_image_assets
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["media_type"], "image/jpeg")
+        self.assertTrue(pending[0]["b64"])
+
 
 @override_settings(MEDIA_ROOT=_MEDIA)
 class AttachmentMarkersTests(TestCase):
