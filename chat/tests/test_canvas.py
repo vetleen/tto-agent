@@ -9,7 +9,12 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from chat.canvas_tools import ActiveCanvasTool, EditCanvasTool, WriteCanvasTool
+from chat.canvas_tools import (
+    ActiveCanvasTool,
+    EditCanvasTool,
+    InsertCanvasImageTool,
+    WriteCanvasTool,
+)
 from chat.models import CanvasCheckpoint, ChatCanvas, ChatThread
 from llm.types.context import RunContext
 
@@ -1790,3 +1795,150 @@ class ActivateCanvasTests(TestCase):
         )
         canvas.refresh_from_db()
         self.assertGreater(canvas.last_activated_at, first_ts)
+
+
+# ---------------------------------------------------------------------------
+# canvas_insert_image — embed an existing data-room image into the canvas
+# ---------------------------------------------------------------------------
+
+import tempfile  # noqa: E402
+
+_INSERT_MEDIA = tempfile.mkdtemp()
+
+
+@override_settings(MEDIA_ROOT=_INSERT_MEDIA)
+class InsertCanvasImageToolTests(TestCase):
+    def setUp(self):
+        from django.core.files.base import ContentFile
+
+        from documents.models import DataRoom, DataRoomDocument
+        from documents.tests._helpers import make_version
+
+        self.user = User.objects.create_user(email="ins@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.data_room = DataRoom.objects.create(name="DR", created_by=self.user)
+
+        # An image-as-document: bytes live on the version's native_blob.
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="chart.png", mime_type="image/png",
+        )
+        v = make_version(self.doc, status=DataRoomDocument.Status.READY)
+        v.parser_type = "image"
+        v.native_blob.save("chart.png", ContentFile(b"\x89PNG fake-bytes"), save=True)
+        self.doc.refresh_from_db()
+
+        from django.utils import timezone
+
+        self.canvas = ChatCanvas.objects.create(
+            thread=self.thread, title="Referat",
+            content="# Referat\n\n## Section 1\n\nText body.",
+            is_active=True, last_activated_at=timezone.now(),
+        )
+
+    def _ctx(self):
+        return RunContext.create(
+            user_id=self.user.pk, conversation_id=str(self.thread.id),
+            data_room_ids=[self.data_room.pk],
+        )
+
+    def test_inserts_token_and_creates_canvas_asset(self):
+        from chat.models import ImageAsset
+
+        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
+        self.assertEqual(result["status"], "ok")
+        assets = list(ImageAsset.objects.filter(canvas=self.canvas))
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0].content_type, "image/png")
+        self.canvas.refresh_from_db()
+        self.assertIn(f"[[image:{assets[0].id}|", self.canvas.content)
+        self.assertEqual(result["image_token"], f"[[image:{assets[0].id}|chart.png]]")
+
+    def test_anchor_places_image_after_heading(self):
+        result = _invoke(
+            InsertCanvasImageTool,
+            {"doc_index": self.doc.doc_index, "anchor_text": "## Section 1"},
+            self._ctx(),
+        )
+        self.assertEqual(result["placement"], "after anchor")
+        self.canvas.refresh_from_db()
+        anchor_pos = self.canvas.content.index("## Section 1")
+        token_pos = self.canvas.content.index("[[image:")
+        body_pos = self.canvas.content.index("Text body.")
+        # Token sits between the heading and the body text that followed it.
+        self.assertGreater(token_pos, anchor_pos)
+        self.assertLess(token_pos, body_pos)
+
+    def test_idempotent_does_not_duplicate(self):
+        from chat.models import ImageAsset
+
+        self._invoke_twice()
+        self.assertEqual(ImageAsset.objects.filter(canvas=self.canvas).count(), 1)
+        self.canvas.refresh_from_db()
+        self.assertEqual(self.canvas.content.count("[[image:"), 1)
+
+    def _invoke_twice(self):
+        _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
+        _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
+
+    def test_errors_without_canvas(self):
+        ChatCanvas.objects.all().delete()
+        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
+        self.assertEqual(result["status"], "error")
+        self.assertIn("canvas", result["message"].lower())
+
+    def test_errors_for_missing_document(self):
+        result = _invoke(InsertCanvasImageTool, {"doc_index": 999}, self._ctx())
+        self.assertEqual(result["status"], "error")
+
+    def test_errors_without_data_room(self):
+        ctx = RunContext.create(user_id=self.user.pk, conversation_id=str(self.thread.id))
+        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, ctx)
+        self.assertEqual(result["status"], "error")
+
+
+class CanvasMarkdownImageGuardrailTests(TestCase):
+    """canvas_write / canvas_edit strip non-rendering markdown image syntax."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="grd@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def test_write_strips_markdown_image_and_warns(self):
+        result = _invoke(
+            WriteCanvasTool,
+            {"title": "Doc", "content": "Intro\n\n![a chart](IMG_3918.jpeg)\n\nOutro"},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("warning", result)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertNotIn("![", canvas.content)
+        self.assertNotIn("(IMG_3918.jpeg)", canvas.content)
+        # The alt text survives as plain words.
+        self.assertIn("a chart", canvas.content)
+
+    def test_edit_strips_markdown_image(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Doc", content="start HERE end")
+        result = _invoke(
+            EditCanvasTool,
+            {"canvas_name": "Doc", "edits": [{"old_text": "HERE", "new_text": "![pic](x.png)"}]},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("warning", result)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertNotIn("![", canvas.content)
+        self.assertIn("pic", canvas.content)
+
+    def test_image_token_is_not_stripped(self):
+        # Our own [[image:uuid]] token must survive canvas_write untouched.
+        uuid = "12345678-1234-1234-1234-1234567890ab"
+        result = _invoke(
+            WriteCanvasTool,
+            {"title": "Doc", "content": f"A\n\n[[image:{uuid}|Image 1: chart]]\n\nB"},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertNotIn("warning", result)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertIn(f"[[image:{uuid}|", canvas.content)

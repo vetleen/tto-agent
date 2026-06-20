@@ -84,6 +84,11 @@ graph TD
 
 Supported diagram types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `erDiagram`, `gantt`, `pie`, `quadrantChart`, `gitgraph`, `timeline`, `mindmap`, `sankey-beta`, `xychart-beta`, `block-beta`. Do NOT use unsupported types such as `radarChart`, `radar`, or `spider` — Mermaid does not support radar/spider charts. If you need to visualise scores across dimensions (e.g., readiness levels), use a table or a `xychart-beta` bar chart instead.
 
+## Images
+To place an existing image into a canvas, use **canvas_insert_image** with the `doc_index` of an image document in an attached data room (find it via document_search / document_list / show_image). Pass `anchor_text` to position it right after a specific line (e.g. a heading); otherwise it is appended. The image then renders in the preview and is baked into the .docx export.
+
+Do NOT write markdown image syntax such as `![caption](file.png)` — it does not render in the canvas and is stripped out. You can only embed images that already exist as data-room documents; you cannot generate or fabricate images.
+
 ## Emails
 You can format draft emails using fenced code blocks with the `email` language tag. These render as styled email cards with an "Open in Mail" button. Example:
 

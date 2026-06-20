@@ -1374,6 +1374,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "document_archive", "document_rename",
             "document_version_list", "document_version_restore", "document_status",
             "show_image",
+            # Embeds a data-room image into the canvas — needs a data room.
+            "canvas_insert_image",
         }
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
@@ -1500,7 +1502,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     pending_tool_results.append(event.data)
                     # Intercept canvas tool results and broadcast canvas.updated
                     tool_name = event.data.get("tool_name", "")
-                    if tool_name in ("canvas_write", "canvas_edit", "skill_field_load", "skill_template_load"):
+                    if tool_name in ("canvas_write", "canvas_edit", "canvas_insert_image", "skill_field_load", "skill_template_load"):
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok" and result.get("canvas_id"):
