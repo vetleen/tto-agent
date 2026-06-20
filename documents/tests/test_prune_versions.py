@@ -78,3 +78,32 @@ class PruneVersionsTests(TestCase):
         pruned = prune_document_versions()
         self.assertEqual(pruned, 0)
         self.assertEqual(self._remaining(), {0})
+
+    def test_versions_fetched_in_batches_not_per_document(self):
+        """Versions are read in one grouped query per batch, not one per document.
+
+        Regression for WILFRED-64 (N+1): the old code issued a SELECT against the
+        version table for every document. Give several documents one version each
+        (so no pruning/deletes muddy the query log) and assert the version-table
+        reads don't scale with the document count.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for i in range(6):
+            d = DataRoomDocument.objects.create(
+                data_room=self.room, uploaded_by=self.user, original_filename=f"d{i}.md",
+            )
+            DataRoomDocumentVersion.objects.create(document=d, version_index=0)
+
+        with CaptureQueriesContext(connection) as ctx:
+            prune_document_versions()
+
+        version_selects = [
+            q["sql"] for q in ctx.captured_queries
+            if 'FROM "documents_dataroomdocumentversion"' in q["sql"]
+            and q["sql"].lstrip().upper().startswith("SELECT")
+        ]
+        # Batched: a single grouped SELECT covers all 7 documents (6 here + the
+        # setUp doc). An N+1 would issue one SELECT per document.
+        self.assertLessEqual(len(version_selects), 2, version_selects)

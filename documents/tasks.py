@@ -370,7 +370,7 @@ def prune_document_versions() -> int:
 
     pruned = 0
     try:
-        doc_iter = list(
+        docs = list(
             DataRoomDocument.objects.all()
             .only("pk", "current_version_id", "active_searchable_version_id")
             .iterator(chunk_size=200)
@@ -379,57 +379,68 @@ def prune_document_versions() -> int:
         logger.info("prune_document_versions: DB unavailable; will retry next tick.", exc_info=True)
         return 0
 
-    for doc in doc_iter:
-        versions = list(
-            DataRoomDocumentVersion.objects.filter(document_id=doc.pk)
+    # Fetch versions a batch of documents at a time — one grouped query per batch
+    # rather than one query per document (the latter was an N+1, WILFRED-64). Each
+    # batch's versions are dropped from memory before the next, preserving the
+    # streaming intent of the document iterator above.
+    BATCH_SIZE = 200
+    for start in range(0, len(docs), BATCH_SIZE):
+        batch = docs[start:start + BATCH_SIZE]
+        versions_by_doc: dict[int, list[dict]] = {}
+        for v in (
+            DataRoomDocumentVersion.objects.filter(document_id__in=[d.pk for d in batch])
             .order_by("-version_index")
-            .values("pk", "version_index", "created_at")
-        )
-        if len(versions) <= 1:
-            continue
+            .values("pk", "document_id", "version_index", "created_at")
+        ):
+            versions_by_doc.setdefault(v["document_id"], []).append(v)
 
-        protected: set[int] = set()
-        # v0 (lowest version_index)
-        v0 = min(versions, key=lambda v: v["version_index"])
-        protected.add(v0["pk"])
-        if doc.current_version_id:
-            protected.add(doc.current_version_id)
-        if doc.active_searchable_version_id:
-            protected.add(doc.active_searchable_version_id)
-
-        # Among the non-protected, keep the newest one per calendar day.
-        kept_days: set = set()
-        droppable: list[int] = []
-        for v in versions:  # newest first
-            if v["pk"] in protected:
+        for doc in batch:
+            versions = versions_by_doc.get(doc.pk, [])
+            if len(versions) <= 1:
                 continue
-            day = v["created_at"].date() if v["created_at"] else None
-            if day is not None and day not in kept_days:
-                kept_days.add(day)
-                continue  # keep the newest of this day
-            droppable.append(v["pk"])
 
-        # Enforce the hard cap: total kept must be <= MAX. Drop more (oldest first)
-        # from the day-survivors if needed, never the always-protected set.
-        total_kept = len(versions) - len(droppable)
-        if total_kept > MAX_VERSIONS_PER_DOCUMENT:
-            day_survivors = [
-                v["pk"] for v in sorted(versions, key=lambda v: v["version_index"])
-                if v["pk"] not in protected and v["pk"] not in droppable
-            ]
-            overflow = total_kept - MAX_VERSIONS_PER_DOCUMENT
-            droppable.extend(day_survivors[:overflow])
+            protected: set[int] = set()
+            # v0 (lowest version_index)
+            v0 = min(versions, key=lambda v: v["version_index"])
+            protected.add(v0["pk"])
+            if doc.current_version_id:
+                protected.add(doc.current_version_id)
+            if doc.active_searchable_version_id:
+                protected.add(doc.active_searchable_version_id)
 
-        for vid in droppable:
-            try:
-                delete_vectors_for_version(vid)
-                DataRoomDocumentVersion.objects.filter(pk=vid).delete()
-                pruned += 1
-            except Exception:
-                logger.exception("prune_document_versions: failed to drop version_id=%s", vid)
+            # Among the non-protected, keep the newest one per calendar day.
+            kept_days: set = set()
+            droppable: list[int] = []
+            for v in versions:  # newest first
+                if v["pk"] in protected:
+                    continue
+                day = v["created_at"].date() if v["created_at"] else None
+                if day is not None and day not in kept_days:
+                    kept_days.add(day)
+                    continue  # keep the newest of this day
+                droppable.append(v["pk"])
 
-        if droppable:
-            recompute_document_sensitivity(doc.pk)
+            # Enforce the hard cap: total kept must be <= MAX. Drop more (oldest first)
+            # from the day-survivors if needed, never the always-protected set.
+            total_kept = len(versions) - len(droppable)
+            if total_kept > MAX_VERSIONS_PER_DOCUMENT:
+                day_survivors = [
+                    v["pk"] for v in sorted(versions, key=lambda v: v["version_index"])
+                    if v["pk"] not in protected and v["pk"] not in droppable
+                ]
+                overflow = total_kept - MAX_VERSIONS_PER_DOCUMENT
+                droppable.extend(day_survivors[:overflow])
+
+            for vid in droppable:
+                try:
+                    delete_vectors_for_version(vid)
+                    DataRoomDocumentVersion.objects.filter(pk=vid).delete()
+                    pruned += 1
+                except Exception:
+                    logger.exception("prune_document_versions: failed to drop version_id=%s", vid)
+
+            if droppable:
+                recompute_document_sensitivity(doc.pk)
 
     if pruned:
         logger.info("prune_document_versions: dropped %s version(s)", pruned)
