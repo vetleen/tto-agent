@@ -125,6 +125,17 @@ class ChatHomeModelChoicesTests(TestCase):
         self.assertIn("default_model", response.context)
         self.assertTrue(len(response.context["default_model"]) > 0)
 
+    def test_attach_accept_offers_photo_picker(self):
+        # The attachment file input must advertise image types + image/* so iOS
+        # Safari offers the photo library instead of the camera/video flow.
+        response = self.client.get(reverse("chat_home"))
+        accept = response.context["attach_accept"]
+        self.assertIn("image/*", accept)
+        self.assertIn(".png", accept)
+        self.assertIn(".docx", accept)
+        # Chat consumes images/PDF/docx/text only — no audio.
+        self.assertNotIn(".mp3", accept)
+
     def test_context_includes_default_model_display(self):
         response = self.client.get(reverse("chat_home"))
         self.assertIn("default_model_display", response.context)

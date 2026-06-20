@@ -357,6 +357,7 @@ def chat_home(request):
     # Resolve preferences (model choices, allowed skills, etc.)
     from django.conf import settings as django_settings
 
+    from core.file_types import CHAT_KINDS, accept_attr
     from core.preferences import get_preferences
     from llm.display import (
         get_capability_level,
@@ -435,6 +436,10 @@ def chat_home(request):
             "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
             "active_subagent_count": active_subagent_count,
             "assistant_name": django_settings.ASSISTANT_NAME,
+            # File-picker accept list derived from the unified capability table.
+            # Includes image/* so iOS Safari offers the photo library instead of
+            # defaulting to the camera/video flow.
+            "attach_accept": accept_attr(CHAT_KINDS),
         },
     )
 

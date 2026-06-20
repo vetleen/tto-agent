@@ -185,3 +185,19 @@ def canonical_mime_for_extension(ext: str) -> str | None:
 
 def is_image_extension(ext: str) -> bool:
     return kind_for_extension(ext) == KIND_IMAGE
+
+
+def accept_attr(kinds) -> str:
+    """Build an ``<input type="file" accept=...>`` value for the given kinds.
+
+    Includes both extensions (``.png``) and canonical MIME types so desktop and
+    mobile browsers both match. When images are allowed, appends ``image/*`` so
+    iOS Safari offers the photo picker (and converts HEIC -> JPEG on selection)
+    instead of defaulting to the video/camera flow.
+    """
+    kinds = frozenset(kinds)
+    parts = sorted("." + ft.ext for ft in _types_for_kinds(kinds))
+    parts += sorted(canonical_mimes_for_kinds(kinds))
+    if KIND_IMAGE in kinds:
+        parts.append("image/*")
+    return ",".join(parts)

@@ -53,8 +53,8 @@
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
-    <input class="cursor-pointer border border-default bg-neutral-primary-soft text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept=".pdf,.txt,.md,.html,.docx,.csv,.json,.xml,.rst,.tex,.yaml,.yml,.log,.msg,.eml,.mp3,.mp4,.m4a,.wav,.webm,.flac,.ogg,application/pdf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json,application/xml,text/xml,application/vnd.ms-outlook,message/rfc822,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/flac,audio/ogg" required multiple aria-describedby="file_input_help">
-        <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md, and audio files. Max 50 MB per file, up to 100 files at a time.</p>
+    <input class="cursor-pointer border border-default bg-neutral-primary-soft text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept="{{ upload_accept }}" required multiple aria-describedby="file_input_help">
+        <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md,{% if upload_images_enabled %} images,{% endif %} and audio files. Max 50 MB per file, up to 100 files at a time.</p>
       </div>
       <button id="upload-btn" type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         Add to data room

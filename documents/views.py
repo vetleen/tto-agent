@@ -229,6 +229,21 @@ def data_room_documents(request, data_room_id):
         doc.pii_summary = summarize_pii_keys(pii_by_version.get(vid, []))
     documents = _annotate_relative_dates([d for d in all_docs if not d.is_archived])
     archived_documents = _annotate_relative_dates([d for d in all_docs if d.is_archived])
+
+    # Build the file-picker accept list from the unified capability table so it
+    # always matches what document_upload actually accepts. Images are only
+    # offered when the org has a vision-capable model (the same gate the upload
+    # view enforces) — otherwise the picker would surface photos that get
+    # rejected. Including image/* makes iOS Safari offer the photo library
+    # (and convert HEIC -> JPEG) instead of defaulting to the camera/video flow.
+    from core.file_types import DATA_ROOM_KINDS, KIND_IMAGE, accept_attr
+    from core.preferences import feature_is_available
+
+    images_enabled = feature_is_available(request.user, "document_image_description")
+    upload_kinds = set(DATA_ROOM_KINDS)
+    if not images_enabled:
+        upload_kinds.discard(KIND_IMAGE)
+
     return render(
         request,
         "documents/data_room_documents.html",
@@ -239,6 +254,8 @@ def data_room_documents(request, data_room_id):
             "pii_pill_label": PILL_LABEL,
             "pii_special_tooltip": SPECIAL_TOOLTIP,
             "pii_criminal_tooltip": CRIMINAL_TOOLTIP,
+            "upload_accept": accept_attr(upload_kinds),
+            "upload_images_enabled": images_enabled,
         },
     )
 

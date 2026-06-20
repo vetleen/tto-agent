@@ -275,6 +275,13 @@ def meeting_detail(request, meeting_uuid):
     effective_summarizer_id = str(effective_summarizer.id) if effective_summarizer else ""
     effective_summarizer_name = effective_summarizer.name if effective_summarizer else "Meeting Summarizer"
 
+    # File-picker accept list for the attachment input, derived from the same
+    # capability table the upload view validates against. Includes image/* so
+    # iOS Safari offers the photo library instead of the camera/video flow.
+    from core.file_types import MEETING_ATTACHMENT_KINDS, accept_attr
+
+    attachment_accept = accept_attr(MEETING_ATTACHMENT_KINDS)
+
     return render(
         request,
         "meetings/meeting_detail.html",
@@ -296,6 +303,7 @@ def meeting_detail(request, meeting_uuid):
             "summarizer_skills": summarizer_skills,
             "effective_summarizer_id": effective_summarizer_id,
             "effective_summarizer_name": effective_summarizer_name,
+            "attachment_accept": attachment_accept,
         },
     )
 

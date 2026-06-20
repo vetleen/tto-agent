@@ -253,7 +253,7 @@
       {% csrf_token %}
       <label data-disable-while-busy class="text-heading bg-neutral-primary-soft hover:bg-neutral-secondary border border-default shadow-xs focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 cursor-pointer">
         Add attachment
-        <input type="file" name="file" class="hidden" data-submit-on-change>
+        <input type="file" name="file" class="hidden" accept="{{ attachment_accept }}" data-submit-on-change>
       </label>
     </form>
   </section>

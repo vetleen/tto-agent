@@ -46,3 +46,31 @@ class FileTypeTableTests(SimpleTestCase):
             m["csv"],
             {"text/csv", "application/csv", "application/vnd.ms-excel", "text/plain"},
         )
+
+    def test_accept_attr_includes_extensions_mimes_and_image_glob(self):
+        accept = ft.accept_attr(ft.DATA_ROOM_KINDS)
+        tokens = accept.split(",")
+        # Extensions (with leading dot) and canonical MIME types both present.
+        self.assertIn(".png", tokens)
+        self.assertIn("image/png", tokens)
+        self.assertIn(".pdf", tokens)
+        self.assertIn("application/pdf", tokens)
+        # image/* is appended so iOS Safari offers the photo library.
+        self.assertIn("image/*", tokens)
+
+    def test_accept_attr_omits_image_glob_when_no_images(self):
+        # Without the image kind, no image/* and no image extensions/MIMEs.
+        accept = ft.accept_attr(ft.DATA_ROOM_KINDS - {ft.KIND_IMAGE})
+        tokens = accept.split(",")
+        self.assertNotIn("image/*", tokens)
+        self.assertNotIn(".png", tokens)
+        self.assertNotIn("image/png", tokens)
+        # Non-image types still present.
+        self.assertIn(".pdf", tokens)
+
+    def test_accept_attr_chat_kinds_has_images_no_audio(self):
+        tokens = ft.accept_attr(ft.CHAT_KINDS).split(",")
+        self.assertIn("image/*", tokens)
+        self.assertIn(".docx", tokens)
+        self.assertNotIn(".mp3", tokens)
+        self.assertNotIn("audio/mpeg", tokens)

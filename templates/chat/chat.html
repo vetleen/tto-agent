@@ -290,7 +290,7 @@
     <div class="max-w-4xl mx-auto w-full px-4 py-3">
       {# Hidden file input for attachments #}
       <input type="file" id="image-upload-input" class="hidden"
-             accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.pdf,text/plain,.txt,text/markdown,.md,text/csv,.csv,text/html,.html,application/json,.json,text/xml,.xml,application/xml,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" multiple />
+             accept="{{ attach_accept }}" multiple />
       {# Attached items — skills, then data rooms, then files; all on one wrapping row #}
       <div class="flex flex-wrap gap-2 mb-0 has-[span]:mb-2">
         {# Attached skill pills (rendered by renderSkillPills() from activeSkillIds) #}

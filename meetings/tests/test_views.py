@@ -84,6 +84,18 @@ class MeetingDetailViewTests(TestCase):
         response = self.client.get(reverse("meeting_detail", args=[self.meeting.uuid]))
         self.assertEqual(response.status_code, 302)
 
+    def test_attachment_input_offers_photo_picker(self):
+        # The attachment file input must advertise image types + image/* so iOS
+        # Safari offers the photo library instead of the camera/video flow.
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("meeting_detail", args=[self.meeting.uuid]))
+        accept = response.context["attachment_accept"]
+        self.assertIn("image/*", accept)
+        self.assertIn(".png", accept)
+        self.assertIn(".docx", accept)
+        # Meeting attachments mirror chat: no audio/email kinds.
+        self.assertNotIn(".mp3", accept)
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingCRUDTests(TestCase):

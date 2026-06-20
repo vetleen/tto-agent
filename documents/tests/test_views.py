@@ -120,6 +120,31 @@ class DocumentViewsTests(TestCase):
         self.assertContains(response, "Upload documents")
         self.assertContains(response, "name=\"file\"")
 
+    @patch("core.preferences.feature_is_available", return_value=True)
+    def test_upload_accept_offers_photo_picker_when_images_enabled(self, _mock):
+        # When the org has a vision model, the file input must advertise image
+        # types + image/* so iOS Safari offers the photo library (the bug fix).
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}))
+        accept = response.context["upload_accept"]
+        self.assertIn("image/*", accept)
+        self.assertIn(".png", accept)
+        self.assertIn("image/png", accept)
+        self.assertTrue(response.context["upload_images_enabled"])
+
+    @patch("core.preferences.feature_is_available", return_value=False)
+    def test_upload_accept_omits_images_when_vision_disabled(self, _mock):
+        # No vision model -> images are rejected on upload, so the picker must
+        # not advertise them (else iOS would offer photos that get rejected).
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}))
+        accept = response.context["upload_accept"]
+        self.assertNotIn("image/*", accept)
+        self.assertNotIn(".png", accept)
+        self.assertFalse(response.context["upload_images_enabled"])
+        # Non-image types stay available.
+        self.assertIn(".pdf", accept)
+
     def test_document_upload_creates_document_and_redirects(self):
         self.client.force_login(self.user)
         content = b"Hello world"
