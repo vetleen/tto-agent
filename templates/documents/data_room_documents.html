@@ -374,11 +374,7 @@
 
     var MAX_FILES = 100;
     var MAX_SIZE = 50000000;
-    var ALLOWED_EXTENSIONS = new Set([
-      'pdf','txt','md','html','docx','csv','json','xml','rst','tex',
-      'yaml','yml','log','msg','eml','mp3','mp4','mpeg','mpga','m4a',
-      'wav','webm','flac','ogg'
-    ]);
+    var ALLOWED_EXTENSIONS = new Set({{ upload_extensions_json|safe }});
 
     var progressDiv = document.getElementById('upload-progress');
     var progressText = document.getElementById('upload-progress-text');

@@ -236,7 +236,7 @@ def data_room_documents(request, data_room_id):
     # view enforces) — otherwise the picker would surface photos that get
     # rejected. Including image/* makes iOS Safari offer the photo library
     # (and convert HEIC -> JPEG) instead of defaulting to the camera/video flow.
-    from core.file_types import DATA_ROOM_KINDS, KIND_IMAGE, accept_attr
+    from core.file_types import DATA_ROOM_KINDS, KIND_IMAGE, accept_attr, allowed_extensions
     from core.preferences import feature_is_available
 
     images_enabled = feature_is_available(request.user, "document_image_description")
@@ -256,6 +256,9 @@ def data_room_documents(request, data_room_id):
             "pii_criminal_tooltip": CRIMINAL_TOOLTIP,
             "upload_accept": accept_attr(upload_kinds),
             "upload_images_enabled": images_enabled,
+            # Client-side pre-upload validation list — derived from the same
+            # table as the picker and the server check so they cannot drift.
+            "upload_extensions_json": json.dumps(sorted(allowed_extensions(upload_kinds))),
         },
     )
 

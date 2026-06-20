@@ -131,6 +131,11 @@ class DocumentViewsTests(TestCase):
         self.assertIn(".png", accept)
         self.assertIn("image/png", accept)
         self.assertTrue(response.context["upload_images_enabled"])
+        # The client-side pre-upload allowlist must also accept images, or the
+        # JS rejects the picked photo with "can't read this file type yet".
+        exts = json.loads(response.context["upload_extensions_json"])
+        self.assertIn("jpeg", exts)
+        self.assertIn("png", exts)
 
     @patch("core.preferences.feature_is_available", return_value=False)
     def test_upload_accept_omits_images_when_vision_disabled(self, _mock):
@@ -144,6 +149,10 @@ class DocumentViewsTests(TestCase):
         self.assertFalse(response.context["upload_images_enabled"])
         # Non-image types stay available.
         self.assertIn(".pdf", accept)
+        # Client-side allowlist also drops images so it matches the server gate.
+        exts = json.loads(response.context["upload_extensions_json"])
+        self.assertNotIn("jpeg", exts)
+        self.assertIn("pdf", exts)
 
     def test_document_upload_creates_document_and_redirects(self):
         self.client.force_login(self.user)
