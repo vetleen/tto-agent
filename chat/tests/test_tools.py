@@ -161,6 +161,7 @@ class SearchDocumentsToolTests(TestCase):
 
         result = self._invoke({"query": "chart"}, self._ctx())
         self.assertIn("[[image:", result)
+        self.assertIn("This document is an image", result)
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     @patch("documents.services.retrieval.get_merged_context_windows")
@@ -365,6 +366,22 @@ class ReadDocumentToolTests(TestCase):
         entry = result["documents"][0]
         self.assertIn("image", entry)
         self.assertTrue(entry["image"].startswith("[[image:"))
+        # The content is flagged as a vision description, with the real chunk
+        # text still present, so the model doesn't re-describe the description.
+        self.assertIn("This document is an image", entry["content"])
+        self.assertIn("AI-generated description", entry["content"])
+        self.assertIn("A bar chart.", entry["content"])
+
+    def test_text_document_has_no_image_note(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="notes.txt", status=DataRoomDocument.Status.READY,
+        )
+        _doc_chunk(doc, chunk_index=0, text="Plain text.", token_count=2)
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        entry = result["documents"][0]
+        self.assertNotIn("This document is an image", entry["content"])
+        self.assertNotIn("image", entry)
 
     def test_scanning_document_returns_not_found(self):
         """A document still awaiting its PII scan must not be readable (and the

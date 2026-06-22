@@ -213,7 +213,17 @@ _PROCESSING_NOTE = (
     "Saving triggers re-processing (chunk → embed → guardrails → PII). The new version "
     "becomes the live searchable document only once it finishes and clears the scans; until "
     "then the previously live version stays in retrieval. Use document_status to check. "
-    "Only save when the document is complete."
+    "Therefore, try to defer the save action to when the document is complete."
+)
+
+# Prepended to an image-as-document's text wherever it's surfaced (search/read).
+# That text IS the vision-generated description — not text inside the image —
+# and without this note the model tends to "describe the description".
+_IMAGE_DESC_NOTE = (
+    "[This document is an image. The text below is an AI-generated description of "
+    "what the image shows — it is the image's searchable text, not text found "
+    "inside the image, and not the image itself. Treat it as a description of the "
+    "image's visual content; not the actual image itself."
 )
 
 
@@ -398,6 +408,10 @@ class SearchDocumentsTool(ContextAwareTool):
                 lines.append(f"**Section:** {heading}")
             if chunk_label:
                 lines.append(f"**{chunk_label}:**")
+            # For an image-as-document the retrieved text is the vision
+            # description; label it so the model doesn't re-describe it.
+            if doc_id in image_version_by_doc:
+                lines.append(_IMAGE_DESC_NOTE)
             lines.append(window["context_text"])
             lines.append("")
 
@@ -559,6 +573,11 @@ class ReadDocumentTool(ContextAwareTool):
                     headings.append(heading)
             content = "\n\n".join(content_parts)
             total_chars += used
+
+            # Image-as-document: the chunks are the vision description, so flag
+            # it as such — otherwise the model re-describes the description.
+            if getattr(version, "parser_type", "") == "image" and content:
+                content = _IMAGE_DESC_NOTE + "\n\n" + content
 
             if read_chunk_ids and context and context.conversation_id:
                 _record_chunk_usage(context.conversation_id, read_chunk_ids)
