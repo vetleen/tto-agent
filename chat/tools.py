@@ -1051,7 +1051,7 @@ class GetDocumentStatusTool(ContextAwareTool):
 
 
 # Register on import
-class ShowImageInput(ReasonBaseModel):
+class DocumentViewImageInput(ReasonBaseModel):
     doc_indices: list[int] = Field(
         description="Document index number(s) of the image(s) to view, from an attached data room."
     )
@@ -1093,17 +1093,17 @@ def _collect_doc_images(doc, max_images: int = 4):
     return out[:max_images]
 
 
-class ShowImageTool(ContextAwareTool):
+class DocumentViewImageTool(ContextAwareTool):
     """Attach data-room image(s) to the conversation so the model can view them."""
 
-    name: str = "show_image"
+    name: str = "document_view_image"
     description: str = (
         "View image(s) from an attached data room by document index so you can see and reason "
         "about them (charts, diagrams, screenshots, photos). The image(s) are attached to the "
         "conversation for you to inspect. Use to view an "
         "image document, or to inspect an uploaded image."
     )
-    args_schema: type[BaseModel] = ShowImageInput
+    args_schema: type[BaseModel] = DocumentViewImageInput
 
     def _run(self, doc_indices: list[int], data_room_id: int | None = None, **kwargs) -> str:
         import base64
@@ -1111,7 +1111,7 @@ class ShowImageTool(ContextAwareTool):
         from chat.image_assets import get_or_create_version_image_token
 
         if not doc_indices or not isinstance(doc_indices, list):
-            raise ValueError("show_image requires a non-empty 'doc_indices' list")
+            raise ValueError("document_view_image requires a non-empty 'doc_indices' list")
         context = self.context
         results = []
         attached = 0
@@ -1156,7 +1156,7 @@ class ShowImageTool(ContextAwareTool):
 
 _registry = get_tool_registry()
 _registry.register_tool(SearchDocumentsTool())
-_registry.register_tool(ShowImageTool())
+_registry.register_tool(DocumentViewImageTool())
 _registry.register_tool(ReadDocumentTool())
 _registry.register_tool(CanvasSaveToDocumentTool())
 _registry.register_tool(ListDocumentsTool())

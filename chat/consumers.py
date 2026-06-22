@@ -1373,7 +1373,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "document_list", "document_open_to_canvas", "document_edit",
             "document_archive", "document_rename",
             "document_version_list", "document_version_restore", "document_status",
-            "show_image",
+            "document_view_image",
         }
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:

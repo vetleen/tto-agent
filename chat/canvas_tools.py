@@ -31,7 +31,7 @@ def _strip_markdown_images(content: str) -> tuple[str, int]:
 _MD_IMAGE_WARNING = (
     "Removed %d markdown image(s) (![...](...)) — that syntax does not render in "
     "the canvas. To embed an image, paste the [[image:<uuid>|label]] token a "
-    "document tool (document_search / document_list / document_read / show_image) "
+    "document tool (document_search / document_list / document_read / document_view_image) "
     "gave you, verbatim, into the content."
 )
 

@@ -2440,7 +2440,7 @@
         let displayText = "Working...";
         if (toolName === "document_search") displayText = "Searching documents...";
         else if (toolName === "document_read") displayText = "Reading document...";
-        else if (toolName === "show_image") displayText = "Viewing image...";
+        else if (toolName === "document_view_image") displayText = "Viewing image...";
         else if (toolName === "canvas_activate") displayText = "Switching active canvases...";
         else if (toolName === "canvas_write") displayText = "Writing document...";
         else if (toolName === "canvas_edit") displayText = "Editing document...";
@@ -2495,7 +2495,7 @@
           try { const result = JSON.parse(resultStr); if (toolName === "document_search" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "document_read" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); else if (toolName === "chat_skill_attach" && result && result.status === "ok") { if (result.attached_skill_name) doneLabel = "Attached skill: " + result.attached_skill_name; else if (result.detached) doneLabel = "Detached skill"; else if (result.no_change) doneLabel = "Skill already attached"; else doneLabel = "No skill attached"; } else if (toolName === "chat_subagent_create" && result.status) { if (result.status === "queued") doneLabel = "Sub-agent queued"; else if (result.status === "started") doneLabel = "Sub-agent dispatched"; else if (result.status === "completed") doneLabel = "Sub-agent finished"; else if (result.status === "timeout") doneLabel = "Sub-agent dispatched"; else if (result.status === "error") doneLabel = "Sub-agent failed"; else doneLabel = "Sub-agent dispatched"; if (result.status === "queued" || result.status === "started" || result.status === "timeout") { var reason = subagentReasons[toolId] || null; delete subagentReasons[toolId]; updateSubagentStatusBar(activeSubagentCount + 1, reason); } } else if (toolName === "canvas_save_to_document" && result.status === "ok") doneLabel = "Saved \"" + result.canvas_title + "\" to " + result.data_room_name; else if (toolName === "chat_loop_create" && result.status === "ok") doneLabel = "Created loop" + (result.schedule_label ? " · " + result.schedule_label : ""); else if (toolName === "chat_loop_list" && result.count !== undefined) doneLabel = "Found " + result.count + " loop" + (result.count !== 1 ? "s" : ""); else if (toolName === "chat_loop_stop" && result.status === "ok") doneLabel = "Stopped loop"; else if (toolName === "chat_loop_edit" && result.status === "ok") doneLabel = "Updated loop" + (result.schedule_label ? " · " + result.schedule_label : ""); } catch (e) {}
           if (doneLabel === "Done") { if (toolName === "document_search") doneLabel = "Searched documents";
           else if (toolName === "document_read") doneLabel = "Read document";
-          else if (toolName === "show_image") doneLabel = "Viewed image";
+          else if (toolName === "document_view_image") doneLabel = "Viewed image";
           else if (toolName === "canvas_activate") doneLabel = "Updated active canvases";
           else if (toolName === "canvas_write") doneLabel = "Rewrote the canvas text from scratch";
           else if (toolName === "canvas_edit") doneLabel = "Edited the canvas text";

@@ -1,5 +1,5 @@
 """Tests for same-turn image viewing: the pipeline injection helper and the
-show_image tool."""
+document_view_image tool."""
 
 import tempfile
 
@@ -66,7 +66,7 @@ class AppendPendingImagesTests(TestCase):
 
 
 @override_settings(MEDIA_ROOT=_MEDIA)
-class ShowImageToolTests(TestCase):
+class DocumentViewImageToolTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="siv@test.com", password="pw")
         self.room = DataRoom.objects.create(name="R", slug="r-siv", created_by=self.user)
@@ -83,9 +83,9 @@ class ShowImageToolTests(TestCase):
         self.doc.save(update_fields=["current_version"])
 
     def _tool(self, data_room_ids):
-        from chat.tools import ShowImageTool
+        from chat.tools import DocumentViewImageTool
 
-        tool = ShowImageTool()
+        tool = DocumentViewImageTool()
         tool.set_context(RunContext.create(user_id=self.user.pk, data_room_ids=data_room_ids))
         return tool
 
@@ -116,7 +116,7 @@ class ShowImageToolTests(TestCase):
 
     def test_attaches_image_from_original_file_when_native_blob_empty(self):
         # Production shape: a freshly-uploaded image keeps its bytes on
-        # doc.original_file with an EMPTY native_blob. show_image must still
+        # doc.original_file with an EMPTY native_blob. document_view_image must still
         # find the image, not report "no viewable image".
         doc = DataRoomDocument.objects.create(
             data_room=self.room, uploaded_by=self.user,
