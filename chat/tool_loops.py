@@ -116,6 +116,10 @@ class LoopCreateInput(ReasonBaseModel):
         description="Skill IDs to attach to the loop (up to 5). Omit for none.",
     )
     model: str = Field(default="", description="Model ID for the loop's turns. Omit for the preferred chat model.")
+    max_runs: int | None = Field(
+        default=None,
+        description="Auto-pause the loop after this many runs. Omit or 0 for unlimited (runs until paused).",
+    )
 
 
 class LoopCreateTool(ContextAwareTool):
@@ -138,7 +142,8 @@ class LoopCreateTool(ContextAwareTool):
         interval_unit: str = "hours", clock_time: str = "", clock_frequency: str = "daily",
         clock_weekday: int = 0, history_mode: str = "fresh",
         first_run_mode: str = "now", first_run_at: str = "", tz: str = "",
-        data_room_ids: list | None = None, skill_ids: list | None = None, model: str = "", **kwargs,
+        data_room_ids: list | None = None, skill_ids: list | None = None, model: str = "",
+        max_runs: int | None = None, **kwargs,
     ) -> str:
         from chat.loop_service import create_loop
 
@@ -160,19 +165,15 @@ class LoopCreateTool(ContextAwareTool):
             "data_room_ids": data_room_ids or [],
             "skill_ids": skill_ids or [],
             "model": model,
+            "max_runs": max_runs,
         }
-        loop, was_reduced, errors = create_loop(
+        loop, errors = create_loop(
             user=user, body=body, now=_now(), tz_name=(tz or _default_tz()),
         )
         if errors:
             return json.dumps({"status": "error", "message": " ".join(errors)})
 
-        result = {"status": "ok", "was_reduced": was_reduced, **_loop_summary(loop)}
-        if was_reduced:
-            result["notice"] = (
-                f"Run count reduced to {loop.max_runs} so the last run stays within a year."
-            )
-        return json.dumps(result)
+        return json.dumps({"status": "ok", **_loop_summary(loop)})
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +284,10 @@ class LoopEditInput(ReasonBaseModel):
         description="Replace the attached skills (up to 5; omit to keep, [] to clear).",
     )
     model: str | None = Field(default=None, description="Replace the loop's model ('' for preferred).")
+    max_runs: int | None = Field(
+        default=None,
+        description="Auto-pause after this many runs; 0 for unlimited. Omit to keep the current setting.",
+    )
     restart: bool = Field(
         default=False,
         description="Re-activate a paused loop and reset its run count to 0 (start over from now).",
@@ -310,8 +315,8 @@ class LoopEditTool(ContextAwareTool):
         self, loop_id: str, prompt=None, cadence_kind=None, interval_value=None,
         interval_unit=None, clock_time=None, clock_frequency=None, clock_weekday=None,
         history_mode=None, first_run_mode=None, first_run_at=None,
-        data_room_ids=None, skill_ids=None, model=None, restart: bool = False,
-        resume: bool = False, **kwargs,
+        data_room_ids=None, skill_ids=None, model=None, max_runs=None,
+        restart: bool = False, resume: bool = False, **kwargs,
     ) -> str:
         from chat.loop_service import _loop_form_json, resume_loop, update_loop
         from chat.models import Loop
@@ -350,6 +355,7 @@ class LoopEditTool(ContextAwareTool):
             "data_room_ids": seed["data_room_ids"],
             "skill_ids": seed["skill_ids"],
             "model": seed["model"],
+            "max_runs": seed["max_runs"],
             "first_run_mode": "keep",
         }
 
@@ -360,6 +366,7 @@ class LoopEditTool(ContextAwareTool):
             "clock_weekday": clock_weekday,
             "first_run_mode": first_run_mode, "first_run_at": first_run_at,
             "data_room_ids": data_room_ids, "skill_ids": skill_ids, "model": model,
+            "max_runs": max_runs,
         }
         for key, val in overrides.items():
             if val is not None:
@@ -367,7 +374,7 @@ class LoopEditTool(ContextAwareTool):
         if restart:
             body["restart"] = True
 
-        loop, was_reduced, errors = update_loop(
+        loop, errors = update_loop(
             loop=loop, user=user, body=body, now=_now(),
             tz_name=(loop.tz or _default_tz()),
         )
@@ -377,12 +384,7 @@ class LoopEditTool(ContextAwareTool):
         if resume and loop.status == Loop.Status.PAUSED:
             resume_loop(loop, _now())
 
-        result = {"status": "ok", "was_reduced": was_reduced, **_loop_summary(loop)}
-        if was_reduced:
-            result["notice"] = (
-                f"Run count reduced to {loop.max_runs} so the last run stays within a year."
-            )
-        return json.dumps(result)
+        return json.dumps({"status": "ok", **_loop_summary(loop)})
 
 
 # Register on import

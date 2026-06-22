@@ -2,21 +2,12 @@
 
 A loop stores only ``next_run`` (when it should next fire). After a fire the
 service recomputes ``next_run`` from the fire time via :func:`compute_next_run`.
-:func:`clamp_max_runs` keeps a loop from scheduling runs more than a year out.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
-
-# Run count is fixed policy (not user-configurable): a loop runs 50 times, or
-# fewer if a year elapses first (see clamp_max_runs / MAX_HORIZON_DAYS). The cap
-# and the default are intentionally equal; they diverge only if per-loop run
-# counts are reintroduced.
-DEFAULT_MAX_RUNS = 50
-MAX_RUNS_CAP = 50
-MAX_HORIZON_DAYS = 365
 
 _UTC = ZoneInfo("UTC")
 
@@ -93,45 +84,3 @@ def loop_schedule_kwargs(loop) -> dict:
 def next_run_for_loop(loop, reference_dt: datetime) -> datetime:
     """Convenience: next fire time for a ``Loop`` from ``reference_dt``."""
     return compute_next_run(reference_dt, **loop_schedule_kwargs(loop))
-
-
-def clamp_max_runs(
-    requested: int | None, reference_dt: datetime, *,
-    cadence_kind: str,
-    interval_seconds: int | None = None,
-    clock_time: time | None = None,
-    clock_frequency: str | None = None,
-    clock_weekday: int | None = None,
-    tz: str = "UTC",
-) -> tuple[int, bool]:
-    """Clamp the requested run count to ``[1, 50]``, then reduce it so the last
-    scheduled run lands within :data:`MAX_HORIZON_DAYS` of ``reference_dt``.
-
-    Counts run 1 as firing at/around ``reference_dt`` and walks the cadence
-    forward; stops once a fire would exceed the horizon. Returns
-    ``(effective_max, was_reduced)``.
-    """
-    original = max(1, int(requested or DEFAULT_MAX_RUNS))
-    capped = min(original, MAX_RUNS_CAP)
-    horizon = reference_dt + timedelta(days=MAX_HORIZON_DAYS)
-    sched = {
-        "cadence_kind": cadence_kind,
-        "interval_seconds": interval_seconds,
-        "clock_time": clock_time,
-        "clock_frequency": clock_frequency,
-        "clock_weekday": clock_weekday,
-        "tz": tz,
-    }
-
-    count = 1  # run 1 fires at/around the reference time
-    cursor = reference_dt
-    for _ in range(capped - 1):
-        cursor = compute_next_run(cursor, **sched)
-        if cursor > horizon:
-            break
-        count += 1
-
-    effective = max(1, min(count, capped))
-    # Reduced if the user gets fewer runs than requested — whether trimmed by the
-    # 50-run cap or the 365-day horizon.
-    return effective, effective < original

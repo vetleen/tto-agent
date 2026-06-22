@@ -157,7 +157,7 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
             "runs_completed", "last_result_at", "consecutive_errors",
             "next_run", "updated_at",
         ]
-        if loop.runs_completed >= loop.max_runs:
+        if loop.max_runs is not None and loop.runs_completed >= loop.max_runs:
             loop.status = Loop.Status.PAUSED
             update_fields.append("status")
         loop.save(update_fields=update_fields)
@@ -204,6 +204,21 @@ def _parse_int(value, *, default, lo, hi):
     return max(lo, min(n, hi))
 
 
+def _parse_max_runs(value):
+    """Normalize a run-cap payload value into ``int >= 1`` or ``None``.
+
+    ``None``, ``""``, ``0``, the string ``"unlimited"``, and anything
+    unparseable all mean "no cap" (the loop runs until paused).
+    """
+    if value in (None, "", "unlimited"):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
 def _parse_hhmm(value):
     """Parse 'HH:MM' into a datetime.time, or None."""
     from datetime import time as _time
@@ -232,12 +247,10 @@ def _parse_local_dt(value, tz_name, now):
 def _build_loop_fields(body, *, now, tz_name):
     """Validate + normalize a loop create/edit payload into model field values.
 
-    Returns ``(fields, was_reduced, errors)``. ``fields`` is a dict ready to
-    splat onto a Loop; ``errors`` is a list of user-facing strings.
+    Returns ``(fields, errors)``. ``fields`` is a dict ready to splat onto a
+    Loop; ``errors`` is a list of user-facing strings.
     """
-    from chat.loop_schedule import (
-        DEFAULT_MAX_RUNS, clamp_max_runs, compute_next_run,
-    )
+    from chat.loop_schedule import compute_next_run
     from chat.models import Loop
 
     errors = []
@@ -296,11 +309,9 @@ def _build_loop_fields(body, *, now, tz_name):
     else:
         next_run = now
 
-    # Run count is fixed policy (DEFAULT_MAX_RUNS), not taken from the payload —
-    # customization was removed. clamp_max_runs still trims it so the last run
-    # lands within a year; ``was_reduced`` then reflects only that year-horizon
-    # trim.
-    effective_max, was_reduced = clamp_max_runs(DEFAULT_MAX_RUNS, now, **sched)
+    # Run cap is optional: an integer >= 1 auto-pauses the loop at that many
+    # runs; None (the default) means it runs until the user pauses it.
+    max_runs = _parse_max_runs(body.get("max_runs"))
 
     fields = {
         "prompt": prompt,
@@ -312,9 +323,9 @@ def _build_loop_fields(body, *, now, tz_name):
         "clock_weekday": clock_weekday,
         "tz": tz_name,
         "next_run": next_run,
-        "max_runs": effective_max,
+        "max_runs": max_runs,
     }
-    return fields, was_reduced, errors
+    return fields, errors
 
 
 def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
@@ -384,16 +395,16 @@ def _loop_form_json(loop, prefs):
 def create_loop(*, user, body, now, tz_name):
     """Validate a payload, create a backing thread + Loop for ``user``.
 
-    Returns ``(loop, was_reduced, errors)``. On validation error ``loop`` is
-    ``None`` and ``errors`` is non-empty.
+    Returns ``(loop, errors)``. On validation error ``loop`` is ``None`` and
+    ``errors`` is non-empty.
     """
     from django.db import transaction
 
     from chat.models import ChatThread, Loop
 
-    fields, was_reduced, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
+    fields, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
     if errors:
-        return None, was_reduced, errors
+        return None, errors
     if fields["next_run"] is None:  # "keep" has no meaning on create
         fields["next_run"] = now
 
@@ -406,7 +417,7 @@ def create_loop(*, user, body, now, tz_name):
             model=body.get("model"),
         )
         loop = Loop.objects.create(thread=thread, created_by=user, **fields)
-    return loop, was_reduced, []
+    return loop, []
 
 
 def update_loop(*, loop, user, body, now, tz_name):
@@ -414,13 +425,13 @@ def update_loop(*, loop, user, body, now, tz_name):
 
     The caller is responsible for fetching ``loop`` and checking ownership.
     Honors ``body['restart']`` (re-activate + reset run count). Returns
-    ``(loop, was_reduced, errors)``; ``loop`` is ``None`` on validation error.
+    ``(loop, errors)``; ``loop`` is ``None`` on validation error.
     """
     from chat.models import Loop
 
-    fields, was_reduced, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
+    fields, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
     if errors:
-        return None, was_reduced, errors
+        return None, errors
 
     _link_loop_resources(
         loop.thread, user, body.get("data_room_ids"), body.get("skill_ids"),
@@ -447,7 +458,7 @@ def update_loop(*, loop, user, body, now, tz_name):
     loop.save()
     if body.get("restart"):
         _mirror_archive_to_thread(loop, False)
-    return loop, was_reduced, []
+    return loop, []
 
 
 def _mirror_archive_to_thread(loop, archived):
@@ -495,8 +506,8 @@ def resume_loop(loop, now):
     loop.running = False
     loop.locked_at = None
     # A resumed loop that already hit its cap would re-pause immediately; give it
-    # at least one more run.
-    if loop.runs_completed >= loop.max_runs:
+    # at least one more run. (Unlimited loops have no cap to bump.)
+    if loop.max_runs is not None and loop.runs_completed >= loop.max_runs:
         loop.max_runs = loop.runs_completed + 1
     loop.save(update_fields=[
         "status", "next_run", "running", "locked_at", "max_runs", "updated_at",

@@ -1131,7 +1131,7 @@ def loop_create(request):
     except (json.JSONDecodeError, ValueError):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    loop, was_reduced, errors = create_loop(
+    loop, errors = create_loop(
         user=request.user, body=body,
         now=timezone.now(), tz_name=timezone.get_current_timezone_name(),
     )
@@ -1142,12 +1142,7 @@ def loop_create(request):
         "ok": True,
         "loop_id": str(loop.id),
         "thread_id": str(loop.thread_id),
-        "was_reduced": was_reduced,
         "max_runs": loop.max_runs,
-        "notice": (
-            f"Run count reduced to {loop.max_runs} so the last run stays within a year."
-            if was_reduced else ""
-        ),
     })
 
 
@@ -1166,7 +1161,7 @@ def loop_edit(request, loop_id):
     except (json.JSONDecodeError, ValueError):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    loop, was_reduced, errors = update_loop(
+    loop, errors = update_loop(
         loop=loop, user=request.user, body=body,
         now=timezone.now(), tz_name=timezone.get_current_timezone_name(),
     )
@@ -1176,12 +1171,7 @@ def loop_edit(request, loop_id):
     return JsonResponse({
         "ok": True,
         "loop_id": str(loop.id),
-        "was_reduced": was_reduced,
         "max_runs": loop.max_runs,
-        "notice": (
-            f"Run count reduced to {loop.max_runs} so the last run stays within a year."
-            if was_reduced else ""
-        ),
     })
 
 

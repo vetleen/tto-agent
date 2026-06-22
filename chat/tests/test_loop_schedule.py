@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from django.test import SimpleTestCase
 
-from chat.loop_schedule import clamp_max_runs, compute_next_run
+from chat.loop_schedule import compute_next_run
 
 UTC = ZoneInfo("UTC")
 
@@ -64,39 +64,3 @@ class ComputeNextRunClockTests(SimpleTestCase):
             clock_frequency="daily", tz="Europe/Oslo",
         )
         self.assertEqual(nxt, datetime(2026, 6, 15, 7, 0, tzinfo=UTC))
-
-
-class ClampMaxRunsTests(SimpleTestCase):
-    def setUp(self):
-        self.ref = datetime(2026, 6, 15, 8, 0, tzinfo=UTC)
-
-    def test_long_interval_reduces_to_fit_year(self):
-        # 50 runs × 30-day interval would span ~1470 days; clamp to fit 365d.
-        effective, reduced = clamp_max_runs(
-            50, self.ref, cadence_kind="interval",
-            interval_seconds=30 * 86400,
-        )
-        self.assertEqual(effective, 13)  # runs at day 0,30,...,360
-        self.assertTrue(reduced)
-
-    def test_short_interval_not_reduced(self):
-        effective, reduced = clamp_max_runs(
-            5, self.ref, cadence_kind="interval", interval_seconds=3600,
-        )
-        self.assertEqual(effective, 5)
-        self.assertFalse(reduced)
-
-    def test_caps_at_fifty(self):
-        effective, reduced = clamp_max_runs(
-            100, self.ref, cadence_kind="interval", interval_seconds=3600,
-        )
-        self.assertEqual(effective, 50)
-        self.assertTrue(reduced)
-
-    def test_daily_clock_fits_year(self):
-        effective, reduced = clamp_max_runs(
-            50, self.ref, cadence_kind="clock", clock_time=time(9, 0),
-            clock_frequency="daily", tz="UTC",
-        )
-        self.assertEqual(effective, 50)
-        self.assertFalse(reduced)

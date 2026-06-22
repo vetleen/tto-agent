@@ -183,9 +183,10 @@ class Loop(models.Model):
     next_run = models.DateTimeField(db_index=True)
 
     # --- Run limits / state ---
-    # Fixed policy: 50 runs, or fewer if a year elapses first. Not user-editable
-    # (see chat.loop_schedule.DEFAULT_MAX_RUNS).
-    max_runs = models.PositiveIntegerField(default=50)
+    # Optional run cap. NULL means "unlimited" — the loop runs until the user
+    # pauses it (the default for new loops). A positive integer makes the loop
+    # auto-pause once ``runs_completed`` reaches it.
+    max_runs = models.PositiveIntegerField(null=True, blank=True, default=None)
     runs_completed = models.PositiveIntegerField(default=0)
     status = models.CharField(
         max_length=8, choices=Status.choices, default=Status.ACTIVE, db_index=True,

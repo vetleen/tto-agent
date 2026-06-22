@@ -119,17 +119,20 @@ class CreateLoopToolTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(Loop.objects.count(), 0)
 
-    def test_create_clamps_max_runs(self):
-        # Run count is the fixed 50-run default; over a 30-day interval that
-        # would span years, so it's trimmed to fit within one year.
+    def test_create_defaults_to_unlimited(self):
+        # No run cap unless the agent asks for one.
+        result = _invoke(LoopCreateTool, {"prompt": "Run forever."}, self.ctx)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(result["max_runs"])
+        self.assertIsNone(Loop.objects.get(id=result["loop_id"]).max_runs)
+
+    def test_create_with_max_runs(self):
         result = _invoke(LoopCreateTool, {
-            "prompt": "Long horizon.",
-            "cadence_kind": "interval", "interval_value": 30, "interval_unit": "days",
+            "prompt": "Run a few times.", "max_runs": 7,
         }, self.ctx)
         self.assertEqual(result["status"], "ok")
-        self.assertTrue(result["was_reduced"])
-        self.assertEqual(result["max_runs"], 13)
-        self.assertIn("notice", result)
+        self.assertEqual(result["max_runs"], 7)
+        self.assertEqual(Loop.objects.get(id=result["loop_id"]).max_runs, 7)
 
     def test_create_without_user_context(self):
         result = _invoke(LoopCreateTool, {"prompt": "No user."}, _ctx(None))
@@ -222,6 +225,28 @@ class EditLoopToolTests(TestCase):
         loop.refresh_from_db()
         self.assertEqual(loop.prompt, "New prompt only.")
         self.assertEqual(loop.interval_seconds, 6 * 3600)  # untouched
+
+    def test_partial_edit_preserves_max_runs(self):
+        # Omitting max_runs must not wipe an existing cap.
+        loop = _make_loop(self.user, max_runs=10)
+        result = _invoke(LoopEditTool, {
+            "loop_id": str(loop.id), "prompt": "New prompt.",
+        }, self.ctx)
+        self.assertEqual(result["status"], "ok")
+        loop.refresh_from_db()
+        self.assertEqual(loop.max_runs, 10)
+
+    def test_edit_sets_and_clears_max_runs(self):
+        loop = _make_loop(self.user, max_runs=10)
+        # Set a new cap.
+        _invoke(LoopEditTool, {"loop_id": str(loop.id), "max_runs": 3}, self.ctx)
+        loop.refresh_from_db()
+        self.assertEqual(loop.max_runs, 3)
+        # max_runs=0 clears it back to unlimited.
+        result = _invoke(LoopEditTool, {"loop_id": str(loop.id), "max_runs": 0}, self.ctx)
+        self.assertEqual(result["status"], "ok")
+        loop.refresh_from_db()
+        self.assertIsNone(loop.max_runs)
 
     def test_edit_interval_to_clock(self):
         loop = _make_loop(self.user)

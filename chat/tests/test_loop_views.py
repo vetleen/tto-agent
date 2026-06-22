@@ -49,18 +49,21 @@ class LoopViewTests(TestCase):
         self.assertEqual(loop.interval_seconds, 6 * 3600)
         self.assertEqual(loop.history_mode, "fresh")
         self.assertTrue(ChatThread.objects.filter(id=data["thread_id"]).exists())
-        self.assertFalse(data["was_reduced"])
+        # No run cap by default: the loop runs until paused.
+        self.assertIsNone(data["max_runs"])
+        self.assertIsNone(loop.max_runs)
 
-    def test_create_clamps_runs_and_returns_notice(self):
-        # The fixed 50-run default over a 30-day interval would span ~4 years;
-        # it's trimmed to fit within one year and the response says so.
-        resp = self._create(
-            cadence_kind="interval", interval_value=30, interval_unit="days",
-        )
+    def test_create_with_max_runs_sets_cap(self):
+        resp = self._create(max_runs=25)
         data = resp.json()
-        self.assertTrue(data["was_reduced"])
-        self.assertEqual(data["max_runs"], 13)
-        self.assertTrue(data["notice"])
+        self.assertEqual(data["max_runs"], 25)
+        self.assertEqual(Loop.objects.get(id=data["loop_id"]).max_runs, 25)
+
+    def test_create_zero_max_runs_is_unlimited(self):
+        resp = self._create(max_runs=0)
+        data = resp.json()
+        self.assertIsNone(data["max_runs"])
+        self.assertIsNone(Loop.objects.get(id=data["loop_id"]).max_runs)
 
     def test_create_requires_prompt(self):
         resp = self._create(prompt="   ")

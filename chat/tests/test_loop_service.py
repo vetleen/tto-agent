@@ -81,6 +81,21 @@ class ExecuteLoopRunTests(TransactionTestCase):
         self.thread.refresh_from_db()
         self.assertTrue(self.thread.is_archived)
 
+    @patch("llm.get_llm_service")
+    def test_unlimited_never_auto_pauses(self, mock_get_service):
+        mock_get_service.return_value = _fake_service()
+        self.loop.max_runs = None  # unlimited
+        self.loop.save(update_fields=["max_runs"])
+        from chat.loop_service import execute_loop_run
+
+        for _ in range(3):
+            execute_loop_run(self.loop.id)
+        self.loop.refresh_from_db()
+        self.assertEqual(self.loop.runs_completed, 3)
+        self.assertEqual(self.loop.status, Loop.Status.ACTIVE)
+        self.thread.refresh_from_db()
+        self.assertFalse(self.thread.is_archived)
+
     def _capture_service(self, captured):
         service = MagicMock()
 
