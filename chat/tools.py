@@ -857,9 +857,8 @@ class EditDocumentTool(ContextAwareTool):
     description: str = (
         "Edit a data room document, creating a new version, without going through a canvas. "
         "mode='edit' (default) applies targeted find-replace edits — each edit's old_text must match "
-        "exactly once. mode='rewrite' replaces the document's entire content with new markdown (use in "
-        "automated loops, e.g. refreshing a document with fresh information). Saving triggers the full "
-        "processing pipeline — use only when the result is complete."
+        "exactly once. mode='rewrite' replaces the document's entire content with new markdown, so be careful with this mode. "
+        "Saving triggers the full processing pipeline — so use this tool only when no other tool calls are needed to complete the desired edit. It's a shortcut, not your primary editing pathway."
     )
     args_schema: type[BaseModel] = EditDocumentInput
 
@@ -1101,7 +1100,7 @@ class ShowImageTool(ContextAwareTool):
     description: str = (
         "View image(s) from an attached data room by document index so you can see and reason "
         "about them (charts, diagrams, screenshots, photos). The image(s) are attached to the "
-        "conversation for you to inspect. Use after document_search / document_list reveals an "
+        "conversation for you to inspect. Use to view an "
         "image document, or to inspect an uploaded image."
     )
     args_schema: type[BaseModel] = ShowImageInput

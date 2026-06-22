@@ -33,11 +33,10 @@ _STRUCTURED_SYSTEM_PROMPT = (
 # detailed description, so the cheap model must summarise the IMAGE — not write a
 # description *of the description*.
 _IMAGE_INPUT_NOTE = (
-    "\n\nIMPORTANT: This document is an image. The text below is a detailed, "
+    "\n\nIMPORTANT: This document is an image. The text below is not the document content, per se, but a detailed, "
     "AI-generated description of that image — it is NOT text contained in a file. "
-    'Write "description" as a concise account of what the IMAGE itself shows. Do '
-    'NOT refer to it as "a description", "a caption", or "this document describes"; '
-    "describe the image directly. Preserve the core facts, keep within the ~100-token "
+    'Write "description" as a concise account of what the IMAGE itself shows. '
+    "Based on the detailed image description, describe the image directly. Keep within the ~100-token "
     'limit, and do not add anything not supported by the text. Set "document_type" to "Image".'
 )
 
