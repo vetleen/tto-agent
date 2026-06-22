@@ -860,17 +860,22 @@ def canvas_save_to_data_room(request, thread_id, canvas_id=None):
         return JsonResponse({"error": "Access denied"}, status=403)
 
     from chat.services import save_canvas_to_data_room as save_canvas_to_data_room_service
+    from documents.services.sync_scan import scan_version_synchronously
 
-    doc = save_canvas_to_data_room_service(canvas, data_room, request.user)
+    # Scan synchronously so the button reports the verdict (spinner → checkmark, or the
+    # block reason) instead of returning before the async scan finishes. A blocked save
+    # is KEPT as an accessible quarantined draft (the work isn't lost); the user sees the
+    # reason and can remediate it directly.
+    doc, version = save_canvas_to_data_room_service(canvas, data_room, request.user, enqueue=False)
+    verdict = scan_version_synchronously(version.id)
 
-    return JsonResponse(
-        {
-            "ok": True,
-            "document_id": doc.id,
-            "filename": doc.original_filename,
-            "data_room_name": data_room.name,
-        }
-    )
+    return JsonResponse({
+        **verdict.to_http_json(),
+        "saved": True,
+        "document_id": doc.id,
+        "filename": doc.original_filename,
+        "data_room_name": data_room.name,
+    })
 
 
 @login_required

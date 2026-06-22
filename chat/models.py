@@ -341,6 +341,11 @@ class ChatCanvas(models.Model):
     )
     is_active = models.BooleanField(default=False)
     last_activated_at = models.DateTimeField(null=True, blank=True)
+    # Consecutive blocked (GDPR Art 9/10) sync saves of this canvas to a data room.
+    # Reset on a successful save and after the agent's retry budget is exhausted (then
+    # the doc is deferred to a quarantined draft and the user is warned). See
+    # CanvasSaveToDocumentTool / documents.services.sync_scan.
+    dr_save_attempts = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

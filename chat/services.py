@@ -324,12 +324,15 @@ def create_canvas_checkpoint(canvas, source, description=""):
     )
 
 
-def save_canvas_to_data_room(canvas, data_room, user):
-    """Save a canvas's content as a markdown document in *data_room* and enqueue processing.
+def save_canvas_to_data_room(canvas, data_room, user, *, enqueue=True):
+    """Save a canvas's content as a markdown document in *data_room*.
 
-    The created document goes through the normal upload pipeline (chunk → embed →
-    guardrails → PII scan). The caller is responsible for verifying that *user*
-    may write to *data_room*. Returns the created ``DataRoomDocument``.
+    The created document goes through the normal pipeline (chunk → embed → guardrails
+    → PII scan). With ``enqueue=True`` (default) that runs asynchronously; pass
+    ``enqueue=False`` to create the document held (the caller then scans it
+    synchronously via ``documents.services.sync_scan``). The caller is responsible for
+    verifying that *user* may write to *data_room*. Returns ``(doc, version)`` — the
+    created ``DataRoomDocument`` and its v0 ``DataRoomDocumentVersion``.
     """
     from django.core.files.base import ContentFile
 
@@ -366,13 +369,13 @@ def save_canvas_to_data_room(canvas, data_room, user):
         native_filename=filename,
         mime_type="text/markdown",
         size_bytes=len(file_bytes),
-        enqueue=True,
+        enqueue=enqueue,
     )
     DataRoomDocumentTag.objects.create(
         version=version, key="source", value="canvas_export"
     )
 
-    return doc
+    return doc, version
 
 
 CANVAS_MAX_IMAGES = 25

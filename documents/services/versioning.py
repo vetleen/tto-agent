@@ -223,12 +223,31 @@ def _joined_chunk_text(version) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+def is_agent_remediable(version) -> bool:
+    """Whether the assistant may open/edit ``version`` while it is quarantined.
+
+    Quarantine controls disclosure of content the system did NOT author. Only content
+    the system itself produced — canvas exports and agent edits/rewrites — is remediable
+    in loop while quarantined. Uploaded / user-edited content stays locked: a quarantined
+    upload is never surfaced to the assistant, even by index. A non-quarantined version
+    is always accessible (normal rules apply).
+    """
+    from documents.models import DataRoomDocumentVersion as V
+
+    if version is None or not version.is_quarantined:
+        return True
+    return version.origin in (V.Origin.AGENT_CREATED, V.Origin.CANVAS_EXPORT)
+
+
 def open_working_version(document):
     """Return ``(content, version, warning)`` for editing the working head.
 
     Reads the version's markdown directly (NOT via gated retrieval), so it works
     even when the working version is quarantined — the originating agent can keep
     remediating. Legacy v0s (empty content, backfilled) fall back to joined chunks.
+
+    Callers that let the agent edit must first gate on :func:`is_agent_remediable`
+    (see ``chat.tools._agent_edit_block_reason``) so a quarantined *upload* stays locked.
     """
     version = document.current_version or document.active_searchable_version
     if version is None:

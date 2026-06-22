@@ -31,6 +31,15 @@ class _TurnState:
     warn_verdict: object | None = None
     modified_canvas_ids: set = field(default_factory=set)
 
+# Tool results whose ``status:ok`` + ``canvas_id`` payload should be broadcast to the
+# frontend as a ``canvas.updated`` event (creating/refreshing the canvas tab). Any tool
+# that creates or mutates a canvas MUST be listed here, or its canvas never appears in
+# the UI (regression source: document_open_to_canvas, dropped here in the tool rename).
+CANVAS_UPDATED_TOOLS = (
+    "canvas_write", "canvas_edit", "document_open_to_canvas",
+    "skill_field_load", "skill_template_load",
+)
+
 MAX_HISTORY_TOKENS = 20_000  # legacy default; overridden by dynamic budget when model is known
 OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when model is known
 
@@ -1500,7 +1509,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     pending_tool_results.append(event.data)
                     # Intercept canvas tool results and broadcast canvas.updated
                     tool_name = event.data.get("tool_name", "")
-                    if tool_name in ("canvas_write", "canvas_edit", "skill_field_load", "skill_template_load"):
+                    if tool_name in CANVAS_UPDATED_TOOLS:
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok" and result.get("canvas_id"):
@@ -1532,6 +1541,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 await self._sink.send_event({
                                     "event_type": "canvases.active_changed",
                                     "activated": result.get("activated", []),
+                                })
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    # A save the agent couldn't get past the safety/PII scan after its
+                    # retries was deferred to a quarantined draft — warn the user directly.
+                    if tool_name == "canvas_save_to_document":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("verdict") == "deferred":
+                                await self._sink.send_event({
+                                    "event_type": "document.save_blocked",
+                                    "doc_index": result.get("doc_index"),
+                                    "reason": result.get("blocked_reason", ""),
+                                    "reasons": result.get("reasons", []),
                                 })
                         except (json.JSONDecodeError, AttributeError):
                             pass

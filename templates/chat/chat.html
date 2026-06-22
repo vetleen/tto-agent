@@ -2590,6 +2590,17 @@
       if (et === "guardrail.suspended") { input.disabled = true; button.disabled = true; } else { enableInput(); }
       scrollToBottom(); return;
     }
+    if (et === "document.save_blocked") {
+      var sbReason = data.reason || (data.reasons && data.reasons.join("; ")) || "flagged content";
+      var sbMsg = ASSISTANT_NAME + " couldn't save the document to the data room: the safety/PII scan flagged it ("
+        + sbReason + ") and it couldn't be cleared after repeated attempts. It has been filed as a quarantined draft "
+        + "(saved but not searchable). You can edit it directly and click Save to data room to try again.";
+      var sbDiv = document.createElement("div");
+      sbDiv.className = "flex items-start gap-2 text-sm text-fg-warning bg-warning-soft border border-warning-subtle rounded-lg p-3 my-2";
+      sbDiv.innerHTML = '<svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>' + escapeHtml(sbMsg) + '</span>';
+      messagesContainer.appendChild(sbDiv);
+      scrollToBottom(); return;
+    }
     if (et === "message_end") {
       if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {
@@ -3968,10 +3979,17 @@
                 .then(function(data) {
                   if (data.ok) {
                     flashCanvasBtnSuccess(canvasSaveToDrBtn);
-                    if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved to " + data.data_room_name; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                    var okMsg = data.verdict === "warn"
+                      ? "Saved to " + data.data_room_name + " (some sections flagged & excluded)"
+                      : "Saved to " + data.data_room_name;
+                    if (canvasSaveStatus) { canvasSaveStatus.textContent = okMsg; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 4000); }
+                  } else if (data.verdict === "blocked") {
+                    // Kept as an accessible quarantined draft — show why it isn't searchable.
+                    flashCanvasBtnError(canvasSaveToDrBtn);
+                    if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved as quarantined draft — " + (data.reason || "flagged content"); setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 7000); }
                   } else {
                     flashCanvasBtnError(canvasSaveToDrBtn);
-                    if (canvasSaveStatus) { canvasSaveStatus.textContent = data.error || "Couldn't save"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                    if (canvasSaveStatus) { canvasSaveStatus.textContent = data.reason || data.error || "Couldn't save"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 5000); }
                   }
                 })
                 .catch(function() {

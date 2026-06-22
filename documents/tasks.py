@@ -163,18 +163,39 @@ def _mirror_terminal_doc_status(version_ids, status, now, error=None):
 
 @shared_task(bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
 def finalize_document_metadata(self, version_id: int) -> None:
-    """Generate description + tags, run the PII scan, and release a held version.
+    """Thin Celery wrapper around :func:`finalize_version` (the shared scan sink).
 
     Dispatched by ``scan_document_version`` once the guardrail chunk scan completes.
-    Operates on a single version: tags (description + PII) attach to the version,
-    quarantine sets the version's flag, and the document-level sensitivity union is
-    recomputed. This task is the SOLE releaser of SCANNING and the only place
-    ``active_searchable_version`` advances:
+    Reschedules a gated PII-scan LLM failure via Celery retry (30s exponential
+    backoff, max 3); when retries are exhausted the core marks the version
+    scan_failed. The synchronous save path calls ``finalize_version(eager=True)``
+    directly, which handles that same failure terminally without Celery.
+    """
+    def _on_pii_retry():
+        # Raises Retry to reschedule, or MaxRetriesExceededError when exhausted.
+        raise self.retry(countdown=30 * (2 ** self.request.retries))
+
+    finalize_version(version_id, eager=False, on_pii_retry=_on_pii_retry)
+
+
+def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None) -> None:
+    """Generate description + tags, run the PII scan, and release a held version.
+
+    The core shared by the async ``finalize_document_metadata`` task and the
+    synchronous save path (``documents.services.sync_scan``). Operates on a single
+    version: tags (description + PII) attach to the version, quarantine sets the
+    version's flag, and the document-level sensitivity union is recomputed. It is the
+    SOLE releaser of SCANNING and the only place ``active_searchable_version`` advances:
 
     - On a clean scan the version is released READY and becomes the active searchable
       version (pgvector ``is_searchable`` flipped on — no re-embed).
     - A quarantined version is released READY but NOT made searchable; the previously
       active version stays live, so the bad draft is invisible to every other thread.
+
+    A gated PII-scan LLM failure is handled by ``on_pii_retry`` (the async task
+    reschedules via Celery, falling through to scan_failed when exhausted). In
+    ``eager`` mode (the sync path) it is terminal immediately — mark scan_failed,
+    no retry.
     """
     from celery.exceptions import MaxRetriesExceededError
     from django.utils import timezone
@@ -311,19 +332,26 @@ def finalize_document_metadata(self, version_id: int) -> None:
                 if held:
                     _finish_release()
                 return
-            logger.exception(
-                "finalize_document_metadata: version_id=%s PII scan failed (attempt %s/%s)",
-                version_id, self.request.retries + 1, self.max_retries + 1,
-            )
-            try:
-                raise self.retry(countdown=30 * (2 ** self.request.retries))
-            except MaxRetriesExceededError:
-                logger.warning(
-                    "finalize_document_metadata: version_id=%s scan retries exhausted; marking scan_failed",
-                    version_id,
+            # Gated PII LLM failure: the async task reschedules via Celery;
+            # the eager (sync) path is terminal.
+            if not eager and on_pii_retry is not None:
+                logger.exception(
+                    "finalize_document_metadata: version_id=%s PII scan failed; retrying via task", version_id,
                 )
-                _mark_scan_failed()
+                try:
+                    on_pii_retry()  # raises Retry to reschedule, or MaxRetriesExceededError when exhausted
+                except MaxRetriesExceededError:
+                    logger.warning(
+                        "finalize_document_metadata: version_id=%s scan retries exhausted; marking scan_failed",
+                        version_id,
+                    )
+                    _mark_scan_failed()
                 return
+            logger.warning(
+                "finalize_document_metadata: version_id=%s PII scan failed (eager); marking scan_failed", version_id,
+            )
+            _mark_scan_failed()
+            return
 
     # --- Quarantine on GDPR Article 9 / 10 detection (version-scoped) ---
     if pii_quarantine_enabled:

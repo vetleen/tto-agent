@@ -193,8 +193,15 @@ def _extract_native(version, doc):
     return cleaned, file_meta_date
 
 
-def process_document_version(version_id: int) -> None:
-    """Process a single version: extract/use markdown, chunk, embed, hand off to scan."""
+def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> None:
+    """Process a single version: extract/use markdown, chunk, embed, hand off to scan.
+
+    ``dispatch_scan=False`` suppresses only the async guardrail-scan dispatch at the
+    tail, leaving the version held ``status="scanning"`` with chunks embedded
+    (``is_searchable=False``). The synchronous save path (``sync_scan``) uses this so
+    it can run the same scan inline and read the verdict back, instead of handing off
+    to Celery.
+    """
     with transaction.atomic():
         version = (
             DataRoomDocumentVersion.objects.filter(pk=version_id)
@@ -339,18 +346,20 @@ def process_document_version(version_id: int) -> None:
         )
 
         # Dispatch the guardrail chunk scan (hands off to finalize on success).
-        try:
-            from guardrails.tasks import scan_document_version
-            scan_document_version.delay(version.id)
-        except Exception:
-            from documents.services.pii_scan import SCAN_FAILED_MESSAGE
-            logger.exception(
-                "process_document_version: version_id=%s guardrail scan dispatch failed; marking scan_failed", version_id,
-            )
-            version.status = "scan_failed"
-            version.processing_error = SCAN_FAILED_MESSAGE
-            version.save(update_fields=["status", "processing_error", "updated_at"])
-            _mirror_doc_status(doc, version, "scan_failed")
+        # Suppressed when the caller runs the scan synchronously (sync_scan).
+        if dispatch_scan:
+            try:
+                from guardrails.tasks import scan_document_version
+                scan_document_version.delay(version.id)
+            except Exception:
+                from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+                logger.exception(
+                    "process_document_version: version_id=%s guardrail scan dispatch failed; marking scan_failed", version_id,
+                )
+                version.status = "scan_failed"
+                version.processing_error = SCAN_FAILED_MESSAGE
+                version.save(update_fields=["status", "processing_error", "updated_at"])
+                _mirror_doc_status(doc, version, "scan_failed")
 
     except ValueError as e:
         duration_seconds = time.perf_counter() - started_at

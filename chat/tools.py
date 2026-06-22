@@ -208,14 +208,6 @@ def _get_user(user_id):
         return None
 
 
-# A note appended to save/edit/write results: re-processing is async and costly.
-_PROCESSING_NOTE = (
-    "Saving triggers re-processing (chunk → embed → guardrails → PII). The new version "
-    "becomes the live searchable document only once it finishes and clears the scans; until "
-    "then the previously live version stays in retrieval. Use document_status to check. "
-    "Therefore, try to defer the save action to when the document is complete."
-)
-
 # Prepended to an image-as-document's text wherever it's surfaced (search/read).
 # That text IS the vision-generated description — not text inside the image —
 # and without this note the model tends to "describe the description".
@@ -225,6 +217,112 @@ _IMAGE_DESC_NOTE = (
     "inside the image, and not the image itself. Treat it as a description of the "
     "image's visual content; not the actual image itself."
 )
+
+
+# --- Synchronous save-to-data-room policy (agent canvas path) -------------------
+# Agent-authored saves are scanned synchronously (documents.services.sync_scan) so the
+# agent learns the verdict in the same turn and can remediate. The agent gets the
+# original attempt + retries up to this many before a still-blocked document is
+# deferred to a quarantined draft and the user is warned (see chat.consumers).
+_MAX_DR_SAVE_ATTEMPTS = 3
+
+
+def _delete_version_vectors(version_id):
+    from documents.services.vector_store import delete_vectors_for_version
+
+    try:
+        delete_vectors_for_version(version_id)
+    except Exception:
+        logger.warning("sync save: vector cleanup failed for version_id=%s", version_id, exc_info=True)
+
+
+def _discard_rejected_version(doc, version, prior_current_id):
+    """Roll back a freshly-created, rejected version: revert the working head, drop its
+    vectors, delete the version row (chunks/tags cascade), recompute sensitivity."""
+    from documents.models import DataRoomDocument
+    from documents.services.versioning import recompute_document_sensitivity
+
+    DataRoomDocument.objects.filter(pk=doc.pk).update(current_version_id=prior_current_id)
+    _delete_version_vectors(version.id)
+    version.delete()
+    recompute_document_sensitivity(doc.pk)
+
+
+def _apply_agent_save_policy(canvas, verdict, *, doc_index, discard_fn):
+    """Apply the agent retry/discard/defer policy to a sync-scan verdict.
+
+    Returns the tool-result dict (caller adds mode-specific fields). ``discard_fn()``
+    rolls back the rejected version (or deletes the brand-new doc).
+
+    - clean / warn          → keep, reset the counter, success.
+    - scan_failed           → discard, return the error (system fault, no budget spent).
+    - blocked, budget left  → discard, increment, return the reason for the agent to fix.
+    - blocked, budget spent → KEEP the already-quarantined draft, reset, mark deferred so
+      the consumer warns the user.
+    """
+    from chat.models import ChatCanvas
+
+    if verdict.ok:
+        ChatCanvas.objects.filter(pk=canvas.pk).update(dr_save_attempts=0)
+        return {**verdict.to_tool_json(), "doc_index": doc_index}
+
+    if verdict.status == "scan_failed":
+        discard_fn()
+        return verdict.to_tool_json()
+
+    # blocked (GDPR Article 9/10)
+    attempts = (canvas.dr_save_attempts or 0) + 1
+    if attempts < _MAX_DR_SAVE_ATTEMPTS:
+        ChatCanvas.objects.filter(pk=canvas.pk).update(dr_save_attempts=attempts)
+        discard_fn()
+        result = verdict.to_tool_json()
+        result["attempts_remaining"] = _MAX_DR_SAVE_ATTEMPTS - attempts
+        return result
+
+    # Budget spent: keep the quarantined draft and defer; the consumer warns the user.
+    ChatCanvas.objects.filter(pk=canvas.pk).update(dr_save_attempts=0)
+    return {
+        "status": "ok",
+        "verdict": "deferred",
+        "doc_index": doc_index,
+        "version": verdict.version_index,
+        "reasons": verdict.reasons,
+        "blocked_reason": verdict.detail,
+        "note": (
+            "After repeated attempts the content still couldn't be cleared. It has been "
+            "filed as a quarantined draft (saved but NOT searchable). The user has been "
+            "notified in the chat and can remediate it directly — do not keep retrying."
+        ),
+    }
+
+
+def _single_sync_save_result(doc, version, prior_current_id, *, extra=None):
+    """Sync-scan a freshly-created version with no retry budget (document_edit path):
+    keep on clean/warn, discard and return the reason on block/scan_failed."""
+    from documents.services.sync_scan import scan_version_synchronously
+
+    verdict = scan_version_synchronously(version.id)
+    if not verdict.ok:
+        _discard_rejected_version(doc, version, prior_current_id)
+    return {**verdict.to_tool_json(), **(extra or {})}
+
+
+def _agent_edit_block_reason(doc):
+    """Return an error message if the assistant must not edit this document, else None.
+
+    A document whose working head is a quarantined *upload* is locked: the assistant can
+    neither open/read it into a canvas nor overwrite it. Quarantined agent-authored
+    drafts stay editable for in-loop remediation. See ``versioning.is_agent_remediable``.
+    """
+    from documents.services.versioning import is_agent_remediable
+
+    version = doc.current_version or doc.active_searchable_version
+    if version is not None and not is_agent_remediable(version):
+        return (
+            "This document is quarantined and locked (it was uploaded, not authored by "
+            "the assistant); it cannot be opened or edited."
+        )
+    return None
 
 
 # --- Tools ---
@@ -632,10 +730,10 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
     description: str = (
         "Save a canvas into one of the attached data rooms. mode='new' creates a brand-new document; "
         "mode='overwrite' files the canvas as a NEW VERSION of an existing document (give its doc_index) "
-        "— the document keeps its history and can be rolled back. The saved document is processed like "
-        "any upload (chunked, embedded, and scanned for safety and PII) and becomes searchable via "
-        "document_search. Saving triggers the full processing pipeline, so use it only when the document "
-        "is complete. Only available when a data room is attached."
+        "— the document keeps its history and can be rolled back. The saved content is scanned for safety "
+        "and PII AT SAVE TIME and the result comes back immediately: a clean save becomes searchable; if it "
+        "is blocked (e.g. GDPR Article 9/10 data or a prompt injection) you get the reason back, so edit the "
+        "canvas to remove the flagged content and save again. Only available when a data room is attached."
     )
     args_schema: type[BaseModel] = CanvasSaveToDocumentInput
 
@@ -643,6 +741,7 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
              data_room_name: str = "", new_name: str = "", **kwargs) -> str:
         from chat.services import resolve_canvas, save_canvas_to_data_room
         from documents.models import DataRoom, DataRoomDocumentVersion
+        from documents.services.sync_scan import scan_version_synchronously
         from documents.services.versioning import create_version
 
         if mode not in ("new", "overwrite"):
@@ -695,16 +794,23 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
 
             if new_name:
                 canvas.title = new_name[:255]
-            doc = save_canvas_to_data_room(canvas, target, user)
-            return json.dumps({
-                "status": "ok",
-                "mode": "new",
-                "doc_index": doc.doc_index,
-                "filename": doc.original_filename,
-                "data_room_name": target.name,
-                "canvas_title": canvas.title,
-                "note": _PROCESSING_NOTE,
-            })
+            doc, version = save_canvas_to_data_room(canvas, target, user, enqueue=False)
+            verdict = scan_version_synchronously(version.id)
+
+            def _discard_new():
+                # A rejected brand-new doc has no prior version — drop the whole thing.
+                _delete_version_vectors(version.id)
+                doc.delete()  # cascades version / chunks / tags
+
+            result = _apply_agent_save_policy(
+                canvas, verdict, doc_index=doc.doc_index, discard_fn=_discard_new,
+            )
+            result["mode"] = "new"
+            if verdict.ok:
+                result["data_room_name"] = target.name
+                result["filename"] = doc.original_filename
+                result["canvas_title"] = canvas.title
+            return json.dumps(result)
 
         # mode == "overwrite"
         if doc_index is None:
@@ -712,18 +818,22 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
         doc, err = _resolve_document(context, doc_index)
         if err:
             return json.dumps({"error": err})
+        locked = _agent_edit_block_reason(doc)
+        if locked:
+            return json.dumps({"error": locked})
+        prior_current_id = doc.current_version_id
         version = create_version(
             doc, content=canvas.content,
             origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT, created_by=user,
+            enqueue=False,
         )
-        return json.dumps({
-            "status": "ok",
-            "mode": "overwrite",
-            "doc_index": doc_index,
-            "version": version.version_index,
-            "processing": True,
-            "note": _PROCESSING_NOTE,
-        })
+        verdict = scan_version_synchronously(version.id)
+        result = _apply_agent_save_policy(
+            canvas, verdict, doc_index=doc_index,
+            discard_fn=lambda: _discard_rejected_version(doc, version, prior_current_id),
+        )
+        result["mode"] = "overwrite"
+        return json.dumps(result)
 
 
 class ListDocumentsTool(ContextAwareTool):
@@ -816,6 +926,9 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         doc, err = _resolve_document(context, doc_index, data_room_id)
         if err:
             return json.dumps({"error": err})
+        locked = _agent_edit_block_reason(doc)
+        if locked:
+            return json.dumps({"error": locked})
 
         content, version, warning = open_working_version(doc)
         title = (canvas_name or doc.display_name or f"Document {doc_index}")[:255]
@@ -858,7 +971,9 @@ class EditDocumentTool(ContextAwareTool):
         "Edit a data room document, creating a new version, without going through a canvas. "
         "mode='edit' (default) applies targeted find-replace edits — each edit's old_text must match "
         "exactly once. mode='rewrite' replaces the document's entire content with new markdown, so be careful with this mode. "
-        "Saving triggers the full processing pipeline — so use this tool only when no other tool calls are needed to complete the desired edit. It's a shortcut, not your primary editing pathway."
+        "The edit is scanned for safety and PII at save time and the result comes back immediately; if it is "
+        "blocked (e.g. GDPR Article 9/10 data or a prompt injection) the edit is discarded and you get the reason. "
+        "It's a shortcut, not your primary editing pathway."
     )
     args_schema: type[BaseModel] = EditDocumentInput
 
@@ -871,19 +986,24 @@ class EditDocumentTool(ContextAwareTool):
         doc, err = _resolve_document(context, doc_index, data_room_id)
         if err:
             return json.dumps({"error": err})
+        locked = _agent_edit_block_reason(doc)
+        if locked:
+            return json.dumps({"error": locked})
 
         user = _get_user(context.user_id if context else None)
 
         if mode == "rewrite":
             if not (content or "").strip():
                 return json.dumps({"error": "content is empty; provide full markdown content for mode='rewrite'."})
+            prior_current_id = doc.current_version_id
             version = create_version(
-                doc, content=content, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
+                doc, content=content, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED,
+                created_by=user, enqueue=False,
             )
-            return json.dumps({
-                "status": "ok", "doc_index": doc_index, "mode": "rewrite",
-                "version": version.version_index, "processing": True, "note": _PROCESSING_NOTE,
-            })
+            result = _single_sync_save_result(
+                doc, version, prior_current_id, extra={"doc_index": doc_index, "mode": "rewrite"},
+            )
+            return json.dumps(result)
 
         # mode == "edit" (default): targeted find-replace
         edits = edits or []
@@ -913,13 +1033,16 @@ class EditDocumentTool(ContextAwareTool):
         if applied == 0:
             return json.dumps({"status": "error", "applied": 0, "failed": failed, "message": "No edits applied."})
 
+        prior_current_id = doc.current_version_id
         version = create_version(
-            doc, content=working, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED, created_by=user,
+            doc, content=working, origin=DataRoomDocumentVersion.Origin.AGENT_CREATED,
+            created_by=user, enqueue=False,
         )
-        return json.dumps({
-            "status": "ok", "doc_index": doc_index, "mode": "edit", "applied": applied, "failed": failed,
-            "version": version.version_index, "processing": True, "note": _PROCESSING_NOTE,
-        })
+        result = _single_sync_save_result(
+            doc, version, prior_current_id,
+            extra={"doc_index": doc_index, "mode": "edit", "applied": applied, "failed": failed},
+        )
+        return json.dumps(result)
 
 
 class ArchiveDocumentTool(ContextAwareTool):

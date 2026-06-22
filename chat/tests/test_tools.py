@@ -573,25 +573,25 @@ class CanvasSaveToDocumentToolTests(TestCase):
         self.assertIn("error", result)
         self.assertFalse(DataRoomDocument.objects.exists())
 
-    @patch("documents.tasks.process_document_version_task.delay")
-    def test_saves_active_canvas_as_md_document(self, mock_delay):
+    def test_saves_active_canvas_as_md_document(self):
         result = self._invoke_json({"mode": "new"}, self._ctx())
 
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["verdict"], "clean")
         self.assertEqual(result["filename"], "Memo.md")
         self.assertEqual(result["data_room_name"], "Owner Room")
 
         doc = DataRoomDocument.objects.get(data_room=self.data_room)
         self.assertEqual(doc.original_filename, "Memo.md")
         self.assertEqual(doc.mime_type, "text/markdown")
-        self.assertEqual(doc.status, DataRoomDocument.Status.UPLOADED)
+        # Sync scan-at-save processes v0 inline and releases it READY on a clean scan
+        # (no LLM models configured in the test env → the scan no-ops and clears).
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
         self.assertTrue(
             DataRoomDocumentTag.objects.filter(
                 version__document=doc, key="source", value="canvas_export"
             ).exists()
         )
-        # Save goes through create_version -> processes the v0 version.
-        mock_delay.assert_called_once_with(doc.current_version_id)
 
     def test_no_data_room_returns_error(self):
         result = self._invoke_json({"mode": "new"}, self._ctx(data_room_pks=[]))
