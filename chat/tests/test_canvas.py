@@ -1837,3 +1837,363 @@ class CanvasMarkdownImageGuardrailTests(TestCase):
         self.assertNotIn("warning", result)
         canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
         self.assertIn(f"[[image:{uuid}|", canvas.content)
+
+
+# ---------------------------------------------------------------------------
+# canvas_diff_baseline: clean vs dirty (pending AI review) detection
+# ---------------------------------------------------------------------------
+
+class CanvasDiffBaselineTests(TestCase):
+    """The diff baseline a canvas should report, and whether a review is pending.
+
+    Clean canvas -> (current content, False): the user's own edits never diff.
+    Unreviewed AI/import edit -> (accepted baseline, True): the combined diff.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="dbl@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _accepted_canvas(self, content="v1", title="Doc"):
+        from chat.services import create_canvas_checkpoint
+        canvas = ChatCanvas.objects.create(thread=self.thread, title=title, content=content)
+        cp = create_canvas_checkpoint(canvas, source="original")
+        canvas.accepted_checkpoint = cp
+        canvas.save(update_fields=["accepted_checkpoint"])
+        return canvas
+
+    def test_no_baseline_when_no_accepted_checkpoint(self):
+        from chat.services import canvas_diff_baseline
+        canvas = ChatCanvas.objects.create(thread=self.thread, title="Doc", content="x")
+        self.assertEqual(canvas_diff_baseline(canvas), (None, False))
+
+    def test_clean_when_latest_is_accepted(self):
+        from chat.services import canvas_diff_baseline
+        canvas = self._accepted_canvas("v1")
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertFalse(pending)
+        self.assertEqual(baseline, "v1")
+
+    def test_pending_when_ai_edit_after_accepted(self):
+        from chat.services import canvas_diff_baseline, create_canvas_checkpoint
+        canvas = self._accepted_canvas("v1")
+        canvas.content = "v2"
+        canvas.save(update_fields=["content"])
+        create_canvas_checkpoint(canvas, source="ai_edit")
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertTrue(pending)
+        self.assertEqual(baseline, "v1")  # diff against the pre-AI baseline
+
+    def test_pending_survives_user_typing_after_ai_edit(self):
+        """User edits after an AI edit create no checkpoint, so the combined diff
+        (AI change + user edits) keeps measuring against the pre-AI baseline."""
+        from chat.services import canvas_diff_baseline, create_canvas_checkpoint
+        canvas = self._accepted_canvas("v1")
+        canvas.content = "v2"
+        canvas.save(update_fields=["content"])
+        create_canvas_checkpoint(canvas, source="ai_edit")
+        # User keeps typing — _save_canvas writes content with no new checkpoint.
+        canvas.content = "v2 plus user edits"
+        canvas.save(update_fields=["content"])
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertTrue(pending)
+        self.assertEqual(baseline, "v1")
+
+    def test_clean_after_accept(self):
+        from chat.services import canvas_diff_baseline, create_canvas_checkpoint
+        canvas = self._accepted_canvas("v1")
+        canvas.content = "v2"
+        canvas.save(update_fields=["content"])
+        ai = create_canvas_checkpoint(canvas, source="ai_edit")
+        canvas.accepted_checkpoint = ai  # user accepts
+        canvas.save(update_fields=["accepted_checkpoint"])
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertFalse(pending)
+        self.assertEqual(baseline, "v2")
+
+    def test_import_edit_is_pending(self):
+        """Document-open / skill-load checkpoints (source='import') on an existing
+        canvas are unreviewed edits and must surface a diff."""
+        from chat.services import canvas_diff_baseline, create_canvas_checkpoint
+        canvas = self._accepted_canvas("v1")
+        canvas.content = "imported body"
+        canvas.save(update_fields=["content"])
+        create_canvas_checkpoint(canvas, source="import")
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertTrue(pending)
+        self.assertEqual(baseline, "v1")
+
+    def test_redacted_latest_is_not_pending(self):
+        """After a redaction rollback the latest checkpoint is relabeled 'redacted';
+        the canvas must read as clean."""
+        from chat.services import canvas_diff_baseline, create_canvas_checkpoint
+        canvas = self._accepted_canvas("v1")
+        create_canvas_checkpoint(canvas, source="redacted")
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertFalse(pending)
+        self.assertEqual(baseline, canvas.content)
+
+    def test_revert_then_user_edit_reports_clean(self):
+        """Regression for the revert-hygiene fix: after a revert advances the
+        baseline, later user typing must not resurface a spurious pending diff."""
+        from chat.services import canvas_diff_baseline, create_canvas_checkpoint
+        canvas = self._accepted_canvas("v1")
+        canvas.content = "ai changed"
+        canvas.save(update_fields=["content"])
+        create_canvas_checkpoint(canvas, source="ai_edit")
+        # Simulate _canvas_revert's outcome: restore content + advance the baseline.
+        canvas.content = "v1"
+        canvas.save(update_fields=["content"])
+        cp = create_canvas_checkpoint(canvas, source="user_save", description="Reverted AI changes")
+        canvas.accepted_checkpoint = cp
+        canvas.save(update_fields=["accepted_checkpoint"])
+        # User keeps editing after the revert.
+        canvas.content = "v1 plus more"
+        canvas.save(update_fields=["content"])
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertFalse(pending)
+        self.assertEqual(baseline, "v1 plus more")
+
+
+# ---------------------------------------------------------------------------
+# First-AI-edit baseline: AI edits to a canvas that has no baseline yet
+# ---------------------------------------------------------------------------
+
+class FirstAiEditBaselineTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="fae@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _active_user_canvas(self, content):
+        from django.utils import timezone
+        canvas = ChatCanvas.objects.create(
+            thread=self.thread, title="Doc", content=content,
+            is_active=True, last_activated_at=timezone.now(),
+        )
+        self.thread.active_canvas = canvas
+        self.thread.save(update_fields=["active_canvas"])
+        return canvas
+
+    def test_write_on_unaccepted_canvas_establishes_pre_ai_baseline(self):
+        from chat.services import canvas_diff_baseline
+        canvas = self._active_user_canvas("user draft")
+        self.assertIsNone(canvas.accepted_checkpoint)
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "AI rewrite"}, _ctx(self.user.pk, self.thread.id))
+        canvas.refresh_from_db()
+        self.assertIsNotNone(canvas.accepted_checkpoint)
+        self.assertEqual(canvas.accepted_checkpoint.content, "user draft")
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertTrue(pending)
+        self.assertEqual(baseline, "user draft")
+
+    def test_edit_on_unaccepted_canvas_establishes_pre_ai_baseline(self):
+        from chat.services import canvas_diff_baseline
+        canvas = self._active_user_canvas("The term is 3 years.")
+        self.assertIsNone(canvas.accepted_checkpoint)
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "3 years", "new_text": "5 years", "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        canvas.refresh_from_db()
+        self.assertIsNotNone(canvas.accepted_checkpoint)
+        self.assertEqual(canvas.accepted_checkpoint.content, "The term is 3 years.")
+        baseline, pending = canvas_diff_baseline(canvas)
+        self.assertTrue(pending)
+        self.assertEqual(baseline, "The term is 3 years.")
+
+    def test_create_path_still_accepts_original(self):
+        canvas = ChatCanvas.objects.filter(thread=self.thread).first()
+        self.assertIsNone(canvas)
+        _invoke(WriteCanvasTool, {"title": "NDA", "content": "# NDA"}, _ctx(self.user.pk, self.thread.id))
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        self.assertIsNotNone(canvas.accepted_checkpoint)
+        self.assertEqual(canvas.accepted_checkpoint.source, "original")
+
+    def test_edit_with_zero_applied_sets_no_baseline(self):
+        canvas = self._active_user_canvas("Some content.")
+        self.assertIsNone(canvas.accepted_checkpoint)
+        _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "nonexistent", "new_text": "x", "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        canvas.refresh_from_db()
+        self.assertIsNone(canvas.accepted_checkpoint)
+
+
+# ---------------------------------------------------------------------------
+# Consumer: pending_ai_review round-trips
+# ---------------------------------------------------------------------------
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class ConsumerPendingReviewTests(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="pr@test.com", password="pass")
+
+    async def _communicator(self):
+        from channels.routing import URLRouter
+        from channels.testing import WebsocketCommunicator
+        from chat.routing import websocket_urlpatterns
+
+        app = URLRouter(websocket_urlpatterns)
+        comm = WebsocketCommunicator(app, "/ws/chat/")
+        comm.scope["user"] = self.user
+        connected, _ = await comm.connect()
+        assert connected
+        return comm
+
+    async def _load_active(self, comm, thread):
+        await comm.send_json_to({"type": "chat.load_thread", "thread_id": str(thread.id)})
+        # thread.loaded, then canvases.loaded
+        await comm.receive_json_from()
+        msg = await comm.receive_json_from()
+        assert msg["event_type"] == "canvases.loaded"
+        return msg["active_canvas"]
+
+    async def test_canvases_loaded_reports_clean(self):
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+
+        def setup():
+            canvas = ChatCanvas.objects.create(thread=thread, title="Doc", content="v1")
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
+            cp = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+        await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        ac = await self._load_active(comm, thread)
+        self.assertFalse(ac["pending_ai_review"])
+        self.assertEqual(ac["accepted_content"], "v1")  # baseline == content -> no diff
+        await comm.disconnect()
+
+    async def test_canvases_loaded_reports_pending_with_baseline(self):
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+
+        def setup():
+            canvas = ChatCanvas.objects.create(thread=thread, title="Doc", content="v1")
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
+            cp = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+            canvas.content = "v2"
+            canvas.save(update_fields=["content"])
+            create_canvas_checkpoint(canvas, source="ai_edit")
+        await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        ac = await self._load_active(comm, thread)
+        self.assertTrue(ac["pending_ai_review"])
+        self.assertEqual(ac["accepted_content"], "v1")  # pre-AI baseline
+        self.assertEqual(ac["content"], "v2")
+        await comm.disconnect()
+
+    async def test_user_save_after_baseline_stays_clean(self):
+        """Author mode: a user edit (chat.canvas_save) on a clean canvas with an
+        existing baseline keeps it clean — the reported baseline tracks content."""
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+
+        def setup():
+            canvas = ChatCanvas.objects.create(thread=thread, title="Doc", content="v1")
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
+            cp = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+            return str(canvas.pk)
+        canvas_id = await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({
+            "type": "chat.canvas_save",
+            "thread_id": str(thread.id),
+            "canvas_id": canvas_id,
+            "title": "Doc",
+            "content": "v1 edited by user",
+        })
+        ac = await self._load_active(comm, thread)
+        self.assertFalse(ac["pending_ai_review"])
+        # Clean -> baseline is the current content, so no diff despite the stale
+        # accepted_checkpoint still holding "v1".
+        self.assertEqual(ac["accepted_content"], "v1 edited by user")
+        self.assertEqual(ac["content"], "v1 edited by user")
+        await comm.disconnect()
+
+    async def test_canvas_switch_carries_pending(self):
+        from channels.db import database_sync_to_async
+        from chat.services import create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+
+        def setup():
+            c1 = ChatCanvas.objects.create(thread=thread, title="One", content="one")
+            c2 = ChatCanvas.objects.create(thread=thread, title="Two", content="a")
+            thread.active_canvas = c1
+            thread.save(update_fields=["active_canvas"])
+            cp = create_canvas_checkpoint(c2, source="original")
+            c2.accepted_checkpoint = cp
+            c2.save(update_fields=["accepted_checkpoint"])
+            c2.content = "b"
+            c2.save(update_fields=["content"])
+            create_canvas_checkpoint(c2, source="ai_edit")
+            return str(c2.pk)
+        c2_id = await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({
+            "type": "chat.canvas_switch",
+            "thread_id": str(thread.id),
+            "canvas_id": c2_id,
+        })
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.loaded")
+        self.assertTrue(msg["pending_ai_review"])
+        self.assertEqual(msg["accepted_content"], "a")
+        self.assertEqual(msg["content"], "b")
+        await comm.disconnect()
+
+    async def test_canvas_revert_leaves_canvas_clean(self):
+        from channels.db import database_sync_to_async
+        from chat.services import canvas_diff_baseline, create_canvas_checkpoint
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="original content"
+        )
+
+        def setup():
+            thread.active_canvas = canvas
+            thread.save(update_fields=["active_canvas"])
+            cp = create_canvas_checkpoint(canvas, source="original")
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+            canvas.content = "ai changed this"
+            canvas.save(update_fields=["content"])
+            create_canvas_checkpoint(canvas, source="ai_edit")
+        await database_sync_to_async(setup)()
+
+        comm = await self._communicator()
+        await comm.send_json_to({"type": "chat.canvas_revert", "thread_id": str(thread.id)})
+        msg = await comm.receive_json_from()
+        self.assertEqual(msg["event_type"], "canvas.reverted")
+        self.assertEqual(msg["content"], "original content")
+
+        def check():
+            c = ChatCanvas.objects.get(thread=thread)
+            latest = CanvasCheckpoint.objects.filter(canvas=c).order_by("-order").first()
+            self.assertEqual(c.accepted_checkpoint_id, latest.pk)  # latest == accepted -> clean
+            baseline, pending = canvas_diff_baseline(c)
+            self.assertFalse(pending)
+            self.assertEqual(baseline, "original content")
+        await database_sync_to_async(check)()
+        await comm.disconnect()

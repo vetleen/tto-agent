@@ -180,10 +180,20 @@ class WriteCanvasTool(ContextAwareTool):
                 canvas.save(update_fields=["content", "updated_at"])
                 created = False
 
+        # An existing canvas with no diff baseline yet (user-created, never
+        # accepted) needs one established at its pre-edit state, so this AI edit
+        # surfaces as a reviewable diff rather than silently overwriting.
+        pre_ai_cp = None
+        if not created and canvas.accepted_checkpoint_id is None:
+            pre_ai_cp = canvas.checkpoints.order_by("-order").first()
+
         source = "original" if created else "ai_edit"
         cp = create_canvas_checkpoint(canvas, source=source, description="Full rewrite")
         if created:
             canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+        elif pre_ai_cp is not None and canvas.accepted_checkpoint_id is None:
+            canvas.accepted_checkpoint = pre_ai_cp
             canvas.save(update_fields=["accepted_checkpoint"])
 
         activate_canvas(thread_id, canvas)
@@ -228,6 +238,13 @@ class EditCanvasTool(ContextAwareTool):
         from chat.services import snapshot_user_edits
         snapshot_user_edits(canvas)
 
+        # Capture the pre-edit baseline for a canvas that has none yet (user-created,
+        # never accepted), so the AI edit below surfaces as a reviewable diff. Adopted
+        # only if an edit is actually applied (see the `applied > 0` block).
+        pre_ai_cp = None
+        if canvas.accepted_checkpoint_id is None:
+            pre_ai_cp = canvas.checkpoints.order_by("-order").first()
+
         content = canvas.content
         applied = 0
         failed = []
@@ -268,6 +285,9 @@ class EditCanvasTool(ContextAwareTool):
                 canvas, source="ai_edit",
                 description="Edited %d section(s)" % applied,
             )
+            if pre_ai_cp is not None and canvas.accepted_checkpoint_id is None:
+                canvas.accepted_checkpoint = pre_ai_cp
+                canvas.save(update_fields=["accepted_checkpoint"])
 
         result = {
             "status": "ok",

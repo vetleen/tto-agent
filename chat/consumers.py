@@ -684,9 +684,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "canvas_id": result["id"],
                 "title": result["title"],
                 "content": result["content"],
+                "accepted_content": result.get("accepted_content"),
+                "pending_ai_review": result.get("pending_ai_review", False),
             }
-            if result.get("accepted_content") is not None:
-                event["accepted_content"] = result["accepted_content"]
             await self.send(text_data=json.dumps(event))
 
     async def _send_heartbeats(self, interval=30):
@@ -1510,15 +1510,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     str(thread.id), canvas_id,
                                 )
                                 if canvas:
-                                    accepted = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else None
+                                    from chat.services import canvas_diff_baseline
+                                    accepted, pending_ai_review = await database_sync_to_async(
+                                        canvas_diff_baseline
+                                    )(canvas)
                                     canvas_event = {
                                         "event_type": "canvas.updated",
                                         "title": canvas.title,
                                         "content": canvas.content,
                                         "canvas_id": canvas_id,
+                                        "accepted_content": accepted,
+                                        "pending_ai_review": pending_ai_review,
                                     }
-                                    if accepted is not None:
-                                        canvas_event["accepted_content"] = accepted
                                     await self._sink.send_event(canvas_event)
                         except (json.JSONDecodeError, AttributeError):
                             pass
@@ -2097,10 +2100,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not active_canvas:
             active_canvas = canvases[0]
             tabs[0]["is_active"] = True
-        accepted_content = (
-            active_canvas.accepted_checkpoint.content
-            if active_canvas.accepted_checkpoint else None
-        )
+        from chat.services import canvas_diff_baseline
+        accepted_content, pending_ai_review = canvas_diff_baseline(active_canvas)
         return {
             "tabs": tabs,
             "active": {
@@ -2108,6 +2109,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "title": active_canvas.title,
                 "content": active_canvas.content,
                 "accepted_content": accepted_content,
+                "pending_ai_review": pending_ai_review,
             },
         }
 
@@ -2211,12 +2213,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 thread_id=thread_id, title="Untitled document", content="",
             )
             set_active_canvas(thread_id, canvas)
-        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else None
+        from chat.services import canvas_diff_baseline
+        accepted_content, pending_ai_review = canvas_diff_baseline(canvas)
         return {
             "id": str(canvas.pk),
             "title": canvas.title,
             "content": canvas.content,
             "accepted_content": accepted_content,
+            "pending_ai_review": pending_ai_review,
         }
 
     @database_sync_to_async
@@ -2234,12 +2238,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _canvas_revert(self, thread_id, canvas_id=None):
+        from chat.models import CanvasCheckpoint
+        from chat.services import create_canvas_checkpoint
         canvas = self._resolve_canvas_id(thread_id, canvas_id)
         if not canvas or not canvas.accepted_checkpoint:
             return None
         canvas.title = canvas.accepted_checkpoint.title
         canvas.content = canvas.accepted_checkpoint.content
         canvas.save(update_fields=["title", "content", "updated_at"])
+        # Reverting discards the unreviewed AI edit. Advance the baseline to the
+        # restored state so the canvas reads as clean (latest == accepted). Without
+        # this, the rejected ai_edit stays `latest`, and a later user edit + reload
+        # would falsely surface a pending diff.
+        latest = CanvasCheckpoint.objects.filter(canvas=canvas).order_by("-order").first()
+        if latest is None or latest.pk != canvas.accepted_checkpoint_id:
+            cp = create_canvas_checkpoint(canvas, source="user_save", description="Reverted AI changes")
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
         return {"title": canvas.title, "content": canvas.content, "canvas_id": str(canvas.pk)}
 
     @database_sync_to_async
@@ -2313,12 +2328,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except ChatCanvas.DoesNotExist:
             return None
         set_active_canvas(thread_id, canvas)
-        accepted_content = canvas.accepted_checkpoint.content if canvas.accepted_checkpoint else None
+        from chat.services import canvas_diff_baseline
+        accepted_content, pending_ai_review = canvas_diff_baseline(canvas)
         return {
             "id": str(canvas.pk),
             "title": canvas.title,
             "content": canvas.content,
             "accepted_content": accepted_content,
+            "pending_ai_review": pending_ai_review,
         }
 
     # -- Skill helpers --
@@ -2601,13 +2618,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             c = ChatCanvas.objects.get(pk=canvas_id, thread=thread)
         except ChatCanvas.DoesNotExist:
             return None
-        accepted = c.accepted_checkpoint
+        from chat.services import canvas_diff_baseline
+        accepted_content, pending_ai_review = canvas_diff_baseline(c)
         return {
             "event_type": "canvas.updated",
             "canvas_id": str(c.pk),
             "title": c.title,
             "content": c.content,
-            "accepted_content": accepted.content if accepted else c.content,
+            "accepted_content": accepted_content,
+            "pending_ai_review": pending_ai_review,
         }
 
     @database_sync_to_async

@@ -2234,15 +2234,20 @@
     if (et === "canvases.loaded") {
       canvasStates = {};
       (data.canvases || []).forEach(function(c) {
-        canvasStates[c.id] = { title: c.title, content: "", acceptedContent: null, pendingUpdate: null };
+        canvasStates[c.id] = { title: c.title, content: "", acceptedContent: null, pendingUpdate: null, aiUpdatePending: false };
       });
       if (data.active_canvas) {
         var ac = data.active_canvas;
         activeCanvasId = ac.id;
         canvasStates[ac.id].content = ac.content || "";
         canvasStates[ac.id].acceptedContent = ac.accepted_content !== undefined ? ac.accepted_content : null;
+        canvasStates[ac.id].aiUpdatePending = !!ac.pending_ai_review;
         canvasAcceptedContent = canvasStates[ac.id].acceptedContent;
+        canvasAiUpdatePending = !!ac.pending_ai_review;
         openCanvas(ac.title, ac.content);
+        // A canvas reloaded while a review is pending shows its banner + inline merge.
+        canvasShowBannerIfNeeded();
+        canvasEnableMergeIfNeeded();
       }
       renderCanvasTabs();
       return;
@@ -2251,17 +2256,28 @@
       var cid = data.canvas_id;
       if (cid && !canvasStates[cid]) {
         // New canvas created by LLM — add tab
-        canvasStates[cid] = { title: data.title, content: data.content, acceptedContent: data.accepted_content, pendingUpdate: null };
+        canvasStates[cid] = { title: data.title, content: data.content, acceptedContent: data.accepted_content, pendingUpdate: null, aiUpdatePending: !!data.pending_ai_review };
         activeCanvasId = cid;
         canvasAcceptedContent = data.accepted_content !== undefined ? data.accepted_content : null;
+        canvasAiUpdatePending = !!data.pending_ai_review;
         openCanvas(data.title, data.content);
+        canvasShowBannerIfNeeded();
+        canvasEnableMergeIfNeeded();
         renderCanvasTabs();
       } else if (!cid || cid === activeCanvasId) {
         canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content);
-        if (cid && canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; }
+        // Sync the dirty flag from the server, but not while the user's recent
+        // typing has queued the AI update (the 2000ms race in updateCanvas) — that
+        // gets applied later via Accept.
+        if (!canvasPendingUpdate && data.pending_ai_review !== undefined) {
+          canvasAiUpdatePending = data.pending_ai_review;
+          if (!canvasAiUpdatePending) canvasDisableMerge();
+          canvasShowBannerIfNeeded();
+        }
+        if (cid && canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; canvasStates[cid].aiUpdatePending = canvasAiUpdatePending; }
       } else {
         // Update non-active canvas state in memory
-        if (canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; }
+        if (canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; canvasStates[cid].aiUpdatePending = !!data.pending_ai_review; }
         renderCanvasTabs();
       }
       return;
@@ -2273,9 +2289,12 @@
           canvasStates[data.canvas_id].content = data.content || "";
           canvasStates[data.canvas_id].title = data.title || "";
           canvasStates[data.canvas_id].acceptedContent = data.accepted_content !== undefined ? data.accepted_content : null;
+          canvasStates[data.canvas_id].aiUpdatePending = !!data.pending_ai_review;
         }
       }
+      canvasAiUpdatePending = !!data.pending_ai_review;
       canvasHandleLoaded(data.title || "", data.content || "", data.accepted_content);
+      canvasEnableMergeIfNeeded();
       renderCanvasTabs();
       return;
     }
@@ -3540,6 +3559,12 @@
       placeholder: "Start writing...",
       onChange: function() {
         canvasLastTyped = Date.now();
+        // Author mode: on a clean canvas the user IS the author, so keep the diff
+        // baseline glued to their content — no orphan diff. When an AI review is
+        // pending, leave the baseline frozen so their edits pile into that diff.
+        if (!canvasAiUpdatePending) {
+          canvasAcceptedContent = canvasTextarea.value;
+        }
         updateWordCount();
         debouncedSave();
       }
@@ -3968,17 +3993,12 @@
   // -- Auto-save canvas version before sending chat message --
   function canvasAutoSaveBeforeChat() {
     if (!canvasIsOpen || !activeThreadId || !ws || ws.readyState !== WebSocket.OPEN) return;
-    if (canvasHasPendingChanges()) {
-      var title = canvasTitleInput.value.trim() || "Untitled document";
-      var content = canvasTextarea.value;
-      var autoSvMsg = { type: "chat.canvas_save_version", thread_id: activeThreadId, title: title, content: content };
-      if (activeCanvasId) autoSvMsg.canvas_id = activeCanvasId;
-      ws.send(JSON.stringify(autoSvMsg));
-      canvasDisableMerge();
-      canvasAiUpdatePending = false;
-      canvasAcceptedContent = content;
-      canvasShowBannerIfNeeded();
-    }
+    // "Keep pending": sending a chat message must NOT accept an unreviewed AI edit.
+    // Just flush the latest content (chat.canvas_save) so the next turn sees it;
+    // never advance the baseline or clear the pending flag. A pending diff survives
+    // the send and the next AI edit piles onto it. snapshot_user_edits preserves the
+    // pre-turn state if the AI edits, so nothing is lost.
+    saveCanvasNow();
   }
 
   if (canvasImportInput) {

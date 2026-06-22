@@ -255,6 +255,35 @@ def snapshot_user_edits(canvas):
         )
 
 
+def canvas_diff_baseline(canvas):
+    """Return ``(baseline_content_or_None, pending_ai_review)`` for a canvas.
+
+    The canvas is "dirty" (an unreviewed AI/import edit is awaiting accept/revert)
+    when its latest checkpoint is neither the accepted one nor an in-place
+    redaction relabel. Every reviewed/clean path advances ``accepted_checkpoint``
+    in the same operation, so ``latest != accepted`` (excluding ``redacted``) is
+    the correct detector.
+
+    - Clean canvas -> ``(current content, False)``: the user's own edits never
+      diff against themselves.
+    - Unreviewed AI/import edit -> ``(accepted_checkpoint.content, True)``: the
+      combined diff (AI changes plus any later user edits) against the pre-edit
+      baseline.
+    """
+    from chat.models import CanvasCheckpoint
+
+    acc = canvas.accepted_checkpoint
+    if acc is None:
+        return (None, False)
+    latest = (
+        CanvasCheckpoint.objects.filter(canvas=canvas)
+        .order_by("-order")
+        .first()
+    )
+    pending = latest is not None and latest.pk != acc.pk and latest.source != "redacted"
+    return (acc.content, True) if pending else (canvas.content, False)
+
+
 def create_canvas_checkpoint(canvas, source, description=""):
     """Create a new checkpoint for the given canvas, using its current title/content.
 
@@ -588,9 +617,12 @@ def describe_image(
     b64 = base64.b64encode(image_bytes).decode("ascii")
 
     prompt = (
-        "Describe this image in one concise sentence suitable as an alt-text placeholder "
-        "in a document. Focus on what the image depicts (chart type, diagram subject, "
-        "photo content). Do NOT include any preamble — output only the description."
+        "Describe this image accurately and in detail, so that someone who cannot see "
+        "it would understand its content. Cover the subject, the composition, and any "
+        "notable details. For a chart, graph, or diagram, state its type and report the "
+        "axes, series, labels, and the values or relationships it shows. Transcribe any "
+        "text that appears in the image verbatim. Describe only what is actually visible "
+        "— do not guess or invent anything. Output only the description, with no preamble."
     )
     if alt_text:
         prompt += f"\nThe original alt text was: {alt_text}"
