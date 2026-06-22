@@ -706,15 +706,15 @@ class ImageTokenSurfacingTests(TestCase):
         from chat.models import ImageAsset
 
         t1 = get_or_create_version_image_token(
-            version_id=self.version.id, mime="image/png",
-            description="A bar chart.", filename="chart.png",
+            version_id=self.version.id, mime="image/png", description="A bar chart.",
         )
         t2 = get_or_create_version_image_token(
-            version_id=self.version.id, mime="image/png",
-            description="A bar chart.", filename="chart.png",
+            version_id=self.version.id, mime="image/png", description="A bar chart.",
         )
         self.assertEqual(t1, t2)
         self.assertTrue(t1.startswith("[[image:"))
+        # The caption is left empty — the model authors it if it wants one.
+        self.assertTrue(t1.endswith("|]]"))
         self.assertEqual(
             ImageAsset.objects.filter(version=self.version, blob="").count(), 1
         )

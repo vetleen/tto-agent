@@ -255,6 +255,7 @@ def finalize_document_metadata(self, version_id: int) -> None:
             if text.strip():
                 result = generate_description_and_tags_from_text(
                     text, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=org_id,
+                    is_image=(getattr(version, "parser_type", "") == "image"),
                 )
                 doc.description = result["description"]
                 update_fields = ["description", "updated_at"]

@@ -32,14 +32,17 @@ def image_token(asset_id, label: str) -> str:
 IMAGE_UNAVAILABLE_TEXT = "[An image was here, but it can no longer be accessed]"
 
 
-def get_or_create_version_image_token(*, version_id, mime="", description="", filename="") -> str:
-    """Return a stable ``[[image:uuid|label]]`` token for a data-room image.
+def get_or_create_version_image_token(*, version_id, mime="", description="") -> str:
+    """Return a stable ``[[image:uuid|]]`` token for a data-room image.
 
     Lazily creates a single *reference* ImageAsset (no blob) scoped to the
     version — the bytes stay on the document's native file; the asset is just the
     addressable token target. Idempotent: the same version always yields the same
     asset (and token), so the model can reuse the token across the thread, and
     existing images work with no backfill.
+
+    The caption is left **empty**: it's not a stored alt-text. The model may add
+    its own caption between the ``|`` and ``]]`` when it embeds the token.
     """
     from chat.models import ImageAsset
 
@@ -48,7 +51,7 @@ def get_or_create_version_image_token(*, version_id, mime="", description="", fi
         asset = ImageAsset.objects.create(
             version_id=version_id, content_type=mime or "", description=description or "",
         )
-    return image_token(asset.id, (description or filename or "image")[:120])
+    return image_token(asset.id, "")
 
 
 def image_asset_source(asset):

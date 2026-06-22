@@ -390,9 +390,12 @@ class SearchDocumentsTool(ContextAwareTool):
                 from chat.image_assets import get_or_create_version_image_token
                 _tok = get_or_create_version_image_token(
                     version_id=image_version_by_doc[doc_id], mime=dm.get("mime_type", ""),
-                    description=doc_desc, filename=filename,
+                    description=doc_desc,
                 )
-                lines.append(f"**Image (embed this token verbatim to show it):** {_tok}")
+                lines.append(
+                    "**Image — paste this token where you want the image shown "
+                    "(optionally add your own caption between the `|` and `]]`):** " + _tok
+                )
             if room_name:
                 lines.append(f"**Data room:** {room_name}")
             uploaded_at = dm.get("uploaded_at")
@@ -611,8 +614,7 @@ class ReadDocumentTool(ContextAwareTool):
             if getattr(version, "parser_type", "") == "image":
                 from chat.image_assets import get_or_create_version_image_token
                 doc_entry["image"] = get_or_create_version_image_token(
-                    version_id=version.id, mime=doc.mime_type,
-                    description=doc.description, filename=doc.original_filename,
+                    version_id=version.id, mime=doc.mime_type, description=doc.description,
                 )
 
             documents.append(doc_entry)
@@ -776,8 +778,7 @@ class ListDocumentsTool(ContextAwareTool):
             # a canvas or its reply.
             if version and getattr(version, "parser_type", "") == "image":
                 row["image"] = get_or_create_version_image_token(
-                    version_id=version.id, mime=d.mime_type,
-                    description=d.description, filename=d.original_filename,
+                    version_id=version.id, mime=d.mime_type, description=d.description,
                 )
             rows.append(row)
         upper = min(offset + limit, total)
@@ -1130,8 +1131,7 @@ class ShowImageTool(ContextAwareTool):
             token = ""
             if ver is not None and getattr(ver, "parser_type", "") == "image":
                 token = get_or_create_version_image_token(
-                    version_id=ver.id, mime=doc.mime_type,
-                    description=doc.description, filename=doc.original_filename,
+                    version_id=ver.id, mime=doc.mime_type, description=doc.description,
                 )
             for img_bytes, media_type, description in images:
                 if attached >= 4:
@@ -1145,7 +1145,10 @@ class ShowImageTool(ContextAwareTool):
                 attached += 1
             msg = f"Document #{idx} ('{doc.original_filename}'): attached {min(len(images), 4)} image(s)."
             if token:
-                msg += f" To place it in a canvas or your reply, embed this token verbatim: {token}"
+                msg += (
+                    f" To place it in a canvas or your reply, paste this token where you "
+                    f"want the image (optionally add your own caption between the | and ]]): {token}"
+                )
             results.append(msg)
         if attached == 0:
             return "\n".join(results) or "No images were attached."

@@ -29,6 +29,18 @@ _STRUCTURED_SYSTEM_PROMPT = (
     "return it as YYYY-MM-DD. Return null if no clear date is present."
 )
 
+# Appended when the document is an image: the text we pass is the vision model's
+# detailed description, so the cheap model must summarise the IMAGE — not write a
+# description *of the description*.
+_IMAGE_INPUT_NOTE = (
+    "\n\nIMPORTANT: This document is an image. The text below is a detailed, "
+    "AI-generated description of that image — it is NOT text contained in a file. "
+    'Write "description" as a concise account of what the IMAGE itself shows. Do '
+    'NOT refer to it as "a description", "a caption", or "this document describes"; '
+    "describe the image directly. Preserve the core facts, keep within the ~100-token "
+    'limit, and do not add anything not supported by the text. Set "document_type" to "Image".'
+)
+
 
 def _truncate_to_tokens(text: str, max_tokens: int) -> str:
     """Truncate text to at most *max_tokens* tokens."""
@@ -57,11 +69,15 @@ def generate_description_and_tags_from_text(
     user_id: int | None = None,
     data_room_id: int | None = None,
     org_id: int | None = None,
+    is_image: bool = False,
 ) -> dict:
     """Generate a description and document_type tag from raw text using the cheap LLM.
 
     Uses structured output (with_structured_output) for reliable JSON parsing.
     Returns ``{"description": "...", "tags": {"document_type": "Agreement"}}``.
+
+    When *is_image* is set, *text* is the vision model's description of an image
+    (not file text), so the prompt is adjusted to summarise the image directly.
     """
     from core.preferences import resolve_org_feature_model
     from llm import get_llm_service
@@ -74,12 +90,14 @@ def generate_description_and_tags_from_text(
     document_text = _prepare_document_text(text)
     model = resolve_org_feature_model(org_id, "document_description")
 
+    system_prompt = _STRUCTURED_SYSTEM_PROMPT + (_IMAGE_INPUT_NOTE if is_image else "")
+
     context = RunContext.create(
         user_id=user_id,
     )
     request = ChatRequest(
         messages=[
-            Message(role="system", content=_STRUCTURED_SYSTEM_PROMPT),
+            Message(role="system", content=system_prompt),
             Message(role="user", content=document_text),
         ],
         model=model,

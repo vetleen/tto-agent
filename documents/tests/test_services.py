@@ -1355,6 +1355,40 @@ class GenerateDescriptionAndTagsTests(TestCase):
         self.assertEqual(result["tags"], {"document_type": "Patent"})
 
     @patch("llm.get_llm_service")
+    def test_is_image_adds_image_note_to_prompt(self, mock_get_service):
+        """For image docs the cheap model is told its input is a vision
+        description, so it summarises the image (not the description)."""
+        from documents.services.description import generate_description_and_tags_from_text
+        from llm.types.structured import DocumentDescriptionOutput
+
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (
+            DocumentDescriptionOutput(description="An aerial photo of a cove.", document_type="Image"),
+            None,
+        )
+        mock_get_service.return_value = mock_service
+
+        generate_description_and_tags_from_text("A detailed vision description.", user_id=1, is_image=True)
+        request = mock_service.run_structured.call_args.args[0]
+        self.assertIn("This document is an image", request.messages[0].content)
+
+    @patch("llm.get_llm_service")
+    def test_non_image_omits_image_note(self, mock_get_service):
+        from documents.services.description import generate_description_and_tags_from_text
+        from llm.types.structured import DocumentDescriptionOutput
+
+        mock_service = Mock()
+        mock_service.run_structured.return_value = (
+            DocumentDescriptionOutput(description="A report.", document_type="Report"),
+            None,
+        )
+        mock_get_service.return_value = mock_service
+
+        generate_description_and_tags_from_text("Some text", user_id=1)
+        request = mock_service.run_structured.call_args.args[0]
+        self.assertNotIn("This document is an image", request.messages[0].content)
+
+    @patch("llm.get_llm_service")
     def test_empty_document_type(self, mock_get_service):
         from documents.services.description import generate_description_and_tags_from_text
         from llm.types.structured import DocumentDescriptionOutput
