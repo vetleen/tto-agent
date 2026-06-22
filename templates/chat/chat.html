@@ -938,12 +938,12 @@
       img.style.maxWidth = '100%';
       img.style.height = 'auto';
       img.style.borderRadius = '0.375rem';
-      // If the asset is gone or inaccessible, fall back to the caption text
-      // rather than leaving a broken-image icon.
+      // If the asset is gone or inaccessible, show a neutral note rather than
+      // leaving a broken-image icon.
       img.onerror = function() {
         var span = document.createElement('span');
         span.className = 'text-xs text-body italic';
-        span.textContent = desc ? ('[image: ' + desc + ']') : '[image unavailable]';
+        span.textContent = '[An image was here, but it can no longer be accessed]';
         if (el.contains(img)) el.replaceChild(span, img);
       };
       el.innerHTML = '';
@@ -2425,7 +2425,6 @@
         else if (toolName === "canvas_activate") displayText = "Switching active canvases...";
         else if (toolName === "canvas_write") displayText = "Writing document...";
         else if (toolName === "canvas_edit") displayText = "Editing document...";
-        else if (toolName === "canvas_insert_image") displayText = "Inserting image...";
         else if (toolName === "web_fetch") displayText = "Fetching web page...";
         else if (toolName === "web_search") displayText = "Searching the web...";
         else if (toolName === "web_search_read") displayText = "Searching and reading web pages...";
@@ -2481,7 +2480,6 @@
           else if (toolName === "canvas_activate") doneLabel = "Updated active canvases";
           else if (toolName === "canvas_write") doneLabel = "Rewrote the canvas text from scratch";
           else if (toolName === "canvas_edit") doneLabel = "Edited the canvas text";
-          else if (toolName === "canvas_insert_image") doneLabel = "Inserted an image into the canvas";
           else if (toolName === "web_fetch") doneLabel = "Fetched web page";
           else if (toolName === "web_search") doneLabel = "Searched the web";
           else if (toolName === "web_search_read") doneLabel = "Searched and read web pages";

@@ -283,11 +283,20 @@ class SearchDocumentsTool(ContextAwareTool):
 
         # Document metadata
         doc_rows = DataRoomDocument.objects.filter(pk__in=doc_pks).values(
-            "pk", "original_filename", "description", "doc_index",
+            "pk", "original_filename", "description", "doc_index", "mime_type",
             "data_room_id", "data_room__name", "data_room__description",
             "uploaded_at", "file_metadata_date", "document_date",
         )
         doc_meta = {r["pk"]: r for r in doc_rows}
+
+        # Image-as-documents: map each to its image version so we can hand the
+        # model a reusable [[image:uuid|label]] token to embed.
+        from documents.models import DataRoomDocumentVersion
+        image_version_by_doc = dict(
+            DataRoomDocumentVersion.objects.filter(
+                document_id__in=doc_pks, parser_type="image",
+            ).values_list("document_id", "id")
+        )
 
         # Document tags (document_type) — scoped to each doc's active searchable version
         tag_rows = DataRoomDocumentTag.objects.filter(
@@ -367,6 +376,13 @@ class SearchDocumentsTool(ContextAwareTool):
                 lines.append(f"**Type:** {doc_type}")
             if doc_desc:
                 lines.append(f"**Description:** {doc_desc}")
+            if doc_id in image_version_by_doc:
+                from chat.image_assets import get_or_create_version_image_token
+                _tok = get_or_create_version_image_token(
+                    version_id=image_version_by_doc[doc_id], mime=dm.get("mime_type", ""),
+                    description=doc_desc, filename=filename,
+                )
+                lines.append(f"**Image (embed this token verbatim to show it):** {_tok}")
             if room_name:
                 lines.append(f"**Data room:** {room_name}")
             uploaded_at = dm.get("uploaded_at")
@@ -571,6 +587,14 @@ class ReadDocumentTool(ContextAwareTool):
                 doc_entry["chunks_returned"] = len(chunk_list)
             if headings:
                 doc_entry["headings"] = headings
+            # Image-as-document: the chunks are the vision description; also hand
+            # the model the token so it can embed the actual image.
+            if getattr(version, "parser_type", "") == "image":
+                from chat.image_assets import get_or_create_version_image_token
+                doc_entry["image"] = get_or_create_version_image_token(
+                    version_id=version.id, mime=doc.mime_type,
+                    description=doc.description, filename=doc.original_filename,
+                )
 
             documents.append(doc_entry)
 
@@ -716,9 +740,11 @@ class ListDocumentsTool(ContextAwareTool):
         )
         total = qs.count()
         rows = []
+        from chat.image_assets import get_or_create_version_image_token
+
         for d in qs[offset:offset + limit]:
             version = d.active_searchable_version or d.current_version
-            rows.append({
+            row = {
                 "doc_index": d.doc_index,
                 "name": d.display_name,
                 "origin": version.origin if version else None,
@@ -726,7 +752,15 @@ class ListDocumentsTool(ContextAwareTool):
                 "versions": d.versions.count(),
                 "total_chunks": version.chunks.count() if version else 0,
                 "upload_date": d.uploaded_at.strftime("%Y-%m-%d") if d.uploaded_at else None,
-            })
+            }
+            # Image-as-document: hand the model a reusable token it can embed in
+            # a canvas or its reply.
+            if version and getattr(version, "parser_type", "") == "image":
+                row["image"] = get_or_create_version_image_token(
+                    version_id=version.id, mime=d.mime_type,
+                    description=d.description, filename=d.original_filename,
+                )
+            rows.append(row)
         upper = min(offset + limit, total)
         header = f"Showing documents {offset + 1}–{upper} of {total}" if total else "No documents."
         return json.dumps({"header": header, "count": total, "documents": rows})
@@ -1055,6 +1089,8 @@ class ShowImageTool(ContextAwareTool):
     def _run(self, doc_indices: list[int], data_room_id: int | None = None, **kwargs) -> str:
         import base64
 
+        from chat.image_assets import get_or_create_version_image_token
+
         if not doc_indices or not isinstance(doc_indices, list):
             raise ValueError("show_image requires a non-empty 'doc_indices' list")
         context = self.context
@@ -1069,19 +1105,29 @@ class ShowImageTool(ContextAwareTool):
             if not images:
                 results.append(f"Document #{idx} ('{doc.original_filename}'): no viewable image found.")
                 continue
+            # For an image-as-document, surface a reusable embed token alongside
+            # the bytes so the model can place it in a canvas or its reply.
+            ver = doc.current_version
+            token = ""
+            if ver is not None and getattr(ver, "parser_type", "") == "image":
+                token = get_or_create_version_image_token(
+                    version_id=ver.id, mime=doc.mime_type,
+                    description=doc.description, filename=doc.original_filename,
+                )
             for img_bytes, media_type, description in images:
                 if attached >= 4:
                     break
                 context.pending_image_assets.append({
-                    "asset_id": "",
+                    "asset_id": token,
                     "b64": base64.b64encode(img_bytes).decode("ascii"),
                     "media_type": media_type,
                     "description": description or "",
                 })
                 attached += 1
-            results.append(
-                f"Document #{idx} ('{doc.original_filename}'): attached {min(len(images), 4)} image(s)."
-            )
+            msg = f"Document #{idx} ('{doc.original_filename}'): attached {min(len(images), 4)} image(s)."
+            if token:
+                msg += f" To place it in a canvas or your reply, embed this token verbatim: {token}"
+            results.append(msg)
         if attached == 0:
             return "\n".join(results) or "No images were attached."
         return "\n".join(results) + "\n\n(The image(s) are now visible to you below.)"

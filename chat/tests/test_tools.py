@@ -135,6 +135,35 @@ class SearchDocumentsToolTests(TestCase):
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     @patch("documents.services.retrieval.get_merged_context_windows")
+    def test_image_document_surfaces_embed_token(self, mock_windows, mock_search):
+        """An image-as-document in search results carries a [[image:…]] token."""
+        from documents.tests._helpers import make_version
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="chart.png", mime_type="image/png",
+            description="A bar chart.", status=DataRoomDocument.Status.READY, doc_index=1,
+        )
+        v = make_version(doc, status=DataRoomDocument.Status.READY)
+        v.parser_type = "image"
+        v.save(update_fields=["parser_type"])
+        chunk = DataRoomDocumentChunk.objects.create(
+            version=v, chunk_index=0, text="A bar chart.", token_count=4,
+        )
+
+        mock_doc = MagicMock()
+        mock_doc.metadata = {"chunk_id": chunk.id}
+        mock_search.return_value = [mock_doc]
+        mock_windows.return_value = [{
+            "chunk_ids": [chunk.id], "document_id": doc.pk,
+            "context_text": "A bar chart.", "context_token_count": 4, "chunks_included": [0],
+        }]
+
+        result = self._invoke({"query": "chart"}, self._ctx())
+        self.assertIn("[[image:", result)
+
+    @patch("documents.services.retrieval.similarity_search_chunks")
+    @patch("documents.services.retrieval.get_merged_context_windows")
     def test_includes_data_room_context(self, mock_windows, mock_search):
         """Should include data room name and description at the bottom."""
         doc = DataRoomDocument.objects.create(
@@ -319,6 +348,23 @@ class ReadDocumentToolTests(TestCase):
         self.assertIn("error", d)
         self.assertIn("quarantined", d["error"].lower())
         self.assertNotIn("content", d)
+
+    def test_image_document_includes_embed_token(self):
+        from documents.tests._helpers import make_version
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="chart.png", mime_type="image/png",
+            description="A bar chart.", status=DataRoomDocument.Status.READY,
+        )
+        v = make_version(doc, status=DataRoomDocument.Status.READY, chunks=["A bar chart."])
+        v.parser_type = "image"
+        v.save(update_fields=["parser_type"])
+
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        entry = result["documents"][0]
+        self.assertIn("image", entry)
+        self.assertTrue(entry["image"].startswith("[[image:"))
 
     def test_scanning_document_returns_not_found(self):
         """A document still awaiting its PII scan must not be readable (and the
@@ -580,3 +626,78 @@ class CanvasSaveToDocumentToolTests(TestCase):
         result = self._invoke_json({"mode": "new"}, self._ctx(data_room_pks=[other_room.pk]))
         self.assertIn("error", result)
         self.assertFalse(DataRoomDocument.objects.exists())
+
+
+class ImageTokenSurfacingTests(TestCase):
+    """document_list surfaces an embed token for image docs; the token helper
+    is idempotent (one reference asset per version)."""
+
+    def setUp(self):
+        from documents.tests._helpers import make_version
+
+        self.user = User.objects.create_user(email="imgtok@test.com", password="pw")
+        self.room = DataRoom.objects.create(name="R", slug="r-imgtok", created_by=self.user)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.user,
+            original_filename="chart.png", mime_type="image/png",
+            description="A bar chart.", status=DataRoomDocument.Status.READY,
+        )
+        self.version = make_version(
+            self.doc, status=DataRoomDocument.Status.READY, chunks=["A bar chart."],
+        )
+        self.version.parser_type = "image"
+        self.version.save(update_fields=["parser_type"])
+        self.doc.refresh_from_db()
+
+    def _ctx(self):
+        return RunContext.create(
+            user_id=self.user.pk, conversation_id="t", data_room_ids=[self.room.pk],
+        )
+
+    def test_document_list_includes_image_token(self):
+        from chat.tools import ListDocumentsTool
+
+        tool = ListDocumentsTool()
+        tool.set_context(self._ctx())
+        out = json.loads(tool.invoke({}))
+        row = next(d for d in out["documents"] if d["doc_index"] == self.doc.doc_index)
+        self.assertIn("image", row)
+        self.assertTrue(row["image"].startswith("[[image:"))
+
+    def test_text_document_has_no_image_token(self):
+        from chat.tools import ListDocumentsTool
+
+        text_doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.user,
+            original_filename="notes.txt", mime_type="text/plain",
+            status=DataRoomDocument.Status.READY,
+        )
+        from documents.tests._helpers import make_version
+
+        v = make_version(text_doc, status=DataRoomDocument.Status.READY, chunks=["hi"])
+        v.parser_type = "text"
+        v.save(update_fields=["parser_type"])
+
+        tool = ListDocumentsTool()
+        tool.set_context(self._ctx())
+        out = json.loads(tool.invoke({}))
+        row = next(d for d in out["documents"] if d["doc_index"] == text_doc.doc_index)
+        self.assertNotIn("image", row)
+
+    def test_token_helper_is_idempotent(self):
+        from chat.image_assets import get_or_create_version_image_token
+        from chat.models import ImageAsset
+
+        t1 = get_or_create_version_image_token(
+            version_id=self.version.id, mime="image/png",
+            description="A bar chart.", filename="chart.png",
+        )
+        t2 = get_or_create_version_image_token(
+            version_id=self.version.id, mime="image/png",
+            description="A bar chart.", filename="chart.png",
+        )
+        self.assertEqual(t1, t2)
+        self.assertTrue(t1.startswith("[[image:"))
+        self.assertEqual(
+            ImageAsset.objects.filter(version=self.version, blob="").count(), 1
+        )

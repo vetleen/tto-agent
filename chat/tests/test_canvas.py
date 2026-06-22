@@ -9,12 +9,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from chat.canvas_tools import (
-    ActiveCanvasTool,
-    EditCanvasTool,
-    InsertCanvasImageTool,
-    WriteCanvasTool,
-)
+from chat.canvas_tools import ActiveCanvasTool, EditCanvasTool, WriteCanvasTool
 from chat.models import CanvasCheckpoint, ChatCanvas, ChatThread
 from llm.types.context import RunContext
 
@@ -1795,124 +1790,6 @@ class ActivateCanvasTests(TestCase):
         )
         canvas.refresh_from_db()
         self.assertGreater(canvas.last_activated_at, first_ts)
-
-
-# ---------------------------------------------------------------------------
-# canvas_insert_image — embed an existing data-room image into the canvas
-# ---------------------------------------------------------------------------
-
-import tempfile  # noqa: E402
-
-_INSERT_MEDIA = tempfile.mkdtemp()
-
-
-@override_settings(MEDIA_ROOT=_INSERT_MEDIA)
-class InsertCanvasImageToolTests(TestCase):
-    def setUp(self):
-        from django.core.files.base import ContentFile
-
-        from documents.models import DataRoom, DataRoomDocument
-        from documents.tests._helpers import make_version
-
-        self.user = User.objects.create_user(email="ins@test.com", password="pass")
-        self.thread = ChatThread.objects.create(created_by=self.user)
-        self.data_room = DataRoom.objects.create(name="DR", created_by=self.user)
-
-        # An image-as-document exactly as a fresh upload stores it: bytes on
-        # doc.original_file, parser_type="image", and native_blob EMPTY (this is
-        # the production shape — _collect_doc_images must read original_file).
-        self.doc = DataRoomDocument.objects.create(
-            data_room=self.data_room, uploaded_by=self.user,
-            original_filename="chart.png", mime_type="image/png",
-        )
-        self.doc.original_file.save("chart.png", ContentFile(b"\x89PNG fake-bytes"), save=True)
-        v = make_version(self.doc, status=DataRoomDocument.Status.READY)
-        v.parser_type = "image"
-        v.save(update_fields=["parser_type"])
-        self.doc.refresh_from_db()
-
-        from django.utils import timezone
-
-        self.canvas = ChatCanvas.objects.create(
-            thread=self.thread, title="Referat",
-            content="# Referat\n\n## Section 1\n\nText body.",
-            is_active=True, last_activated_at=timezone.now(),
-        )
-
-    def _ctx(self):
-        return RunContext.create(
-            user_id=self.user.pk, conversation_id=str(self.thread.id),
-            data_room_ids=[self.data_room.pk],
-        )
-
-    def test_inserts_token_and_creates_canvas_asset(self):
-        from chat.models import ImageAsset
-
-        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
-        self.assertEqual(result["status"], "ok")
-        assets = list(ImageAsset.objects.filter(canvas=self.canvas))
-        self.assertEqual(len(assets), 1)
-        self.assertEqual(assets[0].content_type, "image/png")
-        self.canvas.refresh_from_db()
-        self.assertIn(f"[[image:{assets[0].id}|", self.canvas.content)
-        self.assertEqual(result["image_token"], f"[[image:{assets[0].id}|chart.png]]")
-
-    def test_embeds_from_native_blob_when_present(self):
-        # A re-uploaded version keeps its bytes on native_blob, which takes
-        # precedence over original_file.
-        from django.core.files.base import ContentFile
-
-        from chat.models import ImageAsset
-
-        v = self.doc.current_version
-        v.native_blob.save("v.png", ContentFile(b"\x89PNG native-bytes"), save=True)
-        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
-        self.assertEqual(result["status"], "ok")
-        asset = ImageAsset.objects.filter(canvas=self.canvas).first()
-        with asset.blob.open("rb") as f:
-            self.assertEqual(f.read(), b"\x89PNG native-bytes")
-
-    def test_anchor_places_image_after_heading(self):
-        result = _invoke(
-            InsertCanvasImageTool,
-            {"doc_index": self.doc.doc_index, "anchor_text": "## Section 1"},
-            self._ctx(),
-        )
-        self.assertEqual(result["placement"], "after anchor")
-        self.canvas.refresh_from_db()
-        anchor_pos = self.canvas.content.index("## Section 1")
-        token_pos = self.canvas.content.index("[[image:")
-        body_pos = self.canvas.content.index("Text body.")
-        # Token sits between the heading and the body text that followed it.
-        self.assertGreater(token_pos, anchor_pos)
-        self.assertLess(token_pos, body_pos)
-
-    def test_idempotent_does_not_duplicate(self):
-        from chat.models import ImageAsset
-
-        self._invoke_twice()
-        self.assertEqual(ImageAsset.objects.filter(canvas=self.canvas).count(), 1)
-        self.canvas.refresh_from_db()
-        self.assertEqual(self.canvas.content.count("[[image:"), 1)
-
-    def _invoke_twice(self):
-        _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
-        _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
-
-    def test_errors_without_canvas(self):
-        ChatCanvas.objects.all().delete()
-        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, self._ctx())
-        self.assertEqual(result["status"], "error")
-        self.assertIn("canvas", result["message"].lower())
-
-    def test_errors_for_missing_document(self):
-        result = _invoke(InsertCanvasImageTool, {"doc_index": 999}, self._ctx())
-        self.assertEqual(result["status"], "error")
-
-    def test_errors_without_data_room(self):
-        ctx = RunContext.create(user_id=self.user.pk, conversation_id=str(self.thread.id))
-        result = _invoke(InsertCanvasImageTool, {"doc_index": self.doc.doc_index}, ctx)
-        self.assertEqual(result["status"], "error")
 
 
 class CanvasMarkdownImageGuardrailTests(TestCase):

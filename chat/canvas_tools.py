@@ -11,8 +11,8 @@ from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 # Markdown image syntax the model sometimes emits. It never renders in the
 # canvas (DOMPurify drops <img>) and a bare URL/filename has no asset behind it,
-# so we strip it and tell the model to use canvas_insert_image instead. Our own
-# [[image:<uuid>|label]] tokens use different syntax and are left untouched.
+# so we strip it and tell the model to embed an [[image:uuid|label]] token
+# instead. Our own tokens use different syntax and are left untouched.
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 
 
@@ -30,8 +30,9 @@ def _strip_markdown_images(content: str) -> tuple[str, int]:
 
 _MD_IMAGE_WARNING = (
     "Removed %d markdown image(s) (![...](...)) — that syntax does not render in "
-    "the canvas. To embed an image, use canvas_insert_image with the data-room "
-    "document index of the image."
+    "the canvas. To embed an image, paste the [[image:<uuid>|label]] token a "
+    "document tool (document_search / document_list / document_read / show_image) "
+    "gave you, verbatim, into the content."
 )
 
 
@@ -282,153 +283,8 @@ class EditCanvasTool(ContextAwareTool):
         return json.dumps(result)
 
 
-class InsertCanvasImageInput(ReasonBaseModel):
-    doc_index: int = Field(
-        description=(
-            "Index of the image document (in an attached data room) to embed. "
-            "Discover it with document_search / document_list / show_image."
-        )
-    )
-    data_room_id: int | None = Field(
-        default=None,
-        description="Restrict the document lookup to this data room id (optional).",
-    )
-    canvas_name: str = Field(
-        default="",
-        description="Title of the canvas to insert into. If omitted, the active canvas is used.",
-    )
-    anchor_text: str = Field(
-        default="",
-        description=(
-            "Insert the image immediately after the first exact occurrence of this "
-            "text (e.g. a heading line). Must match exactly once. If empty or not "
-            "uniquely found, the image is appended at the end of the document."
-        ),
-    )
-    caption: str = Field(
-        default="",
-        description="Caption / alt text for the image. Defaults to the document's description.",
-    )
-
-
-class InsertCanvasImageTool(ContextAwareTool):
-    """Embed an existing data-room image into the canvas as a real asset."""
-
-    name: str = "canvas_insert_image"
-    description: str = (
-        "Embed an existing image from an attached data room into the canvas "
-        "document, so it renders in the preview and is baked into the .docx "
-        "export. Reference the image by its data-room document index. Do NOT "
-        "write markdown image syntax like ![](file.png) — that does not render. "
-        "If no canvas exists yet, create one with canvas_write first."
-    )
-    args_schema: type[BaseModel] = InsertCanvasImageInput
-
-    def _run(
-        self,
-        doc_index: int,
-        data_room_id: int | None = None,
-        canvas_name: str = "",
-        anchor_text: str = "",
-        caption: str = "",
-        **kwargs,
-    ) -> str:
-        from chat.image_assets import image_token, store_canvas_image
-        from chat.services import (
-            CANVAS_MAX_CHARS,
-            activate_canvas,
-            create_canvas_checkpoint,
-            resolve_canvas,
-            snapshot_user_edits,
-        )
-        from chat.tools import _collect_doc_images, _get_user, _resolve_document
-
-        context = self.context
-        thread_id = context.conversation_id if context else None
-        if not thread_id:
-            return json.dumps({"status": "error", "message": "No thread context available."})
-
-        canvas, err = resolve_canvas(thread_id, canvas_name or None)
-        if err:
-            return json.dumps({
-                "status": "error",
-                "message": err if canvas_name else "No canvas exists for this thread. Use canvas_write to create one first.",
-            })
-
-        doc, derr = _resolve_document(context, doc_index, data_room_id)
-        if derr:
-            return json.dumps({"status": "error", "message": derr})
-
-        images = _collect_doc_images(doc, max_images=1)
-        if not images:
-            return json.dumps({
-                "status": "error",
-                "message": f"Document #{doc_index} ('{doc.original_filename}') has no viewable image to embed.",
-            })
-
-        img_bytes, ct, desc = images[0]
-        label = (caption or desc or doc.original_filename or "image").strip()
-        user = _get_user(context.user_id if context else None)
-        asset = store_canvas_image(
-            canvas,
-            img_bytes=img_bytes,
-            content_type=ct,
-            description=(caption or desc or ""),
-            alt_text=label,
-            created_by=user,
-        )
-        token = image_token(asset.id, label)
-
-        snapshot_user_edits(canvas)
-        content = canvas.content or ""
-
-        # Idempotent: if this exact image is already embedded, don't duplicate it.
-        if token in content:
-            return json.dumps({
-                "status": "ok",
-                "canvas_id": str(canvas.pk),
-                "title": canvas.title,
-                "image_token": token,
-                "placement": "already present",
-            })
-
-        block = f"\n\n{token}\n\n"
-        placement = "appended"
-        note = ""
-        if anchor_text and content.count(anchor_text) == 1:
-            pos = content.index(anchor_text) + len(anchor_text)
-            content = content[:pos] + block + content[pos:]
-            placement = "after anchor"
-        else:
-            if anchor_text:
-                note = "Anchor text was not found exactly once; image appended at the end instead."
-            content = content.rstrip() + block
-
-        truncated = len(content) > CANVAS_MAX_CHARS
-        if truncated:
-            content = content[:CANVAS_MAX_CHARS]
-            note = "Content truncated to the canvas character limit."
-
-        canvas.content = content
-        canvas.save(update_fields=["content", "updated_at"])
-        activate_canvas(thread_id, canvas)
-        create_canvas_checkpoint(canvas, source="ai_edit", description="Inserted image")
-
-        result = {
-            "status": "ok",
-            "canvas_id": str(canvas.pk),
-            "title": canvas.title,
-            "image_token": token,
-            "placement": placement,
-        }
-        if note:
-            result["note"] = note
-        return json.dumps(result)
-
-
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(ActiveCanvasTool())
 _registry.register_tool(WriteCanvasTool())
 _registry.register_tool(EditCanvasTool())
-_registry.register_tool(InsertCanvasImageTool())

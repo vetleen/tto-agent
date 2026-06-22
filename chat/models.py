@@ -536,7 +536,10 @@ class ImageAsset(models.Model):
         related_name="image_assets",
     )
 
-    blob = models.FileField(upload_to="image_assets/%Y/%m/", max_length=500)
+    # Empty for a *reference* asset (version-owned): the bytes live on the
+    # data-room version's native image (native_blob / the document's
+    # original_file) and are resolved on serve — see image_asset_source().
+    blob = models.FileField(upload_to="image_assets/%Y/%m/", max_length=500, blank=True)
     content_type = models.CharField(max_length=100)
     size_bytes = models.PositiveIntegerField(default=0)
     width = models.PositiveIntegerField(null=True, blank=True)

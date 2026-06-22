@@ -142,3 +142,66 @@ class CanvasImportAssetsTests(TestCase):
         self.assertEqual(len(assets), 1)
         self.assertEqual(assets[0].description, "a revenue chart")
         self.assertIn(f"[[image:{assets[0].id}|", content)
+
+
+@override_settings(MEDIA_ROOT=_MEDIA)
+class ReferenceImageAssetTests(TestCase):
+    """A version-owned ImageAsset with no blob serves the data-room image bytes
+    (the bytes stay on the document's original_file — no copy)."""
+
+    def setUp(self):
+        from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentVersion
+
+        self.owner = User.objects.create_user(email="ref@test.com", password="pw")
+        self.other = User.objects.create_user(email="ref2@test.com", password="pw")
+        self.room = DataRoom.objects.create(name="R", slug="r-ref", created_by=self.owner)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.owner,
+            original_filename="chart.png", mime_type="image/png",
+            doc_index=1, status=DataRoomDocument.Status.READY,
+        )
+        self.doc.original_file.save("chart.png", ContentFile(b"\x89PNG real-bytes"), save=True)
+        self.version = DataRoomDocumentVersion.objects.create(
+            document=self.doc, parser_type="image", mime_type="image/png",
+        )
+        self.doc.current_version = self.version
+        self.doc.save(update_fields=["current_version"])
+        # Reference asset: version-owned, NO blob.
+        self.asset = ImageAsset.objects.create(version=self.version, content_type="image/png")
+
+    def test_reference_asset_has_no_blob(self):
+        self.assertFalse(bool(self.asset.blob))
+
+    def test_owner_fetches_original_file_bytes(self):
+        self.client.force_login(self.owner)
+        resp = self.client.get(reverse("chat_image_asset", args=[self.asset.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "image/png")
+        self.assertIn("inline", resp["Content-Disposition"])
+
+    def test_non_owner_gets_404(self):
+        self.client.force_login(self.other)
+        resp = self.client.get(reverse("chat_image_asset", args=[self.asset.id]))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_embed_resolves_reference_to_dataurl(self):
+        from chat.views import _embed_image_tokens
+
+        out = _embed_image_tokens(f"A [[image:{self.asset.id}|chart]] B", self.owner)
+        self.assertIn('<img src="data:image/png;base64,', out)
+        self.assertNotIn("[[image:", out)
+
+    def test_embed_inaccessible_shows_placeholder(self):
+        from chat.views import _embed_image_tokens
+
+        out = _embed_image_tokens(f"A [[image:{self.asset.id}|chart]] B", self.other)
+        self.assertNotIn("<img", out)
+        self.assertIn("no longer be accessed", out)
+
+    def test_embed_missing_token_shows_placeholder(self):
+        import uuid as _uuid
+
+        from chat.views import _embed_image_tokens
+
+        out = _embed_image_tokens(f"X [[image:{_uuid.uuid4()}|gone]] Y", self.owner)
+        self.assertIn("no longer be accessed", out)

@@ -55,6 +55,7 @@ def serve_image_asset(request, asset_id):
     served inline (so an <img> can render them); anything else is forced to
     download with a generic content type.
     """
+    from chat.image_assets import image_asset_source
     from chat.models import ImageAsset
     from core.file_types import KIND_IMAGE, kind_for_mime
 
@@ -62,10 +63,14 @@ def serve_image_asset(request, asset_id):
     if not _user_can_access_image_asset(request.user, asset):
         raise Http404
 
-    ct = asset.content_type or "application/octet-stream"
+    # A reference asset (empty blob) resolves to the data-room version's native
+    # image; a normal asset serves its own blob.
+    source, ct = image_asset_source(asset)
+    if source is None:
+        raise Http404
     displayable = kind_for_mime(ct) == KIND_IMAGE
     resp = FileResponse(
-        asset.blob.open("rb"),
+        source.open("rb"),
         content_type=ct if displayable else "application/octet-stream",
     )
     disposition = "inline" if displayable else "attachment"
@@ -79,29 +84,34 @@ _IMAGE_TOKEN_RE = re.compile(r"\[\[image:([0-9a-fA-F-]{36})\|([^\]]*)\]\]")
 
 def _embed_image_tokens(content: str, user) -> str:
     """Replace ``[[image:<uuid>|label]]`` tokens with ``<img>`` data-URLs for
-    docx export. Only assets the user may access are embedded; unknown or
-    forbidden tokens are dropped. Runs server-side (sync)."""
+    docx export. Tokens the user can't access (or that no longer resolve) become
+    a neutral placeholder instead of vanishing. Runs server-side (sync)."""
     import base64
 
+    from chat.image_assets import IMAGE_UNAVAILABLE_TEXT, image_asset_source
     from chat.models import ImageAsset
+
+    placeholder = f"<em>{IMAGE_UNAVAILABLE_TEXT}</em>"
 
     def repl(m):
         uuid, label = m.group(1), m.group(2)
         try:
             asset = ImageAsset.objects.get(id=uuid)
         except (ImageAsset.DoesNotExist, ValueError):
-            return ""
+            return placeholder
         if not _user_can_access_image_asset(user, asset):
-            return ""
+            return placeholder
+        source, ct = image_asset_source(asset)
+        if source is None:
+            return placeholder
         try:
-            with asset.blob.open("rb") as f:
+            with source.open("rb") as f:
                 data = f.read()
         except Exception:
-            return ""
+            return placeholder
         b64 = base64.b64encode(data).decode("ascii")
-        ct = asset.content_type or "image/png"
         alt = (label or "").replace('"', "'").replace("<", "").replace(">", "")
-        return f'<img src="data:{ct};base64,{b64}" alt="{alt}" />'
+        return f'<img src="data:{ct or "image/png"};base64,{b64}" alt="{alt}" />'
 
     return _IMAGE_TOKEN_RE.sub(repl, content)
 

@@ -26,6 +26,50 @@ def image_token(asset_id, label: str) -> str:
     return f"[[image:{asset_id}|{_sanitize_for_token(label)}]]"
 
 
+# Shown (in preview, chat, and .docx export) when a token can't be resolved —
+# the source was deleted or the viewer lost access. Threads/canvases are
+# fleeting, so a neutral note is friendlier than a broken-image icon.
+IMAGE_UNAVAILABLE_TEXT = "[An image was here, but it can no longer be accessed]"
+
+
+def get_or_create_version_image_token(*, version_id, mime="", description="", filename="") -> str:
+    """Return a stable ``[[image:uuid|label]]`` token for a data-room image.
+
+    Lazily creates a single *reference* ImageAsset (no blob) scoped to the
+    version — the bytes stay on the document's native file; the asset is just the
+    addressable token target. Idempotent: the same version always yields the same
+    asset (and token), so the model can reuse the token across the thread, and
+    existing images work with no backfill.
+    """
+    from chat.models import ImageAsset
+
+    asset = ImageAsset.objects.filter(version_id=version_id, blob="").first()
+    if asset is None:
+        asset = ImageAsset.objects.create(
+            version_id=version_id, content_type=mime or "", description=description or "",
+        )
+    return image_token(asset.id, (description or filename or "image")[:120])
+
+
+def image_asset_source(asset):
+    """Resolve where an ImageAsset's bytes live → ``(filefield_or_None, content_type)``.
+
+    A normal asset owns its ``blob``. A *reference* asset (empty blob,
+    version-owned) falls back to the data-room version's native image
+    (``native_blob`` else the document's ``original_file``).
+    """
+    if asset.blob:
+        return asset.blob, (asset.content_type or "application/octet-stream")
+    if asset.version_id:
+        version = asset.version
+        document = version.document
+        source = version.native_blob if version.native_blob else document.original_file
+        ct = asset.content_type or document.mime_type or "image/png"
+        if source:
+            return source, ct
+    return None, (asset.content_type or "application/octet-stream")
+
+
 def store_canvas_image(
     canvas, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
 ):

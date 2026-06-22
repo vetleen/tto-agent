@@ -98,6 +98,14 @@ class ShowImageToolTests(TestCase):
         self.assertEqual(pending[0]["media_type"], "image/png")
         self.assertTrue(pending[0]["b64"])
 
+    def test_result_surfaces_embed_token(self):
+        # The model gets a reusable [[image:uuid|label]] token to embed in a
+        # canvas or its reply, both in the result text and as asset_id metadata.
+        tool = self._tool([self.room.pk])
+        result = tool._run([1])
+        self.assertIn("[[image:", result)
+        self.assertTrue(tool.context.pending_image_assets[0]["asset_id"].startswith("[[image:"))
+
     def test_inaccessible_room_is_denied(self):
         other = User.objects.create_user(email="siv-other@test.com", password="pw")
         room2 = DataRoom.objects.create(name="R2", slug="r2-siv", created_by=other)
@@ -108,9 +116,8 @@ class ShowImageToolTests(TestCase):
 
     def test_attaches_image_from_original_file_when_native_blob_empty(self):
         # Production shape: a freshly-uploaded image keeps its bytes on
-        # doc.original_file with an EMPTY native_blob. show_image (and
-        # canvas_insert_image) must still find the image, not report "no
-        # viewable image".
+        # doc.original_file with an EMPTY native_blob. show_image must still
+        # find the image, not report "no viewable image".
         doc = DataRoomDocument.objects.create(
             data_room=self.room, uploaded_by=self.user,
             original_filename="photo.jpg", mime_type="image/jpeg",
