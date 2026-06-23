@@ -68,7 +68,17 @@ class ServeImageAssetTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp["X-Content-Type-Options"], "nosniff")
         self.assertIn("inline", resp["Content-Disposition"])
+        # The download filename carries an extension derived from the mime so a
+        # "Save image as" lands a usable file rather than an extension-less blob.
+        self.assertIn(f'filename="{self.asset.id}.png"', resp["Content-Disposition"])
         self.assertEqual(resp["Content-Type"], "image/png")
+
+    def test_jpeg_filename_uses_jpg_extension(self):
+        asset = _make_asset(canvas=self.canvas, content_type="image/jpeg")
+        self.client.force_login(self.owner)
+        resp = self.client.get(reverse("chat_image_asset", args=[asset.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(f'filename="{asset.id}.jpg"', resp["Content-Disposition"])
 
     def test_non_owner_gets_404(self):
         self.client.force_login(self.other)
@@ -86,6 +96,8 @@ class ServeImageAssetTests(TestCase):
         resp = self.client.get(reverse("chat_image_asset", args=[asset.id]))
         self.assertEqual(resp.status_code, 200)
         self.assertIn("attachment", resp["Content-Disposition"])
+        # Unknown mime -> no extension to append, so the bare id is used.
+        self.assertIn(f'filename="{asset.id}"', resp["Content-Disposition"])
         self.assertEqual(resp["Content-Type"], "application/octet-stream")
 
 

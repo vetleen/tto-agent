@@ -171,6 +171,19 @@ def kind_for_mime(mime: str) -> str | None:
     return None
 
 
+def extension_for_mime(mime: str) -> str | None:
+    """Return the canonical extension for a MIME type (e.g. "image/png" -> "png").
+
+    First match in table order, so image/jpeg yields "jpg" (not "jpeg"). Useful
+    for naming a download from a stored content-type. Returns None if unknown.
+    """
+    mime = (mime or "").lower()
+    for ft in FILE_TYPES:
+        if mime in ft.accepted_mimes:
+            return ft.ext
+    return None
+
+
 def canonical_mime_for_extension(ext: str) -> str | None:
     """Return the canonical MIME type for an extension (e.g. "png" -> "image/png").
 

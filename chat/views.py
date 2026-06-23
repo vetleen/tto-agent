@@ -59,7 +59,7 @@ def serve_image_asset(request, asset_id):
     """
     from chat.image_assets import image_asset_source
     from chat.models import ImageAsset
-    from core.file_types import KIND_IMAGE, kind_for_mime
+    from core.file_types import KIND_IMAGE, extension_for_mime, kind_for_mime
 
     asset = get_object_or_404(ImageAsset, id=asset_id)
     if not _user_can_access_image_asset(request.user, asset):
@@ -76,7 +76,12 @@ def serve_image_asset(request, asset_id):
         content_type=ct if displayable else "application/octet-stream",
     )
     disposition = "inline" if displayable else "attachment"
-    resp["Content-Disposition"] = f'{disposition}; filename="{asset.id}"'
+    # Append an extension derived from the content type so a "Save image as"
+    # download lands a usable file (browsers fall back to this filename / the
+    # extension-less URL otherwise).
+    ext = extension_for_mime(ct)
+    filename = f"{asset.id}.{ext}" if ext else str(asset.id)
+    resp["Content-Disposition"] = f'{disposition}; filename="{filename}"'
     resp["X-Content-Type-Options"] = "nosniff"
     return resp
 
