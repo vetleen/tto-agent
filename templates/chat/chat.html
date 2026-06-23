@@ -600,6 +600,12 @@
   </div>
 </div>
 
+{# Image lightbox — full-size view when a chat/canvas image is clicked #}
+<div id="image-lightbox" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 hidden flex items-center justify-center p-4" style="z-index:60;background:rgba(6,21,14,0.88);">
+  <button type="button" id="image-lightbox-close" aria-label="Close" style="position:absolute;top:16px;right:16px;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border:0;background:rgba(0,0,0,0.35);color:#fff;border-radius:8px;cursor:pointer;"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+  <img id="image-lightbox-img" src="" alt="" style="max-width:95vw;max-height:92vh;object-fit:contain;border-radius:8px;box-shadow:var(--shadow-xl);" />
+</div>
+
 {# Skill selection modal #}
 <div id="skill-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto" style="background:radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55));">
   <div class="wfm-modal" style="position:relative;width:516px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
@@ -922,17 +928,28 @@
       // renderImageBlocks() turns into <img> after sanitization (never raw
       // <img> through DOMPurify).
       text = text.replace(/\[\[image:([0-9a-fA-F-]{36})\|([^\]]*)\]\]/g, function(m, uuid, label) {
+        // A trailing |NN% in the interior is the display width (percent of the
+        // available width), not part of the caption. Treat only a FINAL |NN% as
+        // the size so a | inside a caption is preserved. Keep this rule in sync
+        // with _split_image_label_size in chat/views.py.
+        var width = '';
+        var sizeMatch = label.match(/^([\s\S]*)\|(\d{1,3})%$/);
+        if (sizeMatch) {
+          label = sizeMatch[1];
+          width = String(Math.max(10, Math.min(100, parseInt(sizeMatch[2], 10))));
+        }
         // Collapse whitespace (incl. newlines) — a multi-paragraph label would
         // otherwise embed a blank line in the placeholder span, which marked.parse
         // splits across paragraphs, corrupting the tag so it renders as text.
         var safe = label.replace(/\s+/g, ' ').trim()
           .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        return '<span class="image-placeholder" data-image-uuid="' + uuid + '" data-image-desc="' + safe + '"></span>';
+        var widthAttr = width ? ' data-image-width="' + width + '"' : '';
+        return '<span class="image-placeholder" data-image-uuid="' + uuid + '" data-image-desc="' + safe + '"' + widthAttr + '></span>';
       });
       const html = marked.parse(text);
       return DOMPurify.sanitize(html, {
         ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td','div','span','sup','section','mark'],
-        ALLOWED_ATTR: ['href','title','target','class','data-mermaid','data-email','data-image-uuid','data-image-desc','id']
+        ALLOWED_ATTR: ['href','title','target','class','data-mermaid','data-email','data-image-uuid','data-image-desc','data-image-width','id']
       });
     } catch (e) { return escapeHtml(text).replace(/\n/g, "<br>"); }
   }
@@ -945,6 +962,7 @@
       var uuid = el.getAttribute('data-image-uuid');
       if (!uuid) return;
       var desc = el.getAttribute('data-image-desc') || '';
+      var width = el.getAttribute('data-image-width');
       var img = document.createElement('img');
       img.src = '/chat/asset/' + encodeURIComponent(uuid) + '/';
       img.alt = desc;
@@ -952,6 +970,19 @@
       img.style.maxWidth = '100%';
       img.style.height = 'auto';
       img.style.borderRadius = '0.375rem';
+      // Optional assistant-set display width (percent of the container). Use
+      // inline-block, not block: the percentage still resolves against the text
+      // column (the containing block, not the inline span), but two sized images
+      // written next to each other share a line instead of stacking.
+      if (width) {
+        img.style.display = 'inline-block';
+        img.style.verticalAlign = 'top';
+        img.style.width = width + '%';
+      }
+      // Click to view the image full-size in a lightbox.
+      img.style.cursor = 'zoom-in';
+      img.title = 'Click to enlarge';
+      img.addEventListener('click', function() { openImageLightbox(img.src, img.alt); });
       // If the asset is gone or inaccessible, show a neutral note rather than
       // leaving a broken-image icon.
       img.onerror = function() {
@@ -963,6 +994,34 @@
       el.innerHTML = '';
       el.appendChild(img);
       el.dataset.imageRendered = '1';
+    });
+  }
+
+  // Image lightbox — click any rendered chat/canvas image to view it full-size.
+  // openImageLightbox is a hoisted declaration so renderImageBlocks (above) can
+  // call it; the element refs resolve at click time, well after the DOM loads.
+  var imageLightbox = document.getElementById('image-lightbox');
+  var imageLightboxImg = document.getElementById('image-lightbox-img');
+  function openImageLightbox(src, alt) {
+    if (!imageLightbox || !src) return;
+    imageLightboxImg.src = src;
+    imageLightboxImg.alt = alt || '';
+    imageLightbox.classList.remove('hidden');
+    imageLightbox.setAttribute('aria-hidden', 'false');
+  }
+  function closeImageLightbox() {
+    if (!imageLightbox) return;
+    imageLightbox.classList.add('hidden');
+    imageLightbox.setAttribute('aria-hidden', 'true');
+    imageLightboxImg.removeAttribute('src');
+  }
+  if (imageLightbox) {
+    var imageLightboxClose = document.getElementById('image-lightbox-close');
+    if (imageLightboxClose) imageLightboxClose.addEventListener('click', closeImageLightbox);
+    // A click on the backdrop (not the image or close button) dismisses it.
+    imageLightbox.addEventListener('click', function(e) { if (e.target === imageLightbox) closeImageLightbox(); });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && !imageLightbox.classList.contains('hidden')) closeImageLightbox();
     });
   }
 

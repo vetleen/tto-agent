@@ -88,20 +88,58 @@ def serve_image_asset(request, asset_id):
 
 _IMAGE_TOKEN_RE = re.compile(r"\[\[image:([0-9a-fA-F-]{36})\|([^\]]*)\]\]")
 
+# A token interior may end with an explicit display width: ``...|NN%``. We treat
+# only a FINAL ``|NN%`` as the size, so a ``|`` inside a caption is preserved.
+# Keep this rule in sync with the JS mirror in templates/chat/chat.html
+# (renderMarkdown / renderImageBlocks).
+_IMAGE_SIZE_RE = re.compile(r"^(.*)\|(\d{1,3})%$", re.DOTALL)
 
-def _embed_image_tokens(content: str, user) -> str:
+
+def _split_image_label_size(label):
+    """Split a token interior into ``(label, pct)``. A trailing ``|NN%`` segment is
+    the display width as a percent of the available width, clamped to [10, 100];
+    ``pct`` is None when no explicit size is given (render at full width)."""
+    m = _IMAGE_SIZE_RE.match(label or "")
+    if not m:
+        return (label or ""), None
+    base, num = m.group(1), int(m.group(2))
+    return base, max(10, min(100, num))
+
+
+# Matches an already-rendered <img> (e.g. a client-converted mermaid block) OR an
+# image-asset token. Scanning both in one pass yields a document-ordered list of
+# display widths that stays aligned with the docx's inline shapes after export.
+_IMG_OR_TOKEN_RE = re.compile(
+    r"<img\b[^>]*>|\[\[image:([0-9a-fA-F-]{36})\|([^\]]*)\]\]"
+)
+
+
+def _embed_image_tokens(content, user):
     """Replace ``[[image:<uuid>|label]]`` tokens with ``<img>`` data-URLs for
     docx export. Tokens the user can't access (or that no longer resolve) become
-    a neutral placeholder instead of vanishing. Runs server-side (sync)."""
+    a neutral placeholder instead of vanishing. Runs server-side (sync).
+
+    Returns ``(content, pcts)`` where ``pcts`` holds one entry per rendered image
+    in document order — the requested display width (10-100) or None for full
+    width — so the caller can resize the matching docx inline shapes. Pre-existing
+    <img> tags (mermaid) reserve a None slot to keep the positional alignment;
+    placeholder substitutions (inaccessible/missing images) produce no <img> and
+    so get no slot."""
     import base64
 
     from chat.image_assets import IMAGE_UNAVAILABLE_TEXT, image_asset_source
     from chat.models import ImageAsset
 
     placeholder = f"<em>{IMAGE_UNAVAILABLE_TEXT}</em>"
+    pcts = []
 
     def repl(m):
-        uuid, label = m.group(1), m.group(2)
+        # A pre-existing <img> (mermaid etc.): leave untouched, reserve a slot.
+        if m.group(1) is None:
+            pcts.append(None)
+            return m.group(0)
+        uuid = m.group(1)
+        label, pct = _split_image_label_size(m.group(2))
         try:
             asset = ImageAsset.objects.get(id=uuid)
         except (ImageAsset.DoesNotExist, ValueError):
@@ -118,9 +156,10 @@ def _embed_image_tokens(content: str, user) -> str:
             return placeholder
         b64 = base64.b64encode(data).decode("ascii")
         alt = (label or "").replace('"', "'").replace("<", "").replace(">", "")
+        pcts.append(pct)
         return f'<img src="data:{ct or "image/png"};base64,{b64}" alt="{alt}" />'
 
-    return _IMAGE_TOKEN_RE.sub(repl, content)
+    return _IMG_OR_TOKEN_RE.sub(repl, content), pcts
 
 
 @login_required
@@ -717,8 +756,9 @@ async def canvas_export(request, thread_id, canvas_id=None):
     content = render_citations(content)
     content = replace_email_with_html(content)
     # Resolve image-asset tokens to embedded <img> data-URLs (same path mermaid
-    # images take), so exported docs keep their images.
-    content = await sync_to_async(_embed_image_tokens)(content, request.user)
+    # images take), so exported docs keep their images. image_pcts is the
+    # document-ordered display width for each rendered image (None = full width).
+    content, image_pcts = await sync_to_async(_embed_image_tokens)(content, request.user)
     html_content = md.markdown(content, extensions=["tables", "fenced_code", MarkExtension()])
     # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.
     html_content = _HR_RE.sub(f"<p>{_HR_DIVIDER_MARKER}</p>", html_content)
@@ -756,6 +796,27 @@ async def canvas_export(request, thread_id, canvas_id=None):
     _strip_space_after_line_breaks(doc)
     # Render `---` thematic breaks as a divider rule (html2docx drops <hr>).
     _render_dividers(doc)
+
+    # Apply per-image display widths from the optional ``|NN%`` token suffix.
+    # image_pcts is aligned 1:1 with the doc's inline shapes in document order
+    # (mermaid <img>s reserve a None slot); resize each sized shape, scaling
+    # height to preserve the aspect ratio. pct >= 100 / None keeps html2docx's
+    # default sizing.
+    section = doc.sections[0]
+    text_width = section.page_width - section.left_margin - section.right_margin
+    shapes = doc.inline_shapes
+    for i, pct in enumerate(image_pcts):
+        if i >= len(shapes):
+            break
+        if pct is None or pct >= 100:
+            continue
+        shape = shapes[i]
+        if not shape.width:
+            continue
+        target = int(text_width * pct / 100)
+        ratio = target / shape.width
+        shape.height = int(shape.height * ratio)
+        shape.width = target
 
     # Apply the org's configured document styles (fonts/colours). Read at
     # export time so the look follows the org, not whoever wrote the canvas.

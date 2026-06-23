@@ -5,7 +5,7 @@ import tempfile
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from chat.models import ChatCanvas, ChatMessage, ChatThread, ImageAsset
@@ -116,7 +116,7 @@ class EmbedImageTokensTests(TestCase):
         from chat.views import _embed_image_tokens
 
         content = f"Before\n\n[[image:{self.asset.id}|Image 1: a chart]]\n\nAfter"
-        out = _embed_image_tokens(content, self.owner)
+        out, _ = _embed_image_tokens(content, self.owner)
         self.assertIn('<img src="data:image/png;base64,', out)
         self.assertNotIn("[[image:", out)
 
@@ -124,7 +124,7 @@ class EmbedImageTokensTests(TestCase):
         from chat.views import _embed_image_tokens
 
         content = f"X [[image:{self.asset.id}|Image 1: a chart]] Y"
-        out = _embed_image_tokens(content, self.other)
+        out, _ = _embed_image_tokens(content, self.other)
         self.assertNotIn("<img", out)
         self.assertNotIn("[[image:", out)
 
@@ -199,14 +199,14 @@ class ReferenceImageAssetTests(TestCase):
     def test_embed_resolves_reference_to_dataurl(self):
         from chat.views import _embed_image_tokens
 
-        out = _embed_image_tokens(f"A [[image:{self.asset.id}|chart]] B", self.owner)
+        out, _ = _embed_image_tokens(f"A [[image:{self.asset.id}|chart]] B", self.owner)
         self.assertIn('<img src="data:image/png;base64,', out)
         self.assertNotIn("[[image:", out)
 
     def test_embed_inaccessible_shows_placeholder(self):
         from chat.views import _embed_image_tokens
 
-        out = _embed_image_tokens(f"A [[image:{self.asset.id}|chart]] B", self.other)
+        out, _ = _embed_image_tokens(f"A [[image:{self.asset.id}|chart]] B", self.other)
         self.assertNotIn("<img", out)
         self.assertIn("no longer be accessed", out)
 
@@ -215,5 +215,140 @@ class ReferenceImageAssetTests(TestCase):
 
         from chat.views import _embed_image_tokens
 
-        out = _embed_image_tokens(f"X [[image:{_uuid.uuid4()}|gone]] Y", self.owner)
+        out, _ = _embed_image_tokens(f"X [[image:{_uuid.uuid4()}|gone]] Y", self.owner)
         self.assertIn("no longer be accessed", out)
+
+
+class SplitImageLabelSizeTests(SimpleTestCase):
+    """The optional trailing ``|NN%`` display-width segment of a token interior.
+
+    Mirrors the JS rule in templates/chat/chat.html (renderMarkdown) — keep both
+    in sync.
+    """
+
+    def _split(self, label):
+        from chat.views import _split_image_label_size
+
+        return _split_image_label_size(label)
+
+    def test_size_suffix_extracted(self):
+        self.assertEqual(self._split("a chart|50%"), ("a chart", 50))
+
+    def test_pipe_inside_caption_preserved(self):
+        # Only the FINAL |NN% is the size; an earlier | stays in the caption.
+        self.assertEqual(self._split("a|b|30%"), ("a|b", 30))
+
+    def test_no_size_returns_none(self):
+        self.assertEqual(self._split("just a caption"), ("just a caption", None))
+
+    def test_percent_not_in_suffix_form_is_not_a_size(self):
+        # A bare percent without the leading | is part of the caption.
+        self.assertEqual(self._split("50% done"), ("50% done", None))
+
+    def test_clamps_below_minimum(self):
+        self.assertEqual(self._split("cap|5%"), ("cap", 10))
+        self.assertEqual(self._split("cap|0%"), ("cap", 10))
+
+    def test_clamps_above_maximum(self):
+        self.assertEqual(self._split("cap|250%"), ("cap", 100))
+
+    def test_empty_caption_with_size(self):
+        self.assertEqual(self._split("|40%"), ("", 40))
+
+    def test_empty_string(self):
+        self.assertEqual(self._split(""), ("", None))
+
+
+@override_settings(MEDIA_ROOT=_MEDIA)
+class CanvasExportImageSizingTests(TestCase):
+    """End-to-end docx export honours the ``|NN%`` display-width suffix by
+    resizing the matching inline shape (height scaled to keep the aspect ratio)."""
+
+    def setUp(self):
+        from chat.tests.test_attachments import _tiny_png
+
+        self.png = _tiny_png()
+        self.owner = User.objects.create_user(email="sz@test.com", password="pw")
+        self.thread = ChatThread.objects.create(created_by=self.owner)
+        self.canvas = ChatCanvas.objects.create(thread=self.thread, title="Sized", content="")
+        self.thread.active_canvas = self.canvas
+        self.thread.save(update_fields=["active_canvas"])
+        self.asset = ImageAsset.objects.create(
+            canvas=self.canvas,
+            blob=ContentFile(self.png, name="a.png"),
+            content_type="image/png",
+            size_bytes=len(self.png),
+        )
+        # An asset owned by someone else — inaccessible to self.owner.
+        self.other = User.objects.create_user(email="sz2@test.com", password="pw")
+        other_thread = ChatThread.objects.create(created_by=self.other)
+        other_canvas = ChatCanvas.objects.create(thread=other_thread, title="O", content="")
+        self.foreign_asset = ImageAsset.objects.create(
+            canvas=other_canvas,
+            blob=ContentFile(self.png, name="b.png"),
+            content_type="image/png",
+            size_bytes=len(self.png),
+        )
+        self.client.force_login(self.owner)
+
+    def _export(self, content):
+        import json
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        return self.client.post(url, json.dumps({"content": content}), content_type="application/json")
+
+    def _open(self, response):
+        import io
+
+        from docx import Document as DocxDocument
+
+        return DocxDocument(io.BytesIO(response.getvalue()))
+
+    def _text_width(self, doc):
+        section = doc.sections[0]
+        return section.page_width - section.left_margin - section.right_margin
+
+    def test_sized_token_resizes_inline_shape(self):
+        resp = self._export(f"# T\n\n[[image:{self.asset.id}|a chart|50%]]\n")
+        self.assertEqual(resp.status_code, 200)
+        doc = self._open(resp)
+        self.assertEqual(len(doc.inline_shapes), 1)
+        self.assertEqual(doc.inline_shapes[0].width, int(self._text_width(doc) * 50 / 100))
+
+    def test_unsized_token_keeps_default_width(self):
+        resp = self._export(f"# T\n\n[[image:{self.asset.id}|a chart]]\n")
+        self.assertEqual(resp.status_code, 200)
+        doc = self._open(resp)
+        self.assertEqual(len(doc.inline_shapes), 1)
+        # No |NN% -> html2docx's native sizing, not our half-page width.
+        self.assertNotEqual(doc.inline_shapes[0].width, int(self._text_width(doc) * 50 / 100))
+
+    def test_sized_token_after_inaccessible_token_sizes_correct_shape(self):
+        # The inaccessible token becomes a text placeholder (no inline shape), so
+        # the following sized token's percentage must still land on its own shape.
+        content = (
+            f"[[image:{self.foreign_asset.id}|secret]]\n\n"
+            f"[[image:{self.asset.id}|chart|40%]]\n"
+        )
+        resp = self._export(content)
+        self.assertEqual(resp.status_code, 200)
+        doc = self._open(resp)
+        self.assertEqual(len(doc.inline_shapes), 1)
+        self.assertEqual(doc.inline_shapes[0].width, int(self._text_width(doc) * 40 / 100))
+
+    def test_mermaid_image_before_sized_token_sizes_token_shape(self):
+        # A pre-rendered <img> (the client's mermaid render) reserves a None slot
+        # so the token's percentage lands on the token's shape, not the mermaid's.
+        import base64
+
+        b64 = base64.b64encode(self.png).decode("ascii")
+        mermaid = f'<img src="data:image/png;base64,{b64}" alt="diagram" />'
+        content = f"{mermaid}\n\n[[image:{self.asset.id}|chart|30%]]\n"
+        resp = self._export(content)
+        self.assertEqual(resp.status_code, 200)
+        doc = self._open(resp)
+        self.assertEqual(len(doc.inline_shapes), 2)
+        target = int(self._text_width(doc) * 30 / 100)
+        # Shape 0 = mermaid (untouched); shape 1 = token (resized to 30%).
+        self.assertEqual(doc.inline_shapes[1].width, target)
+        self.assertNotEqual(doc.inline_shapes[0].width, target)
