@@ -159,7 +159,10 @@ def _embed_image_tokens(content, user, *, inline_width=False):
         except Exception:
             return placeholder
         b64 = base64.b64encode(data).decode("ascii")
-        alt = (label or "").replace('"', "'").replace("<", "").replace(">", "")
+        # Collapse whitespace so a multi-paragraph description stays a single-line
+        # alt — a blank line in the tag makes Markdown split the paragraph and
+        # escape the whole <img>, dumping the raw data-URL as text in the export.
+        alt = re.sub(r"\s+", " ", label or "").strip().replace('"', "'").replace("<", "").replace(">", "")
         pcts.append(pct)
         style = f' style="max-width:{pct}%"' if (inline_width and pct and pct < 100) else ""
         return f'<img src="data:{ct or "image/png"};base64,{b64}" alt="{alt}"{style} />'

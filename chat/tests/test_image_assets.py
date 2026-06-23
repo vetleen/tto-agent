@@ -203,6 +203,23 @@ class ReferenceAssetTests(TestCase):
         self.assertIn('<img src="data:image/png;base64,', out)
         self.assertNotIn("[[image:", out)
 
+    def test_embed_multiparagraph_label_stays_single_line(self):
+        """A description spanning paragraphs must collapse to a single-line alt:
+        a blank line inside the tag makes Markdown split the paragraph and escape
+        the whole <img>, dumping the raw data-URL as text in the export."""
+        import markdown as md
+
+        from chat.markdown_export import MarkExtension
+        from chat.views import _embed_image_tokens
+
+        label = "Portrait of Wilfred.\n\nA detailed multi-paragraph caption."
+        out, _ = _embed_image_tokens(f"[[image:{self.asset.id}|{label}]]", self.owner)
+        alt = out.split('alt="')[1].split('"')[0]
+        self.assertNotIn("\n", alt)  # collapsed to a single line
+        html = md.markdown(out, extensions=["tables", "fenced_code", MarkExtension()])
+        self.assertIn("<img", html)
+        self.assertNotIn("&lt;img", html)  # not escaped into literal text
+
     def test_embed_inaccessible_shows_placeholder(self):
         from chat.views import _embed_image_tokens
 
