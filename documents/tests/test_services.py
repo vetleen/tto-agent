@@ -1678,6 +1678,56 @@ class FileMetadataDateTests(TestCase):
         finally:
             path.unlink(missing_ok=True)
 
+    @staticmethod
+    def _write_docx_with_core(core_xml):
+        import zipfile
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
+            path = Path(f.name)
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("docProps/core.xml", core_xml)
+        return path
+
+    def test_docx_prefers_modified_over_created(self):
+        import datetime
+        from documents.services.chunking import extract_file_metadata_date
+        # python-docx's default template hardcodes the 2013 created date; the
+        # real save time lives in dcterms:modified.
+        core_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties'
+            ' xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"'
+            ' xmlns:dcterms="http://purl.org/dc/terms/"'
+            ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            '<dcterms:created xsi:type="dcterms:W3CDTF">2013-12-23T23:15:00Z</dcterms:created>'
+            '<dcterms:modified xsi:type="dcterms:W3CDTF">2026-06-17T12:24:00Z</dcterms:modified>'
+            '</cp:coreProperties>'
+        )
+        path = self._write_docx_with_core(core_xml)
+        try:
+            result = extract_file_metadata_date(path, "docx")
+            self.assertEqual(result, datetime.date(2026, 6, 17))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_docx_falls_back_to_created_when_no_modified(self):
+        import datetime
+        from documents.services.chunking import extract_file_metadata_date
+        core_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties'
+            ' xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"'
+            ' xmlns:dcterms="http://purl.org/dc/terms/"'
+            ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            '<dcterms:created xsi:type="dcterms:W3CDTF">2019-05-01T08:00:00Z</dcterms:created>'
+            '</cp:coreProperties>'
+        )
+        path = self._write_docx_with_core(core_xml)
+        try:
+            result = extract_file_metadata_date(path, "docx")
+            self.assertEqual(result, datetime.date(2019, 5, 1))
+        finally:
+            path.unlink(missing_ok=True)
+
 
 class EmailLoaderTests(TestCase):
     """Tests for .msg and .eml email loading functions."""

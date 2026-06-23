@@ -395,9 +395,16 @@ def extract_file_metadata_date(file_path: str | Path, file_extension: str) -> "d
                 if "docProps/core.xml" in z.namelist():
                     tree = ET.parse(z.open("docProps/core.xml"))
                     ns = {"dcterms": "http://purl.org/dc/terms/"}
-                    created_el = tree.find(".//dcterms:created", ns)
-                    if created_el is not None and created_el.text:
-                        return datetime.date.fromisoformat(created_el.text[:10])
+                    # Prefer the last-modified date and fall back to created.
+                    # The created date is unreliable: python-docx's default
+                    # template hardcodes 2013-12-23, and documents copied from a
+                    # template carry the template's stale created date. modified
+                    # reflects the last actual save and is present on virtually
+                    # all Word/python-docx output.
+                    for tag in ("dcterms:modified", "dcterms:created"):
+                        el = tree.find(f".//{tag}", ns)
+                        if el is not None and el.text:
+                            return datetime.date.fromisoformat(el.text[:10])
 
         elif ext == "msg":
             import extract_msg
