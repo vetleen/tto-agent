@@ -25,11 +25,11 @@
       <span class="font-serif font-semibold text-[22px] text-forest-900">Wilfred</span>
     </a>
     <div class="ml-auto flex items-center gap-4">
-      {# Secondary login link — kept for later, hidden for now #}
+      {# "Get access" link — kept for later, hidden for now #}
       {% comment %}
-      <a href="{% url 'accounts:login' %}" class="hidden sm:inline text-[14.5px] text-[#525C72] hover:text-forest-900 transition-colors">Log in</a>
+      <a href="#" class="hidden sm:inline text-[14.5px] text-[#525C72] hover:text-forest-900 transition-colors">Get access</a>
       {% endcomment %}
-      <a href="#" class="inline-flex items-center justify-center rounded-base bg-forest-800 px-4 py-2 text-sm font-medium text-[#F2F7F4] hover:bg-forest-700 transition-colors">Get access</a>
+      <a href="{% url 'accounts:login' %}" class="inline-flex items-center justify-center rounded-base bg-forest-800 px-4 py-2 text-sm font-medium text-[#F2F7F4] hover:bg-forest-700 transition-colors">Log in</a>
     </div>
   </nav>
 </header>
