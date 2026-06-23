@@ -1,8 +1,9 @@
-"""Persist canvas-embedded images as ImageAssets (canvas docx import).
+"""Persist chat-embedded images as ImageAssets (canvas docx import, and
+docx/pdf chat attachments).
 
-Mirrors documents.services.image_assets.docx_asset_sink, but scopes assets to a
-ChatCanvas and uses the user-scoped image describer (canvas import is an
-interactive, user-initiated action).
+Mirrors documents.services.image_assets.image_asset_sink, but scopes assets to a
+ChatCanvas or ChatMessage and uses the user-scoped image describer (these are
+interactive, user-initiated actions).
 """
 
 from __future__ import annotations
@@ -106,13 +107,84 @@ def store_canvas_image(
     return asset
 
 
-def canvas_asset_sink(canvas, user, *, max_described: int = 25):
-    """Return a docx image_sink that stores each embedded image as an ImageAsset
-    scoped to *canvas* and emits a ``[[image:uuid|Image N: desc]]`` token.
+def store_thread_image(
+    thread, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
+):
+    """Persist *img_bytes* as an ImageAsset scoped to *thread*; return the asset.
 
-    Descriptions (capped at *max_described*) use the user's vision describer;
-    beyond that, images are still stored with a format-only label.
+    Used for tool-generated images (e.g. ``chat_generate_image``): the assistant
+    message doesn't exist yet when the tool runs, but the thread does, so it owns
+    the asset. The returned asset's id is the stable token target the model
+    embeds in its reply.
+
+    When *dedupe* is set, an existing thread asset with the same bytes (sha256)
+    is reused rather than storing a second copy.
     """
+    from django.core.files.base import ContentFile
+
+    from chat.models import ImageAsset
+
+    ct = content_type or "application/octet-stream"
+    sha = hashlib.sha256(img_bytes).hexdigest()
+    if dedupe:
+        existing = ImageAsset.objects.filter(thread=thread, sha256=sha).first()
+        if existing is not None:
+            return existing
+
+    asset = ImageAsset(
+        thread=thread,
+        content_type=ct,
+        size_bytes=len(img_bytes),
+        sha256=sha,
+        description=description or "",
+        alt_text=(alt_text or "")[:1024],
+        created_by=created_by,
+    )
+    asset.blob.save(f"{asset.id}.{_ext_for(ct)}", ContentFile(img_bytes), save=True)
+    return asset
+
+
+def store_message_image(
+    message, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
+):
+    """Persist *img_bytes* as an ImageAsset scoped to *message*; return the asset.
+
+    Used for images extracted from a user's docx/pdf attachment: the user
+    message exists by the time extraction runs, so it owns the asset and the
+    token renders inline in the conversation (see serve_image_asset / the
+    frontend token pipeline).
+
+    When *dedupe* is set, an existing message asset with the same bytes (sha256)
+    is reused rather than storing a second copy.
+    """
+    from django.core.files.base import ContentFile
+
+    from chat.models import ImageAsset
+
+    ct = content_type or "application/octet-stream"
+    sha = hashlib.sha256(img_bytes).hexdigest()
+    if dedupe:
+        existing = ImageAsset.objects.filter(message=message, sha256=sha).first()
+        if existing is not None:
+            return existing
+
+    asset = ImageAsset(
+        message=message,
+        content_type=ct,
+        size_bytes=len(img_bytes),
+        sha256=sha,
+        description=description or "",
+        alt_text=(alt_text or "")[:1024],
+        created_by=created_by,
+    )
+    asset.blob.save(f"{asset.id}.{_ext_for(ct)}", ContentFile(img_bytes), save=True)
+    return asset
+
+
+def _describe_and_store_sink(store, user, *, max_described, model=None):
+    """Shared body for the canvas/message asset sinks: describe (capped) then
+    persist via *store*, a ``(img_bytes, content_type, description, alt_text)``
+    -> asset callable. Emits a ``[[image:uuid|Image N: desc]]`` token."""
     from chat.services import describe_image
 
     def sink(image, idx: int) -> str:
@@ -123,23 +195,61 @@ def canvas_asset_sink(canvas, user, *, max_described: int = 25):
         description = ""
         if idx <= max_described:
             try:
-                description = describe_image(img_bytes, ct, user, alt_text=image.alt_text) or ""
+                description = describe_image(img_bytes, ct, user, alt_text=image.alt_text, model=model) or ""
             except Exception:
-                logger.exception("Failed to describe canvas image")
+                logger.exception("Failed to describe embedded image")
         if not description:
             fmt = ct.split("/")[-1].upper().lstrip("X-")
             description = f"{fmt} image" if fmt else "image"
 
-        asset = store_canvas_image(
+        asset = store(img_bytes, ct, description, image.alt_text or "")
+        return image_token(asset.id, f"Image {idx}: {description}")
+
+    return sink
+
+
+def canvas_asset_sink(canvas, user, *, max_described: int = 25):
+    """Return a docx/pdf image_sink that stores each embedded image as an
+    ImageAsset scoped to *canvas* and emits a ``[[image:uuid|Image N: desc]]``
+    token.
+
+    Descriptions (capped at *max_described*) use the user's vision describer;
+    beyond that, images are still stored with a format-only label.
+    """
+
+    def store(img_bytes, ct, description, alt_text):
+        return store_canvas_image(
             canvas,
             img_bytes=img_bytes,
             content_type=ct,
             description=description,
-            alt_text=image.alt_text or "",
+            alt_text=alt_text,
             created_by=user,
             # docx import emits each embedded image once; no cross-image dedupe.
             dedupe=False,
         )
-        return image_token(asset.id, f"Image {idx}: {description}")
 
-    return sink
+    return _describe_and_store_sink(store, user, max_described=max_described)
+
+
+def message_image_asset_sink(message, user, *, max_described: int = 10, model=None):
+    """Return a docx/pdf image_sink that stores each embedded image as an
+    ImageAsset scoped to *message* and emits a ``[[image:uuid|Image N: desc]]``
+    token — the chat/meeting attachment counterpart of the data-room
+    image_asset_sink. Descriptions are capped at *max_described*.
+    """
+
+    def store(img_bytes, ct, description, alt_text):
+        return store_message_image(
+            message,
+            img_bytes=img_bytes,
+            content_type=ct,
+            description=description,
+            alt_text=alt_text,
+            created_by=user,
+            # core.pdf/core.docx already dedupe within a document; keep this on so
+            # a re-enriched attachment can't double-store.
+            dedupe=True,
+        )
+
+    return _describe_and_store_sink(store, user, max_described=max_described, model=model)

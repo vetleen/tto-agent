@@ -82,6 +82,10 @@ def settings_page(request):
         prefs.allowed_transcription_models
     )
 
+    user_image_model = (user_settings.preferences or {}).get("image_models", {}).get("default")
+    from llm.image_generation_registry import get_image_generation_models
+    image_model_display = {mid: info.display_name for mid, info in get_image_generation_models().items()}
+
     user_feature_models = (user_settings.preferences or {}).get("feature_models", {})
     _USER_FEATURE_META = {
         "chat": ("Chat", "The primary model used for conversations."),
@@ -116,6 +120,10 @@ def settings_page(request):
         "user_live_transcription_mode": user_live_transcription_mode,
         "resolved_live_transcription_mode": prefs.live_transcription_mode,
         "transcription_model_display": transcription_model_display,
+        "allowed_image_models": prefs.allowed_image_models,
+        "user_image_model": user_image_model or "",
+        "resolved_image_model": prefs.image_model,
+        "image_model_display": image_model_display,
         "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
         "assistant_name": django_settings.ASSISTANT_NAME,
         "preference_warnings": prefs.warnings,
@@ -203,6 +211,32 @@ def preferences_transcription_model_update(request):
     update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "model": model, "kind": kind})
+
+
+@login_required
+@require_POST
+def preferences_image_model_update(request):
+    """Update a user's preferred image generation model (must be org-allowed)."""
+    from core.preferences import get_preferences
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    model = (data.get("model") or "").strip() or None
+    if model:
+        prefs = get_preferences(request.user)
+        if model not in prefs.allowed_image_models:
+            return JsonResponse({"error": "Model not allowed"}, status=400)
+
+    def mutate(prefs):
+        image_models = prefs.get("image_models", {})
+        image_models["default"] = model
+        prefs["image_models"] = image_models
+
+    update_user_preferences(request.user, mutate)
+
+    return JsonResponse({"ok": True, "model": model})
 
 
 @login_required
@@ -410,6 +444,19 @@ def org_settings_page(request):
     system_transcription_default_live = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "") or ""
     system_transcription_default_upload = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "") or ""
 
+    from llm.image_generation_registry import get_image_generation_models
+    system_image_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
+    org_allowed_image = org_prefs.get("allowed_image_models")
+    org_image_models = org_prefs.get("image_models", {})
+    effective_image_allowed = (
+        [m for m in org_allowed_image if m in system_image_models]
+        if isinstance(org_allowed_image, list)
+        else list(system_image_models)
+    )
+    image_model_display = {
+        mid: info.display_name for mid, info in get_image_generation_models().items()
+    }
+
     effective_org_allowed = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
 
     org_feature_models = org_prefs.get("feature_models", {})
@@ -461,6 +508,10 @@ def org_settings_page(request):
         "system_transcription_default_live": system_transcription_default_live,
         "system_transcription_default_upload": system_transcription_default_upload,
         "transcription_model_display": transcription_model_display,
+        "system_image_models": system_image_models,
+        "org_allowed_image": org_allowed_image,
+        "org_image_default": org_image_models.get("default", ""),
+        "image_model_display": image_model_display,
         "org_features": org_features,
         "tiers": build_tier_rows(system_defaults, effective_org_allowed),
     })
@@ -598,6 +649,63 @@ def org_transcription_model_update(request):
     update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "model": model, "kind": kind})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_allowed_image_models_update(request):
+    """Set org's allowed image generation models list."""
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    models = data.get("allowed_image_models")
+    if not isinstance(models, list):
+        return JsonResponse({"error": "allowed_image_models must be a list"}, status=400)
+
+    system_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
+    invalid = [m for m in models if m not in system_models]
+    if invalid:
+        return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
+
+    def mutate(prefs):
+        prefs["allowed_image_models"] = models
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, "allowed_image_models": models})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_image_model_update(request):
+    """Set the organization-level default image generation model."""
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    model = (data.get("model") or "").strip() or None
+    if model:
+        org_allowed = (membership.org.preferences or {}).get("allowed_image_models")
+        system_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
+        effective = [m for m in org_allowed if m in system_models] if isinstance(org_allowed, list) else system_models
+        if model not in effective:
+            return JsonResponse({"error": "Model not in allowed list"}, status=400)
+
+    def mutate(prefs):
+        image_models = prefs.get("image_models", {})
+        image_models["default"] = model
+        prefs["image_models"] = image_models
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, "model": model})
 
 
 @login_required

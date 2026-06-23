@@ -457,7 +457,10 @@ def build_text_content_block(text: str, filename: str) -> dict:
     }
 
 
-DOCX_MAX_DESCRIBED_IMAGES = 10
+# Cap on embedded images vision-described per chat/meeting attachment (docx or
+# pdf). Lower than the data-room cap (20) — chat is interactive and per-turn.
+CHAT_MAX_DESCRIBED_IMAGES = 10
+DOCX_MAX_DESCRIBED_IMAGES = CHAT_MAX_DESCRIBED_IMAGES  # back-compat alias
 
 
 def extract_docx_text(file_bytes: bytes, *, user=None) -> str:
@@ -488,6 +491,47 @@ def extract_pdf_text(file_bytes: bytes) -> str:
 
     reader = PdfReader(io.BytesIO(file_bytes))
     return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+
+
+def extract_attachment_text(att, file_bytes: bytes, *, user) -> str:
+    """Extract a docx/pdf chat attachment to text with inline ``[[image:uuid|...]]``
+    tokens, persisting embedded images as message-scoped ImageAssets.
+
+    The chat/meeting counterpart of the data-room image_asset_sink path: when the
+    attachment is linked to a message, embedded images become viewable
+    ImageAssets owned by that message; otherwise (defensive) they fall back to
+    transient ``[Image N: desc]`` descriptions. Caller is responsible for caching
+    the result on ``att.extracted_content``.
+    """
+    from core.file_types import KIND_PDF, kind_for_mime
+
+    if att.message_id:
+        from chat.image_assets import message_image_asset_sink
+
+        sink = message_image_asset_sink(att.message, user, max_described=CHAT_MAX_DESCRIBED_IMAGES)
+    else:
+        sink = describe_image_sink(user, max_described=CHAT_MAX_DESCRIBED_IMAGES)
+
+    if kind_for_mime(att.content_type) == KIND_PDF:
+        from core.pdf import pdf_to_text
+
+        return pdf_to_text(file_bytes, image_sink=sink)
+    from core.docx import docx_to_markdown
+
+    return docx_to_markdown(file_bytes, image_sink=sink)
+
+
+def get_or_extract_attachment_text(att, file_bytes, *, user) -> str:
+    """Cached :func:`extract_attachment_text`: extract (and persist embedded
+    images) exactly once, storing the result on ``att.extracted_content`` so
+    per-turn enrichment replay reuses it instead of re-extracting and recreating
+    assets."""
+    if att.extracted_content:
+        return att.extracted_content
+    text = extract_attachment_text(att, file_bytes, user=user)
+    att.extracted_content = text
+    att.save(update_fields=["extracted_content"])
+    return text
 
 
 def _attachment_markers(messages) -> dict:

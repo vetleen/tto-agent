@@ -27,6 +27,7 @@ def build_static_system_prompt(
     organization_name: str | None = None,
     has_subagent_tool: bool = False,
     has_task_tool: bool = False,
+    has_image_tool: bool = False,
     parallel_subagents: bool = True,
 ) -> str:
     """Build the static portion of the system prompt.
@@ -87,8 +88,21 @@ Supported diagram types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`,
 ## Images
 To show an image from an attached data room — in a canvas or directly in your chat reply — paste its image token where you want the image to appear (e.g. right under a heading). The document tools (`document_search`, `document_list`, `document_read`, `document_view_image`) surface a token of the form `[[image:<uuid>|]]` for each image document. The part after the `|` is an **optional caption** that becomes the image's alt text — leave it empty, or write your own short caption between the `|` and the `]]` (e.g. `[[image:<uuid>|Figure 1: aerial view of the test fascility]]`). The image renders inline in the preview and the chat, and is baked into any .docx export.
 
-Do NOT write markdown image syntax such as `![caption](file.png)` — it does not render and is stripped out. You can only show images that already exist as data-room documents; you cannot generate or fabricate images, and never invent a token uuid — only use one a tool gave you.
+Do NOT write markdown image syntax such as `![caption](file.png)` — it does not render and is stripped out. Never invent a token uuid — only use one a tool gave you.
+"""
 
+    if has_image_tool:
+        prompt += """
+## Generating images
+You can create images with `chat_generate_image` — pass a vivid, detailed `prompt` describing the image. To EDIT or restyle an existing image (one you just generated, or a data-room image you've viewed), pass its `[[image:<uuid>|]]` token in `input_images` together with a prompt describing the change. The tool saves the image and returns a token — paste that token into your reply to show it to the user. Generate ONCE, then present the result and ask whether they'd like any changes; do not regenerate or iterate on your own unless the user asks. Use it only when the user actually wants an image.
+"""
+    else:
+        prompt += """
+## Generating images
+You cannot generate or fabricate images — you can only show images that already exist as data-room documents, using the tokens those document tools give you.
+"""
+
+    prompt += """
 ## Emails
 You can format draft emails using fenced code blocks with the `email` language tag. These render as styled email cards with an "Open in Mail" button. Example:
 
@@ -639,6 +653,7 @@ def build_system_prompt(
     subagent_runs: list[dict] | None = None,
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
+    has_image_tool: bool = False,
     parallel_subagents: bool = True,
 ) -> str:
     """Build the system prompt for a chat session.
@@ -662,6 +677,7 @@ def build_system_prompt(
         organization_name=organization_name,
         has_subagent_tool=has_subagent_tool,
         has_task_tool=has_task_tool,
+        has_image_tool=has_image_tool,
         parallel_subagents=parallel_subagents,
     )
 

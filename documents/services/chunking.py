@@ -64,8 +64,8 @@ def clean_extracted_text(text: str) -> str:
 
 # Lazy imports to avoid loading LangChain at module import when not needed
 def _get_loaders():
-    from langchain_community.document_loaders import PyPDFLoader, TextLoader
-    return PyPDFLoader, TextLoader
+    from langchain_community.document_loaders import TextLoader
+    return TextLoader
 
 
 def _strip_nul_bytes(docs: list[Any]) -> list[Any]:
@@ -155,13 +155,32 @@ def _load_docx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
     structure-aware chunker. ``image_sink`` controls how embedded images are
     rendered; when omitted they become simple ``[Image N]`` placeholders. The
     data-room extraction path passes an asset sink so images are preserved (see
-    documents.services.image_assets.docx_asset_sink).
+    documents.services.image_assets.image_asset_sink).
     """
     from langchain_core.documents import Document
 
     from core.docx import docx_to_markdown, placeholder_image_sink
 
     content = docx_to_markdown(path, image_sink=image_sink or placeholder_image_sink)
+    return [Document(page_content=content.strip())]
+
+
+def _load_pdf_as_documents(path: Path, *, image_sink=None) -> list[Any]:
+    """Extract PDF content as text using the shared core.pdf converter.
+
+    Page text is extracted per page; embedded images are rendered inline via
+    ``image_sink`` (see core.pdf.pdf_to_text). When omitted they become simple
+    ``[Image N]`` placeholders. The data-room extraction path passes an asset
+    sink so images are preserved (see
+    documents.services.image_assets.image_asset_sink). core.pdf already strips
+    NUL bytes from page text, so no separate _strip_nul_bytes pass is needed.
+    """
+    from langchain_core.documents import Document
+
+    from core.docx import placeholder_image_sink
+    from core.pdf import pdf_to_text
+
+    content = pdf_to_text(path, image_sink=image_sink or placeholder_image_sink)
     return [Document(page_content=content.strip())]
 
 
@@ -324,13 +343,11 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
     ext = file_extension.lower().lstrip(".")
-    PyPDFLoader, TextLoader = _get_loaders()
+    TextLoader = _get_loaders()
     # NOTE: never log document content here (even at DEBUG) — these are
     # confidential uploads; counts and sizes only.
     if ext == "pdf":
-        loader = PyPDFLoader(str(path))
-        docs = loader.load()
-        _strip_nul_bytes(docs)
+        docs = _load_pdf_as_documents(path, image_sink=image_sink)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "docx":

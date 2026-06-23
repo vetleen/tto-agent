@@ -1226,6 +1226,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             organization_name=org_name,
             has_subagent_tool=self._has_tool("chat_subagent_create"),
             has_task_tool=self._has_tool("chat_task_update"),
+            has_image_tool=self._has_tool("chat_generate_image"),
             parallel_subagents=parallel_subagents,
         )
         available_skills_for_prompt = (
@@ -2676,8 +2677,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             build_pdf_content_block,
             build_text_content_block,
             detect_provider,
-            extract_docx_text,
-            extract_pdf_text,
         )
         from llm.display import supports_modality
 
@@ -2731,18 +2730,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 att.original_filename,
                             )
                     elif ct in SUPPORTED_PDF_TYPES:
-                        # Prefer the native PDF document block; fall back to
-                        # extracted text when the model lacks native PDF support.
+                        # Always extract once: embedded images become viewable
+                        # message-scoped ImageAssets and the text+tokens are
+                        # cached on the attachment. Feed the model the native PDF
+                        # when it can read one (best fidelity), else the extracted
+                        # text (which now carries the image descriptions).
+                        extracted = await self._attachment_text(att, file_bytes)
                         if supports_modality(model or "", "pdf"):
                             b64 = base64.b64encode(file_bytes).decode("ascii")
                             block = build_pdf_content_block(b64, att.original_filename, provider)
                         else:
-                            extracted = await database_sync_to_async(extract_pdf_text)(file_bytes)
                             block = build_text_content_block(extracted, att.original_filename)
                     elif ct in SUPPORTED_DOCX_TYPES:
-                        extracted = await database_sync_to_async(
-                            extract_docx_text
-                        )(file_bytes, user=self.user)
+                        extracted = await self._attachment_text(att, file_bytes)
                         block = build_text_content_block(extracted, att.original_filename)
                     elif ct in SUPPORTED_TEXT_TYPES:
                         decoded = file_bytes.decode("utf-8", errors="replace")
@@ -2774,6 +2774,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return attachment.file.read()
         finally:
             attachment.file.close()
+
+    @database_sync_to_async
+    def _attachment_text(self, attachment, file_bytes):
+        """Return the extracted text for a docx/pdf attachment, extracting and
+        persisting its embedded images as message-scoped ImageAssets exactly
+        once and caching the result. Reused verbatim on later turns so per-turn
+        replay never re-extracts or recreates assets."""
+        from chat.services import get_or_extract_attachment_text
+
+        return get_or_extract_attachment_text(attachment, file_bytes, user=self.user)
 
     async def _persist_tool_loop_messages(self, thread, tool_calls, tool_results, *, content="", thinking=""):
         """Persist assistant tool-call message and tool result messages.

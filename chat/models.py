@@ -313,6 +313,12 @@ class ChatAttachment(models.Model):
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100)
     size_bytes = models.PositiveIntegerField()
+    # Cached text extracted from a docx/pdf attachment (with inline
+    # [[image:uuid|...]] tokens for any embedded images persisted as
+    # message-scoped ImageAssets). Populated once, lazily, the first time the
+    # attachment is enriched into an LLM request — so per-turn replay reuses it
+    # instead of re-extracting and recreating assets. Empty for images/text.
+    extracted_content = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -511,8 +517,12 @@ class ThreadChunkUsage(models.Model):
 class ImageAsset(models.Model):
     """A persisted image: the native bytes plus a text description.
 
-    Scoped to exactly one owner — a data-room document version, a canvas, or a
-    chat message — via the nullable FKs below (enforced by a CheckConstraint).
+    Scoped to exactly one owner — a data-room document version, a canvas, a
+    chat message, or a chat thread — via the nullable FKs below (enforced by a
+    CheckConstraint). Thread ownership exists for tool-generated images: the
+    assistant message isn't persisted until after the turn streams, but a tool
+    must mint a stable asset id mid-run (so the model can embed its token), and
+    the thread always exists at that point.
     Lives in the chat app (not documents) so every FK points chat -> documents
     or within chat, avoiding a migration cycle (documents must not depend on chat).
     """
@@ -536,6 +546,13 @@ class ImageAsset(models.Model):
     )
     message = models.ForeignKey(
         "ChatMessage",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="image_assets",
+    )
+    thread = models.ForeignKey(
+        "ChatThread",
         on_delete=models.CASCADE,
         null=True,
         blank=True,
@@ -566,14 +583,16 @@ class ImageAsset(models.Model):
         indexes = [
             models.Index(fields=["version"]),
             models.Index(fields=["canvas"]),
+            models.Index(fields=["thread"]),
         ]
         constraints = [
             models.CheckConstraint(
                 name="imageasset_exactly_one_owner",
                 condition=(
-                    models.Q(version__isnull=False, canvas__isnull=True, message__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=False, message__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=False)
+                    models.Q(version__isnull=False, canvas__isnull=True, message__isnull=True, thread__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=False, message__isnull=True, thread__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=False, thread__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=False)
                 ),
             ),
         ]

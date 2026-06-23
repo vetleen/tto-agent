@@ -22,6 +22,7 @@
         <li><a href="#models" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">AI models</a></li>
         {% if user_features %}<li><a href="#features" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Feature overrides</a></li>{% endif %}
         {% if allowed_transcription_models %}<li><a href="#transcription" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Transcription</a></li>{% endif %}
+        {% if allowed_image_models %}<li><a href="#image-generation" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Image generation</a></li>{% endif %}
         <li><a href="#autonomy" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Autonomy</a></li>
         <li><a href="#context" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
         <li><a href="#account" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Account</a></li>
@@ -191,6 +192,35 @@
       </section>
       {% endif %}
 
+      <!-- Image generation -->
+      {% if allowed_image_models %}
+      <section id="image-generation" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Image generation</h2>
+          <p class="mt-0.5 text-sm text-body">Choose your preferred model for when {{ assistant_name }} generates or edits images in chat.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="image-model">
+                Image model
+              </label>
+              <p class="text-xs text-body mt-0.5">Used by {{ assistant_name }}'s image tool in chat.</p>
+              <select
+                id="image-model"
+                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Default ({{ resolved_image_model }})</option>
+                {% for model in allowed_image_models %}
+                <option value="{{ model }}" {% if user_image_model == model %}selected{% endif %}>{{ model }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
       <!-- Assistant autonomy -->
       <section id="autonomy" class="scroll-mt-24">
         <div class="mb-3">
@@ -344,6 +374,24 @@
         if (data.error) {
           alert(data.error);
           modeSelect.value = '';
+        }
+      });
+    });
+  }
+
+  // Image generation model preference
+  var imageModelSelect = document.getElementById('image-model');
+  if (imageModelSelect) {
+    imageModelSelect.addEventListener('change', function() {
+      fetch('{% url "accounts:preferences_image_model_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          imageModelSelect.value = '';
         }
       });
     });

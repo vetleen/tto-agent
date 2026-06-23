@@ -464,6 +464,96 @@ def log_transcription_error(
         logger.exception("Failed to write LLM error log (transcription)")
 
 
+def log_image_generation(
+    model: str,
+    context: "RunContext | None",
+    *,
+    prompt: str,
+    cost_usd: "Decimal | None",
+    duration_ms: int,
+    width: "int | None" = None,
+    height: "int | None" = None,
+    n_images: int = 1,
+    is_edit: bool = False,
+    input_tokens: "int | None" = None,
+    output_tokens: "int | None" = None,
+    total_tokens: "int | None" = None,
+) -> None:
+    """Write a SUCCESS log entry for an image-generation call. Never raises.
+
+    Image generation runs outside the chat pipeline (like transcription), so it
+    writes its own LLMCallLog row for unified cost tracking. ``cost_usd`` may be
+    None when the model has no pricing configured; the row is still written so
+    usage is visible. Token counts are passed through when the provider returns
+    a usage object (e.g. OpenAI gpt-image-*); flat-priced Gemini models leave
+    them None.
+    """
+    try:
+        from llm.models import LLMCallLog
+
+        if TYPE_CHECKING:
+            from llm.types.context import RunContext
+
+        action = "image edit" if is_edit else "image generation"
+        size = f"{width}x{height}" if width and height else "?"
+        LLMCallLog.objects.create(
+            user=_resolve_user(context.user_id if context else None),
+            run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
+            model=model,
+            is_stream=False,
+            prompt=[{"role": "user", "content": f"[{action}: {prompt[:500]}]"}],
+            raw_output=f"[image: {size}, {n_images} image(s)]",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+            status=LLMCallLog.Status.SUCCESS,
+            response_metadata={
+                "width": width,
+                "height": height,
+                "n_images": n_images,
+                "is_edit": is_edit,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to write LLM call log (image generation)")
+
+
+def log_image_generation_error(
+    model: str,
+    context: "RunContext | None",
+    exc: BaseException,
+    duration_ms: int,
+    *,
+    prompt: str = "",
+    is_edit: bool = False,
+) -> None:
+    """Write an ERROR log entry for an image-generation call. Never raises."""
+    try:
+        from llm.models import LLMCallLog
+
+        action = "image edit" if is_edit else "image generation"
+        LLMCallLog.objects.create(
+            user=_resolve_user(context.user_id if context else None),
+            run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
+            model=model,
+            is_stream=False,
+            prompt=[{"role": "user", "content": f"[{action}: {prompt[:500]}]"}],
+            raw_output="",
+            duration_ms=duration_ms,
+            status=LLMCallLog.Status.ERROR,
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:2000],
+        )
+    except Exception:
+        logger.exception("Failed to write LLM error log (image generation)")
+
+
 def log_transcription_streaming(
     model: str,
     context: "RunContext | None",

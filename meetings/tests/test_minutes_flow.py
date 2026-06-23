@@ -306,6 +306,42 @@ class CreateMinutesThreadAttachmentTests(TestCase):
         self.assertIsNotNone(ca.message_id)
         self.assertFalse(ca.message.is_hidden_from_user)
         self.assertEqual(ca.message.role, "user")
+        # attachment_ids in metadata is what the consumer enriches from — without
+        # it the file content never reaches the LLM.
+        self.assertIn(str(ca.id), ca.message.metadata.get("attachment_ids", []))
+
+    def test_pdf_attachment_embedded_images_persist_via_chat_path(self):
+        """A meeting PDF with an embedded image gets the same persistent
+        message-scoped ImageAsset treatment as a chat attachment (meetings
+        inherits the chat enrichment path)."""
+        import io
+        from unittest.mock import patch
+
+        from PIL import Image
+
+        from chat.models import ImageAsset
+        from chat.services import get_or_extract_attachment_text
+
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 80), (10, 80, 160)).save(buf, format="PDF")
+        self._add_attachment("deck.pdf", buf.getvalue(), "application/pdf")
+
+        thread, err = create_minutes_thread(self.user, self.meeting)
+        self.assertIsNone(err)
+        att = ChatAttachment.objects.get(thread=thread)
+
+        att.file.open("rb")
+        try:
+            data = att.file.read()
+        finally:
+            att.file.close()
+        with patch("chat.services.describe_image", return_value="A blue rectangle"):
+            text = get_or_extract_attachment_text(att, data, user=self.user)
+
+        assets = list(ImageAsset.objects.filter(message=att.message))
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0].description, "A blue rectangle")
+        self.assertIn(f"[[image:{assets[0].id}|", text)
 
     def test_supported_docx_with_octet_stream_normalized(self):
         self._add_attachment("notes.docx", b"PK fake docx bytes", "application/octet-stream")

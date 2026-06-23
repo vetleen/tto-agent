@@ -34,6 +34,17 @@ from documents.services.retrieval import (
 User = get_user_model()
 
 
+def _pdf_with_image(width=120, height=80):
+    """Return PDF bytes containing a single embedded raster image (Pillow page)."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 30, 30)).save(buf, format="PDF")
+    return buf.getvalue()
+
+
 def _doc_chunk(doc, **kw):
     """Create a chunk on doc's working version (lazily making one searchable per status)."""
     from documents.models import DataRoomDocumentChunk
@@ -654,6 +665,76 @@ class ProcessDocumentServiceTests(TestCase):
                     any(token in c.text for c in version.chunks.all()),
                     "asset token should appear in the extracted/chunked content",
                 )
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_pdf_embedded_images_become_assets(self):
+        """Embedded PDF images are stored as version-scoped ImageAssets with an
+        inline [[image:uuid|...]] token left in the searchable content — parity
+        with the docx path."""
+        from django.core.files.base import ContentFile
+
+        from chat.models import ImageAsset
+        from documents.services.process_document import process_document
+
+        pdf_bytes = _pdf_with_image()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="report.pdf",
+                    mime_type="application/pdf",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("report.pdf", ContentFile(pdf_bytes), save=True)
+
+                with patch("chat.services.describe_image", return_value="A revenue chart"), \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+                version = doc.current_version
+                assets = list(ImageAsset.objects.filter(version=version))
+                self.assertEqual(len(assets), 1)
+                self.assertEqual(assets[0].description, "A revenue chart")
+                self.assertTrue(assets[0].sha256)
+                token = f"[[image:{assets[0].id}|"
+                self.assertTrue(
+                    any(token in c.text for c in version.chunks.all()),
+                    "asset token should appear in the extracted/chunked content",
+                )
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_image_only_pdf_no_longer_fails(self):
+        """A scanned/image-only PDF (no extractable text) used to hard-fail with
+        the empty-text error; now its embedded page image is described, so the
+        description becomes the searchable content and the doc succeeds."""
+        from django.core.files.base import ContentFile
+
+        from documents.services.process_document import process_document
+
+        pdf_bytes = _pdf_with_image()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="scan.pdf",
+                    mime_type="application/pdf",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("scan.pdf", ContentFile(pdf_bytes), save=True)
+
+                with patch("chat.services.describe_image", return_value="A scanned page of text"), \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+                self.assertNotEqual(doc.status, DataRoomDocument.Status.FAILED)
 
 
 class ProcessDocumentSemanticTests(TestCase):

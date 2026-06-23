@@ -133,4 +133,51 @@ def calculate_transcription_cost(
     return info.price_per_minute * minutes
 
 
-__all__ = ["get_model_pricing", "calculate_cost", "calculate_transcription_cost"]
+def calculate_image_generation_cost(
+    model: str,
+    n_images: int = 1,
+    *,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+) -> Optional[Decimal]:
+    """Compute the USD cost of an image-generation call, or *None* if unknown.
+
+    Prefers the flat per-image price when the model defines one — Gemini's
+    "Nano Banana" family bills a fixed amount per generated image, so
+    ``price_per_image * n_images`` is exact. Falls back to token-based billing
+    (input tokens + image-output tokens) for models that report ``usage``
+    (e.g. OpenAI ``gpt-image-*``).
+
+    Returns *None* for unknown models or when neither pricing path is
+    configured (so the call is still logged, just without a cost).
+    """
+    from llm.image_generation_registry import get_image_generation_model_info
+
+    info = get_image_generation_model_info(model)
+    if info is None:
+        return None
+
+    # Per-image path (exact for flat-priced models).
+    if info.price_per_image is not None:
+        return info.price_per_image * Decimal(n_images)
+
+    # Token-based path: both token counts and both rates present.
+    if (
+        input_tokens is not None
+        and output_tokens is not None
+        and info.input_price_per_1m_tokens is not None
+        and info.output_image_price_per_1m_tokens is not None
+    ):
+        inp = Decimal(input_tokens) * info.input_price_per_1m_tokens / _ONE_MILLION
+        out = Decimal(output_tokens) * info.output_image_price_per_1m_tokens / _ONE_MILLION
+        return inp + out
+
+    return None
+
+
+__all__ = [
+    "get_model_pricing",
+    "calculate_cost",
+    "calculate_transcription_cost",
+    "calculate_image_generation_cost",
+]

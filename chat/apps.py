@@ -12,3 +12,4 @@ class ChatConfig(AppConfig):
         import chat.subagent_tool  # noqa: F401 — register sub-agent tools on startup
         import chat.task_tools  # noqa: F401 — register task tools on startup
         import chat.tool_loops  # noqa: F401 — register loop tools on startup
+        import chat.image_tools  # noqa: F401 — register image generation tool on startup

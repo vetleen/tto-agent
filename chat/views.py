@@ -30,7 +30,7 @@ def _get_accessible_data_rooms(user):
 
 
 def _user_can_access_image_asset(user, asset) -> bool:
-    """Re-derive access from the asset's owner (version / canvas / message).
+    """Re-derive access from the asset's owner (version / canvas / message / thread).
 
     Returns False for orphans. This is the only gate on serving image bytes —
     never a presigned S3 URL.
@@ -39,6 +39,8 @@ def _user_can_access_image_asset(user, asset) -> bool:
         return asset.canvas.thread.created_by_id == user.id
     if asset.message_id:
         return asset.message.thread.created_by_id == user.id
+    if asset.thread_id:
+        return asset.thread.created_by_id == user.id
     if asset.version_id:
         from documents.views import _user_can_access_data_room
 
@@ -249,6 +251,8 @@ def chat_home(request):
             msg_ids = [m.pk for m in chat_messages if m.role == "user"]
             if msg_ids:
                 from collections import defaultdict
+
+                from chat.models import ImageAsset
                 att_qs = ChatAttachment.objects.filter(
                     message_id__in=msg_ids
                 ).values("id", "message_id", "original_filename", "content_type")
@@ -259,8 +263,21 @@ def chat_home(request):
                         "name": a["original_filename"],
                         "content_type": a["content_type"],
                     })
+                # Embedded images extracted from a user's docx/pdf attachments are
+                # persisted as ImageAssets scoped to that user message; surface
+                # them as viewable thumbnails (served via chat_image_asset).
+                img_qs = ImageAsset.objects.filter(
+                    message_id__in=msg_ids
+                ).values("id", "message_id", "description")
+                img_map = defaultdict(list)
+                for a in img_qs:
+                    img_map[a["message_id"]].append({
+                        "id": str(a["id"]),
+                        "description": a["description"],
+                    })
                 for m in chat_messages:
                     m.attachment_items = att_map.get(m.pk, [])
+                    m.attachment_images = img_map.get(m.pk, [])
 
             # Mark which shown messages fall before the compression boundary, so
             # the UI can show a divider and flag attachments that are no longer

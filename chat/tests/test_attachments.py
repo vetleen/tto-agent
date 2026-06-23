@@ -20,6 +20,15 @@ from chat.services import (
 User = get_user_model()
 
 
+def _pdf_with_image(width=120, height=80):
+    """Return PDF bytes containing one embedded raster image (Pillow page)."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 30, 30)).save(buf, format="PDF")
+    return buf.getvalue()
+
+
 def _tiny_docx():
     """Return a minimal valid .docx byte string with 'Hello World' content."""
     import zipfile
@@ -452,3 +461,110 @@ class LoggerTruncationTests(TestCase):
         blocks = [{"type": "document", "source": {"type": "base64", "data": "short"}}]
         result = _truncate_base64_in_content(blocks)
         self.assertEqual(result[0]["source"]["data"], "short")
+
+
+_PDF_MIME = "application/pdf"
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+class PersistentAttachmentExtractionTests(TestCase):
+    """Chat/meeting docx+pdf attachments persist embedded images as
+    message-scoped ImageAssets and cache the extracted text+tokens once."""
+
+    def setUp(self):
+        import tempfile
+
+        self.user = User.objects.create_user(email="u@x.com", password="pw")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="T")
+        self.message = ChatMessage.objects.create(thread=self.thread, role="user", content="see attached")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._media = self.settings(MEDIA_ROOT=self._tmp.name)
+        self._media.enable()
+        self.addCleanup(self._media.disable)
+
+    def _attachment(self, data, content_type, *, linked=True):
+        from django.core.files.base import ContentFile
+
+        return ChatAttachment.objects.create(
+            thread=self.thread,
+            message=self.message if linked else None,
+            uploaded_by=self.user,
+            file=ContentFile(data, name="f"),
+            original_filename="f",
+            content_type=content_type,
+            size_bytes=len(data),
+        )
+
+    def test_pdf_embedded_image_becomes_message_scoped_asset(self):
+        from unittest.mock import patch
+
+        from chat.models import ImageAsset
+        from chat.services import get_or_extract_attachment_text
+
+        data = _pdf_with_image()
+        att = self._attachment(data, _PDF_MIME)
+        with patch("chat.services.describe_image", return_value="A red rectangle"):
+            text = get_or_extract_attachment_text(att, data, user=self.user)
+
+        assets = list(ImageAsset.objects.filter(message=self.message))
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0].description, "A red rectangle")
+        self.assertTrue(assets[0].blob)  # bytes persisted, viewable
+        self.assertIn(f"[[image:{assets[0].id}|", text)
+        # Cached on the attachment for replay.
+        att.refresh_from_db()
+        self.assertEqual(att.extracted_content, text)
+
+    def test_docx_embedded_image_becomes_message_scoped_asset(self):
+        """docx is unified with pdf: chat docx images now persist too."""
+        from unittest.mock import patch
+
+        from chat.models import ImageAsset
+        from chat.services import get_or_extract_attachment_text
+
+        data = _docx_with_image()
+        att = self._attachment(data, _DOCX_MIME)
+        with patch("chat.services.describe_image", return_value="A chart"):
+            text = get_or_extract_attachment_text(att, data, user=self.user)
+
+        assets = list(ImageAsset.objects.filter(message=self.message))
+        self.assertEqual(len(assets), 1)
+        self.assertIn(f"[[image:{assets[0].id}|", text)
+
+    def test_extraction_cached_no_asset_recreation_on_replay(self):
+        """A second enrichment pass reuses the cache and creates no new assets."""
+        from unittest.mock import patch
+
+        from chat.models import ImageAsset
+        from chat.services import get_or_extract_attachment_text
+
+        data = _pdf_with_image()
+        att = self._attachment(data, _PDF_MIME)
+        with patch("chat.services.describe_image", return_value="A red rectangle") as m:
+            first = get_or_extract_attachment_text(att, data, user=self.user)
+            self.assertEqual(m.call_count, 1)
+            # Reload to mimic a fresh per-turn load, then re-enrich.
+            att.refresh_from_db()
+            second = get_or_extract_attachment_text(att, data, user=self.user)
+
+        self.assertEqual(first, second)
+        self.assertEqual(m.call_count, 1, "cached extraction must not re-describe")
+        self.assertEqual(ImageAsset.objects.filter(message=self.message).count(), 1)
+
+    def test_unlinked_attachment_falls_back_to_transient(self):
+        """With no linked message, extraction is transient: no ImageAssets, a
+        plain [Image N: desc] placeholder instead of a token."""
+        from unittest.mock import patch
+
+        from chat.models import ImageAsset
+        from chat.services import extract_attachment_text
+
+        data = _pdf_with_image()
+        att = self._attachment(data, _PDF_MIME, linked=False)
+        with patch("chat.services.describe_image", return_value="A red rectangle"):
+            text = extract_attachment_text(att, data, user=self.user)
+
+        self.assertEqual(ImageAsset.objects.count(), 0)
+        self.assertNotIn("[[image:", text)
+        self.assertIn("[Image 1: A red rectangle]", text)

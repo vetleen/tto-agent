@@ -532,6 +532,11 @@ DOCUMENT_UPLOAD_REQUEST_MAX_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_REQUEST_
 DOCX_MAX_UNCOMPRESSED_BYTES = int(os.environ.get("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000"))  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = int(os.environ.get("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000"))  # 20M chars
 DOCUMENT_ATTACHMENT_MAX_BYTES = int(os.environ.get("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000"))  # 20 MB
+# Embedded-image extraction from PDFs (see core.pdf): skip images whose smaller
+# side is below this many pixels, and cap how many distinct images are stored per
+# PDF so a pathological deck can't fan out into thousands of assets.
+PDF_MIN_IMAGE_DIMENSION = int(os.environ.get("PDF_MIN_IMAGE_DIMENSION", "32"))
+PDF_MAX_EMBEDDED_IMAGES = int(os.environ.get("PDF_MAX_EMBEDDED_IMAGES", "200"))
 TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
 MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
 CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", "100"))
@@ -576,6 +581,12 @@ TRANSCRIPTION_DEFAULT_MODEL_LIVE = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_L
 TRANSCRIPTION_DEFAULT_MODEL_UPLOAD = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
 TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,openai/gpt-4o-transcribe-diarize").split(",") if m.strip()]
 AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
+
+# Image generation settings. Both default to empty, which disables the
+# capability (no models selectable, chat_generate_image tool withheld). Set
+# IMAGE_ALLOWED_MODELS / IMAGE_DEFAULT_MODEL to enable it.
+IMAGE_DEFAULT_MODEL = os.environ.get("IMAGE_DEFAULT_MODEL", "")
+IMAGE_ALLOWED_MODELS = [m.strip() for m in os.environ.get("IMAGE_ALLOWED_MODELS", "").split(",") if m.strip()]
 
 # Meetings settings
 MEETING_CHUNK_TEMP_DIR = os.environ.get("MEETING_CHUNK_TEMP_DIR", str(MEDIA_ROOT / "_meeting_chunks"))

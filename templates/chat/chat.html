@@ -202,6 +202,16 @@
                   {% endfor %}
                 </div>
                 {% endif %}
+                {% if m.attachment_images %}
+                {# Embedded images extracted from this message's docx/pdf attachments #}
+                <div class="flex flex-wrap gap-2 mt-2">
+                  {% for img in m.attachment_images %}
+                  <a href="{% url 'chat_image_asset' img.id %}" target="_blank" rel="noopener" title="{{ img.description }}">
+                    <img src="{% url 'chat_image_asset' img.id %}" alt="{{ img.description }}" loading="lazy" class="h-20 w-20 object-cover rounded-lg border border-neutral-tertiary" />
+                  </a>
+                  {% endfor %}
+                </div>
+                {% endif %}
                 <button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
               </div>
               <span class="wf-avatar" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
@@ -2477,6 +2487,7 @@
         else if (toolName === "document_version_list") displayText = "Listing versions...";
         else if (toolName === "document_version_restore") displayText = "Restoring version...";
         else if (toolName === "document_status") displayText = "Checking document status...";
+        else if (toolName === "chat_generate_image") displayText = "Generating image...";
         const toolArgs = (data.data && data.data.arguments) || {}; const reasonText = (typeof toolArgs === "object" && toolArgs.reason) ? ' <span class="italic">(' + escapeHtml(toolArgs.reason) + ')</span>' : '';
         if (toolName === "chat_subagent_create" && toolId && typeof toolArgs === "object" && toolArgs.reason) subagentReasons[toolId] = toolArgs.reason;
         card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + reasonText + '</span>';
@@ -2492,7 +2503,7 @@
         const card = currentStreamingElement.querySelector('.tool-card[data-tool-id="' + toolId + '"]');
         if (card) {
           let doneLabel = "Done";
-          try { const result = JSON.parse(resultStr); if (toolName === "document_search" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "document_read" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); else if (toolName === "chat_skill_attach" && result && result.status === "ok") { if (result.attached_skill_name) doneLabel = "Attached skill: " + result.attached_skill_name; else if (result.detached) doneLabel = "Detached skill"; else if (result.no_change) doneLabel = "Skill already attached"; else doneLabel = "No skill attached"; } else if (toolName === "chat_subagent_create" && result.status) { if (result.status === "queued") doneLabel = "Sub-agent queued"; else if (result.status === "started") doneLabel = "Sub-agent dispatched"; else if (result.status === "completed") doneLabel = "Sub-agent finished"; else if (result.status === "timeout") doneLabel = "Sub-agent dispatched"; else if (result.status === "error") doneLabel = "Sub-agent failed"; else doneLabel = "Sub-agent dispatched"; if (result.status === "queued" || result.status === "started" || result.status === "timeout") { var reason = subagentReasons[toolId] || null; delete subagentReasons[toolId]; updateSubagentStatusBar(activeSubagentCount + 1, reason); } } else if (toolName === "canvas_save_to_document" && result.status === "ok") doneLabel = "Saved \"" + result.canvas_title + "\" to " + result.data_room_name; else if (toolName === "chat_loop_create" && result.status === "ok") doneLabel = "Created loop" + (result.schedule_label ? " · " + result.schedule_label : ""); else if (toolName === "chat_loop_list" && result.count !== undefined) doneLabel = "Found " + result.count + " loop" + (result.count !== 1 ? "s" : ""); else if (toolName === "chat_loop_stop" && result.status === "ok") doneLabel = "Stopped loop"; else if (toolName === "chat_loop_edit" && result.status === "ok") doneLabel = "Updated loop" + (result.schedule_label ? " · " + result.schedule_label : ""); } catch (e) {}
+          try { const result = JSON.parse(resultStr); if (toolName === "document_search" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "document_read" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); else if (toolName === "chat_skill_attach" && result && result.status === "ok") { if (result.attached_skill_name) doneLabel = "Attached skill: " + result.attached_skill_name; else if (result.detached) doneLabel = "Detached skill"; else if (result.no_change) doneLabel = "Skill already attached"; else doneLabel = "No skill attached"; } else if (toolName === "chat_subagent_create" && result.status) { if (result.status === "queued") doneLabel = "Sub-agent queued"; else if (result.status === "started") doneLabel = "Sub-agent dispatched"; else if (result.status === "completed") doneLabel = "Sub-agent finished"; else if (result.status === "timeout") doneLabel = "Sub-agent dispatched"; else if (result.status === "error") doneLabel = "Sub-agent failed"; else doneLabel = "Sub-agent dispatched"; if (result.status === "queued" || result.status === "started" || result.status === "timeout") { var reason = subagentReasons[toolId] || null; delete subagentReasons[toolId]; updateSubagentStatusBar(activeSubagentCount + 1, reason); } } else if (toolName === "canvas_save_to_document" && result.status === "ok") doneLabel = "Saved \"" + result.canvas_title + "\" to " + result.data_room_name; else if (toolName === "chat_loop_create" && result.status === "ok") doneLabel = "Created loop" + (result.schedule_label ? " · " + result.schedule_label : ""); else if (toolName === "chat_loop_list" && result.count !== undefined) doneLabel = "Found " + result.count + " loop" + (result.count !== 1 ? "s" : ""); else if (toolName === "chat_loop_stop" && result.status === "ok") doneLabel = "Stopped loop"; else if (toolName === "chat_loop_edit" && result.status === "ok") doneLabel = "Updated loop" + (result.schedule_label ? " · " + result.schedule_label : ""); else if (toolName === "chat_generate_image" && result.status) doneLabel = result.status === "ok" ? (result.is_edit ? "Edited image" : "Generated image") : "Image generation failed"; } catch (e) {}
           if (doneLabel === "Done") { if (toolName === "document_search") doneLabel = "Searched documents";
           else if (toolName === "document_read") doneLabel = "Read document";
           else if (toolName === "document_view_image") doneLabel = "Viewed image";
@@ -2531,7 +2542,8 @@
           else if (toolName === "document_rename") doneLabel = "Renamed document";
           else if (toolName === "document_version_list") doneLabel = "Listed versions";
           else if (toolName === "document_version_restore") doneLabel = "Restored version";
-          else if (toolName === "document_status") doneLabel = "Checked document status"; }
+          else if (toolName === "document_status") doneLabel = "Checked document status";
+          else if (toolName === "chat_generate_image") doneLabel = "Generated image"; }
           var isSubagentActive = toolName === "chat_subagent_create" && (doneLabel === "Sub-agent queued" || doneLabel === "Sub-agent dispatched");
           var iconSvg = isSubagentActive
             ? '<svg class="w-3 h-3 shrink-0 text-fg-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'

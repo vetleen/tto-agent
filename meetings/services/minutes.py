@@ -231,6 +231,10 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
 
     # Visible user message carrying the attachments, mirroring the "+ → Add
     # images & files" flow: the user's opening turn arrives with the files.
+    # attachment_ids in metadata is what the consumer's enrichment reads to feed
+    # the files to the LLM (the message FK alone isn't enough) — so meeting
+    # attachments get the same docx/pdf extraction + embedded-image handling as
+    # chat attachments.
     if accepted or skipped:
         disclaimer = _build_attachments_disclaimer(len(accepted), skipped)
         disclaimer_msg = ChatMessage.objects.create(
@@ -238,6 +242,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
             role="user",
             content=disclaimer,
             is_hidden_from_user=False,
+            metadata={"attachment_ids": [str(a.id) for a in accepted]} if accepted else {},
         )
         if accepted:
             ChatAttachment = accepted[0].__class__

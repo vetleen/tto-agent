@@ -44,6 +44,11 @@ class ResolvedPreferences:
     # above is the fallback when neither is set — kept for backwards compat.
     transcription_model_live: str = ""
     transcription_model_upload: str = ""
+    # Image generation. ``image_model`` is the resolved default ("" = disabled,
+    # which also withholds the chat_generate_image tool). ``allowed_image_models``
+    # is the org-filtered list the user may choose from.
+    image_model: str = ""
+    allowed_image_models: list[str] = field(default_factory=list)
     live_transcription_mode: str = "chunked"
     allow_agent_attach_skills: bool = True
     feature_models: dict[str, str] = field(default_factory=dict)
@@ -271,6 +276,32 @@ def get_preferences(user) -> ResolvedPreferences:
     transcription_model_live = _resolve_for_pool(live_capable, "live", system_default_live)
     transcription_model_upload = _resolve_for_pool(upload_capable, "upload", system_default_upload)
 
+    # --- Image generation model cascade ---
+    # Mirrors transcription but single-kind (one "default"). Empty effective
+    # allow-list (system unset, or org set an empty list) = capability disabled.
+    system_image_allowed = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
+    system_image_default = getattr(django_settings, "IMAGE_DEFAULT_MODEL", "") or ""
+
+    org_image_allowed = org_prefs.get("allowed_image_models") if org_prefs else None
+    org_image_models = org_prefs.get("image_models", {}) if org_prefs else {}
+    user_image_models = user_prefs.get("image_models", {}) if user_prefs else {}
+
+    if org_image_allowed is not None and isinstance(org_image_allowed, list):
+        effective_image_allowed = [m for m in org_image_allowed if m in system_image_allowed]
+    else:
+        effective_image_allowed = list(system_image_allowed)
+
+    if effective_image_allowed:
+        image_model = _resolve_tier(
+            user_choice=user_image_models.get("default"),
+            org_default=org_image_models.get("default"),
+            system_default=system_image_default,
+            effective_allowed=effective_image_allowed,
+            system_allowed=system_image_allowed,
+        )
+    else:
+        image_model = ""
+
     # --- Live transcription mode (user override only; system default is fixed) ---
     # Every org gets realtime-with-fallback — realtime when it works, legacy
     # chunked otherwise. Individual users can opt themselves into a specific
@@ -317,6 +348,10 @@ def get_preferences(user) -> ResolvedPreferences:
         })
 
     allowed_tools = base_allowed
+    # chat_generate_image is withheld unless image generation is enabled (a
+    # model resolves). Org tool toggles above can still disable it separately.
+    if not image_model:
+        allowed_tools = [t for t in allowed_tools if t != "chat_generate_image"]
 
     # Resolve subagent settings
     org_subagent_prefs = org_prefs.get("subagents", {})
@@ -382,6 +417,8 @@ def get_preferences(user) -> ResolvedPreferences:
         allowed_transcription_models=effective_transcription_allowed,
         transcription_model_live=transcription_model_live,
         transcription_model_upload=transcription_model_upload,
+        image_model=image_model,
+        allowed_image_models=effective_image_allowed,
         live_transcription_mode=resolved_live_mode,
         allow_agent_attach_skills=allow_agent_attach_skills,
         feature_models=feature_models,
