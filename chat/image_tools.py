@@ -2,7 +2,7 @@
 
 ``chat_generate_image`` is a chat-domain tool (it doesn't touch data rooms). It
 calls the image-generation service, persists the result as a thread-owned
-ImageAsset, and returns a ``[[image:uuid|]]`` token the model embeds in its reply
+Asset, and returns a ``[[image:uuid|]]`` token the model embeds in its reply
 to show the user. The same tool edits/restyles existing images when given
 ``input_images`` (image tokens it already knows about).
 """
@@ -63,7 +63,7 @@ class ChatGenerateImageTool(ContextAwareTool):
         aspect_ratio: str | None = None,
         **kwargs,
     ) -> str:
-        from chat.image_assets import image_token, store_thread_image
+        from chat.assets import image_token, store_thread_image
         from chat.models import ChatThread
         from core.preferences import get_preferences
         from llm.service.image_generation_service import (
@@ -181,16 +181,16 @@ def _resolve_input_image(ref: str, user):
     m = _UUID_RE.search(ref or "")
     if not m:
         return None
-    from chat.image_assets import image_asset_source
-    from chat.models import ImageAsset
-    from chat.views import _user_can_access_image_asset
+    from chat.assets import image_asset_source
+    from chat.models import Asset
+    from chat.views import _user_can_access_asset
     from llm.service.image_generation_service import InputImage
 
     try:
-        asset = ImageAsset.objects.get(id=m.group(0))
-    except (ImageAsset.DoesNotExist, ValueError):
+        asset = Asset.objects.get(id=m.group(0))
+    except (Asset.DoesNotExist, ValueError):
         return None
-    if not _user_can_access_image_asset(user, asset):
+    if not _user_can_access_asset(user, asset):
         return None
     source, ct = image_asset_source(asset)
     if source is None:

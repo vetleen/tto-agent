@@ -29,11 +29,11 @@ def _get_accessible_data_rooms(user):
     )
 
 
-def _user_can_access_image_asset(user, asset) -> bool:
+def _user_can_access_asset(user, asset) -> bool:
     """Re-derive access from the asset's owner (version / canvas / message / thread).
 
-    Returns False for orphans. This is the only gate on serving image bytes —
-    never a presigned S3 URL.
+    Returns False for orphans. This is the only gate on serving asset bytes (both
+    images and file downloads) — never a presigned S3 URL.
     """
     if asset.canvas_id:
         return asset.canvas.thread.created_by_id == user.id
@@ -51,18 +51,18 @@ def _user_can_access_image_asset(user, asset) -> bool:
 @login_required
 @require_http_methods(["GET"])
 def serve_image_asset(request, asset_id):
-    """Stream an ImageAsset's bytes when the user may access its owner.
+    """Stream an Asset's bytes when the user may access its owner.
 
     Access is re-checked on every request. Only known-safe image types are
     served inline (so an <img> can render them); anything else is forced to
     download with a generic content type.
     """
-    from chat.image_assets import image_asset_source
-    from chat.models import ImageAsset
+    from chat.assets import image_asset_source
+    from chat.models import Asset
     from core.file_types import KIND_IMAGE, extension_for_mime, kind_for_mime
 
-    asset = get_object_or_404(ImageAsset, id=asset_id)
-    if not _user_can_access_image_asset(request.user, asset):
+    asset = get_object_or_404(Asset, id=asset_id)
+    if not _user_can_access_asset(request.user, asset):
         raise Http404
 
     # A reference asset (empty blob) resolves to the data-room version's native
@@ -127,8 +127,8 @@ def _embed_image_tokens(content, user):
     so get no slot."""
     import base64
 
-    from chat.image_assets import IMAGE_UNAVAILABLE_TEXT, image_asset_source
-    from chat.models import ImageAsset
+    from chat.assets import IMAGE_UNAVAILABLE_TEXT, image_asset_source
+    from chat.models import Asset
 
     placeholder = f"<em>{IMAGE_UNAVAILABLE_TEXT}</em>"
     pcts = []
@@ -141,10 +141,10 @@ def _embed_image_tokens(content, user):
         uuid = m.group(1)
         label, pct = _split_image_label_size(m.group(2))
         try:
-            asset = ImageAsset.objects.get(id=uuid)
-        except (ImageAsset.DoesNotExist, ValueError):
+            asset = Asset.objects.get(id=uuid)
+        except (Asset.DoesNotExist, ValueError):
             return placeholder
-        if not _user_can_access_image_asset(user, asset):
+        if not _user_can_access_asset(user, asset):
             return placeholder
         source, ct = image_asset_source(asset)
         if source is None:
@@ -160,6 +160,110 @@ def _embed_image_tokens(content, user):
         return f'<img src="data:{ct or "image/png"};base64,{b64}" alt="{alt}" />'
 
     return _IMG_OR_TOKEN_RE.sub(repl, content), pcts
+
+
+_FILE_TOKEN_RE = re.compile(r"\[\[file:([0-9a-fA-F-]{36})\|([^\]]*)\]\]")
+
+
+def _content_disposition(filename: str) -> str:
+    """Build an ``attachment`` Content-Disposition that survives odd filenames.
+
+    Strips header-injection chars, emits an ASCII ``filename="..."`` fallback plus
+    an RFC 5987 ``filename*=UTF-8''...`` for unicode names.
+    """
+    from urllib.parse import quote
+
+    safe = (filename or "").replace("\r", "").replace("\n", "").replace('"', "")
+    ascii_name = safe.encode("ascii", "ignore").decode("ascii").strip() or "download"
+    disp = f'attachment; filename="{ascii_name}"'
+    if safe and safe != ascii_name:
+        disp += f"; filename*=UTF-8''{quote(safe)}"
+    return disp
+
+
+@login_required
+@require_http_methods(["GET"])
+def serve_file_asset(request, asset_id):
+    """Stream a data-room file for download — the ``[[file:uuid]]`` token target.
+
+    Always forces a download with a generic content type; never reflects a stored
+    mime (defence-in-depth, the same rule serve_image_asset applies to non-image
+    bytes). Access is re-checked on every request, and the bytes resolve to the
+    document's LATEST native file, so an old token tracks the newest upload.
+    """
+    from chat.assets import file_asset_source
+    from chat.models import Asset
+
+    asset = get_object_or_404(Asset, id=asset_id)
+    if not _user_can_access_asset(request.user, asset):
+        raise Http404
+
+    source, filename, _ct = file_asset_source(asset)
+    if source is None:
+        raise Http404
+    resp = FileResponse(source.open("rb"), content_type="application/octet-stream")
+    resp["Content-Disposition"] = _content_disposition(filename or str(asset.id))
+    resp["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@login_required
+@require_http_methods(["GET"])
+def serve_file_asset_meta(request, asset_id):
+    """JSON metadata for a file chip (name + size) without serving the bytes.
+
+    The client holds only the token uuid, so the chip fetches this to render the
+    filename and size. Returns ``{"available": false}`` (404) when the token no
+    longer resolves or the viewer lost access.
+    """
+    from chat.assets import file_asset_source
+    from chat.models import Asset
+
+    asset = get_object_or_404(Asset, id=asset_id)
+    if not _user_can_access_asset(request.user, asset):
+        return JsonResponse({"available": False}, status=404)
+
+    source, filename, ct = file_asset_source(asset)
+    if source is None:
+        return JsonResponse({"available": False}, status=404)
+    try:
+        size = source.size
+    except Exception:
+        size = 0
+    return JsonResponse(
+        {"available": True, "name": filename or "", "size_bytes": size, "mime": ct}
+    )
+
+
+def _embed_file_tokens(content, base_url, user):
+    """Replace ``[[file:<uuid>|label]]`` tokens with download hyperlinks for docx
+    export. Inaccessible/missing tokens become a neutral placeholder. Runs
+    server-side (sync). *base_url* is an absolute origin with no trailing slash."""
+    import html
+
+    from chat.assets import FILE_UNAVAILABLE_TEXT, file_asset_source
+    from chat.models import Asset
+
+    placeholder = f"<em>{FILE_UNAVAILABLE_TEXT}</em>"
+
+    def repl(m):
+        uuid, label = m.group(1), (m.group(2) or "")
+        try:
+            asset = Asset.objects.get(id=uuid)
+        except (Asset.DoesNotExist, ValueError):
+            return placeholder
+        if not _user_can_access_asset(user, asset):
+            return placeholder
+        source, filename, _ct = file_asset_source(asset)
+        if source is None:
+            return placeholder
+        text = (label or filename or "Download file").strip()
+        # Hardcoded path (mirrors the client and serve_image_asset's URL shape) so a
+        # token carrying uppercase hex can't trigger a NoReverseMatch mid-export.
+        href = f"{base_url}/chat/file/{uuid}/"
+        return f'<a href="{html.escape(href, quote=True)}">{html.escape(text)}</a>'
+
+    return _FILE_TOKEN_RE.sub(repl, content)
 
 
 @login_required
@@ -296,7 +400,7 @@ def chat_home(request):
             if msg_ids:
                 from collections import defaultdict
 
-                from chat.models import ImageAsset
+                from chat.models import Asset
                 att_qs = ChatAttachment.objects.filter(
                     message_id__in=msg_ids
                 ).values("id", "message_id", "original_filename", "content_type")
@@ -308,9 +412,9 @@ def chat_home(request):
                         "content_type": a["content_type"],
                     })
                 # Embedded images extracted from a user's docx/pdf attachments are
-                # persisted as ImageAssets scoped to that user message; surface
+                # persisted as Assets scoped to that user message; surface
                 # them as viewable thumbnails (served via chat_image_asset).
-                img_qs = ImageAsset.objects.filter(
+                img_qs = Asset.objects.filter(
                     message_id__in=msg_ids
                 ).values("id", "message_id", "description")
                 img_map = defaultdict(list)
@@ -755,9 +859,13 @@ async def canvas_export(request, thread_id, canvas_id=None):
     # Footnote citations [^1] → superscripts + numbered Sources list.
     content = render_citations(content)
     content = replace_email_with_html(content)
-    # Resolve image-asset tokens to embedded <img> data-URLs (same path mermaid
-    # images take), so exported docs keep their images. image_pcts is the
-    # document-ordered display width for each rendered image (None = full width).
+    # Resolve file-download tokens to absolute hyperlinks first (they persist as
+    # links, not embedded bytes), then image-asset tokens to embedded <img>
+    # data-URLs (same path mermaid images take), so exported docs keep their
+    # images. image_pcts is the document-ordered display width for each rendered
+    # image (None = full width).
+    base_url = request.build_absolute_uri("/").rstrip("/")
+    content = await sync_to_async(_embed_file_tokens)(content, base_url, request.user)
     content, image_pcts = await sync_to_async(_embed_image_tokens)(content, request.user)
     html_content = md.markdown(content, extensions=["tables", "fenced_code", MarkExtension()])
     # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.

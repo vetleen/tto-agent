@@ -672,6 +672,14 @@
   .email-body p:last-child { margin-bottom: 0; }
   .email-body strong { font-weight: 600; }
   .email-body em { font-style: italic; }
+  /* File-download chips ([[file:uuid]] tokens) */
+  .wf-file-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; vertical-align: middle; margin: 2px 0; padding: 4px 11px; font-size: 13px; line-height: 1.3; color: var(--wf-heading); text-decoration: none; background: var(--wf-sunken); border: 1px solid var(--wf-border-subtle); border-radius: 9999px; transition: background .12s, border-color .12s; }
+  .wf-file-chip:hover { background: var(--wf-brand-soft); border-color: var(--wf-border-strong); }
+  .wf-file-chip-icon { flex-shrink: 0; width: 15px; height: 15px; color: var(--wf-accent); }
+  .wf-file-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .wf-file-chip-size { flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; color: var(--wf-faint); }
+  .wf-file-chip--unavailable { color: var(--wf-muted); border-style: dashed; cursor: default; font-style: italic; }
+  .wf-file-chip--unavailable:hover { background: var(--wf-sunken); border-color: var(--wf-border-subtle); }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
 
@@ -956,10 +964,17 @@
         var widthAttr = width ? ' data-image-width="' + width + '"' : '';
         return '<span class="image-placeholder" data-image-uuid="' + uuid + '" data-image-desc="' + safe + '"' + widthAttr + '></span>';
       });
+      // File download tokens [[file:<uuid>|<label>]] -> placeholder spans that
+      // renderFileChips() turns into <a download> chips after sanitization.
+      text = text.replace(/\[\[file:([0-9a-fA-F-]{36})\|([^\]]*)\]\]/g, function(m, uuid, label) {
+        var safe = (label || '').replace(/\s+/g, ' ').trim()
+          .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return '<span class="file-chip-placeholder" data-file-uuid="' + uuid + '" data-file-label="' + safe + '"></span>';
+      });
       const html = marked.parse(text);
       return DOMPurify.sanitize(html, {
         ALLOWED_TAGS: ['p','br','strong','em','u','s','del','code','pre','ul','ol','li','h1','h2','h3','h4','h5','h6','blockquote','a','hr','table','thead','tbody','tr','th','td','div','span','sup','section','mark'],
-        ALLOWED_ATTR: ['href','title','target','class','data-mermaid','data-email','data-image-uuid','data-image-desc','data-image-width','id']
+        ALLOWED_ATTR: ['href','title','target','class','data-mermaid','data-email','data-image-uuid','data-image-desc','data-image-width','data-file-uuid','data-file-label','id']
       });
     } catch (e) { return escapeHtml(text).replace(/\n/g, "<br>"); }
   }
@@ -1004,6 +1019,77 @@
       el.innerHTML = '';
       el.appendChild(img);
       el.dataset.imageRendered = '1';
+    });
+  }
+
+  // File-download placeholders -> <a download> chips. The token only carries the
+  // uuid + label; the filename/size come from a cached meta fetch (one per uuid).
+  var _fileMetaCache = {};
+  function _fetchFileMeta(uuid) {
+    if (!_fileMetaCache[uuid]) {
+      _fileMetaCache[uuid] = fetch('/chat/file/' + encodeURIComponent(uuid) + '/meta/', { credentials: 'same-origin' })
+        .then(function(r) { return r.ok ? r.json() : { available: false }; })
+        .catch(function() { return { available: false }; });
+    }
+    return _fileMetaCache[uuid];
+  }
+  function _formatBytes(n) {
+    if (!n || n < 1) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return Math.round(n / 1024) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+  function _fileChipIcon() {
+    return '<svg class="wf-file-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">' +
+      '<path stroke-linecap="round" stroke-linejoin="round" d="M14 3v4a1 1 0 0 0 1 1h4M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M14 3l5 5"/>' +
+      '<path stroke-linecap="round" stroke-linejoin="round" d="M12 11.5v5m0 0 2-2m-2 2-2-2"/></svg>';
+  }
+  function _truncateName(s) { s = s || ''; return s.length > 50 ? s.slice(0, 49) + '…' : s; }
+  function renderFileChips(container) {
+    var placeholders = container.querySelectorAll('.file-chip-placeholder[data-file-uuid]');
+    placeholders.forEach(function(el) {
+      if (el.dataset.fileRendered) return;
+      el.dataset.fileRendered = '1';
+      var uuid = el.getAttribute('data-file-uuid');
+      if (!uuid) return;
+      var label = el.getAttribute('data-file-label') || '';
+      var a = document.createElement('a');
+      a.className = 'wf-file-chip';
+      a.href = '/chat/file/' + encodeURIComponent(uuid) + '/';
+      a.setAttribute('download', '');
+      a.rel = 'noopener';
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'wf-file-chip-name';
+      nameSpan.textContent = _truncateName(label) || 'Download';
+      var sizeSpan = document.createElement('span');
+      sizeSpan.className = 'wf-file-chip-size';
+      a.innerHTML = _fileChipIcon();
+      a.appendChild(nameSpan);
+      a.appendChild(sizeSpan);
+      if (label) a.title = label;
+      el.innerHTML = '';
+      el.appendChild(a);
+      // Fill in the real filename + size; degrade to a disabled chip if the file
+      // is gone or the viewer lost access.
+      _fetchFileMeta(uuid).then(function(meta) {
+        if (!meta || !meta.available) {
+          var span = document.createElement('span');
+          span.className = 'wf-file-chip wf-file-chip--unavailable';
+          span.innerHTML = _fileChipIcon();
+          var t = document.createElement('span');
+          t.className = 'wf-file-chip-name';
+          t.textContent = 'File no longer available';
+          span.appendChild(t);
+          if (el.contains(a)) el.replaceChild(span, a);
+          return;
+        }
+        var display = label || meta.name || 'Download';
+        nameSpan.textContent = _truncateName(display);
+        a.title = display;
+        if (meta.name) a.setAttribute('download', meta.name);
+        var sz = _formatBytes(meta.size_bytes);
+        sizeSpan.textContent = sz ? ' (' + sz + ')' : '';
+      });
     });
   }
 
@@ -1307,7 +1393,7 @@
 
   function renderServerMarkdown() {
     const els = messagesContainer.querySelectorAll('.markdown-content');
-    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); renderEmailBlocks(el); renderImageBlocks(el); } });
+    els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); renderEmailBlocks(el); renderImageBlocks(el); renderFileChips(el); } });
     // Server-rendered "Thought further"/"Thoughts" blocks need their toggle
     // wired up (live-streamed blocks get it in createThinkingBlock).
     messagesContainer.querySelectorAll('[data-server-thinking] .thinking-toggle').forEach(function(btn) {
@@ -2385,7 +2471,7 @@
       canvasAcceptedContent = data.accepted_content;
       if (data.canvas_id && canvasStates[data.canvas_id]) canvasStates[data.canvas_id].acceptedContent = data.accepted_content;
       canvasShowBannerIfNeeded();
-      if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); renderImageBlocks(canvasPreview); }
+      if (canvasPreviewMode) { canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value); renderMermaidBlocks(canvasPreview); renderEmailBlocks(canvasPreview); renderImageBlocks(canvasPreview); renderFileChips(canvasPreview); }
       return;
     }
     if (et === "canvas.reverted") {
@@ -2689,7 +2775,7 @@
     if (et === "message_end") {
       if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {
-        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); }
+        const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); renderFileChips(contentEl); }
         const toolCards = currentStreamingElement.querySelector(".tool-cards"); if (toolCards && toolCards.children.length > 0) toolCards.classList.add("tool-cards-done");
         currentStreamingElement = null; accumulatedContent = "";
       }
@@ -2700,7 +2786,7 @@
   function finishStreaming(suffix) {
     if (!currentStreamingElement) return; if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
     const contentEl = currentStreamingElement.querySelector(".message-content");
-    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); }
+    if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); renderFileChips(contentEl); }
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { locked = false; clearHandoff(); stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = SEND_BTN_HTML; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } syncSendReady(); renderTaskPlan(); }
@@ -3718,7 +3804,7 @@
       canvasPreview.innerHTML = renderMarkdown(canvasTextarea.value);
     }
     renderMermaidBlocks(canvasPreview);
-    renderEmailBlocks(canvasPreview); renderImageBlocks(canvasPreview);
+    renderEmailBlocks(canvasPreview); renderImageBlocks(canvasPreview); renderFileChips(canvasPreview);
   }
 
   // Inline per-hunk diff of an applied AI update against the accepted baseline.

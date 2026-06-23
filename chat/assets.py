@@ -1,4 +1,4 @@
-"""Persist chat-embedded images as ImageAssets (canvas docx import, and
+"""Persist chat-embedded images as Assets (canvas docx import, and
 docx/pdf chat attachments).
 
 Mirrors documents.services.image_assets.image_asset_sink, but scopes assets to a
@@ -44,7 +44,7 @@ IMAGE_UNAVAILABLE_TEXT = "[An image was here, but it can no longer be accessed]"
 def get_or_create_version_image_token(*, version_id, mime="", description="") -> str:
     """Return a stable ``[[image:uuid|]]`` token for a data-room image.
 
-    Lazily creates a single *reference* ImageAsset (no blob) scoped to the
+    Lazily creates a single *reference* Asset (no blob) scoped to the
     version — the bytes stay on the document's native file; the asset is just the
     addressable token target. Idempotent: the same version always yields the same
     asset (and token), so the model can reuse the token across the thread, and
@@ -53,18 +53,21 @@ def get_or_create_version_image_token(*, version_id, mime="", description="") ->
     The caption is left **empty**: it's not a stored alt-text. The model may add
     its own caption between the ``|`` and ``]]`` when it embeds the token.
     """
-    from chat.models import ImageAsset
+    from chat.models import Asset
 
-    asset = ImageAsset.objects.filter(version_id=version_id, blob="").first()
+    asset = Asset.objects.filter(
+        version_id=version_id, blob="", kind=Asset.KIND_IMAGE
+    ).first()
     if asset is None:
-        asset = ImageAsset.objects.create(
-            version_id=version_id, content_type=mime or "", description=description or "",
+        asset = Asset.objects.create(
+            version_id=version_id, kind=Asset.KIND_IMAGE,
+            content_type=mime or "", description=description or "",
         )
     return image_token(asset.id, "")
 
 
 def image_asset_source(asset):
-    """Resolve where an ImageAsset's bytes live → ``(filefield_or_None, content_type)``.
+    """Resolve where an Asset's bytes live → ``(filefield_or_None, content_type)``.
 
     A normal asset owns its ``blob``. A *reference* asset (empty blob,
     version-owned) falls back to the data-room version's native image
@@ -82,10 +85,99 @@ def image_asset_source(asset):
     return None, (asset.content_type or "application/octet-stream")
 
 
+# Shown (in chat and .docx export) when a file token can't be resolved — the
+# source was deleted or the viewer lost access. Mirrors IMAGE_UNAVAILABLE_TEXT.
+FILE_UNAVAILABLE_TEXT = "[A file was here, but it can no longer be accessed]"
+
+
+def file_token(asset_id, label: str) -> str:
+    """Build a data-room file-download reference token ``[[file:<uuid>|<label>]]``."""
+    return f"[[file:{asset_id}|{_sanitize_for_token(label)}]]"
+
+
+def get_or_create_version_file_token(*, version_id, mime="", filename="") -> str:
+    """Return a stable ``[[file:uuid|]]`` token for downloading a data-room document.
+
+    Mirrors get_or_create_version_image_token but mints a *file* reference asset
+    (``kind=file``), kept distinct from any image reference for the same version so
+    the two never share a uuid. The download resolves the document's LATEST native
+    file at serve time (see latest_native_file), so an old token tracks the newest
+    upload — like a symlink, not a snapshot.
+
+    The label is left **empty**; the model may add its own between ``|`` and ``]]``.
+    """
+    from chat.models import Asset
+
+    asset = Asset.objects.filter(
+        version_id=version_id, blob="", kind=Asset.KIND_FILE
+    ).first()
+    if asset is None:
+        asset = Asset.objects.create(
+            version_id=version_id, kind=Asset.KIND_FILE,
+            content_type=mime or "", description=(filename or "")[:1024],
+        )
+    return file_token(asset.id, "")
+
+
+def latest_native_file(document):
+    """``(filefield_or_None, filename, content_type)`` for *document*'s newest
+    downloadable native file.
+
+    Walks versions newest-first for one carrying native bytes, else falls back to
+    the document's ``original_file``. Markdown/canvas-only edit versions (empty
+    ``native_blob``) are skipped — they have no downloadable original form — so the
+    result is the latest *uploaded* file, which is what a ``[[file:]]`` link offers.
+    """
+    version = (
+        document.versions.exclude(native_blob="")
+        .order_by("-version_index")
+        .first()
+    )
+    if version and version.native_blob:
+        return (
+            version.native_blob,
+            version.native_filename or document.original_filename or "",
+            version.mime_type or document.mime_type or "application/octet-stream",
+        )
+    if document.original_file:
+        return (
+            document.original_file,
+            document.original_filename or "",
+            document.mime_type or "application/octet-stream",
+        )
+    return None, "", "application/octet-stream"
+
+
+def file_asset_source(asset):
+    """Resolve a file reference asset to its document's latest native file →
+    ``(filefield_or_None, filename, content_type)``. Anchored on a version for the
+    one-owner constraint + ACL walk, but the *version is ignored* for resolution so
+    a stale token always serves the newest upload."""
+    if asset.version_id:
+        return latest_native_file(asset.version.document)
+    return None, "", "application/octet-stream"
+
+
+def file_token_for_document(document) -> str | None:
+    """Return a ``[[file:uuid|]]`` download handle for *document*, or ``None`` if it
+    has no downloadable native file (e.g. a from-scratch canvas doc).
+
+    Surfaced by the document tools so the model can offer a download. Anchors the
+    reference on the document's current version (any version works — serving always
+    resolves the document's latest native file)."""
+    source, filename, ct = latest_native_file(document)
+    if source is None:
+        return None
+    version_id = document.current_version_id or document.active_searchable_version_id
+    if not version_id:
+        return None
+    return get_or_create_version_file_token(version_id=version_id, mime=ct, filename=filename)
+
+
 def store_canvas_image(
     canvas, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
 ):
-    """Persist *img_bytes* as an ImageAsset scoped to *canvas*; return the asset.
+    """Persist *img_bytes* as an Asset scoped to *canvas*; return the asset.
 
     When *dedupe* is set, an existing canvas asset with the same bytes (sha256)
     is reused rather than storing a second copy — so re-inserting the same image
@@ -93,16 +185,16 @@ def store_canvas_image(
     """
     from django.core.files.base import ContentFile
 
-    from chat.models import ImageAsset
+    from chat.models import Asset
 
     ct = content_type or "application/octet-stream"
     sha = hashlib.sha256(img_bytes).hexdigest()
     if dedupe:
-        existing = ImageAsset.objects.filter(canvas=canvas, sha256=sha).first()
+        existing = Asset.objects.filter(canvas=canvas, sha256=sha).first()
         if existing is not None:
             return existing
 
-    asset = ImageAsset(
+    asset = Asset(
         canvas=canvas,
         content_type=ct,
         size_bytes=len(img_bytes),
@@ -118,7 +210,7 @@ def store_canvas_image(
 def store_thread_image(
     thread, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
 ):
-    """Persist *img_bytes* as an ImageAsset scoped to *thread*; return the asset.
+    """Persist *img_bytes* as an Asset scoped to *thread*; return the asset.
 
     Used for tool-generated images (e.g. ``chat_generate_image``): the assistant
     message doesn't exist yet when the tool runs, but the thread does, so it owns
@@ -130,16 +222,16 @@ def store_thread_image(
     """
     from django.core.files.base import ContentFile
 
-    from chat.models import ImageAsset
+    from chat.models import Asset
 
     ct = content_type or "application/octet-stream"
     sha = hashlib.sha256(img_bytes).hexdigest()
     if dedupe:
-        existing = ImageAsset.objects.filter(thread=thread, sha256=sha).first()
+        existing = Asset.objects.filter(thread=thread, sha256=sha).first()
         if existing is not None:
             return existing
 
-    asset = ImageAsset(
+    asset = Asset(
         thread=thread,
         content_type=ct,
         size_bytes=len(img_bytes),
@@ -155,7 +247,7 @@ def store_thread_image(
 def store_message_image(
     message, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
 ):
-    """Persist *img_bytes* as an ImageAsset scoped to *message*; return the asset.
+    """Persist *img_bytes* as an Asset scoped to *message*; return the asset.
 
     Used for images extracted from a user's docx/pdf attachment: the user
     message exists by the time extraction runs, so it owns the asset and the
@@ -167,16 +259,16 @@ def store_message_image(
     """
     from django.core.files.base import ContentFile
 
-    from chat.models import ImageAsset
+    from chat.models import Asset
 
     ct = content_type or "application/octet-stream"
     sha = hashlib.sha256(img_bytes).hexdigest()
     if dedupe:
-        existing = ImageAsset.objects.filter(message=message, sha256=sha).first()
+        existing = Asset.objects.filter(message=message, sha256=sha).first()
         if existing is not None:
             return existing
 
-    asset = ImageAsset(
+    asset = Asset(
         message=message,
         content_type=ct,
         size_bytes=len(img_bytes),
@@ -218,7 +310,7 @@ def _describe_and_store_sink(store, user, *, max_described, model=None):
 
 def canvas_asset_sink(canvas, user, *, max_described: int = 25):
     """Return a docx/pdf image_sink that stores each embedded image as an
-    ImageAsset scoped to *canvas* and emits a ``[[image:uuid|Image N: desc]]``
+    Asset scoped to *canvas* and emits a ``[[image:uuid|Image N: desc]]``
     token.
 
     Descriptions (capped at *max_described*) use the user's vision describer;
@@ -242,7 +334,7 @@ def canvas_asset_sink(canvas, user, *, max_described: int = 25):
 
 def message_image_asset_sink(message, user, *, max_described: int = 10, model=None):
     """Return a docx/pdf image_sink that stores each embedded image as an
-    ImageAsset scoped to *message* and emits a ``[[image:uuid|Image N: desc]]``
+    Asset scoped to *message* and emits a ``[[image:uuid|Image N: desc]]``
     token — the chat/meeting attachment counterpart of the data-room
     image_asset_sink. Descriptions are capped at *max_described*.
     """

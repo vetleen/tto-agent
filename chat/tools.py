@@ -389,6 +389,9 @@ class SearchDocumentsTool(ContextAwareTool):
         # --- Batch-fetch enrichment data ---
         doc_pks = list({w["document_id"] for w in windows})
 
+        # Instances for file-download handles (latest native file is resolved lazily).
+        docs_by_pk = DataRoomDocument.objects.in_bulk(doc_pks)
+
         # Document metadata
         doc_rows = DataRoomDocument.objects.filter(pk__in=doc_pks).values(
             "pk", "original_filename", "description", "doc_index", "mime_type",
@@ -485,7 +488,7 @@ class SearchDocumentsTool(ContextAwareTool):
             if doc_desc:
                 lines.append(f"**Description:** {doc_desc}")
             if doc_id in image_version_by_doc:
-                from chat.image_assets import get_or_create_version_image_token
+                from chat.assets import get_or_create_version_image_token
                 _tok = get_or_create_version_image_token(
                     version_id=image_version_by_doc[doc_id], mime=dm.get("mime_type", ""),
                     description=doc_desc,
@@ -494,6 +497,15 @@ class SearchDocumentsTool(ContextAwareTool):
                     "**Image — paste this token where you want the image shown "
                     "(optionally add your own caption between the `|` and `]]`):** " + _tok
                 )
+            doc_obj = docs_by_pk.get(doc_id)
+            if doc_obj is not None:
+                from chat.assets import file_token_for_document
+                _file_tok = file_token_for_document(doc_obj)
+                if _file_tok:
+                    lines.append(
+                        "**File — paste this token to offer the original file as a "
+                        "download:** " + _file_tok
+                    )
             if room_name:
                 lines.append(f"**Data room:** {room_name}")
             uploaded_at = dm.get("uploaded_at")
@@ -710,10 +722,15 @@ class ReadDocumentTool(ContextAwareTool):
             # Image-as-document: the chunks are the vision description; also hand
             # the model the token so it can embed the actual image.
             if getattr(version, "parser_type", "") == "image":
-                from chat.image_assets import get_or_create_version_image_token
+                from chat.assets import get_or_create_version_image_token
                 doc_entry["image"] = get_or_create_version_image_token(
                     version_id=version.id, mime=doc.mime_type, description=doc.description,
                 )
+            # Offer a direct download of the original file when one exists.
+            from chat.assets import file_token_for_document
+            file_tok = file_token_for_document(doc)
+            if file_tok:
+                doc_entry["file"] = file_tok
 
             documents.append(doc_entry)
 
@@ -871,7 +888,7 @@ class ListDocumentsTool(ContextAwareTool):
         )
         total = qs.count()
         rows = []
-        from chat.image_assets import get_or_create_version_image_token
+        from chat.assets import file_token_for_document, get_or_create_version_image_token
 
         for d in qs[offset:offset + limit]:
             version = d.active_searchable_version or d.current_version
@@ -890,6 +907,9 @@ class ListDocumentsTool(ContextAwareTool):
                 row["image"] = get_or_create_version_image_token(
                     version_id=version.id, mime=d.mime_type, description=d.description,
                 )
+            file_tok = file_token_for_document(d)
+            if file_tok:
+                row["file"] = file_tok
             rows.append(row)
         upper = min(offset + limit, total)
         header = f"Showing documents {offset + 1}–{upper} of {total}" if total else "No documents."
@@ -1186,10 +1206,10 @@ class DocumentViewImageInput(ReasonBaseModel):
 def _collect_doc_images(doc, max_images: int = 4):
     """Return ``[(bytes, media_type, description)]`` of a document's viewable images.
 
-    Covers the native image of an image-as-document and any embedded ImageAssets
+    Covers the native image of an image-as-document and any embedded Assets
     on the current version, limited to vision-supported types.
     """
-    from chat.models import ImageAsset
+    from chat.models import Asset
     from chat.services import SUPPORTED_IMAGE_TYPES
 
     out: list = []
@@ -1207,7 +1227,7 @@ def _collect_doc_images(doc, max_images: int = 4):
             with source.open("rb") as f:
                 out.append((f.read(), ct, doc.description or doc.original_filename))
     if len(out) < max_images:
-        for asset in ImageAsset.objects.filter(version=version):
+        for asset in Asset.objects.filter(version=version):
             if asset.content_type in SUPPORTED_IMAGE_TYPES and asset.blob:
                 with asset.blob.open("rb") as f:
                     out.append((f.read(), asset.content_type, asset.description))
@@ -1231,7 +1251,7 @@ class DocumentViewImageTool(ContextAwareTool):
     def _run(self, doc_indices: list[int], data_room_id: int | None = None, **kwargs) -> str:
         import base64
 
-        from chat.image_assets import get_or_create_version_image_token
+        from chat.assets import get_or_create_version_image_token
 
         if not doc_indices or not isinstance(doc_indices, list):
             raise ValueError("document_view_image requires a non-empty 'doc_indices' list")

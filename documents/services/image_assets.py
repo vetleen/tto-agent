@@ -1,7 +1,7 @@
-"""Persist embedded document images as ImageAssets during data-room ingestion.
+"""Persist embedded document images as Assets during data-room ingestion.
 
 Provides an ``image_sink`` (see core.docx.docx_to_markdown and core.pdf.pdf_to_text)
-that stores each embedded image's bytes on an ImageAsset scoped to the document
+that stores each embedded image's bytes on an Asset scoped to the document
 version and leaves an inline ``[[image:<uuid>|Image N: <description>]]`` token in
 the extracted markdown — so the image is never lost and its description stays
 searchable. Shared by both the docx and pdf extraction paths. Only the
@@ -44,7 +44,7 @@ def _sanitize_for_token(text: str) -> str:
 
 
 def image_asset_sink(version, doc):
-    """Return an image_sink that stores each embedded image as an ImageAsset
+    """Return an image_sink that stores each embedded image as an Asset
     scoped to *version* and emits a ``[[image:uuid|Image N: desc]]`` token.
 
     Format-neutral: used by both the docx (core.docx.docx_to_markdown) and pdf
@@ -55,7 +55,7 @@ def image_asset_sink(version, doc):
     """
     from django.core.files.base import ContentFile
 
-    from chat.models import ImageAsset
+    from chat.models import Asset
     from chat.services import describe_image
     from core.preferences import resolve_org_feature_model
     from documents.services.pii_scan import org_id_for_document
@@ -82,7 +82,7 @@ def image_asset_sink(version, doc):
             fmt = content_type.split("/")[-1].upper().lstrip("X-")
             description = f"{fmt} image" if fmt else "image"
 
-        asset = ImageAsset(
+        asset = Asset(
             version=version,
             content_type=content_type,
             size_bytes=len(img_bytes),

@@ -2731,7 +2731,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                             )
                     elif ct in SUPPORTED_PDF_TYPES:
                         # Always extract once: embedded images become viewable
-                        # message-scoped ImageAssets and the text+tokens are
+                        # message-scoped Assets and the text+tokens are
                         # cached on the attachment. Feed the model the native PDF
                         # when it can read one (best fidelity), else the extracted
                         # text (which now carries the image descriptions).
@@ -2778,7 +2778,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _attachment_text(self, attachment, file_bytes):
         """Return the extracted text for a docx/pdf attachment, extracting and
-        persisting its embedded images as message-scoped ImageAssets exactly
+        persisting its embedded images as message-scoped Assets exactly
         once and caching the result. Reused verbatim on later turns so per-turn
         replay never re-extracts or recreates assets."""
         from chat.services import get_or_extract_attachment_text

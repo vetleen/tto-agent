@@ -469,7 +469,7 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 
 class PersistentAttachmentExtractionTests(TestCase):
     """Chat/meeting docx+pdf attachments persist embedded images as
-    message-scoped ImageAssets and cache the extracted text+tokens once."""
+    message-scoped Assets and cache the extracted text+tokens once."""
 
     def setUp(self):
         import tempfile
@@ -499,7 +499,7 @@ class PersistentAttachmentExtractionTests(TestCase):
     def test_pdf_embedded_image_becomes_message_scoped_asset(self):
         from unittest.mock import patch
 
-        from chat.models import ImageAsset
+        from chat.models import Asset
         from chat.services import get_or_extract_attachment_text
 
         data = _pdf_with_image()
@@ -507,7 +507,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         with patch("chat.services.describe_image", return_value="A red rectangle"):
             text = get_or_extract_attachment_text(att, data, user=self.user)
 
-        assets = list(ImageAsset.objects.filter(message=self.message))
+        assets = list(Asset.objects.filter(message=self.message))
         self.assertEqual(len(assets), 1)
         self.assertEqual(assets[0].description, "A red rectangle")
         self.assertTrue(assets[0].blob)  # bytes persisted, viewable
@@ -520,7 +520,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         """docx is unified with pdf: chat docx images now persist too."""
         from unittest.mock import patch
 
-        from chat.models import ImageAsset
+        from chat.models import Asset
         from chat.services import get_or_extract_attachment_text
 
         data = _docx_with_image()
@@ -528,7 +528,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         with patch("chat.services.describe_image", return_value="A chart"):
             text = get_or_extract_attachment_text(att, data, user=self.user)
 
-        assets = list(ImageAsset.objects.filter(message=self.message))
+        assets = list(Asset.objects.filter(message=self.message))
         self.assertEqual(len(assets), 1)
         self.assertIn(f"[[image:{assets[0].id}|", text)
 
@@ -536,7 +536,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         """A second enrichment pass reuses the cache and creates no new assets."""
         from unittest.mock import patch
 
-        from chat.models import ImageAsset
+        from chat.models import Asset
         from chat.services import get_or_extract_attachment_text
 
         data = _pdf_with_image()
@@ -550,7 +550,7 @@ class PersistentAttachmentExtractionTests(TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(m.call_count, 1, "cached extraction must not re-describe")
-        self.assertEqual(ImageAsset.objects.filter(message=self.message).count(), 1)
+        self.assertEqual(Asset.objects.filter(message=self.message).count(), 1)
 
     def test_multiline_description_yields_single_line_token(self):
         """A multi-paragraph vision description must collapse to a single line —
@@ -571,11 +571,11 @@ class PersistentAttachmentExtractionTests(TestCase):
         self.assertIn("A man in an office. He wears a grey suit. His watch is dark.", text)
 
     def test_unlinked_attachment_falls_back_to_transient(self):
-        """With no linked message, extraction is transient: no ImageAssets, a
+        """With no linked message, extraction is transient: no Assets, a
         plain [Image N: desc] placeholder instead of a token."""
         from unittest.mock import patch
 
-        from chat.models import ImageAsset
+        from chat.models import Asset
         from chat.services import extract_attachment_text
 
         data = _pdf_with_image()
@@ -583,6 +583,6 @@ class PersistentAttachmentExtractionTests(TestCase):
         with patch("chat.services.describe_image", return_value="A red rectangle"):
             text = extract_attachment_text(att, data, user=self.user)
 
-        self.assertEqual(ImageAsset.objects.count(), 0)
+        self.assertEqual(Asset.objects.count(), 0)
         self.assertNotIn("[[image:", text)
         self.assertIn("[Image 1: A red rectangle]", text)

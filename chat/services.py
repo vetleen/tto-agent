@@ -495,18 +495,18 @@ def extract_pdf_text(file_bytes: bytes) -> str:
 
 def extract_attachment_text(att, file_bytes: bytes, *, user) -> str:
     """Extract a docx/pdf chat attachment to text with inline ``[[image:uuid|...]]``
-    tokens, persisting embedded images as message-scoped ImageAssets.
+    tokens, persisting embedded images as message-scoped Assets.
 
     The chat/meeting counterpart of the data-room image_asset_sink path: when the
     attachment is linked to a message, embedded images become viewable
-    ImageAssets owned by that message; otherwise (defensive) they fall back to
+    Assets owned by that message; otherwise (defensive) they fall back to
     transient ``[Image N: desc]`` descriptions. Caller is responsible for caching
     the result on ``att.extracted_content``.
     """
     from core.file_types import KIND_PDF, kind_for_mime
 
     if att.message_id:
-        from chat.image_assets import message_image_asset_sink
+        from chat.assets import message_image_asset_sink
 
         sink = message_image_asset_sink(att.message, user, max_described=CHAT_MAX_DESCRIBED_IMAGES)
     else:
@@ -769,14 +769,14 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> 
     """Convert a .docx upload to markdown for a canvas.
 
     When *canvas* is given, embedded images are stored as canvas-scoped
-    ImageAssets and referenced by ``[[image:uuid|...]]`` tokens (so they survive
+    Assets and referenced by ``[[image:uuid|...]]`` tokens (so they survive
     into the canvas and its export). Without a canvas, images are described
     inline as ``[Image N: ...]`` text. Returns (title, content, truncated).
     """
     from core.docx import docx_to_markdown
 
     if canvas is not None:
-        from chat.image_assets import canvas_asset_sink
+        from chat.assets import canvas_asset_sink
 
         sink = canvas_asset_sink(canvas, user, max_described=CANVAS_MAX_IMAGES)
     else:

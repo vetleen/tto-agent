@@ -315,7 +315,7 @@ class ChatAttachment(models.Model):
     size_bytes = models.PositiveIntegerField()
     # Cached text extracted from a docx/pdf attachment (with inline
     # [[image:uuid|...]] tokens for any embedded images persisted as
-    # message-scoped ImageAssets). Populated once, lazily, the first time the
+    # message-scoped Assets). Populated once, lazily, the first time the
     # attachment is enriched into an LLM request — so per-turn replay reuses it
     # instead of re-extracting and recreating assets. Empty for images/text.
     extracted_content = models.TextField(blank=True, default="")
@@ -514,8 +514,11 @@ class ThreadChunkUsage(models.Model):
         return f"Thread {self.thread_id} used chunk {self.chunk_id}"
 
 
-class ImageAsset(models.Model):
-    """A persisted image: the native bytes plus a text description.
+class Asset(models.Model):
+    """A persisted asset: either binary bytes (an image) or a blob-less reference
+    to a data-room document version. Backs both inline-image tokens
+    (``[[image:uuid]]``) and file-download tokens (``[[file:uuid]]``); ``kind``
+    distinguishes the two reference flavours so they never share a row.
 
     Scoped to exactly one owner — a data-room document version, a canvas, a
     chat message, or a chat thread — via the nullable FKs below (enforced by a
@@ -527,6 +530,9 @@ class ImageAsset(models.Model):
     or within chat, avoiding a migration cycle (documents must not depend on chat).
     """
 
+    KIND_IMAGE = "image"
+    KIND_FILE = "file"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     # Exactly one owner is set (see Meta.constraints).
@@ -535,35 +541,46 @@ class ImageAsset(models.Model):
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="image_assets",
+        related_name="assets",
     )
     canvas = models.ForeignKey(
         "ChatCanvas",
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="image_assets",
+        related_name="assets",
     )
     message = models.ForeignKey(
         "ChatMessage",
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="image_assets",
+        related_name="assets",
     )
     thread = models.ForeignKey(
         "ChatThread",
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="image_assets",
+        related_name="assets",
     )
 
     # Empty for a *reference* asset (version-owned): the bytes live on the
-    # data-room version's native image (native_blob / the document's
-    # original_file) and are resolved on serve — see image_asset_source().
+    # data-room version's native file (native_blob / the document's
+    # original_file) and are resolved on serve — see image_asset_source /
+    # file_asset_source.
     blob = models.FileField(upload_to="image_assets/%Y/%m/", max_length=500, blank=True)
     content_type = models.CharField(max_length=100)
+    # Render/serve mode, only meaningful for reference assets: an inline image
+    # (``[[image:]]``) vs a file download (``[[file:]]``). Blob-owning assets are
+    # always images. Keeps an image-ref and a file-ref for the SAME version as
+    # distinct rows (their dedup queries filter on this).
+    kind = models.CharField(
+        max_length=8,
+        choices=[(KIND_IMAGE, KIND_IMAGE), (KIND_FILE, KIND_FILE)],
+        default=KIND_IMAGE,
+        db_index=True,
+    )
     size_bytes = models.PositiveIntegerField(default=0)
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
@@ -598,4 +615,4 @@ class ImageAsset(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"ImageAsset {self.id} ({self.content_type})"
+        return f"Asset {self.id} ({self.content_type})"

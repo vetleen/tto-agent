@@ -180,7 +180,7 @@ def _extract_native(version, doc):
             logger.info("process_document_version: version_id=%s stage=extracting", version.id)
             image_sink = None
             if ext in ("docx", "pdf"):
-                # Embedded images become ImageAssets (bytes preserved) + inline
+                # Embedded images become Assets (bytes preserved) + inline
                 # [[image:uuid|...]] tokens (searchable descriptions).
                 from documents.services.image_assets import image_asset_sink
                 image_sink = image_asset_sink(version, doc)

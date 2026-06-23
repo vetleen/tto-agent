@@ -1,4 +1,4 @@
-"""Tests for the ImageAsset model and its access-checked serve view."""
+"""Tests for the Asset model and its access-checked serve view."""
 
 import tempfile
 
@@ -8,7 +8,7 @@ from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from chat.models import ChatCanvas, ChatMessage, ChatThread, ImageAsset
+from chat.models import ChatCanvas, ChatMessage, ChatThread, Asset
 
 User = get_user_model()
 
@@ -16,7 +16,7 @@ _MEDIA = tempfile.mkdtemp()
 
 
 def _make_asset(*, canvas=None, version=None, message=None, content_type="image/png"):
-    return ImageAsset.objects.create(
+    return Asset.objects.create(
         canvas=canvas,
         version=version,
         message=message,
@@ -27,7 +27,7 @@ def _make_asset(*, canvas=None, version=None, message=None, content_type="image/
 
 
 @override_settings(MEDIA_ROOT=_MEDIA)
-class ImageAssetModelTests(TestCase):
+class AssetModelTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="ia@test.com", password="pw")
         self.thread = ChatThread.objects.create(created_by=self.user)
@@ -36,7 +36,7 @@ class ImageAssetModelTests(TestCase):
     def test_single_owner_is_allowed(self):
         asset = _make_asset(canvas=self.canvas)
         self.assertIsNotNone(asset.pk)
-        self.assertEqual(self.canvas.image_assets.count(), 1)
+        self.assertEqual(self.canvas.assets.count(), 1)
 
     def test_zero_owners_rejected(self):
         with self.assertRaises(IntegrityError):
@@ -51,7 +51,7 @@ class ImageAssetModelTests(TestCase):
 
 
 @override_settings(MEDIA_ROOT=_MEDIA)
-class ServeImageAssetTests(TestCase):
+class ServeAssetTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user(email="own@test.com", password="pw")
         self.other = User.objects.create_user(email="oth@test.com", password="pw")
@@ -131,7 +131,7 @@ class EmbedImageTokensTests(TestCase):
 
 @override_settings(MEDIA_ROOT=_MEDIA)
 class CanvasImportAssetsTests(TestCase):
-    """Docx import attaches embedded images to the canvas as ImageAssets + tokens."""
+    """Docx import attaches embedded images to the canvas as Assets + tokens."""
 
     def setUp(self):
         self.user = User.objects.create_user(email="cimp@test.com", password="pw")
@@ -150,15 +150,15 @@ class CanvasImportAssetsTests(TestCase):
         with patch("chat.services.describe_image", return_value="a revenue chart"):
             _title, content, _truncated = import_docx_to_canvas(f, self.user, canvas=self.canvas)
 
-        assets = list(ImageAsset.objects.filter(canvas=self.canvas))
+        assets = list(Asset.objects.filter(canvas=self.canvas))
         self.assertEqual(len(assets), 1)
         self.assertEqual(assets[0].description, "a revenue chart")
         self.assertIn(f"[[image:{assets[0].id}|", content)
 
 
 @override_settings(MEDIA_ROOT=_MEDIA)
-class ReferenceImageAssetTests(TestCase):
-    """A version-owned ImageAsset with no blob serves the data-room image bytes
+class ReferenceAssetTests(TestCase):
+    """A version-owned Asset with no blob serves the data-room image bytes
     (the bytes stay on the document's original_file — no copy)."""
 
     def setUp(self):
@@ -179,7 +179,7 @@ class ReferenceImageAssetTests(TestCase):
         self.doc.current_version = self.version
         self.doc.save(update_fields=["current_version"])
         # Reference asset: version-owned, NO blob.
-        self.asset = ImageAsset.objects.create(version=self.version, content_type="image/png")
+        self.asset = Asset.objects.create(version=self.version, content_type="image/png")
 
     def test_reference_asset_has_no_blob(self):
         self.assertFalse(bool(self.asset.blob))
@@ -273,7 +273,7 @@ class CanvasExportImageSizingTests(TestCase):
         self.canvas = ChatCanvas.objects.create(thread=self.thread, title="Sized", content="")
         self.thread.active_canvas = self.canvas
         self.thread.save(update_fields=["active_canvas"])
-        self.asset = ImageAsset.objects.create(
+        self.asset = Asset.objects.create(
             canvas=self.canvas,
             blob=ContentFile(self.png, name="a.png"),
             content_type="image/png",
@@ -283,7 +283,7 @@ class CanvasExportImageSizingTests(TestCase):
         self.other = User.objects.create_user(email="sz2@test.com", password="pw")
         other_thread = ChatThread.objects.create(created_by=self.other)
         other_canvas = ChatCanvas.objects.create(thread=other_thread, title="O", content="")
-        self.foreign_asset = ImageAsset.objects.create(
+        self.foreign_asset = Asset.objects.create(
             canvas=other_canvas,
             blob=ContentFile(self.png, name="b.png"),
             content_type="image/png",

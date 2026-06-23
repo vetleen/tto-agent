@@ -312,14 +312,14 @@ class CreateMinutesThreadAttachmentTests(TestCase):
 
     def test_pdf_attachment_embedded_images_persist_via_chat_path(self):
         """A meeting PDF with an embedded image gets the same persistent
-        message-scoped ImageAsset treatment as a chat attachment (meetings
+        message-scoped Asset treatment as a chat attachment (meetings
         inherits the chat enrichment path)."""
         import io
         from unittest.mock import patch
 
         from PIL import Image
 
-        from chat.models import ImageAsset
+        from chat.models import Asset
         from chat.services import get_or_extract_attachment_text
 
         buf = io.BytesIO()
@@ -338,7 +338,7 @@ class CreateMinutesThreadAttachmentTests(TestCase):
         with patch("chat.services.describe_image", return_value="A blue rectangle"):
             text = get_or_extract_attachment_text(att, data, user=self.user)
 
-        assets = list(ImageAsset.objects.filter(message=att.message))
+        assets = list(Asset.objects.filter(message=att.message))
         self.assertEqual(len(assets), 1)
         self.assertEqual(assets[0].description, "A blue rectangle")
         self.assertIn(f"[[image:{assets[0].id}|", text)

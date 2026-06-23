@@ -1,4 +1,4 @@
-"""Tests for the chat_generate_image tool and thread-owned ImageAsset.
+"""Tests for the chat_generate_image tool and thread-owned Asset.
 
 The image-generation service is faked; no Gemini SDK or network is touched.
 """
@@ -13,9 +13,9 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from chat.image_assets import image_token, store_thread_image
+from chat.assets import image_token, store_thread_image
 from chat.image_tools import ChatGenerateImageTool
-from chat.models import ChatThread, ImageAsset
+from chat.models import ChatThread, Asset
 from llm.service.image_generation_service import ImageGenerationError, ImageGenerationResult
 from llm.types.context import RunContext
 
@@ -79,8 +79,8 @@ class ChatGenerateImageToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIn("[[image:", result["token"])
         self.assertFalse(result["is_edit"])
-        self.assertEqual(ImageAsset.objects.filter(thread=self.thread).count(), 1)
-        asset = ImageAsset.objects.get(thread=self.thread)
+        self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)
+        asset = Asset.objects.get(thread=self.thread)
         self.assertTrue(asset.blob)
         self.assertEqual(asset.created_by, self.user)
         # The image is surfaced to the model for this turn.
@@ -93,7 +93,7 @@ class ChatGenerateImageToolTests(TestCase):
             result = self._invoke({"prompt": "x"})
         self.assertEqual(result["status"], "error")
         self.assertIn("not enabled", result["message"].lower())
-        self.assertEqual(ImageAsset.objects.filter(thread=self.thread).count(), 0)
+        self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 0)
 
     def test_provider_error_returns_error(self):
         fake = _FakeService(exc=ImageGenerationError("blocked by safety filters"))
@@ -101,7 +101,7 @@ class ChatGenerateImageToolTests(TestCase):
             result = self._invoke({"prompt": "x"})
         self.assertEqual(result["status"], "error")
         self.assertIn("blocked", result["message"].lower())
-        self.assertEqual(ImageAsset.objects.filter(thread=self.thread).count(), 0)
+        self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 0)
 
     def test_input_images_access_control(self):
         # One asset the user owns, one owned by someone else.
@@ -129,13 +129,13 @@ class ChatGenerateImageToolTests(TestCase):
         self.assertTrue(result["is_edit"])
 
 
-class ImageAssetConstraintTests(TestCase):
+class AssetConstraintTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="c@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
 
     def test_thread_owner_allowed(self):
-        asset = ImageAsset.objects.create(thread=self.thread, content_type="image/png")
+        asset = Asset.objects.create(thread=self.thread, content_type="image/png")
         self.assertIsNotNone(asset.pk)
 
     def test_zero_owner_rejected(self):
@@ -143,4 +143,4 @@ class ImageAssetConstraintTests(TestCase):
 
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
-                ImageAsset.objects.create(content_type="image/png")
+                Asset.objects.create(content_type="image/png")

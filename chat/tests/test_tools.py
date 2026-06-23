@@ -702,8 +702,8 @@ class ImageTokenSurfacingTests(TestCase):
         self.assertNotIn("image", row)
 
     def test_token_helper_is_idempotent(self):
-        from chat.image_assets import get_or_create_version_image_token
-        from chat.models import ImageAsset
+        from chat.assets import get_or_create_version_image_token
+        from chat.models import Asset
 
         t1 = get_or_create_version_image_token(
             version_id=self.version.id, mime="image/png", description="A bar chart.",
@@ -716,5 +716,5 @@ class ImageTokenSurfacingTests(TestCase):
         # The caption is left empty — the model authors it if it wants one.
         self.assertTrue(t1.endswith("|]]"))
         self.assertEqual(
-            ImageAsset.objects.filter(version=self.version, blob="").count(), 1
+            Asset.objects.filter(version=self.version, blob="").count(), 1
         )

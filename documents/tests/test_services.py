@@ -628,11 +628,11 @@ class ProcessDocumentServiceTests(TestCase):
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_docx_embedded_images_become_assets(self):
-        """Embedded docx images are stored as version-scoped ImageAssets with an
+        """Embedded docx images are stored as version-scoped Assets with an
         inline [[image:uuid|...]] token left in the searchable content."""
         from django.core.files.base import ContentFile
 
-        from chat.models import ImageAsset
+        from chat.models import Asset
         from chat.tests.test_attachments import _docx_with_image
         from documents.services.process_document import process_document
 
@@ -656,7 +656,7 @@ class ProcessDocumentServiceTests(TestCase):
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
                 version = doc.current_version
-                assets = list(ImageAsset.objects.filter(version=version))
+                assets = list(Asset.objects.filter(version=version))
                 self.assertEqual(len(assets), 1)
                 self.assertEqual(assets[0].description, "A revenue chart")
                 self.assertTrue(assets[0].sha256)
@@ -668,12 +668,12 @@ class ProcessDocumentServiceTests(TestCase):
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_pdf_embedded_images_become_assets(self):
-        """Embedded PDF images are stored as version-scoped ImageAssets with an
+        """Embedded PDF images are stored as version-scoped Assets with an
         inline [[image:uuid|...]] token left in the searchable content — parity
         with the docx path."""
         from django.core.files.base import ContentFile
 
-        from chat.models import ImageAsset
+        from chat.models import Asset
         from documents.services.process_document import process_document
 
         pdf_bytes = _pdf_with_image()
@@ -696,7 +696,7 @@ class ProcessDocumentServiceTests(TestCase):
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
                 version = doc.current_version
-                assets = list(ImageAsset.objects.filter(version=version))
+                assets = list(Asset.objects.filter(version=version))
                 self.assertEqual(len(assets), 1)
                 self.assertEqual(assets[0].description, "A revenue chart")
                 self.assertTrue(assets[0].sha256)
