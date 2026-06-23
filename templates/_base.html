@@ -33,6 +33,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <script src="{% static 'js/editor.bundle.js' %}"></script>
     {% endif %}
+    {% block extra_head %}{% endblock %}
   </head>
   <body class="{% block body_class %}pt-20 bg-neutral-primary min-h-screen{% endblock %}">
     {% block navbar %}
