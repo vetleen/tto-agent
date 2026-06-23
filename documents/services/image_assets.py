@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# Collapses runs of whitespace (incl. newlines) in a token label.
+_TOKEN_WS_RE = re.compile(r"\s+")
 
 # Cap how many embedded images get a vision description per document; beyond
 # this they're still stored (bytes preserved) but labelled by format only, so a
@@ -27,8 +31,16 @@ def _ext_for(content_type: str) -> str:
 
 
 def _sanitize_for_token(text: str) -> str:
-    """Strip characters that would break the [[image:uuid|desc]] token grammar."""
-    return text.replace("[", "(").replace("]", ")").replace("|", "/").strip()
+    """Strip characters that would break the [[image:uuid|desc]] token grammar.
+
+    The token is single-line: as well as the [], | delimiters, collapse all
+    whitespace (incl. newlines) to single spaces. A multi-paragraph vision
+    description would otherwise embed a blank line in the token, which breaks the
+    Markdown renderer that turns it into an <img> (the blank line splits the
+    placeholder span across paragraphs and it renders as literal text).
+    """
+    text = text.replace("[", "(").replace("]", ")").replace("|", "/")
+    return _TOKEN_WS_RE.sub(" ", text).strip()
 
 
 def image_asset_sink(version, doc):

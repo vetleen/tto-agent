@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# Collapses runs of whitespace (incl. newlines) in a token label.
+_TOKEN_WS_RE = re.compile(r"\s+")
 
 
 def _ext_for(content_type: str) -> str:
@@ -19,7 +23,11 @@ def _ext_for(content_type: str) -> str:
 
 
 def _sanitize_for_token(text: str) -> str:
-    return text.replace("[", "(").replace("]", ")").replace("|", "/").strip()
+    """Strip token-breaking chars and collapse whitespace — the [[image:uuid|desc]]
+    token is single-line; an embedded newline (multi-paragraph description) breaks
+    the Markdown renderer that turns it into an <img>."""
+    text = text.replace("[", "(").replace("]", ")").replace("|", "/")
+    return _TOKEN_WS_RE.sub(" ", text).strip()
 
 
 def image_token(asset_id, label: str) -> str:

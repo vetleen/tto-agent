@@ -552,6 +552,24 @@ class PersistentAttachmentExtractionTests(TestCase):
         self.assertEqual(m.call_count, 1, "cached extraction must not re-describe")
         self.assertEqual(ImageAsset.objects.filter(message=self.message).count(), 1)
 
+    def test_multiline_description_yields_single_line_token(self):
+        """A multi-paragraph vision description must collapse to a single line —
+        an embedded blank line breaks the Markdown renderer (the token's <img>
+        placeholder span gets split across paragraphs and shows as raw text)."""
+        from unittest.mock import patch
+
+        from chat.services import get_or_extract_attachment_text
+
+        data = _pdf_with_image()
+        att = self._attachment(data, _PDF_MIME)
+        multiline = "A man in an office.\n\nHe wears a grey suit.\nHis watch is dark."
+        with patch("chat.services.describe_image", return_value=multiline):
+            text = get_or_extract_attachment_text(att, data, user=self.user)
+
+        self.assertIn("[[image:", text)
+        self.assertNotIn("\n", text, "token (and its label) must be single-line")
+        self.assertIn("A man in an office. He wears a grey suit. His watch is dark.", text)
+
     def test_unlinked_attachment_falls_back_to_transient(self):
         """With no linked message, extraction is transient: no ImageAssets, a
         plain [Image N: desc] placeholder instead of a token."""

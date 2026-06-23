@@ -922,7 +922,11 @@
       // renderImageBlocks() turns into <img> after sanitization (never raw
       // <img> through DOMPurify).
       text = text.replace(/\[\[image:([0-9a-fA-F-]{36})\|([^\]]*)\]\]/g, function(m, uuid, label) {
-        var safe = label.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        // Collapse whitespace (incl. newlines) — a multi-paragraph label would
+        // otherwise embed a blank line in the placeholder span, which marked.parse
+        // splits across paragraphs, corrupting the tag so it renders as text.
+        var safe = label.replace(/\s+/g, ' ').trim()
+          .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         return '<span class="image-placeholder" data-image-uuid="' + uuid + '" data-image-desc="' + safe + '"></span>';
       });
       const html = marked.parse(text);
