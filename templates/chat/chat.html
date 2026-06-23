@@ -172,7 +172,7 @@
               <div class="umsg__bubble">
                 <div class="umsg__txt whitespace-pre-wrap text-body/50 italic">{{ assistant_name }} set this message aside for safety.</div>
               </div>
-              <span class="wf-avatar" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
+              {% user_avatar user "chat" %}
             </div>
           {% elif m.is_redacted and m.role == "assistant" %}
             <div class="wmsg opacity-60" data-role="assistant">
@@ -214,7 +214,7 @@
                 {% endif %}
                 <button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>
               </div>
-              <span class="wf-avatar" style="{{ user.email|avatar_style }}">{{ user.email|first|upper }}</span>
+              {% user_avatar user "chat" %}
             </div>
           {% elif m.role == "assistant" and m.is_intermediate %}
             {# Hidden tool-loop message carrying narration/thinking — render as collapsed blocks, matching the live-streaming "Thought further" UI #}
@@ -740,6 +740,7 @@
   .umsg__bubble { display: flex; flex-direction: column; max-width: 460px; min-width: 0; background: var(--wf-sunken); border: 1px solid var(--wf-border-subtle); border-radius: 14px 14px 4px 14px; padding: 11px 15px; }
   .umsg__txt { font-size: 14.5px; line-height: 1.6; color: var(--wf-heading); white-space: pre-wrap; word-break: break-word; }
   .wf-avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; }
+  img.wf-avatar { object-fit: cover; }
   .wmsg { display: flex; gap: 11px; align-items: flex-start; }
   .wmsg__av { width: 28px; height: 28px; flex-shrink: 0; border-radius: 9999px; background: var(--wf-forest-900); color: var(--wf-copper-light); border: 1px solid var(--wf-forest-700); display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-serif); font-size: 14px; font-weight: 600; }
   .wmsg__body { flex: 1; min-width: 0; padding-top: 3px; display: flex; flex-direction: column; }
@@ -814,6 +815,15 @@
   const THREAD_ID = "{{ thread.id|default:'' }}";
   const USER_INITIAL = "{{ user.email|first|upper }}";
   const USER_AVATAR_STYLE = "{{ user.email|avatar_style }}";
+  const USER_AVATAR_URL = "{% if user.profile_picture %}{{ user.profile_picture.url|escapejs }}{% endif %}";
+  // Picture-or-initials avatar for live (JS-rendered) user messages — mirrors the
+  // server-side {% templatetag openblock %} user_avatar {% templatetag closeblock %} tag.
+  function userAvatarHtml() {
+    if (USER_AVATAR_URL) {
+      return `<img class="wf-avatar" src="${USER_AVATAR_URL}" alt="">`;
+    }
+    return `<span class="wf-avatar" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span>`;
+  }
   const ASSISTANT_NAME = "{{ assistant_name|escapejs }}";
   const STREAM_TIMEOUT_MS = 660000;
   const CHAT_HOME = "{% url 'chat_home' %}";
@@ -2262,7 +2272,7 @@
     if (!text) return;
     const userDiv = document.createElement("div");
     userDiv.className = "umsg"; userDiv.setAttribute("data-role", "user");
-    userDiv.innerHTML = `<div class="umsg__bubble"><div class="umsg__txt whitespace-pre-wrap">${escapeHtml(text)}</div>${COPY_BTN_HTML}</div><span class="wf-avatar" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span>`;
+    userDiv.innerHTML = `<div class="umsg__bubble"><div class="umsg__txt whitespace-pre-wrap">${escapeHtml(text)}</div>${COPY_BTN_HTML}</div>${userAvatarHtml()}`;
     const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
     scrollContainer.classList.add('flex-1');
     if (scrollContainer.firstElementChild) scrollContainer.firstElementChild.classList.add('py-6');
@@ -2776,7 +2786,7 @@
       });
       attBadges += '</div>';
     }
-    userDiv.innerHTML = `<div class="umsg__bubble"><div class="umsg__txt whitespace-pre-wrap">${escapeHtml(text)}</div>${attBadges}${COPY_BTN_HTML}</div><span class="wf-avatar" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span>`;
+    userDiv.innerHTML = `<div class="umsg__bubble"><div class="umsg__txt whitespace-pre-wrap">${escapeHtml(text)}</div>${attBadges}${COPY_BTN_HTML}</div>${userAvatarHtml()}`;
     const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
     // Switch from empty (centered) layout to normal chat layout
     scrollContainer.classList.add('flex-1');

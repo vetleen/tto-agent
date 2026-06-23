@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% load branding %}
 
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-16">
@@ -81,6 +82,22 @@
       <p class="mt-1 text-sm text-body">Help {{ assistant_name }} address you properly and tailor responses to your role.</p>
 
       <div class="mt-4 space-y-4">
+        <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
+          <span class="block text-sm font-medium text-heading">Profile picture</span>
+          <p class="text-xs text-body mt-0.5">Optional. Shown in the top bar and beside your chat messages. JPEG, PNG, or WebP, up to 8&nbsp;MB.</p>
+          <div class="mt-3 flex items-center gap-4">
+            <span id="avatar-preview" class="inline-flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full text-xl font-semibold"{% if not user.profile_picture %} style="{{ user.email|avatar_style }}"{% endif %}>{% if user.profile_picture %}<img src="{{ user.profile_picture.url }}" alt="" class="h-full w-full object-cover">{% else %}{{ user.email|first|upper }}{% endif %}</span>
+            <div class="flex items-center gap-2">
+              <button type="button" id="avatar-upload-btn"
+                class="border border-default text-body hover:bg-neutral-secondary-soft hover:text-heading disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Upload photo</button>
+              <button type="button" id="avatar-remove-btn"
+                class="text-fg-danger hover:underline disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm px-2 py-2 focus:outline-none{% if not user.profile_picture %} hidden{% endif %}">Remove</button>
+            </div>
+          </div>
+          <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" class="hidden">
+          <p id="avatar-error" class="text-xs text-fg-danger hidden mt-2"></p>
+        </div>
+
         <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
           <label class="block text-sm font-medium text-heading" for="profile-first-name">First name</label>
           <input type="text" id="profile-first-name" maxlength="150" value="{{ user.first_name }}"
@@ -273,6 +290,67 @@
     });
     descTextarea.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
   }
+
+  // --- Profile picture ---
+  (function() {
+    var input = document.getElementById('avatar-input');
+    var uploadBtn = document.getElementById('avatar-upload-btn');
+    var removeBtn = document.getElementById('avatar-remove-btn');
+    var preview = document.getElementById('avatar-preview');
+    var errEl = document.getElementById('avatar-error');
+    if (!input || !uploadBtn || !preview) return;
+    var AVATAR_INITIAL = "{{ user.email|first|upper|escapejs }}";
+    var AVATAR_STYLE = "{{ user.email|avatar_style|escapejs }}";
+
+    function showErr(msg) {
+      errEl.textContent = msg || '';
+      errEl.classList.toggle('hidden', !msg);
+    }
+
+    uploadBtn.addEventListener('click', function() { input.click(); });
+
+    input.addEventListener('change', function() {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      showErr('');
+      var fd = new FormData();
+      fd.append('picture', file);
+      uploadBtn.disabled = true;
+      fetch('{% url "accounts:profile_picture_update" %}', {
+        method: 'POST', headers: { 'X-CSRFToken': csrf }, body: fd, credentials: 'same-origin',
+      }).then(function(r) {
+        return r.json().then(function(d) { return { ok: r.ok, d: d }; });
+      }).then(function(res) {
+        if (!res.ok || res.d.error) { showErr(res.d.error || 'Upload failed.'); return; }
+        // Cache-bust: replacing within the same month reuses the same URL.
+        var sep = res.d.url.indexOf('?') === -1 ? '?' : '&';
+        var img = document.createElement('img');
+        img.src = res.d.url + sep + 't=' + Date.now();
+        img.alt = '';
+        img.className = 'h-full w-full object-cover';
+        preview.removeAttribute('style');
+        preview.replaceChildren(img);
+        if (removeBtn) removeBtn.classList.remove('hidden');
+      }).catch(function() { showErr('Upload failed. Please try again.'); })
+        .finally(function() { uploadBtn.disabled = false; input.value = ''; });
+    });
+
+    if (removeBtn) {
+      removeBtn.addEventListener('click', function() {
+        showErr('');
+        removeBtn.disabled = true;
+        fetch('{% url "accounts:profile_picture_delete" %}', {
+          method: 'POST', headers: { 'X-CSRFToken': csrf }, credentials: 'same-origin',
+        }).then(function(r) { return r.json(); }).then(function(d) {
+          if (d.error) { showErr(d.error); return; }
+          preview.setAttribute('style', AVATAR_STYLE);
+          preview.textContent = AVATAR_INITIAL;
+          removeBtn.classList.add('hidden');
+        }).catch(function() { showErr('Could not remove the picture.'); })
+          .finally(function() { removeBtn.disabled = false; });
+      });
+    }
+  })();
 
   // --- Organization (admin auto-save) ---
   {% if cust.is_org_admin %}

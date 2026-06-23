@@ -1139,6 +1139,81 @@ def profile_update(request):
     return JsonResponse({"ok": True})
 
 
+# ---- Profile picture ----
+
+# ~8 MB image + multipart framing headroom. Rejected from Content-Length before
+# Django spools the body to disk.
+PROFILE_PICTURE_REQUEST_MAX_BYTES = 12_000_000
+
+
+def _delete_profile_picture_files(user):
+    """Delete both stored avatar files from storage, clearing the fields in memory.
+
+    ``FieldFile.delete(save=False)`` removes the file and empties the field on
+    the instance; missing files are ignored. The caller persists the change.
+    """
+    for field in (user.profile_picture, user.profile_picture_original):
+        if field:
+            field.delete(save=False)
+
+
+@login_required
+@require_POST
+@ratelimit(key="user", rate="30/h", method="POST", block=True)
+def profile_picture_update(request):
+    from accounts.avatars import (
+        InvalidProfilePicture,
+        max_upload_bytes,
+        process_profile_picture,
+    )
+
+    # Reject oversized requests from Content-Length BEFORE request.FILES spools
+    # the whole multipart body to disk.
+    try:
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    max_request_bytes = getattr(
+        django_settings, "PROFILE_PICTURE_REQUEST_MAX_BYTES", PROFILE_PICTURE_REQUEST_MAX_BYTES
+    )
+    if content_length > max_request_bytes:
+        return JsonResponse({"error": "Image is too large."}, status=413)
+
+    upload = request.FILES.get("picture")
+    if not upload:
+        return JsonResponse({"error": "No image was provided."}, status=400)
+    if upload.size > max_upload_bytes():
+        return JsonResponse({"error": "Image is too large (max 8 MB)."}, status=400)
+
+    try:
+        ext, original, resized = process_profile_picture(upload)
+    except InvalidProfilePicture:
+        return JsonResponse(
+            {"error": "That file couldn't be read as an image. Use a JPEG, PNG, or WebP."},
+            status=400,
+        )
+
+    user = request.user
+    # Drop any previous files first so a replacement doesn't leave orphans.
+    _delete_profile_picture_files(user)
+    user.profile_picture_original.save(f"user_{user.pk}.{ext}", original, save=False)
+    user.profile_picture.save(f"user_{user.pk}.{ext}", resized, save=False)
+    user.save(update_fields=["profile_picture", "profile_picture_original"])
+
+    return JsonResponse({"ok": True, "url": user.profile_picture.url})
+
+
+@login_required
+@require_POST
+@ratelimit(key="user", rate="30/h", method="POST", block=True)
+def profile_picture_delete(request):
+    user = request.user
+    if user.profile_picture or user.profile_picture_original:
+        _delete_profile_picture_files(user)
+        user.save(update_fields=["profile_picture", "profile_picture_original"])
+    return JsonResponse({"ok": True})
+
+
 # ---- Organization Description ----
 
 

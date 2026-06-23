@@ -61,6 +61,18 @@ class User(AbstractBaseUser, PermissionsMixin):
     # the org-wide soul, then the system default. See accounts.agent_customization.
     soul = models.TextField(blank=True, default="", max_length=5000)
 
+    # Optional profile picture. Two files are kept: a small re-encoded thumbnail
+    # shown in the nav and chat (profile_picture), and the re-encoded full-size
+    # upload retained for future, higher-resolution uses (profile_picture_original).
+    # Uploads are validated and re-encoded in accounts.avatars (no PII/guardrails
+    # scan — the bytes are never shown to the assistant).
+    profile_picture = models.ImageField(
+        upload_to="user_avatars/%Y/%m/", blank=True, max_length=500
+    )
+    profile_picture_original = models.ImageField(
+        upload_to="user_avatars/originals/%Y/%m/", blank=True, max_length=500
+    )
+
     # Email verification
     email_verified = models.BooleanField(default=False)
     last_verification_email_sent_at = models.DateTimeField(null=True, blank=True)
