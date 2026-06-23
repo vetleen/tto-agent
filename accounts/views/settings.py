@@ -474,15 +474,19 @@ def org_settings_page(request):
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
     )
 
+    from core.fonts import org_font_families
     from core.styles import FONT_CHOICES, get_org_styles
 
     org_styles = get_org_styles(org)
+    org_fonts = org_font_families(org)
 
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "styles": org_styles,
         "styles_json": json.dumps(org_styles),
         "font_choices": FONT_CHOICES,
+        "org_fonts": org_fonts,
+        "org_fonts_json": json.dumps(org_fonts),
         "monthly_budget_per_user": org_prefs.get("monthly_budget_per_user", 0),
         "monthly_budget_org": org_prefs.get("monthly_budget_org", 0),
         "system_models": system_models,
@@ -570,7 +574,127 @@ def org_styles_update(request):
 
     update_org_preferences(membership.org_id, mutate)
 
-    return JsonResponse({"ok": True, "styles": clean})
+    # Resolve the chosen fonts now (pre-warming Google fetches) so the UI can warn
+    # immediately when a font will be substituted or fall back in PDF export.
+    from core.fonts import resolve_fonts
+
+    font_notes = [
+        {"requested": res.requested, "fidelity": res.fidelity, "note": res.note}
+        for res in resolve_fonts(clean, membership.org).values()
+        if res.fidelity in ("visual", "fallback") and res.note
+    ]
+    return JsonResponse({"ok": True, "styles": clean, "font_notes": font_notes})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_fonts_upload(request):
+    """Upload one org brand-font face (.ttf/.otf/.woff/.woff2) for PDF export."""
+    from core.fonts import ingest_uploaded_font, org_font_families
+
+    membership = request.org_membership
+    upload = request.FILES.get("file")
+    if not upload:
+        return JsonResponse({"error": "No file uploaded."}, status=400)
+
+    max_bytes = getattr(django_settings, "FONT_UPLOAD_MAX_SIZE_BYTES", 5_000_000)
+    if upload.size > max_bytes:
+        return JsonResponse(
+            {"error": f"Font is too large (max {max_bytes // 1_000_000} MB)."}, status=400
+        )
+    try:
+        ingest_uploaded_font(
+            membership.org,
+            filename=upload.name,
+            data=upload.read(),
+            created_by=request.user,
+            max_bytes=max_bytes,
+        )
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    return JsonResponse({"ok": True, "fonts": org_font_families(membership.org)})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_fonts_delete(request):
+    """Delete all faces of an uploaded font family for the org."""
+    from accounts.models import FontAsset
+    from core.fonts import org_font_families
+
+    membership = request.org_membership
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+    family_norm = (data.get("family_norm") or "").strip()
+    if not family_norm:
+        return JsonResponse({"error": "Missing font family."}, status=400)
+
+    FontAsset.objects.filter(
+        organization=membership.org,
+        source=FontAsset.SOURCE_UPLOAD,
+        family_norm=family_norm,
+    ).delete()
+    return JsonResponse({"ok": True, "fonts": org_font_families(membership.org)})
+
+
+# ~18 MB image + multipart framing headroom, rejected from Content-Length before
+# Django spools the body to disk (same budget as the profile picture).
+LOGO_REQUEST_MAX_BYTES = 18_000_000
+
+
+@login_required
+@require_POST
+@org_admin_required
+@ratelimit(key="user", rate="30/h", method="POST", block=True)
+def org_logo_upload(request):
+    """Upload the org's brand logo (PNG/JPEG/WebP) for document headers."""
+    from accounts.avatars import InvalidLogo, process_org_logo
+
+    membership = request.org_membership
+
+    # Reject oversized requests from Content-Length BEFORE request.FILES spools
+    # the whole multipart body to disk.
+    try:
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    if content_length > getattr(django_settings, "LOGO_REQUEST_MAX_BYTES", LOGO_REQUEST_MAX_BYTES):
+        return JsonResponse({"error": "Image is too large."}, status=413)
+
+    upload = request.FILES.get("logo")
+    if not upload:
+        return JsonResponse({"error": "No image was provided."}, status=400)
+
+    try:
+        ext, processed = process_org_logo(upload)
+    except InvalidLogo as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    org = membership.org
+    # Drop the previous file first so a replacement doesn't leave an orphan.
+    if org.logo:
+        org.logo.delete(save=False)
+    org.logo.save(f"org_{org.pk}.{ext}", processed, save=False)
+    org.save(update_fields=["logo"])
+
+    return JsonResponse({"ok": True, "url": org.logo.url})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_logo_delete(request):
+    """Remove the org's brand logo."""
+    membership = request.org_membership
+    org = membership.org
+    if org.logo:
+        org.logo.delete(save=False)
+        org.save(update_fields=["logo"])
+    return JsonResponse({"ok": True})
 
 
 @login_required

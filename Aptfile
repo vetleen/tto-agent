@@ -2,3 +2,13 @@ ffmpeg
 libpulse0
 libblas3
 liblapack3
+# WeasyPrint (HTML → PDF for canvas exports) renders text through Pango +
+# HarfBuzz + Fontconfig. Modern WeasyPrint (>=53) dropped Cairo/GDK-PixBuf, so
+# these are the full runtime set. The heroku-community/apt buildpack must be
+# indexed BEFORE heroku/python or boot fails with "cannot load library pango".
+libpango-1.0-0
+libpangoft2-1.0-0
+libharfbuzz0b
+libharfbuzz-subset0
+libffi-dev
+fontconfig

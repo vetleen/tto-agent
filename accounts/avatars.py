@@ -38,9 +38,21 @@ DEFAULT_MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 # display size while keeping the stored file tiny.
 AVATAR_MAX_EDGE = 256
 
+# Bounding box for a stored org logo. The image is scaled proportionally to fit
+# *within* this box (aspect preserved): height is brought under LOGO_MAX_HEIGHT
+# first, then width under LOGO_MAX_WIDTH. A logo prints at ~1.4cm tall in the
+# document header, so a few hundred px keeps it crisp on paper without bloating
+# the file. Wider than tall because letterhead logos usually are.
+LOGO_MAX_WIDTH = 1000
+LOGO_MAX_HEIGHT = 400
+
 
 class InvalidProfilePicture(Exception):
     """An uploaded profile picture was missing, too large, or not a usable image."""
+
+
+class InvalidLogo(Exception):
+    """An uploaded org logo was missing, too large, or not a usable image."""
 
 
 def max_upload_bytes() -> int:
@@ -96,6 +108,53 @@ def process_profile_picture(f):
         raise InvalidProfilePicture("That file couldn't be read as an image. Please use a JPEG, PNG, or WebP.") from exc
 
     return _FORMAT_EXT[fmt], ContentFile(original_bytes), ContentFile(resized_bytes)
+
+
+def process_org_logo(f):
+    """Validate, re-encode and scale an uploaded org logo.
+
+    Returns ``(ext, processed)`` where *ext* is ``"png"`` and *processed* is a
+    :class:`~django.core.files.base.ContentFile`. The image is scaled
+    proportionally to fit within ``LOGO_MAX_WIDTH`` × ``LOGO_MAX_HEIGHT`` and
+    re-encoded to PNG — lossless, alpha-preserving (logos are usually flat with
+    transparency), and the one format both the DOCX and PDF export paths embed
+    cleanly. Re-encoding also strips EXIF / embedded payloads, like avatars.
+
+    Raises :class:`InvalidLogo` (user-facing message) for an oversize upload, an
+    unreadable file, a disallowed format, or a pixel bomb. Mirrors the hardening
+    in :func:`process_profile_picture`.
+    """
+    limit = max_upload_bytes()
+    size = getattr(f, "size", None)
+    if size is not None and size > limit:
+        raise InvalidLogo(f"That image is too large. Please use one under {limit // (1024 * 1024)} MB.")
+
+    try:
+        f.seek(0)
+        with Image.open(f) as img:
+            if img.format not in _ALLOWED_FORMATS:
+                raise InvalidLogo("That image type isn't supported. Please use a PNG, JPEG, or WebP.")
+            # Header dimensions — reject bombs before the decode in _encode().
+            if img.width * img.height > _MAX_IMAGE_PIXELS:
+                raise InvalidLogo(
+                    f"That image is too large ({img.width} × {img.height} pixels). Please use a smaller one."
+                )
+            ImageOps.exif_transpose(img, in_place=True)
+            # Scale proportionally to fit the bounding box (no-op if already
+            # smaller). thumbnail() shrinks the longer-constrained edge first and
+            # preserves the aspect ratio — exactly "fit height, then width".
+            img.thumbnail((LOGO_MAX_WIDTH, LOGO_MAX_HEIGHT), Image.Resampling.LANCZOS)
+            # Normalise to a PNG-compatible mode (keep alpha when present).
+            if img.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+                img = img.convert("RGBA")
+            png_bytes = _encode(img, "PNG")
+    except InvalidLogo:
+        raise
+    except Exception as exc:
+        logger.info("Rejected org logo upload: %s", exc.__class__.__name__)
+        raise InvalidLogo("That file couldn't be read as an image. Please use a PNG, JPEG, or WebP.") from exc
+
+    return "png", ContentFile(png_bytes)
 
 
 def _encode(img, fmt):

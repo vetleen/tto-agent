@@ -470,13 +470,25 @@
           </div>
         </div>
       </div>
-      {# 3. Export as .docx #}
-      <button id="canvas-export-link" title="Export as .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
-        <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-        <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-        <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-        <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-      </button>
+      {# 3. Export (Word / PDF) #}
+      <div class="relative">
+        <button id="canvas-export-btn" title="Export" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
+          <svg class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          <svg class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+          <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+        <div id="canvas-export-dropdown" class="hidden absolute right-0 top-full mt-1 z-50 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg w-44 py-1">
+          <button type="button" class="canvas-export-option flex items-center gap-2 w-full px-3 py-2 text-sm text-body hover:bg-neutral-tertiary text-left" data-format="docx">
+            <svg class="w-4 h-4 shrink-0 text-fg-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m-7 5h8a2 2 0 002-2V7l-5-5H8a2 2 0 00-2 2v15a2 2 0 002 2z"/></svg>
+            Word (.docx)
+          </button>
+          <button type="button" class="canvas-export-option flex items-center gap-2 w-full px-3 py-2 text-sm text-body hover:bg-neutral-tertiary text-left" data-format="pdf">
+            <svg class="w-4 h-4 shrink-0 text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M8.5 14.5h.5a1 1 0 000-2h-.5v3m3-3v3h.6a1 1 0 001-1v-1a1 1 0 00-1-1H11.5m4 0H15v3m0-1.5h.8"/></svg>
+            PDF (.pdf)
+          </button>
+        </div>
+      </div>
       {# 4. Version history #}
       <div class="relative">
         <button id="canvas-history-btn" title="Version history" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
@@ -3292,7 +3304,8 @@
       if (canvasSaveStatus) { canvasSaveStatus.textContent = ""; canvasSaveStatus.className = "text-xs text-body"; }
     }, isError ? 4000 : 2000);
   }
-  var canvasExportLink = document.getElementById("canvas-export-link");
+  var canvasExportBtn = document.getElementById("canvas-export-btn");
+  var canvasExportDropdown = document.getElementById("canvas-export-dropdown");
   var canvasImportInput = document.getElementById("canvas-import-input");
   var canvasUpdateBanner = document.getElementById("canvas-update-banner");
   var canvasBannerText = document.getElementById("canvas-banner-text");
@@ -3396,50 +3409,78 @@
       canvasExportUrl = "/chat/threads/" + activeThreadId + "/canvas/export/";
     }
   }
-  if (canvasExportLink) {
-    canvasExportLink.addEventListener("click", async function() {
-      if (!canvasExportUrl) return;
-      setCanvasBtnState(canvasExportLink, "loading");
-      canvasExportLink.title = "Exporting...";
-      try {
-        // Pre-render mermaid blocks client-side so the server doesn't need Playwright.
-        var content = canvasTextarea.value;
-        var mermaidBlockRe = /```mermaid\s*\n([\s\S]*?)```/g;
-        var matches = [];
-        var m;
-        while ((m = mermaidBlockRe.exec(content)) !== null) matches.push(m);
-        // Render in reverse order to preserve string offsets during replacement
-        for (var i = matches.length - 1; i >= 0; i--) {
-          var match = matches[i];
-          var dataUrl = await renderMermaidToPngDataUrl(match[1]);
-          if (dataUrl) {
-            content = content.substring(0, match.index) +
-              '<img src="' + dataUrl + '" alt="Diagram" />' +
-              content.substring(match.index + match[0].length);
-          }
+  // Show any PDF font-fallback warnings the server returns (X-Font-Fallbacks).
+  function showFontFallbackToast(headerVal) {
+    var notes;
+    try { notes = JSON.parse(headerVal); } catch (e) { return; }
+    if (!notes || !notes.length) return;
+    notes.slice(0, 2).forEach(function(n) { if (n && n.note) showToast(n.note); });
+  }
+
+  async function exportCanvas(format) {
+    if (!canvasExportUrl) return;
+    setCanvasBtnState(canvasExportBtn, "loading");
+    canvasExportBtn.title = "Exporting…";
+    try {
+      // Pre-render mermaid blocks client-side so the server doesn't need Playwright.
+      var content = canvasTextarea.value;
+      var mermaidBlockRe = /```mermaid\s*\n([\s\S]*?)```/g;
+      var matches = [];
+      var m;
+      while ((m = mermaidBlockRe.exec(content)) !== null) matches.push(m);
+      // Render in reverse order to preserve string offsets during replacement
+      for (var i = matches.length - 1; i >= 0; i--) {
+        var match = matches[i];
+        var dataUrl = await renderMermaidToPngDataUrl(match[1]);
+        if (dataUrl) {
+          content = content.substring(0, match.index) +
+            '<img src="' + dataUrl + '" alt="Diagram" />' +
+            content.substring(match.index + match[0].length);
         }
-        var resp = await fetch(canvasExportUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-CSRFToken": getCSRFToken() },
-          body: JSON.stringify({ content: content })
-        });
-        if (!resp.ok) throw new Error("Couldn't export the document.");
-        var cd = resp.headers.get("Content-Disposition") || "";
-        var fnMatch = cd.match(/filename="?([^"]+)"?/);
-        var filename = fnMatch ? fnMatch[1] : "document.docx";
-        var blob = await resp.blob();
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement("a");
-        a.href = url; a.download = filename;
-        document.body.appendChild(a); a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        flashCanvasBtnSuccess(canvasExportLink);
-      } catch (err) {
-        flashCanvasBtnError(canvasExportLink);
-        alert("Couldn't export the document. " + err.message);
-      } finally {
-        canvasExportLink.title = "Export as .docx";
+      }
+      var exportUrl = canvasExportUrl + (format === "pdf" ? "?format=pdf" : "");
+      var resp = await fetch(exportUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": getCSRFToken() },
+        body: JSON.stringify({ content: content })
+      });
+      if (!resp.ok) throw new Error("Couldn't export the document.");
+      var cd = resp.headers.get("Content-Disposition") || "";
+      var fnMatch = cd.match(/filename="?([^"]+)"?/);
+      var filename = fnMatch ? fnMatch[1] : ("document." + format);
+      var warnHeader = resp.headers.get("X-Font-Fallbacks");
+      var blob = await resp.blob();
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      flashCanvasBtnSuccess(canvasExportBtn);
+      if (warnHeader) showFontFallbackToast(warnHeader);
+    } catch (err) {
+      flashCanvasBtnError(canvasExportBtn);
+      alert("Couldn't export the document. " + err.message);
+    } finally {
+      canvasExportBtn.title = "Export";
+    }
+  }
+
+  if (canvasExportBtn && canvasExportDropdown) {
+    canvasExportBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      if (!canvasExportUrl) return;
+      canvasExportDropdown.classList.toggle("hidden");
+    });
+    canvasExportDropdown.querySelectorAll(".canvas-export-option").forEach(function(opt) {
+      opt.addEventListener("click", function() {
+        canvasExportDropdown.classList.add("hidden");
+        exportCanvas(this.dataset.format);
+      });
+    });
+    document.addEventListener("click", function(e) {
+      if (!canvasExportDropdown.contains(e.target) && !canvasExportBtn.contains(e.target)) {
+        canvasExportDropdown.classList.add("hidden");
       }
     });
   }

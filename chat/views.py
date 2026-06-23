@@ -114,17 +114,21 @@ _IMG_OR_TOKEN_RE = re.compile(
 )
 
 
-def _embed_image_tokens(content, user):
+def _embed_image_tokens(content, user, *, inline_width=False):
     """Replace ``[[image:<uuid>|label]]`` tokens with ``<img>`` data-URLs for
-    docx export. Tokens the user can't access (or that no longer resolve) become
-    a neutral placeholder instead of vanishing. Runs server-side (sync).
+    export. Tokens the user can't access (or that no longer resolve) become a
+    neutral placeholder instead of vanishing. Runs server-side (sync).
 
     Returns ``(content, pcts)`` where ``pcts`` holds one entry per rendered image
     in document order — the requested display width (10-100) or None for full
-    width — so the caller can resize the matching docx inline shapes. Pre-existing
+    width — so the docx caller can resize the matching inline shapes. Pre-existing
     <img> tags (mermaid) reserve a None slot to keep the positional alignment;
     placeholder substitutions (inaccessible/missing images) produce no <img> and
-    so get no slot."""
+    so get no slot.
+
+    For PDF export (``inline_width=True``) the display width is written straight
+    onto the ``<img>`` as ``style="max-width:NN%"`` — CSS handles sizing, so the
+    docx post-resize loop isn't needed."""
     import base64
 
     from chat.assets import IMAGE_UNAVAILABLE_TEXT, image_asset_source
@@ -157,7 +161,8 @@ def _embed_image_tokens(content, user):
         b64 = base64.b64encode(data).decode("ascii")
         alt = (label or "").replace('"', "'").replace("<", "").replace(">", "")
         pcts.append(pct)
-        return f'<img src="data:{ct or "image/png"};base64,{b64}" alt="{alt}" />'
+        style = f' style="max-width:{pct}%"' if (inline_width and pct and pct < 100) else ""
+        return f'<img src="data:{ct or "image/png"};base64,{b64}" alt="{alt}"{style} />'
 
     return _IMG_OR_TOKEN_RE.sub(repl, content), pcts
 
@@ -825,34 +830,22 @@ def _strip_space_after_line_breaks(doc):
                 after_break = False
 
 
-@login_required
-@require_http_methods(["POST"])
-async def canvas_export(request, thread_id, canvas_id=None):
-    """Export the canvas as a .docx file.
+def _safe_doc_title(title: str) -> str:
+    """Sanitise a canvas title for use as a download filename stem."""
+    return "".join(c for c in (title or "") if c.isalnum() or c in " _-").strip() or "document"
 
-    The client sends JSON ``{"content": "..."}`` with mermaid blocks already
-    rendered as ``<img>`` tags (rendered in the browser), so the server never
-    runs a headless browser over untrusted canvas content.
+
+def _canvas_content_to_html(content, base_url, user, *, inline_image_width=False):
+    """Shared markdown→HTML front of the export pipeline (DOCX and PDF).
+
+    Promotes headings, renders citations and email blocks, resolves file/image
+    tokens, and converts to an HTML body. Returns ``(html_content, image_pcts)``.
+    Runs sync (touches the DB resolving tokens); the async view wraps it.
     """
-    from asgiref.sync import sync_to_async
-
-    thread = await sync_to_async(get_object_or_404)(ChatThread, id=thread_id, created_by=request.user)
-    if canvas_id:
-        canvas = await sync_to_async(get_object_or_404)(ChatCanvas, pk=canvas_id, thread=thread)
-    else:
-        canvas = await sync_to_async(get_object_or_404)(ChatCanvas, pk=thread.active_canvas_id, thread=thread)
-
     import markdown as md
 
-    from chat.markdown_export import MarkExtension, html2docx_with_highlight as html2docx
+    from chat.markdown_export import MarkExtension
     from chat.services import normalize_heading_levels, render_citations, replace_email_with_html
-
-    # Client already replaced mermaid blocks with <img> tags.
-    try:
-        body = json.loads(request.body)
-    except (json.JSONDecodeError, ValueError):
-        return HttpResponseBadRequest("Invalid JSON")
-    content = body.get("content", canvas.content)
 
     # Promote headings so the doc's top level is H1 (LLMs often start at ##).
     content = normalize_heading_levels(content)
@@ -863,11 +856,95 @@ async def canvas_export(request, thread_id, canvas_id=None):
     # links, not embedded bytes), then image-asset tokens to embedded <img>
     # data-URLs (same path mermaid images take), so exported docs keep their
     # images. image_pcts is the document-ordered display width for each rendered
-    # image (None = full width).
-    base_url = request.build_absolute_uri("/").rstrip("/")
-    content = await sync_to_async(_embed_file_tokens)(content, base_url, request.user)
-    content, image_pcts = await sync_to_async(_embed_image_tokens)(content, request.user)
+    # image (None = full width); used by the docx resize loop.
+    content = _embed_file_tokens(content, base_url, user)
+    content, image_pcts = _embed_image_tokens(content, user, inline_width=inline_image_width)
     html_content = md.markdown(content, extensions=["tables", "fenced_code", MarkExtension()])
+    return html_content, image_pcts
+
+
+def _render_canvas_pdf_bytes(html_content, title, org):
+    """Resolve fonts, build the stylesheet, and render the canvas HTML to PDF.
+
+    Returns ``(pdf_bytes, warnings)`` where ``warnings`` lists fonts that fell
+    back / were visually substituted (for the X-Font-Fallbacks header). CPU-bound
+    and blocking — call under ``sync_to_async``.
+    """
+    from chat.pdf_export import render_canvas_pdf
+    from core.fonts import resolve_fonts
+    from core.styles import build_pdf_css, get_org_styles, resolve_org_logo
+
+    styles = get_org_styles(org)
+    resolutions = resolve_fonts(styles, org)
+    logo = resolve_org_logo(styles, org)
+    css = build_pdf_css(styles, resolutions, logo)
+    pdf_bytes = render_canvas_pdf(html_content, title=title, css=css)
+    warnings = [
+        {"requested": r.requested, "actual": r.actual, "fidelity": r.fidelity, "note": r.note}
+        for r in resolutions.values()
+        if r.fidelity in ("fallback", "visual") and r.note
+    ]
+    return pdf_bytes, warnings
+
+
+@login_required
+@require_http_methods(["POST"])
+async def canvas_export(request, thread_id, canvas_id=None):
+    """Export the canvas as a .docx (default) or .pdf (``?format=pdf``) file.
+
+    The client sends JSON ``{"content": "..."}`` with mermaid blocks already
+    rendered as ``<img>`` tags (rendered in the browser), so the server never
+    runs a headless browser over untrusted canvas content. The markdown→HTML
+    front of the pipeline is shared; the two formats branch at the render step.
+    """
+    from asgiref.sync import sync_to_async
+
+    thread = await sync_to_async(get_object_or_404)(ChatThread, id=thread_id, created_by=request.user)
+    if canvas_id:
+        canvas = await sync_to_async(get_object_or_404)(ChatCanvas, pk=canvas_id, thread=thread)
+    else:
+        canvas = await sync_to_async(get_object_or_404)(ChatCanvas, pk=thread.active_canvas_id, thread=thread)
+
+    # Client already replaced mermaid blocks with <img> tags.
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return HttpResponseBadRequest("Invalid JSON")
+    content = body.get("content", canvas.content)
+    fmt = (request.GET.get("format") or "docx").lower()
+    base_url = request.build_absolute_uri("/").rstrip("/")
+
+    from accounts.models import get_membership
+
+    membership = await sync_to_async(get_membership)(request.user)
+    org = membership.org if membership else None
+
+    html_content, image_pcts = await sync_to_async(_canvas_content_to_html)(
+        content, base_url, request.user, inline_image_width=(fmt == "pdf")
+    )
+
+    # --- PDF branch (HTML → WeasyPrint) ---
+    if fmt == "pdf":
+        try:
+            pdf_bytes, font_warnings = await sync_to_async(_render_canvas_pdf_bytes)(
+                html_content, canvas.title, org
+            )
+        except Exception:
+            logger.exception("PDF export failed for canvas %s", canvas.id)
+            return JsonResponse({"error": "Couldn't render the PDF."}, status=500)
+        resp = FileResponse(
+            io.BytesIO(pdf_bytes),
+            as_attachment=True,
+            filename=f"{_safe_doc_title(canvas.title)}.pdf",
+            content_type="application/pdf",
+        )
+        if font_warnings:
+            resp["X-Font-Fallbacks"] = json.dumps(font_warnings)
+        return resp
+
+    # --- DOCX branch (HTML → html2docx) ---
+    from chat.markdown_export import html2docx_with_highlight as html2docx
+
     # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.
     html_content = _HR_RE.sub(f"<p>{_HR_DIVIDER_MARKER}</p>", html_content)
     full_html = f"<html><body>{html_content}</body></html>"
@@ -928,18 +1005,16 @@ async def canvas_export(request, thread_id, canvas_id=None):
 
     # Apply the org's configured document styles (fonts/colours). Read at
     # export time so the look follows the org, not whoever wrote the canvas.
-    from accounts.models import get_membership
-    from core.styles import apply_doc_styles, get_org_styles
+    from core.styles import apply_doc_styles, get_org_styles, resolve_org_logo
 
-    membership = await sync_to_async(get_membership)(request.user)
-    apply_doc_styles(doc, get_org_styles(membership.org if membership else None))
+    doc_styles = get_org_styles(org)
+    apply_doc_styles(doc, doc_styles, resolve_org_logo(doc_styles, org))
 
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
 
-    safe_title = "".join(c for c in canvas.title if c.isalnum() or c in " _-").strip() or "document"
-    filename = f"{safe_title}.docx"
+    filename = f"{_safe_doc_title(canvas.title)}.docx"
     return FileResponse(
         buf,
         as_attachment=True,

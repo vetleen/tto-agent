@@ -1,0 +1,2 @@
+EBGaramond is licensed under OFL-1.1.
+Source: https://raw.githubusercontent.com/google/fonts/main/ofl/ebgaramond

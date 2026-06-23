@@ -486,8 +486,9 @@
       <section id="styles" class="scroll-mt-24">
         <div class="mb-3">
           <h2 class="text-base font-semibold text-heading">Styles</h2>
-          <p class="mt-0.5 text-sm text-body">Design settings used when exporting documents (e.g. a canvas to Word). Applies to everyone in this organization.</p>
+          <p class="mt-0.5 text-sm text-body">Design settings used when exporting documents (a canvas to Word or PDF). Applies to everyone in this organization.</p>
         </div>
+        <div id="style-font-warnings" class="mb-3 hidden rounded-base border border-default bg-neutral-secondary-soft px-4 py-2.5 text-sm text-body"></div>
         <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
           <div class="divide-y divide-default">
 
@@ -506,7 +507,7 @@
                     {% for f in grp.fonts %}<option value="{{ f }}">{{ f }}</option>{% endfor %}
                   </optgroup>
                   {% endfor %}
-                  <option value="__custom__">Custom&hellip;</option>
+                  {% if org_fonts %}<optgroup label="Your fonts" class="style-font-uploaded">{% for f in org_fonts %}<option value="{{ f.family }}">{{ f.family }}</option>{% endfor %}</optgroup>{% endif %}<option value="__custom__">Custom&hellip;</option>
                 </select>
                 <input
                   type="number"
@@ -534,7 +535,7 @@
                   {% for f in grp.fonts %}<option value="{{ f }}">{{ f }}</option>{% endfor %}
                 </optgroup>
                 {% endfor %}
-                <option value="__custom__">Custom&hellip;</option>
+                {% if org_fonts %}<optgroup label="Your fonts" class="style-font-uploaded">{% for f in org_fonts %}<option value="{{ f.family }}">{{ f.family }}</option>{% endfor %}</optgroup>{% endif %}<option value="__custom__">Custom&hellip;</option>
               </select>
             </div>
 
@@ -568,6 +569,26 @@
               </div>
             </div>
 
+            <!-- Brand fonts (PDF export) -->
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading">Brand fonts (PDF)</label>
+              <p class="text-xs text-body mt-0.5">Word documents store only a font name, but PDFs embed the actual font. Common fonts (Calibri, Arial&hellip;) and most Google Fonts are handled automatically. Upload your own typefaces here for an exact match &mdash; add Regular, Bold, Italic and Bold-Italic separately for full coverage. .ttf, .otf, .woff or .woff2; max 5&nbsp;MB each. Fonts whose licence forbids embedding are rejected.</p>
+              <ul id="org-fonts-list" class="mt-3 space-y-1.5">
+                {% for f in org_fonts %}
+                <li class="flex items-center justify-between gap-3 text-sm" data-family-norm="{{ f.family_norm }}">
+                  <span class="text-heading">{{ f.family }} <span class="text-xs text-body opacity-70">({{ f.faces|length }} face{{ f.faces|length|pluralize }})</span></span>
+                  <button type="button" class="org-font-delete text-xs text-fg-danger hover:underline" data-family-norm="{{ f.family_norm }}">Remove</button>
+                </li>
+                {% endfor %}
+              </ul>
+              <p id="org-fonts-empty" class="mt-2 text-xs text-body opacity-70 {% if org_fonts %}hidden{% endif %}">No brand fonts uploaded yet.</p>
+              <div class="mt-3 flex items-center gap-3">
+                <input type="file" id="org-font-file" accept=".ttf,.otf,.woff,.woff2" class="hidden">
+                <button type="button" id="org-font-upload-btn" class="rounded-base border border-default px-3 py-1.5 text-sm text-body hover:bg-neutral-secondary-soft">Upload font&hellip;</button>
+                <span id="org-font-status" class="text-xs text-body"></span>
+              </div>
+            </div>
+
           </div>
         </div>
       </section>
@@ -586,7 +607,7 @@
     <div class="px-5 py-4">
       <label class="block text-sm font-medium text-heading" for="custom-font-input">Font name</label>
       <input type="text" id="custom-font-input" placeholder="e.g. PT Sans" maxlength="64" class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
-      <p class="mt-2 text-xs text-body">Type any font name. It will be used only if that font is installed on the device opening the document; otherwise the reader's app substitutes a default. Letters, numbers, spaces and hyphens only.</p>
+      <p class="mt-2 text-xs text-body">Type any font name. In Word it's used if installed on the reader's device. In PDF we fetch it from Google Fonts when available (or substitute a close match and warn you). For an exact, guaranteed match, upload the font under "Brand fonts" instead. Letters, numbers, spaces and hyphens only.</p>
       <p id="custom-font-error" class="mt-2 hidden text-xs text-danger"></p>
     </div>
     <div class="flex justify-end gap-2 border-t border-default px-5 py-3">
@@ -663,7 +684,7 @@
         <div class="mt-2 flex gap-3">
           <select id="style-header-font" data-style-font="header_font" class="style-font-select flex-1 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
             {% for grp in font_choices %}<optgroup label="{{ grp.group }}">{% for f in grp.fonts %}<option value="{{ f }}">{{ f }}</option>{% endfor %}</optgroup>{% endfor %}
-            <option value="__custom__">Custom&hellip;</option>
+            {% if org_fonts %}<optgroup label="Your fonts" class="style-font-uploaded">{% for f in org_fonts %}<option value="{{ f.family }}">{{ f.family }}</option>{% endfor %}</optgroup>{% endif %}<option value="__custom__">Custom&hellip;</option>
           </select>
           <input type="number" id="style-header-size" min="6" max="24" step="1" value="{{ styles.header_size }}" aria-label="Header size in points" class="wf-mono w-24 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
         </div>
@@ -680,6 +701,36 @@
             <input type="checkbox" id="style-header-italic" {% if styles.header_italic %}checked{% endif %} class="rounded border-default text-brand focus:ring-brand-medium"> Italic
           </label>
         </div>
+      </div>
+      <div class="px-5 py-4">
+        <label class="block text-sm font-medium text-heading">Logo</label>
+        <p class="text-xs text-body mt-0.5">Optional. Shown in the header. PNG, JPEG or WebP &mdash; scaled to fit.</p>
+        <div class="mt-3 flex items-center gap-4">
+          <span id="org-logo-preview" class="inline-flex h-12 min-w-12 max-w-40 shrink-0 items-center justify-center overflow-hidden rounded-base border border-default bg-neutral-primary-soft px-2">
+            {% if org.logo %}<img src="{{ org.logo.url }}" alt="Logo" class="max-h-12 w-auto object-contain">{% else %}<span class="text-xs text-body">None</span>{% endif %}
+          </span>
+          <div class="flex items-center gap-2">
+            <button type="button" id="org-logo-upload-btn" class="inline-flex items-center gap-1.5 rounded-base border border-default bg-neutral-primary-soft px-4 py-2 text-sm font-medium text-heading hover:bg-neutral-secondary-soft focus:outline-none focus:ring-4 focus:ring-neutral-tertiary disabled:opacity-50 disabled:cursor-not-allowed transition-colors">Upload logo</button>
+            <button type="button" id="org-logo-remove-btn" class="text-fg-danger hover:underline disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium px-2 py-2 focus:outline-none{% if not org.logo %} hidden{% endif %}">Remove</button>
+          </div>
+        </div>
+        <input type="file" id="org-logo-input" accept="image/png,image/jpeg,image/webp" class="hidden">
+        <p id="org-logo-error" class="text-xs text-fg-danger hidden mt-2"></p>
+        <fieldset id="org-logo-position" class="mt-4{% if not org.logo %} hidden{% endif %}">
+          <legend class="text-sm font-medium text-heading">Placement</legend>
+          <p class="text-xs text-body mt-0.5">Which side of the header &mdash; your text moves to the other side.</p>
+          <div class="mt-2 flex flex-wrap gap-4">
+            <label class="flex items-center gap-2 text-sm text-body cursor-pointer">
+              <input type="radio" name="logo-position" value="left" {% if styles.header_logo_position == 'left' %}checked{% endif %} class="border-default text-brand focus:ring-brand-medium"> Left
+            </label>
+            <label class="flex items-center gap-2 text-sm text-body cursor-pointer">
+              <input type="radio" name="logo-position" value="right" {% if styles.header_logo_position == 'right' %}checked{% endif %} class="border-default text-brand focus:ring-brand-medium"> Right
+            </label>
+            <label class="flex items-center gap-2 text-sm text-body cursor-pointer">
+              <input type="radio" name="logo-position" value="none" {% if styles.header_logo_position != 'left' and styles.header_logo_position != 'right' %}checked{% endif %} class="border-default text-brand focus:ring-brand-medium"> Don&rsquo;t include
+            </label>
+          </div>
+        </fieldset>
       </div>
     </div>
     <div class="flex justify-end border-t border-default px-5 py-3 sticky bottom-0 bg-neutral-primary">
@@ -706,7 +757,7 @@
         <div class="mt-2 flex gap-3">
           <select id="style-footer-font" data-style-font="footer_font" class="style-font-select flex-1 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
             {% for grp in font_choices %}<optgroup label="{{ grp.group }}">{% for f in grp.fonts %}<option value="{{ f }}">{{ f }}</option>{% endfor %}</optgroup>{% endfor %}
-            <option value="__custom__">Custom&hellip;</option>
+            {% if org_fonts %}<optgroup label="Your fonts" class="style-font-uploaded">{% for f in org_fonts %}<option value="{{ f.family }}">{{ f.family }}</option>{% endfor %}</optgroup>{% endif %}<option value="__custom__">Custom&hellip;</option>
           </select>
           <input type="number" id="style-footer-size" min="6" max="24" step="1" value="{{ styles.footer_size }}" aria-label="Footer size in points" class="wf-mono w-24 rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
         </div>
@@ -1218,6 +1269,7 @@
       footer_bold: document.getElementById('style-footer-bold').checked,
       footer_italic: document.getElementById('style-footer-italic').checked,
       footer_page_numbers: document.getElementById('style-footer-page-numbers').checked,
+      header_logo_position: (document.querySelector('input[name="logo-position"]:checked') || {}).value || 'none',
     };
   }
 
@@ -1230,7 +1282,25 @@
     }).then(function(r) { return r.json(); }).then(function(data) {
       if (data.error) { alert(data.error); return; }
       if (data.styles) { state = data.styles; }
+      renderFontWarnings(data.font_notes);
     });
+  }
+
+  var warningsBox = document.getElementById('style-font-warnings');
+  function renderFontWarnings(notes) {
+    if (!warningsBox) return;
+    if (!notes || !notes.length) { warningsBox.classList.add('hidden'); warningsBox.textContent = ''; return; }
+    warningsBox.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'font-medium text-heading mb-1';
+    head.textContent = 'Heads up — PDF fonts';
+    warningsBox.appendChild(head);
+    notes.forEach(function(n) {
+      var p = document.createElement('p');
+      p.textContent = n.note;
+      warningsBox.appendChild(p);
+    });
+    warningsBox.classList.remove('hidden');
   }
 
   // Body size
@@ -1362,6 +1432,186 @@
     btn.addEventListener('click', cancelModal);
   });
   modal.addEventListener('click', function(e) { if (e.target === modal) cancelModal(); });
+
+  // --- Brand fonts: upload / delete (PDF export) ---
+  var fontSelects = [bodyFontSel, headingFontSel, headerFontSel, footerFontSel];
+  var fontList = document.getElementById('org-fonts-list');
+  var fontEmpty = document.getElementById('org-fonts-empty');
+  var fontStatus = document.getElementById('org-font-status');
+  var fileInput = document.getElementById('org-font-file');
+  var uploadBtn = document.getElementById('org-font-upload-btn');
+  var uploadUrl = '{% url "accounts:org_fonts_upload" %}';
+  var deleteUrl = '{% url "accounts:org_fonts_delete" %}';
+
+  function rebuildUploadedOptgroups(fonts) {
+    fontSelects.forEach(function(sel) {
+      if (!sel) return;
+      var og = sel.querySelector('optgroup[label="Your fonts"]');
+      if (!fonts.length) { if (og) og.remove(); return; }
+      if (!og) {
+        og = document.createElement('optgroup');
+        og.label = 'Your fonts';
+        sel.insertBefore(og, sel.querySelector('option[value="__custom__"]'));
+      }
+      og.innerHTML = '';
+      fonts.forEach(function(f) {
+        var o = document.createElement('option');
+        o.value = f.family; o.textContent = f.family;
+        og.appendChild(o);
+      });
+    });
+  }
+
+  function renderFontList(fonts) {
+    if (!fontList) return;
+    fontList.innerHTML = '';
+    fonts.forEach(function(f) {
+      var li = document.createElement('li');
+      li.className = 'flex items-center justify-between gap-3 text-sm';
+      li.dataset.familyNorm = f.family_norm;
+      var span = document.createElement('span');
+      span.className = 'text-heading';
+      var faces = f.faces ? f.faces.length : 0;
+      span.textContent = f.family + ' (' + faces + ' face' + (faces === 1 ? '' : 's') + ')';
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'org-font-delete text-xs text-fg-danger hover:underline';
+      btn.dataset.familyNorm = f.family_norm;
+      btn.textContent = 'Remove';
+      li.appendChild(span); li.appendChild(btn);
+      fontList.appendChild(li);
+    });
+    if (fontEmpty) fontEmpty.classList.toggle('hidden', fonts.length > 0);
+  }
+
+  function syncUploadedFonts(fonts) {
+    rebuildUploadedOptgroups(fonts);
+    renderFontList(fonts);
+    // Keep current selections valid after the optgroups change.
+    ensureOption(bodyFontSel, state.body_font);
+    ensureOption(headingFontSel, state.heading_font);
+    ensureOption(headerFontSel, state.header_font);
+    ensureOption(footerFontSel, state.footer_font);
+  }
+
+  if (uploadBtn && fileInput) {
+    uploadBtn.addEventListener('click', function() { fileInput.click(); });
+    fileInput.addEventListener('change', function() {
+      var file = this.files && this.files[0];
+      if (!file) return;
+      fontStatus.textContent = 'Uploading ' + file.name + '…';
+      fontStatus.className = 'text-xs text-body';
+      var fd = new FormData();
+      fd.append('file', file);
+      fetch(uploadUrl, { method: 'POST', headers: { 'X-CSRFToken': csrf }, body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) { fontStatus.textContent = data.error; fontStatus.className = 'text-xs text-fg-danger'; return; }
+          fontStatus.textContent = 'Added.';
+          fontStatus.className = 'text-xs text-fg-success';
+          syncUploadedFonts(data.fonts || []);
+        })
+        .catch(function() { fontStatus.textContent = 'Upload failed.'; fontStatus.className = 'text-xs text-fg-danger'; })
+        .finally(function() { fileInput.value = ''; });
+    });
+  }
+
+  if (fontList) {
+    fontList.addEventListener('click', function(e) {
+      var btn = e.target.closest('.org-font-delete');
+      if (!btn) return;
+      var fam = btn.dataset.familyNorm;
+      if (!fam || !confirm('Remove this font? PDFs will fall back to a substitute.')) return;
+      fetch(deleteUrl, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ family_norm: fam }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) { alert(data.error); return; }
+        syncUploadedFonts(data.fonts || []);
+      });
+    });
+  }
+
+  // --- Brand logo: upload / remove + placement (document header) ---
+  var logoPreview = document.getElementById('org-logo-preview');
+  var logoInput = document.getElementById('org-logo-input');
+  var logoUploadBtn = document.getElementById('org-logo-upload-btn');
+  var logoRemoveBtn = document.getElementById('org-logo-remove-btn');
+  var logoError = document.getElementById('org-logo-error');
+  var logoFieldset = document.getElementById('org-logo-position');
+  var logoUploadUrl = '{% url "accounts:org_logo_upload" %}';
+  var logoDeleteUrl = '{% url "accounts:org_logo_delete" %}';
+
+  function showLogoErr(msg) {
+    if (!logoError) return;
+    logoError.textContent = msg || '';
+    logoError.classList.toggle('hidden', !msg);
+  }
+  function setLogoPosition(value) {
+    var radio = document.querySelector('input[name="logo-position"][value="' + value + '"]');
+    if (radio) radio.checked = true;
+  }
+
+  // Persist placement whenever a radio changes.
+  document.querySelectorAll('input[name="logo-position"]').forEach(function(radio) {
+    radio.addEventListener('change', save);
+  });
+
+  if (logoUploadBtn && logoInput) {
+    logoUploadBtn.addEventListener('click', function() { logoInput.click(); });
+    logoInput.addEventListener('change', function() {
+      var file = this.files && this.files[0];
+      if (!file) return;
+      showLogoErr('');
+      logoUploadBtn.disabled = true;
+      var fd = new FormData();
+      fd.append('logo', file);
+      fetch(logoUploadUrl, { method: 'POST', headers: { 'X-CSRFToken': csrf }, body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+        .then(function(res) {
+          if (!res.ok || res.d.error) { showLogoErr(res.d.error || 'Upload failed.'); return; }
+          var sep = res.d.url.indexOf('?') === -1 ? '?' : '&';
+          var img = document.createElement('img');
+          img.src = res.d.url + sep + 't=' + Date.now();
+          img.alt = 'Logo';
+          img.className = 'max-h-12 w-auto object-contain';
+          if (logoPreview) logoPreview.replaceChildren(img);
+          if (logoRemoveBtn) logoRemoveBtn.classList.remove('hidden');
+          if (logoFieldset) logoFieldset.classList.remove('hidden');
+          // Uploading a logo implies using it: default to the left when unplaced.
+          var current = (document.querySelector('input[name="logo-position"]:checked') || {}).value || 'none';
+          if (current === 'none') { setLogoPosition('left'); save(); }
+        })
+        .catch(function() { showLogoErr('Upload failed. Please try again.'); })
+        .finally(function() { logoUploadBtn.disabled = false; logoInput.value = ''; });
+    });
+  }
+
+  if (logoRemoveBtn) {
+    logoRemoveBtn.addEventListener('click', function() {
+      showLogoErr('');
+      logoRemoveBtn.disabled = true;
+      fetch(logoDeleteUrl, { method: 'POST', headers: { 'X-CSRFToken': csrf }, credentials: 'same-origin' })
+        .then(function(r) { return r.json(); }).then(function(d) {
+          if (d.error) { showLogoErr(d.error); return; }
+          if (logoPreview) {
+            var span = document.createElement('span');
+            span.className = 'text-xs text-body';
+            span.textContent = 'None';
+            logoPreview.replaceChildren(span);
+          }
+          logoRemoveBtn.classList.add('hidden');
+          // Reset placement so exports stop reserving a side for the logo.
+          setLogoPosition('none');
+          if (logoFieldset) logoFieldset.classList.add('hidden');
+          save();
+        })
+        .catch(function() { showLogoErr('Could not remove the logo.'); })
+        .finally(function() { logoRemoveBtn.disabled = false; });
+    });
+  }
 })();
 </script>
 

@@ -1,0 +1,2 @@
+Tinos is licensed under Apache-2.0.
+Source: https://raw.githubusercontent.com/google/fonts/main/ofl/tinos

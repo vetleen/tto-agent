@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
@@ -143,6 +144,13 @@ class Organization(models.Model):
     # the system default. Members may override it with their own User.soul when
     # the org allows it (preferences["allow_user_soul"]).
     soul = models.TextField(blank=True, default="", max_length=5000)
+    # Optional brand logo for exported documents (Org settings → Styles → Header).
+    # Validated, scaled to a bounding box and re-encoded to PNG in
+    # accounts.avatars.process_org_logo. The placement (none/left/right) lives in
+    # preferences["styles"]["header_logo_position"]; the export reads both.
+    logo = models.ImageField(
+        upload_to="org_logos/%Y/%m/", blank=True, max_length=500
+    )
     preferences = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -286,3 +294,74 @@ def get_user_org(user):
     """Return the user's single Organization, or None."""
     m = get_membership(user)
     return m.org if m else None
+
+
+class FontAsset(models.Model):
+    """A stored font face for PDF export (one row per face, e.g. Bold-Italic).
+
+    Two flavours, distinguished by ``source``:
+
+    * ``upload`` — an org-uploaded brand typeface (``organization`` set). Only
+      faces whose OS/2 ``fsType`` permits embedding are stored (checked on
+      upload), since embedding into a PDF is redistribution.
+    * ``google`` — a face auto-fetched from Google Fonts and cached globally
+      (``organization`` null) so a custom font someone typed renders without a
+      per-export round trip.
+
+    The PDF resolver (:mod:`core.fonts`) reads ``blob`` and embeds it via CSS
+    ``@font-face``. Bundled OFL substitute fonts live in the repo, not here.
+    """
+
+    SOURCE_UPLOAD = "upload"
+    SOURCE_GOOGLE = "google"
+    STYLE_NORMAL = "normal"
+    STYLE_ITALIC = "italic"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="font_assets",
+    )
+    family = models.CharField(max_length=128)
+    # Normalised family (see core.fonts.normalize_font_name) for case/space-
+    # insensitive resolver lookups.
+    family_norm = models.CharField(max_length=128, db_index=True)
+    source = models.CharField(
+        max_length=16,
+        choices=[(SOURCE_UPLOAD, SOURCE_UPLOAD), (SOURCE_GOOGLE, SOURCE_GOOGLE)],
+        default=SOURCE_UPLOAD,
+    )
+    blob = models.FileField(upload_to="fonts/%Y/%m/", max_length=500)
+    content_type = models.CharField(max_length=100, blank=True, default="")
+    font_format = models.CharField(max_length=16, blank=True, default="")  # truetype|opentype|woff|woff2
+    weight = models.PositiveIntegerField(default=400)
+    style = models.CharField(
+        max_length=8,
+        choices=[(STYLE_NORMAL, STYLE_NORMAL), (STYLE_ITALIC, STYLE_ITALIC)],
+        default=STYLE_NORMAL,
+    )
+    size_bytes = models.PositiveIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    embeddable = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["organization", "family_norm"]),
+            models.Index(fields=["source", "family_norm"]),
+        ]
+
+    def __str__(self) -> str:
+        scope = self.organization_id or "global"
+        flag = "i" if self.style == self.STYLE_ITALIC else ""
+        return f"{self.family} {self.weight}{flag} ({scope})"

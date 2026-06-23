@@ -582,6 +582,13 @@ TRANSCRIPTION_DEFAULT_MODEL_UPLOAD = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL
 TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,openai/gpt-4o-transcribe-diarize").split(",") if m.strip()]
 AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
 
+# Org brand-font upload (PDF export). A single font face is small; cap well below
+# image/doc uploads. Used by the font-upload endpoint and the resolver.
+FONT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("FONT_UPLOAD_MAX_SIZE_BYTES", "5000000"))  # 5 MB
+# Google Fonts Developer API key. Empty disables the auto-fetch tier of the font
+# resolver (it falls through to substitute/fallback). See core/fonts.py.
+GOOGLE_FONTS_API_KEY = os.environ.get("GOOGLE_FONTS_API_KEY", "")
+
 # Image generation settings. Both default to empty, which disables the
 # capability (no models selectable, chat_generate_image tool withheld). Set
 # IMAGE_ALLOWED_MODELS / IMAGE_DEFAULT_MODEL to enable it.
