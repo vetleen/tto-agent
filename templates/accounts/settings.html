@@ -1,5 +1,6 @@
 {% extends "_base.html" %}
 {% load humanize %}
+{% load branding %}
 
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-16">
@@ -18,6 +19,7 @@
     <!-- Section index -->
     <nav class="hidden lg:block sticky top-24" aria-label="Settings sections">
       <ul class="space-y-0.5 text-sm">
+        <li><a href="#profile" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Profile</a></li>
         <li><a href="#appearance" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Appearance</a></li>
         <li><a href="#models" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">AI models</a></li>
         {% if user_features %}<li><a href="#features" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Feature overrides</a></li>{% endif %}
@@ -31,6 +33,29 @@
 
     <!-- Section cards -->
     <div class="space-y-8 min-w-0">
+
+      <!-- Profile -->
+      <section id="profile" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Profile picture</h2>
+          <p class="mt-0.5 text-sm text-body">An optional photo shown in the top bar and beside your chat messages.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="px-5 py-4">
+            <div class="flex items-center gap-4">
+              <span id="avatar-preview" class="inline-flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full text-xl font-semibold"{% if not user.profile_picture %} style="{{ user.email|avatar_style }}"{% endif %}>{% if user.profile_picture %}<img src="{{ user.profile_picture.url }}" alt="" class="h-full w-full object-cover">{% else %}{{ user.email|first|upper }}{% endif %}</span>
+              <div class="flex items-center gap-2">
+                <button type="button" id="avatar-upload-btn"
+                  class="inline-flex items-center gap-1.5 rounded-base border border-default bg-neutral-primary-soft px-4 py-2 text-sm font-medium text-heading hover:bg-neutral-secondary-soft focus:outline-none focus:ring-4 focus:ring-neutral-tertiary disabled:opacity-50 disabled:cursor-not-allowed transition-colors">Upload photo</button>
+                <button type="button" id="avatar-remove-btn"
+                  class="text-fg-danger hover:underline disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium px-2 py-2 focus:outline-none{% if not user.profile_picture %} hidden{% endif %}">Remove</button>
+              </div>
+            </div>
+            <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" class="hidden">
+            <p id="avatar-error" class="text-xs text-fg-danger hidden mt-2"></p>
+          </div>
+        </div>
+      </section>
 
       <!-- Appearance -->
       <section id="appearance" class="scroll-mt-24">
@@ -513,6 +538,70 @@
     entries.forEach(function(e) { if (e.isIntersecting) setActive(e.target.id); });
   }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
   document.querySelectorAll('main section[id]').forEach(function(s) { obs.observe(s); });
+})();
+</script>
+
+<script nonce="{{ request.csp_nonce }}">
+(function() {
+  // --- Profile picture upload/remove ---
+  var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var input = document.getElementById('avatar-input');
+  var uploadBtn = document.getElementById('avatar-upload-btn');
+  var removeBtn = document.getElementById('avatar-remove-btn');
+  var preview = document.getElementById('avatar-preview');
+  var errEl = document.getElementById('avatar-error');
+  if (!input || !uploadBtn || !preview) return;
+  var AVATAR_INITIAL = "{{ user.email|first|upper|escapejs }}";
+  var AVATAR_STYLE = "{{ user.email|avatar_style|escapejs }}";
+
+  function showErr(msg) {
+    errEl.textContent = msg || '';
+    errEl.classList.toggle('hidden', !msg);
+  }
+
+  uploadBtn.addEventListener('click', function() { input.click(); });
+
+  input.addEventListener('change', function() {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    showErr('');
+    var fd = new FormData();
+    fd.append('picture', file);
+    uploadBtn.disabled = true;
+    fetch('{% url "accounts:profile_picture_update" %}', {
+      method: 'POST', headers: { 'X-CSRFToken': csrf }, body: fd, credentials: 'same-origin',
+    }).then(function(r) {
+      return r.json().then(function(d) { return { ok: r.ok, d: d }; });
+    }).then(function(res) {
+      if (!res.ok || res.d.error) { showErr(res.d.error || 'Upload failed.'); return; }
+      // Cache-bust: replacing within the same month reuses the same URL.
+      var sep = res.d.url.indexOf('?') === -1 ? '?' : '&';
+      var img = document.createElement('img');
+      img.src = res.d.url + sep + 't=' + Date.now();
+      img.alt = '';
+      img.className = 'h-full w-full object-cover';
+      preview.removeAttribute('style');
+      preview.replaceChildren(img);
+      if (removeBtn) removeBtn.classList.remove('hidden');
+    }).catch(function() { showErr('Upload failed. Please try again.'); })
+      .finally(function() { uploadBtn.disabled = false; input.value = ''; });
+  });
+
+  if (removeBtn) {
+    removeBtn.addEventListener('click', function() {
+      showErr('');
+      removeBtn.disabled = true;
+      fetch('{% url "accounts:profile_picture_delete" %}', {
+        method: 'POST', headers: { 'X-CSRFToken': csrf }, credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.error) { showErr(d.error); return; }
+        preview.setAttribute('style', AVATAR_STYLE);
+        preview.textContent = AVATAR_INITIAL;
+        removeBtn.classList.add('hidden');
+      }).catch(function() { showErr('Could not remove the picture.'); })
+        .finally(function() { removeBtn.disabled = false; });
+    });
+  }
 })();
 </script>
 {% endblock content %}

@@ -1141,9 +1141,9 @@ def profile_update(request):
 
 # ---- Profile picture ----
 
-# ~8 MB image + multipart framing headroom. Rejected from Content-Length before
+# ~15 MB image + multipart framing headroom. Rejected from Content-Length before
 # Django spools the body to disk.
-PROFILE_PICTURE_REQUEST_MAX_BYTES = 12_000_000
+PROFILE_PICTURE_REQUEST_MAX_BYTES = 18_000_000
 
 
 def _delete_profile_picture_files(user):
@@ -1182,16 +1182,15 @@ def profile_picture_update(request):
     upload = request.FILES.get("picture")
     if not upload:
         return JsonResponse({"error": "No image was provided."}, status=400)
+    limit_mb = max_upload_bytes() // (1024 * 1024)
     if upload.size > max_upload_bytes():
-        return JsonResponse({"error": "Image is too large (max 8 MB)."}, status=400)
+        return JsonResponse({"error": f"That image is too large. Please use one under {limit_mb} MB."}, status=400)
 
     try:
         ext, original, resized = process_profile_picture(upload)
-    except InvalidProfilePicture:
-        return JsonResponse(
-            {"error": "That file couldn't be read as an image. Use a JPEG, PNG, or WebP."},
-            status=400,
-        )
+    except InvalidProfilePicture as exc:
+        # The exception carries a user-facing reason (format/size/dimensions/unreadable).
+        return JsonResponse({"error": str(exc)}, status=400)
 
     user = request.user
     # Drop any previous files first so a replacement doesn't leave orphans.

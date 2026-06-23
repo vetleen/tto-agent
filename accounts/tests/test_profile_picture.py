@@ -2,6 +2,7 @@
 import io
 import shutil
 import tempfile
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -87,6 +88,17 @@ class ProcessProfilePictureTests(TestCase):
         with self.assertRaises(InvalidProfilePicture):
             process_profile_picture(_upload("a.png", data, "image/png"))
 
+    def test_rejects_too_many_pixels(self):
+        # Patch the cap low so we don't have to allocate a 50-megapixel image.
+        data = _image_bytes(size=(50, 50))
+        with patch("accounts.avatars._MAX_IMAGE_PIXELS", 100):
+            with self.assertRaises(InvalidProfilePicture) as cm:
+                process_profile_picture(_upload("a.png", data, "image/png"))
+        msg = str(cm.exception)
+        self.assertIn("pixel", msg.lower())
+        # The message names the image's actual dimensions, not just a megapixel cap.
+        self.assertIn("50", msg)
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"], MEDIA_ROOT=_MEDIA)
 class ProfilePictureUploadViewTests(TestCase):
@@ -128,10 +140,28 @@ class ProfilePictureUploadViewTests(TestCase):
             with Image.open(fh) as img:
                 self.assertEqual(img.size, (400, 300))
 
+    def test_jpeg_upload_succeeds(self):
+        r = self._post_image(size=(800, 600), fmt="JPEG", name="photo.jpg", content_type="image/jpeg")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.profile_picture)
+        with self.user.profile_picture.open("rb") as fh:
+            with Image.open(fh) as img:
+                self.assertEqual(img.format, "JPEG")
+
     def test_missing_file_returns_400(self):
         r = self.client.post(self.url, {})
         self.assertEqual(r.status_code, 400)
         self.assertIn("error", r.json())
+
+    def test_dimension_rejection_reason_is_surfaced(self):
+        # A valid image that exceeds the pixel cap must report the real reason,
+        # not a generic "use a JPEG/PNG/WebP" message that implies a format problem.
+        with patch("accounts.avatars._MAX_IMAGE_PIXELS", 100):
+            r = self._post_image(size=(200, 200))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("pixel", r.json()["error"].lower())
 
     def test_invalid_image_returns_400(self):
         r = self.client.post(self.url, {"picture": _upload("a.png", b"garbage", "image/png")})
