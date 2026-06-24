@@ -5,13 +5,18 @@ end-to-end render test runs only where the native Pango libs are available.
 """
 import io
 import json
+import logging
 from unittest import mock, skipUnless
 
 from django.test import TestCase
 
 from accounts.models import Membership, Organization, User
 from chat.models import ChatCanvas, ChatThread
-from chat.pdf_export import weasyprint_available
+from chat.pdf_export import (
+    _DropNotdefGlyphWarnings,
+    _install_weasyprint_log_filter,
+    weasyprint_available,
+)
 
 FAKE_PDF = b"%PDF-1.4\n% fake\n"
 
@@ -93,3 +98,45 @@ class CanvasPdfExportTests(TestCase):
         reader = PdfReader(io.BytesIO(data))
         text = "\n".join(page.extract_text() for page in reader.pages)
         self.assertIn("NDA", text)
+
+
+class WeasyPrintNotdefFilterTests(TestCase):
+    """WeasyPrint's '.notdef glyph rendered ...' warnings fire once per character
+    with no glyph in the export fonts (e.g. emoji ✅/❌ pasted into a canvas) and
+    stormed Sentry one event per char (WILFRED-66/67). The export still works, so
+    they must be filtered off the weasyprint logger while other warnings pass.
+    """
+
+    def _record(self, msg):
+        return logging.LogRecord(
+            name="weasyprint", level=logging.WARNING, pathname=__file__,
+            lineno=1, msg=msg, args=(), exc_info=None,
+        )
+
+    def test_filter_drops_notdef_but_keeps_other_warnings(self):
+        f = _DropNotdefGlyphWarnings()
+        notdef = self._record(
+            '.notdef glyph rendered for Unicode string unsupported by fonts: "✅" (U+2705)'
+        )
+        other = self._record("Failed to load image at 'https://x/y.png'")
+        self.assertFalse(f.filter(notdef))
+        self.assertTrue(f.filter(other))
+
+    def test_install_is_idempotent_and_suppresses_on_logger(self):
+        wp_logger = logging.getLogger("weasyprint")
+        # Clean slate, then install twice — must not stack duplicate filters.
+        for flt in [f for f in wp_logger.filters if isinstance(f, _DropNotdefGlyphWarnings)]:
+            wp_logger.removeFilter(flt)
+        try:
+            _install_weasyprint_log_filter()
+            _install_weasyprint_log_filter()
+            installed = [f for f in wp_logger.filters if isinstance(f, _DropNotdefGlyphWarnings)]
+            self.assertEqual(len(installed), 1)
+            # Attached filter drops a .notdef record but keeps a real warning.
+            self.assertFalse(wp_logger.filter(self._record(
+                '.notdef glyph rendered for Unicode string unsupported by fonts: "❌" (U+274C)'
+            )))
+            self.assertTrue(bool(wp_logger.filter(self._record("some other weasyprint warning"))))
+        finally:
+            for flt in [f for f in wp_logger.filters if isinstance(f, _DropNotdefGlyphWarnings)]:
+                wp_logger.removeFilter(flt)

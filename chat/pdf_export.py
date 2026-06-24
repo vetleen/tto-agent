@@ -11,6 +11,28 @@ module freely; only call the renderer where the libs exist (Linux/Heroku).
 from __future__ import annotations
 
 import html as _html
+import logging
+
+# WeasyPrint logs '.notdef glyph rendered for Unicode string unsupported by
+# fonts: ...' at WARNING once per character that has no glyph in the embedded
+# export fonts — e.g. emoji (✅/❌) pasted into a canvas. The PDF still renders
+# (the glyph becomes the font's .notdef box), so these are benign, but at
+# WARNING they storm Sentry one event per character (WILFRED-66/67). We drop
+# just that message off the weasyprint logger; genuinely useful WeasyPrint
+# warnings (broken CSS, failed image loads, …) still propagate.
+_NOTDEF_PREFIX = ".notdef glyph rendered"
+
+
+class _DropNotdefGlyphWarnings(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.getMessage().startswith(_NOTDEF_PREFIX)
+
+
+def _install_weasyprint_log_filter() -> None:
+    """Attach the .notdef-dropping filter to the ``weasyprint`` logger once."""
+    wp_logger = logging.getLogger("weasyprint")
+    if not any(isinstance(f, _DropNotdefGlyphWarnings) for f in wp_logger.filters):
+        wp_logger.addFilter(_DropNotdefGlyphWarnings())
 
 
 def weasyprint_available() -> bool:
@@ -44,6 +66,7 @@ def render_canvas_pdf(html_body: str, *, title: str, css: str) -> bytes:
     from weasyprint import CSS, HTML
     from weasyprint.text.fonts import FontConfiguration
 
+    _install_weasyprint_log_filter()
     font_config = FontConfiguration()
     document = HTML(string=_wrap(html_body, title))
     stylesheet = CSS(string=css, font_config=font_config)
