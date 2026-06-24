@@ -339,3 +339,39 @@ class SeedSystemSkillsTests(TestCase):
         self.assertIn("college-level", skill.description)
         self.assertIn("Decode the prompt", skill.instructions)
         self.assertEqual(skill.tool_names, [])
+
+    def test_market_analyzer_fields(self):
+        from agent_skills.seed_skills import seed_system_skills
+
+        seed_system_skills()
+
+        skill = AgentSkill.objects.get(slug="market-analyzer", level="system")
+        self.assertEqual(skill.name, "Market Analyzer")
+        # Description routes correctly and stays within the model cap.
+        self.assertIn("go / no-go", skill.description)
+        self.assertIn("DOFI", skill.description)
+        self.assertIn("Idea Evaluation Planner", skill.description)
+        self.assertLessEqual(len(skill.description), 1024)
+
+        # Instructions carry the guided multi-phase structure, the desktop-only
+        # boundary, decision-language recommendation, and the market-analysis
+        # substance (buying unit, substitutes, patent-as-signal).
+        self.assertIn("Phase 1", skill.instructions)
+        self.assertIn("Phase 5", skill.instructions)
+        self.assertIn("Desktop research only", skill.instructions)
+        self.assertIn("Do not proceed on current assumptions", skill.instructions)
+        self.assertIn("buying unit", skill.instructions)
+        self.assertIn("substitute", skill.instructions)
+        self.assertIn("patent landscape", skill.instructions)
+
+        self.assertEqual(
+            skill.tool_names, ["skill_template_view", "skill_template_load"]
+        )
+
+        # Exactly the report template, with its key anchors.
+        self.assertEqual(skill.templates.count(), 1)
+        report = skill.templates.get(name="Market Analysis Report")
+        self.assertIn("TAM", report.content)
+        self.assertIn("Market access", report.content)
+        self.assertIn("freedom-to-operate", report.content)
+        self.assertIn("Search log", report.content)
