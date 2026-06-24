@@ -747,6 +747,13 @@ def _logo_box_css(logo) -> str:
     the logo neither distorts nor exceeds the print box, independent of however
     WeasyPrint sizes the margin box itself. Painted to its side and vertically
     centered within the top margin.
+
+    A top page-margin box derives its *width* from its content; with an empty
+    ``content:""`` that width collapses to zero and the background image never
+    paints (the header-text box renders only because its text gives it width).
+    So we set an explicit ``width`` equal to the logo's print width. The box's
+    *height* is the page's top margin (fixed by the spec), so the smaller logo
+    stays vertically centered via ``background-position``.
     """
     width_cm, height_cm = _logo_print_dims(logo.aspect)
     b64 = base64.b64encode(logo.data).decode("ascii")
@@ -757,6 +764,7 @@ def _logo_box_css(logo) -> str:
         "background-repeat:no-repeat;"
         f"background-position:{side} center;"
         f"background-size:{width_cm:.2f}cm {height_cm:.2f}cm;"
+        f"width:{width_cm:.2f}cm;"
     )
 
 

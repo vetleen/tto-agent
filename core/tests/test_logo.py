@@ -130,6 +130,16 @@ class BuildPdfCssLogoTests(SimpleTestCase):
         self.assertIn("background-size:", css)
         self.assertIn('@top-right{content:"Hi"', css)
 
+    def test_logo_box_has_explicit_width(self):
+        """The logo margin box needs an explicit width or it collapses to zero
+        (empty content) and WeasyPrint paints no background — the bug that left
+        the logo out of the PDF while it showed in the DOCX. aspect 2.0 →
+        height 1.4cm, width 2.8cm."""
+        logo = LogoRender(data=_png_bytes(200, 100), aspect=2.0, position="left")
+        css = self._css(logo, header_logo_position="left")
+        self.assertIn("width:2.80cm;", css)
+        self.assertIn("background-size:2.80cm 1.40cm;", css)
+
     def test_logo_right_text_left(self):
         logo = LogoRender(data=_png_bytes(200, 100), aspect=2.0, position="right")
         css = self._css(logo, header_logo_position="right")
