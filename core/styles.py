@@ -47,6 +47,10 @@ BUNDLED_FONTS = {
     "Gelasio": {"label": "Gelasio", "category": "serif"},
     "EBGaramond": {"label": "EB Garamond", "category": "serif"},
     "Cousine": {"label": "Cousine", "category": "mono"},
+    # Monochrome emoji fallback — appended to PDF font stacks only when the
+    # content contains symbol/emoji characters, so ✅/❌ render instead of a
+    # .notdef box. Not offered in the picker.
+    "NotoEmoji": {"label": "Noto Emoji", "category": "sans"},
 }
 
 # FONT_SUBSTITUTES: normalised (lowercased) proprietary/common name ->
@@ -756,7 +760,7 @@ def _logo_box_css(logo) -> str:
     )
 
 
-def build_pdf_css(styles: dict, resolutions: dict, logo=None) -> str:
+def build_pdf_css(styles: dict, resolutions: dict, logo=None, symbol_fallback=False) -> str:
     """Build the stylesheet for PDF export — the CSS sibling of
     :func:`apply_doc_styles`, driven by the same ``styles`` dict so DOCX and PDF
     stay aligned.
@@ -784,8 +788,11 @@ def build_pdf_css(styles: dict, resolutions: dict, logo=None) -> str:
         add(res)
         fb_key = fonts.GENERIC_FALLBACK.get(res.generic, FALLBACK_FONT)
         add(fonts.bundled_resolution(fb_key))
-        return f"'{res.css_family}', 'wf-{fb_key.lower()}', {res.generic}"
+        emoji = "'wf-notoemoji', " if symbol_fallback else ""
+        return f"'{res.css_family}', 'wf-{fb_key.lower()}', {emoji}{res.generic}"
 
+    if symbol_fallback:
+        add(fonts.bundled_resolution("NotoEmoji"))  # emoji/symbol glyphs
     body_stack = stack(styles.get("body_font"))
     heading_stack = stack(styles.get("heading_font"))
     header_stack = stack(styles.get("header_font"))

@@ -880,7 +880,11 @@ def _render_canvas_pdf_bytes(html_content, title, org):
     styles = get_org_styles(org)
     resolutions = resolve_fonts(styles, org)
     logo = resolve_org_logo(styles, org)
-    css = build_pdf_css(styles, resolutions, logo)
+    # Embed an emoji fallback only when the content has symbol/emoji characters
+    # (>= U+2190 skips ordinary smart quotes/dashes), so ✅/❌ render instead of a
+    # .notdef box without bloating every PDF with the emoji font.
+    symbol_fallback = any(ord(c) >= 0x2190 for c in html_content)
+    css = build_pdf_css(styles, resolutions, logo, symbol_fallback=symbol_fallback)
     pdf_bytes = render_canvas_pdf(html_content, title=title, css=css)
     warnings = [
         {"requested": r.requested, "actual": r.actual, "fidelity": r.fidelity, "note": r.note}

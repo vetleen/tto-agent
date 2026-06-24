@@ -36,6 +36,7 @@ FAMILIES = {
     "Arimo": ("ofl/arimo", "Arimo", "variable", "Apache-2.0"),        # Arial-metric
     "Gelasio": ("ofl/gelasio", "Gelasio", "variable", "OFL-1.1"),     # Georgia-metric
     "EBGaramond": ("ofl/ebgaramond", "EBGaramond", "variable", "OFL-1.1"),  # Garamond-visual
+    "NotoEmoji": ("ofl/notoemoji", "NotoEmoji", "variable", "OFL-1.1"),  # monochrome emoji fallback
 }
 
 # style -> (variable upright|italic file, weight to instance at)

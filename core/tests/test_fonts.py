@@ -240,3 +240,9 @@ class BuildPdfCssTests(TestCase):
         css = self._css(header_text="", footer_text="", footer_page_numbers=False)
         self.assertNotIn("@bottom-right", css)
         self.assertNotIn("@top-left", css)
+
+    def test_symbol_fallback_embeds_emoji_font_only_when_requested(self):
+        styles = dict(STYLE_DEFAULTS)
+        resolved = fonts.resolve_fonts(styles, None)
+        self.assertIn("wf-notoemoji", build_pdf_css(styles, resolved, symbol_fallback=True))
+        self.assertNotIn("wf-notoemoji", build_pdf_css(styles, resolved, symbol_fallback=False))
