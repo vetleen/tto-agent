@@ -21,7 +21,7 @@ import dj_database_url
 import sentry_sdk
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
-from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration, ignore_logger
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -123,6 +123,12 @@ if _sentry_dsn and not _is_test_run and not DEBUG:
             ),
         ],
     )
+
+    # PDF export: WeasyPrint logs a WARNING per glyph missing from the embedded
+    # fonts (e.g. an emoji in the canvas), so a single export can emit dozens.
+    # Keep them out of Sentry's event stream — they're cosmetic, not errors.
+    ignore_logger("weasyprint")
+    ignore_logger("fontTools")
 
 # SECURITY: SECRET_KEY must be set in production (no fallback when DEBUG is False).
 _secret_key = os.environ.get("DJANGO_SECRET_KEY", "").strip()
