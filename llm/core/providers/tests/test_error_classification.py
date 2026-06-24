@@ -4,13 +4,35 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from llm.core.providers.base import classify_api_error
+from llm.core.providers.base import (
+    classify_api_error,
+    _is_overloaded_error,
+    _is_rate_limit_error,
+    _is_retryable_transient_error,
+)
 
 
 def _exc_with_status(status_code: int, message: str = "error") -> Exception:
     exc = Exception(message)
     exc.status_code = status_code
     return exc
+
+
+def _gemini_exc(*, code=None, status=None, message="error") -> Exception:
+    """Mimic ``langchain_google_genai.ChatGoogleGenerativeAIError``.
+
+    The wrapper carries no status attributes of its own; the real status lives
+    on the chained ``google.genai.errors`` cause (numeric ``code`` + gRPC
+    ``status`` enum). The wrapper message also embeds the enum and number.
+    """
+    cause = Exception(message)
+    if code is not None:
+        cause.code = code
+    if status is not None:
+        cause.status = status
+    wrapper = Exception(message)
+    wrapper.__cause__ = cause
+    return wrapper
 
 
 def _exc_mid_stream(error_type: str, message: str = "error") -> Exception:
@@ -122,6 +144,57 @@ class TestClassifyApiError(TestCase):
         result = classify_api_error(exc, "Anthropic")
         self.assertEqual(result.error_code, "rate_limited")
         self.assertIn("rate limiting", result.user_message)
+
+    # -- Gemini (google-genai) errors: status on the chained cause -----------
+
+    def test_gemini_resource_exhausted_maps_to_rate_limited(self):
+        exc = _gemini_exc(
+            code=429, status="RESOURCE_EXHAUSTED",
+            message="Error calling model 'gemini-3.5-flash' (RESOURCE_EXHAUSTED): "
+                    "429 RESOURCE_EXHAUSTED. {...}",
+        )
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "rate_limited")
+        self.assertEqual(result.log_level, "warning")
+        self.assertTrue(_is_rate_limit_error(exc))
+        self.assertTrue(_is_retryable_transient_error(exc))
+
+    def test_gemini_unavailable_maps_to_overloaded_and_retryable(self):
+        exc = _gemini_exc(code=503, status="UNAVAILABLE")
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "overloaded")
+        self.assertTrue(_is_overloaded_error(exc))
+        self.assertTrue(_is_retryable_transient_error(exc))
+
+    def test_gemini_deadline_exceeded_message_only_maps_to_timeout(self):
+        # No structured code/status — only the message carries the enum.
+        exc = Exception(
+            "Error calling model 'gemini-3.5-flash' (DEADLINE_EXCEEDED): "
+            "504 DEADLINE_EXCEEDED."
+        )
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "timeout")
+        # Timeouts are not retried inside the provider (the whole sub-agent run
+        # is retried at the Celery layer instead).
+        self.assertFalse(_is_retryable_transient_error(exc))
+
+    def test_gemini_internal_maps_to_server_error(self):
+        exc = _gemini_exc(code=500, status="INTERNAL")
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "server_error")
+        self.assertEqual(result.log_level, "error")
+
+    def test_gemini_message_only_enum_maps_to_rate_limited(self):
+        # Cause without a numeric code; only the enum string is present.
+        exc = _gemini_exc(status="RESOURCE_EXHAUSTED", message="429 RESOURCE_EXHAUSTED. quota")
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "rate_limited")
+
+    def test_gemini_permission_denied_maps_to_auth_error(self):
+        exc = _gemini_exc(code=403, status="PERMISSION_DENIED")
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "auth_error")
+        self.assertFalse(_is_retryable_transient_error(exc))
 
     def test_provider_label_appears_in_messages(self):
         """Provider label is included in user messages for most error codes."""

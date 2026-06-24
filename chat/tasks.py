@@ -70,17 +70,20 @@ class _SubagentTask(Task):
 def run_subagent_task(self, run_id: str) -> None:
     """Execute a sub-agent run asynchronously via Celery."""
     from django.db.utils import OperationalError
-    from chat.subagent_service import run_subagent
+    from chat.subagent_service import is_retryable_subagent_error, run_subagent
 
     try:
         run_subagent(uuid.UUID(run_id), deadline_seconds=540)
-    except OperationalError as exc:
-        if "too many connections" in str(exc).lower():
+    except Exception as exc:
+        if is_retryable_subagent_error(exc):
+            # Transient (LLM rate-limit/overload/timeout, network blip, DB
+            # hiccup). run_subagent left the row RUNNING so this retry re-enters
+            # it; on_failure records FAILED once retries are exhausted.
+            raise self.retry(exc=exc)
+        # Terminal: run_subagent already recorded FAILED.
+        if isinstance(exc, OperationalError) and "too many connections" in str(exc).lower():
             logger.error("Connection limit hit for sub-agent %s, failing permanently", run_id)
-            raise
-        raise self.retry(exc=exc)
-    except (ConnectionError, TimeoutError, OSError) as exc:
-        raise self.retry(exc=exc)
+        raise
 
 
 @shared_task(time_limit=30)

@@ -106,16 +106,20 @@ class LLMService:
             duration_ms = int((time.monotonic() - t0) * 1000)
             log_error(request, exc, duration_ms)
             logger.error(
-                "LLMService.run failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
-                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+                "LLMService.run failed pipeline=%s model=%s error=%s",
+                pipeline_id, request.model, type(exc).__name__,
+                exc_info=True,
+                extra={"run_id": run_id, "duration_ms": duration_ms},
             )
             raise
         except Exception as exc:
             duration_ms = int((time.monotonic() - t0) * 1000)
             log_error(request, exc, duration_ms)
             logger.error(
-                "LLMService.run failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
-                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+                "LLMService.run failed pipeline=%s model=%s error=%s",
+                pipeline_id, request.model, type(exc).__name__,
+                exc_info=True,
+                extra={"run_id": run_id, "duration_ms": duration_ms},
             )
             raise LLMProviderError(f"Pipeline {pipeline_id} run failed") from exc
 
@@ -150,8 +154,10 @@ class LLMService:
             log_error(request, exc, duration_ms, is_stream=True)
             _logged = True
             logger.error(
-                "LLMService.stream failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
-                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+                "LLMService.stream failed pipeline=%s model=%s error=%s",
+                pipeline_id, request.model, type(exc).__name__,
+                exc_info=True,
+                extra={"run_id": run_id, "duration_ms": duration_ms},
             )
             raise
         except Exception as exc:
@@ -159,8 +165,10 @@ class LLMService:
             log_error(request, exc, duration_ms, is_stream=True)
             _logged = True
             logger.error(
-                "LLMService.stream failed pipeline=%s model=%s duration_ms=%d error=%s run_id=%s",
-                pipeline_id, request.model, duration_ms, type(exc).__name__, run_id,
+                "LLMService.stream failed pipeline=%s model=%s error=%s",
+                pipeline_id, request.model, type(exc).__name__,
+                exc_info=True,
+                extra={"run_id": run_id, "duration_ms": duration_ms},
             )
             raise LLMProviderError(f"Pipeline {pipeline_id} stream failed") from exc
         finally:

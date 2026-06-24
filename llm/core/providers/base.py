@@ -81,9 +81,76 @@ def _extract_body_error_type(exc: Exception) -> str | None:
     return None
 
 
+# gRPC / Google status enums → HTTP status codes. The google-genai SDK raises
+# errors (wrapped by ``langchain_google_genai.ChatGoogleGenerativeAIError``)
+# whose chained cause carries a numeric ``code`` and a ``status`` enum string,
+# and whose message embeds both, e.g.
+#   "Error calling model '...' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {...}".
+_GRPC_STATUS_TO_HTTP = {
+    "RESOURCE_EXHAUSTED": 429,
+    "UNAVAILABLE": 503,
+    "SERVICE_UNAVAILABLE": 503,
+    "DEADLINE_EXCEEDED": 504,
+    "INTERNAL": 500,
+    "UNAUTHENTICATED": 401,
+    "PERMISSION_DENIED": 403,
+}
+
+
+def _coerce_http_status(value: object) -> int | None:
+    """Return *value* as an int when it looks like an HTTP status (400–599)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and 400 <= value <= 599:
+        return value
+    return None
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    """Best-effort HTTP status for an API error across providers.
+
+    Anthropic/OpenAI SDK exceptions expose ``status_code`` directly. The
+    google-genai SDK (surfaced as ``ChatGoogleGenerativeAIError``) does not: the
+    HTTP status lives on the chained cause's ``code`` attribute, and both the
+    numeric code and a gRPC ``status`` enum appear in the message text. Checked
+    in order: own/cause ``status_code``/``code`` attrs, a ``status`` enum string,
+    then a scan of the message text. Returns None when nothing looks like a
+    status (so the caller falls back to type-based / catch-all handling).
+    """
+    cause = getattr(exc, "__cause__", None)
+
+    # 1. Numeric attributes on the exception or its chained cause.
+    for candidate in (exc, cause):
+        if candidate is None:
+            continue
+        for attr in ("status_code", "code"):
+            status = _coerce_http_status(getattr(candidate, attr, None))
+            if status is not None:
+                return status
+
+    # 2. gRPC status enum carried on a ``status`` attribute.
+    for candidate in (exc, cause):
+        status_str = getattr(candidate, "status", None)
+        if isinstance(status_str, str):
+            mapped = _GRPC_STATUS_TO_HTTP.get(status_str.strip().upper())
+            if mapped is not None:
+                return mapped
+
+    # 3. Last resort: scan the message text for a known gRPC status enum. Real
+    # google-genai errors embed it (e.g. "... (RESOURCE_EXHAUSTED): 429 ...").
+    text = str(exc)
+    if cause is not None:
+        text = f"{text} {cause}"
+    upper = text.upper()
+    for enum, mapped in _GRPC_STATUS_TO_HTTP.items():
+        if enum in upper:
+            return mapped
+    return None
+
+
 def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
     """Inspect an exception and return a classified error with user-facing message."""
-    status = getattr(exc, "status_code", None)
+    status = _extract_status_code(exc)
     msg_lower = str(exc).lower()
     body_error_type = _extract_body_error_type(exc)
 
@@ -123,7 +190,7 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
             user_message=f"{provider_label} experienced an internal error. Please try again.",
             log_level="error",
         )
-    if status == 408 or isinstance(exc, TimeoutError):
+    if status in (408, 504) or isinstance(exc, TimeoutError):
         return ClassifiedError(
             error_code="timeout",
             user_message=f"The request to {provider_label} timed out. Please try again.",
@@ -167,7 +234,7 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     Covers both request-level errors (``status_code=429``) and mid-stream
     errors where the SSE body carries ``error.type == "rate_limit_error"``.
     """
-    if getattr(exc, "status_code", None) == 429:
+    if _extract_status_code(exc) == 429:
         return True
     return _extract_body_error_type(exc) == "rate_limit_error"
 
@@ -178,7 +245,7 @@ def _is_overloaded_error(exc: Exception) -> bool:
     Covers both request-level errors (``status_code`` in 503/529) and
     mid-stream errors where the SSE body carries ``error.type == "overloaded_error"``.
     """
-    if getattr(exc, "status_code", None) in (503, 529):
+    if _extract_status_code(exc) in (503, 529):
         return True
     return _extract_body_error_type(exc) == "overloaded_error"
 

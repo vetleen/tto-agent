@@ -12,6 +12,38 @@ from core.preferences import ResolvedPreferences
 logger = logging.getLogger(__name__)
 
 
+def is_retryable_subagent_error(exc: BaseException) -> bool:
+    """Whether a sub-agent failure is transient and worth retrying the whole run.
+
+    Single source of truth shared by :func:`run_subagent` (which leaves the run
+    RUNNING instead of marking it FAILED for these, so a retry can re-enter
+    cleanly) and ``chat.tasks.run_subagent_task`` (which calls ``self.retry``).
+    Covers transient LLM provider errors (rate-limit / overload / timeout /
+    connection) and low-level network errors. A Postgres "too many connections"
+    error is treated as terminal — retrying immediately would just hit the cap
+    again.
+    """
+    from django.db.utils import OperationalError
+    from llm.service.errors import (
+        LLMConnectionError,
+        LLMOverloadedError,
+        LLMRateLimitError,
+        LLMTimeoutError,
+    )
+
+    if isinstance(exc, OperationalError):
+        return "too many connections" not in str(exc).lower()
+    return isinstance(exc, (
+        LLMRateLimitError,
+        LLMOverloadedError,
+        LLMTimeoutError,
+        LLMConnectionError,
+        ConnectionError,
+        TimeoutError,
+        OSError,
+    ))
+
+
 def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
     """Map a tier name to the user's configured model for that tier."""
     mapping = {
@@ -217,6 +249,18 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
                 )
 
     except Exception as exc:
+        if is_retryable_subagent_error(exc):
+            # Transient failure (Gemini rate-limit/overload/timeout, network or
+            # DB blip). Leave the run RUNNING so the Celery retry re-enters via
+            # the guarded RUNNING transition above; on_failure records FAILED
+            # only once retries are exhausted. Writing FAILED here would make the
+            # retry a no-op (the guard skips FAILED runs) and would break the
+            # "FAILED == cancelled-or-terminal" invariant a user cancel relies on.
+            logger.warning(
+                "Sub-agent run %s hit a transient error (%s); will retry",
+                run_id, type(exc).__name__,
+            )
+            raise
         logger.exception("Sub-agent run %s failed", run_id)
         # Guarded: keep an earlier failure reason (e.g. "Cancelled by user.")
         # instead of clobbering it with this exception's message.

@@ -855,6 +855,34 @@ class RunSubagentTaskTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.FAILED)
         self.assertIn("Provider down", run.error)
 
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_task_retries_on_transient_llm_error(self, mock_prefs, mock_svc):
+        """A transient LLM error triggers self.retry and leaves the run RUNNING
+        (not FAILED) so the retry can re-enter it cleanly."""
+        from celery.exceptions import Retry
+        from llm.service.errors import LLMOverloadedError
+
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run.side_effect = LLMOverloadedError(
+            "overloaded", error_code="overloaded",
+        )
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="Do research",
+        )
+
+        from chat.tasks import run_subagent_task
+        with patch.object(run_subagent_task, "retry", side_effect=Retry()) as mock_retry:
+            with self.assertRaises(Retry):
+                run_subagent_task(str(run.id))
+        mock_retry.assert_called_once()
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.RUNNING)
+        self.assertEqual(run.error, "")
+        self.assertIsNone(run.completed_at)
+
 
 # ---------------------------------------------------------------------------
 # run_subagent service tests
@@ -1015,6 +1043,73 @@ class RunSubagentServiceTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.FAILED)
         self.assertIn("Transient error", run.error)
         self.assertIsNotNone(run.completed_at)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_transient_error_leaves_run_running(self, mock_prefs, mock_svc):
+        """A transient LLM error must NOT be recorded as FAILED — the run is left
+        RUNNING so a Celery retry re-enters it. (Writing FAILED would make the
+        retry a no-op via the RUNNING-transition guard.)"""
+        from llm.service.errors import LLMRateLimitError
+
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run.side_effect = LLMRateLimitError(
+            "rate limited", error_code="rate_limited",
+        )
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task",
+        )
+
+        from chat.subagent_service import run_subagent
+        with self.assertRaises(LLMRateLimitError):
+            run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.RUNNING)
+        self.assertEqual(run.error, "")
+        self.assertIsNone(run.completed_at)
+
+
+# ---------------------------------------------------------------------------
+# is_retryable_subagent_error predicate
+# ---------------------------------------------------------------------------
+
+class IsRetryableSubagentErrorTests(TestCase):
+    def test_transient_errors_are_retryable(self):
+        from chat.subagent_service import is_retryable_subagent_error
+        from llm.service.errors import (
+            LLMConnectionError, LLMOverloadedError, LLMRateLimitError, LLMTimeoutError,
+        )
+        for exc in (
+            LLMRateLimitError("x"), LLMOverloadedError("x"),
+            LLMTimeoutError("x"), LLMConnectionError("x"),
+            ConnectionError("x"), TimeoutError("x"), OSError("x"),
+        ):
+            self.assertTrue(
+                is_retryable_subagent_error(exc), type(exc).__name__,
+            )
+
+    def test_terminal_errors_are_not_retryable(self):
+        from chat.subagent_service import is_retryable_subagent_error
+        from llm.service.errors import (
+            LLMAuthError, LLMProviderError, LLMRequestTooLargeError,
+        )
+        for exc in (
+            RuntimeError("x"), ValueError("x"),
+            LLMAuthError("x"), LLMRequestTooLargeError("x"), LLMProviderError("x"),
+        ):
+            self.assertFalse(
+                is_retryable_subagent_error(exc), type(exc).__name__,
+            )
+
+    def test_operational_error_too_many_connections_is_terminal(self):
+        from django.db.utils import OperationalError
+        from chat.subagent_service import is_retryable_subagent_error
+        self.assertFalse(is_retryable_subagent_error(
+            OperationalError("FATAL: too many connections for role")))
+        self.assertTrue(is_retryable_subagent_error(
+            OperationalError("the database system is starting up")))
 
 
 # ---------------------------------------------------------------------------
