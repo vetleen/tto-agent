@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
@@ -73,6 +73,24 @@ class EditCanvasInput(ReasonBaseModel):
         default="",
         description="Title of the canvas to edit. If omitted, edits the active canvas.",
     )
+
+    @field_validator("edits", mode="before")
+    @classmethod
+    def _coerce_json_string_edits(cls, value):
+        """Tolerate models that pass ``edits`` as a JSON-encoded string.
+
+        Some tool-calling models serialize the array argument as a string
+        (e.g. ``'[{"old_text": ...}]'``) instead of a native list, which made
+        canvas_edit fail Pydantic validation outright (WILFRED-40). If the value
+        is a string, parse it as JSON; on success use the result, otherwise fall
+        through to the normal list-type validation error.
+        """
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (ValueError, TypeError):
+                return value
+        return value
 
 
 class ActiveCanvasTool(ContextAwareTool):

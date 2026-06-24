@@ -1057,6 +1057,21 @@ class EditCanvasToolCheckpointTests(TestCase):
         self.assertEqual(len(cps), 2)
         self.assertEqual(cps[1].source, "ai_edit")
 
+    def test_edits_passed_as_json_string_are_coerced(self):
+        """Regression for WILFRED-40: some tool-calling models serialize ``edits``
+        as a JSON string instead of a native list, which made canvas_edit fail
+        Pydantic validation outright. The tool should parse the string and apply
+        the edit. Goes through tool.invoke() → langchain _parse_input, the exact
+        path that raised in production.
+        """
+        self._setup_canvas("The term is 3 years.")
+        result = _invoke(EditCanvasTool, {
+            "edits": json.dumps([{"old_text": "3 years", "new_text": "5 years", "reason": "update"}])
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["applied"], 1)
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        self.assertIn("5 years", canvas.content)
+
     def test_failed_edit_does_not_create_checkpoint(self):
         self._setup_canvas("Some content.")
         _invoke(EditCanvasTool, {
