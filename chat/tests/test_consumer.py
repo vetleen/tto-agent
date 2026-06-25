@@ -855,6 +855,37 @@ class CanvasOwnershipTests(TransactionTestCase):
         )()
         self.assertEqual(count, 0)
 
+    async def test_save_canvas_dedupes_title_on_collision(self):
+        """WILFRED-69: saving a canvas with a title another canvas in the thread
+        already holds (e.g. two "Untitled document"s) must not raise
+        IntegrityError. The content edit is saved and the title de-duplicated.
+        """
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Untitled document", content="first",
+        )
+        target = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Draft", content="old",
+        )
+        consumer = self._make_consumer(self.owner)
+        # Rename `target` to a title the sibling already holds — used to crash.
+        await consumer._save_canvas(
+            str(thread.id), "Untitled document", "new content", canvas_id=str(target.pk),
+        )
+        target = await database_sync_to_async(ChatCanvas.objects.get)(pk=target.pk)
+        # Content edit preserved; title de-duplicated, not the colliding one.
+        self.assertEqual(target.content, "new content")
+        self.assertEqual(target.title, "Untitled document (2)")
+        # No two canvases in the thread share a title.
+        titles = await database_sync_to_async(
+            lambda: list(
+                ChatCanvas.objects.filter(thread=thread).values_list("title", flat=True)
+            )
+        )()
+        self.assertEqual(len(titles), len(set(titles)))
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}

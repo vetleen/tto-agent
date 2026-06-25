@@ -2200,24 +2200,66 @@ class ChatConsumer(AsyncWebsocketConsumer):
             .first()
         )
 
+    def _dedupe_canvas_title(self, thread_id, title, exclude_pk=None):
+        """Return a title not used by a *different* canvas in this thread.
+
+        Canvas titles are unique per thread (unique_canvas_title_per_thread). If
+        ``title`` is already taken by another canvas, append " (2)", " (3)", …
+        until free, staying within the 255-char column limit.
+        """
+        from chat.models import ChatCanvas
+        title = (title or "")[:255] or "Untitled document"
+        qs = ChatCanvas.objects.filter(thread_id=thread_id)
+        if exclude_pk is not None:
+            qs = qs.exclude(pk=exclude_pk)
+        taken = set(qs.values_list("title", flat=True))
+        if title not in taken:
+            return title
+        i = 2
+        while True:
+            suffix = f" ({i})"
+            candidate = title[: 255 - len(suffix)] + suffix
+            if candidate not in taken:
+                return candidate
+            i += 1
+
     @database_sync_to_async
     def _save_canvas(self, thread_id, title, content, canvas_id=None):
+        from django.db import IntegrityError, transaction
+
         from chat.models import ChatCanvas, ChatThread
+        from chat.services import set_active_canvas
         title = (title or "")[:255]  # column limit; longer is a DB error
         canvas = self._resolve_canvas_id(thread_id, canvas_id)
-        if canvas:
-            canvas.title = title
-            canvas.content = content
-            canvas.save(update_fields=["title", "content", "updated_at"])
-        else:
-            # Verify thread ownership before creating a canvas
-            if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
+        if canvas is None and not ChatThread.objects.filter(
+            pk=thread_id, created_by=self.user
+        ).exists():
+            # No canvas to update and the requester doesn't own the thread.
+            return
+        exclude_pk = canvas.pk if canvas else None
+        # Titles are unique per thread (unique_canvas_title_per_thread): saving a
+        # canvas with a title another canvas already holds (e.g. two "Untitled
+        # document"s) used to raise an unhandled IntegrityError (WILFRED-69).
+        # Resolve a non-colliding title first — never dropping the user's content
+        # edit — and retry on the unique violation in case a concurrent save
+        # raced in with the same title.
+        for attempt in range(3):
+            candidate = self._dedupe_canvas_title(thread_id, title, exclude_pk=exclude_pk)
+            try:
+                with transaction.atomic():
+                    if canvas:
+                        canvas.title = candidate
+                        canvas.content = content
+                        canvas.save(update_fields=["title", "content", "updated_at"])
+                    else:
+                        canvas = ChatCanvas.objects.create(
+                            thread_id=thread_id, title=candidate, content=content,
+                        )
+                        set_active_canvas(thread_id, canvas)
                 return
-            from chat.services import set_active_canvas
-            canvas = ChatCanvas.objects.create(
-                thread_id=thread_id, title=title, content=content,
-            )
-            set_active_canvas(thread_id, canvas)
+            except IntegrityError:
+                if attempt == 2:
+                    raise
 
     @database_sync_to_async
     def _get_or_create_canvas(self, thread_id):
