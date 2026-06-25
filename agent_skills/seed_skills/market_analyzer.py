@@ -5,7 +5,7 @@ MARKET_ANALYZER = {
     "name": "Market Analyzer",
     "emoji": "📊",
     "description": """\
-Produce a decision-grade desktop only market analysis for an early-stage technology \
+Produce a decision-grade desktop-only market analysis for an early-stage technology \
 idea, invention disclosure (DOFI), or research result. This is desktop research only — \
 not a substitute for customer interviews.""",
     "instructions": """\
@@ -67,7 +67,7 @@ slow or uncertain access path is often a weaker opportunity than a smaller segme
 clear route to adoption.
 
 **Show your method and your limitations.** A good analytical report has \
-repeatable search strategy, explicit methodology, acceptable recall and precision trade-offs, \
+a repeatable search strategy, explicit methodology, acceptable recall and precision trade-offs, \
 documented challenges, and clear limits on what the analysis can and cannot show. That is \
 exactly the standard to apply here. Every important conclusion in the report should be \
 traceable to a source, an assumption, or a clearly marked inference.
@@ -84,7 +84,7 @@ sign the problem isn't painful enough to act on.
 
 **Narrow beats wide, early.** The smallest version someone would pay \
 real money for is more valuable than the full platform vision. Wedge \
-first. Expand from strength. We don't care about  "the AI market" or "the \
+first. Expand from strength. We don't care about "the AI market" or "the \
 healthcare market." We want to begin with a tight statement — "infection-surveillance \
 software for tertiary hospitals," "solid state battery anodes for EV-cell \
 manufacturers." 
@@ -101,7 +101,7 @@ specific workflow, in what department, at what type of hospital, \
 breaks down today? Name the person whose day gets worse."
 
 **Platform vision → wedge challenge.**
-- User: "The technology can be usedacross three industries."
+- User: "The technology can be used across three industries."
 - Weak: "Which industry should we focus on first?"
 - Strong: "Three industries means zero customers. Which single \
 use case, in which single segment, would someone pay for right \
@@ -137,7 +137,7 @@ synthesize.
 specific source; when sources conflict, preserve the conflict and explain it \
 rather than forcing one fact.
 - Sourcing claims can be a bit more difficult when using sub-agents, so be clear when \
-prmpting them on how you want them to cite their findings, so that you can trust that \
+prompting them on how you want them to cite their findings, so that you can trust that \
 their claims and confidently source your final report correctly.
 - Use a canvas as a scratch pad to keep track of each steps output. Use the *same* \
 scratchpad for each process step's output for simplicity.
@@ -153,14 +153,14 @@ standard commercial evaluation:
 - Analyze provided materials
 - User Q&A: fill context gaps 
 - User Q&A: Understand the decision this report will support
-- Define key questions that will support the decison, get user feedback
+- Define key questions that will support the decision, get user feedback
 - First round of research
-- Reason around the decison using the information gathered so far, deepen hypothesies, etc.
+- Reason around the decision using the information gathered so far, deepen hypotheses, etc.
 - Define further key questions and information needs
 - User feedback if needed
 - Second research round
 - Evaluate need for further iteration / re-planning
-- Create market analysis document with reccomendation in canvas
+- Create market analysis document with recommendation in canvas
 ```
 
 Adapt the plan to the actual case. 
@@ -303,7 +303,7 @@ Do NOT continue on with a full market analysis on a fictional hypothesis, in suc
 
 Once the hypothesis is confirmed, write it as one specific paragraph and move on.
 
-In some cases, each prioritized application area (from the previous step) needs it's own hypothesis. Spend the required time and effort to establish it for each prioritized application. 
+In some cases, each prioritized application area (from the previous step) needs its own hypothesis. Spend the required time and effort to establish it for each prioritized application. 
 
 **Output:** a short value proposition block adhering to the above description. Add it to the *project scratch-pad*.  
 
@@ -325,37 +325,37 @@ In some cases, each prioritized application area (from the previous step) needs 
 
 **Output:** a top-down market model showing total possible demand within the defined boundary, plus notes on data year and source limitations. Add it to your scratchpad.
 
-### Step 8
+### Step 7
 
 **Estimate the market from the bottom up, then derive the realistic entry market.** A serious market report never relies on one giant number. Build a bottom-up model from actual buying units: number of target customers, expected units or contracts per customer per year, annual purchase frequency where relevant, and realized price or annual contract value. Startup market-sizing guidance starts with the target customer, then the number of customers, then penetration, then market value. For commercialization work, it is also helpful to distinguish between total market, accessible market, and realistically obtainable first market. Use sub-agents for information retrieval.
 
-**Output:** three numbers for the chosen segment  —total addressable, serviceable accessible, and realistic first-obtainable market—using low, base, and high scenarios, not one single point estimate. Add it to your scratchpad. 
+**Output:** three numbers for the chosen segment — total addressable, serviceable accessible, and realistic first-obtainable market — using low, base, and high scenarios, not one single point estimate. Add it to your scratchpad. 
 
-### Step 9
+### Step 8
 
 **Map competitors, substitutes, and market structure.** Identify direct competitors, indirect competitors, and substitute solutions. You should specifically distinguish direct and secondary or indirect competitors, and Harvard’s Five Forces framework reminds analysts that substitutes, buyer power, supplier power, new entrants, and rivalry all shape how value is divided in a market. For each meaningful competitor, collect: **offering**, **customer segment**, **pricing logic** if visible, **geographic focus**, **technical claims**, **evidence level**, **partnerships**, **funding signals**, and **route to market**. Use company websites and product pages first, then primary company documents such as SEC filings for public firms; for UK firms, Companies House is useful, but Companies House itself warns that it does not check the accuracy of filed information, so anything important should be cross-validated. Other geographies may have similar resources. Use sub-agents for information retrieval.
 
 **Output:** a competitor and substitute matrix that compares like with like. Add it to the scratch-pad.
 
-### Step 10
+### Step 9
 
 **Build the patent and IP landscape as a market signal, not as a legal opinion.** Patent landscaping is useful because it reveals who is active, where activity is growing, how crowded an area is, what classifications recur, who owns relevant filings, and how adjacent technologies are evolving. WIPO describes patent landscape reports as evidence-based tools for informed decision-making in advanced technology domains, but also stresses that they require careful search design, data cleanup, and explicit methodology. Use subagents for information retrieval, and ask them to use Espacenet, PATENTSCOPE, and USPTO Patent Public Search as the core free platforms. Have them search broadly at first for recall, then refine with classification codes, assignee names, and citation trails. Encourage the sub-agents to clean assignee names carefully, because raw patent data is messy and grouping errors can distort conclusions. Note that a patent landscape, like we are doing here, is not the same thing as a legal freedom-to-operate opinion, which this skill does not encompass. 
 
 **Output:** a patent summary covering filing trend, top assignees, relevant jurisdictions, major technical clusters, and key white-space observations. Add to your scratch-pad.
 
-### Step 11
+### Step 10
 
 **Test market access, evidence burden, and procurement reality.** For some technologies, the real market question is not “who needs this?” but “what must be true for this to be bought at scale?” Device classification determines the type of premarket submission required. Digital-health technologies are evaluated against evidence standards used by commissioners and evaluators. Even breakthrough technologies may face coverage, coding, payment, and evidence questions. In public-sector markets, procurement systems and tender notices show how buyers actually purchase. U.S. acquisition rules require market research before requirements are developed or offers are solicited, and public procurement can itself drive adoption and scale for innovative solutions. For health technologies, clinical-trial registries and literature databases can also indicate maturity, competitive pipeline, and evidence direction. Use sub-agents for information retrieval.
 
 **Output:** a route-to-market memo summarizing regulatory pathway, evidence burden, reimbursement or funding logic, procurement route, and any obvious access blockers. Add it to your scratch-pad.
 
-### Step 12
+### Step 11
 
 **Analyze adoption timing, not just market size.** OECD’s recent work on technology diffusion finds that diffusion varies substantially by sector and technology, that larger firms often adopt more quickly, and that human and technological capital are important enablers. This matters enormously for early-stage business ideas. A segment can be large and still be a poor first market if adoption requires workflow redesign, long validation cycles, capital approval, integration work, behavior change, or standards certification. Use sub-agents for information retrieval.
 
 **Output:** 1) A short adoption thesis for the chosen segment: why this segment will move, what has to happen before buying, who must approve, and what could slow uptake. 2) An adoption-barrier table with probability, impact, and likely mitigation. Add both to the scratch-pad.
 
-### Step 13
+### Step 12
 
 **Write the recommendation in decision language.** The report should end with a direct recommendation, not a vague summary. Make sure the recommendation connects market, customers, competition, IP, regulation, production and marketing, revenue streams, and risks into one commercialization view. The final page should therefore state: the best entry segment, why that segment is strongest, what the first realistic obtainable market is, the strongest competing alternatives, the major market-access risks, and what evidence is still missing. 
 
@@ -363,10 +363,10 @@ In some cases, each prioritized application area (from the previous step) needs 
 
 ## Checkpoint: verify with the user
 
-Before writing the report, present and justify your reccomendationa and supporting key findings. \
+Before writing the report, present and justify your recommendation and supporting key findings. \
 Then ask the user if they want to proceed. Something like:
 
-> "This is my reccomendation and supporting findings: (...) \
+> "This is my recommendation and supporting findings: (...) \
 > Before I build the report around it, would you adjust anything, \
 > or is there anything else we should change or add or research more in-depth \
 > before making a decision?"
@@ -409,14 +409,14 @@ Industry and trade associations can be useful supplements, especially for catego
 **Writing the report**
 
 - Load the **"Market Analysis Report"** template to a fresh canvas. 
-- Evaluate if the structure is applicable, otherwise, adapt it to suite the decision, your findings, the arguments - in short, the situation at hand.
+- Evaluate if the structure is applicable, otherwise, adapt it to suit the decision, your findings, the arguments - in short, the situation at hand.
 - Write piece-by-piece, never more than a whole section at a time, making sure to maintain clarity and intended detail. 
 - Everything written in the report should be synthesized from collected evidence. Related findings should be grouped, deduped, and \
 stronger and more directly relevant sources should be prioritized. Preserve disagreements, and stay within what the sources support. \
 - Facts, assumptions and inferences all have a place in the report, but should be clearly distinguished.
 - End in **decision language**, not a vague summary. State the explicit recommendation, which should support the business decision the user is making. 
 - Make sure to support the recommendation with items like the best entry segment, the first realistic obtainable market, the strongest \
-competing alternatives, the major market-access risks, (where thewse are relevant) and be open about what evidence is still missing — and \
+competing alternatives, the major market-access risks, (where these are relevant) and be open about what evidence is still missing — and \
 how to get it (this may be the bridge back to customer discovery).
 
 The analysis is likely decision-grade if it answers these questions cleanly: 
@@ -438,8 +438,8 @@ The analysis is likely decision-grade if it answers these questions cleanly:
 
 - Do not start the report with a huge global TAM at the cost of the first realistic segment to win. 
 - Do not focus on describing the invention at the cost of who pays, who approves, and why they would change behavior. 
-- Do not lists only direct competitors at the cost of substitutes, workflow alternatives, or “do nothing” options. 
-- Do not treats patent count as proof of market demand. 
+- Do not list only direct competitors at the cost of substitutes, workflow alternatives, or “do nothing” options.
+- Do not treat patent count as proof of market demand.
 - Do not treat a patent landscape as a freedom-to-operate opinion. 
 - Do not put regulation, reimbursement, evidence generation, or procurement into a late appendix even though those factors determine whether the market is accessible at all. 
 - Do not provide conclusions without a search trail, dates, or source-quality judgment. 
@@ -454,18 +454,18 @@ The analysis is likely decision-grade if it answers these questions cleanly:
 
 *Date: [date]*
 *Analyst: [name]*
+*This document was created in collaboration with an AI agent.*
 *Decision this analysis serves: [the specific go/no-go or choice]*
 
 > Desktop research only. A strong hypothesis basis for decision-making, not a
-> substitute for direct market contact. Sections that don't apply to this case
-> are marked **N/A** with a reason.
+> substitute for direct market contact. 
 
 ---
 
 ## 1. Executive summary & recommendation
 
 **Recommendation:** [Go / Go but narrow / Hold pending evidence / Do not proceed
-on current assumptions]
+on current assumptions / custom]
 
 - **Best entry segment:** [the beachhead]
 - **First obtainable market (SOM, base case):** [number + basis]
@@ -482,6 +482,7 @@ on current assumptions]
 - **For a technical buyer:** [one sentence]
 - **Economic improvement:** [the quantified "better than what"]
 - **Current alternative it replaces:** [status quo]
+- **Commercial hypothesis:** [the paragraph]
 
 ## 3. Application & segment selection
 
@@ -513,6 +514,8 @@ on current assumptions]
 
 ## 6. Competitors & substitutes
 
+[Example table, adapt to situation:]
+
 | Name | Type (direct / indirect / substitute / do-nothing) | Segment | Pricing logic | Geography | Evidence level | Route to market |
 |------|----------------------------------------------------|---------|---------------|-----------|----------------|-----------------|
 |      |                                                    |         |               |           |                |                 |
@@ -522,7 +525,6 @@ substitution pressure — Five Forces where useful]
 
 ## 7. IP & patent landscape
 
-> A market signal — **not** a freedom-to-operate opinion.
 
 - **Method & databases:** [Espacenet / PATENTSCOPE / USPTO; queries in appendix]
 - **Filing trend:** [growing / flat / declining]
