@@ -519,8 +519,8 @@
         <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
         <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
       </label>
-      {# 7. Clear canvas (trash) #}
-      <button id="canvas-clear-btn" title="Clear canvas" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+      {# 7. Delete canvas (trash) #}
+      <button id="canvas-delete-btn" title="Delete canvas" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
       </button>
       {# 8. Close #}
@@ -2510,6 +2510,49 @@
       renderCanvasTabs();
       return;
     }
+    if (et === "canvas.deleted") {
+      if (data.deleted_id && canvasStates[data.deleted_id]) delete canvasStates[data.deleted_id];
+      if (data.active_canvas) {
+        // Rebuild tab state from the server's surviving set, preserving any
+        // in-memory content we already hold for canvases that remain.
+        var survivors = {};
+        (data.canvases || []).forEach(function(c) {
+          var prev = canvasStates[c.id] || {};
+          survivors[c.id] = {
+            title: c.title,
+            content: prev.content || "",
+            acceptedContent: prev.acceptedContent !== undefined ? prev.acceptedContent : null,
+            pendingUpdate: prev.pendingUpdate || null,
+            aiUpdatePending: prev.aiUpdatePending || false
+          };
+        });
+        canvasStates = survivors;
+        var dac = data.active_canvas;
+        activeCanvasId = dac.id;
+        if (canvasStates[dac.id]) {
+          canvasStates[dac.id].content = dac.content || "";
+          canvasStates[dac.id].acceptedContent = dac.accepted_content !== undefined ? dac.accepted_content : null;
+          canvasStates[dac.id].aiUpdatePending = !!dac.pending_ai_review;
+        }
+        canvasAcceptedContent = canvasStates[dac.id] ? canvasStates[dac.id].acceptedContent : null;
+        canvasAiUpdatePending = !!dac.pending_ai_review;
+        canvasDisableMerge();
+        openCanvas(dac.title, dac.content);
+        canvasShowBannerIfNeeded();
+        canvasEnableMergeIfNeeded();
+        renderCanvasTabs();
+      } else {
+        // No canvases left — reset state and close the panel.
+        canvasStates = {};
+        activeCanvasId = null;
+        canvasAcceptedContent = null;
+        canvasPendingUpdate = null;
+        canvasAiUpdatePending = false;
+        canvasDisableMerge();
+        closeCanvas();
+      }
+      return;
+    }
     if (et === "canvas.accepted") {
       canvasAcceptedContent = data.accepted_content;
       if (data.canvas_id && canvasStates[data.canvas_id]) canvasStates[data.canvas_id].acceptedContent = data.accepted_content;
@@ -3349,7 +3392,7 @@
   var canvasSaveToDrBtn = document.getElementById("canvas-save-to-dr-btn");
   var canvasSaveToDrDropdown = document.getElementById("canvas-save-to-dr-dropdown");
   var canvasSaveToDrList = document.getElementById("canvas-save-to-dr-list");
-  var canvasClearBtn = document.getElementById("canvas-clear-btn");
+  var canvasDeleteBtn = document.getElementById("canvas-delete-btn");
   var openCanvasBtn = document.getElementById("open-canvas-btn");
   var canvasToggleBtn = document.getElementById("canvas-toggle-btn");
   var canvasToggleArrow = document.getElementById("canvas-toggle-arrow");
@@ -3839,33 +3882,12 @@
     canvasCloseBtn.addEventListener("click", function() { saveCanvasNow(); closeCanvas(); });
   }
 
-  if (canvasClearBtn) {
-    canvasClearBtn.addEventListener("click", function() {
-      if (!confirm("Clear the canvas? Previous versions will still be available in version history.")) return;
-      // Save current content as a version checkpoint first (if non-empty)
-      var currentContent = canvasTextarea.value.trim();
-      if (currentContent && activeThreadId && ws && ws.readyState === WebSocket.OPEN) {
-        var clearMsg = {
-          type: "chat.canvas_save_version",
-          thread_id: activeThreadId,
-          title: canvasTitleInput.value,
-          content: canvasTextarea.value
-        };
-        if (activeCanvasId) clearMsg.canvas_id = activeCanvasId;
-        ws.send(JSON.stringify(clearMsg));
-      }
-      // Clear canvas
-      canvasDisableMerge();
-      canvasAiUpdatePending = false;
-      canvasTitleInput.value = "Untitled document";
-      canvasTextarea.value = "";
-      canvasAcceptedContent = null;
-      canvasUpdateBanner.classList.add("hidden");
-      canvasPendingUpdate = null;
-      updateWordCount();
-      if (canvasPreviewMode) { canvasRenderPreview(); }
-      // Save the empty state
-      saveCanvasNow();
+  if (canvasDeleteBtn) {
+    canvasDeleteBtn.addEventListener("click", function() {
+      if (!activeThreadId || !activeCanvasId) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!confirm("Delete this canvas? This permanently removes it and its version history.")) return;
+      ws.send(JSON.stringify({ type: "chat.canvas_delete", thread_id: activeThreadId, canvas_id: activeCanvasId }));
     });
   }
 

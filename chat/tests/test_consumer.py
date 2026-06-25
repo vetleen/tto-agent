@@ -886,6 +886,109 @@ class CanvasOwnershipTests(TransactionTestCase):
         )()
         self.assertEqual(len(titles), len(set(titles)))
 
+    async def test_delete_canvas_promotes_survivor_to_active(self):
+        """Deleting the active canvas promotes a survivor and reports its tabs."""
+        from chat.services import set_active_canvas
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas_a = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="A", content="aaa",
+        )
+        canvas_b = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="B", content="bbb",
+        )
+        await database_sync_to_async(set_active_canvas)(str(thread.id), canvas_a)
+        consumer = self._make_consumer(self.owner)
+        result = await consumer._delete_canvas(str(thread.id), str(canvas_a.pk))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["deleted_id"], str(canvas_a.pk))
+        exists = await database_sync_to_async(
+            ChatCanvas.objects.filter(pk=canvas_a.pk).exists
+        )()
+        self.assertFalse(exists)
+        # canvas_b survives and is promoted to active, both in the payload and DB.
+        self.assertEqual(result["active_canvas"]["id"], str(canvas_b.pk))
+        self.assertEqual([t["id"] for t in result["canvases"]], [str(canvas_b.pk)])
+        self.assertTrue(result["canvases"][0]["is_active"])
+        thread = await database_sync_to_async(ChatThread.objects.get)(pk=thread.pk)
+        self.assertEqual(thread.active_canvas_id, canvas_b.pk)
+
+    async def test_delete_canvas_keeps_active_when_deleting_background_tab(self):
+        """Deleting a non-active tab leaves the active canvas untouched."""
+        from chat.services import set_active_canvas
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas_a = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="A", content="aaa",
+        )
+        canvas_b = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="B", content="bbb",
+        )
+        await database_sync_to_async(set_active_canvas)(str(thread.id), canvas_a)
+        consumer = self._make_consumer(self.owner)
+        result = await consumer._delete_canvas(str(thread.id), str(canvas_b.pk))
+        self.assertEqual(result["active_canvas"]["id"], str(canvas_a.pk))
+        thread = await database_sync_to_async(ChatThread.objects.get)(pk=thread.pk)
+        self.assertEqual(thread.active_canvas_id, canvas_a.pk)
+
+    async def test_delete_last_canvas_leaves_none(self):
+        """Deleting the only canvas leaves the thread with no active canvas."""
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Only", content="x",
+        )
+        consumer = self._make_consumer(self.owner)
+        result = await consumer._delete_canvas(str(thread.id), str(canvas.pk))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["canvases"], [])
+        self.assertIsNone(result["active_canvas"])
+        count = await database_sync_to_async(
+            ChatCanvas.objects.filter(thread=thread).count
+        )()
+        self.assertEqual(count, 0)
+
+    async def test_delete_canvas_cascades_checkpoints(self):
+        """A deleted canvas takes its version history (checkpoints) with it."""
+        from chat.models import CanvasCheckpoint
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="x",
+        )
+        await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Survivor", content="y",
+        )
+        cp = await database_sync_to_async(CanvasCheckpoint.objects.create)(
+            canvas=canvas, source="user_save", content="x", order=1,
+        )
+        consumer = self._make_consumer(self.owner)
+        await consumer._delete_canvas(str(thread.id), str(canvas.pk))
+        cp_exists = await database_sync_to_async(
+            CanvasCheckpoint.objects.filter(pk=cp.pk).exists
+        )()
+        self.assertFalse(cp_exists)
+
+    async def test_delete_canvas_denies_other_users_thread(self):
+        """A non-owner cannot delete a canvas; it must remain intact."""
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Secret", content="No",
+        )
+        consumer = self._make_consumer(self.attacker)
+        result = await consumer._delete_canvas(str(thread.id), str(canvas.pk))
+        self.assertIsNone(result)
+        exists = await database_sync_to_async(
+            ChatCanvas.objects.filter(pk=canvas.pk).exists
+        )()
+        self.assertTrue(exists)
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}

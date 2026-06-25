@@ -298,6 +298,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_canvas_get_checkpoints(data)
         elif msg_type == "chat.canvas_switch":
             await self._handle_canvas_switch(data)
+        elif msg_type == "chat.canvas_delete":
+            await self._handle_canvas_delete(data)
         elif msg_type == "chat.stop":
             await self._handle_stop(data)
         elif msg_type == "pong":
@@ -697,6 +699,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "pending_ai_review": result.get("pending_ai_review", False),
             }
             await self.send(text_data=json.dumps(event))
+
+    async def _handle_canvas_delete(self, data):
+        """Permanently delete a canvas (and its version history)."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        canvas_id = data.get("canvas_id")
+        if not thread_id or not canvas_id:
+            return
+        result = await self._delete_canvas(thread_id, canvas_id)
+        if result is None:
+            return
+        await self.send(text_data=json.dumps({
+            "event_type": "canvas.deleted",
+            "deleted_id": result["deleted_id"],
+            "canvases": result["canvases"],
+            "active_canvas": result["active_canvas"],
+        }))
 
     async def _send_heartbeats(self, interval=30):
         """Send periodic heartbeat events to keep the connection alive during long operations."""
@@ -2402,6 +2420,60 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "content": canvas.content,
             "accepted_content": accepted_content,
             "pending_ai_review": pending_ai_review,
+        }
+
+    @database_sync_to_async
+    def _delete_canvas(self, thread_id, canvas_id):
+        """Permanently delete a canvas the user owns; promote a survivor to active.
+
+        Returns ``{deleted_id, canvases, active_canvas}`` describing the post-delete
+        state (``active_canvas`` is ``None`` when the thread has no canvases left),
+        or ``None`` if the canvas isn't found or the requester doesn't own the
+        thread. Checkpoints cascade with the canvas; ``ChatThread.active_canvas`` is
+        SET_NULL if the deleted canvas was the active one, so we re-promote here.
+        """
+        from chat.models import ChatCanvas, ChatThread
+        from chat.services import canvas_diff_baseline, set_active_canvas
+        try:
+            canvas = ChatCanvas.objects.get(
+                pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
+            )
+        except (ChatCanvas.DoesNotExist, ValueError, TypeError):
+            return None
+        canvas.delete()
+        remaining = list(
+            ChatCanvas.objects.filter(thread_id=thread_id)
+            .select_related("accepted_checkpoint")
+            .order_by("created_at")
+        )
+        if not remaining:
+            return {"deleted_id": str(canvas_id), "canvases": [], "active_canvas": None}
+        # Re-promote an active canvas: the deleted one may have been active (the FK
+        # is now NULL) or the pointer may already target a survivor.
+        thread = ChatThread.objects.get(pk=thread_id)
+        active_canvas = None
+        if thread.active_canvas_id:
+            active_canvas = next(
+                (c for c in remaining if c.pk == thread.active_canvas_id), None
+            )
+        if active_canvas is None:
+            active_canvas = remaining[0]
+            set_active_canvas(thread_id, active_canvas)
+        tabs = [
+            {"id": str(c.pk), "title": c.title, "is_active": c.pk == active_canvas.pk}
+            for c in remaining
+        ]
+        accepted_content, pending_ai_review = canvas_diff_baseline(active_canvas)
+        return {
+            "deleted_id": str(canvas_id),
+            "canvases": tabs,
+            "active_canvas": {
+                "id": str(active_canvas.pk),
+                "title": active_canvas.title,
+                "content": active_canvas.content,
+                "accepted_content": accepted_content,
+                "pending_ai_review": pending_ai_review,
+            },
         }
 
     # -- Skill helpers --
