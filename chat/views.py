@@ -274,6 +274,18 @@ def _embed_file_tokens(content, base_url, user):
     return _FILE_TOKEN_RE.sub(repl, content)
 
 
+def _thread_attachment_bytes(thread) -> int:
+    """Total stored bytes of every attachment on a thread (drafts included)."""
+    from django.db.models import Sum
+
+    return (
+        ChatAttachment.objects.filter(thread=thread).aggregate(total=Sum("size_bytes"))[
+            "total"
+        ]
+        or 0
+    )
+
+
 @login_required
 @require_POST
 def reattach_attachment(request, thread_id, attachment_id):
@@ -286,8 +298,15 @@ def reattach_attachment(request, thread_id, attachment_id):
     """
     from django.core.files.base import ContentFile
 
+    from chat.services import MAX_THREAD_ATTACHMENT_BYTES
+
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
     old = get_object_or_404(ChatAttachment, id=attachment_id, thread=thread)
+    if _thread_attachment_bytes(thread) + old.size_bytes > MAX_THREAD_ATTACHMENT_BYTES:
+        return JsonResponse(
+            {"error": f"This chat has reached its {MAX_THREAD_ATTACHMENT_BYTES // (1024 * 1024)} MB attachment limit."},
+            status=400,
+        )
     try:
         with old.file.open("rb") as f:
             data = f.read()
@@ -583,6 +602,13 @@ def chat_home(request):
         thread and (thread.metadata or {}).get("pending_initial_turn")
     )
 
+    # One-shot composer draft seeded by "branch from a user message" — pop it so a
+    # later reload starts clean.
+    draft_input = ""
+    if thread and (thread.metadata or {}).get("draft_input"):
+        draft_input = thread.metadata.pop("draft_input")
+        thread.save(update_fields=["metadata"])
+
     # Model picker default: the loaded thread's effective model (honoring its
     # stored choice, with tier fallback), or the user's preferred chat model for
     # a new thread.
@@ -616,6 +642,7 @@ def chat_home(request):
             "thread_tasks_json": thread_tasks_json,
             "thread_cost_usd": thread_cost_usd,
             "pending_initial_turn": pending_initial_turn,
+            "draft_input": draft_input,
             "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
             "active_subagent_count": active_subagent_count,
             "assistant_name": django_settings.ASSISTANT_NAME,
@@ -1109,6 +1136,133 @@ def thread_create(request):
 
 @login_required
 @require_POST
+def thread_branch(request, thread_id):
+    """Fork a conversation into a new independent thread.
+
+    Copies the source thread's messages up to a chosen point, plus its *current*
+    data-room/skill attachments, the files on the copied messages (byte-copied to
+    fresh storage), and chunk-usage analytics up to the branch point. There is no
+    replay — the new thread is a static copy the user can continue.
+
+    The branch button is only rendered on user / final-assistant bubbles, so the
+    branch point is always one of:
+      * assistant message -> copy messages with created_at <= its timestamp.
+      * user message     -> copy messages strictly before it, and stash the user
+        message's text in metadata["draft_input"] so the new thread pre-fills the
+        composer for an edit-and-resend.
+    """
+    from django.core.files.base import ContentFile
+    from django.db import transaction
+
+    from chat.models import (
+        ChatMessage,
+        ChatThreadDataRoom,
+        ChatThreadSkill,
+        ThreadChunkUsage,
+    )
+
+    source = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
+    try:
+        message_id = json.loads(request.body or "{}").get("message_id")
+    except (ValueError, TypeError):
+        return HttpResponseBadRequest("Invalid JSON")
+    if not message_id:
+        return JsonResponse({"error": "message_id is required"}, status=400)
+    bp = get_object_or_404(ChatMessage, id=message_id, thread=source)
+
+    user_mode = bp.role == ChatMessage.Role.USER
+    if user_mode:
+        msgs = list(source.messages.filter(created_at__lt=bp.created_at).order_by("created_at"))
+    else:
+        msgs = list(source.messages.filter(created_at__lte=bp.created_at).order_by("created_at"))
+
+    metadata = {"branched_from": {"thread_id": str(source.id), "message_id": str(bp.id)}}
+    if user_mode:
+        metadata["draft_input"] = bp.content
+
+    with transaction.atomic():
+        new = ChatThread.objects.create(
+            created_by=request.user,
+            model=source.model,
+            emoji=source.emoji,
+            title=("Branch: " + (source.title or "Untitled"))[:255],
+            metadata=metadata,
+        )
+
+        # Current data-room and skill attachments (order preserved by the
+        # auto-increment id tie-break, matching ChatThreadSkill's ordering).
+        ChatThreadDataRoom.objects.bulk_create([
+            ChatThreadDataRoom(thread=new, data_room_id=link.data_room_id)
+            for link in source.thread_data_rooms.order_by("attached_at", "id")
+        ])
+        ChatThreadSkill.objects.bulk_create([
+            ChatThreadSkill(thread=new, skill_id=link.skill_id)
+            for link in source.thread_skills.order_by("attached_at", "id")
+        ])
+
+        # Messages. created_at is auto_now_add, so bulk_create stamps "now" and
+        # would scramble ordering=["created_at"] — restore the original timestamps
+        # with a follow-up bulk_update (which does not re-fire auto_now_add).
+        copies = [
+            ChatMessage(
+                thread=new,
+                role=m.role,
+                content=m.content,
+                tool_call_id=m.tool_call_id,
+                metadata=m.metadata,
+                token_count=m.token_count,
+                is_redacted=m.is_redacted,
+                is_hidden_from_user=m.is_hidden_from_user,
+            )
+            for m in msgs
+        ]
+        ChatMessage.objects.bulk_create(copies)
+        for src, copy in zip(msgs, copies):
+            copy.created_at = src.created_at
+        if copies:
+            ChatMessage.objects.bulk_update(copies, ["created_at"])
+        id_map = {src.id: copy for src, copy in zip(msgs, copies)}
+
+        # Files on the copied messages: byte-copy to a fresh storage path (the
+        # reattach_attachment pattern). Branch is exempt from the per-thread cap —
+        # it copies a subset of an already-compliant thread.
+        for att in ChatAttachment.objects.filter(message_id__in=id_map.keys()):
+            try:
+                with att.file.open("rb") as fh:
+                    data = fh.read()
+            except Exception:
+                logger.warning(
+                    "Skipping unreadable attachment %s while branching thread %s",
+                    att.id, source.id,
+                )
+                continue
+            copy = ChatAttachment(
+                thread=new,
+                message=id_map[att.message_id],
+                uploaded_by=request.user,
+                original_filename=att.original_filename,
+                content_type=att.content_type,
+                size_bytes=att.size_bytes,
+                extracted_content=att.extracted_content,
+            )
+            copy.file.save(att.original_filename[:255] or "file", ContentFile(data), save=True)
+
+        # Chunk-usage analytics up to the branch point.
+        usage_filter = (
+            {"created_at__lt": bp.created_at}
+            if user_mode
+            else {"created_at__lte": bp.created_at}
+        )
+        ThreadChunkUsage.objects.bulk_create([
+            ThreadChunkUsage(thread=new, chunk_id=u.chunk_id, document_id=u.document_id)
+            for u in source.chunk_usages.filter(**usage_filter)
+        ])
+
+    return JsonResponse({"thread_id": str(new.id)})
+
+
+@login_required
+@require_POST
 def canvas_save_to_data_room(request, thread_id, canvas_id=None):
     """Save canvas content as a markdown document in a data room."""
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
@@ -1179,7 +1333,12 @@ def upload_attachments(request, thread_id):
     attachment`` + ``X-Content-Type-Options: nosniff`` and must NOT reflect this
     stored value as the response ``Content-Type`` (it could be a mislabeled file).
     """
-    from chat.services import SUPPORTED_ATTACHMENT_TYPES, SUPPORTED_DOCX_TYPES, max_size_for_content_type
+    from chat.services import (
+        MAX_THREAD_ATTACHMENT_BYTES,
+        SUPPORTED_ATTACHMENT_TYPES,
+        SUPPORTED_DOCX_TYPES,
+        max_size_for_content_type,
+    )
 
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
 
@@ -1206,6 +1365,12 @@ def upload_attachments(request, thread_id):
                 {"error": f"{f.name} is too large (max {max_size // (1024 * 1024)} MB)."},
                 status=400,
             )
+
+    if _thread_attachment_bytes(thread) + sum(f.size for f in files) > MAX_THREAD_ATTACHMENT_BYTES:
+        return JsonResponse(
+            {"error": f"This chat has reached its {MAX_THREAD_ATTACHMENT_BYTES // (1024 * 1024)} MB attachment limit."},
+            status=400,
+        )
 
     for f in files:
         att = ChatAttachment.objects.create(
