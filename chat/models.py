@@ -352,14 +352,22 @@ class ChatCanvas(models.Model):
     # the doc is deferred to a quarantined draft and the user is warned). See
     # CanvasSaveToDocumentTool / documents.services.sync_scan.
     dr_save_attempts = models.PositiveSmallIntegerField(default=0)
+    # Soft delete: a non-null timestamp hides the canvas from the agent (prompt +
+    # tool lookups) and the UI tabs, as if deleted, while preserving content and
+    # version history for an Undo/restore. Enumeration/lookup sites filter on
+    # deleted_at__isnull=True; see chat.services.soft_delete_canvas / restore_canvas.
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["created_at"]
         constraints = [
+            # Titles are unique only among *live* canvases, so a soft-deleted
+            # canvas keeps its title without blocking a new one that reuses it.
             models.UniqueConstraint(
                 fields=["thread", "title"],
+                condition=models.Q(deleted_at__isnull=True),
                 name="unique_canvas_title_per_thread",
             ),
         ]

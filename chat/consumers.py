@@ -300,6 +300,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_canvas_switch(data)
         elif msg_type == "chat.canvas_delete":
             await self._handle_canvas_delete(data)
+        elif msg_type == "chat.canvas_restore":
+            await self._handle_canvas_restore(data)
         elif msg_type == "chat.stop":
             await self._handle_stop(data)
         elif msg_type == "pong":
@@ -701,7 +703,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps(event))
 
     async def _handle_canvas_delete(self, data):
-        """Permanently delete a canvas (and its version history)."""
+        """Soft-delete a canvas (preserved + undoable) and post the Undo pill."""
         thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
         canvas_id = data.get("canvas_id")
         if not thread_id or not canvas_id:
@@ -709,12 +711,91 @@ class ChatConsumer(AsyncWebsocketConsumer):
         result = await self._delete_canvas(thread_id, canvas_id)
         if result is None:
             return
-        await self.send(text_data=json.dumps({
+        await self._broadcast_canvas_deleted(thread_id, result)
+
+    async def _broadcast_canvas_deleted(self, thread_id, result, emit=None):
+        """Emit the tab/panel update, persist the Undo-pill marker, surface it live.
+
+        Shared by the user trash-button path (`_handle_canvas_delete`, direct
+        websocket send) and the agent `canvas_delete` tool path (the tool_end
+        watcher, which passes ``emit=self._sink.send_event`` to route through the
+        streaming sink).
+        """
+        async def _default_emit(evt):
+            await self.send(text_data=json.dumps(evt))
+        emit = emit or _default_emit
+        await emit({
             "event_type": "canvas.deleted",
             "deleted_id": result["deleted_id"],
             "canvases": result["canvases"],
             "active_canvas": result["active_canvas"],
+        })
+        title = result.get("deleted_title", "")
+        message_id = await self._create_canvas_deleted_marker(
+            thread_id, result["deleted_id"], title,
+        )
+        await emit({
+            "event_type": "chat.canvas_deleted_marker",
+            "message_id": message_id,
+            "canvas_id": result["deleted_id"],
+            "canvas_title": title,
+        })
+
+    async def _handle_canvas_restore(self, data):
+        """Restore a soft-deleted canvas (Undo) and resolve its pill."""
+        thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
+        canvas_id = data.get("canvas_id")
+        message_id = data.get("message_id")
+        if not thread_id or not canvas_id:
+            return
+        result = await self._restore_canvas(thread_id, canvas_id)
+        if result is None:
+            return
+        # Re-add the tab + reopen by reusing the canvases.loaded contract.
+        await self.send(text_data=json.dumps({
+            "event_type": "canvases.loaded",
+            "canvases": result["canvases"],
+            "active_canvas": result["active_canvas"],
         }))
+        if message_id:
+            await self._mark_canvas_marker_restored(message_id)
+            await self.send(text_data=json.dumps({
+                "event_type": "chat.canvas_marker_restored",
+                "message_id": str(message_id),
+            }))
+
+    @database_sync_to_async
+    def _create_canvas_deleted_marker(self, thread_id, canvas_id, canvas_title):
+        """Persist a UI-only 'canvas deleted' marker message (carries the Undo pill).
+
+        Stored visible-to-user but flagged ``ui_only`` so `_load_history` keeps it
+        out of the LLM context.
+        """
+        from chat.models import ChatMessage
+        msg = ChatMessage.objects.create(
+            thread_id=thread_id,
+            role="system",
+            content="",
+            metadata={
+                "type": "canvas_deleted",
+                "ui_only": True,
+                "canvas_id": str(canvas_id),
+                "canvas_title": canvas_title,
+            },
+            is_hidden_from_user=False,
+        )
+        return str(msg.id)
+
+    @database_sync_to_async
+    def _mark_canvas_marker_restored(self, message_id):
+        """Flag the deletion marker as restored so its pill drops the Undo button."""
+        from chat.models import ChatMessage
+        msg = ChatMessage.objects.filter(
+            id=message_id, thread__created_by=self.user,
+        ).first()
+        if msg and isinstance(msg.metadata, dict) and msg.metadata.get("type") == "canvas_deleted":
+            msg.metadata = {**msg.metadata, "restored": True}
+            msg.save(update_fields=["metadata"])
 
     async def _send_heartbeats(self, interval=30):
         """Send periodic heartbeat events to keep the connection alive during long operations."""
@@ -1563,6 +1644,29 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 })
                         except (json.JSONDecodeError, AttributeError):
                             pass
+                    # The tool already soft-deleted the canvas; recompute the
+                    # post-delete tab state and surface the same canvas.deleted +
+                    # Undo-pill the user trash button produces (via the sink).
+                    if tool_name == "canvas_delete":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok" and result.get("canvas_id"):
+                                from chat.services import live_canvas_state
+                                state = await database_sync_to_async(live_canvas_state)(
+                                    str(thread.id),
+                                )
+                                await self._broadcast_canvas_deleted(
+                                    str(thread.id),
+                                    {
+                                        "deleted_id": str(result["canvas_id"]),
+                                        "deleted_title": result.get("canvas_title", ""),
+                                        "canvases": state["canvases"],
+                                        "active_canvas": state["active_canvas"],
+                                    },
+                                    emit=self._sink.send_event,
+                                )
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
                     # A save the agent couldn't get past the safety/PII scan after its
                     # retries was deferred to a quarantined draft — warn the user directly.
                     if tool_name == "canvas_save_to_document":
@@ -2121,7 +2225,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except ChatThread.DoesNotExist:
             return None
         canvases = list(
-            ChatCanvas.objects.filter(thread_id=thread_id)
+            ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
             .select_related("accepted_checkpoint")
             .order_by("created_at")
         )
@@ -2167,7 +2271,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except ChatThread.DoesNotExist:
             return None
         canvases = list(
-            ChatCanvas.objects.filter(thread=thread)
+            ChatCanvas.objects.filter(thread=thread, deleted_at__isnull=True)
             .select_related("accepted_checkpoint")
             .order_by("created_at")
         )
@@ -2195,6 +2299,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             try:
                 return ChatCanvas.objects.select_related("accepted_checkpoint").get(
                     pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
+                    deleted_at__isnull=True,
                 )
             except ChatCanvas.DoesNotExist:
                 return None
@@ -2207,39 +2312,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return ChatCanvas.objects.select_related("accepted_checkpoint").get(
                     pk=thread.active_canvas_id,
                     thread=thread,
+                    deleted_at__isnull=True,
                 )
             except ChatCanvas.DoesNotExist:
                 pass
         # Fall back to first canvas
         return (
-            ChatCanvas.objects.filter(thread=thread)
+            ChatCanvas.objects.filter(thread=thread, deleted_at__isnull=True)
             .select_related("accepted_checkpoint")
             .order_by("created_at")
             .first()
         )
 
     def _dedupe_canvas_title(self, thread_id, title, exclude_pk=None):
-        """Return a title not used by a *different* canvas in this thread.
+        """Return a title not used by a *different* live canvas in this thread.
 
-        Canvas titles are unique per thread (unique_canvas_title_per_thread). If
-        ``title`` is already taken by another canvas, append " (2)", " (3)", …
-        until free, staying within the 255-char column limit.
+        Thin wrapper over ``chat.services.dedupe_canvas_title`` so the consumer
+        and the soft-delete/restore service paths share one implementation
+        (which excludes soft-deleted canvases — their titles are free to reuse).
         """
-        from chat.models import ChatCanvas
-        title = (title or "")[:255] or "Untitled document"
-        qs = ChatCanvas.objects.filter(thread_id=thread_id)
-        if exclude_pk is not None:
-            qs = qs.exclude(pk=exclude_pk)
-        taken = set(qs.values_list("title", flat=True))
-        if title not in taken:
-            return title
-        i = 2
-        while True:
-            suffix = f" ({i})"
-            candidate = title[: 255 - len(suffix)] + suffix
-            if candidate not in taken:
-                return candidate
-            i += 1
+        from chat.services import dedupe_canvas_title
+        return dedupe_canvas_title(thread_id, title, exclude_pk=exclude_pk)
 
     @database_sync_to_async
     def _save_canvas(self, thread_id, title, content, canvas_id=None):
@@ -2287,7 +2380,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
             return None
         canvas = (
-            ChatCanvas.objects.filter(thread_id=thread_id)
+            ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
             .select_related("accepted_checkpoint")
             .order_by("created_at")
             .first()
@@ -2408,6 +2501,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
                 pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
+                deleted_at__isnull=True,
             )
         except ChatCanvas.DoesNotExist:
             return None
@@ -2424,57 +2518,42 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _delete_canvas(self, thread_id, canvas_id):
-        """Permanently delete a canvas the user owns; promote a survivor to active.
+        """Soft-delete a canvas the user owns; promote a survivor to active.
 
-        Returns ``{deleted_id, canvases, active_canvas}`` describing the post-delete
-        state (``active_canvas`` is ``None`` when the thread has no canvases left),
-        or ``None`` if the canvas isn't found or the requester doesn't own the
-        thread. Checkpoints cascade with the canvas; ``ChatThread.active_canvas`` is
-        SET_NULL if the deleted canvas was the active one, so we re-promote here.
+        Returns ``{deleted_id, deleted_title, canvases, active_canvas}`` describing
+        the post-delete state (``active_canvas`` is ``None`` when no live canvas
+        remains), or ``None`` if the canvas isn't found, already deleted, or not
+        owned. Content and version history are preserved for Undo — see
+        ``chat.services.restore_canvas``.
         """
-        from chat.models import ChatCanvas, ChatThread
-        from chat.services import canvas_diff_baseline, set_active_canvas
+        from chat.models import ChatCanvas
+        from chat.services import soft_delete_canvas
         try:
             canvas = ChatCanvas.objects.get(
                 pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
+                deleted_at__isnull=True,
             )
         except (ChatCanvas.DoesNotExist, ValueError, TypeError):
             return None
-        canvas.delete()
-        remaining = list(
-            ChatCanvas.objects.filter(thread_id=thread_id)
-            .select_related("accepted_checkpoint")
-            .order_by("created_at")
-        )
-        if not remaining:
-            return {"deleted_id": str(canvas_id), "canvases": [], "active_canvas": None}
-        # Re-promote an active canvas: the deleted one may have been active (the FK
-        # is now NULL) or the pointer may already target a survivor.
-        thread = ChatThread.objects.get(pk=thread_id)
-        active_canvas = None
-        if thread.active_canvas_id:
-            active_canvas = next(
-                (c for c in remaining if c.pk == thread.active_canvas_id), None
+        return soft_delete_canvas(thread_id, canvas)
+
+    @database_sync_to_async
+    def _restore_canvas(self, thread_id, canvas_id):
+        """Restore a soft-deleted canvas the user owns.
+
+        Returns ``{restored_id, title, canvases, active_canvas}`` or ``None`` if the
+        canvas isn't found, isn't deleted, or isn't owned.
+        """
+        from chat.models import ChatCanvas
+        from chat.services import restore_canvas
+        try:
+            canvas = ChatCanvas.objects.get(
+                pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
+                deleted_at__isnull=False,
             )
-        if active_canvas is None:
-            active_canvas = remaining[0]
-            set_active_canvas(thread_id, active_canvas)
-        tabs = [
-            {"id": str(c.pk), "title": c.title, "is_active": c.pk == active_canvas.pk}
-            for c in remaining
-        ]
-        accepted_content, pending_ai_review = canvas_diff_baseline(active_canvas)
-        return {
-            "deleted_id": str(canvas_id),
-            "canvases": tabs,
-            "active_canvas": {
-                "id": str(active_canvas.pk),
-                "title": active_canvas.title,
-                "content": active_canvas.content,
-                "accepted_content": accepted_content,
-                "pending_ai_review": pending_ai_review,
-            },
-        }
+        except (ChatCanvas.DoesNotExist, ValueError, TypeError):
+            return None
+        return restore_canvas(thread_id, canvas)
 
     # -- Skill helpers --
 
@@ -3005,7 +3084,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Load ALL messages newest-first (needed to build the overlap window).
         all_msgs = list(
-            ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).order_by("-created_at")
+            ChatMessage.objects.filter(thread=thread)
+            .exclude(is_redacted=True)
+            # UI-only markers (e.g. canvas-deleted pills) never reach the LLM.
+            # has_key is NULL-safe — `exclude(metadata__ui_only=True)` would also
+            # drop every message whose metadata lacks the key (NULL gotcha).
+            .exclude(metadata__has_key="ui_only")
+            .order_by("-created_at")
         )
         total_messages = len(all_msgs)
 
@@ -3040,7 +3125,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         add_qs = ChatMessage.objects.filter(
             thread=thread,
             created_at__lt=oldest_overlap.created_at,
-        ).exclude(is_redacted=True).order_by("-created_at")
+        ).exclude(is_redacted=True).exclude(metadata__has_key="ui_only").order_by("-created_at")
         if thread.summary_up_to_message_id:
             cutoff_msg = ChatMessage.objects.filter(
                 id=thread.summary_up_to_message_id,

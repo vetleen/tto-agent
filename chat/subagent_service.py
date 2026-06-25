@@ -65,7 +65,7 @@ def resolve_subagent_tools(
     - Removes document tools if no data rooms attached
     """
     excluded = {
-        "canvas_activate", "canvas_write", "canvas_edit",
+        "canvas_activate", "canvas_write", "canvas_edit", "canvas_delete",
         "canvas_save_to_document",
         "chat_subagent_create",
         "chat_loop_create", "chat_loop_edit", "chat_loop_stop", "chat_loop_list",

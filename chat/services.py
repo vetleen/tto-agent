@@ -144,14 +144,14 @@ def resolve_canvas(thread_id, canvas_name=None):
     if canvas_name:
         try:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                thread_id=thread_id, title=canvas_name,
+                thread_id=thread_id, title=canvas_name, deleted_at__isnull=True,
             )
             return canvas, None
         except ChatCanvas.DoesNotExist:
             return None, f"No canvas named '{canvas_name}' in this thread."
 
     canvas = (
-        ChatCanvas.objects.filter(thread_id=thread_id, is_active=True)
+        ChatCanvas.objects.filter(thread_id=thread_id, is_active=True, deleted_at__isnull=True)
         .select_related("accepted_checkpoint")
         .order_by("-last_activated_at")
         .first()
@@ -178,13 +178,13 @@ def activate_canvas(thread_id, canvas):
         canvas.save(update_fields=["last_activated_at"])
     else:
         active_count = ChatCanvas.objects.filter(
-            thread_id=thread_id, is_active=True,
+            thread_id=thread_id, is_active=True, deleted_at__isnull=True,
         ).count()
 
         if active_count >= MAX_ACTIVE_CANVASES:
             excess = active_count - MAX_ACTIVE_CANVASES + 1
             oldest_pks = list(
-                ChatCanvas.objects.filter(thread_id=thread_id, is_active=True)
+                ChatCanvas.objects.filter(thread_id=thread_id, is_active=True, deleted_at__isnull=True)
                 .order_by("last_activated_at")
                 .values_list("pk", flat=True)[:excess]
             )
@@ -207,13 +207,13 @@ def set_active_canvases(thread_id, canvas_names):
     from chat.models import ChatCanvas
 
     now = timezone.now()
-    ChatCanvas.objects.filter(thread_id=thread_id).update(is_active=False)
+    ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True).update(is_active=False)
 
     activated = []
     errors = []
     for name in canvas_names[:MAX_ACTIVE_CANVASES]:
         try:
-            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=name)
+            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=name, deleted_at__isnull=True)
             canvas.is_active = True
             canvas.last_activated_at = now
             canvas.save(update_fields=["is_active", "last_activated_at"])
@@ -227,6 +227,117 @@ def set_active_canvases(thread_id, canvas_names):
 def set_active_canvas(thread_id, canvas):
     """Activate a single canvas and update the UI tab pointer."""
     activate_canvas(thread_id, canvas)
+
+
+def dedupe_canvas_title(thread_id, title, exclude_pk=None):
+    """Return a title not used by another *live* canvas in this thread.
+
+    Appends " (2)", " (3)", … until free, within the 255-char column limit.
+    Soft-deleted canvases' titles don't count — the unique constraint ignores
+    them — so a freed title becomes available again.
+    """
+    from chat.models import ChatCanvas
+
+    title = (title or "")[:255] or "Untitled document"
+    qs = ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    taken = set(qs.values_list("title", flat=True))
+    if title not in taken:
+        return title
+    i = 2
+    while True:
+        suffix = f" ({i})"
+        candidate = title[: 255 - len(suffix)] + suffix
+        if candidate not in taken:
+            return candidate
+        i += 1
+
+
+def live_canvas_state(thread_id):
+    """Tabs + active-canvas detail for the thread's non-deleted canvases.
+
+    Re-promotes the oldest surviving canvas to active when the thread's
+    active pointer no longer targets a live one. ``active_canvas`` is None
+    when no live canvas remains (the zero-state).
+    """
+    from chat.models import ChatCanvas, ChatThread
+
+    survivors = list(
+        ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+        .select_related("accepted_checkpoint")
+        .order_by("created_at")
+    )
+    if not survivors:
+        return {"canvases": [], "active_canvas": None}
+    thread = ChatThread.objects.get(pk=thread_id)
+    active = next((c for c in survivors if c.pk == thread.active_canvas_id), None)
+    if active is None:
+        active = survivors[0]
+        set_active_canvas(thread_id, active)
+    tabs = [
+        {"id": str(c.pk), "title": c.title, "is_active": c.pk == active.pk}
+        for c in survivors
+    ]
+    accepted_content, pending_ai_review = canvas_diff_baseline(active)
+    return {
+        "canvases": tabs,
+        "active_canvas": {
+            "id": str(active.pk),
+            "title": active.title,
+            "content": active.content,
+            "accepted_content": accepted_content,
+            "pending_ai_review": pending_ai_review,
+        },
+    }
+
+
+def soft_delete_canvas(thread_id, canvas):
+    """Soft-delete a canvas: hide it from the agent + UI, preserve content/history.
+
+    If it was the active canvas, the thread pointer is re-pointed to the oldest
+    surviving canvas (or left NULL when none remain — the zero-state). Returns
+    the ``canvas.deleted`` event contract:
+    ``{deleted_id, deleted_title, canvases, active_canvas}``.
+    """
+    from django.utils import timezone
+
+    from chat.models import ChatThread
+
+    deleted_title = canvas.title
+    canvas.deleted_at = timezone.now()
+    canvas.is_active = False
+    canvas.save(update_fields=["deleted_at", "is_active", "updated_at"])
+    # active_canvas is SET_NULL, but the row survives a soft-delete so the DB
+    # won't null it — clear it explicitly before re-promoting a survivor.
+    ChatThread.objects.filter(pk=thread_id, active_canvas=canvas).update(active_canvas=None)
+    state = live_canvas_state(thread_id)
+    return {
+        "deleted_id": str(canvas.pk),
+        "deleted_title": deleted_title,
+        "canvases": state["canvases"],
+        "active_canvas": state["active_canvas"],
+    }
+
+
+def restore_canvas(thread_id, canvas):
+    """Restore a soft-deleted canvas, de-duplicating its title against live ones.
+
+    A same-titled live canvas may have been created while this one was deleted,
+    so the restored title is de-duplicated first to satisfy the conditional
+    unique constraint. Returns ``{restored_id, title, canvases, active_canvas}``.
+    """
+    canvas.title = dedupe_canvas_title(thread_id, canvas.title, exclude_pk=canvas.pk)
+    canvas.deleted_at = None
+    canvas.save(update_fields=["title", "deleted_at", "updated_at"])
+    set_active_canvas(thread_id, canvas)
+    state = live_canvas_state(thread_id)
+    return {
+        "restored_id": str(canvas.pk),
+        "title": canvas.title,
+        "canvases": state["canvases"],
+        "active_canvas": state["active_canvas"],
+    }
 
 
 def snapshot_user_edits(canvas):

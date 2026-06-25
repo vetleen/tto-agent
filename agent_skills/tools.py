@@ -132,7 +132,7 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
 
     try:
         canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-            thread_id=thread_id, title=title,
+            thread_id=thread_id, title=title, deleted_at__isnull=True,
         )
         canvas.content = content
         canvas.save(update_fields=["content", "updated_at"])
@@ -145,7 +145,7 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
             created = True
         except IntegrityError:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                thread_id=thread_id, title=title,
+                thread_id=thread_id, title=title, deleted_at__isnull=True,
             )
             canvas.content = content
             canvas.save(update_fields=["content", "updated_at"])
@@ -749,7 +749,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
 
         try:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                thread_id=thread_id, title=title,
+                thread_id=thread_id, title=title, deleted_at__isnull=True,
             )
             canvas.content = content
             canvas.save(update_fields=["content", "updated_at"])
@@ -762,7 +762,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                 created = True
             except IntegrityError:
                 canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                    thread_id=thread_id, title=title,
+                    thread_id=thread_id, title=title, deleted_at__isnull=True,
                 )
                 canvas.content = content
                 canvas.save(update_fields=["content", "updated_at"])

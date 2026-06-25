@@ -454,6 +454,7 @@ def build_semi_static_prompt(
 \nUse `canvas_write(title="...", content="...")` to create a new canvas tab or rewrite an existing one.
 Use `canvas_edit(canvas_name="...", edits=[...])` to make targeted edits. When canvas_name is omitted, the most recently activated canvas is used.
 Use `canvas_activate(canvas_names=["..."])` to choose which canvases (up to 3) are in your context.
+Use `canvas_delete(canvas_name="...")` to remove a canvas you no longer need — e.g. a scratch/draft canvas, or to free room when the per-thread canvas limit is reached. It's preserved and the user can undo, so this is safe.
 After using canvas tools, don't reproduce the content in chat.
 """
     elif canvas:

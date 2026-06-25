@@ -1088,17 +1088,17 @@ def canvas_import(request, thread_id, canvas_id=None):
     title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
     if canvas_id:
-        canvas = get_object_or_404(ChatCanvas, pk=canvas_id, thread=thread)
+        canvas = get_object_or_404(ChatCanvas, pk=canvas_id, thread=thread, deleted_at__isnull=True)
         canvas.title = title
     else:
         from django.db import IntegrityError
         try:
-            canvas = ChatCanvas.objects.get(thread=thread, title=title)
+            canvas = ChatCanvas.objects.get(thread=thread, title=title, deleted_at__isnull=True)
         except ChatCanvas.DoesNotExist:
             try:
                 canvas = ChatCanvas.objects.create(thread=thread, title=title, content="")
             except IntegrityError:
-                canvas = ChatCanvas.objects.get(thread=thread, title=title)
+                canvas = ChatCanvas.objects.get(thread=thread, title=title, deleted_at__isnull=True)
 
     _title, content, truncated = import_docx_to_canvas(uploaded, request.user, canvas=canvas)
     canvas.content = content

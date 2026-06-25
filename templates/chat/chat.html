@@ -255,6 +255,14 @@
                 </div>
               </div>
             </div>
+          {% elif m.role == "system" and m.metadata.type == "canvas_deleted" %}
+            <div class="flex justify-center my-2" data-canvas-marker data-message-id="{{ m.id }}">
+              <span class="inline-flex items-center gap-2 px-3 py-1 text-xs rounded-full text-body/70 bg-neutral-tertiary">
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                <span class="canvas-marker-text">{{ assistant_name }} deleted the canvas "{{ m.metadata.canvas_title }}"{% if m.metadata.restored %} · restored{% endif %}</span>
+                {% if not m.metadata.restored %}<button type="button" class="canvas-undo-btn font-medium text-fg-brand hover:underline cursor-pointer" data-canvas-id="{{ m.metadata.canvas_id }}" data-message-id="{{ m.id }}">Undo</button>{% endif %}
+              </span>
+            </div>
           {% endif %}
           {% if m.is_boundary %}
           <div class="compression-divider flex items-center gap-2 text-xs text-body/40 select-none" data-compression-divider>
@@ -1203,6 +1211,17 @@
       btn.disabled = false;
       if (typeof showToast === 'function') showToast(err.message || 'Could not branch this chat.');
     });
+  });
+  // Delegated Undo handler for the "canvas deleted" pill — restore the
+  // soft-deleted canvas over the WebSocket (mirrors the canvas-delete send).
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.canvas-undo-btn');
+    if (!btn || btn.disabled) return;
+    var canvasId = btn.getAttribute('data-canvas-id');
+    var messageId = btn.getAttribute('data-message-id');
+    if (!canvasId || !activeThreadId || !ws || ws.readyState !== WebSocket.OPEN) return;
+    btn.disabled = true;
+    ws.send(JSON.stringify({ type: "chat.canvas_restore", thread_id: activeThreadId, canvas_id: canvasId, message_id: messageId }));
   });
   // Delegated re-attach handler: re-attach a dropped (pre-compression) file to
   // the next message. Mirrors the upload flow (pendingAttachment* + pill).
@@ -2553,6 +2572,32 @@
       }
       return;
     }
+    if (et === "chat.canvas_deleted_marker") {
+      // Persistent inline Undo pill for a just-deleted canvas (agent or user).
+      var cdmWrap = document.createElement("div");
+      cdmWrap.className = "flex justify-center my-2";
+      cdmWrap.setAttribute("data-canvas-marker", "");
+      if (data.message_id) cdmWrap.setAttribute("data-message-id", String(data.message_id));
+      cdmWrap.innerHTML = '<span class="inline-flex items-center gap-2 px-3 py-1 text-xs rounded-full text-body/70 bg-neutral-tertiary">'
+        + '<svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>'
+        + '<span class="canvas-marker-text">' + ASSISTANT_NAME + ' deleted the canvas "' + escapeHtml(String(data.canvas_title || "")) + '"</span>'
+        + '<button type="button" class="canvas-undo-btn font-medium text-fg-brand hover:underline cursor-pointer" data-canvas-id="' + escapeHtml(String(data.canvas_id || "")) + '" data-message-id="' + escapeHtml(String(data.message_id || "")) + '">Undo</button>'
+        + '</span>';
+      messagesContainer.appendChild(cdmWrap);
+      scrollToBottom();
+      return;
+    }
+    if (et === "chat.canvas_marker_restored") {
+      if (!data.message_id) return;
+      var cmr = messagesContainer.querySelector('[data-canvas-marker][data-message-id="' + data.message_id + '"]');
+      if (cmr) {
+        var cmrUndo = cmr.querySelector('.canvas-undo-btn');
+        if (cmrUndo) cmrUndo.remove();
+        var cmrText = cmr.querySelector('.canvas-marker-text');
+        if (cmrText && cmrText.textContent.indexOf(' · restored') === -1) cmrText.textContent += ' · restored';
+      }
+      return;
+    }
     if (et === "canvas.accepted") {
       canvasAcceptedContent = data.accepted_content;
       if (data.canvas_id && canvasStates[data.canvas_id]) canvasStates[data.canvas_id].acceptedContent = data.accepted_content;
@@ -2699,6 +2744,7 @@
         else if (toolName === "canvas_activate") displayText = "Switching active canvases...";
         else if (toolName === "canvas_write") displayText = "Writing document...";
         else if (toolName === "canvas_edit") displayText = "Editing document...";
+        else if (toolName === "canvas_delete") displayText = "Deleting canvas...";
         else if (toolName === "web_fetch") displayText = "Fetching web page...";
         else if (toolName === "web_search") displayText = "Searching the web...";
         else if (toolName === "web_search_read") displayText = "Searching and reading web pages...";
@@ -2755,6 +2801,7 @@
           else if (toolName === "canvas_activate") doneLabel = "Updated active canvases";
           else if (toolName === "canvas_write") doneLabel = "Rewrote the canvas text from scratch";
           else if (toolName === "canvas_edit") doneLabel = "Edited the canvas text";
+          else if (toolName === "canvas_delete") doneLabel = "Deleted canvas";
           else if (toolName === "web_fetch") doneLabel = "Fetched web page";
           else if (toolName === "web_search") doneLabel = "Searched the web";
           else if (toolName === "web_search_read") doneLabel = "Searched and read web pages";

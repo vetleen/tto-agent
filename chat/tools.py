@@ -955,12 +955,12 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         content = (content or "")[:CANVAS_MAX_CHARS]
 
         try:
-            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=title)
+            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=title, deleted_at__isnull=True)
             canvas.content = content
             canvas.save(update_fields=["content", "updated_at"])
             created = False
         except ChatCanvas.DoesNotExist:
-            if ChatCanvas.objects.filter(thread_id=thread_id).count() >= MAX_CANVASES_PER_THREAD:
+            if ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True).count() >= MAX_CANVASES_PER_THREAD:
                 return json.dumps({"error": f"Maximum of {MAX_CANVASES_PER_THREAD} canvases per thread reached."})
             canvas = ChatCanvas.objects.create(thread_id=thread_id, title=title, content=content)
             created = True

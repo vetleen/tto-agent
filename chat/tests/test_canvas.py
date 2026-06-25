@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from chat.canvas_tools import ActiveCanvasTool, EditCanvasTool, WriteCanvasTool
+from chat.canvas_tools import ActiveCanvasTool, DeleteCanvasTool, EditCanvasTool, WriteCanvasTool
 from chat.models import CanvasCheckpoint, ChatCanvas, ChatThread
 from llm.types.context import RunContext
 
@@ -2212,3 +2212,94 @@ class ConsumerPendingReviewTests(TransactionTestCase):
             self.assertEqual(baseline, "original content")
         await database_sync_to_async(check)()
         await comm.disconnect()
+
+
+class DeleteCanvasToolTests(TestCase):
+    """canvas_delete soft-deletes (preserved + undoable) and frees the cap."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="del@example.com", password="pw")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _c(self):
+        return _ctx(self.user.pk, self.thread.id)
+
+    def test_delete_soft_deletes_and_preserves_history(self):
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "hi"}, self._c())
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertTrue(CanvasCheckpoint.objects.filter(canvas=canvas).exists())
+        result = _invoke(DeleteCanvasTool, {"canvas_name": "Doc"}, self._c())
+        self.assertEqual(result["status"], "ok")
+        canvas.refresh_from_db()
+        self.assertIsNotNone(canvas.deleted_at)
+        # Content + version history preserved.
+        self.assertEqual(canvas.content, "hi")
+        self.assertTrue(CanvasCheckpoint.objects.filter(canvas=canvas).exists())
+
+    def test_deleted_canvas_invisible_to_resolve(self):
+        from chat.services import resolve_canvas
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "hi"}, self._c())
+        _invoke(DeleteCanvasTool, {"canvas_name": "Doc"}, self._c())
+        canvas, err = resolve_canvas(str(self.thread.id), "Doc")
+        self.assertIsNone(canvas)
+        self.assertIsNotNone(err)
+
+    def test_unknown_title_returns_error_with_available(self):
+        _invoke(WriteCanvasTool, {"title": "Real", "content": "x"}, self._c())
+        result = _invoke(DeleteCanvasTool, {"canvas_name": "Ghost"}, self._c())
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Real", result["available_canvases"])
+
+    def test_same_title_allowed_after_soft_delete(self):
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "v1"}, self._c())
+        _invoke(DeleteCanvasTool, {"canvas_name": "Doc"}, self._c())
+        # Re-creating the same title must not raise (conditional unique constraint).
+        result = _invoke(WriteCanvasTool, {"title": "Doc", "content": "v2"}, self._c())
+        self.assertEqual(result["status"], "ok")
+        live = ChatCanvas.objects.filter(
+            thread=self.thread, title="Doc", deleted_at__isnull=True,
+        )
+        self.assertEqual(live.count(), 1)
+        self.assertEqual(live.first().content, "v2")
+        # Two rows total: the soft-deleted one + the new live one.
+        self.assertEqual(
+            ChatCanvas.objects.filter(thread=self.thread, title="Doc").count(), 2,
+        )
+
+    def test_delete_frees_canvas_cap(self):
+        from chat.services import MAX_CANVASES_PER_THREAD
+        for i in range(MAX_CANVASES_PER_THREAD):
+            r = _invoke(WriteCanvasTool, {"title": f"C{i}", "content": "x"}, self._c())
+            self.assertEqual(r["status"], "ok")
+        # Cap reached — a new canvas is refused.
+        capped = _invoke(WriteCanvasTool, {"title": "Overflow", "content": "x"}, self._c())
+        self.assertEqual(capped["status"], "error")
+        # Free a slot via soft-delete, then the new canvas succeeds.
+        _invoke(DeleteCanvasTool, {"canvas_name": "C0"}, self._c())
+        freed = _invoke(WriteCanvasTool, {"title": "Overflow", "content": "x"}, self._c())
+        self.assertEqual(freed["status"], "ok")
+
+    def test_restore_round_trip(self):
+        from chat.services import resolve_canvas, restore_canvas
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "hi"}, self._c())
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        _invoke(DeleteCanvasTool, {"canvas_name": "Doc"}, self._c())
+        canvas.refresh_from_db()
+        restore_canvas(str(self.thread.id), canvas)
+        canvas.refresh_from_db()
+        self.assertIsNone(canvas.deleted_at)
+        found, err = resolve_canvas(str(self.thread.id), "Doc")
+        self.assertIsNotNone(found)
+
+    def test_restore_dedupes_title_on_collision(self):
+        from chat.services import restore_canvas
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "first"}, self._c())
+        deleted = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        _invoke(DeleteCanvasTool, {"canvas_name": "Doc"}, self._c())
+        # A new live canvas reclaims the freed title while the other is deleted.
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "second"}, self._c())
+        deleted.refresh_from_db()
+        restore_canvas(str(self.thread.id), deleted)
+        deleted.refresh_from_db()
+        self.assertEqual(deleted.title, "Doc (2)")
+        self.assertIsNone(deleted.deleted_at)

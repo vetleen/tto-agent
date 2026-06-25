@@ -903,10 +903,9 @@ class CanvasOwnershipTests(TransactionTestCase):
         result = await consumer._delete_canvas(str(thread.id), str(canvas_a.pk))
         self.assertIsNotNone(result)
         self.assertEqual(result["deleted_id"], str(canvas_a.pk))
-        exists = await database_sync_to_async(
-            ChatCanvas.objects.filter(pk=canvas_a.pk).exists
-        )()
-        self.assertFalse(exists)
+        # canvas_a is soft-deleted: the row is preserved (Undo) but hidden.
+        canvas_a = await database_sync_to_async(ChatCanvas.objects.get)(pk=canvas_a.pk)
+        self.assertIsNotNone(canvas_a.deleted_at)
         # canvas_b survives and is promoted to active, both in the payload and DB.
         self.assertEqual(result["active_canvas"]["id"], str(canvas_b.pk))
         self.assertEqual([t["id"] for t in result["canvases"]], [str(canvas_b.pk)])
@@ -934,7 +933,7 @@ class CanvasOwnershipTests(TransactionTestCase):
         self.assertEqual(thread.active_canvas_id, canvas_a.pk)
 
     async def test_delete_last_canvas_leaves_none(self):
-        """Deleting the only canvas leaves the thread with no active canvas."""
+        """Deleting the only canvas leaves no *live* canvas (the row is preserved)."""
         thread = await database_sync_to_async(ChatThread.objects.create)(
             created_by=self.owner,
         )
@@ -946,13 +945,18 @@ class CanvasOwnershipTests(TransactionTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["canvases"], [])
         self.assertIsNone(result["active_canvas"])
-        count = await database_sync_to_async(
+        live = await database_sync_to_async(
+            ChatCanvas.objects.filter(thread=thread, deleted_at__isnull=True).count
+        )()
+        self.assertEqual(live, 0)
+        # The row itself is preserved for Undo.
+        total = await database_sync_to_async(
             ChatCanvas.objects.filter(thread=thread).count
         )()
-        self.assertEqual(count, 0)
+        self.assertEqual(total, 1)
 
-    async def test_delete_canvas_cascades_checkpoints(self):
-        """A deleted canvas takes its version history (checkpoints) with it."""
+    async def test_delete_canvas_preserves_checkpoints(self):
+        """Soft-delete keeps the canvas's version history for Undo/restore."""
         from chat.models import CanvasCheckpoint
         thread = await database_sync_to_async(ChatThread.objects.create)(
             created_by=self.owner,
@@ -971,10 +975,10 @@ class CanvasOwnershipTests(TransactionTestCase):
         cp_exists = await database_sync_to_async(
             CanvasCheckpoint.objects.filter(pk=cp.pk).exists
         )()
-        self.assertFalse(cp_exists)
+        self.assertTrue(cp_exists)
 
     async def test_delete_canvas_denies_other_users_thread(self):
-        """A non-owner cannot delete a canvas; it must remain intact."""
+        """A non-owner cannot delete a canvas; it must remain intact and live."""
         thread = await database_sync_to_async(ChatThread.objects.create)(
             created_by=self.owner,
         )
@@ -984,10 +988,63 @@ class CanvasOwnershipTests(TransactionTestCase):
         consumer = self._make_consumer(self.attacker)
         result = await consumer._delete_canvas(str(thread.id), str(canvas.pk))
         self.assertIsNone(result)
-        exists = await database_sync_to_async(
-            ChatCanvas.objects.filter(pk=canvas.pk).exists
-        )()
-        self.assertTrue(exists)
+        canvas = await database_sync_to_async(ChatCanvas.objects.get)(pk=canvas.pk)
+        self.assertIsNone(canvas.deleted_at)
+
+    async def test_restore_canvas_denies_other_users_thread(self):
+        """A non-owner cannot restore another user's soft-deleted canvas."""
+        from chat.services import soft_delete_canvas
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Secret", content="No",
+        )
+        await database_sync_to_async(soft_delete_canvas)(str(thread.id), canvas)
+        consumer = self._make_consumer(self.attacker)
+        result = await consumer._restore_canvas(str(thread.id), str(canvas.pk))
+        self.assertIsNone(result)
+        canvas = await database_sync_to_async(ChatCanvas.objects.get)(pk=canvas.pk)
+        self.assertIsNotNone(canvas.deleted_at)
+
+    async def test_canvas_deleted_marker_excluded_from_llm_history(self):
+        """The UI-only deletion marker is shown to the user but never to the LLM."""
+        from chat.models import ChatMessage
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        await database_sync_to_async(ChatMessage.objects.create)(
+            thread=thread, role="user", content="hello", token_count=1,
+        )
+        consumer = self._make_consumer(self.owner)
+        await consumer._create_canvas_deleted_marker(str(thread.id), "1", "Doc")
+        hist = await consumer._load_history(thread)
+        roles = [m.get("role") for m in hist["messages"]]
+        self.assertIn("user", roles)
+        self.assertNotIn("system", roles)  # the ui_only marker is filtered out
+
+    async def test_restore_via_handler_resolves_marker(self):
+        """_restore_canvas un-deletes the row; the marker is flagged restored."""
+        from chat.models import ChatMessage
+        from chat.services import soft_delete_canvas
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        canvas = await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=thread, title="Doc", content="x",
+        )
+        await database_sync_to_async(soft_delete_canvas)(str(thread.id), canvas)
+        consumer = self._make_consumer(self.owner)
+        msg_id = await consumer._create_canvas_deleted_marker(
+            str(thread.id), str(canvas.pk), "Doc",
+        )
+        result = await consumer._restore_canvas(str(thread.id), str(canvas.pk))
+        self.assertIsNotNone(result)
+        await consumer._mark_canvas_marker_restored(msg_id)
+        canvas = await database_sync_to_async(ChatCanvas.objects.get)(pk=canvas.pk)
+        self.assertIsNone(canvas.deleted_at)
+        marker = await database_sync_to_async(ChatMessage.objects.get)(pk=msg_id)
+        self.assertTrue(marker.metadata.get("restored"))
 
 
 @override_settings(

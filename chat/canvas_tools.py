@@ -167,7 +167,7 @@ class WriteCanvasTool(ContextAwareTool):
         lookup_title = (canvas_name or title)[:255]
         try:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                thread_id=thread_id, title=lookup_title,
+                thread_id=thread_id, title=lookup_title, deleted_at__isnull=True,
             )
             # Preserve any uncommitted user edits before overwriting
             snapshot_user_edits(canvas)
@@ -178,7 +178,9 @@ class WriteCanvasTool(ContextAwareTool):
             created = False
         except ChatCanvas.DoesNotExist:
             # Check canvas cap
-            count = ChatCanvas.objects.filter(thread_id=thread_id).count()
+            count = ChatCanvas.objects.filter(
+                thread_id=thread_id, deleted_at__isnull=True,
+            ).count()
             if count >= MAX_CANVASES_PER_THREAD:
                 return json.dumps({
                     "status": "error",
@@ -192,7 +194,7 @@ class WriteCanvasTool(ContextAwareTool):
             except IntegrityError:
                 # Race condition — title was created concurrently
                 canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
-                    thread_id=thread_id, title=title,
+                    thread_id=thread_id, title=title, deleted_at__isnull=True,
                 )
                 canvas.content = content
                 canvas.save(update_fields=["content", "updated_at"])
@@ -321,8 +323,57 @@ class EditCanvasTool(ContextAwareTool):
         return json.dumps(result)
 
 
+class DeleteCanvasInput(ReasonBaseModel):
+    canvas_name: str = Field(description="Exact title of the canvas to delete.")
+
+
+class DeleteCanvasTool(ContextAwareTool):
+    """Soft-delete a canvas from the conversation (preserved + user-undoable)."""
+
+    name: str = "canvas_delete"
+    description: str = (
+        "Delete a canvas from this conversation when it's no longer needed — e.g. "
+        "to discard a scratch/draft canvas, or to free room when the per-thread "
+        "canvas limit is reached. The canvas's content and version history are "
+        "preserved and the user can undo the deletion, so this is safe. Provide the "
+        "exact title of the canvas to delete."
+    )
+    args_schema: type[BaseModel] = DeleteCanvasInput
+
+    def _run(self, canvas_name: str, **kwargs) -> str:
+        from chat.models import ChatCanvas
+        from chat.services import soft_delete_canvas
+
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        try:
+            canvas = ChatCanvas.objects.get(
+                thread_id=thread_id, title=canvas_name, deleted_at__isnull=True,
+            )
+        except ChatCanvas.DoesNotExist:
+            available = list(
+                ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+                .order_by("created_at")
+                .values_list("title", flat=True)
+            )
+            return json.dumps({
+                "status": "error",
+                "message": f"No canvas named '{canvas_name}' in this thread.",
+                "available_canvases": available,
+            })
+
+        title = canvas.title
+        soft_delete_canvas(thread_id, canvas)
+        return json.dumps({
+            "status": "ok", "canvas_id": str(canvas.pk), "canvas_title": title,
+        })
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(ActiveCanvasTool())
 _registry.register_tool(WriteCanvasTool())
 _registry.register_tool(EditCanvasTool())
+_registry.register_tool(DeleteCanvasTool())
