@@ -180,18 +180,19 @@ if not DEBUG:
 # All third-party JS is self-hosted (static/js/vendor/), so script-src is 'self'
 # plus a per-request nonce: injected inline scripts carry no nonce and are blocked
 # — the primary XSS control. Inline styles keep 'unsafe-inline' (style injection is
-# low risk and there are many inline style= attributes + library-injected styles);
-# Google Fonts are allowlisted. img-src/media-src allow https: so S3-hosted media
-# and document images still load. These resource directives are a starting point to
-# tighten once verified on staging.
+# low risk and there are many inline style= attributes + library-injected styles).
+# Brand web fonts are self-hosted (static/fonts/, served same-origin), so style-src
+# and font-src no longer need Google/jsDelivr origins — SELF covers them. img-src/
+# media-src allow https: so S3-hosted media and document images still load. These
+# resource directives are a starting point to tighten once verified on staging.
 from csp.constants import NONE, NONCE, SELF, UNSAFE_INLINE  # noqa: E402
 
 CONTENT_SECURITY_POLICY = {
     "DIRECTIVES": {
         "default-src": [SELF],
         "script-src": [SELF, NONCE],
-        "style-src": [SELF, UNSAFE_INLINE, "https://fonts.googleapis.com"],
-        "font-src": [SELF, "https://fonts.gstatic.com", "https://cdn.jsdelivr.net", "data:"],
+        "style-src": [SELF, UNSAFE_INLINE],
+        "font-src": [SELF, "data:"],
         "img-src": [SELF, "data:", "blob:", "https:"],
         "media-src": [SELF, "blob:", "https:"],
         "connect-src": [SELF],
