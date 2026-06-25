@@ -1,6 +1,7 @@
 """Tests for WebFetchTool."""
 
 import json
+import logging
 import re
 import socket
 from unittest.mock import MagicMock, patch
@@ -1266,3 +1267,20 @@ class PdfRoutingTests(TestCase):
 
         self.assertIn("Error", result)
         self.assertIn("PDF", result)
+
+
+class TrafilaturaLoggerMutedTests(TestCase):
+    """Importing web_fetch raises the trafilatura logger to ERROR so its
+    per-page 'discarding data' WARNING chatter doesn't storm Sentry (WILFRED-68).
+    Extraction has a readability → bs4 fallback, so the warnings are non-actionable.
+    """
+
+    def test_trafilatura_warnings_disabled(self):
+        import llm.tools.web_fetch  # noqa: F401 — import applies the level
+
+        self.assertEqual(logging.getLogger("trafilatura").level, logging.ERROR)
+        # trafilatura.core (the logger that emitted WILFRED-68) inherits the
+        # effective level, so WARNING is suppressed while ERROR+ still surfaces.
+        core = logging.getLogger("trafilatura.core")
+        self.assertFalse(core.isEnabledFor(logging.WARNING))
+        self.assertTrue(core.isEnabledFor(logging.ERROR))

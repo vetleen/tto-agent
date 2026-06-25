@@ -25,6 +25,14 @@ from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
 
 logger = logging.getLogger(__name__)
 
+# trafilatura (the primary content extractor in _extract_content) is chatty: on
+# pages it can't cleanly parse it logs per-page chatter such as "discarding data:
+# None" at WARNING, which Sentry's WARNING capture turned into events from the
+# web_fetch tool (WILFRED-68). Extraction has a fallback chain (readability →
+# bs4) so these are non-actionable for us. Raise the library's level to ERROR so
+# genuine failures still surface while the per-page chatter stays out of Sentry.
+logging.getLogger("trafilatura").setLevel(logging.ERROR)
+
 _ABSOLUTE_MAX_CHARS = 50_000
 
 # Default hard ceiling on bytes downloaded from a (user/LLM-supplied) URL.
