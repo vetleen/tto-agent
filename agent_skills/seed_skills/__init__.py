@@ -1,5 +1,8 @@
 """System skill definitions seeded on every migrate."""
 
+from agent_skills.seed_skills.commercial_hypothesis_drafter import (
+    COMMERCIAL_HYPOTHESIS_DRAFTER,
+)
 from agent_skills.seed_skills.idea_evaluation_designer import IDEA_EVALUATION_DESIGNER
 from agent_skills.seed_skills.irl_project_assessor import IRL_PROJECT_ASSESSOR
 from agent_skills.seed_skills.market_analyzer import MARKET_ANALYZER
@@ -9,7 +12,7 @@ from agent_skills.seed_skills.skill_creator import SKILL_CREATOR
 from agent_skills.seed_skills.web_deep_researcher import WEB_DEEP_RESEARCHER
 from agent_skills.seed_skills.written_assignment_writer import WRITTEN_ASSIGNMENT_WRITER
 
-SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, RCN_QUALIFICATION_GRANT, RCN_VERIFICATION_GRANT, WEB_DEEP_RESEARCHER, IRL_PROJECT_ASSESSOR, IDEA_EVALUATION_DESIGNER, MARKET_ANALYZER]
+SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, RCN_QUALIFICATION_GRANT, RCN_VERIFICATION_GRANT, WEB_DEEP_RESEARCHER, IRL_PROJECT_ASSESSOR, IDEA_EVALUATION_DESIGNER, MARKET_ANALYZER, COMMERCIAL_HYPOTHESIS_DRAFTER]
 
 # Cross-app seed skill from the meetings app. Wrapped in try/except so
 # the agent_skills app remains importable even if `meetings` is removed

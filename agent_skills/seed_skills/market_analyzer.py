@@ -175,7 +175,7 @@ Adapt the plan to the actual case.
 - what problem it claims to solve
 - how mature the evidence is
 - who the inventors are
-- whether a prototype or reduction to practice exists. 
+- whether a prototype or reduction to practice exists
 
 *If you don't find these answers in the provided materials, pause and challenge the user to produce the answers.*
 
