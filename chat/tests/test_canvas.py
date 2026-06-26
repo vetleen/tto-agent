@@ -1072,6 +1072,23 @@ class EditCanvasToolCheckpointTests(TestCase):
         canvas = ChatCanvas.objects.get(thread=self.thread)
         self.assertIn("5 years", canvas.content)
 
+    def test_malformed_edit_items_are_dropped(self):
+        """Regression for WILFRED-6A: a model sometimes includes a non-actionable
+        edit item (e.g. {"reason": ...} with no old_text/new_text). That item is
+        dropped so the valid edits still apply, instead of the whole tool call
+        failing Pydantic validation.
+        """
+        self._setup_canvas("The term is 3 years.")
+        result = _invoke(EditCanvasTool, {
+            "edits": [
+                {"old_text": "3 years", "new_text": "5 years", "reason": "update"},
+                {"reason": "explain the change"},  # malformed: no old_text/new_text
+            ]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["applied"], 1)
+        canvas = ChatCanvas.objects.get(thread=self.thread)
+        self.assertIn("5 years", canvas.content)
+
     def test_failed_edit_does_not_create_checkpoint(self):
         self._setup_canvas("Some content.")
         _invoke(EditCanvasTool, {

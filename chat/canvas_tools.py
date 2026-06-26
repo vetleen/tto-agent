@@ -76,20 +76,30 @@ class EditCanvasInput(ReasonBaseModel):
 
     @field_validator("edits", mode="before")
     @classmethod
-    def _coerce_json_string_edits(cls, value):
-        """Tolerate models that pass ``edits`` as a JSON-encoded string.
+    def _coerce_and_clean_edits(cls, value):
+        """Tolerate the common ways models malform the ``edits`` array.
 
-        Some tool-calling models serialize the array argument as a string
-        (e.g. ``'[{"old_text": ...}]'``) instead of a native list, which made
-        canvas_edit fail Pydantic validation outright (WILFRED-40). If the value
-        is a string, parse it as JSON; on success use the result, otherwise fall
-        through to the normal list-type validation error.
+        1. Some tool-calling models serialize the whole array as a JSON string
+           (e.g. ``'[{"old_text": ...}]'``) instead of a native list, which made
+           canvas_edit fail Pydantic validation outright (WILFRED-40). Parse a
+           string as JSON; on failure fall through to the normal list-type error.
+        2. Some models include a non-actionable item missing the find/replace
+           fields — e.g. ``{"reason": "..."}`` with no old_text/new_text
+           (WILFRED-6A). Such an item can't be applied as a find-replace, so drop
+           it and let the valid edits proceed instead of failing the whole call.
         """
         if isinstance(value, str):
             try:
-                return json.loads(value)
+                value = json.loads(value)
             except (ValueError, TypeError):
                 return value
+        if isinstance(value, list):
+            return [
+                item
+                for item in value
+                if not isinstance(item, dict)
+                or (item.get("old_text") and "new_text" in item)
+            ]
         return value
 
 
