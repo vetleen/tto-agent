@@ -818,7 +818,7 @@ class RunSubagentTaskTests(TestCase):
         mock_response.message.content = "Task completed successfully."
         mock_response.usage.total_tokens = 500
         mock_response.usage.cost_usd = 0.01
-        mock_svc.return_value.run.return_value = mock_response
+        mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -840,7 +840,7 @@ class RunSubagentTaskTests(TestCase):
     def test_task_handles_failure_sets_failed(self, mock_prefs, mock_svc):
         """On failure, run_subagent sets FAILED directly."""
         mock_prefs.return_value = _prefs()
-        mock_svc.return_value.run.side_effect = RuntimeError("Provider down")
+        mock_svc.return_value.run_via_stream.side_effect = RuntimeError("Provider down")
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -864,7 +864,7 @@ class RunSubagentTaskTests(TestCase):
         from llm.service.errors import LLMOverloadedError
 
         mock_prefs.return_value = _prefs()
-        mock_svc.return_value.run.side_effect = LLMOverloadedError(
+        mock_svc.return_value.run_via_stream.side_effect = LLMOverloadedError(
             "overloaded", error_code="overloaded",
         )
 
@@ -901,7 +901,7 @@ class RunSubagentServiceTests(TestCase):
         mock_response.message.content = "Done"
         mock_response.usage.total_tokens = 100
         mock_response.usage.cost_usd = 0.001
-        mock_svc.return_value.run.return_value = mock_response
+        mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -923,7 +923,7 @@ class RunSubagentServiceTests(TestCase):
         mock_response.message.content = "Done"
         mock_response.usage.total_tokens = 100
         mock_response.usage.cost_usd = 0.0
-        mock_svc.return_value.run.return_value = mock_response
+        mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -934,7 +934,7 @@ class RunSubagentServiceTests(TestCase):
         run_subagent(run.id)
 
         # Verify the request included data room IDs in context
-        call_args = mock_svc.return_value.run.call_args
+        call_args = mock_svc.return_value.run_via_stream.call_args
         request = call_args[0][1]
         self.assertEqual(request.context.data_room_ids, [1, 2])
 
@@ -946,7 +946,7 @@ class RunSubagentServiceTests(TestCase):
         mock_response.message.content = "Research findings here."
         mock_response.usage.total_tokens = 100
         mock_response.usage.cost_usd = 0.001
-        mock_svc.return_value.run.return_value = mock_response
+        mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -979,7 +979,7 @@ class RunSubagentServiceTests(TestCase):
         mock_response.message.tool_calls = []
         mock_response.usage.total_tokens = 50
         mock_response.usage.cost_usd = 0.0
-        mock_svc.return_value.run.return_value = mock_response
+        mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -1006,7 +1006,7 @@ class RunSubagentServiceTests(TestCase):
         mock_response.message.tool_calls = [{"id": "c1", "name": "web_search"}]
         mock_response.usage.total_tokens = 200
         mock_response.usage.cost_usd = 0.002
-        mock_svc.return_value.run.return_value = mock_response
+        mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -1028,7 +1028,7 @@ class RunSubagentServiceTests(TestCase):
     def test_failure_sets_failed(self, mock_prefs, mock_svc):
         """run_subagent should set FAILED on failure."""
         mock_prefs.return_value = _prefs()
-        mock_svc.return_value.run.side_effect = RuntimeError("Transient error")
+        mock_svc.return_value.run_via_stream.side_effect = RuntimeError("Transient error")
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
@@ -1053,7 +1053,7 @@ class RunSubagentServiceTests(TestCase):
         from llm.service.errors import LLMRateLimitError
 
         mock_prefs.return_value = _prefs()
-        mock_svc.return_value.run.side_effect = LLMRateLimitError(
+        mock_svc.return_value.run_via_stream.side_effect = LLMRateLimitError(
             "rate limited", error_code="rate_limited",
         )
 
@@ -1069,6 +1069,32 @@ class RunSubagentServiceTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.RUNNING)
         self.assertEqual(run.error, "")
         self.assertIsNone(run.completed_at)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_uses_streaming_not_blocking_run(self, mock_prefs, mock_svc):
+        """run_subagent must drive the streaming path (run_via_stream) with
+        request.stream=True, never the non-streaming run() — so a long generation
+        can't trip a non-streaming read timeout."""
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 10
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        mock_svc.return_value.run_via_stream.assert_called_once()
+        mock_svc.return_value.run.assert_not_called()
+        pipeline_id, request = mock_svc.return_value.run_via_stream.call_args[0]
+        self.assertEqual(pipeline_id, "simple_chat")
+        self.assertTrue(request.stream)
 
 
 # ---------------------------------------------------------------------------
@@ -1164,6 +1190,44 @@ class CeleryOnFailureTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.error, "Cancelled by user.")
 
+    def test_on_failure_captures_and_flushes_to_sentry(self):
+        """Terminal failures are captured + flushed explicitly so they can't be
+        lost by the LoggingIntegration (regression: prod run b268f675, a 562s
+        timeout whose error logs never produced a Sentry event)."""
+        from llm.service.errors import LLMProviderError
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="doomed task", status=SubAgentRun.Status.RUNNING,
+        )
+        exc = LLMProviderError("Anthropic timed out", error_code="timeout")
+
+        from chat.tasks import run_subagent_task
+        with patch("sentry_sdk.capture_exception") as cap, \
+                patch("sentry_sdk.flush") as flush:
+            run_subagent_task.on_failure(
+                exc, "fake-task-id", [str(run.id)], {}, None,
+            )
+
+        cap.assert_called_once_with(exc)
+        flush.assert_called_once()
+
+    def test_on_failure_survives_sentry_error(self):
+        """A Sentry hiccup must never break the failure-marking path."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="doomed task", status=SubAgentRun.Status.RUNNING,
+        )
+
+        from chat.tasks import run_subagent_task
+        with patch("sentry_sdk.capture_exception", side_effect=RuntimeError("sentry down")):
+            run_subagent_task.on_failure(
+                RuntimeError("Final failure"), "fake-task-id", [str(run.id)], {}, None,
+            )
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+
 
 # ---------------------------------------------------------------------------
 # Cancellation vs. completion races (fix: stop must not be overwritten)
@@ -1191,7 +1255,7 @@ class RunSubagentCancellationTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, SubAgentRun.Status.FAILED)
         self.assertEqual(run.error, "Cancelled by user.")
-        mock_svc.return_value.run.assert_not_called()
+        mock_svc.return_value.run_via_stream.assert_not_called()
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
@@ -1214,7 +1278,7 @@ class RunSubagentCancellationTests(TestCase):
             mock_response.usage.cost_usd = 0.001
             return mock_response
 
-        mock_svc.return_value.run.side_effect = cancel_then_respond
+        mock_svc.return_value.run_via_stream.side_effect = cancel_then_respond
 
         from chat.subagent_service import run_subagent
         run_subagent(run.id)
@@ -1237,7 +1301,7 @@ class RunSubagentCancellationTests(TestCase):
         mock_response.message.content = "Done"
         mock_response.usage.total_tokens = 10
         mock_response.usage.cost_usd = 0.0
-        mock_svc.return_value.run.return_value = mock_response
+        mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user, prompt="task",

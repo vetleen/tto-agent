@@ -362,7 +362,19 @@ class SimpleChatPipeline(BasePipeline):
         tool_by_name = {t.name: t for t in tools}
         req = request
         sequence = 1
-        cancel_event = (request.params or {}).get("_cancel_event")
+        params = request.params or {}
+        cancel_event = params.get("_cancel_event")
+        # Sub-agents cancel cooperatively via a DB-poll callable (_cancel_check)
+        # rather than the consumer's threading.Event; honor both. Polled only at
+        # per-iteration boundaries below (a DB query per token would be wasteful);
+        # the per-chunk check stays event-only.
+        cancel_check = params.get("_cancel_check")
+
+        def _is_cancelled() -> bool:
+            return bool(
+                (cancel_event is not None and cancel_event.is_set())
+                or (cancel_check is not None and cancel_check())
+            )
 
         ctx = request.context
         deadline_dt = None
@@ -406,7 +418,7 @@ class SimpleChatPipeline(BasePipeline):
             yield (end_data, sequence, saw_error)
 
         for i in range(max_iterations):
-            if cancel_event and cancel_event.is_set():
+            if _is_cancelled():
                 return
 
             if deadline_dt and datetime.now(timezone.utc) >= deadline_dt:
@@ -490,7 +502,7 @@ class SimpleChatPipeline(BasePipeline):
                 )
                 sequence += 1
 
-            if cancel_event and cancel_event.is_set():
+            if _is_cancelled():
                 return
 
             # Execute tools (in parallel when multiple)

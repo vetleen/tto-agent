@@ -64,6 +64,18 @@ _ERROR_CODE_TO_EXCEPTION: dict[str, type[LLMProviderError]] = {
 }
 
 
+def exception_for_error_code(error_code: str | None) -> type[LLMProviderError]:
+    """Map a classified ``error_code`` to its ``LLMProviderError`` subclass.
+
+    Public, table-hiding accessor so callers outside this module (e.g. the
+    service-level stream collapser, which rebuilds an exception from a streamed
+    ``error`` event) can preserve retryable types — ``timeout`` →
+    ``LLMTimeoutError``, etc. — without importing the private mapping. Unknown
+    or missing codes fall back to the base ``LLMProviderError``.
+    """
+    return _ERROR_CODE_TO_EXCEPTION.get(error_code or "unknown", LLMProviderError)
+
+
 def _extract_body_error_type(exc: Exception) -> str | None:
     """Extract ``body["error"]["type"]`` from a provider SDK exception, if present.
 
@@ -148,6 +160,49 @@ def _extract_status_code(exc: Exception) -> int | None:
     return None
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    """True for client-side *timeouts* across providers.
+
+    Beyond the builtin ``TimeoutError``, the Anthropic/OpenAI SDKs raise
+    ``APITimeoutError`` (which carries no ``status_code``) when the underlying
+    httpx read/connect/pool timeout fires — e.g. a long, non-streamed completion
+    that outruns the request timeout, or its internal retries. The chained cause
+    is an ``httpx.TimeoutException``. Matched by class name (so we don't import
+    the provider SDKs here) and by the httpx cause.
+    """
+    if isinstance(exc, TimeoutError):
+        return True
+    if type(exc).__name__ == "APITimeoutError":
+        return True
+    try:
+        import httpx
+    except ImportError:
+        return False
+    cause = getattr(exc, "__cause__", None)
+    return isinstance(exc, httpx.TimeoutException) or isinstance(cause, httpx.TimeoutException)
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """True for client-side *connection* failures across providers.
+
+    Beyond builtin ``ConnectionError``/``OSError``, the Anthropic/OpenAI SDKs
+    raise ``APIConnectionError`` (dropped connection / DNS / TLS failure — no
+    ``status_code``). ``APITimeoutError`` subclasses ``APIConnectionError``, so
+    callers must test :func:`_is_timeout_error` first (``classify_api_error``
+    does).
+    """
+    if isinstance(exc, (ConnectionError, OSError)):
+        return True
+    if type(exc).__name__ == "APIConnectionError":
+        return True
+    try:
+        import httpx
+    except ImportError:
+        return False
+    cause = getattr(exc, "__cause__", None)
+    return isinstance(exc, httpx.TransportError) or isinstance(cause, httpx.TransportError)
+
+
 def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
     """Inspect an exception and return a classified error with user-facing message."""
     status = _extract_status_code(exc)
@@ -190,13 +245,13 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
             user_message=f"{provider_label} experienced an internal error. Please try again.",
             log_level="error",
         )
-    if status in (408, 504) or isinstance(exc, TimeoutError):
+    if status in (408, 504) or _is_timeout_error(exc):
         return ClassifiedError(
             error_code="timeout",
             user_message=f"The request to {provider_label} timed out. Please try again.",
             log_level="warning",
         )
-    if isinstance(exc, (ConnectionError, OSError)):
+    if _is_connection_error(exc):
         return ClassifiedError(
             error_code="connection_error",
             user_message=f"Unable to reach {provider_label}. Please check your connection and try again.",
@@ -504,7 +559,7 @@ class BaseLangChainChatModel(ChatModel):
                         exc_info=True,
                     )
                     _highlight_if_unmapped(classified, exc, self.name, self._provider_label, run_id)
-                    exc_cls = _ERROR_CODE_TO_EXCEPTION.get(classified.error_code, LLMProviderError)
+                    exc_cls = exception_for_error_code(classified.error_code)
                     raise exc_cls(
                         classified.user_message,
                         error_code=classified.error_code,
@@ -546,7 +601,7 @@ class BaseLangChainChatModel(ChatModel):
                 "LLM generate transient retries exhausted model=%s provider=%s error_code=%s run_id=%s",
                 self.name, self._provider_label, classified.error_code, run_id,
             )
-            exc_cls = _ERROR_CODE_TO_EXCEPTION.get(classified.error_code, LLMProviderError)
+            exc_cls = exception_for_error_code(classified.error_code)
             raise exc_cls(
                 classified.user_message,
                 error_code=classified.error_code,
@@ -809,4 +864,4 @@ class BaseLangChainChatModel(ChatModel):
         )
 
 
-__all__ = ["BaseLangChainChatModel"]
+__all__ = ["BaseLangChainChatModel", "exception_for_error_code"]

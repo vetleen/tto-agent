@@ -37,6 +37,7 @@ from llm.service.errors import LLMError, LLMPolicyDenied, LLMProviderError
 from llm.service.logger import log_call, log_error, log_stream
 from llm.service.policies import resolve_model
 from llm.types.context import RunContext
+from llm.types.messages import Message
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
@@ -122,6 +123,88 @@ class LLMService:
                 extra={"run_id": run_id, "duration_ms": duration_ms},
             )
             raise LLMProviderError(f"Pipeline {pipeline_id} run failed") from exc
+
+    def run_via_stream(self, pipeline_id: str, request: ChatRequest) -> ChatResponse:
+        """Run a streaming pipeline but return a single collapsed ``ChatResponse``.
+
+        Gives callers the blocking ergonomics of :meth:`run` with streaming's
+        connection resilience: the provider streams tokens, so a long generation
+        never trips a non-streaming read timeout (per Anthropic's "long requests"
+        guidance), and the SSE events are reduced back into one ``ChatResponse``.
+        The service-level analog of the Anthropic SDK's
+        ``.stream().get_final_message()``.
+
+        For headless callers (sub-agents) that don't surface tokens live.
+        :meth:`stream` performs the single ``LLMCallLog`` write as it drains, so
+        we deliberately don't log again here. Provider failures surface as
+        ``error`` stream events; :meth:`_collapse_stream_events` re-raises them as
+        the mapped ``LLMProviderError`` subclass so retry classification (e.g.
+        ``timeout`` → ``LLMTimeoutError``) still works.
+        """
+        request.stream = True
+        events = list(self.stream(pipeline_id, request))
+        return self._collapse_stream_events(events, request)
+
+    @staticmethod
+    def _collapse_stream_events(
+        events: list[StreamEvent], request: ChatRequest
+    ) -> ChatResponse:
+        """Reduce a drained stream into a ``ChatResponse`` (pure; no I/O).
+
+        The final assistant text is rebuilt from ``token`` events, reset on each
+        ``message_start`` so only the last turn's answer survives (the streaming
+        tool-loop pops ``content`` from its final ``message_end``). Usage comes
+        from the last ``message_end`` (which carries the aggregated totals). An
+        ``error`` event — emitted by the provider instead of raising — is
+        re-raised as the mapped exception after the drain (the pipeline stops
+        without a synthetic ``message_end`` on error).
+        """
+        from llm.core.providers.base import exception_for_error_code
+
+        text_parts: list[str] = []
+        last_end: dict | None = None
+        error_data: dict | None = None
+        for event in events:
+            et = event.event_type
+            if et == "message_start":
+                text_parts = []
+            elif et == "token":
+                text_parts.append(event.data.get("text", ""))
+            elif et == "message_end":
+                last_end = event.data
+            elif et == "error":
+                error_data = event.data
+            # thinking / tool_start / tool_end: not part of the collapsed result
+
+        if error_data is not None:
+            error_code = error_data.get("error_code")
+            raise exception_for_error_code(error_code)(
+                error_data.get("message") or "LLM stream failed",
+                error_code=error_code,
+            )
+
+        usage = None
+        metadata: dict = {}
+        if last_end:
+            usage = Usage(
+                prompt_tokens=last_end.get("input_tokens"),
+                completion_tokens=last_end.get("output_tokens"),
+                total_tokens=last_end.get("total_tokens"),
+                cached_tokens=last_end.get("cached_tokens"),
+                cache_write_tokens=last_end.get("cache_write_tokens"),
+                reasoning_tokens=last_end.get("reasoning_tokens"),
+                cost_usd=last_end.get("cost_usd"),
+            )
+            for key in ("response_metadata", "stop_reason", "provider_model_id"):
+                if key in last_end:
+                    metadata[key] = last_end[key]
+
+        return ChatResponse(
+            message=Message(role="assistant", content="".join(text_parts)),
+            model=(last_end or {}).get("model") or request.model or "",
+            usage=usage,
+            metadata=metadata,
+        )
 
     def stream(self, pipeline_id: str, request: ChatRequest) -> Iterator[StreamEvent]:
         """Stream events from a pipeline. Ensures context and model; validates streaming capability."""

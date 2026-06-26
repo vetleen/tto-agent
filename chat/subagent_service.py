@@ -169,15 +169,19 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
                 Message(role="user", content=run.prompt),
             ],
             model=model,
-            stream=False,
+            stream=True,
             tools=tool_list if tool_list else None,
             context=context,
             params={"_cancel_check": _is_cancelled},
         )
 
-        # Execute
+        # Execute via streaming so a long generation never trips a non-streaming
+        # read timeout (Anthropic sends no bytes until a non-streamed completion
+        # is fully generated; streamed tokens reset the read timeout). Tokens are
+        # not surfaced live — run_via_stream collapses the stream into the same
+        # ChatResponse shape run() returns.
         service = get_llm_service()
-        response = service.run("simple_chat", request)
+        response = service.run_via_stream("simple_chat", request)
 
         # Store result
         run.result = response.message.content or ""

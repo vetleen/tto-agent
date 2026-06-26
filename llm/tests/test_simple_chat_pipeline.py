@@ -381,6 +381,89 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0].data["text"], "The result is 3.")
 
+    def test_stream_cancel_check_aborts_before_model_call(self):
+        """A sub-agent cancels via a DB-poll ``_cancel_check`` (no threading.Event);
+        the streaming tool loop must honor it like the consumer's ``_cancel_event``."""
+        mock_tool = self._make_mock_tool("document_search")
+        request = ChatRequest(
+            messages=[Message(role="user", content="go")],
+            stream=True, model="gpt-4o-mini", tools=["document_search"],
+            context=RunContext.create(),
+            params={"_cancel_check": lambda: True},
+        )
+        fake_model = MagicMock()
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+        self.assertEqual(events, [])
+        fake_model.stream.assert_not_called()
+
+    def test_stream_cancel_check_polled_per_iteration_not_per_token(self):
+        """``_cancel_check`` is a DB query — it must be polled per-iteration, never
+        per streamed token (which would hammer the DB)."""
+        mock_tool = self._make_mock_tool("document_search")
+        mock_tool._return_value = '{"result": 3}'
+        cancel_check = MagicMock(return_value=False)
+        request = ChatRequest(
+            messages=[Message(role="user", content="go")],
+            stream=True, model="gpt-4o-mini", tools=["document_search"],
+            context=RunContext.create(),
+            params={"_cancel_check": cancel_check},
+        )
+
+        def fake_tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "s1", "name": "document_search", "arguments": {"a": 1, "b": 2}}],
+            }, sequence=2, run_id="")
+
+        def fake_final_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+            for t in ["The ", "result ", "is ", "3", ".", " Done"]:
+                yield StreamEvent(event_type="token", data={"text": t}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "The result is 3. Done"}, sequence=3, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        tokens = [e for e in events if e.event_type == "token"]
+        self.assertEqual(len(tokens), 6)  # all tokens streamed through
+        # Per-iteration polling: a few checks, far fewer than the 6 tokens.
+        self.assertLessEqual(cancel_check.call_count, 4)
+
+    def test_stream_cancel_event_unset_completes_normally(self):
+        """Passing only the consumer's ``_cancel_event`` (unset) is unaffected by
+        the ``_cancel_check`` addition — backward-compatible for the orchestrator."""
+        import threading
+
+        mock_tool = self._make_mock_tool("document_search")
+        request = ChatRequest(
+            messages=[Message(role="user", content="go")],
+            stream=True, model="gpt-4o-mini", tools=["document_search"],
+            context=RunContext.create(),
+            params={"_cancel_event": threading.Event()},
+        )
+
+        def fake_final_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "done"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "done"}, sequence=3, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [fake_final_stream(None)]
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+        tokens = [e for e in events if e.event_type == "token"]
+        self.assertEqual(len(tokens), 1)
+
     def test_stream_tool_start_emitted_before_execution(self):
         """tool_start must be yielded BEFORE the tool runs, not after."""
         execution_log = []

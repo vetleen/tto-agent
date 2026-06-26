@@ -7,7 +7,15 @@ from pydantic import BaseModel, Field
 
 from llm.pipelines.registry import PipelineRegistry
 from llm.service.llm_service import LLMService, get_llm_service
-from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
+from llm.service.errors import (
+    LLMConfigurationError,
+    LLMConnectionError,
+    LLMOverloadedError,
+    LLMPolicyDenied,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+)
 from llm.types.context import RunContext
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
@@ -339,6 +347,150 @@ class LLMServiceTests(TestCase):
         self.assertEqual(events[0].event_type, "message_start")
         self.assertEqual(events[1].data, {"text": "Hi"})
         self.assertEqual(events[2].event_type, "message_end")
+
+
+class RunViaStreamTests(TestCase):
+    """LLMService.run_via_stream: stream under the hood, collapse to a ChatResponse."""
+
+    @staticmethod
+    def _ev(event_type, **data):
+        return StreamEvent(event_type=event_type, data=data, sequence=0, run_id="r")
+
+    @staticmethod
+    def _req():
+        return ChatRequest(
+            messages=[Message(role="user", content="Hi")],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+
+    # -- pure reducer ------------------------------------------------------
+
+    def test_collapse_tokens_usage_and_model(self):
+        events = [
+            self._ev("message_start", model="claude-haiku-4-5"),
+            self._ev("token", text="Hello "),
+            self._ev("token", text="world"),
+            self._ev("message_end", model="claude-haiku-4-5",
+                     input_tokens=10, output_tokens=5, total_tokens=15, cost_usd=0.002),
+        ]
+        resp = LLMService._collapse_stream_events(events, self._req())
+        self.assertEqual(resp.message.content, "Hello world")
+        self.assertEqual(resp.model, "claude-haiku-4-5")
+        self.assertEqual(resp.usage.prompt_tokens, 10)
+        self.assertEqual(resp.usage.completion_tokens, 5)
+        self.assertEqual(resp.usage.total_tokens, 15)
+        self.assertEqual(resp.usage.cost_usd, 0.002)
+
+    def test_collapse_resets_text_on_message_start(self):
+        # An intermediate (tool) turn streams narration; a fresh turn streams the
+        # final answer. Only the final turn's text should survive.
+        events = [
+            self._ev("message_start"),
+            self._ev("token", text="Let me search..."),
+            self._ev("tool_start", tool_name="web_search"),
+            self._ev("tool_end", tool_name="web_search"),
+            self._ev("message_start"),
+            self._ev("token", text="Final answer"),
+            self._ev("message_end", input_tokens=1, output_tokens=1, total_tokens=2),
+        ]
+        resp = LLMService._collapse_stream_events(events, self._req())
+        self.assertEqual(resp.message.content, "Final answer")
+
+    def test_collapse_last_message_end_usage_wins(self):
+        events = [
+            self._ev("message_start"),
+            self._ev("token", text="x"),
+            self._ev("message_end", input_tokens=1, output_tokens=1, total_tokens=2),
+            self._ev("message_start"),
+            self._ev("token", text="y"),
+            self._ev("message_end", input_tokens=100, output_tokens=50, total_tokens=150),
+        ]
+        resp = LLMService._collapse_stream_events(events, self._req())
+        self.assertEqual(resp.message.content, "y")
+        self.assertEqual(resp.usage.total_tokens, 150)
+
+    def test_collapse_error_event_raises_mapped_exception(self):
+        # Retryable types must be preserved so is_retryable_subagent_error works.
+        cases = [
+            ("timeout", LLMTimeoutError),
+            ("connection_error", LLMConnectionError),
+            ("rate_limited", LLMRateLimitError),
+            ("overloaded", LLMOverloadedError),
+            (None, LLMProviderError),
+            ("totally_unknown", LLMProviderError),
+        ]
+        for error_code, exc_type in cases:
+            with self.subTest(error_code=error_code):
+                events = [
+                    self._ev("message_start"),
+                    self._ev("token", text="partial"),
+                    self._ev("error", error_code=error_code, message="boom", details="raw"),
+                ]
+                with self.assertRaises(exc_type) as ctx:
+                    LLMService._collapse_stream_events(events, self._req())
+                self.assertEqual(ctx.exception.error_code, error_code or "unknown")
+
+    def test_collapse_interrupted_no_message_end(self):
+        # Cancelled/interrupted mid-stream: no message_end → empty content, no usage.
+        resp = LLMService._collapse_stream_events([self._ev("message_start")], self._req())
+        self.assertEqual(resp.message.content, "")
+        self.assertIsNone(resp.usage)
+
+    def test_collapse_ignores_thinking_and_tool_events(self):
+        events = [
+            self._ev("message_start"),
+            self._ev("thinking", text="hmm reasoning"),
+            self._ev("tool_start", tool_name="x"),
+            self._ev("token", text="answer"),
+            self._ev("tool_end", tool_name="x"),
+            self._ev("message_end", input_tokens=1, output_tokens=1, total_tokens=2),
+        ]
+        resp = LLMService._collapse_stream_events(events, self._req())
+        self.assertEqual(resp.message.content, "answer")
+
+    # -- end-to-end via the service ---------------------------------------
+
+    @patch("llm.service.llm_service.log_stream")
+    def test_run_via_stream_sets_flag_logs_once_and_collapses(self, mock_log):
+        request = self._req()
+        self.assertFalse(request.stream)
+
+        def fake_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="r")
+            yield StreamEvent(event_type="token", data={"text": "Hi there"}, sequence=2, run_id="r")
+            yield StreamEvent(event_type="message_end",
+                              data={"model": "m", "input_tokens": 7, "output_tokens": 3,
+                                    "total_tokens": 10, "cost_usd": 0.001},
+                              sequence=3, run_id="r")
+
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = fake_stream
+        service = _make_service(fake_pipeline)
+        resp = service.run_via_stream("simple_chat", request)
+        self.assertTrue(request.stream)
+        self.assertEqual(resp.message.content, "Hi there")
+        self.assertEqual(resp.usage.total_tokens, 10)
+        mock_log.assert_called_once()
+
+    @patch("llm.service.llm_service.log_stream")
+    def test_run_via_stream_error_event_raises_mapped(self, _mock_log):
+        request = self._req()
+
+        def fake_stream(req):
+            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="r")
+            yield StreamEvent(event_type="error",
+                              data={"error_code": "timeout", "message": "timed out"},
+                              sequence=2, run_id="r")
+
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = fake_stream
+        service = _make_service(fake_pipeline)
+        with self.assertRaises(LLMTimeoutError):
+            service.run_via_stream("simple_chat", request)
 
 
 class _TestSchema(BaseModel):

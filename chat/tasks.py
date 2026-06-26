@@ -29,6 +29,40 @@ def _notify_consumer(run_id: str, thread_id: str) -> None:
         logger.debug("Could not notify consumer of sub-agent %s completion", run_id)
 
 
+def _capture_subagent_failure(exc: BaseException, run_id_str: str) -> None:
+    """Guarantee a terminally-failed sub-agent run reaches Sentry.
+
+    The ``LoggingIntegration`` that normally turns the upstream
+    ``logger.error(exc_info=True)`` into an event has been observed to silently
+    drop long-running provider failures — e.g. prod run b268f675, a ~562s
+    Anthropic read-timeout that overran Celery's ``soft_time_limit`` (540s), so
+    none of its error logs produced a Sentry event despite being written.
+
+    ``on_failure`` fires exactly once per run, only after retries are exhausted,
+    so we capture + flush *synchronously* here: the task is already finished, so
+    the brief block is harmless, and ``flush`` blocks until the event is
+    delivered (defeating any transport/teardown race). The full ``__cause__``
+    chain (APITimeoutError → httpx/httpcore ReadTimeout) rides along with the
+    captured exception.
+    """
+    try:
+        import sentry_sdk
+
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("subagent_run_id", str(run_id_str))
+            error_code = getattr(exc, "error_code", None)
+            if error_code:
+                scope.set_tag("llm_error_code", error_code)
+            sentry_sdk.capture_exception(exc)
+        sentry_sdk.flush(timeout=5)
+    except Exception:
+        # Never let observability break the failure path.
+        logger.warning(
+            "Failed to capture sub-agent run %s failure to Sentry", run_id_str,
+            exc_info=True,
+        )
+
+
 class _SubagentTask(Task):
     """Custom task class that marks runs as permanently FAILED after all retries."""
 
@@ -56,6 +90,8 @@ class _SubagentTask(Task):
                     _notify_consumer(run_id_str, str(run["thread_id"]))
         except Exception:
             logger.exception("Failed to mark sub-agent run %s as FAILED", run_id_str)
+
+        _capture_subagent_failure(exc, run_id_str)
 
 
 @shared_task(

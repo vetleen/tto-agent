@@ -129,6 +129,58 @@ class TestClassifyApiError(TestCase):
         self.assertIn("unexpected error", result.user_message)
         self.assertEqual(result.log_level, "error")
 
+    # -- SDK request-level errors: no status_code, not builtin Timeout/OSError --
+
+    def test_sdk_api_timeout_error_maps_to_timeout(self):
+        """Anthropic/OpenAI ``APITimeoutError`` (no status_code) → timeout, not unknown.
+
+        Regression: a non-streamed read timeout used to fall through to the
+        ``unknown`` catch-all ("encountered an unexpected error") and was not
+        retried (prod sub-agent run b268f675).
+        """
+        class APITimeoutError(Exception):
+            pass
+
+        result = classify_api_error(
+            APITimeoutError("Request timed out or interrupted."), "Anthropic"
+        )
+        self.assertEqual(result.error_code, "timeout")
+        self.assertIn("timed out", result.user_message)
+        self.assertIn("Anthropic", result.user_message)
+
+    def test_sdk_api_connection_error_maps_to_connection_error(self):
+        class APIConnectionError(Exception):
+            pass
+
+        result = classify_api_error(APIConnectionError("Connection error."), "OpenAI")
+        self.assertEqual(result.error_code, "connection_error")
+        self.assertIn("Unable to reach", result.user_message)
+
+    def test_httpx_read_timeout_cause_maps_to_timeout(self):
+        """An SDK error whose chained cause is an httpx timeout → timeout."""
+        import httpx
+
+        exc = Exception("boom")
+        exc.__cause__ = httpx.ReadTimeout("The read operation timed out")
+        result = classify_api_error(exc, "Anthropic")
+        self.assertEqual(result.error_code, "timeout")
+
+    def test_httpx_connect_error_cause_maps_to_connection_error(self):
+        import httpx
+
+        exc = Exception("boom")
+        exc.__cause__ = httpx.ConnectError("connection refused")
+        result = classify_api_error(exc, "Anthropic")
+        self.assertEqual(result.error_code, "connection_error")
+
+    def test_sdk_timeout_not_retried_inside_provider(self):
+        """Timeouts stay terminal at the provider layer (the sub-agent run is
+        retried at the Celery layer instead) — same contract as 408/504."""
+        class APITimeoutError(Exception):
+            pass
+
+        self.assertFalse(_is_retryable_transient_error(APITimeoutError("timed out")))
+
     def test_mid_stream_overloaded_body_maps_to_overloaded(self):
         """SSE-delivered overloaded_error (status_code=200) still classifies correctly."""
         exc = _exc_mid_stream("overloaded_error", "Overloaded")
