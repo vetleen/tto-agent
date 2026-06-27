@@ -1046,6 +1046,47 @@ class CanvasOwnershipTests(TransactionTestCase):
         marker = await database_sync_to_async(ChatMessage.objects.get)(pk=msg_id)
         self.assertTrue(marker.metadata.get("restored"))
 
+    async def test_canvas_deleted_marker_records_actor(self):
+        """The marker attributes the deletion to whoever triggered it: the agent
+        canvas_delete tool defaults to "assistant"; the user trash button passes
+        "user" (and the live event carries it too) so the pill reads "You ...".
+        """
+        from chat.models import ChatMessage
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.owner,
+        )
+        consumer = self._make_consumer(self.owner)
+
+        # Agent tool path (default) → assistant.
+        agent_msg_id = await consumer._create_canvas_deleted_marker(
+            str(thread.id), "1", "Doc",
+        )
+        agent_msg = await database_sync_to_async(ChatMessage.objects.get)(pk=agent_msg_id)
+        self.assertEqual(agent_msg.metadata["actor"], "assistant")
+
+        # User trash-button path → user, threaded through both the persisted
+        # marker and the live chat.canvas_deleted_marker event.
+        events = []
+
+        async def _capture(evt):
+            events.append(evt)
+
+        await consumer._broadcast_canvas_deleted(
+            str(thread.id),
+            {"deleted_id": "2", "deleted_title": "Scratch",
+             "canvases": [], "active_canvas": None},
+            emit=_capture,
+            actor="user",
+        )
+        marker_evt = next(
+            e for e in events if e["event_type"] == "chat.canvas_deleted_marker"
+        )
+        self.assertEqual(marker_evt["actor"], "user")
+        user_msg = await database_sync_to_async(ChatMessage.objects.get)(
+            pk=marker_evt["message_id"],
+        )
+        self.assertEqual(user_msg.metadata["actor"], "user")
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}

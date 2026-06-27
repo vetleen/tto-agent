@@ -711,15 +711,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         result = await self._delete_canvas(thread_id, canvas_id)
         if result is None:
             return
-        await self._broadcast_canvas_deleted(thread_id, result)
+        await self._broadcast_canvas_deleted(thread_id, result, actor="user")
 
-    async def _broadcast_canvas_deleted(self, thread_id, result, emit=None):
+    async def _broadcast_canvas_deleted(self, thread_id, result, emit=None, actor="assistant"):
         """Emit the tab/panel update, persist the Undo-pill marker, surface it live.
 
         Shared by the user trash-button path (`_handle_canvas_delete`, direct
-        websocket send) and the agent `canvas_delete` tool path (the tool_end
-        watcher, which passes ``emit=self._sink.send_event`` to route through the
-        streaming sink).
+        websocket send, ``actor="user"``) and the agent `canvas_delete` tool path
+        (the tool_end watcher, which passes ``emit=self._sink.send_event`` to route
+        through the streaming sink, ``actor="assistant"``). ``actor`` decides who the
+        marker attributes the deletion to ("You" vs the assistant's name).
         """
         async def _default_emit(evt):
             await self.send(text_data=json.dumps(evt))
@@ -732,13 +733,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         })
         title = result.get("deleted_title", "")
         message_id = await self._create_canvas_deleted_marker(
-            thread_id, result["deleted_id"], title,
+            thread_id, result["deleted_id"], title, actor,
         )
         await emit({
             "event_type": "chat.canvas_deleted_marker",
             "message_id": message_id,
             "canvas_id": result["deleted_id"],
             "canvas_title": title,
+            "actor": actor,
         })
 
     async def _handle_canvas_restore(self, data):
@@ -765,11 +767,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }))
 
     @database_sync_to_async
-    def _create_canvas_deleted_marker(self, thread_id, canvas_id, canvas_title):
+    def _create_canvas_deleted_marker(self, thread_id, canvas_id, canvas_title, actor="assistant"):
         """Persist a UI-only 'canvas deleted' marker message (carries the Undo pill).
 
         Stored visible-to-user but flagged ``ui_only`` so `_load_history` keeps it
-        out of the LLM context.
+        out of the LLM context. ``actor`` ("user" or "assistant") records who
+        deleted the canvas so the marker attributes it correctly on re-render.
         """
         from chat.models import ChatMessage
         msg = ChatMessage.objects.create(
@@ -781,6 +784,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "ui_only": True,
                 "canvas_id": str(canvas_id),
                 "canvas_title": canvas_title,
+                "actor": actor,
             },
             is_hidden_from_user=False,
         )
@@ -1664,6 +1668,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                         "active_canvas": state["active_canvas"],
                                     },
                                     emit=self._sink.send_event,
+                                    actor="assistant",
                                 )
                         except (json.JSONDecodeError, AttributeError):
                             pass

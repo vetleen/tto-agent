@@ -259,7 +259,7 @@
             <div class="flex justify-center my-2" data-canvas-marker data-message-id="{{ m.id }}">
               <span class="inline-flex items-center gap-2 px-3 py-1 text-xs rounded-full text-body/70 bg-neutral-tertiary">
                 <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                <span class="canvas-marker-text">{{ assistant_name }} deleted the canvas "{{ m.metadata.canvas_title }}"{% if m.metadata.restored %} · restored{% endif %}</span>
+                <span class="canvas-marker-text">{% if m.metadata.actor == "user" %}You{% else %}{{ assistant_name }}{% endif %} deleted the canvas "{{ m.metadata.canvas_title }}"{% if m.metadata.restored %} · restored{% endif %}</span>
                 {% if not m.metadata.restored %}<button type="button" class="canvas-undo-btn font-medium text-fg-brand hover:underline cursor-pointer" data-canvas-id="{{ m.metadata.canvas_id }}" data-message-id="{{ m.id }}">Undo</button>{% endif %}
               </span>
             </div>
@@ -2580,7 +2580,7 @@
       if (data.message_id) cdmWrap.setAttribute("data-message-id", String(data.message_id));
       cdmWrap.innerHTML = '<span class="inline-flex items-center gap-2 px-3 py-1 text-xs rounded-full text-body/70 bg-neutral-tertiary">'
         + '<svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>'
-        + '<span class="canvas-marker-text">' + ASSISTANT_NAME + ' deleted the canvas "' + escapeHtml(String(data.canvas_title || "")) + '"</span>'
+        + '<span class="canvas-marker-text">' + (data.actor === "user" ? "You" : ASSISTANT_NAME) + ' deleted the canvas "' + escapeHtml(String(data.canvas_title || "")) + '"</span>'
         + '<button type="button" class="canvas-undo-btn font-medium text-fg-brand hover:underline cursor-pointer" data-canvas-id="' + escapeHtml(String(data.canvas_id || "")) + '" data-message-id="' + escapeHtml(String(data.message_id || "")) + '">Undo</button>'
         + '</span>';
       messagesContainer.appendChild(cdmWrap);
