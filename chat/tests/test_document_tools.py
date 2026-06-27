@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from chat.tools import (
     ArchiveDocumentTool,
+    EditDocumentInput,
     GetDocumentStatusTool,
     ListDocumentsTool,
     ListVersionsTool,
@@ -99,3 +100,27 @@ class DocumentToolsTests(TestCase):
         tool.set_context(ctx)
         res = json.loads(tool.invoke({"doc_index": doc.doc_index}))
         self.assertIn("error", res)
+
+
+class EditDocumentInputCoercionTests(TestCase):
+    """WILFRED-6A: document_edit (EditDocumentInput) must tolerate the model
+    passing `edits` as a JSON string and drop non-actionable items, mirroring
+    canvas_edit. model_validate is exactly the langchain _parse_input path.
+    """
+
+    def test_edits_passed_as_json_string_are_coerced(self):
+        m = EditDocumentInput.model_validate({
+            "doc_index": 1,
+            "edits": json.dumps([{"old_text": "a", "new_text": "b"}]),
+        })
+        self.assertEqual([(e.old_text, e.new_text) for e in m.edits], [("a", "b")])
+
+    def test_malformed_edit_items_are_dropped(self):
+        m = EditDocumentInput.model_validate({
+            "doc_index": 1,
+            "edits": [
+                {"old_text": "a", "new_text": "b"},
+                {"reason": "no find/replace"},  # malformed: no old_text/new_text
+            ],
+        })
+        self.assertEqual([(e.old_text, e.new_text) for e in m.edits], [("a", "b")])

@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
@@ -140,6 +140,36 @@ class EditDocumentInput(ReasonBaseModel):
     )
     data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
     reason: str = Field(default="", description="Brief reason for the change.")
+
+    @field_validator("edits", mode="before")
+    @classmethod
+    def _coerce_and_clean_edits(cls, value):
+        """Tolerate the common ways models malform the ``edits`` array.
+
+        1. Some tool-calling models serialize the whole array as a JSON string
+           (e.g. ``'[{"old_text": ...}]'``) instead of a native list, which made
+           document_edit fail Pydantic validation outright (WILFRED-6A). Parse a
+           string as JSON; on failure fall through to the normal list-type error.
+        2. Some models include a non-actionable item missing the find/replace
+           fields. Drop dict items lacking a usable old_text or a new_text key so
+           the valid edits proceed instead of failing the whole call.
+
+        Mirrors EditCanvasInput's validator in chat/canvas_tools.py — the same
+        find-replace tool-input robustness applied to document_edit.
+        """
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                return value
+        if isinstance(value, list):
+            return [
+                item
+                for item in value
+                if not isinstance(item, dict)
+                or (item.get("old_text") and "new_text" in item)
+            ]
+        return value
 
 
 class ArchiveDocumentInput(ReasonBaseModel):
