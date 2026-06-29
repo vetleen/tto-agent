@@ -283,7 +283,7 @@ regulated or procurement-heavy markets.
 
 **Sharpening a vague hypothesis**
 
-When (technology or product) features and (user) needs are confused and inter-mingled, multiple \
+When (technology or product) features and (user) needs are confused and intermingled, multiple \
 possible users are implied, or there's no clear target — the hypothesis isn't \
 ready yet. Before narrowing, have the user map the full user × need \
 space: list every plausible user or customer group and the need each \
