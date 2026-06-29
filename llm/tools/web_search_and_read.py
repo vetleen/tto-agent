@@ -80,6 +80,8 @@ class WebSearchAndReadTool(ContextAwareTool):
     """Search the web and read the content of each result page."""
 
     name: str = "web_search_read"
+    start_label: str = "Searching and reading web pages..."
+    end_label: str = "Searched and read web pages"
     description: str = (
         "Search the web and read the full content of each result page. "
         "Use this when you need to research a topic in depth — it searches "

@@ -230,6 +230,9 @@ class ChatEndToEndTests(TransactionTestCase):
         self.assertEqual(tool_start["data"]["tool_name"], "document_search")
         self.assertEqual(tool_end["event_type"], "tool_end")
         self.assertEqual(tool_end["data"]["tool_name"], "document_search")
+        # display_label flows end-to-end through the consumer to the client.
+        self.assertEqual(tool_start["data"]["display_label"], "Searching documents...")
+        self.assertTrue(tool_end["data"].get("display_label"))
         self.assertEqual(msg_start["event_type"], "message_start")
         self.assertEqual(token_ev["event_type"], "token")
         self.assertEqual(token_ev["data"].get("text"), "Done")

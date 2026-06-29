@@ -384,6 +384,8 @@ class BraveSearchTool(ContextAwareTool):
     """Search the web using the Brave Search API."""
 
     name: str = "web_search"
+    start_label: str = "Searching the web..."
+    end_label: str = "Searched the web"
     description: str = (
         "Search the web for current information using Brave Search. "
         "Use this when you need up-to-date information, facts, or data "

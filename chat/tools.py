@@ -361,6 +361,8 @@ class SearchDocumentsTool(ContextAwareTool):
     """Search data room documents using semantic similarity."""
 
     name: str = "document_search"
+    start_label: str = "Searching documents..."
+    end_label: str = "Searched documents"
     description: str = (
         "Search the attached data rooms' documents for information relevant to a query, using "
         "hybrid retrieval and reranking to find the most relevant passages. "
@@ -583,6 +585,13 @@ class ReadDocumentTool(ContextAwareTool):
     """Read the full text content of one or more documents by index number."""
 
     name: str = "document_read"
+    start_label: str = "Reading document..."
+    end_label: str = "Read document"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        n = len(result.get("documents") or [])
+        return f"Read {n} document{'' if n == 1 else 's'}"
+
     description: str = (
         "Read content from one or more documents by their index number — "
         "either the full text or a specific chunk range (via chunk_start/chunk_end). "
@@ -774,6 +783,14 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
     """Save a canvas into a data room — as a new document or a new version of an existing one."""
 
     name: str = "canvas_save_to_document"
+    start_label: str = "Saving canvas to data room..."
+    end_label: str = "Saved canvas to data room"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        title = result.get("canvas_title")
+        room = result.get("data_room_name")
+        return f'Saved "{title}" to {room}' if title and room else None
+
     description: str = (
         "Save a canvas into one of the attached data rooms. mode='new' creates a brand-new document; "
         "mode='overwrite' files the canvas as a NEW VERSION of an existing document (give its doc_index) "
@@ -887,6 +904,8 @@ class ListDocumentsTool(ContextAwareTool):
     """List documents in the attached data rooms (paginated)."""
 
     name: str = "document_list"
+    start_label: str = "Listing documents..."
+    end_label: str = "Listed documents"
     description: str = (
         "List the documents in the attached data rooms, paginated. Returns each document's "
         "index number, name, origin, processing status, version count and dates. Use this to "
@@ -950,6 +969,8 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
     """Open a data room document's working content into a canvas for editing."""
 
     name: str = "document_open_to_canvas"
+    start_label: str = "Opening document..."
+    end_label: str = "Opened document"
     description: str = (
         "Open a data room document's working content into a canvas so you can edit it and save it "
         "back. Reads the document's editable markdown directly (works even if the latest version is "
@@ -1017,6 +1038,8 @@ class EditDocumentTool(ContextAwareTool):
     """Edit a data room document — targeted find-replace, or a full rewrite (creates a new version)."""
 
     name: str = "document_edit"
+    start_label: str = "Editing document..."
+    end_label: str = "Edited document"
     description: str = (
         "Edit a data room document, creating a new version, without going through a canvas. "
         "mode='edit' (default) applies targeted find-replace edits — each edit's old_text must match "
@@ -1098,6 +1121,8 @@ class ArchiveDocumentTool(ContextAwareTool):
     """Archive (soft-delete) or restore a document."""
 
     name: str = "document_archive"
+    start_label: str = "Archiving document..."
+    end_label: str = "Archived document"
     description: str = (
         "Archive (soft-delete) a data room document so it no longer appears in listings or retrieval, "
         "or restore a previously archived one (archive=false). Reversible."
@@ -1121,6 +1146,8 @@ class RenameDocumentTool(ContextAwareTool):
     """Rename a document's display name."""
 
     name: str = "document_rename"
+    start_label: str = "Renaming document..."
+    end_label: str = "Renamed document"
     description: str = (
         "Rename a data room document's display name. The original upload filename is preserved as "
         "provenance; this only changes the shown name."
@@ -1144,6 +1171,8 @@ class ListVersionsTool(ContextAwareTool):
     """List a document's version history."""
 
     name: str = "document_version_list"
+    start_label: str = "Listing versions..."
+    end_label: str = "Listed versions"
     description: str = (
         "List a data room document's version history — each version's index, origin, status, whether "
         "it is the live (searchable) and/or current working version, chunk count and date. Use before "
@@ -1175,6 +1204,8 @@ class RestoreVersionTool(ContextAwareTool):
     """Roll a document back to a prior version (instant — no reprocessing)."""
 
     name: str = "document_version_restore"
+    start_label: str = "Restoring version..."
+    end_label: str = "Restored version"
     description: str = (
         "Roll a data room document back to a prior version, making it the live searchable document "
         "again. Instant — no reprocessing. Only READY, non-quarantined versions can be restored."
@@ -1205,6 +1236,8 @@ class GetDocumentStatusTool(ContextAwareTool):
     """Report a document's processing/searchability status (incl. async quarantine verdict)."""
 
     name: str = "document_status"
+    start_label: str = "Checking document status..."
+    end_label: str = "Checked document status"
     description: str = (
         "Check a data room document's current state: ready, processing, quarantined, or failed — and "
         "whether the working version differs from the live searchable version. Use this after saving "
@@ -1269,6 +1302,8 @@ class DocumentViewImageTool(ContextAwareTool):
     """Attach data-room image(s) to the conversation so the model can view them."""
 
     name: str = "document_view_image"
+    start_label: str = "Viewing image..."
+    end_label: str = "Viewed image"
     description: str = (
         "View image(s) from an attached data room by document index so you can see and reason "
         "about them (charts, diagrams, screenshots, photos). The image(s) are attached to the "

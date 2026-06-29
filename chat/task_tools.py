@@ -29,6 +29,8 @@ class UpdateTasksTool(ContextAwareTool):
     """Create, update, or replace the task plan for this conversation."""
 
     name: str = "chat_task_update"
+    start_label: str = "Updating task plan..."
+    end_label: str = "Updated task plan"
     description: str = (
         "Create or update the task plan for this conversation. Use proactively "
         "whenever work involves multiple steps — do not wait to be asked. "

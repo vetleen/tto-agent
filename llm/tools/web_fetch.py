@@ -657,6 +657,8 @@ class WebFetchTool(ContextAwareTool):
     """Fetch a web page and extract clean markdown content."""
 
     name: str = "web_fetch"
+    start_label: str = "Fetching web page..."
+    end_label: str = "Fetched web page"
     description: str = (
         "Fetch a web page and extract its content as clean markdown. "
         "Use this to read the content of a specific URL, such as articles, "

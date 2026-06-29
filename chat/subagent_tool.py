@@ -34,6 +34,18 @@ class CreateSubagentTool(ContextAwareTool):
     """Create a sub-agent to handle a delegated task."""
 
     name: str = "chat_subagent_create"
+    start_label: str = "Running sub-agent..."
+    end_label: str = "Sub-agent dispatched"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        return {
+            "queued": "Sub-agent queued",
+            "started": "Sub-agent dispatched",
+            "completed": "Sub-agent finished",
+            "timeout": "Sub-agent dispatched",
+            "error": "Sub-agent failed",
+        }.get(result.get("status"))
+
     description: str = (
         "Delegate a task to an independent sub-agent that runs with its own context and tools. "
         "Use for tasks requiring extensive research, parallel analysis, or focused work. "

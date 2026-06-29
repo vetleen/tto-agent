@@ -30,6 +30,20 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_CHARS = 200_000
 
 
+def _safe_result_dict(result_str: str) -> dict | None:
+    """Best-effort parse of a tool result into a dict for label computation.
+
+    Returns None for non-JSON or non-dict results (e.g. tools that return
+    markdown), in which case the caller falls back to the tool's static
+    ``end_label``.
+    """
+    try:
+        value = json.loads(result_str)
+    except (ValueError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 class SimpleChatPipeline(BasePipeline):
     """Single pipeline: LLM-driven tool calling via bind_tools(), else delegate to ChatModel."""
 
@@ -490,12 +504,14 @@ class SimpleChatPipeline(BasePipeline):
 
             # Emit tool_start for all tool calls (show spinners simultaneously)
             for tc in parsed_tool_calls:
+                tool = tool_by_name.get(tc.name)
                 yield StreamEvent(
                     event_type="tool_start",
                     data={
                         "tool_name": tc.name,
                         "tool_call_id": tc.id,
                         "arguments": tc.arguments,
+                        "display_label": tool.start_label if tool else "Working...",
                     },
                     sequence=sequence,
                     run_id=run_id,
@@ -510,12 +526,19 @@ class SimpleChatPipeline(BasePipeline):
 
             # Emit tool_end for all results and append to history
             for tc, result_str in results:
+                tool = tool_by_name.get(tc.name)
+                display_label = "Done"
+                if tool:
+                    parsed = _safe_result_dict(result_str)
+                    dynamic = tool.end_label_for_result(parsed) if parsed is not None else None
+                    display_label = dynamic or tool.end_label
                 yield StreamEvent(
                     event_type="tool_end",
                     data={
                         "tool_name": tc.name,
                         "tool_call_id": tc.id,
                         "result": result_str,
+                        "display_label": display_label,
                     },
                     sequence=sequence,
                     run_id=run_id,

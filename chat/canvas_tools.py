@@ -107,6 +107,8 @@ class ActiveCanvasTool(ContextAwareTool):
     """Set which canvases are active (visible in your context)."""
 
     name: str = "canvas_activate"
+    start_label: str = "Switching active canvases..."
+    end_label: str = "Updated active canvases"
     description: str = (
         "Set which canvases are active. Active canvases have their full "
         "content included in your prompt context (up to 3). When called, "
@@ -145,6 +147,8 @@ class WriteCanvasTool(ContextAwareTool):
     """Create or completely rewrite the canvas document."""
 
     name: str = "canvas_write"
+    start_label: str = "Writing document..."
+    end_label: str = "Rewrote the canvas text from scratch"
     description: str = (
         "Create or completely rewrite the canvas document for this conversation. "
         "Use this when starting a document from scratch or doing a full rewrite. "
@@ -240,6 +244,8 @@ class EditCanvasTool(ContextAwareTool):
     """Apply targeted find-replace edits to the existing canvas document."""
 
     name: str = "canvas_edit"
+    start_label: str = "Editing document..."
+    end_label: str = "Edited the canvas text"
     description: str = (
         "Make targeted find-replace edits to the existing canvas document. "
         "Prefer this over canvas_write when the document already exists and you "
@@ -342,6 +348,8 @@ class DeleteCanvasTool(ContextAwareTool):
     """Soft-delete a canvas from the conversation (preserved + user-undoable)."""
 
     name: str = "canvas_delete"
+    start_label: str = "Deleting canvas..."
+    end_label: str = "Deleted canvas"
     description: str = (
         "Delete a canvas from this conversation when it's no longer needed — e.g. "
         "to discard a scratch/draft canvas, or to free room when the per-thread "

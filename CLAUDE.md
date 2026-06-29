@@ -71,11 +71,18 @@ For deploy details, config vars, rollback, and ops, see `RUNBOOK.md`.
 
 ## Chat Tool Labels
 
-When adding a new tool to the chat system, you **must** add display labels in `templates/chat/chat.html` for both:
-- **`tool_start`** — present-tense label while running (e.g., "Searching the web...")
-- **`tool_end`** — past-tense label when done (e.g., "Searched the web")
+Display labels are **tool metadata**, declared on the tool class (a `ContextAwareTool`
+subclass in `llm/tools/`, `chat/`, or `agent_skills/`) — not in the frontend. When adding
+a new tool, set:
+- **`start_label`** — present-tense label while running (e.g., `"Searching the web..."`)
+- **`end_label`** — past-tense label when done (e.g., `"Searched the web"`)
 
-Look for the `tool_start` and `tool_end` event handler blocks and add `else if` branches for the new tool name.
+The pipeline (`llm/pipelines/simple_chat.py`) ships these to the client as `display_label`
+in the `tool_start`/`tool_end` events, and `templates/chat/chat.html` just renders it — no
+per-tool branches in the template. If a tool's completion label depends on its result
+(e.g. "Found 3 results"), override `end_label_for_result(self, result: dict) -> str | None`
+on the class; return `None` to fall back to `end_label`. The result is the tool's JSON
+output parsed to a dict (`None` for non-JSON results, which then use `end_label`).
 
 ## Logging
 

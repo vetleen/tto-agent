@@ -30,6 +30,24 @@ class _MockToolImpl(ContextAwareTool):
         return self._return_value
 
 
+class _LabeledMockTool(ContextAwareTool):
+    """Mock tool exercising start_label/end_label + end_label_for_result."""
+
+    name: str = "document_search"
+    description: str = "A labeled mock tool"
+    args_schema: type[BaseModel] = _MockInput
+    start_label: str = "Scanning..."
+    end_label: str = "Scanned"
+    _return_value: str = '{"count": 7}'
+
+    def _run(self, a: float, b: float) -> str:
+        return self._return_value
+
+    def end_label_for_result(self, result: dict):
+        n = result.get("count")
+        return None if n is None else f"Found {n}"
+
+
 class SimpleChatPipelineTests(TestCase):
     """Test simple_chat pipeline: tool loop and model delegation."""
 
@@ -371,6 +389,10 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(tool_starts[0].data["arguments"], {"a": 1, "b": 2})
         self.assertEqual(tool_ends[0].data["tool_name"], "document_search")
         self.assertIn("3", tool_ends[0].data["result"])
+        # display_label ships with every tool event; the bare mock tool inherits
+        # the base-class defaults.
+        self.assertEqual(tool_starts[0].data["display_label"], "Working...")
+        self.assertEqual(tool_ends[0].data["display_label"], "Done")
 
         # Verify stream() was called (not generate()) for all iterations
         self.assertEqual(fake_model.stream.call_count, 2)
@@ -380,6 +402,68 @@ class SimpleChatPipelineTests(TestCase):
         tokens = [e for e in events if e.event_type == "token"]
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0].data["text"], "The result is 3.")
+
+    def test_stream_ships_display_label_from_tool(self):
+        """tool_start/tool_end carry display_label from the tool's metadata;
+        end_label_for_result drives the completion label, falling back to
+        end_label when the result is not a JSON dict."""
+        def run_with_result(return_value):
+            tool = _LabeledMockTool(name="document_search")
+            tool._return_value = return_value
+            request = ChatRequest(
+                messages=[Message(role="user", content="go")],
+                stream=True, model="gpt-4o-mini", tools=["document_search"],
+                context=RunContext.create(),
+            )
+
+            def fake_tool_stream(req):
+                yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+                yield StreamEvent(event_type="message_end", data={
+                    "content": "",
+                    "tool_calls": [{"id": "s1", "name": "document_search", "arguments": {"a": 1, "b": 2}}],
+                }, sequence=2, run_id="")
+
+            def fake_final_stream(req):
+                yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+                yield StreamEvent(event_type="message_end", data={"content": "ok"}, sequence=2, run_id="")
+
+            fake_model = MagicMock()
+            fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
+            with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+                 self._patch_tool_registry(tool):
+                mock_create.return_value = fake_model
+                events = list(SimpleChatPipeline().stream(request))
+            starts = [e for e in events if e.event_type == "tool_start"]
+            ends = [e for e in events if e.event_type == "tool_end"]
+            return starts[0].data["display_label"], ends[0].data["display_label"]
+
+        start_label, end_label = run_with_result('{"count": 7}')
+        self.assertEqual(start_label, "Scanning...")
+        self.assertEqual(end_label, "Found 7")
+
+        # Non-JSON result → fall back to the static end_label
+        _, end_label = run_with_result("plain text, not json")
+        self.assertEqual(end_label, "Scanned")
+
+    def test_safe_result_dict(self):
+        """_safe_result_dict returns a dict only for JSON objects, else None."""
+        from llm.pipelines.simple_chat import _safe_result_dict
+        self.assertEqual(_safe_result_dict('{"a": 1}'), {"a": 1})
+        self.assertIsNone(_safe_result_dict("not json"))
+        self.assertIsNone(_safe_result_dict("[1, 2, 3]"))
+        self.assertIsNone(_safe_result_dict("42"))
+
+    def test_real_tool_end_labels(self):
+        """Representative real tools compute their dynamic completion labels."""
+        from chat.tool_loops import LoopListTool
+        from chat.subagent_tool import CreateSubagentTool
+        self.assertEqual(LoopListTool().end_label_for_result({"count": 2}), "Found 2 loops")
+        self.assertEqual(LoopListTool().end_label_for_result({"count": 1}), "Found 1 loop")
+        self.assertIsNone(LoopListTool().end_label_for_result({}))
+        sub = CreateSubagentTool()
+        self.assertEqual(sub.end_label_for_result({"status": "queued"}), "Sub-agent queued")
+        self.assertEqual(sub.end_label_for_result({"status": "error"}), "Sub-agent failed")
+        self.assertIsNone(sub.end_label_for_result({"status": "weird"}))
 
     def test_stream_cancel_check_aborts_before_model_call(self):
         """A sub-agent cancels via a DB-poll ``_cancel_check`` (no threading.Event);

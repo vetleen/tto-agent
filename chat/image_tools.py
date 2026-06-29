@@ -46,6 +46,17 @@ class ChatGenerateImageTool(ContextAwareTool):
     """Generate (or edit) an image from a text prompt using the configured image model."""
 
     name: str = "chat_generate_image"
+    start_label: str = "Generating image..."
+    end_label: str = "Generated image"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        status = result.get("status")
+        if not status:
+            return None
+        if status == "ok":
+            return "Edited image" if result.get("is_edit") else "Generated image"
+        return "Image generation failed"
+
     description: str = (
         "Generate an image from a text prompt. Can also EDIT or restyle an existing "
         "image: pass its [[image:<uuid>|...]] token in input_images along with a prompt "

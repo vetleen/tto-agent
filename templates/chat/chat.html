@@ -2737,48 +2737,7 @@
       const container = currentStreamingElement.querySelector(".tool-cards");
       if (container) {
         const card = document.createElement("div"); card.className = "tool-card tool"; card.setAttribute("data-tool-id", toolId);
-        let displayText = "Working...";
-        if (toolName === "document_search") displayText = "Searching documents...";
-        else if (toolName === "document_read") displayText = "Reading document...";
-        else if (toolName === "document_view_image") displayText = "Viewing image...";
-        else if (toolName === "canvas_activate") displayText = "Switching active canvases...";
-        else if (toolName === "canvas_write") displayText = "Writing document...";
-        else if (toolName === "canvas_edit") displayText = "Editing document...";
-        else if (toolName === "canvas_delete") displayText = "Deleting canvas...";
-        else if (toolName === "web_fetch") displayText = "Fetching web page...";
-        else if (toolName === "web_search") displayText = "Searching the web...";
-        else if (toolName === "web_search_read") displayText = "Searching and reading web pages...";
-        else if (toolName === "skill_create") displayText = "Creating skill...";
-        else if (toolName === "skill_field_save") displayText = "Saving to skill...";
-        else if (toolName === "skill_field_load") displayText = "Loading skill field...";
-        else if (toolName === "skill_edit") displayText = "Editing skill...";
-        else if (toolName === "skill_delete") displayText = "Deleting skill...";
-        // Removed in commit 5fd4ef5 — template editing now goes through
-        // skill_field_save and skill_edit's delete_templates param.
-        // else if (toolName === "add_skill_template") displayText = "Adding template...";
-        // else if (toolName === "edit_skill_template") displayText = "Editing template...";
-        // else if (toolName === "delete_skill_template") displayText = "Deleting template...";
-        else if (toolName === "skill_template_view") displayText = "Loading template...";
-        else if (toolName === "skill_template_load") displayText = "Loading template to canvas...";
-        else if (toolName === "skill_tool_list") displayText = "Listing skill tools...";
-        else if (toolName === "skill_tool_inspect") displayText = "Inspecting tool...";
-        else if (toolName === "chat_subagent_create") displayText = "Running sub-agent...";
-        else if (toolName === "chat_task_update") displayText = "Updating task plan...";
-        else if (toolName === "chat_skill_attach") displayText = "Updating attached skills...";
-        else if (toolName === "chat_loop_create") displayText = "Creating loop...";
-        else if (toolName === "chat_loop_list") displayText = "Listing loops...";
-        else if (toolName === "chat_loop_stop") displayText = "Stopping loop...";
-        else if (toolName === "chat_loop_edit") displayText = "Updating loop...";
-        else if (toolName === "canvas_save_to_document") displayText = "Saving canvas to data room...";
-        else if (toolName === "document_list") displayText = "Listing documents...";
-        else if (toolName === "document_open_to_canvas") displayText = "Opening document...";
-        else if (toolName === "document_edit") displayText = "Editing document...";
-        else if (toolName === "document_archive") displayText = "Archiving document...";
-        else if (toolName === "document_rename") displayText = "Renaming document...";
-        else if (toolName === "document_version_list") displayText = "Listing versions...";
-        else if (toolName === "document_version_restore") displayText = "Restoring version...";
-        else if (toolName === "document_status") displayText = "Checking document status...";
-        else if (toolName === "chat_generate_image") displayText = "Generating image...";
+        let displayText = (data.data && data.data.display_label) || "Working...";
         const toolArgs = (data.data && data.data.arguments) || {}; const reasonText = (typeof toolArgs === "object" && toolArgs.reason) ? ' <span class="italic">(' + escapeHtml(toolArgs.reason) + ')</span>' : '';
         if (toolName === "chat_subagent_create" && toolId && typeof toolArgs === "object" && toolArgs.reason) subagentReasons[toolId] = toolArgs.reason;
         card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + reasonText + '</span>';
@@ -2793,50 +2752,19 @@
       if (currentStreamingElement) {
         const card = currentStreamingElement.querySelector('.tool-card[data-tool-id="' + toolId + '"]');
         if (card) {
-          let doneLabel = "Done";
-          try { const result = JSON.parse(resultStr); if (toolName === "document_search" && result.count !== undefined) doneLabel = "Found " + result.count + " result" + (result.count !== 1 ? "s" : ""); else if (toolName === "document_read" && result.documents) doneLabel = "Read " + result.documents.length + " document" + (result.documents.length !== 1 ? "s" : ""); else if (toolName === "chat_skill_attach" && result && result.status === "ok") { if (result.attached_skill_name) doneLabel = "Attached skill: " + result.attached_skill_name; else if (result.detached) doneLabel = "Detached skill"; else if (result.no_change) doneLabel = "Skill already attached"; else doneLabel = "No skill attached"; } else if (toolName === "chat_subagent_create" && result.status) { if (result.status === "queued") doneLabel = "Sub-agent queued"; else if (result.status === "started") doneLabel = "Sub-agent dispatched"; else if (result.status === "completed") doneLabel = "Sub-agent finished"; else if (result.status === "timeout") doneLabel = "Sub-agent dispatched"; else if (result.status === "error") doneLabel = "Sub-agent failed"; else doneLabel = "Sub-agent dispatched"; if (result.status === "queued" || result.status === "started" || result.status === "timeout") { var reason = subagentReasons[toolId] || null; delete subagentReasons[toolId]; updateSubagentStatusBar(activeSubagentCount + 1, reason); } } else if (toolName === "canvas_save_to_document" && result.status === "ok") doneLabel = "Saved \"" + result.canvas_title + "\" to " + result.data_room_name; else if (toolName === "chat_loop_create" && result.status === "ok") doneLabel = "Created loop" + (result.schedule_label ? " · " + result.schedule_label : ""); else if (toolName === "chat_loop_list" && result.count !== undefined) doneLabel = "Found " + result.count + " loop" + (result.count !== 1 ? "s" : ""); else if (toolName === "chat_loop_stop" && result.status === "ok") doneLabel = "Stopped loop"; else if (toolName === "chat_loop_edit" && result.status === "ok") doneLabel = "Updated loop" + (result.schedule_label ? " · " + result.schedule_label : ""); else if (toolName === "chat_generate_image" && result.status) doneLabel = result.status === "ok" ? (result.is_edit ? "Edited image" : "Generated image") : "Image generation failed"; } catch (e) {}
-          if (doneLabel === "Done") { if (toolName === "document_search") doneLabel = "Searched documents";
-          else if (toolName === "document_read") doneLabel = "Read document";
-          else if (toolName === "document_view_image") doneLabel = "Viewed image";
-          else if (toolName === "canvas_activate") doneLabel = "Updated active canvases";
-          else if (toolName === "canvas_write") doneLabel = "Rewrote the canvas text from scratch";
-          else if (toolName === "canvas_edit") doneLabel = "Edited the canvas text";
-          else if (toolName === "canvas_delete") doneLabel = "Deleted canvas";
-          else if (toolName === "web_fetch") doneLabel = "Fetched web page";
-          else if (toolName === "web_search") doneLabel = "Searched the web";
-          else if (toolName === "web_search_read") doneLabel = "Searched and read web pages";
-          else if (toolName === "skill_create") doneLabel = "Created skill";
-          else if (toolName === "skill_field_save") doneLabel = "Saved to skill";
-          else if (toolName === "skill_field_load") doneLabel = "Loaded skill field to canvas";
-          else if (toolName === "skill_edit") doneLabel = "Updated skill";
-          else if (toolName === "skill_delete") doneLabel = "Deleted skill";
-          // Removed in commit 5fd4ef5 — template editing now goes through
-          // skill_field_save and skill_edit's delete_templates param.
-          // else if (toolName === "add_skill_template") doneLabel = "Added template";
-          // else if (toolName === "edit_skill_template") doneLabel = "Updated template";
-          // else if (toolName === "delete_skill_template") doneLabel = "Deleted template";
-          else if (toolName === "skill_template_view") doneLabel = "Viewed template";
-          else if (toolName === "skill_template_load") doneLabel = "Loaded template to canvas";
-          else if (toolName === "skill_tool_list") doneLabel = "Listed skill tools";
-          else if (toolName === "skill_tool_inspect") doneLabel = "Inspected tool";
-          else if (toolName === "chat_subagent_create") doneLabel = "Sub-agent dispatched";
-          else if (toolName === "chat_task_update") doneLabel = "Updated task plan";
-          else if (toolName === "chat_skill_attach") doneLabel = "Updated attached skills";
-          else if (toolName === "chat_loop_create") doneLabel = "Created loop";
-          else if (toolName === "chat_loop_list") doneLabel = "Listed loops";
-          else if (toolName === "chat_loop_stop") doneLabel = "Stopped loop";
-          else if (toolName === "chat_loop_edit") doneLabel = "Updated loop";
-          else if (toolName === "canvas_save_to_document") doneLabel = "Saved canvas to data room";
-          else if (toolName === "document_list") doneLabel = "Listed documents";
-          else if (toolName === "document_open_to_canvas") doneLabel = "Opened document";
-          else if (toolName === "document_edit") doneLabel = "Edited document";
-          else if (toolName === "document_archive") doneLabel = "Archived document";
-          else if (toolName === "document_rename") doneLabel = "Renamed document";
-          else if (toolName === "document_version_list") doneLabel = "Listed versions";
-          else if (toolName === "document_version_restore") doneLabel = "Restored version";
-          else if (toolName === "document_status") doneLabel = "Checked document status";
-          else if (toolName === "chat_generate_image") doneLabel = "Generated image"; }
-          var isSubagentActive = toolName === "chat_subagent_create" && (doneLabel === "Sub-agent queued" || doneLabel === "Sub-agent dispatched");
+          let doneLabel = (data.data && data.data.display_label) || "Done";
+          // Sub-agent UI behavior (status bar + active icon) keys on the
+          // structured result status, not the label text.
+          var subagentStatus = null;
+          if (toolName === "chat_subagent_create") {
+            try { subagentStatus = (JSON.parse(resultStr) || {}).status || null; } catch (e) {}
+          }
+          var isSubagentActive = (subagentStatus === "queued" || subagentStatus === "started" || subagentStatus === "timeout");
+          if (isSubagentActive) {
+            var reason = subagentReasons[toolId] || null;
+            delete subagentReasons[toolId];
+            updateSubagentStatusBar(activeSubagentCount + 1, reason);
+          }
           var iconSvg = isSubagentActive
             ? '<svg class="w-3 h-3 shrink-0 text-fg-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'
             : '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';

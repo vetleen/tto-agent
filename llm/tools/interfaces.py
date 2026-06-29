@@ -24,9 +24,21 @@ class ContextAwareTool(BaseTool):
     context: RunContext | None = None
     section: str = "chat"
 
+    # UI display labels for the chat surface. The pipeline ships these to the
+    # client in the tool_start/tool_end events as ``display_label`` so the
+    # frontend stays a dumb renderer (no per-tool label logic in the template).
+    start_label: str = "Working..."  # present tense, shown while the tool runs
+    end_label: str = "Done"  # past tense, static fallback when finished
+
     def set_context(self, ctx: RunContext) -> "ContextAwareTool":
         self.context = ctx
         return self
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        """Dynamic past-tense label derived from the (best-effort parsed) result
+        dict. Return None to fall back to ``end_label``. Override in tools whose
+        completion label depends on the result (counts, names, status, etc.)."""
+        return None
 
 
 # Backward-compat alias

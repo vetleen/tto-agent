@@ -126,6 +126,15 @@ class LoopCreateTool(ContextAwareTool):
     """Create a scheduled, recurring chat loop."""
 
     name: str = "chat_loop_create"
+    start_label: str = "Creating loop..."
+    end_label: str = "Created loop"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") != "ok":
+            return None
+        label = result.get("schedule_label")
+        return f"Created loop · {label}" if label else "Created loop"
+
     description: str = (
         "Create a Loop: a recurring, scheduled task that runs the same prompt on a cadence in its own "
         "chat thread. Use when the user wants something done repeatedly on a schedule (e.g. 'every "
@@ -188,6 +197,15 @@ class LoopListTool(ContextAwareTool):
     """List the current user's loops."""
 
     name: str = "chat_loop_list"
+    start_label: str = "Listing loops..."
+    end_label: str = "Listed loops"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        n = result.get("count")
+        if n is None:
+            return None
+        return f"Found {n} loop{'' if n == 1 else 's'}"
+
     description: str = (
         "List the current user's loops (active and paused), with each loop's id, prompt, schedule, status, "
         "next run time, run progress, and backing thread id. Use this to find a loop's id before "
@@ -223,6 +241,8 @@ class LoopStopTool(ContextAwareTool):
     """Pause a loop so it stops firing (reversible)."""
 
     name: str = "chat_loop_stop"
+    start_label: str = "Stopping loop..."
+    end_label: str = "Stopped loop"
     description: str = (
         "Stop a loop by pausing it: it stops firing but is kept and can be resumed later via "
         "chat_loop_edit(resume=true). Identify the loop by its id (use chat_loop_list to find it)."
@@ -302,6 +322,15 @@ class LoopEditTool(ContextAwareTool):
     """Edit an existing loop; can also resume or restart a paused one."""
 
     name: str = "chat_loop_edit"
+    start_label: str = "Updating loop..."
+    end_label: str = "Updated loop"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") != "ok":
+            return None
+        label = result.get("schedule_label")
+        return f"Updated loop · {label}" if label else "Updated loop"
+
     description: str = (
         "Edit an existing loop identified by loop_id. Only the fields you pass change; everything else "
         "is preserved. Use restart=true to re-activate a paused loop and start its run count over, or "

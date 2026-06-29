@@ -243,6 +243,8 @@ class CreateSkillTool(ContextAwareTool):
     """Create a new user-level skill."""
 
     name: str = "skill_create"
+    start_label: str = "Creating skill..."
+    end_label: str = "Created skill"
     description: str = (
         "Create a new user-level skill. Returns the slug and ID of the created skill."
     )
@@ -300,6 +302,8 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
     """Save the current canvas content to a skill field or template."""
 
     name: str = "skill_field_save"
+    start_label: str = "Saving to skill..."
+    end_label: str = "Saved to skill"
     description: str = (
         "Save the current canvas content into a skill's instructions, description, "
         "or a named template. The canvas content is saved verbatim."
@@ -378,6 +382,8 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
     """Load a skill field or template into the canvas for viewing/editing."""
 
     name: str = "skill_field_load"
+    start_label: str = "Loading skill field..."
+    end_label: str = "Loaded skill field to canvas"
     description: str = (
         "Load a skill's instructions, description, or a named template into "
         "the canvas. This allows the user to view and edit the content."
@@ -432,6 +438,8 @@ class EditSkillTool(ContextAwareTool):
     """Edit a skill's metadata or text fields."""
 
     name: str = "skill_edit"
+    start_label: str = "Editing skill..."
+    end_label: str = "Updated skill"
     description: str = (
         "Edit a skill's name, slug, tool_names, is_active, or apply "
         "find-replace edits to text fields like description."
@@ -599,6 +607,8 @@ class DeleteSkillTool(ContextAwareTool):
     """Delete a user or org skill."""
 
     name: str = "skill_delete"
+    start_label: str = "Deleting skill..."
+    end_label: str = "Deleted skill"
     description: str = "Delete a skill that the user owns. System skills cannot be deleted."
     args_schema: type[BaseModel] = DeleteSkillInput
     section: str = "skills"
@@ -676,6 +686,8 @@ class ViewTemplateTool(ContextAwareTool):
     """View the content of a template from an attached skill."""
 
     name: str = "skill_template_view"
+    start_label: str = "Loading template..."
+    end_label: str = "Viewed template"
     description: str = (
         "View the full content of a named template from an attached skill. "
         "Returns the template text so you can reference it when generating output."
@@ -722,6 +734,8 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     """Load a template from an attached skill into the canvas."""
 
     name: str = "skill_template_load"
+    start_label: str = "Loading template to canvas..."
+    end_label: str = "Loaded template to canvas"
     description: str = (
         "Load a named template from an attached skill into the canvas. "
         "Use this to give the user a starting point they can edit. "
@@ -789,6 +803,8 @@ class ListSkillToolsTool(ContextAwareTool):
     """List skill-specific tools that can be attached to a skill."""
 
     name: str = "skill_tool_list"
+    start_label: str = "Listing skill tools..."
+    end_label: str = "Listed skill tools"
     description: str = (
         "List all skill-specific tools — the tools that must be explicitly "
         "attached to a skill via tool_names. Use this to discover which "
@@ -818,6 +834,8 @@ class InspectToolTool(ContextAwareTool):
     """Inspect a tool to see its description and determine if it's appropriate for a skill."""
 
     name: str = "skill_tool_inspect"
+    start_label: str = "Inspecting tool..."
+    end_label: str = "Inspected tool"
     description: str = (
         "Get the description of a specific tool by name. Use this to "
         "understand what a tool does before adding it to a skill's tool_names."
@@ -858,6 +876,21 @@ class AttachSkillsInput(ReasonBaseModel):
 
 class AttachSkillsTool(ContextAwareTool):
     name: str = "chat_skill_attach"
+    start_label: str = "Updating attached skills..."
+    end_label: str = "Updated attached skills"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") != "ok":
+            return None
+        skills = result.get("skills") or []
+        if result.get("no_change"):
+            return "Skill already attached" if skills else "No skills attached"
+        if not skills:
+            return "Detached skill"
+        if len(skills) == 1:
+            return f"Attached skill: {skills[0].get('name', '')}".rstrip()
+        return "Updated attached skills"
+
     description: str = (
         "Set the skills attached to this chat thread to the given set of "
         f"slugs (up to {MAX_THREAD_SKILLS}), replacing whatever is currently "
