@@ -122,12 +122,12 @@
       <p class="mt-1 text-sm text-body">The personality {{ assistant_name }} uses for everyone in your organization. It guides tone, voice and style only — it can't change {{ assistant_name }}'s identity or capabilities. Reset to fall back to the system default.</p>
 
       <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
-        <textarea id="org-soul" maxlength="5000" rows="6"
+        <textarea id="org-soul" maxlength="75000" rows="6"
           style="min-height: 8.5rem; max-height: 24rem;"
           class="block w-full font-mono rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.org_soul }}</textarea>
         <div class="flex items-center justify-between mt-1.5">
           <p id="org-soul-status" class="text-xs hidden"></p>
-          <p class="text-xs text-body ml-auto wf-mono"><span id="org-soul-count">{{ cust.org_soul|length }}</span> / 5000</p>
+          <p class="text-xs text-body ml-auto wf-mono"><span id="org-soul-count">{{ cust.org_soul|length }}</span> / 75000</p>
         </div>
         <div class="mt-3 flex items-center gap-2">
           <button type="button" id="org-soul-save" disabled
@@ -158,12 +158,12 @@
       <p class="mt-1 text-sm text-body">Your personal personality for {{ assistant_name }}. It guides tone, voice and style only — it can't change {{ assistant_name }}'s identity or capabilities. Reset to fall back to {% if has_org %}your organization's SOUL{% else %}the system default{% endif %}.</p>
 
       <div class="mt-4 rounded-base border border-default bg-neutral-primary-soft p-4">
-        <textarea id="user-soul" maxlength="5000" rows="6"
+        <textarea id="user-soul" maxlength="75000" rows="6"
           style="min-height: 8.5rem; max-height: 24rem;"
           class="block w-full font-mono rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ cust.soul }}</textarea>
         <div class="flex items-center justify-between mt-1.5">
           <p id="user-soul-status" class="text-xs hidden"></p>
-          <p class="text-xs text-body ml-auto wf-mono"><span id="user-soul-count">{{ cust.soul|length }}</span> / 5000</p>
+          <p class="text-xs text-body ml-auto wf-mono"><span id="user-soul-count">{{ cust.soul|length }}</span> / 75000</p>
         </div>
         <div class="mt-3 flex items-center gap-2">
           <button type="button" id="user-soul-save" disabled
@@ -363,7 +363,7 @@
     var initial = ta.value;
 
     var ed = mountEditor(ta, {
-      maxLength: 5000, minHeight: '12rem', maxHeight: '28rem',
+      maxLength: 75000, minHeight: '12rem', maxHeight: '28rem',
       onChange: function(val) {
         if (count) count.textContent = val.length;
         if (saveBtn) saveBtn.disabled = (val === initial);

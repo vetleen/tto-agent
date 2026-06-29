@@ -60,7 +60,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     description = models.TextField(blank=True, default="", max_length=5000)
     # Personal personality override for the assistant ("SOUL"). Blank = inherit
     # the org-wide soul, then the system default. See accounts.agent_customization.
-    soul = models.TextField(blank=True, default="", max_length=5000)
+    soul = models.TextField(blank=True, default="", max_length=75000)
 
     # Optional profile picture. Two files are kept: a small re-encoded thumbnail
     # shown in the nav and chat (profile_picture), and the re-encoded full-size
@@ -143,7 +143,7 @@ class Organization(models.Model):
     # Org-wide personality baseline for the assistant ("SOUL"). Blank = inherit
     # the system default. Members may override it with their own User.soul when
     # the org allows it (preferences["allow_user_soul"]).
-    soul = models.TextField(blank=True, default="", max_length=5000)
+    soul = models.TextField(blank=True, default="", max_length=75000)
     # Optional brand logo for exported documents (Org settings → Styles → Header).
     # Validated, scaled to a bounding box and re-encoded to PNG in
     # accounts.avatars.process_org_logo. The placement (none/left/right) lives in
