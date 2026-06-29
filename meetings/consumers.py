@@ -505,11 +505,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
     async def _persist_realtime_utterance(self, completed) -> None:
         """Create a MeetingTranscriptSegment row + push segment.ready to client."""
-        # Compute the start offset from cumulative PCM bytes forwarded before
-        # this utterance started. The server's clock is authoritative for the
-        # server-VAD turn boundaries; we just need a stable ordering hint for
-        # the UI.
-        start_offset = self._total_pcm_bytes / (24_000 * 2)
+        # The session reports the offset captured at this utterance's
+        # speech_started (its START). Fall back to the running total only if the
+        # provider couldn't determine it (which would over-report toward the end).
+        start_offset = getattr(completed, "start_offset_seconds", None)
+        if start_offset is None:
+            start_offset = self._total_pcm_bytes / (24_000 * 2)
         idx = await self._allocate_and_persist_segment(
             text=completed.text,
             start_offset=start_offset,

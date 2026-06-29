@@ -64,6 +64,9 @@ class TranscriptCompleted:
     item_id: str
     text: str
     usage: dict | None = None
+    # Seconds of audio that preceded this utterance's start (not its end).
+    # ``None`` if the provider couldn't determine it; the consumer falls back.
+    start_offset_seconds: float | None = None
 
 
 @dataclass
@@ -235,6 +238,12 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         self._session_id: str | None = None
         self._replay_buffer: deque[bytes] = deque()
         self._replay_bytes = 0
+        # Utterance start-offset tracking. _pcm_bytes_sent is a monotonic count of
+        # audio forwarded; each speech_started snapshots it so the matching
+        # .completed reports where the utterance BEGAN, not where it ended.
+        # FIFO-paired in event-arrival order.
+        self._pcm_bytes_sent = 0
+        self._speech_start_offsets: deque[int] = deque()
         # Monotonic count of server events received. finalize() snapshots this,
         # sends the commit, then waits for it to advance so the server's
         # post-commit transcription has a chance to arrive before teardown.
@@ -251,6 +260,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
     async def _open(self) -> None:
         if not self._api_key:
             raise RealtimeSessionError("OPENAI_API_KEY is not set")
+        # Drop any utterance-start offsets left pending from a dropped connection
+        # so a reconnect can't pair the next utterance with a stale offset. The
+        # byte counter keeps running to preserve a continuous meeting timeline.
+        self._speech_start_offsets.clear()
         self._ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
         await self._send_session_update()
         self._recv_task = asyncio.create_task(self._receive_loop())
@@ -339,6 +352,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             "input_audio_buffer.committed",
         ):
             logger.info("OpenAIRealtimeSession: VAD %s", evt_type)
+            if evt_type == "input_audio_buffer.speech_started":
+                # Snapshot how much audio preceded this utterance so the matching
+                # .completed (FIFO) can report its START offset, not its end.
+                self._speech_start_offsets.append(self._pcm_bytes_sent)
             return
         if evt_type == "conversation.item.input_audio_transcription.delta":
             item_id = event.get("item_id", "") or ""
@@ -357,7 +374,19 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                     "output_tokens": usage_obj.get("output_tokens"),
                     "total_tokens": usage_obj.get("total_tokens"),
                 }
-            await self._events.put(TranscriptCompleted(item_id=item_id, text=text, usage=usage))
+            # Pair this completion with the offset captured at its speech_started
+            # (FIFO); fall back to the current count if the start was missed.
+            # 24kHz mono PCM16 → 24000 * 2 = 48000 bytes/sec.
+            if self._speech_start_offsets:
+                start_bytes = self._speech_start_offsets.popleft()
+            else:
+                start_bytes = self._pcm_bytes_sent
+            await self._events.put(TranscriptCompleted(
+                item_id=item_id,
+                text=text,
+                usage=usage,
+                start_offset_seconds=start_bytes / (24_000 * 2),
+            ))
             return
         if evt_type == "error":
             err = event.get("error") or {}
@@ -448,6 +477,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
     async def send_pcm(self, frame: bytes) -> None:
         if self._closed:
             return
+        self._pcm_bytes_sent += len(frame)
         self._remember_pcm(frame)
         if self._ws is None:
             return  # mid-reconnect; the ring buffer will replay once we're back.
@@ -502,6 +532,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         if self._closed:
             return
         self._closed = True
+        self._speech_start_offsets.clear()
         if self._recv_task is not None:
             self._recv_task.cancel()
             try:

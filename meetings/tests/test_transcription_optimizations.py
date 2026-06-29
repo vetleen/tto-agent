@@ -171,6 +171,25 @@ class TranscriptionServiceStreamingTests(TestCase):
         result = service._consume_streaming(iter([delta, done]), broken)
         self.assertEqual(result.text, "x")
 
+    def test_consume_streaming_returns_assembled_text_for_frozen_done_event(self):
+        """A frozen/slotted done event (setattr would raise) must not lose the
+        transcript — the assembled deltas are returned instead of an empty text."""
+        from llm.service.transcription_service import TranscriptionService
+
+        class _FrozenDone:
+            __slots__ = ("type",)  # no settable/readable .text attribute
+
+            def __init__(self):
+                self.type = "transcript.text.done"
+
+        delta = MagicMock()
+        delta.type = "transcript.text.delta"
+        delta.delta = "Hello world."
+
+        service = TranscriptionService()
+        result = service._consume_streaming(iter([delta, _FrozenDone()]), None)
+        self.assertEqual(result.text, "Hello world.")
+
 
 class PartialTranscriptFlusherTests(TestCase):
     def setUp(self):

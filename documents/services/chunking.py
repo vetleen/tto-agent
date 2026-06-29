@@ -538,8 +538,11 @@ def _split_section_preserving_blocks(text: str) -> list[str]:
                 current_block = []
             in_table = False
 
-        # Transition out of list
-        if in_list and not is_list and not line.startswith("  ") and is_blank:
+        # Transition out of list: any non-list, non-indented line ends the list
+        # (mirrors the table-exit above). Without this a plain paragraph that
+        # follows a bullet with no blank line in between is absorbed into the
+        # list block, producing oversized blocks and wrong chunk boundaries.
+        if in_list and not is_list and not line.startswith("  "):
             if current_block:
                 blocks.append("\n".join(current_block))
                 current_block = []

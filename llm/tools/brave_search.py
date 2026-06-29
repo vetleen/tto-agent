@@ -208,8 +208,17 @@ def _search_core(
                 headers=headers,
                 params=params,
                 timeout=10,
+                stream=True,
             )
             response.raise_for_status()
+            # Brave returns small JSON metadata, but cap the read anyway (on par
+            # with the fetch tool) so a malformed/huge body can't OOM the worker.
+            from llm.tools.web_fetch import (
+                _enforce_size_and_buffer,
+                _max_response_bytes,
+            )
+
+            _enforce_size_and_buffer(response, _max_response_bytes())
             data = response.json()
 
             results = []
@@ -287,6 +296,15 @@ def _search_core(
         except requests.exceptions.RequestException as e:
             last_exc = e
             logger.warning("Brave Search request error (attempt %d) query=%r: %s", attempt + 1, query, e)
+        except Exception as e:
+            # _ResponseTooLarge (size cap) and any other non-request error: don't
+            # retry — surface a graceful result rather than crashing the tool call.
+            from llm.tools.web_fetch import _ResponseTooLarge
+
+            if isinstance(e, _ResponseTooLarge):
+                logger.warning("Brave Search response too large query=%r: %s", query, e)
+                return {"error": "Brave Search returned an unexpectedly large response.", "results": []}
+            raise
 
         if attempt < _MAX_RETRIES:
             time.sleep(_BACKOFF_BASE * (2 ** attempt))

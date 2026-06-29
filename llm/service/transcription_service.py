@@ -400,17 +400,17 @@ class TranscriptionService:
                     full_text_parts.append(final_text)
 
         if final_event is not None:
-            # Reuse the done event as the "response" — it has .text and .usage
-            # on the SDKs we care about. If .text is missing/short, fall back
-            # to the assembled delta buffer.
+            # Build a stable response object instead of mutating the SDK event:
+            # some SDK events are frozen/slotted, so the old setattr(text)
+            # silently failed and the whole transcript was lost. Prefer the done
+            # event's own text, falling back to the assembled deltas, and carry
+            # over usage + any diarization segments the event exposes.
             assembled = "".join(full_text_parts)
-            if not getattr(final_event, "text", None):
-                # Attach assembled text as a dynamic attribute for downstream.
-                try:
-                    setattr(final_event, "text", assembled)
-                except Exception:
-                    pass
-            return final_event
+            return _SynthesizedResponse(
+                text=getattr(final_event, "text", None) or assembled,
+                usage=getattr(final_event, "usage", None),
+                segments=getattr(final_event, "segments", None),
+            )
 
         # No done event — synthesize a minimal response object.
         assembled = "".join(full_text_parts)
@@ -424,8 +424,15 @@ class TranscriptionService:
 
 @dataclass
 class _SynthesizedResponse:
-    """Fallback response shape when the streaming path produces no `.done` event."""
+    """Stable response shape for the streaming path.
+
+    Used both when there is no ``transcript.text.done`` event and when there is
+    one — we never mutate the SDK event object (it may be frozen). Mirrors the
+    ``.text`` / ``.usage`` / ``.segments`` attributes the callers read.
+    """
     text: str
+    usage: dict | None = None
+    segments: list | None = None
 
 
 def _extract_text_from_response(response, info) -> str:

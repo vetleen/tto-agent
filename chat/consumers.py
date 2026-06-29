@@ -2952,7 +2952,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 except Exception:
                     logger.exception("Failed to read attachment %s", att_id)
 
-            if len(content_blocks) > 1:  # has at least text + one attachment
+            # Rewrite to multimodal blocks whenever at least one attachment block
+            # was added — including a message with only an attachment and no text
+            # (otherwise the attachment is silently dropped before the LLM sees it).
+            if len(content_blocks) > (1 if text else 0):
                 message_obj.content = content_blocks
 
     @database_sync_to_async
@@ -3162,7 +3165,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         for m in included:
             msg_dict = {
                 "role": m.role,
-                "content": m.content,
+                # Coerce NULL content (e.g. an assistant message with only
+                # tool_calls) to "" so the merge loop's .startswith()/concat below
+                # can't raise AttributeError and abort the whole turn.
+                "content": m.content or "",
                 "tool_call_id": m.tool_call_id,
             }
             if m.metadata and m.metadata.get("tool_calls"):

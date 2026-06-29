@@ -153,6 +153,42 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(audio_input["turn_detection"]["type"], "server_vad")
         self.assertEqual(audio_input["noise_reduction"], {"type": "near_field"})
 
+    def test_completed_reports_utterance_start_offset_not_end(self):
+        """start_offset_seconds must reflect where the utterance STARTED (the
+        audio position captured at speech_started), not the larger total
+        forwarded by the time the .completed event arrives."""
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+        bytes_per_second = 24_000 * 2
+
+        async def run():
+            await session.connect()
+            await session._events.get()  # drain the "connected" status
+            # 1s of audio precedes this utterance.
+            await session.send_pcm(b"\x00" * bytes_per_second)
+            ws.push_server_json({"type": "input_audio_buffer.speech_started"})
+            await asyncio.sleep(0.05)  # let the recv loop snapshot the offset
+            # More audio arrives during/after the utterance.
+            await session.send_pcm(b"\x00" * bytes_per_second)
+            ws.push_server_json({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item_1",
+                "transcript": "hello",
+            })
+            evt = await session._events.get()
+            await session.aclose()
+            return evt
+
+        completed = _run(run())
+        self.assertIsInstance(completed, TranscriptCompleted)
+        self.assertAlmostEqual(completed.start_offset_seconds, 1.0)
+
     def test_long_prompt_is_capped_at_1024(self):
         # OpenAI's Realtime transcription endpoint closes the session with
         # ``string_above_max_length`` if the prompt exceeds 1024 chars.

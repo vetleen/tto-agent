@@ -78,6 +78,8 @@ def _annotate_relative_dates(docs):
 
 
 def _user_can_access_data_room(user, data_room: DataRoom) -> bool:
+    # Same ownership rule as documents.access.accessible_data_rooms (the queryset
+    # form); keep the two in sync if access ever broadens (e.g. shared rooms).
     return data_room.created_by_id == user.id
 
 
@@ -590,7 +592,11 @@ def document_chunks(request, data_room_id, document_id):
         return JsonResponse({"error": "Forbidden"}, status=403)
     doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
     chunks = []
-    version = doc.active_searchable_version or doc.current_version
+    # Only expose the released (scanned, non-quarantined) version. Do NOT fall
+    # back to current_version: it advances immediately on upload, so a version
+    # still being scanned would otherwise leak un-screened chunks. A never-scanned
+    # doc therefore returns [] until its first version reaches READY.
+    version = doc.active_searchable_version
     version_chunks = version.chunks.filter(is_quarantined=False).order_by("chunk_index") if version else []
     for c in version_chunks:
         chunks.append({

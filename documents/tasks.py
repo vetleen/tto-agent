@@ -84,17 +84,26 @@ def requeue_stale_documents() -> int:
             ).values_list("pk", flat=True)
         )
         if exhausted_ids:
-            DataRoomDocumentVersion.objects.filter(pk__in=exhausted_ids).update(
-                status=Status.FAILED,
-                processing_error="Processing was interrupted repeatedly and has been stopped.",
-                updated_at=now,
+            # Re-check the stale predicate at write time: a version that finished
+            # (advanced to SCANNING/READY) between the select above and now must
+            # not be clobbered to FAILED.
+            failed_ids = list(
+                DataRoomDocumentVersion.objects.filter(
+                    stale_pipeline, pk__in=exhausted_ids, requeue_count__gte=MAX_REQUEUES,
+                ).values_list("pk", flat=True)
             )
-            _mirror_terminal_doc_status(exhausted_ids, Status.FAILED, now)
-            logger.warning(
-                "requeue_stale_documents: %s version(s) exceeded %s requeues, marked FAILED",
-                len(exhausted_ids), MAX_REQUEUES,
-            )
-            handled += len(exhausted_ids)
+            if failed_ids:
+                DataRoomDocumentVersion.objects.filter(pk__in=failed_ids).update(
+                    status=Status.FAILED,
+                    processing_error="Processing was interrupted repeatedly and has been stopped.",
+                    updated_at=now,
+                )
+                _mirror_terminal_doc_status(failed_ids, Status.FAILED, now)
+                logger.warning(
+                    "requeue_stale_documents: %s version(s) exceeded %s requeues, marked FAILED",
+                    len(failed_ids), MAX_REQUEUES,
+                )
+                handled += len(failed_ids)
 
         requeue_ids = list(
             DataRoomDocumentVersion.objects.filter(

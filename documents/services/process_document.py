@@ -21,8 +21,14 @@ from django.utils import timezone
 
 from django.contrib.postgres.search import SearchVector
 
-# If a version has been PROCESSING longer than this, treat it as stuck and allow reprocessing.
-STALE_PROCESSING_MINUTES = 15
+# If a version has been PROCESSING longer than this, treat it as stuck and allow
+# reprocessing. The in-process guard below intentionally defers crash recovery to
+# the sweeper (requeue_stale_documents), which reclaims a row this long after its
+# last update — so a worker hard-killed (OOM/SIGKILL) mid-PROCESSING is picked up
+# within this window. Keep it SHORT for fast recovery but strictly ABOVE the
+# worst-case single-version processing time, or the sweeper will requeue a job
+# that is still legitimately running. Overridable for slow corpora.
+STALE_PROCESSING_MINUTES = getattr(settings, "STALE_PROCESSING_MINUTES", 10)
 
 from documents.models import (
     DataRoomDocument,

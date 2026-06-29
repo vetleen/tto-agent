@@ -193,6 +193,14 @@ def _scan_chunks_for_version(version) -> None:
             )
             _set_chunk_scan_state([chunk["id"]], ScanState.HEURISTIC_DONE)
         else:
+            # Intentional: heuristically-clean chunks are still added to the
+            # classifier batch (remaining_chunks), not skipped. The classifier's
+            # fail-closed completeness check downstream requires a result for
+            # EVERY sent chunk; keeping clean chunks in the batch lets it tell
+            # "the model dropped a chunk" apart from "we never sent it", so an
+            # omission fails the batch (and retries) instead of silently leaving
+            # a chunk unclassified. Don't pull clean chunks out of the batch
+            # without revisiting that check.
             remaining_chunks.append(chunk)
             clean_chunk_ids.append(chunk["id"])
     if clean_chunk_ids:
@@ -435,7 +443,6 @@ def _decide_flagged_chunk(
             action_taken="escalated",
             reviewer_output=result.reasoning,
         )
-        reviewer_budget["remaining"] -= 1
         neighbor_context = (
             _build_neighbor_context(version.id, chunk["chunk_index"]) if version else ""
         )
@@ -450,6 +457,10 @@ def _decide_flagged_chunk(
                 org_id=org_id,
                 user_id=doc.uploaded_by_id,
             )
+            # Count the review only once it actually succeeded — an exception must
+            # not consume the per-version reviewer budget, or repeated reviewer
+            # errors would starve later flagged chunks of review.
+            reviewer_budget["remaining"] -= 1
         except Exception:
             logger.exception(
                 "scan_document_chunks: reviewer errored for chunk_index=%s; "

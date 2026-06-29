@@ -20,6 +20,10 @@ def _mock_ok(payload=None):
     """Build a mocked 200 response with the given JSON payload."""
     mock_response = MagicMock()
     mock_response.status_code = 200
+    # Shape needed by the size-cap guard (_enforce_size_and_buffer): a real
+    # headers dict (no Content-Length) and a small streamed body.
+    mock_response.headers = {}
+    mock_response.iter_content.return_value = [b"{}"]
     mock_response.json.return_value = (
         payload if payload is not None else {"web": {"results": []}}
     )
@@ -57,6 +61,25 @@ class BraveSearchToolTests(TestCase):
         mock_get.assert_called_once()
         call_kwargs = mock_get.call_args
         self.assertEqual(call_kwargs.kwargs["headers"]["X-Subscription-Token"], "test-key")
+
+    @override_settings(BRAVE_SEARCH_API_KEY="test-key")
+    @patch("llm.tools.brave_search.requests.get")
+    def test_oversized_response_rejected_gracefully(self, mock_get):
+        """An oversized body is capped (no OOM) and surfaced as a search error
+        without retrying — Brave responses are never legitimately that large."""
+        from llm.tools.web_fetch import _max_response_bytes
+
+        oversized = MagicMock()
+        oversized.status_code = 200
+        oversized.headers = {"Content-Length": str(_max_response_bytes() + 1)}
+        oversized.raise_for_status = MagicMock()
+        mock_get.return_value = oversized
+
+        result = self.tool.invoke({"query": "test"})
+
+        self.assertIn("Search error", result)
+        self.assertIn("large", result)
+        mock_get.assert_called_once()
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")

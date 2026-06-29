@@ -1066,19 +1066,18 @@ class EditDocumentTool(ContextAwareTool):
         if not (working or "").strip():
             return json.dumps({"error": "Document has no editable content."})
 
-        applied = 0
-        failed = []
-        for edit in edits:
-            old_text = edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text
-            new_text = edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text
-            count = working.count(old_text)
-            if count == 1:
-                working = working.replace(old_text, new_text, 1)
-                applied += 1
-            elif count > 1:
-                failed.append({"old_text": old_text[:80], "error": f"Found {count} matches — add more context."})
-            else:
-                failed.append({"old_text": old_text[:80], "error": "Text not found."})
+        # Resolve every edit against the original snapshot (not the mutated
+        # buffer) so one edit can't match text another edit just inserted.
+        from chat.edit_utils import apply_unique_text_edits
+
+        pairs = [
+            (
+                edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text,
+                edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text,
+            )
+            for edit in edits
+        ]
+        working, applied, failed = apply_unique_text_edits(working, pairs)
 
         if applied == 0:
             return json.dumps({"status": "error", "applied": 0, "failed": failed, "message": "No edits applied."})

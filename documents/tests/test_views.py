@@ -455,6 +455,31 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(data["chunks"][0]["text"], "A")
         self.assertEqual(data["chunks"][1]["text"], "B")
 
+    def test_document_chunks_api_hides_unscanned_current_version(self):
+        """A doc whose only version is still SCANNING (no active_searchable_version
+        yet) must not leak its un-screened chunks — the endpoint returns []."""
+        from documents.tests._helpers import make_version
+
+        self.client.force_login(self.user)
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="x.txt",
+            status=DataRoomDocument.Status.SCANNING,
+        )
+        version = make_version(
+            doc, status=DataRoomDocument.Status.SCANNING,
+            make_active=False, make_current=True,
+        )
+        DataRoomDocumentChunk.objects.create(
+            version=version, chunk_index=0, text="secret", token_count=1,
+        )
+        response = self.client.get(
+            reverse("document_chunks", kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["chunks"], [])
+
     # ------------------------------------------------------------------ #
     # data_room_delete                                                     #
     # ------------------------------------------------------------------ #

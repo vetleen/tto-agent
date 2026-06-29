@@ -1123,6 +1123,19 @@ class StructureAwareChunkTests(TestCase):
         )
         self.assertTrue(list_found, "List was split across chunks")
 
+    def test_paragraph_after_list_without_blank_line_is_separate_block(self):
+        """A plain paragraph immediately after a bullet (no blank line between)
+        must not be absorbed into the list block."""
+        from documents.services.chunking import _split_section_preserving_blocks
+
+        blocks = _split_section_preserving_blocks(
+            "- Item one\n- Item two\nA following paragraph."
+        )
+        list_block = next(b for b in blocks if "- Item one" in b)
+        self.assertIn("- Item two", list_block)
+        self.assertNotIn("A following paragraph.", list_block)
+        self.assertTrue(any(b.strip() == "A following paragraph." for b in blocks))
+
     @unittest.skipIf(not LANGCHAIN_OPENAI_AVAILABLE, "langchain-openai not installed")
     @patch("documents.services.chunking.semantic_chunk")
     def test_large_section_delegates_to_semantic_chunk(self, mock_semantic):

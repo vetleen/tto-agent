@@ -264,43 +264,45 @@ class EditCanvasTool(ContextAwareTool):
                 "message": err if canvas_name else "No canvas exists for this thread. Use canvas_write to create one first.",
             })
 
-        # Preserve any uncommitted user edits before applying AI edits
+        # Resolve every edit against the original snapshot (not the mutated
+        # buffer) so one edit can't match text another edit just inserted.
+        from chat.edit_utils import apply_unique_text_edits
+
+        pairs = [
+            (
+                edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text,
+                edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text,
+            )
+            for edit in edits
+        ]
+        new_content, applied, failed = apply_unique_text_edits(canvas.content, pairs)
+
+        # Nothing matched — report an error and leave the canvas untouched (no
+        # save, no checkpoint), mirroring document_edit. Returning "ok" here would
+        # let the model believe the edit succeeded.
+        if applied == 0:
+            return json.dumps({
+                "status": "error",
+                "applied": 0,
+                "failed": failed,
+                "message": "No edits applied.",
+                "title": canvas.title,
+                "canvas_id": str(canvas.pk),
+            })
+
+        # Preserve any uncommitted user edits before applying AI edits.
         from chat.services import snapshot_user_edits
         snapshot_user_edits(canvas)
 
         # Capture the pre-edit baseline for a canvas that has none yet (user-created,
-        # never accepted), so the AI edit below surfaces as a reviewable diff. Adopted
-        # only if an edit is actually applied (see the `applied > 0` block).
+        # never accepted), so the AI edit below surfaces as a reviewable diff.
         pre_ai_cp = None
         if canvas.accepted_checkpoint_id is None:
             pre_ai_cp = canvas.checkpoints.order_by("-order").first()
 
-        content = canvas.content
-        applied = 0
-        failed = []
-
-        for edit in edits:
-            if isinstance(edit, dict):
-                old_text = edit.get("old_text", "")
-                new_text = edit.get("new_text", "")
-                reason = edit.get("reason", "")
-            else:
-                old_text = edit.old_text
-                new_text = edit.new_text
-                reason = edit.reason
-
-            count = content.count(old_text)
-            if count == 1:
-                content = content.replace(old_text, new_text, 1)
-                applied += 1
-            elif count > 1:
-                failed.append({"old_text": old_text[:80], "error": "Found %d matches — include more surrounding text to make it unique." % count})
-            else:
-                failed.append({"old_text": old_text[:80], "error": "Text not found in document."})
-
         from chat.services import CANVAS_MAX_CHARS, activate_canvas, create_canvas_checkpoint
 
-        content, stripped_images = _strip_markdown_images(content)
+        content, stripped_images = _strip_markdown_images(new_content)
 
         truncated = len(content) > CANVAS_MAX_CHARS
         if truncated:
@@ -309,15 +311,14 @@ class EditCanvasTool(ContextAwareTool):
         canvas.content = content
         canvas.save(update_fields=["content", "updated_at"])
 
-        if applied > 0:
-            activate_canvas(thread_id, canvas)
-            create_canvas_checkpoint(
-                canvas, source="ai_edit",
-                description="Edited %d section(s)" % applied,
-            )
-            if pre_ai_cp is not None and canvas.accepted_checkpoint_id is None:
-                canvas.accepted_checkpoint = pre_ai_cp
-                canvas.save(update_fields=["accepted_checkpoint"])
+        activate_canvas(thread_id, canvas)
+        create_canvas_checkpoint(
+            canvas, source="ai_edit",
+            description="Edited %d section(s)" % applied,
+        )
+        if pre_ai_cp is not None and canvas.accepted_checkpoint_id is None:
+            canvas.accepted_checkpoint = pre_ai_cp
+            canvas.save(update_fields=["accepted_checkpoint"])
 
         result = {
             "status": "ok",

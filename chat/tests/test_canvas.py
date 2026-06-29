@@ -221,9 +221,13 @@ class EditCanvasToolTests(TestCase):
         result = _invoke(EditCanvasTool, {
             "edits": [{"old_text": "not in text", "new_text": "replacement", "reason": "test"}]
         }, _ctx(self.user.pk, self.thread.id))
-        self.assertEqual(result["status"], "ok")
+        # No edit matched: report an error and leave the canvas untouched, so the
+        # model doesn't mistake a no-op for a successful edit.
+        self.assertEqual(result["status"], "error")
         self.assertEqual(result["applied"], 0)
         self.assertEqual(len(result["failed"]), 1)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertEqual(canvas.content, "Some content here.")
 
     def test_partial_edits_applied(self):
         self._setup_canvas("Hello world foo bar.")

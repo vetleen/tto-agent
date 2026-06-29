@@ -333,12 +333,14 @@ def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
     from agent_skills.models import MAX_THREAD_SKILLS
     from chat.models import ChatThreadDataRoom, ChatThreadSkill
     from core.preferences import get_preferences
-    from documents.models import DataRoom
+    from documents.access import accessible_data_rooms
 
     prefs = get_preferences(user)
+    # Route through the canonical access helper so loops honour the same rule as
+    # the data-room views (ownership today; shared rooms in future).
     valid_pks = list(
-        DataRoom.objects.filter(
-            created_by=user, pk__in=data_room_ids or [], is_archived=False,
+        accessible_data_rooms(user).filter(
+            pk__in=data_room_ids or [], is_archived=False,
         ).values_list("pk", flat=True)
     )
     ChatThreadDataRoom.objects.filter(thread=thread).delete()
