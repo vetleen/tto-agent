@@ -299,6 +299,27 @@ class BuildSubagentSystemPromptTests(TestCase):
         self.assertIn("Researches the web", prompt)
 
 
+class SpecializationsCatalogueTests(TestCase):
+    """The orchestrator-facing 'Sub-agent specializations' catalogue."""
+
+    def test_catalogue_rendered_when_present(self):
+        from chat.prompts import build_semi_static_prompt
+
+        prompt = build_semi_static_prompt(specializations=[
+            {"slug": "web-researcher", "name": "Web Researcher",
+             "emoji": "", "description": "Researches the web"},
+        ])
+        self.assertIn("# Sub-agent specializations", prompt)
+        self.assertIn("web-researcher", prompt)
+        self.assertIn('type="<slug>"', prompt)
+
+    def test_no_catalogue_when_absent(self):
+        from chat.prompts import build_semi_static_prompt
+
+        prompt = build_semi_static_prompt(specializations=None)
+        self.assertNotIn("# Sub-agent specializations", prompt)
+
+
 # ---------------------------------------------------------------------------
 # check_subagent_limits tests
 # ---------------------------------------------------------------------------
