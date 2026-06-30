@@ -13,7 +13,7 @@
   {% endif %}
 
   <nav class="text-sm text-body mb-4">
-    <a href="{% url 'agent_skills_list' %}" class="hover:text-heading">&larr; Back to skills</a>
+    <a href="{% url 'agent_skills_list' %}{% if skill.audience == 'subagent' %}?tab=subagent{% endif %}" class="hover:text-heading">&larr; Back to skills</a>
   </nav>
 
   <form id="skill-detail-form" method="post" action="{% url 'agent_skills_save' skill_id=skill.id %}" class="space-y-6">

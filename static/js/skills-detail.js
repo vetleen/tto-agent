@@ -99,8 +99,12 @@
           preview.innerHTML = renderMarkdown(ed.getValue());
           preview.classList.remove("hidden");
           wrapper.classList.add("hidden");
-          o.previewBtn.innerHTML = "<span>Edit</span>" + PEN_ICON;
-          o.previewBtn.title = "Toggle editing";
+          // On read-only skills (built-in, or org skills for non-admins) the
+          // raw view isn't editable, so "Edit" would mislead — call it
+          // "View markdown" instead.
+          var rawLabel = o.readOnly ? "View markdown" : "Edit";
+          o.previewBtn.innerHTML = "<span>" + rawLabel + "</span>" + PEN_ICON;
+          o.previewBtn.title = o.readOnly ? "Toggle markdown source" : "Toggle editing";
         } else {
           preview.classList.add("hidden");
           wrapper.classList.remove("hidden");
