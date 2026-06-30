@@ -1,0 +1,73 @@
+{% comment %}
+Org-settings skill enable/tool-toggle list for one audience.
+Param: skills — a list of skill dicts (slug, name, emoji, description,
+tool_names, enabled, tools).
+{% endcomment %}
+<div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+  <div class="divide-y divide-default">
+    {% for skill in skills %}
+    <div class="px-5 py-4">
+      <label class="flex items-center justify-between cursor-pointer">
+        <div>
+          <span class="text-sm font-medium text-heading">{% if skill.emoji %}{{ skill.emoji }} {% endif %}{{ skill.name }}</span>
+          {% if skill.description %}
+          <p class="text-xs text-body mt-0.5 max-w-lg truncate">{{ skill.description|truncatechars:120 }}</p>
+          {% endif %}
+        </div>
+        <input
+          type="checkbox"
+          class="skill-toggle rounded border-default text-brand focus:ring-brand-medium"
+          data-skill="{{ skill.slug }}"
+          {% if skill.enabled %}checked{% endif %}
+        >
+      </label>
+
+      {% if skill.tool_names %}
+      <div class="mt-3 ml-4 space-y-1 skill-tools" data-parent-skill="{{ skill.slug }}">
+        {% for tool_name in skill.tool_names %}
+        <div class="skill-tool-row rounded-base border border-default bg-neutral-primary p-2" data-skill="{{ skill.slug }}" data-tool="{{ tool_name }}">
+          <!-- Normal state: checkbox -->
+          <label class="skill-tool-normal flex items-center justify-between cursor-pointer text-xs">
+            <span class="text-body">{{ tool_name }}</span>
+            <input
+              type="checkbox"
+              class="skill-tool-toggle rounded border-default text-brand focus:ring-brand-medium"
+              data-skill="{{ skill.slug }}"
+              data-tool="{{ tool_name }}"
+              {% if not skill.enabled %}disabled{% endif %}
+            >
+          </label>
+
+          <!-- Scope choice (hidden by default) -->
+          <div class="skill-tool-scope hidden text-xs mt-1">
+            <p class="text-body mb-1">Disable <strong>{{ tool_name }}</strong> for:</p>
+            <div class="flex items-center gap-4">
+              <label class="flex items-center gap-1 cursor-pointer text-body">
+                <input type="radio" name="scope-{{ skill.slug }}-{{ tool_name }}" value="skill" class="scope-radio text-brand focus:ring-brand-medium">
+                This skill only
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer text-body">
+                <input type="radio" name="scope-{{ skill.slug }}-{{ tool_name }}" value="all" class="scope-radio text-brand focus:ring-brand-medium">
+                All skills
+              </label>
+              <button type="button" class="scope-cancel text-fg-accent hover:underline ml-2">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Globally disabled state (hidden by default) -->
+          <div class="skill-tool-disabled hidden text-xs mt-1 flex items-center justify-between">
+            <span class="text-body italic">Disabled for all skills</span>
+            <button type="button" class="re-enable-btn text-fg-accent hover:underline">Re-enable</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% empty %}
+    <div class="px-5 py-4">
+      <p class="text-sm text-body italic">{{ empty_label|default:"No skills available." }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</div>

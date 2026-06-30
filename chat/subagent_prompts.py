@@ -2,9 +2,43 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from django.conf import settings as django_settings
+
+
+def _render_specialization(skill) -> str:
+    """Render a sub-agent's specialization skill as a prompt block.
+
+    Mirrors the main agent's ``_render_one_skill`` (headings deepened so they
+    nest under the section) but framed for a background worker: the sub-agent
+    has no canvas and cannot talk to the user, so templates are read with
+    ``skill_template_view`` and reproduced in the final text answer rather than
+    loaded into a canvas.
+    """
+    deepened = re.sub(r"^(#+)", r"##\1", skill.instructions, flags=re.MULTILINE)
+    block = f"\n# Your specialization: {skill.name}\n"
+    block += (
+        "You have been spawned as a specialized sub-agent. Follow these "
+        "specialization instructions closely while completing your task.\n"
+    )
+    if skill.description:
+        block += f"\n## Specialization summary:\n{skill.description}\n"
+    block += f"\n## Specialization instructions:\n{deepened}\n"
+
+    templates = list(skill.templates.all())
+    if templates:
+        block += (
+            "\n## Specialization templates\n\n"
+            "This specialization provides the following templates. Use "
+            "`skill_template_view` to read a template's content, then reproduce "
+            "the relevant structure in your final text answer (you have no "
+            "canvas).\n\n"
+        )
+        for tmpl in templates:
+            block += f"- **{tmpl.name}**\n"
+    return block
 
 
 def build_subagent_system_prompt(
@@ -13,11 +47,12 @@ def build_subagent_system_prompt(
     organization_name: str | None = None,
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
+    specialization_skill=None,
 ) -> str:
     """Build a focused system prompt for a sub-agent.
 
-    Sub-agents get a minimal prompt: identity, general instructions, and
-    optional data rooms / task plan.
+    Sub-agents get a minimal prompt: identity, general instructions, an optional
+    specialization ("type"), and optional data rooms / task plan.
     """
     org_line = f" at {organization_name}," if organization_name else ""
 
@@ -40,6 +75,9 @@ You have been given a specific task. Complete it thoroughly and return your find
   - **Never** provide a citation for something that you didn't specifically see in this session. If drawing on your general knowledge, or guessing, be transparent about that.
 
 """
+
+    if specialization_skill is not None:
+        prompt += _render_specialization(specialization_skill)
 
     if has_task_tool:
         prompt += """

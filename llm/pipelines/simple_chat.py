@@ -118,6 +118,7 @@ class SimpleChatPipeline(BasePipeline):
 
     def _resolve_tools(self, tool_names: List[str], context: RunContext | None = None) -> List[ContextAwareTool]:
         registry = get_tool_registry()
+        agent_kind = getattr(context, "agent_kind", "main") if context else "main"
         tools = []
         for name in tool_names:
             t = registry.get_tool(name)
@@ -126,6 +127,17 @@ class SimpleChatPipeline(BasePipeline):
                 # imported/older skill). Skip it rather than crashing the turn —
                 # the request just proceeds without that tool.
                 logger.warning("Skipping unknown tool name in request: %r", name)
+                continue
+            # Defence in depth: tool selection is gated upstream by audience
+            # (preferences / resolve_subagent_tools), but enforce it here too so
+            # a bug upstream can never run a tool in the wrong agent kind (e.g. a
+            # main-only canvas tool inside a sub-agent).
+            audience = getattr(t, "audience", "shared")
+            if audience != "shared" and audience != agent_kind:
+                logger.warning(
+                    "Dropping tool %r (audience=%s) for agent_kind=%s",
+                    name, audience, agent_kind,
+                )
                 continue
             # Copy to avoid shared state across concurrent requests
             copy = t.model_copy()

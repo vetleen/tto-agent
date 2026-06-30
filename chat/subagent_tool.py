@@ -17,6 +17,15 @@ logger = logging.getLogger(__name__)
 
 class CreateSubagentInput(ReasonBaseModel):
     prompt: str = Field(description="The task description for the sub-agent.")
+    type: str | None = Field(
+        default=None,
+        description=(
+            "Optional specialization for the sub-agent — pass the slug of one of "
+            "the specializations listed in your instructions (under 'Sub-agent "
+            "specializations'). Gives the sub-agent extra instructions and tools "
+            "for that role. Omit for a general-purpose sub-agent."
+        ),
+    )
     model_tier: str = Field(
         default="mid",
         description='Model tier: "mid" (default) for research, "top" for deep analysis.',
@@ -34,6 +43,7 @@ class CreateSubagentTool(ContextAwareTool):
     """Create a sub-agent to handle a delegated task."""
 
     name: str = "chat_subagent_create"
+    audience: str = "main"
     start_label: str = "Running sub-agent..."
     end_label: str = "Sub-agent dispatched"
 
@@ -92,6 +102,25 @@ class CreateSubagentTool(ContextAwareTool):
         # Enforce sequential subagent policy if parallel is disabled
         from core.preferences import get_preferences
         prefs = get_preferences(user)
+
+        # Resolve an optional specialization ("type"). Validate against the
+        # user's available specializations and feed an actionable error back to
+        # the model (it can retry without a type, or with a valid one) rather
+        # than silently ignoring an unknown slug.
+        specialization = (kwargs.get("type") or "").strip()
+        if specialization:
+            valid_slugs = [s["slug"] for s in prefs.allowed_specializations]
+            if specialization not in valid_slugs:
+                available = ", ".join(valid_slugs) if valid_slugs else "(none available)"
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"Unknown sub-agent type '{specialization}'. "
+                        f"Available types: {available}. "
+                        "Omit 'type' to spawn a general-purpose sub-agent."
+                    ),
+                })
+
         if not prefs.parallel_subagents:
             active = SubAgentRun.objects.filter(
                 thread_id=thread_id,
@@ -109,6 +138,7 @@ class CreateSubagentTool(ContextAwareTool):
             model_tier=model_tier,
             timeout=timeout,
             data_room_ids=data_room_ids,
+            skill_slug=specialization,
         )
         if run is None:
             return json.dumps({"status": "error", "message": err_msg})

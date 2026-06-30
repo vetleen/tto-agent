@@ -1337,6 +1337,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if prefs and prefs.allow_agent_attach_skills
             else None
         )
+        # Sub-agent specializations are only actionable when the orchestrator
+        # can actually spawn sub-agents.
+        specializations_for_prompt = (
+            prefs.allowed_specializations
+            if prefs and self._has_tool("chat_subagent_create")
+            else None
+        )
         semi_static_system = build_semi_static_prompt(
             data_rooms=data_rooms,
             canvases=canvases_info["canvases"] if canvases_info else None,
@@ -1346,6 +1353,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             organization_description=self._org_description or None,
             user_context=self._user_context,
             available_skills=available_skills_for_prompt,
+            specializations=specializations_for_prompt,
         )
         dynamic_context = build_dynamic_context(
             doc_context=doc_context,
@@ -2648,7 +2656,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         skill = get_skill_for_user(self.user, skill_id)
         if skill is None:
             return []
-        return filter_to_skill_tools(skill.tool_names or [])
+        return filter_to_skill_tools(skill.tool_names or [], skill_audience=skill.audience)
 
     # -- Database helpers --
 

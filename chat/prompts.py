@@ -182,6 +182,7 @@ the result is returned inline and you may incorporate it in the same response. I
 and the same async reactivation path as described above kicks in.
   - Maximum timeout is 540 seconds
 - Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" for deep analysis (rarely relevant).
+- Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
 - Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
 
 ## Checking results
@@ -315,6 +316,7 @@ def build_semi_static_prompt(
     organization_description: str | None = None,
     user_context: dict[str, str] | None = None,
     available_skills: list[dict[str, Any]] | None = None,
+    specializations: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the semi-static portion of the system prompt.
 
@@ -383,6 +385,27 @@ def build_semi_static_prompt(
             "empty list to detach all.\n"
         )
         for s in available_skills:
+            desc = (s.get("description") or "").strip().replace("\n", " ")
+            if len(desc) > 160:
+                desc = desc[:157] + "..."
+            emoji = (s.get("emoji") or "").strip()
+            prefix = f"{emoji} " if emoji else ""
+            line = f"- {prefix}**{s['slug']}** — {s.get('name', '')}"
+            if desc:
+                line += f": {desc}"
+            prompt += line + "\n"
+
+    # -- Sub-agent specializations catalogue --
+    if specializations:
+        prompt += (
+            "\n# Sub-agent specializations\n"
+            "When you spawn a sub-agent with `chat_subagent_create`, you may "
+            "optionally pass `type=\"<slug>\"` to give it one of the following "
+            "specializations — extra instructions and tools for a focused role. "
+            "Pick one when the task fits; otherwise omit `type` for a "
+            "general-purpose sub-agent.\n"
+        )
+        for s in specializations:
             desc = (s.get("description") or "").strip().replace("\n", " ")
             if len(desc) > 160:
                 desc = desc[:157] + "..."
@@ -655,6 +678,7 @@ def build_system_prompt(
     active_canvas: Any = None,
     skills: list | None = None,
     available_skills: list[dict[str, Any]] | None = None,
+    specializations: list[dict[str, Any]] | None = None,
     has_subagent_tool: bool = False,
     subagent_runs: list[dict] | None = None,
     tasks: list[dict] | None = None,
@@ -697,6 +721,7 @@ def build_system_prompt(
         organization_description=organization_description,
         user_context=user_context,
         available_skills=available_skills,
+        specializations=specializations if has_subagent_tool else None,
     )
 
     dynamic = build_dynamic_context(

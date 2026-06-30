@@ -1,0 +1,90 @@
+{% comment %}
+The three skill tiers (your / org / built-in) for one audience tab.
+Params:
+  audience      — "main" | "subagent"; carried into create/import/copy actions
+  user_rows, org_rows, system_rows — annotated rows for this audience
+  user_org, is_org_admin, assistant_name — as in skills_list
+{% endcomment %}
+{# ---------- Your skills ---------- #}
+<section class="mb-8">
+  <div class="flex items-center justify-between gap-4 mb-3">
+    <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
+      Your skills
+      <span class="wf-mono text-xs font-normal text-body-subtle">{{ user_rows|length }}</span>
+    </h2>
+    <div class="flex items-center gap-2 shrink-0">
+      <form method="post" action="{% url 'agent_skills_import' %}" enctype="multipart/form-data" class="m-0" id="import-skill-form-{{ audience }}">
+        {% csrf_token %}
+        <input type="hidden" name="audience" value="{{ audience }}">
+        <input type="file" name="file" accept=".json,application/json" id="import-skill-input-{{ audience }}" class="hidden import-skill-input">
+        <button type="button" class="import-skill-btn inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
+          Import skill
+        </button>
+      </form>
+      <form method="post" action="{% url 'agent_skills_create' %}" class="m-0">
+        {% csrf_token %}
+        <input type="hidden" name="audience" value="{{ audience }}">
+        <input type="hidden" name="name" value="{% if audience == 'subagent' %}Untitled sub-agent skill{% else %}Untitled skill{% endif %}">
+        <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          New
+        </button>
+      </form>
+    </div>
+  </div>
+  <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
+    {% for row in user_rows %}
+      {% include "agent_skills/_skill_row.html" with row=row section="user" audience=audience is_first=forloop.first is_last=forloop.last %}
+    {% empty %}
+    <p class="px-5 py-6 text-body text-sm">No skills of your own yet. Use <strong>New</strong> to teach {{ assistant_name }} something.</p>
+    {% endfor %}
+  </div>
+</section>
+
+{# ---------- Organization skills ---------- #}
+{% if user_org %}
+<section class="mb-8">
+  <div class="flex items-center justify-between gap-4 mb-3">
+    <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
+      {{ user_org.name }}'s skills
+      <span class="wf-mono text-xs font-normal text-body-subtle">{{ org_rows|length }}</span>
+    </h2>
+    {% if is_org_admin %}
+    <form method="post" action="{% url 'agent_skills_create_org' %}" class="m-0 shrink-0">
+      {% csrf_token %}
+      <input type="hidden" name="audience" value="{{ audience }}">
+      <input type="hidden" name="name" value="{% if audience == 'subagent' %}Untitled sub-agent organization skill{% else %}Untitled organization skill{% endif %}">
+      <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        New
+      </button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
+    {% for row in org_rows %}
+      {% include "agent_skills/_skill_row.html" with row=row section="org" audience=audience is_first=forloop.first is_last=forloop.last %}
+    {% empty %}
+    <p class="px-5 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New</strong> above to add one.{% endif %}</p>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ---------- System skills ---------- #}
+<section class="mb-8">
+  <div class="flex items-center justify-between gap-4 mb-3">
+    <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
+      Built-in skills
+      <span class="wf-mono text-xs font-normal text-body-subtle">{{ system_rows|length }}</span>
+    </h2>
+  </div>
+  <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
+    {% for row in system_rows %}
+      {% include "agent_skills/_skill_row.html" with row=row section="system" audience=audience is_first=forloop.first is_last=forloop.last %}
+    {% empty %}
+    <p class="px-5 py-6 text-body text-sm">No built-in skills available.</p>
+    {% endfor %}
+  </div>
+</section>

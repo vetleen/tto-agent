@@ -84,6 +84,26 @@ per-tool branches in the template. If a tool's completion label depends on its r
 on the class; return `None` to fall back to `end_label`. The result is the tool's JSON
 output parsed to a dict (`None` for non-JSON results, which then use `end_label`).
 
+## Tool & Skill Audience
+
+Tools and skills carry an **`audience`** orthogonal to a tool's `section` (`chat`/`skills`)
+and a skill's `level` (system/org/user):
+
+- **Tools** — `ContextAwareTool.audience` (`llm/tools/interfaces.py`): `"shared"` (default,
+  both the main assistant and sub-agents), `"main"` (canvas, loops, skill management,
+  `chat_subagent_create` — never run in a sub-agent), or `"subagent"`. This *replaces* the
+  old hard-coded sub-agent denylist: a new main-only tool **must** set `audience = "main"`
+  or it leaks to sub-agents.
+- **Skills** — `AgentSkill.audience` (`main`/`subagent`/`shared`). Sub-agent-audience skills
+  are "specializations" the orchestrator attaches by passing `type=<slug>` to
+  `chat_subagent_create`. `shared` is seed-only (no UI to author it). A skill may only list
+  tools whose audience is compatible (`skill_tool_audience_ok` in `agent_skills/services.py`).
+
+Resolution lives in `core/preferences.py` (`allowed_tools` / `allowed_subagent_tools`,
+`allowed_skills` / `allowed_specializations`) and `chat/subagent_service.py`
+(`resolve_subagent_tools`). `RunContext.agent_kind` (`"main"`/`"subagent"`) lets the
+pipeline defensively drop wrong-audience tools.
+
 ## Logging
 
 - Use `logger = logging.getLogger(__name__)` in every module.

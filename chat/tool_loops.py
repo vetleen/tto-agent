@@ -126,6 +126,7 @@ class LoopCreateTool(ContextAwareTool):
     """Create a scheduled, recurring chat loop."""
 
     name: str = "chat_loop_create"
+    audience: str = "main"
     start_label: str = "Creating loop..."
     end_label: str = "Created loop"
 
@@ -197,6 +198,7 @@ class LoopListTool(ContextAwareTool):
     """List the current user's loops."""
 
     name: str = "chat_loop_list"
+    audience: str = "main"
     start_label: str = "Listing loops..."
     end_label: str = "Listed loops"
 
@@ -241,6 +243,7 @@ class LoopStopTool(ContextAwareTool):
     """Pause a loop so it stops firing (reversible)."""
 
     name: str = "chat_loop_stop"
+    audience: str = "main"
     start_label: str = "Stopping loop..."
     end_label: str = "Stopped loop"
     description: str = (
@@ -322,6 +325,7 @@ class LoopEditTool(ContextAwareTool):
     """Edit an existing loop; can also resume or restart a paused one."""
 
     name: str = "chat_loop_edit"
+    audience: str = "main"
     start_label: str = "Updating loop..."
     end_label: str = "Updated loop"
 

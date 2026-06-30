@@ -17,6 +17,9 @@ class RunContext(BaseModel):
     data_room_ids: list[int] = Field(default_factory=list)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     deadline_seconds: Optional[int] = None
+    # Which agent kind this run is: "main" (the orchestrator) or "subagent".
+    # Lets the pipeline defensively drop tools whose audience excludes this kind.
+    agent_kind: str = "main"
     # Image assets a tool asked to surface to the model this turn. The chat
     # pipeline drains these into a user message — native image blocks when the
     # model supports vision, else their text descriptions. Each item is a dict:

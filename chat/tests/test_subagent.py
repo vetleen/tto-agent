@@ -39,7 +39,13 @@ def _prefs(**overrides):
             "document_search", "document_read", "web_fetch", "web_search",
             "canvas_write", "canvas_edit", "chat_subagent_create",
         ],
+        # The sub-agent base set: shared/subagent-audience chat tools only
+        # (canvas/subagent/skill tools are audience="main" and excluded upstream).
+        allowed_subagent_tools=[
+            "document_search", "document_read", "web_fetch", "web_search",
+        ],
         allowed_skills=[],
+        allowed_specializations=[],
         theme="light",
     )
     defaults.update(overrides)
@@ -152,26 +158,15 @@ class ResolveSubagentModelTests(TestCase):
 # ---------------------------------------------------------------------------
 
 class ResolveSubagentToolsTests(TestCase):
-    def test_removes_canvas_and_subagent_tools(self):
-        prefs = _prefs(allowed_tools=[
-            "canvas_activate", "canvas_write", "canvas_edit",
-            "canvas_save_to_document", "chat_subagent_create", "document_search",
-        ])
-        tools = resolve_subagent_tools(prefs, data_room_ids=[1])
-        self.assertNotIn("canvas_activate", tools)
-        self.assertNotIn("canvas_write", tools)
-        self.assertNotIn("canvas_edit", tools)
-        self.assertNotIn("canvas_save_to_document", tools)
-        self.assertNotIn("chat_subagent_create", tools)
-
-    def test_removes_skill_and_template_tools(self):
+    def test_base_is_subagent_audience_tools(self):
+        """The base set comes from prefs.allowed_subagent_tools — main-only tools
+        (canvas, sub-agent spawn, skill management) are never in it."""
         prefs = _prefs()
-        tools = resolve_subagent_tools(prefs, data_room_ids=[])
+        tools = resolve_subagent_tools(prefs, data_room_ids=[1])
         for name in [
-            "chat_skill_attach", "skill_create", "skill_edit", "skill_delete",
-            "skill_field_save", "skill_field_load",
-            "skill_template_view", "skill_template_load",
-            "skill_tool_list", "skill_tool_inspect",
+            "canvas_activate", "canvas_write", "canvas_edit",
+            "canvas_save_to_document", "chat_subagent_create",
+            "chat_skill_attach", "skill_create", "skill_template_load",
         ]:
             self.assertNotIn(name, tools)
 
@@ -193,14 +188,32 @@ class ResolveSubagentToolsTests(TestCase):
         self.assertIn("web_fetch", tools)
         self.assertIn("web_search", tools)
 
-    def test_skill_tools_not_added(self):
-        """Sub-agents never get skill-specific tools."""
-        prefs = _prefs(allowed_skills=[{
-            "id": "1", "slug": "test-skill", "name": "Test",
-            "description": "", "tool_names": ["custom_tool"],
+    def test_no_specialization_means_no_skill_tools(self):
+        """Without a specialization the sub-agent gets no skill-section tools."""
+        prefs = _prefs(allowed_specializations=[{
+            "id": "1", "slug": "web-researcher", "name": "Web Researcher",
+            "emoji": "", "description": "", "tool_names": ["skill_template_view"],
         }])
         tools = resolve_subagent_tools(prefs, data_room_ids=[])
-        self.assertNotIn("custom_tool", tools)
+        self.assertNotIn("skill_template_view", tools)
+
+    def test_specialization_adds_its_tools(self):
+        """A spawned specialization contributes its (already filtered) tools."""
+        prefs = _prefs(allowed_specializations=[{
+            "id": "1", "slug": "web-researcher", "name": "Web Researcher",
+            "emoji": "", "description": "", "tool_names": ["skill_template_view"],
+        }])
+        tools = resolve_subagent_tools(
+            prefs, data_room_ids=[], specialization_slug="web-researcher",
+        )
+        self.assertIn("skill_template_view", tools)
+
+    def test_unknown_specialization_adds_nothing(self):
+        prefs = _prefs()
+        tools = resolve_subagent_tools(
+            prefs, data_room_ids=[], specialization_slug="does-not-exist",
+        )
+        self.assertNotIn("skill_template_view", tools)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +282,21 @@ class BuildSubagentSystemPromptTests(TestCase):
     def test_task_planning_excluded_without_tool(self):
         prompt = build_subagent_system_prompt(has_task_tool=False)
         self.assertNotIn("# Task Planning", prompt)
+
+    def test_no_specialization_by_default(self):
+        prompt = build_subagent_system_prompt()
+        self.assertNotIn("Your specialization", prompt)
+
+    def test_specialization_injected(self):
+        skill = MagicMock()
+        skill.name = "Web Researcher"
+        skill.description = "Researches the web"
+        skill.instructions = "# Method\nSearch a lot."
+        skill.templates.all.return_value = []
+        prompt = build_subagent_system_prompt(specialization_skill=skill)
+        self.assertIn("Your specialization: Web Researcher", prompt)
+        self.assertIn("Search a lot.", prompt)
+        self.assertIn("Researches the web", prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +693,40 @@ class CreateSubagentToolTimeoutTests(TestCase):
         self.assertEqual(result["status"], "started")
         run = SubAgentRun.objects.first()
         self.assertEqual(run.timeout, 0)
+
+
+class CreateSubagentToolSpecializationTests(TestCase):
+    def setUp(self):
+        from agent_skills.models import AgentSkill
+
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="spec_tool@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        AgentSkill.objects.create(
+            slug="web-researcher", name="Web Researcher", level="user",
+            created_by=self.user, audience="subagent",
+            tool_names=["skill_template_view"],
+        )
+
+    def test_unknown_type_rejected(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(CreateSubagentTool, {"prompt": "task", "type": "nope"}, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Unknown sub-agent type", result["message"])
+        self.assertFalse(SubAgentRun.objects.exists())
+
+    @patch("chat.tasks.run_subagent_task")
+    def test_valid_type_stored_on_run(self, mock_task):
+        mock_task.delay.return_value = MagicMock(id="celery-spec")
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(
+            CreateSubagentTool,
+            {"prompt": "task", "type": "web-researcher", "timeout": 0},
+            ctx,
+        )
+        self.assertIn(result["status"], ("started", "queued"))
+        run = SubAgentRun.objects.get()
+        self.assertEqual(run.skill_slug, "web-researcher")
 
 
 class CreateSubagentToolBackgroundTests(TestCase):

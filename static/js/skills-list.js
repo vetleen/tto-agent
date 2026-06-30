@@ -121,19 +121,20 @@
     postToggle(row, checkbox.checked);
   });
 
-  // Import skill: the visible button proxies to a hidden file input, which
-  // auto-submits its (multipart) form once the user picks a file.
-  var importBtn = document.getElementById("import-skill-btn");
-  var importInput = document.getElementById("import-skill-input");
-  var importForm = document.getElementById("import-skill-form");
-  if (importBtn && importInput && importForm) {
+  // Import skill: each audience tab has its own button proxying to a hidden
+  // file input inside its form, which auto-submits once a file is picked.
+  document.querySelectorAll(".import-skill-btn").forEach(function (importBtn) {
+    var form = importBtn.closest("form");
+    if (!form) return;
+    var importInput = form.querySelector(".import-skill-input");
+    if (!importInput) return;
     importBtn.addEventListener("click", function () {
       importInput.click();
     });
     importInput.addEventListener("change", function () {
       if (importInput.files && importInput.files.length > 0) {
-        importForm.submit();
+        form.submit();
       }
     });
-  }
+  });
 })();

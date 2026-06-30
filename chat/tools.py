@@ -783,6 +783,7 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
     """Save a canvas into a data room — as a new document or a new version of an existing one."""
 
     name: str = "canvas_save_to_document"
+    audience: str = "main"
     start_label: str = "Saving canvas to data room..."
     end_label: str = "Saved canvas to data room"
 

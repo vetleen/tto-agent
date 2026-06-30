@@ -32,7 +32,15 @@ class ResolvedPreferences:
     cheap_model: str
     allowed_models: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
+    # Always-on chat tools a sub-agent may run (audience subagent/shared, minus
+    # org-disabled). The sub-agent base set, analogous to ``allowed_tools`` for
+    # the main agent.
+    allowed_subagent_tools: list[str] = field(default_factory=list)
     allowed_skills: list[dict] = field(default_factory=list)
+    # Sub-agent "specializations": the sub-agent-audience analogue of
+    # ``allowed_skills``. Each dict mirrors an allowed_skills entry
+    # (id/slug/name/emoji/description/tool_names).
+    allowed_specializations: list[dict] = field(default_factory=list)
     theme: str = "light"
     parallel_subagents: bool = True
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
@@ -140,7 +148,19 @@ def get_preferences(user) -> ResolvedPreferences:
 
     registry = get_tool_registry()
     all_tools_dict = registry.list_tools()
-    chat_tools = [n for n, t in all_tools_dict.items() if getattr(t, "section", "chat") == "chat"]
+    # Always-on chat tools, split by audience. The main agent gets
+    # main/shared; sub-agents get subagent/shared. A tool's audience is
+    # orthogonal to its section (see ContextAwareTool.audience).
+    chat_tools = [
+        n for n, t in all_tools_dict.items()
+        if getattr(t, "section", "chat") == "chat"
+        and getattr(t, "audience", "shared") in ("main", "shared")
+    ]
+    subagent_chat_tools = [
+        n for n, t in all_tools_dict.items()
+        if getattr(t, "section", "chat") == "chat"
+        and getattr(t, "audience", "shared") in ("subagent", "shared")
+    ]
 
     # --- Organization level ---
     org_prefs = _get_org_preferences(user)
@@ -313,39 +333,56 @@ def get_preferences(user) -> ResolvedPreferences:
     if resolved_live_mode not in LIVE_TRANSCRIPTION_MODES:
         resolved_live_mode = "realtime_with_fallback"
 
-    # Resolve tools: base chat-section tools filtered by org toggles
+    # Resolve tools: base chat-section tools filtered by org toggles. One org
+    # tool toggle governs a tool everywhere it appears (a shared tool disabled
+    # under the main-agent tools section is also withheld from sub-agents).
     base_allowed = [t for t in chat_tools if org_tools.get(t, True) is not False]
+    allowed_subagent_tools = [
+        t for t in subagent_chat_tools if org_tools.get(t, True) is not False
+    ]
 
     # Resolve allowed skills — skill-section tools are gated by the skill's
     # tool_names field, so they only appear in a chat when the active skill
     # declares them.  They are further filtered by org per-skill tool toggles
-    # and by the org-level tool toggles.
-    from agent_skills.services import filter_to_skill_tools, get_available_skills
+    # and by the org-level tool toggles. Sub-agent "specializations" resolve
+    # the same way against the sub-agent-audience skill list.
+    from agent_skills.services import (
+        filter_to_skill_tools,
+        get_available_skills,
+        get_subagent_skills,
+    )
 
     org_skills_prefs = org_prefs.get("skills", {})
-    user_skills = get_available_skills(user)
-    allowed_skills = []
 
-    for skill in user_skills:
-        skill_pref = org_skills_prefs.get(skill.slug, {})
-        if skill_pref.get("enabled", skill.level != "system") is False:
-            continue
-        # Allow-list to skills-section tools first so a dirty stored row can't
-        # smuggle a non-skill tool, then apply org per-skill + org tool toggles.
-        tool_toggles = skill_pref.get("tools", {})
-        filtered_tools = [
-            t for t in filter_to_skill_tools(skill.tool_names)
-            if tool_toggles.get(t, True) is not False
-            and org_tools.get(t, True) is not False
-        ]
-        allowed_skills.append({
-            "id": str(skill.id),
-            "slug": skill.slug,
-            "name": skill.name,
-            "emoji": skill.emoji,
-            "description": skill.description,
-            "tool_names": filtered_tools,
-        })
+    def _resolve_skill_entries(skills) -> list[dict]:
+        entries = []
+        for skill in skills:
+            skill_pref = org_skills_prefs.get(skill.slug, {})
+            if skill_pref.get("enabled", skill.level != "system") is False:
+                continue
+            # Allow-list to skills-section tools (audience-compatible with the
+            # carrying skill) first so a dirty stored row can't smuggle a
+            # non-skill or wrong-audience tool, then apply org toggles.
+            tool_toggles = skill_pref.get("tools", {})
+            filtered_tools = [
+                t for t in filter_to_skill_tools(
+                    skill.tool_names, skill_audience=skill.audience
+                )
+                if tool_toggles.get(t, True) is not False
+                and org_tools.get(t, True) is not False
+            ]
+            entries.append({
+                "id": str(skill.id),
+                "slug": skill.slug,
+                "name": skill.name,
+                "emoji": skill.emoji,
+                "description": skill.description,
+                "tool_names": filtered_tools,
+            })
+        return entries
+
+    allowed_skills = _resolve_skill_entries(get_available_skills(user))
+    allowed_specializations = _resolve_skill_entries(get_subagent_skills(user))
 
     allowed_tools = base_allowed
     # chat_generate_image is withheld unless image generation is enabled (a
@@ -409,7 +446,9 @@ def get_preferences(user) -> ResolvedPreferences:
         cheap_model=cheap_model,
         allowed_models=effective_allowed,
         allowed_tools=allowed_tools,
+        allowed_subagent_tools=allowed_subagent_tools,
         allowed_skills=allowed_skills,
+        allowed_specializations=allowed_specializations,
         theme=user_theme,
         parallel_subagents=parallel_subagents,
         max_context_tokens=max_context_tokens,

@@ -243,6 +243,7 @@ class CreateSkillTool(ContextAwareTool):
     """Create a new user-level skill."""
 
     name: str = "skill_create"
+    audience: str = "main"
     start_label: str = "Creating skill..."
     end_label: str = "Created skill"
     description: str = (
@@ -302,6 +303,7 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
     """Save the current canvas content to a skill field or template."""
 
     name: str = "skill_field_save"
+    audience: str = "main"
     start_label: str = "Saving to skill..."
     end_label: str = "Saved to skill"
     description: str = (
@@ -382,6 +384,7 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
     """Load a skill field or template into the canvas for viewing/editing."""
 
     name: str = "skill_field_load"
+    audience: str = "main"
     start_label: str = "Loading skill field..."
     end_label: str = "Loaded skill field to canvas"
     description: str = (
@@ -438,6 +441,7 @@ class EditSkillTool(ContextAwareTool):
     """Edit a skill's metadata or text fields."""
 
     name: str = "skill_edit"
+    audience: str = "main"
     start_label: str = "Editing skill..."
     end_label: str = "Updated skill"
     description: str = (
@@ -518,7 +522,9 @@ class EditSkillTool(ContextAwareTool):
             # names are dropped rather than passed through to the LLM.
             from agent_skills.services import filter_to_skill_tools
 
-            skill.tool_names = filter_to_skill_tools(updates["tool_names"])
+            skill.tool_names = filter_to_skill_tools(
+                updates["tool_names"], skill_audience=skill.audience
+            )
             update_fields.append("tool_names")
         # NOTE: is_active is deliberately NOT editable here. Every skill lookup
         # (list, detail, this tool's own resolution) filters is_active=True, so
@@ -607,6 +613,7 @@ class DeleteSkillTool(ContextAwareTool):
     """Delete a user or org skill."""
 
     name: str = "skill_delete"
+    audience: str = "main"
     start_label: str = "Deleting skill..."
     end_label: str = "Deleted skill"
     description: str = "Delete a skill that the user owns. System skills cannot be deleted."
@@ -686,6 +693,7 @@ class ViewTemplateTool(ContextAwareTool):
     """View the content of a template from an attached skill."""
 
     name: str = "skill_template_view"
+    audience: str = "shared"
     start_label: str = "Loading template..."
     end_label: str = "Viewed template"
     description: str = (
@@ -734,6 +742,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     """Load a template from an attached skill into the canvas."""
 
     name: str = "skill_template_load"
+    audience: str = "main"
     start_label: str = "Loading template to canvas..."
     end_label: str = "Loaded template to canvas"
     description: str = (
@@ -803,6 +812,7 @@ class ListSkillToolsTool(ContextAwareTool):
     """List skill-specific tools that can be attached to a skill."""
 
     name: str = "skill_tool_list"
+    audience: str = "main"
     start_label: str = "Listing skill tools..."
     end_label: str = "Listed skill tools"
     description: str = (
@@ -834,6 +844,7 @@ class InspectToolTool(ContextAwareTool):
     """Inspect a tool to see its description and determine if it's appropriate for a skill."""
 
     name: str = "skill_tool_inspect"
+    audience: str = "main"
     start_label: str = "Inspecting tool..."
     end_label: str = "Inspected tool"
     description: str = (
@@ -876,6 +887,7 @@ class AttachSkillsInput(ReasonBaseModel):
 
 class AttachSkillsTool(ContextAwareTool):
     name: str = "chat_skill_attach"
+    audience: str = "main"
     start_label: str = "Updating attached skills..."
     end_label: str = "Updated attached skills"
 

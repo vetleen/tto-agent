@@ -30,6 +30,15 @@ class AgentSkill(models.Model):
         ORG = "org", "Organization"
         USER = "user", "User"
 
+    class Audience(models.TextChoices):
+        # Who may use the skill. ``MAIN`` skills attach to a chat thread for the
+        # main assistant; ``SUBAGENT`` skills are "specializations" the
+        # orchestrator gives a sub-agent on spawn; ``SHARED`` skills surface in
+        # both places (seed-only — there is no UI to author a shared skill).
+        MAIN = "main", "Main agent"
+        SUBAGENT = "subagent", "Sub-agent"
+        SHARED = "shared", "Shared"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     slug = models.SlugField(max_length=64)
     name = models.CharField(max_length=255)
@@ -37,6 +46,9 @@ class AgentSkill(models.Model):
     description = models.TextField(max_length=1024, blank=True)
     instructions = models.TextField(max_length=MAX_INSTRUCTIONS_CHARS)
     tool_names = models.JSONField(default=list, blank=True)
+    audience = models.CharField(
+        max_length=10, choices=Audience.choices, default=Audience.MAIN
+    )
     level = models.CharField(max_length=10, choices=Level.choices)
     organization = models.ForeignKey(
         "accounts.Organization",

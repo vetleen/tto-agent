@@ -59,7 +59,22 @@ def _save_with_free_slug(base_slug: str, taken: Callable[[str], bool], persist, 
                 raise
 
 
-def filter_to_skill_tools(tool_names) -> list[str]:
+def skill_tool_audience_ok(tool_audience: str, skill_audience: str) -> bool:
+    """Whether a tool of ``tool_audience`` may be listed by a skill of ``skill_audience``.
+
+    ``shared`` tools work in any context. Otherwise a tool may only be carried
+    by a skill of the same audience — a ``main`` skill can't grant a
+    sub-agent-only tool and vice versa. A ``shared`` skill (seed-only) must run
+    in both contexts, so it may only carry ``shared`` tools.
+    """
+    if tool_audience == "shared":
+        return True
+    if skill_audience == "shared":
+        return False
+    return tool_audience == skill_audience
+
+
+def filter_to_skill_tools(tool_names, skill_audience: str | None = None) -> list[str]:
     """Allow-list: keep only registered ``section == "skills"`` tools, in order.
 
     Drops names unknown to the registry and tools from any other section
@@ -67,6 +82,11 @@ def filter_to_skill_tools(tool_names) -> list[str]:
     chokepoint enforced at save, import, edit, and runtime resolution so a
     hand-crafted import or a stale stored row can't smuggle a non-skill tool
     into the LLM's tool list.
+
+    When ``skill_audience`` is given, also drop tools whose audience is
+    incompatible with the carrying skill (see :func:`skill_tool_audience_ok`),
+    so a sub-agent specialization can never grant a main-only tool and a main
+    skill can never grant a sub-agent-only tool.
     """
     from llm.tools.registry import get_tool_registry
 
@@ -75,8 +95,13 @@ def filter_to_skill_tools(tool_names) -> list[str]:
     for name in tool_names or []:
         name = name if isinstance(name, str) else str(name)
         tool = registry.get_tool(name)
-        if tool is not None and getattr(tool, "section", "chat") == "skills":
-            out.append(name)
+        if tool is None or getattr(tool, "section", "chat") != "skills":
+            continue
+        if skill_audience is not None and not skill_tool_audience_ok(
+            getattr(tool, "audience", "shared"), skill_audience
+        ):
+            continue
+        out.append(name)
     return out
 
 
@@ -163,16 +188,22 @@ def get_user_skill_prefs(user) -> dict:
     return skills_prefs if isinstance(skills_prefs, dict) else {}
 
 
-def get_available_skills(user) -> list[AgentSkill]:
-    """Return the effective skill list for a user.
+# Audience groupings for resolving the effective skill list per surface.
+_MAIN_AUDIENCES = frozenset({"main", "shared"})
+_SUBAGENT_AUDIENCES = frozenset({"subagent", "shared"})
 
-    For each slug, the user's explicit selection in
-    ``UserSettings.preferences["skills"][slug]`` wins. Absent rows fall back
-    to shadowing defaults (system < org < user). A row whose
-    ``selected_skill_id`` is ``None`` means the user has explicitly disabled
-    that slug.
+
+def _resolve_available_skills(user, audiences: frozenset[str]) -> list[AgentSkill]:
+    """Shadow-resolve the accessible skills, scoped to an audience group.
+
+    Filters by audience *before* grouping by slug so a main skill and a
+    sub-agent skill that happen to share a slug across tiers never shadow each
+    other — each surface resolves only within its own audience group.
     """
-    accessible = get_accessible_skills(user)
+    accessible = [
+        s for s in get_accessible_skills(user)
+        if getattr(s, "audience", "main") in audiences
+    ]
     by_slug: dict[str, list[AgentSkill]] = {}
     for skill in accessible:
         by_slug.setdefault(skill.slug, []).append(skill)
@@ -195,6 +226,29 @@ def get_available_skills(user) -> list[AgentSkill]:
             result.append(shadowing_default(candidates))
 
     return sorted(result, key=lambda s: s.name)
+
+
+def get_available_skills(user) -> list[AgentSkill]:
+    """Return the effective *main-agent* skill list for a user.
+
+    For each slug, the user's explicit selection in
+    ``UserSettings.preferences["skills"][slug]`` wins. Absent rows fall back
+    to shadowing defaults (system < org < user). A row whose
+    ``selected_skill_id`` is ``None`` means the user has explicitly disabled
+    that slug. Only ``main``/``shared`` audience skills are surfaced — sub-agent
+    specializations never attach to a main thread.
+    """
+    return _resolve_available_skills(user, _MAIN_AUDIENCES)
+
+
+def get_subagent_skills(user) -> list[AgentSkill]:
+    """Return the effective *sub-agent specialization* list for a user.
+
+    The sub-agent-audience analogue of :func:`get_available_skills`: same
+    access gate, org-disable, and per-user shadowing, scoped to
+    ``subagent``/``shared`` audience skills.
+    """
+    return _resolve_available_skills(user, _SUBAGENT_AUDIENCES)
 
 
 def get_skill_for_user(user, skill_id: str) -> AgentSkill | None:
@@ -277,8 +331,12 @@ def get_editable_skill_for_user(user, slug: str) -> AgentSkill | None:
     ).first()
 
 
-def create_user_skill(user, name: str, slug: str | None = None) -> AgentSkill:
+def create_user_skill(
+    user, name: str, slug: str | None = None, *, audience: str = AgentSkill.Audience.MAIN
+) -> AgentSkill:
     """Create a user-level skill with auto-generated slug."""
+    if audience not in AgentSkill.Audience.values or audience == AgentSkill.Audience.SHARED:
+        audience = AgentSkill.Audience.MAIN
     if not slug:
         slug = slugify(name)[:64]
     if not slug:
@@ -294,6 +352,7 @@ def create_user_skill(user, name: str, slug: str | None = None) -> AgentSkill:
             name=name,
             instructions="",
             description="",
+            audience=audience,
             level="user",
             created_by=user,
         ),
@@ -339,7 +398,8 @@ def _next_user_skill_name(user, source_name: str) -> str:
 
 
 def fork_skill(
-    user, source_skill: AgentSkill, *, copy_templates: bool = True
+    user, source_skill: AgentSkill, *, copy_templates: bool = True,
+    audience: str | None = None,
 ) -> AgentSkill:
     """Fork a skill to a user-level copy, including templates.
 
@@ -362,6 +422,15 @@ def fork_skill(
 
     parent = source_skill.parent if source_skill.level == "user" else source_skill
 
+    # A personal copy is never "shared" (shared is seed-only). When the caller
+    # forces an audience (the Skills page tab the copy was made from), drop a
+    # shared source down to that audience; otherwise inherit the source's.
+    # tool_names are copied verbatim — runtime resolution re-filters them by
+    # audience, so a faithful copy stays a faithful copy.
+    new_audience = audience or source_skill.audience
+    if new_audience == AgentSkill.Audience.SHARED:
+        new_audience = AgentSkill.Audience.MAIN
+
     new_skill = _save_with_free_slug(
         source_skill.slug,
         lambda s: AgentSkill.objects.filter(
@@ -374,6 +443,7 @@ def fork_skill(
             description=source_skill.description,
             instructions=source_skill.instructions,
             tool_names=list(source_skill.tool_names or []),
+            audience=new_audience,
             level="user",
             created_by=user,
             parent=parent,
@@ -481,7 +551,10 @@ def migrate_skill_slug_prefs(skill, old_slug: str, new_slug: str) -> None:
         us.save(update_fields=["preferences"])
 
 
-def create_org_skill(user, name: str, organization, slug: str | None = None) -> AgentSkill:
+def create_org_skill(
+    user, name: str, organization, slug: str | None = None,
+    *, audience: str = AgentSkill.Audience.MAIN,
+) -> AgentSkill:
     """Create an org-level skill. Caller must be an admin of ``organization``.
 
     Raises ``PermissionError`` if the user is not an admin of the org.
@@ -494,6 +567,8 @@ def create_org_skill(user, name: str, organization, slug: str | None = None) -> 
     if not is_admin:
         raise PermissionError("Only org admins can create org skills.")
 
+    if audience not in AgentSkill.Audience.values or audience == AgentSkill.Audience.SHARED:
+        audience = AgentSkill.Audience.MAIN
     if not slug:
         slug = slugify(name)[:64]
     if not slug:
@@ -509,6 +584,7 @@ def create_org_skill(user, name: str, organization, slug: str | None = None) -> 
             name=name,
             instructions="",
             description="",
+            audience=audience,
             level="org",
             organization=organization,
         ),
@@ -516,7 +592,8 @@ def create_org_skill(user, name: str, organization, slug: str | None = None) -> 
 
 
 def promote_skill_to_org(
-    user, source_skill: AgentSkill, organization, *, copy_templates: bool = True
+    user, source_skill: AgentSkill, organization, *, copy_templates: bool = True,
+    audience: str | None = None,
 ) -> AgentSkill:
     """Create an org-level copy of ``source_skill`` (or a no-op if already org).
 
@@ -540,6 +617,13 @@ def promote_skill_to_org(
     if source_skill.level == "org" and source_skill.organization_id == organization.id:
         return source_skill
 
+    # Org skills aren't authored as "shared" (seed-only); inherit the source's
+    # audience, dropping shared to the tab's audience or main. tool_names are
+    # copied verbatim (runtime resolution re-filters them by audience).
+    new_audience = audience or source_skill.audience
+    if new_audience == AgentSkill.Audience.SHARED:
+        new_audience = AgentSkill.Audience.MAIN
+
     new_skill = _save_with_free_slug(
         source_skill.slug,
         lambda s: AgentSkill.objects.filter(
@@ -552,6 +636,7 @@ def promote_skill_to_org(
             description=source_skill.description,
             instructions=source_skill.instructions,
             tool_names=list(source_skill.tool_names or []),
+            audience=new_audience,
             level="org",
             organization=organization,
             parent=source_skill,
@@ -714,6 +799,7 @@ def export_skill(skill: AgentSkill) -> dict:
         "slug": skill.slug,
         "name": skill.name,
         "emoji": skill.emoji,
+        "audience": skill.audience,
         "description": _lines(skill.description),
         "instructions": _lines(skill.instructions),
         "tool_names": list(skill.tool_names or []),
@@ -755,12 +841,17 @@ def _normalize_skill_payload(entry: dict) -> dict:
     description = _join_lines(entry.get("description"))[:1024]
     instructions = _join_lines(entry.get("instructions"))[:MAX_INSTRUCTIONS_CHARS]
 
+    audience = str(entry.get("audience") or "").strip().lower()
+    if audience not in AgentSkill.Audience.values:
+        audience = AgentSkill.Audience.MAIN
+
     raw_slug = str(entry.get("slug") or "").strip()
     slug = slugify(raw_slug)[:64] if raw_slug else ""
 
     raw_tools = entry.get("tool_names")
     tool_names = (
-        filter_to_skill_tools(raw_tools) if isinstance(raw_tools, list) else []
+        filter_to_skill_tools(raw_tools, skill_audience=audience)
+        if isinstance(raw_tools, list) else []
     )
 
     templates: list[dict] = []
@@ -783,6 +874,7 @@ def _normalize_skill_payload(entry: dict) -> dict:
         "slug": slug,
         "name": name,
         "emoji": emoji,
+        "audience": audience,
         "description": description,
         "instructions": instructions,
         "tool_names": tool_names,
@@ -863,6 +955,10 @@ def import_skill(user, payload: dict) -> AgentSkill:
     # Allow-list tool_names and cap instructions/template content at the
     # persistence boundary so the rules hold even for a caller that bypassed
     # _normalize_skill_payload.
+    audience = payload.get("audience") or AgentSkill.Audience.MAIN
+    if audience not in AgentSkill.Audience.values:
+        audience = AgentSkill.Audience.MAIN
+
     skill = _save_with_free_slug(
         base_slug,
         lambda s: AgentSkill.objects.filter(
@@ -874,7 +970,9 @@ def import_skill(user, payload: dict) -> AgentSkill:
             emoji=payload.get("emoji", ""),
             description=payload.get("description", ""),
             instructions=(payload.get("instructions", "") or "")[:MAX_INSTRUCTIONS_CHARS],
-            tool_names=filter_to_skill_tools(payload.get("tool_names") or []),
+            tool_names=filter_to_skill_tools(
+                payload.get("tool_names") or [], skill_audience=audience
+            ),
             level="user",
             created_by=user,
             parent=None,

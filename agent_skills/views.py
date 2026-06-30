@@ -66,6 +66,16 @@ def _is_org_admin(user, organization) -> bool:
     ).exists()
 
 
+def _audience_from_request(request) -> str:
+    """The Skills-page tab a create/copy/import action came from.
+
+    Determines the new skill's audience. ``shared`` is seed-only, so only
+    ``main``/``subagent`` are accepted; anything else falls back to ``main``.
+    """
+    aud = (request.POST.get("audience") or "").strip().lower()
+    return aud if aud in ("main", "subagent") else "main"
+
+
 def _relative_date(value) -> str:
     """Render a datetime as 'today', 'yesterday', 'N days ago', etc."""
     if value is None:
@@ -170,8 +180,14 @@ def _annotate_skills(
     return rows
 
 
-def _available_skill_tools() -> list[dict]:
-    """Return [{name, description}] for tools registered with section='skills'."""
+def _available_skill_tools(skill_audience: str | None = None) -> list[dict]:
+    """Return [{name, description}] for tools registered with section='skills'.
+
+    When ``skill_audience`` is given, only tools a skill of that audience may
+    carry are offered (so the picker on a sub-agent skill won't list main-only
+    management tools).
+    """
+    from agent_skills.services import skill_tool_audience_ok
     from llm.tools.registry import get_tool_registry
 
     registry = get_tool_registry()
@@ -182,6 +198,8 @@ def _available_skill_tools() -> list[dict]:
                 "description": tool.description or "",
             }
             for tool in registry.list_tools_by_section("skills").values()
+            if skill_audience is None
+            or skill_tool_audience_ok(getattr(tool, "audience", "shared"), skill_audience)
         ],
         key=lambda t: t["name"],
     )
@@ -198,29 +216,34 @@ def skills_list(request):
 
     accessible = get_accessible_skills(request.user)
     user_skill_prefs = get_user_skill_prefs(request.user)
-    user_skills = sorted(
-        [s for s in accessible if s.level == "user"], key=lambda s: s.name
-    )
-    org_skills = sorted(
-        [s for s in accessible if s.level == "org"], key=lambda s: s.name
-    )
-    system_skills = sorted(
-        [s for s in accessible if s.level == "system"], key=lambda s: s.name
-    )
+
+    def _tier(level, audiences):
+        skills = sorted(
+            [
+                s for s in accessible
+                if s.level == level and getattr(s, "audience", "main") in audiences
+            ],
+            key=lambda s: s.name,
+        )
+        return _annotate_skills(
+            request.user, skills, accessible, user_skill_prefs, is_org_admin
+        )
+
+    # Two surfaces, partitioned by audience: the main assistant (main/shared) and
+    # sub-agent specializations (subagent/shared). Shared seeds appear in both.
+    main_aud = {"main", "shared"}
+    sub_aud = {"subagent", "shared"}
 
     return render(
         request,
         "agent_skills/skills_list.html",
         {
-            "user_rows": _annotate_skills(
-                request.user, user_skills, accessible, user_skill_prefs, is_org_admin
-            ),
-            "org_rows": _annotate_skills(
-                request.user, org_skills, accessible, user_skill_prefs, is_org_admin
-            ),
-            "system_rows": _annotate_skills(
-                request.user, system_skills, accessible, user_skill_prefs, is_org_admin
-            ),
+            "main_user_rows": _tier("user", main_aud),
+            "main_org_rows": _tier("org", main_aud),
+            "main_system_rows": _tier("system", main_aud),
+            "sub_user_rows": _tier("user", sub_aud),
+            "sub_org_rows": _tier("org", sub_aud),
+            "sub_system_rows": _tier("system", sub_aud),
             "user_org": org,
             "is_org_admin": is_org_admin,
         },
@@ -231,7 +254,9 @@ def skills_list(request):
 @require_POST
 def skills_create(request):
     name = (request.POST.get("name") or "").strip() or "Untitled skill"
-    skill = create_user_skill(request.user, name[:255])
+    skill = create_user_skill(
+        request.user, name[:255], audience=_audience_from_request(request)
+    )
     messages.success(request, f"Created skill '{skill.name}'.")
     return redirect("agent_skills_detail", skill_id=skill.id)
 
@@ -244,7 +269,9 @@ def skills_create_org(request):
         return HttpResponseForbidden("Org admin required.")
     name = (request.POST.get("name") or "").strip() or "Untitled skill"
     try:
-        skill = create_org_skill(request.user, name[:255], org)
+        skill = create_org_skill(
+            request.user, name[:255], org, audience=_audience_from_request(request)
+        )
     except PermissionError:
         return HttpResponseForbidden("Org admin required.")
     messages.success(request, f"Created organization skill '{skill.name}'.")
@@ -298,7 +325,7 @@ def skills_detail(request, skill_id):
             ]),
             "tool_names_json": json.dumps(list(skill.tool_names or [])),
             "editable": editable,
-            "available_tools": _available_skill_tools(),
+            "available_tools": _available_skill_tools(skill.audience),
             "is_org_admin": is_org_admin,
             "user_org": org,
             "colleague_count": colleague_count,
@@ -357,13 +384,14 @@ def _parse_tool_names_json(raw: str) -> list[str]:
     return [str(item) for item in data if isinstance(item, (str, int))]
 
 
-def _filter_skill_tools(tool_names: list[str]) -> list[str]:
+def _filter_skill_tools(tool_names: list[str], skill_audience: str | None = None) -> list[str]:
     """Allow-list submitted tool names down to skills-section tools.
 
     Thin wrapper over the shared chokepoint so the save form, import, edit
-    tool, and runtime resolution all enforce the same rule.
+    tool, and runtime resolution all enforce the same rule (including the
+    skill↔tool audience compatibility check when ``skill_audience`` is given).
     """
-    return filter_to_skill_tools(tool_names)
+    return filter_to_skill_tools(tool_names, skill_audience=skill_audience)
 
 
 class SkillFormValidationError(Exception):
@@ -387,7 +415,8 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     description = request.POST.get("description") or ""
     instructions = (request.POST.get("instructions") or "")[:MAX_INSTRUCTIONS_CHARS]
     tool_names = _filter_skill_tools(
-        _parse_tool_names_json(request.POST.get("tool_names_json", ""))
+        _parse_tool_names_json(request.POST.get("tool_names_json", "")),
+        skill_audience=skill.audience,
     )
 
     # Handle slug updates for user-level skills.
@@ -575,7 +604,9 @@ def skills_copy(request, skill_id):
     skill = get_skill_for_user(request.user, str(skill_id))
     if skill is None:
         return redirect("agent_skills_list")
-    new_skill = fork_skill(request.user, skill)
+    new_skill = fork_skill(
+        request.user, skill, audience=_audience_from_request(request)
+    )
     messages.success(request, f"Copied as '{new_skill.name}'.")
     return redirect("agent_skills_detail", skill_id=new_skill.id)
 
@@ -641,7 +672,9 @@ def skills_copy_to_org(request, skill_id):
     if not _is_org_admin(request.user, org):
         return HttpResponseForbidden("Org admin required.")
     try:
-        copied = promote_skill_to_org(request.user, skill, org)
+        copied = promote_skill_to_org(
+            request.user, skill, org, audience=_audience_from_request(request)
+        )
     except PermissionError:
         return HttpResponseForbidden("Org admin required.")
     messages.success(request, f"Copied '{copied.name}' as an organization skill.")
@@ -697,9 +730,17 @@ def skills_import(request):
         messages.error(request, f"Could not import skill: {exc}")
         return redirect("agent_skills_list")
 
+    # The tab the import was started from decides the audience (and re-filters
+    # tool_names against it), overriding whatever the file declared.
+    target_audience = _audience_from_request(request)
+
     created = []
     failed = 0
     for payload in payloads:
+        payload["audience"] = target_audience
+        payload["tool_names"] = filter_to_skill_tools(
+            payload.get("tool_names") or [], skill_audience=target_audience
+        )
         try:
             created.append(import_skill(request.user, payload))
         except Exception:

@@ -107,6 +107,7 @@ class ActiveCanvasTool(ContextAwareTool):
     """Set which canvases are active (visible in your context)."""
 
     name: str = "canvas_activate"
+    audience: str = "main"
     start_label: str = "Switching active canvases..."
     end_label: str = "Updated active canvases"
     description: str = (
@@ -147,6 +148,7 @@ class WriteCanvasTool(ContextAwareTool):
     """Create or completely rewrite the canvas document."""
 
     name: str = "canvas_write"
+    audience: str = "main"
     start_label: str = "Writing document..."
     end_label: str = "Rewrote the canvas text from scratch"
     description: str = (
@@ -244,6 +246,7 @@ class EditCanvasTool(ContextAwareTool):
     """Apply targeted find-replace edits to the existing canvas document."""
 
     name: str = "canvas_edit"
+    audience: str = "main"
     start_label: str = "Editing document..."
     end_label: str = "Edited the canvas text"
     description: str = (
@@ -348,6 +351,7 @@ class DeleteCanvasTool(ContextAwareTool):
     """Soft-delete a canvas from the conversation (preserved + user-undoable)."""
 
     name: str = "canvas_delete"
+    audience: str = "main"
     start_label: str = "Deleting canvas..."
     end_label: str = "Deleted canvas"
     description: str = (

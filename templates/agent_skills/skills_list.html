@@ -11,91 +11,38 @@
   </ul>
   {% endif %}
 
-  <div class="mb-10">
+  <div class="mb-6">
     <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Skills</h1>
     <p class="mt-2 text-sm text-body">Manage which skills are available to {{ assistant_name }}. Toggle versions on and off, copy a skill to make your own variant, or edit your own skills directly.</p>
   </div>
 
-  {# ---------- Your skills ---------- #}
-  <section class="mb-8">
-    <div class="flex items-center justify-between gap-4 mb-3">
-      <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
-        Your skills
-        <span class="wf-mono text-xs font-normal text-body-subtle">{{ user_rows|length }}</span>
-      </h2>
-      <div class="flex items-center gap-2 shrink-0">
-        <form method="post" action="{% url 'agent_skills_import' %}" enctype="multipart/form-data" class="m-0" id="import-skill-form">
-          {% csrf_token %}
-          <input type="file" name="file" accept=".json,application/json" id="import-skill-input" class="hidden">
-          <button type="button" id="import-skill-btn" class="inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
-            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
-            Import skill
-          </button>
-        </form>
-        <form method="post" action="{% url 'agent_skills_create' %}" class="m-0">
-          {% csrf_token %}
-          <input type="hidden" name="name" value="Untitled skill">
-          <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
-            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-            New
-          </button>
-        </form>
-      </div>
-    </div>
-    <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
-      {% for row in user_rows %}
-        {% include "agent_skills/_skill_row.html" with row=row section="user" is_first=forloop.first is_last=forloop.last %}
-      {% empty %}
-      <p class="px-5 py-6 text-body text-sm">No skills of your own yet. Use <strong>New</strong> to teach {{ assistant_name }} something.</p>
-      {% endfor %}
-    </div>
-  </section>
+  {# ---------- Audience tabs ---------- #}
+  <ul class="flex flex-wrap -mb-px text-sm font-medium border-b border-default mb-6" id="skills-tabs"
+      data-tabs-toggle="#skills-tab-content"
+      data-tabs-active-classes="text-fg-accent border-accent"
+      data-tabs-inactive-classes="border-transparent text-body hover:text-heading hover:border-default-medium"
+      role="tablist">
+    <li class="me-2" role="presentation">
+      <button class="inline-block px-4 py-2 border-b-2 rounded-t-base" id="tab-main"
+              data-tabs-target="#panel-main" type="button" role="tab"
+              aria-controls="panel-main" aria-selected="true">{{ assistant_name }} skills</button>
+    </li>
+    <li class="me-2" role="presentation">
+      <button class="inline-block px-4 py-2 border-b-2 rounded-t-base" id="tab-subagent"
+              data-tabs-target="#panel-subagent" type="button" role="tab"
+              aria-controls="panel-subagent" aria-selected="false">Sub-agent skills</button>
+    </li>
+  </ul>
 
-  {# ---------- Organization skills ---------- #}
-  {% if user_org %}
-  <section class="mb-8">
-    <div class="flex items-center justify-between gap-4 mb-3">
-      <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
-        {{ user_org.name }}'s skills
-        <span class="wf-mono text-xs font-normal text-body-subtle">{{ org_rows|length }}</span>
-      </h2>
-      {% if is_org_admin %}
-      <form method="post" action="{% url 'agent_skills_create_org' %}" class="m-0 shrink-0">
-        {% csrf_token %}
-        <input type="hidden" name="name" value="Untitled organization skill">
-        <button type="submit" class="inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
-          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          New
-        </button>
-      </form>
-      {% endif %}
+  <div id="skills-tab-content">
+    <div id="panel-main" role="tabpanel" aria-labelledby="tab-main">
+      {% include "agent_skills/_skill_tier_sections.html" with audience="main" user_rows=main_user_rows org_rows=main_org_rows system_rows=main_system_rows %}
     </div>
-    <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
-      {% for row in org_rows %}
-        {% include "agent_skills/_skill_row.html" with row=row section="org" is_first=forloop.first is_last=forloop.last %}
-      {% empty %}
-      <p class="px-5 py-6 text-body text-sm">No organization skills yet.{% if is_org_admin %} Use <strong>New</strong> above to add one.{% endif %}</p>
-      {% endfor %}
+    <div class="hidden" id="panel-subagent" role="tabpanel" aria-labelledby="tab-subagent">
+      <p class="mb-4 text-sm text-body">Sub-agent skills are <em>specializations</em> {{ assistant_name }} can give a sub-agent when it delegates a task (e.g. a focused web researcher). They are never attached to your own chats.</p>
+      {% include "agent_skills/_skill_tier_sections.html" with audience="subagent" user_rows=sub_user_rows org_rows=sub_org_rows system_rows=sub_system_rows %}
     </div>
-  </section>
-  {% endif %}
-
-  {# ---------- System skills ---------- #}
-  <section class="mb-8">
-    <div class="flex items-center justify-between gap-4 mb-3">
-      <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
-        Built-in skills
-        <span class="wf-mono text-xs font-normal text-body-subtle">{{ system_rows|length }}</span>
-      </h2>
-    </div>
-    <div class="rounded-base border border-default bg-neutral-primary-soft text-sm font-medium text-heading">
-      {% for row in system_rows %}
-        {% include "agent_skills/_skill_row.html" with row=row section="system" is_first=forloop.first is_last=forloop.last %}
-      {% empty %}
-      <p class="px-5 py-6 text-body text-sm">No built-in skills available.</p>
-      {% endfor %}
-    </div>
-  </section>
+  </div>
 
   {# ---------- Toast container ---------- #}
   <div id="skills-toast" class="fixed bottom-6 right-6 z-50 hidden max-w-sm bg-neutral-primary-medium border border-default-medium rounded-base shadow-lg px-4 py-3 text-sm text-heading"></div>

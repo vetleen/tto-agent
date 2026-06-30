@@ -52,6 +52,7 @@ opacity propagates to all descendants and cannot be undone on a child.
       {% if not is_org_admin or row.skill.level != "org" %}
       <form method="post" action="{% url 'agent_skills_copy' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
+        <input type="hidden" name="audience" value="{{ audience }}">
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
           Copy as personal skill
         </button>
@@ -68,6 +69,7 @@ opacity propagates to all descendants and cannot be undone on a child.
         {% elif row.skill.level == "system" %}
         <form method="post" action="{% url 'agent_skills_copy_to_org' skill_id=row.skill.id %}" class="p-0">
           {% csrf_token %}
+          <input type="hidden" name="audience" value="{{ audience }}">
           <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
             Copy as organization skill
           </button>

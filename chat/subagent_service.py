@@ -56,29 +56,34 @@ def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
 def resolve_subagent_tools(
     prefs: ResolvedPreferences,
     data_room_ids: list[int],
+    specialization_slug: str = "",
 ) -> list[str]:
     """Return the tool list for a sub-agent.
 
-    Starts with the user's allowed chat tools, then:
-    - Removes canvas tools (orchestrator-only)
-    - Removes sub-agent tools (prevents recursion)
-    - Removes document tools if no data rooms attached
+    Base = the user's sub-agent-audience chat tools
+    (``prefs.allowed_subagent_tools``). Tools that must never run in a sub-agent
+    — canvas, loops, skill management, spawning sub-agents — are declared
+    ``audience="main"`` and so are absent from that list (replacing the old
+    hard-coded denylist). Document tools are dropped when no data rooms are
+    attached. A specialization ("type") contributes its skill-section tools,
+    already audience-filtered and org-toggle-filtered in
+    ``prefs.allowed_specializations``.
     """
-    excluded = {
-        "canvas_activate", "canvas_write", "canvas_edit", "canvas_delete",
-        "canvas_save_to_document",
-        "chat_subagent_create",
-        "chat_loop_create", "chat_loop_edit", "chat_loop_stop", "chat_loop_list",
-        "chat_skill_attach", "skill_create", "skill_edit", "skill_delete",
-        "skill_field_save", "skill_field_load",
-        "skill_template_view", "skill_template_load",
-        "skill_tool_list", "skill_tool_inspect",
-    }
-    tools = [t for t in prefs.allowed_tools if t not in excluded]
+    tools = list(prefs.allowed_subagent_tools)
 
     if not data_room_ids:
         doc_tools = {"document_search", "document_read"}
         tools = [t for t in tools if t not in doc_tools]
+
+    if specialization_slug:
+        spec = next(
+            (s for s in prefs.allowed_specializations if s["slug"] == specialization_slug),
+            None,
+        )
+        if spec:
+            for t in spec["tool_names"]:
+                if t not in tools:
+                    tools.append(t)
 
     return tools
 
@@ -110,9 +115,29 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         model = resolve_subagent_model(run.model_tier, prefs)
         run.model_used = model
 
+        # Resolve an optional specialization ("type"). The carrying skill is
+        # re-resolved through the same access gate / shadowing as at spawn time,
+        # so a skill deleted or revoked in between is dropped gracefully.
+        specialization_skill = None
+        if run.skill_slug:
+            from agent_skills.services import get_subagent_skills
+
+            specialization_skill = next(
+                (s for s in get_subagent_skills(user) if s.slug == run.skill_slug),
+                None,
+            )
+            if specialization_skill is None:
+                logger.info(
+                    "Sub-agent run %s referenced specialization '%s' that is no "
+                    "longer available; running without it",
+                    run_id, run.skill_slug,
+                )
+
         # Resolve tools
         data_room_ids = run.data_room_ids or []
-        tool_list = resolve_subagent_tools(prefs, data_room_ids)
+        tool_list = resolve_subagent_tools(
+            prefs, data_room_ids, specialization_slug=run.skill_slug,
+        )
         run.tool_names = tool_list
         run.save(update_fields=["model_used", "tool_names"])
 
@@ -148,6 +173,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             organization_name=org_name,
             tasks=thread_tasks if thread_tasks else None,
             has_task_tool=has_task_tool,
+            specialization_skill=specialization_skill,
         )
 
         # Build LLM request
@@ -158,6 +184,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             deadline_seconds=deadline_seconds,
         )
         context.run_id = str(run_id)
+        context.agent_kind = "subagent"
 
         # Cooperative cancellation: check if the run has been marked FAILED
         def _is_cancelled():

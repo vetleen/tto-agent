@@ -44,6 +44,14 @@ class ContextAwareTool(BaseTool):
     context: RunContext | None = None
     section: str = "chat"
 
+    # Which agent kinds may run this tool. "shared" (default) = both the main
+    # assistant and sub-agents; "main" = main assistant only (e.g. canvas,
+    # loops, skill management, spawning sub-agents); "subagent" = sub-agents
+    # only. Orthogonal to ``section`` (which gates activation, not audience).
+    # Enforced upstream when assembling the tool list (preferences /
+    # resolve_subagent_tools) and defensively in the pipeline's _resolve_tools.
+    audience: str = "shared"
+
     # When the model calls a tool with arguments that fail the args_schema — a
     # list passed as a JSON string, a missing required field, malformed JSON, … —
     # langchain catches the ValidationError and returns this message as the tool

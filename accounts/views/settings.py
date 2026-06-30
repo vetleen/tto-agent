@@ -351,8 +351,18 @@ def org_settings_page(request):
 
     SECTION_META = {
         "chat": {
-            "label": f"{django_settings.ASSISTANT_NAME} Chat",
-            "description": "Tools available during chat conversations.",
+            "label": f"{django_settings.ASSISTANT_NAME} tools",
+            "description": (
+                f"Tools available to {django_settings.ASSISTANT_NAME} and "
+                "sub-agents during chat conversations."
+            ),
+        },
+        "subagent": {
+            "label": "Sub-agent tools",
+            "description": (
+                "Tools available specifically only to sub-agents of "
+                f"{django_settings.ASSISTANT_NAME}."
+            ),
         },
         "document_processing": {
             "label": "Document Processing",
@@ -373,37 +383,52 @@ def org_settings_page(request):
     system_defaults = get_system_defaults()
     all_tools = get_tool_registry().list_tools()
 
-    # Group tools by section (skip "skills" — managed in Skills section)
+    # Group tools by section (skip "skills" — managed in Skills section). The
+    # always-on "chat" section is further split by audience: shared/main tools
+    # under the main-agent group, sub-agent-only tools under "Sub-agent tools".
+    # Both are pre-seeded (in display order) so the sub-agent group shows even
+    # when no sub-agent-only tools exist yet.
     tool_sections = {}
+    for key in ("chat", "subagent"):
+        meta = SECTION_META[key]
+        tool_sections[key] = {
+            "label": meta["label"], "description": meta["description"], "tools": [],
+        }
     for name, tool in sorted(all_tools.items()):
         section_key = getattr(tool, "section", "chat")
         if section_key == "skills":
             continue
-        if section_key not in tool_sections:
-            meta = SECTION_META.get(section_key, {"label": section_key.replace("_", " ").title(), "description": ""})
-            tool_sections[section_key] = {
+        if section_key == "chat":
+            bucket = "subagent" if getattr(tool, "audience", "shared") == "subagent" else "chat"
+        else:
+            bucket = section_key
+        if bucket not in tool_sections:
+            meta = SECTION_META.get(bucket, {"label": bucket.replace("_", " ").title(), "description": ""})
+            tool_sections[bucket] = {
                 "label": meta["label"],
                 "description": meta["description"],
                 "tools": [],
             }
-        tool_sections[section_key]["tools"].append({
+        tool_sections[bucket]["tools"].append({
             "name": name,
             "description": tool.description,
             "enabled": org_tools.get(name, True) is not False,
             "note": TOOL_NOTES.get(name, ""),
         })
 
-    # Build skills data for the settings page
+    # Build skills data for the settings page, split by audience into the
+    # main-agent skills and the sub-agent specializations subsections.
     visible_skills = list(
         AgentSkill.objects.filter(level="system", is_active=True)
     ) + list(
         AgentSkill.objects.filter(level="org", organization=org, is_active=True)
     )
     skills_data = []
+    subagent_skills_data = []
     for skill in sorted(visible_skills, key=lambda s: s.name):
         sp = org_skills_prefs.get(skill.slug, {})
         tool_toggles = sp.get("tools", {})
-        skills_data.append({
+        entry = {
             "slug": skill.slug,
             "name": skill.name,
             "emoji": skill.emoji,
@@ -411,7 +436,12 @@ def org_settings_page(request):
             "tool_names": skill.tool_names or [],
             "enabled": sp.get("enabled", skill.level != "system") is not False,
             "tools": {t: tool_toggles.get(t, True) is not False for t in (skill.tool_names or [])},
-        })
+        }
+        if getattr(skill, "audience", "main") == "subagent":
+            subagent_skills_data.append(entry)
+        else:
+            # main + shared
+            skills_data.append(entry)
 
     org_subagent_prefs = org_prefs.get("subagents", {})
     parallel_subagents = org_subagent_prefs.get("parallel", True)
@@ -497,7 +527,8 @@ def org_settings_page(request):
         "org_tools_json": json.dumps(org_tools),
         "tool_sections": tool_sections,
         "skills_data": skills_data,
-        "skills_data_json": json.dumps(skills_data),
+        "subagent_skills_data": subagent_skills_data,
+        "skills_data_json": json.dumps(skills_data + subagent_skills_data),
         "parallel_subagents": parallel_subagents,
         "pii_scan_enabled": pii_scan_enabled,
         "pii_quarantine_enabled": pii_quarantine_enabled,

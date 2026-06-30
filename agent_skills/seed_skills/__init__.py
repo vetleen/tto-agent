@@ -10,9 +10,10 @@ from agent_skills.seed_skills.rcn_qualification_grant import RCN_QUALIFICATION_G
 from agent_skills.seed_skills.rcn_verification_grant import RCN_VERIFICATION_GRANT
 from agent_skills.seed_skills.skill_creator import SKILL_CREATOR
 from agent_skills.seed_skills.web_deep_researcher import WEB_DEEP_RESEARCHER
+from agent_skills.seed_skills.web_researcher import WEB_RESEARCHER
 from agent_skills.seed_skills.written_assignment_writer import WRITTEN_ASSIGNMENT_WRITER
 
-SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, RCN_QUALIFICATION_GRANT, RCN_VERIFICATION_GRANT, WEB_DEEP_RESEARCHER, IRL_PROJECT_ASSESSOR, IDEA_EVALUATION_DESIGNER, MARKET_ANALYZER, COMMERCIAL_HYPOTHESIS_DRAFTER]
+SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, RCN_QUALIFICATION_GRANT, RCN_VERIFICATION_GRANT, WEB_DEEP_RESEARCHER, WEB_RESEARCHER, IRL_PROJECT_ASSESSOR, IDEA_EVALUATION_DESIGNER, MARKET_ANALYZER, COMMERCIAL_HYPOTHESIS_DRAFTER]
 
 # Cross-app seed skill from the meetings app. Wrapped in try/except so
 # the agent_skills app remains importable even if `meetings` is removed
@@ -35,6 +36,9 @@ def seed_system_skills():
             "description": skill_data["description"],
             "instructions": skill_data["instructions"],
             "tool_names": skill_data["tool_names"],
+            # Default to the main agent; sub-agent specializations (and any
+            # future shared seeds) opt in explicitly.
+            "audience": skill_data.get("audience", AgentSkill.Audience.MAIN),
         }
         try:
             skill = AgentSkill.objects.get(slug=skill_data["slug"], level="system")
