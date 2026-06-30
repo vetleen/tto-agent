@@ -13,9 +13,8 @@ def _render_specialization(skill) -> str:
 
     Mirrors the main agent's ``_render_one_skill`` (headings deepened so they
     nest under the section) but framed for a background worker: the sub-agent
-    has no canvas and cannot talk to the user, so templates are read with
-    ``skill_template_view`` and reproduced in the final text answer rather than
-    loaded into a canvas.
+    cannot talk to the user and works in a single working canvas (its first
+    template is auto-loaded there) rather than the multi-canvas review UI.
     """
     deepened = re.sub(r"^(#+)", r"##\1", skill.instructions, flags=re.MULTILINE)
     block = f"\n# Your specialization: {skill.name}\n"
@@ -29,15 +28,37 @@ def _render_specialization(skill) -> str:
 
     templates = list(skill.templates.all())
     if templates:
+        first = templates[0]
         block += (
             "\n## Specialization templates\n\n"
-            "This specialization provides the following templates. Use "
-            "`skill_template_view` to read a template's content, then reproduce "
-            "the relevant structure in your final text answer (you have no "
-            "canvas).\n\n"
+            f"The template **{first.name}** has been loaded into your working "
+            "canvas as a starting point.\n"
         )
-        for tmpl in templates:
-            block += f"- **{tmpl.name}**\n"
+        if len(templates) > 1:
+            others = ", ".join(f"**{t.name}**" for t in templates[1:])
+            block += f"Other templates you can load into your canvas instead: {others}.\n"
+    return block
+
+
+def _render_working_canvas(content: str | None, title: str | None) -> str:
+    """Orient the sub-agent to its single working canvas.
+
+    Tool mechanics (when to write vs edit, that loading a template erases the
+    canvas) live in the ``subagent_canvas_*`` tool descriptions; this only
+    orients and injects the current canvas content.
+    """
+    block = (
+        "\n# Working canvas\n"
+        "You have a single working canvas — a durable document you build with the "
+        "`subagent_canvas_*` tools. It is returned to the orchestrator alongside "
+        "your final message, so build substantial structured deliverables there "
+        "rather than squeezing them into your final answer.\n"
+    )
+    if content:
+        label = title or "Working document"
+        block += f'\n## Current canvas content: "{label}"\n```markdown\n{content}\n```\n'
+    else:
+        block += "\nYour canvas is currently empty.\n"
     return block
 
 
@@ -48,6 +69,8 @@ def build_subagent_system_prompt(
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
     specialization_skill=None,
+    canvas_content: str | None = None,
+    canvas_title: str | None = None,
 ) -> str:
     """Build a focused system prompt for a sub-agent.
 
@@ -65,7 +88,7 @@ You have been given a specific task. Complete it thoroughly and return your find
 - Focus exclusively on the task. Do not ask follow-up questions, and do not offer to do more work. 
 - Structure your response clearly with headings if appropriate. You may use markdown.
 - If you cannot complete the task with the tools available, explain what's missing.
-- IMPORTANT: Return your findings as text in your final message.
+- IMPORTANT: Return your findings as text in your final message. For substantial structured deliverables, build them in your working canvas (see "Working canvas" below) instead of inlining everything.
 - You may be as exhaustive as you like. Make sure you don't exclude any important findings from your answer.
 - Make sure you cite and source in such way that it is unambigously clear where each fact came from. 
   - For websites provie the concrete URL where you sourced the data.
@@ -78,6 +101,8 @@ You have been given a specific task. Complete it thoroughly and return your find
 
     if specialization_skill is not None:
         prompt += _render_specialization(specialization_skill)
+
+    prompt += _render_working_canvas(canvas_content, canvas_title)
 
     if has_task_tool:
         prompt += """

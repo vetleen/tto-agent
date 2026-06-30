@@ -496,17 +496,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         from chat.models import ChatMessage, SubAgentRun
 
-        completed_run_ids = list(
+        # A sub-agent delivers via its final text and/or its working canvas, so a
+        # canvas-only run (completed with no final message) and a terminally-failed
+        # run that still built a canvas both count. The hidden-message check below
+        # is the precise gate — cancelled runs never get one, so they're filtered
+        # out there even though FAILED is included here.
+        candidate_run_ids = list(
             SubAgentRun.objects.filter(
                 thread_id=thread_id,
-                status=SubAgentRun.Status.COMPLETED,
-            ).exclude(result="").values_list("id", flat=True)
+                status__in=[
+                    SubAgentRun.Status.COMPLETED,
+                    SubAgentRun.Status.FAILED,
+                ],
+            ).exclude(result="", canvas="").values_list("id", flat=True)
         )
-        if not completed_run_ids:
+        if not candidate_run_ids:
             return False
 
         unreported_ids = []
-        for run_id in completed_run_ids:
+        for run_id in candidate_run_ids:
             hidden_msg = ChatMessage.objects.filter(
                 thread_id=thread_id,
                 metadata__source="subagent",

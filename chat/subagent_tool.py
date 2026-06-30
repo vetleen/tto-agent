@@ -180,8 +180,14 @@ class CreateSubagentTool(ContextAwareTool):
             time.sleep(2)
             run.refresh_from_db()
             if run.status == SubAgentRun.Status.COMPLETED:
-                if run.result:
-                    return run.result
+                if run.result or run.canvas:
+                    from chat.subagent_service import render_canvas_block
+
+                    body = run.result or (
+                        "The sub-agent produced no final message, but left the "
+                        "following working canvas."
+                    )
+                    return body + render_canvas_block(run)
                 return json.dumps({
                     "status": "completed",
                     "run_id": str(run.id),

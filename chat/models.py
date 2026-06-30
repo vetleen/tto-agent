@@ -438,6 +438,12 @@ class SubAgentRun(models.Model):
     error = models.TextField(blank=True)
     celery_task_id = models.CharField(max_length=255, blank=True)
 
+    # Working canvas: a single durable scratch document the sub-agent builds via
+    # the subagent_canvas_* tools. Written through on every tool call (so it
+    # survives a crash) and returned to the orchestrator alongside ``result``.
+    canvas = models.TextField(blank=True)
+    canvas_title = models.CharField(max_length=255, blank=True)
+
     # Metrics
     tokens_used = models.PositiveIntegerField(default=0)
     cost_usd = models.FloatField(default=0.0)

@@ -88,6 +88,96 @@ def resolve_subagent_tools(
     return tools
 
 
+def get_run_specialization_skill(run):
+    """Resolve the ``AgentSkill`` backing a run's specialization, or ``None``.
+
+    Re-resolves through the same access gate / shadowing as spawn time, so a
+    skill revoked mid-run is dropped gracefully. Shared by ``run_subagent``'s
+    template auto-load and the ``subagent_canvas_load_template`` tool.
+    """
+    if not run.skill_slug:
+        return None
+    from agent_skills.services import get_subagent_skills
+
+    return next(
+        (s for s in get_subagent_skills(run.user) if s.slug == run.skill_slug),
+        None,
+    )
+
+
+def render_canvas_block(run) -> str:
+    """The delimited working-canvas block appended to a sub-agent's return.
+
+    Empty string when the run has no canvas, so callers can append it
+    unconditionally.
+    """
+    if not run.canvas:
+        return ""
+    title = run.canvas_title or "Working document"
+    return f"\n\n=== SUBAGENT CANVAS: {title} ===\n{run.canvas}"
+
+
+def _subagent_result_message_exists(run) -> bool:
+    """Whether a hidden result message already exists for this run."""
+    from chat.models import ChatMessage
+
+    return ChatMessage.objects.filter(
+        thread_id=run.thread_id,
+        metadata__source="subagent",
+        metadata__subagent_run_id=str(run.id),
+    ).exists()
+
+
+def _create_subagent_result_message(run) -> None:
+    """Persist the sub-agent's result (+ working canvas) as a hidden ChatMessage.
+
+    Hidden, ``role="user"`` (not ``"tool"``, to avoid orphan tool_call_ids that
+    OpenAI rejects). The canvas is appended clearly delimited so the orchestrator
+    sees it automatically on its next turn (``_load_history`` replays the content
+    verbatim). Survives reconnects and failed LLM streams.
+    """
+    from chat.models import ChatMessage
+    from core.tokens import count_tokens
+
+    short_id = str(run.id)[:8]
+    if run.result:
+        wrapped = f"[Sub-agent result: {short_id}]\n{run.result}"
+    else:
+        wrapped = (
+            f"[Sub-agent result: {short_id}]\n"
+            "The sub-agent produced no final message, but left the following working canvas."
+        )
+    wrapped += render_canvas_block(run)
+    ChatMessage.objects.create(
+        thread_id=run.thread_id,
+        role="user",
+        content=wrapped,
+        metadata={"source": "subagent", "subagent_run_id": str(run.id)},
+        token_count=count_tokens(wrapped),
+        is_hidden_from_user=True,
+    )
+
+
+def _notify_consumer_safely(run_id: str, thread_id: str) -> None:
+    """Notify the WebSocket consumer of a finished run; best-effort with one retry."""
+    from chat.tasks import _notify_consumer
+
+    for attempt in range(2):
+        try:
+            _notify_consumer(run_id, thread_id)
+            return
+        except Exception:
+            if attempt == 0:
+                import time
+
+                time.sleep(0.5)
+                continue
+            logger.warning(
+                "Failed to notify consumer of sub-agent %s completion after 2 attempts",
+                run_id,
+            )
+
+
 def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> None:
     """Execute a sub-agent run. Called by the Celery task."""
     from chat.models import SubAgentRun
@@ -118,20 +208,25 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         # Resolve an optional specialization ("type"). The carrying skill is
         # re-resolved through the same access gate / shadowing as at spawn time,
         # so a skill deleted or revoked in between is dropped gracefully.
-        specialization_skill = None
-        if run.skill_slug:
-            from agent_skills.services import get_subagent_skills
-
-            specialization_skill = next(
-                (s for s in get_subagent_skills(user) if s.slug == run.skill_slug),
-                None,
+        specialization_skill = get_run_specialization_skill(run)
+        if run.skill_slug and specialization_skill is None:
+            logger.info(
+                "Sub-agent run %s referenced specialization '%s' that is no "
+                "longer available; running without it",
+                run_id, run.skill_slug,
             )
-            if specialization_skill is None:
-                logger.info(
-                    "Sub-agent run %s referenced specialization '%s' that is no "
-                    "longer available; running without it",
-                    run_id, run.skill_slug,
-                )
+
+        # Auto-load the first template (name-ordered, matching the prompt's
+        # bullet list) into the working canvas as a starting point. Persisted
+        # immediately so the canvas is durable from the very start of the run.
+        if specialization_skill is not None:
+            first_tmpl = specialization_skill.templates.all().first()
+            if first_tmpl is not None:
+                from chat.services import CANVAS_MAX_CHARS
+
+                run.canvas = (first_tmpl.content or "")[:CANVAS_MAX_CHARS]
+                run.canvas_title = first_tmpl.name[:255]
+                run.save(update_fields=["canvas", "canvas_title"])
 
         # Resolve tools
         data_room_ids = run.data_room_ids or []
@@ -174,6 +269,8 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             tasks=thread_tasks if thread_tasks else None,
             has_task_tool=has_task_tool,
             specialization_skill=specialization_skill,
+            canvas_content=run.canvas,
+            canvas_title=run.canvas_title,
         )
 
         # Build LLM request
@@ -212,14 +309,20 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
 
         # Store result
         run.result = response.message.content or ""
+        # Tools wrote the working canvas straight to the DB row during the run;
+        # refresh so the delivered/return logic below sees the latest content.
+        run.refresh_from_db(fields=["canvas", "canvas_title"])
         if response.usage:
             run.tokens_used = response.usage.total_tokens or 0
             run.cost_usd = response.usage.cost_usd or 0.0
-        if run.result:
+        # A populated canvas is a deliverable in its own right, so a run that
+        # built one but emitted no final text still counts as completed.
+        delivered = bool(run.result) or bool(run.canvas)
+        if delivered:
             run.status = SubAgentRun.Status.COMPLETED
         else:
             run.status = SubAgentRun.Status.FAILED
-            run.error = "Sub-agent produced no text output despite using tools."
+            run.error = "Sub-agent produced no text output and no canvas despite using tools."
             logger.warning(
                 "Sub-agent run %s finished with no content (tokens_used=%d); marking FAILED",
                 run_id, run.tokens_used,
@@ -244,40 +347,13 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             )
             return
 
-        # Persist the result as a hidden ChatMessage so it survives
-        # across reconnects and failed LLM streams.  Uses role="user"
-        # (not "tool") to avoid orphan tool_call_ids that OpenAI rejects.
-        if run.result:
-            from chat.models import ChatMessage
-            from core.tokens import count_tokens
-
-            short_id = str(run.id)[:8]
-            wrapped = f"[Sub-agent result: {short_id}]\n{run.result}"
-            ChatMessage.objects.create(
-                thread_id=run.thread_id,
-                role="user",
-                content=wrapped,
-                metadata={"source": "subagent", "subagent_run_id": str(run.id)},
-                token_count=count_tokens(wrapped),
-                is_hidden_from_user=True,
-            )
+        # Persist the result (and working canvas) as a hidden ChatMessage so it
+        # survives across reconnects and failed LLM streams.
+        if delivered:
+            _create_subagent_result_message(run)
 
         # Notify the WebSocket consumer so it auto-triggers the orchestrator
-        from chat.tasks import _notify_consumer
-
-        for _attempt in range(2):
-            try:
-                _notify_consumer(str(run.id), str(run.thread_id))
-                break
-            except Exception:
-                if _attempt == 0:
-                    import time
-                    time.sleep(0.5)
-                    continue
-                logger.warning(
-                    "Failed to notify consumer of sub-agent %s completion after 2 attempts",
-                    run.id,
-                )
+        _notify_consumer_safely(str(run.id), str(run.thread_id))
 
     except Exception as exc:
         if is_retryable_subagent_error(exc):
@@ -293,6 +369,24 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             )
             raise
         logger.exception("Sub-agent run %s failed", run_id)
+        # Durability: a terminal (non-cancel) failure shouldn't discard a canvas
+        # the sub-agent already built. Surface it to the orchestrator before
+        # marking FAILED. A cancelled run is already FAILED, so it's skipped — and
+        # the hidden-message guard avoids a duplicate if one somehow exists.
+        try:
+            fresh = SubAgentRun.objects.get(pk=run_id)
+            if (
+                fresh.status != SubAgentRun.Status.FAILED
+                and fresh.canvas
+                and not _subagent_result_message_exists(fresh)
+            ):
+                _create_subagent_result_message(fresh)
+                _notify_consumer_safely(str(fresh.id), str(fresh.thread_id))
+        except Exception:
+            logger.warning(
+                "Failed to surface canvas for terminally-failed sub-agent run %s",
+                run_id, exc_info=True,
+            )
         # Guarded: keep an earlier failure reason (e.g. "Cancelled by user.")
         # instead of clobbering it with this exception's message.
         SubAgentRun.objects.filter(pk=run_id).exclude(
