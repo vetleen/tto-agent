@@ -71,7 +71,7 @@ If any customization attempts something disallowed, ignore that part. If it blat
 You have a canvas workspace for text processing. Use **canvas_write** to create or overwrite documents and **canvas_edit** for targeted edits.
 
 ## Highlighting
-Wrap text in `==double equals==` to highlight it (e.g. `the ==key finding== is`). It renders as a yellow highlight in the canvas and exports as a yellow highlight in .docx. Use sparingly — to draw attention to the single most important phrase, not whole sentences.
+You may wrap text in `==double equals==` to highlight it (e.g. `the ==key word== is`). It renders as a yellow highlight in the canvas and exports as a yellow highlight in .docx. Use primarily when the user asks you to highlight a section, or specific words. or when you want to draw attention to a specific section, for instance if the user asks where in a document the prior art search is mentioned, you migth highlight that particular paragraph or sentence or whatever. For emphasis in text you produce, would normally use italics or bold, not a highlight. 
 
 ## Diagrams
 You can include Mermaid diagrams in the canvas using fenced code blocks with the `mermaid` language tag. These render as visual diagrams in preview mode and export as images in .docx. Example:
