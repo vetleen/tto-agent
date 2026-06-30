@@ -510,3 +510,65 @@ class FinalizeTests(TestCase):
         self.assertTrue(
             any(json.loads(s).get("type") == "input_audio_buffer.commit" for s in ws.sent)
         )
+
+    def test_finalize_waits_for_completed_that_trails_committed_ack(self):
+        """The production Stop-drop race: under server-VAD the manual commit
+        gets a fast ``input_audio_buffer.committed`` ack, but the real
+        ``.completed`` transcript trails it. The old finalize bailed on the ack
+        (+0.4s settle) and tore the socket down before the transcript arrived.
+
+        Here the completion trails by 0.6s — longer than that old settle window
+        — so this fails on the old code and passes once finalize keys off the
+        committed-vs-completed gap.
+        """
+        class _AckThenDelayedCompletionWS(_FakeWebSocket):
+            async def send(self, payload):
+                await super().send(payload)
+                if json.loads(payload).get("type") == "input_audio_buffer.commit":
+                    # Fast ack (advances the event counter immediately)...
+                    self.push_server_json({"type": "input_audio_buffer.committed"})
+
+                    # ...then the real transcript, well after the old settle.
+                    async def _delayed():
+                        await asyncio.sleep(0.6)
+                        self.push_server_json({
+                            "type": "conversation.item.input_audio_transcription.completed",
+                            "item_id": "item_final",
+                            "transcript": "the trailing words.",
+                        })
+                    asyncio.create_task(_delayed())
+
+        ws = _AckThenDelayedCompletionWS(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            completed: list[TranscriptCompleted] = []
+
+            async def consume():
+                async for evt in session.events():
+                    if isinstance(evt, TranscriptCompleted):
+                        completed.append(evt)
+                    elif isinstance(evt, SessionStatus) and evt.state == "disconnected":
+                        return
+
+            consumer = asyncio.create_task(consume())
+            await asyncio.sleep(0.05)  # drain session.created
+            await session.finalize(timeout=2.0)
+            # finalize must have blocked until the trailing .completed landed;
+            # only then do we close (which would otherwise cancel the recv loop).
+            await session.aclose()
+            await consumer
+            return completed
+
+        completed = _run(run())
+        self.assertTrue(
+            any(e.text == "the trailing words." for e in completed),
+            "finalize() must wait for the .completed that trails the committed ack",
+        )

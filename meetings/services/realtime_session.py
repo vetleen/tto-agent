@@ -152,6 +152,15 @@ class RealtimeTranscriptionSession(abc.ABC):
             if isinstance(evt, SessionStatus) and evt.state == "disconnected":
                 return
 
+    def pending_event_count(self) -> int:
+        """Events produced but not yet consumed.
+
+        Teardown uses this to give the event-consumer task a bounded moment to
+        dequeue and persist the trailing ``.completed`` that ``finalize()``
+        waited for, before it gets cancelled.
+        """
+        return self._events.qsize()
+
 
 # ---------------------------------------------------------------------------
 # OpenAI implementation
@@ -248,6 +257,12 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         # sends the commit, then waits for it to advance so the server's
         # post-commit transcription has a chance to arrive before teardown.
         self._server_event_count = 0
+        # Utterance bookkeeping for a clean Stop: every committed buffer should
+        # produce one transcription. finalize() waits until completed catches up
+        # to committed so the trailing utterance isn't dropped when the user
+        # stops mid-transcription.
+        self._committed_count = 0
+        self._completed_count = 0
         self._reconnect_attempt = 0
         self._last_reconnect_success: float = 0.0
         self._ws_connect_factory = _ws_connect_factory or _default_ws_connect
@@ -356,6 +371,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                 # Snapshot how much audio preceded this utterance so the matching
                 # .completed (FIFO) can report its START offset, not its end.
                 self._speech_start_offsets.append(self._pcm_bytes_sent)
+            elif evt_type == "input_audio_buffer.committed":
+                # One committed buffer ⇒ one transcription owed. finalize() waits
+                # for completed to catch up so Stop doesn't drop it.
+                self._committed_count += 1
             return
         if evt_type == "conversation.item.input_audio_transcription.delta":
             item_id = event.get("item_id", "") or ""
@@ -387,6 +406,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                 usage=usage,
                 start_offset_seconds=start_bytes / (24_000 * 2),
             ))
+            self._completed_count += 1
             return
         if evt_type == "error":
             err = event.get("error") or {}
@@ -515,17 +535,22 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             logger.debug("OpenAIRealtimeSession: commit raised (%s) — continuing", exc)
             return
         deadline = time.monotonic() + timeout
-        # Phase 1: wait (up to the deadline) for the server to react to the
-        # commit at all — a ``.committed`` ack, a ``.completed`` transcript, or
-        # an error. The old code bailed the instant the queue was empty, which
-        # is the common case (the consumer drains it), so it never actually
-        # waited and the final utterance was lost.
-        while time.monotonic() < deadline and self._server_event_count == events_before:
-            await asyncio.sleep(0.05)
-        # Phase 2: brief settle window so a ``.completed`` that trails the
-        # ``.committed`` ack lands too. Still bounded by the overall deadline.
-        settle_deadline = min(deadline, time.monotonic() + 0.4)
-        while time.monotonic() < settle_deadline:
+        # Wait until the server has reacted to our commit AND every committed
+        # utterance has produced its transcription, so the still-running consume
+        # loop can persist the trailing ``.completed`` before teardown.
+        #
+        # Keying off the committed-vs-completed gap (not just "any event after
+        # the commit") is what fixes the Stop drop: under server-VAD the last
+        # utterance usually auto-committed already, so our manual commit gets a
+        # fast ``commit_empty`` ack while the real ``.completed`` is still in
+        # flight. The old code returned on that ack and tore the socket down
+        # before the transcript arrived. ``timeout`` is a hard ceiling so a
+        # silent/wedged socket (or a completion that never comes) can't hang us.
+        while time.monotonic() < deadline:
+            server_responded = self._server_event_count > events_before
+            all_transcribed = self._committed_count <= self._completed_count
+            if server_responded and all_transcribed:
+                break
             await asyncio.sleep(0.05)
 
     async def aclose(self) -> None:

@@ -604,6 +604,64 @@ class TranscriptionModelCascadeTest(TestCase):
         # User's choice not in org allowed, so falls back
         self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")
 
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_live_model_follows_user_default_when_no_live_override(self, mock_registry, mock_allowed):
+        """The live model follows the user's GENERAL default when they haven't
+        set a dedicated 'live' override — not the system mini fallback.
+
+        Regression: clicking Transcribe always used gpt-4o-mini-transcribe even
+        when the user's default was gpt-4o-transcribe, because the live cascade
+        never consulted the 'default' key.
+        """
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tx-live-follows-default@example.com")
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {
+            "transcription_models": {"default": "openai/gpt-4o-transcribe"},
+        }
+        settings.save()
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-transcribe")
+        self.assertEqual(prefs.transcription_model_live, "openai/gpt-4o-transcribe")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_explicit_live_override_wins_over_default(self, mock_registry, mock_allowed):
+        """An explicit 'live' override is still honored over the general default."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tx-live-override@example.com")
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {
+            "transcription_models": {
+                "default": "openai/gpt-4o-transcribe",
+                "live": "openai/gpt-4o-mini-transcribe",
+            },
+        }
+        settings.save()
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_model_live, "openai/gpt-4o-mini-transcribe")
+
 
 class TierConstraintTest(TestCase):
     """Tier constraints prevent wrong-tier models from being used."""

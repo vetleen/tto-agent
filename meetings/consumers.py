@@ -114,6 +114,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._realtime_session = None
         self._pcm_pipe = None
         self._realtime_tasks: list[asyncio.Task] = []
+        self._realtime_consume_task: asyncio.Task | None = None
         self._realtime_started: bool = False
         self._realtime_language: str = ""
         self._total_pcm_bytes: int = 0
@@ -424,9 +425,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 self._pcm_pipe = None
             raise
 
+        # Keep a handle on the consume task: teardown lets it drain the trailing
+        # .completed before cancelling it (see _teardown_realtime).
+        self._realtime_consume_task = asyncio.create_task(self._consume_realtime_events())
         self._realtime_tasks = [
             asyncio.create_task(self._pump_pcm_to_realtime()),
-            asyncio.create_task(self._consume_realtime_events()),
+            self._realtime_consume_task,
         ]
         self._realtime_started = True
         self._realtime_was_active_this_conn = True
@@ -594,7 +598,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             logger.exception("realtime: persist utterance failed")
             return None
 
-    async def _teardown_realtime(self) -> None:
+    async def _teardown_realtime(self, *, finalize_timeout: float = 2.0) -> None:
         """Cancel forwarder tasks, flush the session, close the pipe.
 
         Safe to call from inside one of the realtime tasks (e.g. the event
@@ -602,6 +606,11 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         currently running on — that task is expected to ``return`` on its own
         right afterwards. Idempotent, so the consumer-branch call and the later
         ``disconnect`` call don't double-tear-down.
+
+        On a user-initiated Stop, ``finalize()`` commits pending audio and waits
+        for the trailing transcription; we then give the event-consumer task a
+        bounded moment to actually dequeue + persist it before cancelling, so
+        the user's last sentence isn't lost.
         """
         if (
             not self._realtime_started
@@ -612,9 +621,26 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         current = asyncio.current_task()
         if self._realtime_session is not None:
             try:
-                await self._realtime_session.finalize(timeout=2.0)
+                await self._realtime_session.finalize(timeout=finalize_timeout)
             except Exception:
                 pass
+            # Let the consumer persist the trailing .completed that finalize()
+            # coaxed out before we cancel it. Skip when teardown is driven by the
+            # consumer task itself (fatal-error path) — it can't drain while it's
+            # the one running here. Bounded so a stuck queue can't hang teardown.
+            # getattr: the attribute is set in connect(), so a directly-built
+            # consumer (tests) may not have it yet.
+            consume_task = getattr(self, "_realtime_consume_task", None)
+            if (
+                consume_task is not None
+                and consume_task is not current
+                and not consume_task.done()
+            ):
+                for _ in range(150):  # ~3s ceiling (150 * 20ms)
+                    if self._realtime_session.pending_event_count() == 0:
+                        break
+                    await asyncio.sleep(0.02)
+                await asyncio.sleep(0.05)  # let an in-flight DB write settle
         for task in self._realtime_tasks:
             if task is current:
                 continue
@@ -819,7 +845,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._stop_requested = True
         if self._realtime_started:
             try:
-                await self._teardown_realtime()
+                # Stop is the one path where we want to wait a beat longer for
+                # the in-flight final transcription rather than cut it off.
+                await self._teardown_realtime(finalize_timeout=3.0)
             except Exception:
                 logger.exception("_handle_stop: realtime teardown failed")
         try:

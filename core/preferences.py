@@ -273,8 +273,19 @@ def get_preferences(user) -> ResolvedPreferences:
     # Per-capability system defaults. The env vars let ops pin a specific
     # model per path without touching the generic TRANSCRIPTION_DEFAULT_MODEL
     # (which stays around as the ultimate fallback).
+    #
+    # When neither an explicit *live* override (user/org "live" key) nor an ops
+    # TRANSCRIPTION_DEFAULT_MODEL_LIVE is set, fall back to the user's resolved
+    # GENERAL default (the "default" key) rather than the system mini default.
+    # Product rule: live transcription uses the user's default model unless a
+    # per-meeting override is set. Without this, a user who set their default to
+    # gpt-4o-transcribe silently got gpt-4o-mini-transcribe on the live path
+    # (the live cascade never consulted the "default" key). If the general
+    # default isn't live-capable (e.g. a diarize/batch-only model), _resolve_tier
+    # drops it against the live pool and picks the first live-capable model.
     system_default_live = (
         getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "")
+        or transcription_model
         or system_transcription_default
     )
     system_default_upload = (
