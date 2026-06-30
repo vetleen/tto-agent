@@ -34,6 +34,15 @@ _PROBE = (
     "print('ACTIVE' if sentry_sdk.get_client().is_active() else 'INACTIVE')"
 )
 
+# Same check, but run via ``manage.py shell -c`` so sys.argv[1] == "shell" when
+# settings imports — exercising the shell guard (WILFRED-3G / WILFRED-6B: ad-hoc
+# `heroku run ... shell -c` typos must not reach Sentry, even at DEBUG=False).
+# A distinctive marker keeps parsing robust against the shell's own banner noise.
+_SHELL_PROBE = (
+    "import sentry_sdk; "
+    "print('SENTRYPROBE:' + ('ACTIVE' if sentry_sdk.get_client().is_active() else 'INACTIVE'))"
+)
+
 
 def _probe_sentry(env_overrides: dict) -> str:
     """Import ``config.settings`` in a fresh process; return ``'ACTIVE'``/``'INACTIVE'``."""
@@ -43,6 +52,9 @@ def _probe_sentry(env_overrides: dict) -> str:
     # the unrelated production email-backend guard further down in settings).
     env.setdefault("DJANGO_SECRET_KEY", "x" * 50)
     env.setdefault("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.locmem.EmailBackend")
+    # Satisfy the production media guard so DEBUG=False settings import cleanly
+    # without real AWS creds (settings raises otherwise).
+    env.setdefault("MEDIA_ALLOW_EPHEMERAL", "true")
     result = subprocess.run(
         [sys.executable, "-c", _PROBE],
         env=env,
@@ -54,6 +66,36 @@ def _probe_sentry(env_overrides: dict) -> str:
     if result.returncode != 0:
         raise AssertionError(f"settings import failed: {result.stderr}")
     return result.stdout.strip().splitlines()[-1]
+
+
+def _probe_sentry_shell(env_overrides: dict) -> str:
+    """Run ``manage.py shell -c`` in a fresh process; return ``'ACTIVE'``/``'INACTIVE'``.
+
+    The shell command sets ``sys.argv[1] == "shell"`` while settings imports, so
+    this exercises the shell guard the plain-``-c`` probe can't reach.
+    """
+    env = {**os.environ, **env_overrides}
+    env.setdefault("DJANGO_SECRET_KEY", "x" * 50)
+    env.setdefault("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.locmem.EmailBackend")
+    # Satisfy the production media guard so DEBUG=False settings import cleanly
+    # without real AWS creds (settings raises otherwise).
+    env.setdefault("MEDIA_ALLOW_EPHEMERAL", "true")
+    result = subprocess.run(
+        [sys.executable, "manage.py", "shell", "-c", _SHELL_PROBE],
+        env=env,
+        cwd=str(settings.BASE_DIR),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"manage.py shell failed: {result.stderr}")
+    for line in result.stdout.splitlines():
+        if line.startswith("SENTRYPROBE:"):
+            return line.split(":", 1)[1]
+    raise AssertionError(
+        f"probe marker not found. stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
 
 
 class SentryInitGatingTests(SimpleTestCase):
@@ -77,5 +119,17 @@ class SentryInitGatingTests(SimpleTestCase):
         """No DSN → Sentry never initializes, even in a deployed-style run."""
         self.assertEqual(
             _probe_sentry({"DJANGO_DEBUG": "False", "SENTRY_DSN": ""}),
+            "INACTIVE",
+        )
+
+    def test_skipped_in_shell_even_in_production(self) -> None:
+        """`manage.py shell` never initializes Sentry, even with DEBUG=False + DSN.
+
+        Covers `heroku run ... shell -c "..."` against production: ad-hoc developer
+        shell typos (WILFRED-3G / WILFRED-6B) must not surface as Sentry events.
+        Contrast with test_initializes_in_production (same env, non-shell → active).
+        """
+        self.assertEqual(
+            _probe_sentry_shell({"DJANGO_DEBUG": "False", "SENTRY_DSN": _FAKE_DSN}),
             "INACTIVE",
         )

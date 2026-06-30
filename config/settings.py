@@ -60,17 +60,22 @@ warnings.filterwarnings(
 # ---------------------------------------------------------------------------
 # Sentry — error tracking & performance monitoring
 # ---------------------------------------------------------------------------
-# Never initialize Sentry during test runs or local development. Error-handling
-# tests intentionally log WARNING/ERROR ("db boom", "LLM down", mock artifacts),
-# and routine local management commands (check, makemigrations, runserver,
-# one-off shells) raise or log expected errors. Either source floods Sentry with
-# local_dev noise that drowns out real production issues. Deployed apps run with
-# DEBUG=False, so gating on DEBUG keeps every developer machine out of Sentry
-# regardless of whether SENTRY_ENVIRONMENT is set locally; the test-run guard
-# stays for CI, where DEBUG may be False while the suite runs.
+# Never initialize Sentry during test runs, interactive shells, or local
+# development. Error-handling tests intentionally log WARNING/ERROR ("db boom",
+# "LLM down", mock artifacts); `manage.py shell` sessions — including
+# `heroku run ... shell -c "..."` against production — raise ad-hoc developer
+# typos that are not application errors (WILFRED-3G / WILFRED-6B); and routine
+# local management commands (check, makemigrations, runserver) raise or log
+# expected errors. Each source floods Sentry with noise that drowns out real
+# production issues. Deployed apps run with DEBUG=False, so gating on DEBUG keeps
+# developer machines out regardless of whether SENTRY_ENVIRONMENT is set locally.
+# The test-run and shell guards apply in EVERY environment (they fire even when
+# DEBUG=False, e.g. a production `heroku run` shell), and the test guard also
+# covers CI, where DEBUG may be False while the suite runs.
 _is_test_run = len(sys.argv) > 1 and sys.argv[1] == "test"
+_is_shell = len(sys.argv) > 1 and sys.argv[1] == "shell"
 _sentry_dsn = os.environ.get("SENTRY_DSN", "")
-if _sentry_dsn and not _is_test_run and not DEBUG:
+if _sentry_dsn and not _is_test_run and not _is_shell and not DEBUG:
     from core.middleware import get_request_id
     from core.sentry_scrub import scrub_event
 
