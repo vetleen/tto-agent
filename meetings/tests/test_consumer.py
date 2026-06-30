@@ -748,6 +748,58 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertTrue(any(m["type"] == "live_mode_changed" for m in sent))
 
 
+class RealtimePromptSeedingTests(TransactionTestCase):
+    """The realtime session's seed prompt must carry meeting metadata (for
+    proper-noun bias) but NOT the prior-transcript tail.
+
+    gpt-4o-transcribe treats the realtime ``prompt`` as a token-biasing hint,
+    not an instruction, so on short/quiet VAD utterances it regurgitates the
+    prompt verbatim. Seeding the running transcript made it echo prior text as
+    new "utterances", which re-seeded an ever-larger prompt on each reconnect —
+    a runaway repetition loop. This guards that the tail stays out of the live
+    prompt (the chunked/upload path still uses it; full chunks anchor the model).
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="rtprompt@example.com", password="pw")
+
+    async def _seed_prompt_for(self, *, transcript: str) -> dict:
+        import types
+
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="Innovasjon Norge Sync",
+            slug="rt-prompt-seed",
+            created_by=self.user,
+            transcript=transcript,
+        )
+        consumer = MeetingTranscribeConsumer()
+        consumer.user = self.user
+
+        prefs = types.SimpleNamespace(
+            allowed_transcription_models=["openai/gpt-4o-transcribe"],
+            transcription_model_live="openai/gpt-4o-transcribe",
+            live_transcription_mode="realtime",
+        )
+        with patch("core.preferences.get_preferences", return_value=prefs):
+            return await consumer._load_and_lock_meeting(meeting.uuid)
+
+    async def test_realtime_prompt_has_metadata_but_not_prior_transcript(self):
+        marker = "REGURGITATION_CANARY_PHRASE"
+        result = await self._seed_prompt_for(
+            transcript=f"...{marker} and then the deadline would slip.",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertNotEqual(result["live_mode"], "chunked")
+        prompt = result["prompt"]
+        # Metadata bias is still seeded.
+        self.assertIn("Meeting: Innovasjon Norge Sync", prompt)
+        # ...but the prior transcript tail is NOT — neither the section header
+        # nor any of its content.
+        self.assertNotIn("Previous transcript excerpt", prompt)
+        self.assertNotIn(marker, prompt)
+
+
 class RecomputeIncludesMarkerTests(TransactionTestCase):
     """A marker segment with status=READY must show up inline in the joined
     transcript, ordered by segment_index. This guards the contract used by

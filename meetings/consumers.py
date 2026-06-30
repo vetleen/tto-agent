@@ -1003,14 +1003,21 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             live_mode = "chunked"
 
         # Seed a prompt for the realtime session from meeting metadata so the
-        # model biases toward proper nouns. Reuses the same builder the upload
-        # path uses so both routes see identical context.
+        # model biases toward proper nouns. We deliberately do NOT seed the
+        # prior-transcript tail here. gpt-4o-transcribe treats the realtime
+        # `prompt` as a token-biasing hint, not an instruction, so on short or
+        # quiet VAD utterances it regurgitates the prompt verbatim. Feeding the
+        # running transcript made the model echo prior text back as new
+        # "utterances", which then re-seeded an ever-larger prompt on each
+        # reconnect — a runaway repetition loop (duplicate + \n\n-joined blobs).
+        # Metadata-only keeps the proper-noun bias without the loop. The
+        # upload/chunked path still passes prior_tail: full ~30s chunks give the
+        # model enough real audio to anchor on, so it doesn't echo the prompt.
         prompt = ""
         if live_mode != "chunked":
             try:
                 from meetings.services.audio_transcription import build_transcription_prompt
-                tail = (meeting.transcript or "")[-1200:] if meeting.transcript else None
-                prompt = build_transcription_prompt(meeting, prior_tail=tail)
+                prompt = build_transcription_prompt(meeting)
             except Exception:
                 prompt = ""
 
