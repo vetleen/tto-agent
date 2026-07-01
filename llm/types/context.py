@@ -25,6 +25,18 @@ class RunContext(BaseModel):
     # model supports vision, else their text descriptions. Each item is a dict:
     # {"asset_id", "b64", "media_type", "description"}.
     pending_image_assets: list = Field(default_factory=list)
+    # Skill activation the agent triggered mid-turn (via chat_skill_attach).
+    # The chat pipeline drains these each tool-loop iteration so a skill the
+    # agent attaches takes effect on the very next step of the SAME turn — not
+    # the next user turn. Mirrors the pending_image_assets drain pattern.
+    #   added_tool_names           — tool names to union into the live tool set.
+    #   pending_skill_instructions — rendered instruction blocks to inject.
+    added_tool_names: list = Field(default_factory=list)
+    pending_skill_instructions: list = Field(default_factory=list)
+    # slug -> org-filtered tool_names, stashed by the consumer from
+    # prefs.allowed_skills so chat_skill_attach can resolve a newly-attached
+    # skill's tools without re-deriving org tool-toggle filtering.
+    skill_tool_map: dict = Field(default_factory=dict)
 
     @classmethod
     def create(

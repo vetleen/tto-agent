@@ -906,8 +906,9 @@ class AttachSkillsTool(ContextAwareTool):
     description: str = (
         "Set the skills attached to this chat thread to the given set of "
         f"slugs (up to {MAX_THREAD_SKILLS}), replacing whatever is currently "
-        "attached. Pass an empty list to detach all. Skill-declared tools "
-        "become available on your next turn, not the turn you attach."
+        "attached. Pass an empty list to detach all. A skill's tools and "
+        "instructions become active immediately — from your next step in this "
+        "same turn — so you can attach a skill and then use its tools right away."
     )
     args_schema: type[BaseModel] = AttachSkillsInput
     section: str = "chat"
@@ -964,6 +965,21 @@ class AttachSkillsTool(ContextAwareTool):
                 })
             chosen.append(skill)
 
+        # Unlock the attached skills' tools for the REST OF THIS TURN. The chat
+        # pipeline drains ctx.added_tool_names each tool-loop iteration and unions
+        # them into the live tool set (SimpleChatPipeline._expand_tools_from_context),
+        # so a skill the agent attaches takes effect on its next step, not next turn.
+        # Declarative (runs even on no_change); the pipeline dedupes against tools
+        # already active. Names come from ctx.skill_tool_map (org-filtered upstream by
+        # the consumer) so this never bypasses org tool-toggles.
+        ctx = self.context
+        if ctx is not None:
+            tool_map = getattr(ctx, "skill_tool_map", None) or {}
+            for s in chosen:
+                for t in tool_map.get(s.slug, []):
+                    if t not in ctx.added_tool_names:
+                        ctx.added_tool_names.append(t)
+
         previous_ids = [
             str(i) for i in ChatThreadSkill.objects.filter(
                 thread=thread
@@ -984,6 +1000,18 @@ class AttachSkillsTool(ContextAwareTool):
 
         prev_set = set(previous_ids)
         desired_set = set(desired_ids)
+
+        # Inject NEWLY-attached skills' instructions into this same turn so the agent
+        # follows them immediately. Skills already attached are already rendered into
+        # this turn's system prompt (# Relevant skills), so re-injecting would
+        # duplicate; the prev_set check skips them. The pipeline drains this into an
+        # ephemeral (non-persisted) user message.
+        if ctx is not None:
+            from chat.prompts import _render_one_skill  # local: avoid app import cycle
+            for s in chosen:
+                if str(s.id) not in prev_set:
+                    ctx.pending_skill_instructions.append(_render_one_skill(s))
+
         return json.dumps({
             "status": "ok",
             "no_change": no_change,

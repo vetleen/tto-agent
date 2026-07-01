@@ -179,6 +179,43 @@ class AttachSkillsToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["no_change"])
 
+    # --- Same-turn activation: context slots the pipeline drains mid-loop ---
+
+    def test_attach_populates_added_tool_names(self):
+        """Attaching unlocks the skill's (org-filtered) tools for this turn."""
+        self.tool.context.skill_tool_map = {"my-skill": ["skill_template_view"]}
+        self._attach("my-skill")
+        self.assertEqual(self.tool.context.added_tool_names, ["skill_template_view"])
+
+    def test_attach_no_change_still_populates_added_tool_names(self):
+        """Declarative: an already-attached skill still surfaces its tools (the
+        pipeline dedupes), so a redundant re-attach never errors or hides tools."""
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
+        self.tool.context.skill_tool_map = {"my-skill": ["skill_template_view"]}
+        result = self._attach("my-skill")
+        self.assertTrue(result["no_change"])
+        self.assertEqual(self.tool.context.added_tool_names, ["skill_template_view"])
+
+    def test_attach_unmapped_skill_adds_no_tools(self):
+        """Fail-closed: a skill absent from skill_tool_map (org-disabled tools /
+        no prefs) contributes nothing, never bypassing org filtering."""
+        self._attach("my-skill")
+        self.assertEqual(self.tool.context.added_tool_names, [])
+
+    def test_attach_new_skill_pushes_instructions(self):
+        """A newly-attached skill's instructions are queued for same-turn injection."""
+        self._attach("my-skill")
+        instr = self.tool.context.pending_skill_instructions
+        self.assertEqual(len(instr), 1)
+        self.assertIn("Do the thing.", instr[0])
+
+    def test_attach_already_attached_skips_instructions(self):
+        """Instructions are NOT re-injected for a skill already in this turn's
+        system prompt (avoids duplication)."""
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
+        self._attach("my-skill")
+        self.assertEqual(self.tool.context.pending_skill_instructions, [])
+
     def test_tool_registered(self):
         from llm.tools.registry import get_tool_registry
         self.assertIn("chat_skill_attach", get_tool_registry().list_tools())

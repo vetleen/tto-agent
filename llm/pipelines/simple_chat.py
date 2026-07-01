@@ -235,6 +235,61 @@ class SimpleChatPipeline(BasePipeline):
                 })
         new_messages.append(Message(role="user", content=blocks))
 
+    @staticmethod
+    def _append_pending_skill_instructions(new_messages: List[Message], req: ChatRequest) -> None:
+        """Drain context.pending_skill_instructions into a user message so a skill
+        the agent just attached takes effect this turn.
+
+        Mirrors _append_pending_images: chat_skill_attach pushes the rendered
+        instruction block(s) of newly-attached skills onto the shared context, and
+        the loop injects them as an ephemeral (non-persisted) user message on the
+        next iteration. No-op when nothing was queued (the common case).
+        """
+        ctx = req.context
+        pending = list(getattr(ctx, "pending_skill_instructions", None) or [])
+        if not pending:
+            return
+        ctx.pending_skill_instructions.clear()
+        new_messages.append(Message(
+            role="user",
+            content=(
+                "The following skill(s) were just attached and are now active for "
+                "the rest of this conversation. Follow their instructions:\n\n"
+                + "\n\n".join(pending)
+            ),
+        ))
+
+    def _expand_tools_from_context(
+        self,
+        tools: List[ContextAwareTool],
+        tool_by_name: dict[str, ContextAwareTool],
+        req: ChatRequest,
+    ) -> List[ContextAwareTool]:
+        """Union context.added_tool_names into the live tool set for the next
+        iteration, so a skill the agent just attached is callable this turn.
+
+        chat_skill_attach pushes tool names onto the shared context; here we resolve
+        them to tool objects (via _resolve_tools, which enforces audience and binds
+        context), extend the dispatch map in place, and return the enlarged tools
+        list. The caller folds it into req.tool_schemas — the model re-binds tools
+        from req.tool_schemas on every call, so the enlarged set reaches the provider
+        next iteration. Additive-only and deduped against tools already active.
+        No-op when nothing was queued (the common case).
+        """
+        ctx = req.context
+        pending = list(getattr(ctx, "added_tool_names", None) or [])
+        if not pending:
+            return tools
+        ctx.added_tool_names.clear()
+        new_names = [n for n in dict.fromkeys(pending) if n not in tool_by_name]
+        if not new_names:
+            return tools
+        new_tools = self._resolve_tools(new_names, ctx)
+        if not new_tools:
+            return tools
+        tool_by_name.update({t.name: t for t in new_tools})
+        return tools + new_tools
+
     def _run_tool_loop(
         self,
         chat_model: ChatModel,
@@ -345,7 +400,9 @@ class SimpleChatPipeline(BasePipeline):
                 ))
 
             self._append_pending_images(new_messages, req)
-            req = req.model_copy(update={"messages": new_messages})
+            self._append_pending_skill_instructions(new_messages, req)
+            tools = self._expand_tools_from_context(tools, tool_by_name, req)
+            req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:
             logger.warning(
                 "Tool loop exhausted %d iterations; stripping tools for final generate",
@@ -587,7 +644,9 @@ class SimpleChatPipeline(BasePipeline):
                 ))
 
             self._append_pending_images(new_messages, req)
-            req = req.model_copy(update={"messages": new_messages})
+            self._append_pending_skill_instructions(new_messages, req)
+            tools = self._expand_tools_from_context(tools, tool_by_name, req)
+            req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:
             logger.warning(
                 "Streaming tool loop exhausted %d iterations; stripping tools for final stream",

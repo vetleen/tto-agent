@@ -1486,6 +1486,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         prefs = self.resolved_prefs
 
+        # Stash the org-filtered skill -> tool_names map so chat_skill_attach can
+        # unlock a newly-attached skill's tools mid-turn without re-deriving org
+        # tool-toggle filtering (see RunContext.skill_tool_map and
+        # SimpleChatPipeline._expand_tools_from_context). This is the full AVAILABLE
+        # set, not just attached — the agent may attach any available skill mid-turn.
+        if prefs is not None:
+            context.skill_tool_map = {
+                s["slug"]: s["tool_names"] for s in prefs.allowed_skills
+            }
+
         # Use pre-resolved model from _handle_chat_message, or resolve here
         model = resolved_model
         if model is None:

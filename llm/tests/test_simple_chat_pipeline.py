@@ -48,6 +48,24 @@ class _LabeledMockTool(ContextAwareTool):
         return None if n is None else f"Found {n}"
 
 
+class _AttachSimInput(BaseModel):
+    note: str = Field(default="", description="unused")
+
+
+class _AttachSimTool(ContextAwareTool):
+    """Simulates chat_skill_attach: pushes a tool name onto the shared
+    RunContext.added_tool_names so the pipeline unlocks it mid-loop."""
+
+    name: str = "chat_skill_attach"
+    description: str = "attach sim"
+    args_schema: type[BaseModel] = _AttachSimInput
+
+    def _run(self, **kwargs) -> str:
+        if self.context is not None:
+            self.context.added_tool_names.append("late_tool")
+        return '{"status": "ok"}'
+
+
 class SimpleChatPipelineTests(TestCase):
     """Test simple_chat pipeline: tool loop and model delegation."""
 
@@ -88,6 +106,139 @@ class SimpleChatPipelineTests(TestCase):
         mock_registry = MagicMock()
         mock_registry.return_value.get_tool.side_effect = lambda n: tool if n == tool.name else None
         return patch("llm.pipelines.simple_chat.get_tool_registry", mock_registry)
+
+    def _patch_tool_registry_multi(self, tools_by_name):
+        """Patch get_tool_registry to resolve any of several tools by name."""
+        mock_registry = MagicMock()
+        mock_registry.return_value.get_tool.side_effect = lambda n: tools_by_name.get(n)
+        return patch("llm.pipelines.simple_chat.get_tool_registry", mock_registry)
+
+    def test_stream_tool_added_mid_loop_becomes_callable(self):
+        """A tool that pushes a name onto context.added_tool_names on iteration 1
+        makes that previously-absent tool callable on iteration 2 of the SAME turn."""
+        attach_tool = _AttachSimTool()
+        late_tool = _MockToolImpl(name="late_tool")
+        late_tool._return_value = '{"late": true}'
+        tools_by_name = {"chat_skill_attach": attach_tool, "late_tool": late_tool}
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="attach then use")],
+            stream=True,
+            model="gpt-4o-mini",
+            tools=["chat_skill_attach"],  # late_tool NOT initially available
+            context=RunContext.create(),
+        )
+
+        def stream_attach(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "a1", "name": "chat_skill_attach", "arguments": {}}],
+            }, sequence=2, run_id="")
+
+        def stream_use_late(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "l1", "name": "late_tool", "arguments": {"a": 1, "b": 2}}],
+            }, sequence=2, run_id="")
+
+        def stream_final(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="token", data={"text": "done"}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "done"}, sequence=3, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [stream_attach(None), stream_use_late(None), stream_final(None)]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry_multi(tools_by_name):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        # late_tool actually executed (not an "Unknown tool" error result)
+        late_ends = [
+            e for e in events
+            if e.event_type == "tool_end" and e.data["tool_name"] == "late_tool"
+        ]
+        self.assertEqual(len(late_ends), 1)
+        self.assertIn("late", late_ends[0].data["result"])
+        self.assertNotIn("Unknown tool", late_ends[0].data["result"])
+        # Iteration 2's request was sent the enlarged tool set.
+        self.assertEqual(fake_model.stream.call_count, 3)
+        second_req = fake_model.stream.call_args_list[1][0][0]
+        self.assertIn("late_tool", {t.name for t in second_req.tool_schemas})
+
+    def test_run_tool_added_mid_loop_becomes_callable(self):
+        """Same mid-loop unlock in the non-streaming run() loop."""
+        attach_tool = _AttachSimTool()
+        late_tool = _MockToolImpl(name="late_tool")
+        late_tool._return_value = '{"late": true}'
+        tools_by_name = {"chat_skill_attach": attach_tool, "late_tool": late_tool}
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="attach then use")],
+            stream=False,
+            model="gpt-4o-mini",
+            tools=["chat_skill_attach"],
+            context=RunContext.create(),
+        )
+
+        def _tc(id_, name, args):
+            return ChatResponse(
+                message=Message(role="assistant", content="", tool_calls=[
+                    ToolCall(id=id_, name=name, arguments=args)]),
+                model="gpt-4o-mini", usage=None, metadata={},
+            )
+
+        attach_call = _tc("a1", "chat_skill_attach", {})
+        late_call = _tc("l1", "late_tool", {"a": 1, "b": 2})
+        final = ChatResponse(
+            message=Message(role="assistant", content="done"),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = [attach_call, late_call, final]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry_multi(tools_by_name):
+            mock_create.return_value = fake_model
+            response = SimpleChatPipeline().run(request)
+
+        self.assertEqual(fake_model.generate.call_count, 3)
+        self.assertEqual(response.message.content, "done")
+        # Iteration 2 carried the enlarged tool set...
+        second_req = fake_model.generate.call_args_list[1][0][0]
+        self.assertIn("late_tool", {t.name for t in second_req.tool_schemas})
+        # ...and late_tool's result reached history (executed, not "Unknown tool").
+        third_req = fake_model.generate.call_args_list[2][0][0]
+        tool_msgs = [m for m in third_req.messages if m.role == "tool"]
+        self.assertTrue(any("late" in m.content for m in tool_msgs))
+        self.assertFalse(any("Unknown tool" in m.content for m in tool_msgs))
+
+    def test_expand_tools_from_context_dedupes_and_noops(self):
+        """_expand_tools_from_context is a no-op with nothing queued, drains the
+        slot, and never duplicates a tool already in the dispatch map."""
+        pipeline = SimpleChatPipeline()
+        existing = _MockToolImpl(name="document_search")
+        tools = [existing]
+        tool_by_name = {"document_search": existing}
+        ctx = RunContext.create()
+        req = ChatRequest(
+            messages=[Message(role="user", content="x")],
+            model="gpt-4o-mini", context=ctx,
+        )
+
+        # Nothing queued -> same list, unchanged map.
+        out = pipeline._expand_tools_from_context(tools, tool_by_name, req)
+        self.assertIs(out, tools)
+        self.assertEqual(set(tool_by_name), {"document_search"})
+
+        # Queued name already active -> deduped (no growth), slot drained.
+        ctx.added_tool_names.append("document_search")
+        out = pipeline._expand_tools_from_context(tools, tool_by_name, req)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(ctx.added_tool_names, [])
 
     def test_run_tool_loop_executes_tool_and_returns_final_response(self):
         """Model returns tool_calls on first call, then text on second; tool is executed."""
