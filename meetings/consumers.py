@@ -1030,24 +1030,24 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             )
             live_mode = "chunked"
 
-        # Seed a prompt for the realtime session from meeting metadata so the
-        # model biases toward proper nouns. We deliberately do NOT seed the
-        # prior-transcript tail here. gpt-4o-transcribe treats the realtime
-        # `prompt` as a token-biasing hint, not an instruction, so on short or
-        # quiet VAD utterances it regurgitates the prompt verbatim. Feeding the
-        # running transcript made the model echo prior text back as new
-        # "utterances", which then re-seeded an ever-larger prompt on each
-        # reconnect — a runaway repetition loop (duplicate + \n\n-joined blobs).
-        # Metadata-only keeps the proper-noun bias without the loop. The
-        # upload/chunked path still passes prior_tail: full ~30s chunks give the
-        # model enough real audio to anchor on, so it doesn't echo the prompt.
+        # Seed NO prompt on the realtime path. gpt-4o-transcribe treats the
+        # realtime `prompt` as a token-biasing hint, not an instruction, so on
+        # short/quiet VAD utterances (little real audio) it regurgitates the
+        # prompt verbatim as a fake "utterance".
+        #
+        # 5b1b241 dropped the prior-transcript tail for this reason but kept the
+        # meeting metadata, on the theory that metadata-only would bias proper
+        # nouns "without the loop". Prod evidence (meeting da1c8903, 2026-06-30)
+        # falsified that: the metadata line itself leaks — e.g.
+        # "Meeting: 260630 - New meeting" and "260630" appeared repeatedly in
+        # the transcript. The auto-generated meeting name carries no proper-noun
+        # value anyway, so seeding it is all cost and no benefit here; an empty
+        # prompt has nothing to regurgitate.
+        #
+        # The upload/chunked path still builds + passes a prompt (incl.
+        # prior_tail): full ~30s chunks give the model enough real audio to
+        # anchor on, so it transcribes rather than echoes.
         prompt = ""
-        if live_mode != "chunked":
-            try:
-                from meetings.services.audio_transcription import build_transcription_prompt
-                prompt = build_transcription_prompt(meeting)
-            except Exception:
-                prompt = ""
 
         # Transition the meeting to LIVE_TRANSCRIBING (preserve started_at on resume).
         update_fields = ["status", "transcript_source", "updated_at"]

@@ -749,15 +749,17 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
 
 
 class RealtimePromptSeedingTests(TransactionTestCase):
-    """The realtime session's seed prompt must carry meeting metadata (for
-    proper-noun bias) but NOT the prior-transcript tail.
+    """The realtime session must be seeded with NO prompt.
 
     gpt-4o-transcribe treats the realtime ``prompt`` as a token-biasing hint,
     not an instruction, so on short/quiet VAD utterances it regurgitates the
-    prompt verbatim. Seeding the running transcript made it echo prior text as
-    new "utterances", which re-seeded an ever-larger prompt on each reconnect —
-    a runaway repetition loop. This guards that the tail stays out of the live
-    prompt (the chunked/upload path still uses it; full chunks anchor the model).
+    prompt verbatim as fake "utterances". 5b1b241 dropped the prior-transcript
+    tail for this reason but kept the meeting metadata; prod evidence (meeting
+    da1c8903, 2026-06-30) showed the metadata line itself leaks — e.g.
+    "Meeting: <name>" and "<name>" appearing repeatedly in the transcript. So
+    the realtime path now seeds no prompt at all. The chunked/upload path still
+    uses a metadata+tail prompt; full ~30s chunks anchor the model so it
+    transcribes rather than echoes.
     """
 
     def setUp(self):
@@ -783,7 +785,7 @@ class RealtimePromptSeedingTests(TransactionTestCase):
         with patch("core.preferences.get_preferences", return_value=prefs):
             return await consumer._load_and_lock_meeting(meeting.uuid)
 
-    async def test_realtime_prompt_has_metadata_but_not_prior_transcript(self):
+    async def test_realtime_prompt_is_empty(self):
         marker = "REGURGITATION_CANARY_PHRASE"
         result = await self._seed_prompt_for(
             transcript=f"...{marker} and then the deadline would slip.",
@@ -792,11 +794,12 @@ class RealtimePromptSeedingTests(TransactionTestCase):
         self.assertTrue(result["ok"])
         self.assertNotEqual(result["live_mode"], "chunked")
         prompt = result["prompt"]
-        # Metadata bias is still seeded.
-        self.assertIn("Meeting: Innovasjon Norge Sync", prompt)
-        # ...but the prior transcript tail is NOT — neither the section header
-        # nor any of its content.
-        self.assertNotIn("Previous transcript excerpt", prompt)
+        # No prompt is seeded on the realtime path — nothing for the model to
+        # regurgitate on short/quiet utterances.
+        self.assertEqual(prompt, "")
+        # Neither the meeting name (metadata bias) nor the prior-transcript tail
+        # leaks into the live prompt.
+        self.assertNotIn("Innovasjon Norge Sync", prompt)
         self.assertNotIn(marker, prompt)
 
 
