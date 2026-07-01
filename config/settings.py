@@ -579,6 +579,15 @@ LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
+
+# EPO Open Patent Services (OPS) — patent search tools. A single shared Wilfred
+# credential (OAuth2 client-credentials) serves all orgs; OPS is read-only public
+# data. The tools register only when both key and secret are set. See the
+# patent-searcher seed skill and llm/tools/epo_ops.py.
+EPO_OPS_KEY = os.environ.get("EPO_OPS_KEY", "")
+EPO_OPS_SECRET = os.environ.get("EPO_OPS_SECRET", "")
+EPO_OPS_BASE_URL = os.environ.get("EPO_OPS_BASE_URL", "https://ops.epo.org/3.2")
+EPO_OPS_RPM = int(os.environ.get("EPO_OPS_RPM", "30"))  # OPS fair-use throttle
 # Jina Reader endpoint. The former EU endpoint (eu.r.jina.ai) no longer
 # resolves (2026-06); override here if Jina ships a new regional endpoint.
 JINA_READER_BASE_URL = os.environ.get("JINA_READER_BASE_URL", "https://r.jina.ai")

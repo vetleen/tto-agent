@@ -14,4 +14,14 @@ if getattr(settings, "BRAVE_SEARCH_API_KEY", None):
     registry.register_tool(BraveSearchTool())
     registry.register_tool(WebSearchAndReadTool())
 
+if getattr(settings, "EPO_OPS_KEY", None) and getattr(settings, "EPO_OPS_SECRET", None):
+    from llm.tools.epo_ops import (
+        PatentEpoOpsFamilyTool,
+        PatentEpoOpsGetTool,
+        PatentEpoOpsSearchTool,
+    )
+    registry.register_tool(PatentEpoOpsSearchTool())
+    registry.register_tool(PatentEpoOpsGetTool())
+    registry.register_tool(PatentEpoOpsFamilyTool())
+
 __all__: list[str] = []

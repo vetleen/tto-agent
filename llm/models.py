@@ -81,4 +81,33 @@ class LLMCallLog(models.Model):
         return f"{self.model} @ {self.created_at} ({self.status})"
 
 
-__all__ = ["LLMCallLog"]
+class OpsUsageLog(models.Model):
+    """Lightweight per-call log of EPO OPS API usage, for observing per-org
+    consumption of the shared fair-use quota.
+
+    Deliberately minimal and decoupled: ``org_id``/``user_id`` are plain ints
+    (denormalized, not FKs) so the write is cheap, never cascades, and a per-org
+    ``GROUP BY`` needs no join and survives a user later changing orgs. Written
+    best-effort by ``llm.tools.epo_ops._log_ops_usage`` — a failure here must
+    never break a tool call.
+    """
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    org_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    user_id = models.PositiveIntegerField(null=True, blank=True)
+    tool_name = models.CharField(max_length=64, db_index=True)
+    response_bytes = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["org_id", "created_at"], name="ops_usage_org_created_idx"),
+        ]
+        verbose_name = "OPS Usage Log"
+        verbose_name_plural = "OPS Usage Logs"
+
+    def __str__(self):
+        return f"{self.tool_name} org={self.org_id} @ {self.created_at}"
+
+
+__all__ = ["LLMCallLog", "OpsUsageLog"]
