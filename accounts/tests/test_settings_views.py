@@ -1150,6 +1150,118 @@ class PreferencesTranscriptionModelUpdateTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgTranscriptionLanguageUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="lang-admin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="LangOrg", slug="lang-org")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        self.url = reverse("accounts:org_transcription_language_update")
+
+    def test_admin_sets_language(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": "no"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["transcription_language"], "no")
+
+    def test_admin_sets_auto(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": "auto"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["transcription_language"], "auto")
+
+    def test_reject_invalid_language(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": "klingon"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_member_forbidden(self):
+        member = User.objects.create_user(email="lang-member@example.com", password=self.password)
+        member.email_verified = True
+        member.save(update_fields=["email_verified"])
+        Membership.objects.create(user=member, org=self.org, role=Membership.Role.MEMBER)
+        self.client.login(email=member.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": "no"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url, json.dumps({"language": "no"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PreferencesTranscriptionLanguageUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="lang-user@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.url = reverse("accounts:preferences_transcription_language_update")
+
+    def test_user_sets_language(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": "en"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertEqual(settings.preferences["transcription_language"], "en")
+
+    def test_user_sets_auto(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": "auto"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertEqual(settings.preferences["transcription_language"], "auto")
+
+    def test_clear_language_removes_key(self):
+        UserSettings.objects.filter(user=self.user).update(
+            preferences={"transcription_language": "no"}
+        )
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": ""}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertNotIn("transcription_language", settings.preferences)
+
+    def test_reject_invalid_language(self):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            self.url, json.dumps({"language": "zz"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_requires_login(self):
+        response = self.client.post(
+            self.url, json.dumps({"language": "en"}), content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class AgentAttachSkillsPreferenceViewTests(TestCase):
     def setUp(self):
         self.password = "test-pass-123"

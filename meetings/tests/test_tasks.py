@@ -14,6 +14,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
+from accounts.models import UserSettings
 from meetings.models import Meeting, MeetingTranscriptSegment
 from meetings.tasks import (
     transcribe_meeting_chunk_task,
@@ -80,6 +81,57 @@ class TranscribeMeetingChunkTaskPromptTests(TestCase):
         seg = MeetingTranscriptSegment.objects.get(meeting=self.meeting, segment_index=0)
         self.assertEqual(seg.status, MeetingTranscriptSegment.Status.READY)
         self.assertEqual(seg.text, "hello segment")
+
+
+class TranscribeMeetingChunkTaskLanguageTests(TestCase):
+    """The live chunk task passes a language hint: the meeting's own
+    forced_language if set, else the user's default-language preference.
+    (Historically this path passed no language at all.)"""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="ctlang@example.com", password="pw")
+
+    def _run(self, meeting):
+        path = _write_temp_audio()
+        try:
+            with patch(
+                "documents.services.transcription.transcribe_audio",
+                return_value="seg",
+            ) as mock_transcribe:
+                transcribe_meeting_chunk_task(
+                    meeting_id=meeting.pk,
+                    segment_index=0,
+                    temp_path=path,
+                    mime="audio/webm",
+                    model_id="openai/gpt-4o-mini-transcribe",
+                    user_id=self.user.pk,
+                )
+            return mock_transcribe.call_args.kwargs.get("language")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def _set_user_language(self, code):
+        settings = UserSettings.objects.get(user=self.user)
+        settings.preferences = {"transcription_language": code}
+        settings.save()
+
+    def test_meeting_language_passed(self):
+        meeting = Meeting.objects.create(
+            name="m", slug="ctl-1", forced_language="no", created_by=self.user
+        )
+        self.assertEqual(self._run(meeting), "no")
+
+    def test_pref_default_used_when_meeting_blank(self):
+        self._set_user_language("no")
+        meeting = Meeting.objects.create(name="m", slug="ctl-2", created_by=self.user)
+        self.assertEqual(self._run(meeting), "no")
+
+    def test_auto_detect_when_nothing_set(self):
+        meeting = Meeting.objects.create(name="m", slug="ctl-3", created_by=self.user)
+        self.assertIsNone(self._run(meeting))
 
 
 class TranscribeMeetingChunkTaskFailureLoggingTests(TestCase):

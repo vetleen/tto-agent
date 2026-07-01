@@ -225,6 +225,21 @@
               </div>
             </div>
             {% endif %}
+
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="org-transcription-language">
+                Default language
+              </label>
+              <p class="text-xs text-body mt-0.5">The spoken language used for new meetings across your organization. Members can override it for themselves or per meeting. Auto-detect lets the model guess.</p>
+              <select
+                id="org-transcription-language"
+                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                {% for code, label in transcription_language_choices %}
+                <option value="{{ code }}" {% if org_transcription_language == code or not org_transcription_language and code == "auto" %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </div>
           </div>
         </div>
       </section>
@@ -865,6 +880,21 @@
       });
     });
   });
+
+  // Org default transcription language
+  var orgLangSelect = document.getElementById('org-transcription-language');
+  if (orgLangSelect) {
+    orgLangSelect.addEventListener('change', function() {
+      fetch('{% url "accounts:org_transcription_language_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language: this.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  }
 
   // Save allowed image generation models on each checkbox change
   document.querySelectorAll('.allowed-image-model-checkbox').forEach(function(cb) {

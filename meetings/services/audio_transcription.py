@@ -443,9 +443,25 @@ def orchestrate_upload_transcription(
     meeting = Meeting.objects.get(pk=meeting_id)
     ctx = RunContext.create(user_id=user_id)
 
-    # Optional language hint from meeting settings. When blank, the model
-    # auto-detects per call — which is usually correct for multilingual orgs.
-    forced_language = (getattr(meeting, "forced_language", "") or "").strip() or None
+    # Optional language hint: the meeting's own choice, else the resolved
+    # user/org/system default. None = auto-detect (usually correct for
+    # multilingual orgs, and the system default when nobody set a preference).
+    from core.languages import effective_meeting_language
+    from core.preferences import get_preferences
+
+    _pref_user = None
+    if user_id is not None:
+        from django.contrib.auth import get_user_model
+
+        _pref_user = get_user_model().objects.filter(pk=user_id).first()
+    _default_language = (
+        getattr(get_preferences(_pref_user), "transcription_language", "auto")
+        if _pref_user
+        else "auto"
+    )
+    forced_language = effective_meeting_language(
+        getattr(meeting, "forced_language", ""), _default_language
+    )
 
     # Snapshot the existing transcript BEFORE any work. If the user is
     # re-uploading to an existing meeting, new text is appended to this

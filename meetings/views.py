@@ -220,9 +220,11 @@ def meeting_detail(request, meeting_uuid):
         prefs = get_preferences(request.user)
         allowed_models = list(prefs.allowed_transcription_models or [])
         prefs_default = prefs.transcription_model or ""
+        resolved_default_language = prefs.transcription_language or "auto"
     except Exception:
         allowed_models = []
         prefs_default = ""
+        resolved_default_language = "auto"
 
     transcription_model_choices = []
     unknown_models: list[str] = []
@@ -282,6 +284,8 @@ def meeting_detail(request, meeting_uuid):
 
     attachment_accept = accept_attr(MEETING_ATTACHMENT_KINDS)
 
+    from core.languages import TRANSCRIPTION_LANGUAGE_CHOICES
+
     return render(
         request,
         "meetings/meeting_detail.html",
@@ -300,6 +304,11 @@ def meeting_detail(request, meeting_uuid):
             "transcription_model_selected_supports_live": selected_supports_live,
             "transcription_model_selected_supports_diarization": selected_supports_diarization,
             "forced_language": meeting.forced_language or "",
+            # Ordered (code, label) options for the language dropdown, and the
+            # option to pre-select: the meeting's own choice, else the resolved
+            # user/org/system default (so a blank meeting shows the default).
+            "transcription_language_choices": TRANSCRIPTION_LANGUAGE_CHOICES,
+            "forced_language_selected": meeting.forced_language or resolved_default_language,
             "summarizer_skills": summarizer_skills,
             "effective_summarizer_id": effective_summarizer_id,
             "effective_summarizer_name": effective_summarizer_name,
@@ -393,11 +402,12 @@ def meeting_update_metadata(request, meeting_uuid):
         fields.append("transcription_model")
     if "forced_language" in request.POST:
         raw_lang = (request.POST.get("forced_language") or "").strip().lower()
-        # Accept empty (= auto) or a short ISO-639-1-ish code. Whitelist the
-        # codes the UI offers to prevent arbitrary strings from reaching the
-        # transcription API.
-        allowed_langs = {"", "en", "no", "nb", "nn", "sv", "da", "de", "fr", "es"}
-        if raw_lang not in allowed_langs:
+        # Accept "" (= inherit the resolved default), "auto" (explicit
+        # auto-detect), or a whitelisted code — never an arbitrary string that
+        # could reach the transcription API.
+        from core.languages import VALID_TRANSCRIPTION_LANGUAGE_VALUES
+
+        if raw_lang not in VALID_TRANSCRIPTION_LANGUAGE_VALUES:
             return JsonResponse(
                 {"error": f"Unsupported language code '{raw_lang}'."},
                 status=400,

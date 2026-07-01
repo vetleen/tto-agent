@@ -102,9 +102,21 @@ def transcribe_meeting_chunk_task(
         prior_tail = (meeting.transcript or "")[-LIVE_PROMPT_TAIL_CHARS:] or None
         prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
 
+        # Effective language: the meeting's own choice, else the resolved
+        # user/org/system default. None = auto-detect. (Historically this
+        # chunked-live path passed no language at all.)
+        from core.languages import effective_meeting_language
+        from core.preferences import get_preferences
+
+        prefs = get_preferences(user) if user else None
+        language = effective_meeting_language(
+            meeting.forced_language,
+            getattr(prefs, "transcription_language", "auto"),
+        )
+
         local_path = download_chunk_to_local(temp_path, mime)
         try:
-            text = transcribe_audio(local_path, model_id, user, prompt=prompt)
+            text = transcribe_audio(local_path, model_id, user, prompt=prompt, language=language)
         except Exception as exc:
             from .services.errors import classify_transcription_error, log_unmapped
 

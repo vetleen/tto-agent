@@ -803,6 +803,52 @@ class RealtimePromptSeedingTests(TransactionTestCase):
         self.assertNotIn(marker, prompt)
 
 
+class RealtimeLanguageResolutionTests(TransactionTestCase):
+    """``_load_and_lock_meeting`` resolves the realtime language hint: the
+    meeting's own ``forced_language`` if set, else the resolved default-language
+    preference. Covers both the detail-page Start and the overview auto-start
+    since both use this WS path. ``None`` means auto-detect."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="rtlang@example.com", password="pw")
+
+    async def _resolve(self, *, meeting_forced, pref_language):
+        import types
+
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="RT Lang",
+            slug=f"rt-lang-{meeting_forced or 'blank'}-{pref_language}",
+            created_by=self.user,
+            forced_language=meeting_forced,
+        )
+        consumer = MeetingTranscribeConsumer()
+        consumer.user = self.user
+        prefs = types.SimpleNamespace(
+            allowed_transcription_models=["openai/gpt-4o-transcribe"],
+            transcription_model_live="openai/gpt-4o-transcribe",
+            live_transcription_mode="realtime",
+            transcription_language=pref_language,
+        )
+        with patch("core.preferences.get_preferences", return_value=prefs):
+            return await consumer._load_and_lock_meeting(meeting.uuid)
+
+    async def test_meeting_blank_uses_pref_default(self):
+        result = await self._resolve(meeting_forced="", pref_language="no")
+        self.assertEqual(result["forced_language"], "no")
+
+    async def test_meeting_language_overrides_pref(self):
+        result = await self._resolve(meeting_forced="en", pref_language="no")
+        self.assertEqual(result["forced_language"], "en")
+
+    async def test_meeting_auto_forces_detection(self):
+        result = await self._resolve(meeting_forced="auto", pref_language="no")
+        self.assertIsNone(result["forced_language"])
+
+    async def test_auto_default_is_none(self):
+        result = await self._resolve(meeting_forced="", pref_language="auto")
+        self.assertIsNone(result["forced_language"])
+
+
 class RecomputeIncludesMarkerTests(TransactionTestCase):
     """A marker segment with status=READY must show up inline in the joined
     transcript, ordered by segment_index. This guards the contract used by

@@ -26,6 +26,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 from django.utils import timezone
 
+from core.languages import effective_meeting_language
 from meetings.services.transcript_cleanup import collapse_repetitions
 
 logger = logging.getLogger(__name__)
@@ -1069,7 +1070,14 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             "segment_index_base": segment_index_base,
             "model_id": model_id,
             "live_mode": live_mode,
-            "forced_language": (meeting.forced_language or "") or None,
+            # Effective language: the meeting's own choice, else the resolved
+            # user/org/system default. Returns None for auto-detect. Covers both
+            # the detail-page Start and the overview ?transcribe=1 auto-start,
+            # since both use this same WS path.
+            "forced_language": effective_meeting_language(
+                meeting.forced_language,
+                getattr(prefs, "transcription_language", "auto"),
+            ),
             "prompt": prompt,
         }
 

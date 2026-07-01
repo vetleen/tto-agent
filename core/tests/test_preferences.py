@@ -663,6 +663,83 @@ class TranscriptionModelCascadeTest(TestCase):
         self.assertEqual(prefs.transcription_model_live, "openai/gpt-4o-mini-transcribe")
 
 
+@override_settings(
+    LLM_DEFAULT_MODEL="openai/gpt-5.4",
+    LLM_DEFAULT_MID_MODEL="",
+    LLM_DEFAULT_CHEAP_MODEL="",
+)
+@patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+@patch("llm.tools.registry.get_tool_registry")
+class TranscriptionLanguageCascadeTest(TestCase):
+    """Default transcription language cascade: System -> Org -> User.
+
+    System default is ``"auto"`` (auto-detect). ``"auto"`` is a first-class
+    value a user can pick to override an org language default.
+    """
+
+    def _mk(self, mock_registry):
+        mock_registry.return_value.list_tools.return_value = {}
+
+    def test_system_default_is_auto(self, mock_registry, mock_allowed):
+        self._mk(mock_registry)
+        user = _create_user(email="lang-default@example.com")
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_language, "auto")
+
+    def test_org_default_applies_to_user(self, mock_registry, mock_allowed):
+        self._mk(mock_registry)
+        user = _create_user(email="lang-org@example.com")
+        org = Organization.objects.create(
+            name="LangOrg1", slug="langorg1",
+            preferences={"transcription_language": "no"},
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_language, "no")
+
+    def test_user_override_wins_over_org(self, mock_registry, mock_allowed):
+        self._mk(mock_registry)
+        user = _create_user(email="lang-user@example.com")
+        org = Organization.objects.create(
+            name="LangOrg2", slug="langorg2",
+            preferences={"transcription_language": "no"},
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {"transcription_language": "en"}
+        settings.save()
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_language, "en")
+
+    def test_user_can_override_org_language_back_to_auto(self, mock_registry, mock_allowed):
+        self._mk(mock_registry)
+        user = _create_user(email="lang-user-auto@example.com")
+        org = Organization.objects.create(
+            name="LangOrg3", slug="langorg3",
+            preferences={"transcription_language": "no"},
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {"transcription_language": "auto"}
+        settings.save()
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.transcription_language, "auto")
+
+    def test_invalid_value_ignored(self, mock_registry, mock_allowed):
+        self._mk(mock_registry)
+        user = _create_user(email="lang-invalid@example.com")
+        settings = UserSettings.objects.get(user=user)
+        settings.preferences = {"transcription_language": "klingon"}
+        settings.save()
+
+        prefs = get_preferences(user)
+        # Garbage is ignored and the cascade falls through to the system default.
+        self.assertEqual(prefs.transcription_language, "auto")
+
+
 class TierConstraintTest(TestCase):
     """Tier constraints prevent wrong-tier models from being used."""
 

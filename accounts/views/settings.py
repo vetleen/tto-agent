@@ -74,6 +74,18 @@ def settings_page(request):
     user_transcription_model_upload = user_transcription_prefs.get("upload")
     user_live_transcription_mode = (user_settings.preferences or {}).get("live_transcription_mode", "")
 
+    # Default transcription language: the user's raw override (blank = inherit),
+    # and the label of what they'd inherit (org default, else system auto-detect)
+    # to show on the inherit option.
+    from core.languages import (
+        DEFAULT_TRANSCRIPTION_LANGUAGE,
+        TRANSCRIPTION_LANGUAGE_CHOICES,
+        language_label,
+    )
+    user_transcription_language = (user_settings.preferences or {}).get("transcription_language", "")
+    org_default_language = org_prefs.get("transcription_language") or DEFAULT_TRANSCRIPTION_LANGUAGE
+    org_default_language_label = language_label(org_default_language)
+
     from llm.transcription_registry import get_all_transcription_models
     all_models = get_all_transcription_models()
     transcription_model_display = {mid: info.display_name for mid, info in all_models.items()}
@@ -119,6 +131,10 @@ def settings_page(request):
         "resolved_transcription_model_upload": prefs.transcription_model_upload,
         "user_live_transcription_mode": user_live_transcription_mode,
         "resolved_live_transcription_mode": prefs.live_transcription_mode,
+        "user_transcription_language": user_transcription_language or "",
+        "org_default_language_label": org_default_language_label,
+        "transcription_language_choices": TRANSCRIPTION_LANGUAGE_CHOICES,
+        "resolved_transcription_language": prefs.transcription_language,
         "transcription_model_display": transcription_model_display,
         "allowed_image_models": prefs.allowed_image_models,
         "user_image_model": user_image_model or "",
@@ -270,6 +286,36 @@ def preferences_live_transcription_mode_update(request):
     update_user_preferences(request.user, mutate)
 
     return JsonResponse({"ok": True, "mode": mode})
+
+
+@login_required
+@require_POST
+def preferences_transcription_language_update(request):
+    """Update the user's default transcription language override.
+
+    Values: ``""`` clears the override (inherit the org/system default),
+    ``"auto"`` forces per-utterance auto-detect, or a whitelisted language code
+    (e.g. ``"no"``). Cascade resolution lives in ``core.preferences``.
+    """
+    from core.languages import VALID_TRANSCRIPTION_LANGUAGE_VALUES
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    language = (data.get("language") or "").strip().lower()
+    if language not in VALID_TRANSCRIPTION_LANGUAGE_VALUES:
+        return JsonResponse({"error": f"Unsupported language '{language}'."}, status=400)
+
+    def mutate(prefs):
+        if language:
+            prefs["transcription_language"] = language
+        else:
+            prefs.pop("transcription_language", None)
+
+    update_user_preferences(request.user, mutate)
+
+    return JsonResponse({"ok": True, "language": language})
 
 
 @login_required
@@ -474,6 +520,9 @@ def org_settings_page(request):
     system_transcription_default_live = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "") or ""
     system_transcription_default_upload = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "") or ""
 
+    from core.languages import TRANSCRIPTION_LANGUAGE_CHOICES
+    org_transcription_language = org_prefs.get("transcription_language", "")
+
     from llm.image_generation_registry import get_image_generation_models
     system_image_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
     org_allowed_image = org_prefs.get("allowed_image_models")
@@ -542,6 +591,8 @@ def org_settings_page(request):
         "upload_capable_transcription_models": upload_capable_transcription_models,
         "system_transcription_default_live": system_transcription_default_live,
         "system_transcription_default_upload": system_transcription_default_upload,
+        "org_transcription_language": org_transcription_language or "",
+        "transcription_language_choices": TRANSCRIPTION_LANGUAGE_CHOICES,
         "transcription_model_display": transcription_model_display,
         "system_image_models": system_image_models,
         "org_allowed_image": org_allowed_image,
@@ -804,6 +855,39 @@ def org_transcription_model_update(request):
     update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, "model": model, "kind": kind})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_transcription_language_update(request):
+    """Set the organization-level default transcription language.
+
+    Values: ``""`` clears the org default (falls back to the system default,
+    auto-detect), ``"auto"`` for explicit auto-detect, or a whitelisted code.
+    Individual users may override this on their own settings page.
+    """
+    from core.languages import VALID_TRANSCRIPTION_LANGUAGE_VALUES
+
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    language = (data.get("language") or "").strip().lower()
+    if language not in VALID_TRANSCRIPTION_LANGUAGE_VALUES:
+        return JsonResponse({"error": f"Unsupported language '{language}'."}, status=400)
+
+    def mutate(prefs):
+        if language:
+            prefs["transcription_language"] = language
+        else:
+            prefs.pop("transcription_language", None)
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, "language": language})
 
 
 @login_required

@@ -58,6 +58,9 @@ class ResolvedPreferences:
     image_model: str = ""
     allowed_image_models: list[str] = field(default_factory=list)
     live_transcription_mode: str = "chunked"
+    # Default transcription language (system → org → user). Always resolves to a
+    # concrete value: "auto" (auto-detect, the system default) or a code like "no".
+    transcription_language: str = "auto"
     allow_agent_attach_skills: bool = True
     feature_models: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -344,6 +347,29 @@ def get_preferences(user) -> ResolvedPreferences:
     if resolved_live_mode not in LIVE_TRANSCRIPTION_MODES:
         resolved_live_mode = "realtime_with_fallback"
 
+    # --- Default transcription language (user override → org default → system) ---
+    # Empty/absent at a layer means "not set here" → inherit. "auto" is an
+    # explicit auto-detect choice (a user can pick it to override an org language
+    # default). Invalid values are ignored so a stale/garbage entry can't wedge
+    # the cascade. Falls through to the system default ("auto").
+    from core.languages import (
+        DEFAULT_TRANSCRIPTION_LANGUAGE,
+        VALID_TRANSCRIPTION_LANGUAGE_VALUES,
+    )
+
+    def _valid_language(value):
+        if isinstance(value, str):
+            value = value.strip().lower()
+            if value and value in VALID_TRANSCRIPTION_LANGUAGE_VALUES:
+                return value
+        return None
+
+    resolved_language = (
+        _valid_language(user_prefs.get("transcription_language"))
+        or _valid_language(org_prefs.get("transcription_language"))
+        or DEFAULT_TRANSCRIPTION_LANGUAGE
+    )
+
     # Resolve tools: base chat-section tools filtered by org toggles. One org
     # tool toggle governs a tool everywhere it appears (a shared tool disabled
     # under the main-agent tools section is also withheld from sub-agents).
@@ -470,6 +496,7 @@ def get_preferences(user) -> ResolvedPreferences:
         image_model=image_model,
         allowed_image_models=effective_image_allowed,
         live_transcription_mode=resolved_live_mode,
+        transcription_language=resolved_language,
         allow_agent_attach_skills=allow_agent_attach_skills,
         feature_models=feature_models,
         warnings=warnings,

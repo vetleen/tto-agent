@@ -25,6 +25,7 @@ from llm.transcription_registry import (
     get_all_transcription_models,
     get_transcription_model_info,
 )
+from accounts.models import UserSettings
 from meetings.models import Meeting
 from meetings.services.audio_transcription import (
     DEFAULT_TARGET_CHUNK_SECONDS,
@@ -312,3 +313,70 @@ class OrchestratorLanguageAndDeltaTests(TestCase):
 
         self.assertEqual(captured_kwargs["language"], "no")
         self.assertIsNotNone(captured_kwargs["on_delta"])
+
+
+class OrchestratorLanguageDefaultTests(TestCase):
+    """The upload orchestrator resolves the language hint from the meeting's own
+    ``forced_language`` if set, else the user's default-language preference."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="langdef@example.com", password="pw")
+
+    def _fake_extract(self, source_path, boundary, max_bytes):
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, prefix="langd_")
+        tmp.write(b"\x00" * 16)
+        tmp.close()
+        return Path(tmp.name)
+
+    def _run(self, meeting):
+        captured = {}
+
+        def fake_transcribe(file_path, model_id, *, context, prompt, language, on_delta):
+            captured["language"] = language
+            result = MagicMock()
+            result.text = "x"
+            return result
+
+        service = MagicMock()
+        service.transcribe.side_effect = fake_transcribe
+        with patch(
+            "meetings.services.audio_transcription._plan_upload_chunks",
+            return_value=[ChunkBoundary(index=0, start_ms=0, end_ms=1000)],
+        ), patch(
+            "meetings.services.audio_transcription._extract_chunk",
+            side_effect=self._fake_extract,
+        ):
+            orchestrate_upload_transcription(
+                meeting_id=meeting.pk,
+                temp_path=Path("/fake.mp3"),
+                model_id="openai/gpt-4o-mini-transcribe",
+                user_id=self.user.pk,
+                service=service,
+            )
+        return captured["language"]
+
+    def _set_user_language(self, code):
+        settings = UserSettings.objects.get(user=self.user)
+        settings.preferences = {"transcription_language": code}
+        settings.save()
+
+    def test_pref_default_used_when_meeting_blank(self):
+        self._set_user_language("no")
+        meeting = Meeting.objects.create(name="m1", slug="lm1", created_by=self.user)
+        self.assertEqual(self._run(meeting), "no")
+
+    def test_meeting_language_overrides_pref(self):
+        self._set_user_language("no")
+        meeting = Meeting.objects.create(
+            name="m2", slug="lm2", forced_language="en", created_by=self.user
+        )
+        self.assertEqual(self._run(meeting), "en")
+
+    def test_auto_detect_when_nothing_set(self):
+        meeting = Meeting.objects.create(name="m3", slug="lm3", created_by=self.user)
+        self.assertIsNone(self._run(meeting))
+
+    def test_explicit_auto_pref_is_auto_detect(self):
+        self._set_user_language("auto")
+        meeting = Meeting.objects.create(name="m4", slug="lm4", created_by=self.user)
+        self.assertIsNone(self._run(meeting))
