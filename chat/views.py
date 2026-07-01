@@ -404,12 +404,19 @@ def chat_home(request):
             # "Thought further" blocks (matching the live-streaming UI).
             from django.db.models import Q
 
+            # Take the NEWEST 100 qualifying messages, then present them oldest-
+            # first for rendering. Slicing the *oldest* 100 silently dropped the
+            # most recent messages once a thread crossed 100 — which a long-running
+            # Loop thread does (every run appends a visible prompt + assistant
+            # messages to the same thread), hiding its latest scheduled results even
+            # though they exist and aren't hidden/redacted.
             chat_messages = list(
                 thread.messages.filter(
                     Q(is_hidden_from_user=False)
                     | Q(is_hidden_from_user=True, role="assistant", is_redacted=False)
-                ).order_by("created_at")[:100]
+                ).order_by("-created_at")[:100]
             )
+            chat_messages.reverse()
             filtered = []
             for m in chat_messages:
                 if m.is_hidden_from_user:

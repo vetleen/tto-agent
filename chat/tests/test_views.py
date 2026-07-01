@@ -94,6 +94,25 @@ class ChatHomeIntermediateMessagesTests(TestCase):
         self.assertContains(response, "Deliberating carefully.")
         self.assertContains(response, "data-server-thinking")
 
+    def test_newest_messages_shown_when_over_cap(self):
+        """A thread past the 100-message cap (e.g. a long-running Loop) shows its
+        NEWEST messages, chronologically ordered — not the oldest 100. Regression
+        for scheduled-loop results silently vanishing once the thread grew."""
+        for i in range(120):
+            ChatMessage.objects.create(
+                thread=self.thread, role="assistant", content=f"msg-{i:03d}",
+            )
+
+        _, messages = self._get_messages()
+        contents = [m.content for m in messages]
+        # Capped at 100, keeping the newest and dropping the oldest.
+        self.assertEqual(len(contents), 100)
+        self.assertEqual(contents[-1], "msg-119")
+        self.assertEqual(contents[0], "msg-020")
+        self.assertNotIn("msg-000", contents)
+        # Still rendered oldest-first (chronological), not reverse.
+        self.assertEqual(contents, sorted(contents))
+
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
