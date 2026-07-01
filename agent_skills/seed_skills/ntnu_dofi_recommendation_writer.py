@@ -7,19 +7,15 @@ NTNU_DOFI_RECOMMENDATION_WRITER = {
     "description": """\
 Draft NTNU Technology Transfer's initial assessment of ownership and \
 commercialization potential, and its recommendation for the further process, \
-following an invention disclosure (DOFI). Produces the recommendation letter and, \
+following an invention disclosure (DOFI) at NTNU. Produces the recommendation letter and, \
 when the recommendation is to proceed, the accompanying power-of-attorney \
 (forvaltningsfullmakt) form.
 
-Use when the user wants to write a "DOFI recommendation", an "initial assessment", \
-or an ownership/commercialization recommendation for an NTNU invention disclosure.
-
-Do NOT use for other kinds of TTO writing (grant applications, market analyses, \
-etc.).""",
+Use **only** for the initial recommendation letter and PoA request against NTNU.""",
     "instructions": """\
 # NTNU DOFI Recommendation Writer
 
-Draft NTNU Technology Transfer's *initial assessment of ownership, \
+Draft NTNU Technology Transfer's recommendation to NTNU, including *initial assessment of ownership, \
 commercialization potential, and recommendation for the further process* \
 following an invention disclosure (DOFI). NTNU's internal policy asks for this \
 recommendation within 30 days of the first inventor meeting (the law allows four \
@@ -85,13 +81,13 @@ support.
 user. Do NOT add facts, market data, competitors, or figures from your own \
 general knowledge. If something important is missing, ask the user or leave a \
 clear `[TBD]` placeholder.
-- **Never perform or assert a freedom-to-operate (FtO) analysis.** A prior-art \
-look is fine; FtO is out of scope for this document.
+- **Never perform, assert, or even mention a freedom-to-operate (FtO) analysis.** A prior-art \
+look is fine; FtO is not something NTNU Technology Transfer does. There is also no need to mention it explicitly.
 
 ## Phase 2 — Draft
 
 1. Load the **DOFI Recommendation** template to the canvas with \
-`skill_template_load`, giving the canvas a name that includes the project number \
+`skill_template_load`, giving the canvas a name that includes the document type, project number \
 and title. Fill in every section from the information gathered:
    - **Header** — place and date, recipient (To / Att.), sender (From / Att.), \
 and the NTNU TTO ref. (the SuperOffice number).
@@ -116,23 +112,17 @@ Keep it short and concise.
 bold**, and always recommend a clear next step whatever the conclusion.
 
 2. **If, and only if, the recommendation is to request power of attorney**, also \
-load the **Power of Attorney** template to a *separate* canvas with \
-`skill_template_load`. Fill in only the project-specific placeholders: the \
+load the **Power of Attorney** template to a *separate* canvas. Fill in only the project-specific placeholders: the \
 SuperOffice number, the project name, the IP/DOFI description as an ELI5, and the \
 signatory block. **Keep all other wording of the PoA verbatim** — it is a legal \
 form and must not be reworded. If the recommendation is NOT to continue, do not \
 produce the PoA form.
 
-Use `skill_template_view` first if you want to inspect a template before loading \
-it.
+*Note that if the inventor team has several affiliations within NTNU, a PoA should be retrieved from each. The recommendation may be reused, however.*
 
 ## Phase 3 — Iterate
 
-Present the draft(s) and refine them with the user through canvas edits. Common \
-adjustments: tightening the ELI5, sharpening the ownership conclusion, \
-calibrating how strongly to foreshadow commercial challenges, and confirming the \
-recipient, the "Att." names, and the signatory block. Keep the document short — a \
-simple, clear recommendation is the goal, not length.
+Present the draft(s) and refine them with the user through canvas edits.
 """,
     "tool_names": ["skill_template_view", "skill_template_load"],
     "templates": {
