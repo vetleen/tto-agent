@@ -365,6 +365,129 @@ def _group_threads_by_time(threads):
     return groups
 
 
+def load_thread_message_page(thread, user, *, before=None, turns=20):
+    """Load one turn-bounded page of a thread's messages for display.
+
+    A "turn" is a visible user message plus everything up to (but not including)
+    the next visible user message — its hidden-assistant narration ("Thought
+    further" blocks), tool messages, and final answer all ride along. Pages hold
+    the newest ``turns`` turns; pass ``before`` (a ``created_at`` cursor) to load
+    the ``turns`` turns immediately older than a prior page.
+
+    Returns ``(messages, cursor, has_more, compressed_above)``:
+      * ``messages`` — oldest-first, annotated with ``is_intermediate``,
+        ``attachment_items`` / ``attachment_images``, and ``is_summarized`` /
+        ``is_boundary`` (compression-divider flags), as the template expects.
+      * ``cursor`` — the ``created_at`` of the oldest loaded turn's user message
+        (feed it back as ``before`` for the next page), or ``None`` once this page
+        reaches the start of the thread.
+      * ``has_more`` — whether older turns remain.
+      * ``compressed_above`` — whether the summary boundary sits above every message
+        on this page (render the "earlier messages summarized" divider at the top).
+    """
+    from collections import defaultdict
+
+    from django.db.models import Q
+
+    from chat.models import Asset, ChatMessage
+
+    # Turn boundaries are VISIBLE user messages. A hidden user message (e.g. a
+    # sub-agent result injected as role=user) rides along inside its turn and does
+    # not start a new one. Fetch one extra to learn whether older turns remain.
+    vu = thread.messages.filter(role="user", is_hidden_from_user=False)
+    if before is not None:
+        vu = vu.filter(created_at__lt=before)
+    starts = list(
+        vu.order_by("-created_at").values_list("created_at", flat=True)[: turns + 1]
+    )
+    has_more = len(starts) > turns
+    # Inclusive lower bound = the oldest turn we keep on this page. When fewer than
+    # a full page of turns remains, sweep to the start of the thread (lower_bound
+    # None) so any leading non-user messages are included too.
+    lower_bound = starts[turns - 1] if has_more else None
+    cursor = lower_bound
+
+    # Display filter: visible messages, plus hidden assistant tool-loop messages
+    # that carry narration/thinking (rendered as collapsed "Thought further"
+    # blocks). The half-open range [lower_bound, before) keeps each turn atomic:
+    # lower_bound is a turn's first (earliest) message, so >= lower_bound pulls the
+    # whole turn and the previous page's < lower_bound cannot touch it.
+    disp = thread.messages.filter(
+        Q(is_hidden_from_user=False)
+        | Q(is_hidden_from_user=True, role="assistant", is_redacted=False)
+    )
+    if lower_bound is not None:
+        disp = disp.filter(created_at__gte=lower_bound)
+    if before is not None:
+        disp = disp.filter(created_at__lt=before)
+    chat_messages = list(disp.order_by("created_at"))
+
+    # Drop empty hidden-assistant narration; flag the rest as intermediate so they
+    # render as collapsed "Thought further" blocks.
+    filtered = []
+    for m in chat_messages:
+        if m.is_hidden_from_user:
+            has_narration = bool(m.content.strip()) or bool(
+                (m.metadata or {}).get("thinking")
+            )
+            if not has_narration:
+                continue
+            m.is_intermediate = True
+        filtered.append(m)
+    chat_messages = filtered
+
+    # Annotate user messages with attachments (id used for re-attach) and any
+    # images extracted from their docx/pdf uploads (served via chat_image_asset).
+    msg_ids = [m.pk for m in chat_messages if m.role == "user"]
+    if msg_ids:
+        att_qs = ChatAttachment.objects.filter(
+            message_id__in=msg_ids
+        ).values("id", "message_id", "original_filename", "content_type")
+        att_map = defaultdict(list)
+        for a in att_qs:
+            att_map[a["message_id"]].append({
+                "id": str(a["id"]),
+                "name": a["original_filename"],
+                "content_type": a["content_type"],
+            })
+        img_qs = Asset.objects.filter(
+            message_id__in=msg_ids
+        ).values("id", "message_id", "description")
+        img_map = defaultdict(list)
+        for a in img_qs:
+            img_map[a["message_id"]].append({
+                "id": str(a["id"]),
+                "description": a["description"],
+            })
+        for m in chat_messages:
+            m.attachment_items = att_map.get(m.pk, [])
+            m.attachment_images = img_map.get(m.pk, [])
+
+    # Mark which shown messages fall at/before the compression boundary, so the UI
+    # can show a divider and flag attachments no longer re-sent to the model on each
+    # turn. Per page this sets EITHER a per-message boundary OR compressed_above,
+    # never both — which is what keeps the paginated top-divider handling
+    # self-consistent as older pages are prepended.
+    compressed_above = False
+    if thread.summary_up_to_message_id:
+        boundary = ChatMessage.objects.filter(
+            pk=thread.summary_up_to_message_id
+        ).only("created_at").first()
+        boundary_dt = boundary.created_at if boundary else None
+        if boundary_dt:
+            summarized = []
+            for m in chat_messages:
+                m.is_summarized = m.created_at <= boundary_dt
+                if m.is_summarized:
+                    summarized.append(m)
+            if summarized:
+                summarized[-1].is_boundary = True
+            elif chat_messages:
+                compressed_above = True
+
+    return chat_messages, cursor, has_more, compressed_above
+
+
 @login_required
 @require_http_methods(["GET"])
 def chat_home(request):
@@ -373,6 +496,8 @@ def chat_home(request):
     chat_messages = []
     thread_loop_id = None
     history_compressed_above = False
+    history_cursor = ""
+    history_has_more = False
 
     if request.GET.get("thread"):
         thread_id = request.GET["thread"]
@@ -399,88 +524,13 @@ def chat_home(request):
                 loop.last_seen_at = timezone.now()
                 loop.save(update_fields=["last_seen_at"])
                 thread_loop_id = str(loop.id)
-            # Visible messages, plus hidden assistant tool-loop messages that
-            # carry narration or thinking — those render as collapsed
-            # "Thought further" blocks (matching the live-streaming UI).
-            from django.db.models import Q
-
-            # Take the NEWEST 100 qualifying messages, then present them oldest-
-            # first for rendering. Slicing the *oldest* 100 silently dropped the
-            # most recent messages once a thread crossed 100 — which a long-running
-            # Loop thread does (every run appends a visible prompt + assistant
-            # messages to the same thread), hiding its latest scheduled results even
-            # though they exist and aren't hidden/redacted.
-            chat_messages = list(
-                thread.messages.filter(
-                    Q(is_hidden_from_user=False)
-                    | Q(is_hidden_from_user=True, role="assistant", is_redacted=False)
-                ).order_by("-created_at")[:100]
+            # Load the newest page of turns for display. Older pages are fetched
+            # lazily by the load_older_messages endpoint. See
+            # load_thread_message_page for the turn-boundary and annotation logic.
+            chat_messages, cursor, history_has_more, history_compressed_above = (
+                load_thread_message_page(thread, request.user)
             )
-            chat_messages.reverse()
-            filtered = []
-            for m in chat_messages:
-                if m.is_hidden_from_user:
-                    has_narration = bool(m.content.strip()) or bool(
-                        (m.metadata or {}).get("thinking")
-                    )
-                    if not has_narration:
-                        continue
-                    m.is_intermediate = True
-                filtered.append(m)
-            chat_messages = filtered
-
-            # Annotate user messages with attachments (id used for re-attach)
-            msg_ids = [m.pk for m in chat_messages if m.role == "user"]
-            if msg_ids:
-                from collections import defaultdict
-
-                from chat.models import Asset
-                att_qs = ChatAttachment.objects.filter(
-                    message_id__in=msg_ids
-                ).values("id", "message_id", "original_filename", "content_type")
-                att_map = defaultdict(list)
-                for a in att_qs:
-                    att_map[a["message_id"]].append({
-                        "id": str(a["id"]),
-                        "name": a["original_filename"],
-                        "content_type": a["content_type"],
-                    })
-                # Embedded images extracted from a user's docx/pdf attachments are
-                # persisted as Assets scoped to that user message; surface
-                # them as viewable thumbnails (served via chat_image_asset).
-                img_qs = Asset.objects.filter(
-                    message_id__in=msg_ids
-                ).values("id", "message_id", "description")
-                img_map = defaultdict(list)
-                for a in img_qs:
-                    img_map[a["message_id"]].append({
-                        "id": str(a["id"]),
-                        "description": a["description"],
-                    })
-                for m in chat_messages:
-                    m.attachment_items = att_map.get(m.pk, [])
-                    m.attachment_images = img_map.get(m.pk, [])
-
-            # Mark which shown messages fall before the compression boundary, so
-            # the UI can show a divider and flag attachments that are no longer
-            # re-sent to the model on each turn.
-            if thread.summary_up_to_message_id:
-                from chat.models import ChatMessage
-
-                boundary = ChatMessage.objects.filter(
-                    pk=thread.summary_up_to_message_id
-                ).only("created_at").first()
-                boundary_dt = boundary.created_at if boundary else None
-                if boundary_dt:
-                    summarized = []
-                    for m in chat_messages:
-                        m.is_summarized = m.created_at <= boundary_dt
-                        if m.is_summarized:
-                            summarized.append(m)
-                    if summarized:
-                        summarized[-1].is_boundary = True
-                    elif chat_messages:
-                        history_compressed_above = True
+            history_cursor = cursor.isoformat() if cursor else ""
 
     all_threads = ChatThread.objects.filter(created_by=request.user).order_by("-updated_at")
     threads = [t for t in all_threads if not t.is_archived]
@@ -637,6 +687,8 @@ def chat_home(request):
             "archived_threads": archived_threads,
             "messages": chat_messages,
             "history_compressed_above": history_compressed_above,
+            "history_cursor": history_cursor,
+            "history_has_more": history_has_more,
             "data_rooms": data_rooms,
             "thread_data_rooms": thread_data_rooms,
             "skills_json": skills_json,
@@ -659,6 +711,50 @@ def chat_home(request):
             "attach_accept": accept_attr(CHAT_KINDS),
         },
     )
+
+
+@login_required
+@require_http_methods(["GET"])
+def load_older_messages(request, thread_id):
+    """Return the page of turns immediately older than ``?before=<cursor>``.
+
+    Powers the chat history "Show earlier messages" control. Renders the same
+    per-message markup as the initial page (via the shared ``_message_list.html``
+    partial) so the client can prepend it verbatim, and returns the cursor for the
+    next page plus flags for the "more?" button and the compression divider.
+    """
+    from django.conf import settings as django_settings
+    from django.template.loader import render_to_string
+    from django.utils.dateparse import parse_datetime
+
+    thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
+
+    before = None
+    raw = request.GET.get("before")
+    if raw:
+        before = parse_datetime(raw)
+        if before is None:
+            return HttpResponseBadRequest("invalid cursor")
+
+    messages, cursor, has_more, compressed_above = load_thread_message_page(
+        thread, request.user, before=before
+    )
+    html = render_to_string(
+        "chat/_message_list.html",
+        {
+            "messages": messages,
+            "assistant_name": django_settings.ASSISTANT_NAME,
+            "user": request.user,
+            "compressed_above": compressed_above,
+        },
+        request=request,
+    )
+    return JsonResponse({
+        "html": html,
+        "cursor": cursor.isoformat() if cursor else "",
+        "has_more": has_more,
+        "compressed_above": compressed_above,
+    })
 
 
 @login_required
