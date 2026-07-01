@@ -1357,7 +1357,10 @@
       btn.addEventListener('click', function() { btn.closest('.thinking-block').classList.toggle('collapsed'); });
     });
   }
-  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', renderServerMarkdown); } else { renderServerMarkdown(); }
+  // Wrap the handler: addEventListener passes an Event as the first arg, and
+  // renderServerMarkdown treats a truthy first arg as `root` (would throw on
+  // event.querySelectorAll and silently skip all server-markdown hydration).
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', function() { renderServerMarkdown(); }); } else { renderServerMarkdown(); }
 
   function autoResize(ta) { ta.style.height = 'auto'; const h = Math.min(Math.max(ta.scrollHeight, 40), 200); ta.style.height = h + 'px'; ta.style.overflowY = ta.scrollHeight > 200 ? 'auto' : 'hidden'; }
   if (input) {
