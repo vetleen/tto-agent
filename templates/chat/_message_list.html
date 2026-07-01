@@ -1,12 +1,12 @@
 {% load branding %}
-{# Message list — shared by chat_home (initial page) and the load_older_messages
+{% comment %}Message list — shared by chat_home (initial page) and the load_older_messages
    endpoint (older pages, prepended client-side). Context: messages, assistant_name,
    user, compressed_above. Keep in sync with the live-streaming DOM built in
-   chat.html's JS. #}
+   chat.html's JS.{% endcomment %}
 {% if compressed_above %}
-{# Summary boundary sits above every message on this page → top divider. Carries
+{% comment %}Summary boundary sits above every message on this page → top divider. Carries
    data-top-divider so the "Show earlier messages" JS can find & replace it as
-   older pages load. Mutually exclusive with the inline m.is_boundary divider. #}
+   older pages load. Mutually exclusive with the inline m.is_boundary divider.{% endcomment %}
 <div class="compression-divider flex items-center gap-2 text-xs text-body/40 select-none" data-compression-divider data-top-divider>
   <span class="flex-1 border-t border-neutral-quaternary"></span>
   <span>Earlier messages summarized to fit the context window</span>
