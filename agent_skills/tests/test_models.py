@@ -287,6 +287,34 @@ class SeedSystemSkillsTests(TestCase):
         self.assertIn("Arbeidspakke", app_form.content)
         self.assertIn("Hovedmål", app_form.content)
 
+    def test_ntnu_dofi_recommendation_writer_fields(self):
+        from agent_skills.seed_skills import seed_system_skills
+
+        seed_system_skills()
+
+        skill = AgentSkill.objects.get(
+            slug="ntnu-dofi-recommendation-writer", level="system"
+        )
+        self.assertEqual(skill.name, "NTNU DOFI Recommendation Writer")
+        self.assertIn("DOFI", skill.description)
+        self.assertIn("Phase 1", skill.instructions)
+        self.assertIn("Phase 3", skill.instructions)
+        self.assertIn("power of attorney", skill.instructions.lower())
+        self.assertIn("freedom-to-operate", skill.instructions.lower())
+        self.assertEqual(
+            skill.tool_names, ["skill_template_view", "skill_template_load"]
+        )
+        # Verify both templates were created
+        self.assertTrue(skill.templates.filter(name="DOFI Recommendation").exists())
+        self.assertTrue(skill.templates.filter(name="Power of Attorney").exists())
+        self.assertEqual(skill.templates.count(), 2)
+        # Verify template content
+        recommendation = skill.templates.get(name="DOFI Recommendation")
+        self.assertIn("IP-ownership assessment", recommendation.content)
+        poa = skill.templates.get(name="Power of Attorney")
+        self.assertIn("FORVALTNINGSFULLMAKT", poa.content)
+        self.assertIn("samarbeidsavtalen", poa.content)
+
     def test_seed_creates_and_updates_templates(self):
         from agent_skills.seed_skills import seed_system_skills
 
