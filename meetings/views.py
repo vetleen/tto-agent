@@ -219,7 +219,12 @@ def meeting_detail(request, meeting_uuid):
         from core.preferences import get_preferences
         prefs = get_preferences(request.user)
         allowed_models = list(prefs.allowed_transcription_models or [])
-        prefs_default = prefs.transcription_model or ""
+        # The meeting page's primary action is LIVE transcription, so default the
+        # picker to the user's resolved LIVE model (falling back to the generic
+        # default). Previously this used the generic default, which displayed the
+        # wrong model whenever a user's live default differed from their generic
+        # one (e.g. live=gpt-4o-transcribe but default=gpt-4o-mini-transcribe).
+        prefs_default = prefs.transcription_model_live or prefs.transcription_model or ""
         resolved_default_language = prefs.transcription_language or "auto"
     except Exception:
         allowed_models = []
