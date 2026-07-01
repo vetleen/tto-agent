@@ -11,7 +11,7 @@ following an invention disclosure (DOFI) at NTNU. Produces the recommendation le
 when the recommendation is to proceed, the accompanying power-of-attorney \
 (forvaltningsfullmakt) form.
 
-Use **only** for the initial recommendation letter and PoA request against NTNU.""",
+Use **only** for the initial recommendation letter and PoA request to NTNU.""",
     "instructions": """\
 # NTNU DOFI Recommendation Writer
 
