@@ -15,6 +15,11 @@ class GetModelPricingTests(SimpleTestCase):
         self.assertIsNotNone(pricing)
         self.assertEqual(pricing, (Decimal("3.00"), Decimal("0.30"), Decimal("3.75"), Decimal("15.00")))
 
+    def test_sonnet_5_uses_long_term_pricing(self):
+        # Long-term $3/$15, NOT the $2/$10 introductory price (through 2026-08-31).
+        pricing = get_model_pricing("claude-sonnet-5")
+        self.assertEqual(pricing, (Decimal("3.00"), Decimal("0.30"), Decimal("3.75"), Decimal("15.00")))
+
     def test_openai_model(self):
         pricing = get_model_pricing("gpt-5.4-mini")
         self.assertEqual(pricing, (Decimal("0.25"), Decimal("0.025"), Decimal("0.25"), Decimal("2.00")))

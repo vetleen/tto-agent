@@ -162,6 +162,13 @@ class AnthropicAdaptiveThinkingTests(TestCase):
         model = AnthropicChatModel("anthropic/claude-opus-4-8", client)
         self.assertTrue(model._uses_adaptive_thinking())
 
+    def test_sonnet_5_uses_adaptive_thinking(self):
+        # Sonnet 5 has no extended thinking; it must route through the adaptive
+        # path (the fixed budget_tokens path 400s on it).
+        client = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-sonnet-5", client)
+        self.assertTrue(model._uses_adaptive_thinking())
+
 
 class OpenAIThinkingLevelTests(TestCase):
 

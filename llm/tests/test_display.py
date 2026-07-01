@@ -166,6 +166,14 @@ class GetThinkingLevelsTests(TestCase):
             ["low", "medium", "high"],
         )
 
+    def test_sonnet_5_standard_levels(self):
+        # Sonnet 5 supports adaptive thinking but, like Sonnet 4.6, does not
+        # expose the "max" level in the UI (reserved for the Opus flagship tier).
+        self.assertEqual(
+            get_thinking_levels("anthropic/claude-sonnet-5"),
+            ["low", "medium", "high"],
+        )
+
     def test_non_thinking_model_empty(self):
         self.assertEqual(get_thinking_levels("openai/gpt-5.4-mini"), [])
 

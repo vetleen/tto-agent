@@ -148,6 +148,22 @@ _MODELS: dict[str, ModelInfo] = {
         cache_write_1h_price=Decimal("10.00"),
         output_price=Decimal("25.00"),
     ),
+    "anthropic/claude-sonnet-5": ModelInfo(
+        display_name="Claude Sonnet 5",
+        provider="anthropic",
+        api_model="claude-sonnet-5",
+        tier=TIER_STANDARD,
+        supports_thinking=True,
+        input_modalities=("text", "image", "pdf"),
+        context_window=1_000_000,
+        # Long-term pricing ($3/$15). Introductory $2/$10 (through 2026-08-31)
+        # is deliberately not used — steady-state cost should drive selection.
+        input_price=Decimal("3.00"),
+        cached_input_price=Decimal("0.30"),
+        cache_write_price=Decimal("3.75"),
+        cache_write_1h_price=Decimal("6.00"),
+        output_price=Decimal("15.00"),
+    ),
     "anthropic/claude-sonnet-4-6": ModelInfo(
         display_name="Claude Sonnet 4.6",
         provider="anthropic",

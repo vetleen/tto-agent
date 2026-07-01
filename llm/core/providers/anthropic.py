@@ -17,6 +17,9 @@ _ANTHROPIC_THINKING = {
 _ADAPTIVE_THINKING_MODELS = frozenset({
     "claude-opus-4-7",
     "claude-opus-4-8",
+    # Sonnet 5 is adaptive-thinking-only (no extended thinking); the fixed
+    # budget_tokens path 400s on it, so it must route through adaptive.
+    "claude-sonnet-5",
 })
 
 
