@@ -384,6 +384,8 @@ class BraveSearchTool(ContextAwareTool):
     """Search the web using the Brave Search API."""
 
     name: str = "web_search"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Searching the web..."
     end_label: str = "Searched the web"
     description: str = (

@@ -305,9 +305,11 @@ class EditLoopToolTests(TestCase):
 
 
 class LoopToolExposureTests(TestCase):
-    """Loop tools are exposed to a vanilla user by default (section='chat')."""
+    """Loop tools moved behind the assistant_loop_tools skill (section='skills'),
+    so they are no longer in the default always-on tool set — they surface only
+    when that skill is active."""
 
-    def test_default_allowed_tools_includes_loop_tools(self):
+    def test_loop_tools_not_in_default_allowed_tools(self):
         from core.preferences import get_preferences
 
         user = User.objects.create_user(email="exposure@test.com", password="pass")
@@ -315,4 +317,12 @@ class LoopToolExposureTests(TestCase):
         for name in (
             "chat_loop_create", "chat_loop_list", "chat_loop_stop", "chat_loop_edit",
         ):
-            self.assertIn(name, allowed)
+            self.assertNotIn(name, allowed)
+
+    def test_loop_tools_are_valid_skill_tools(self):
+        from agent_skills.services import filter_to_skill_tools
+
+        # All four survive the skills-section + main-audience allow-list, so the
+        # assistant_loop_tools skill can carry them.
+        names = ["chat_loop_create", "chat_loop_list", "chat_loop_stop", "chat_loop_edit"]
+        self.assertEqual(filter_to_skill_tools(names, skill_audience="main"), names)

@@ -657,6 +657,8 @@ class WebFetchTool(ContextAwareTool):
     """Fetch a web page and extract clean markdown content."""
 
     name: str = "web_fetch"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Fetching web page..."
     end_label: str = "Fetched web page"
     description: str = (

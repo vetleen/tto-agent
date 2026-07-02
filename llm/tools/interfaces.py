@@ -44,6 +44,13 @@ class ContextAwareTool(BaseTool):
     context: RunContext | None = None
     section: str = "chat"
 
+    # Per-audience override of ``section`` for sub-agents. When set (e.g.
+    # "chat"), the sub-agent tool resolver uses THIS instead of ``section`` —
+    # letting a tool be skills-gated for the main agent yet always-on for
+    # sub-agents (used by the document and web tools). None => sub-agents fall
+    # back to ``section``. Consumed in core/preferences.py's sub-agent base list.
+    subagent_section: str | None = None
+
     # Which agent kinds may run this tool. "shared" (default) = both the main
     # assistant and sub-agents; "main" = main assistant only (e.g. canvas,
     # loops, skill management, spawning sub-agents); "subagent" = sub-agents

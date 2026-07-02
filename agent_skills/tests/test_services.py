@@ -631,7 +631,7 @@ class FilterToSkillToolsTests(TestCase):
 
     Relies on the real tool registry, populated at startup: agent_skills.tools
     registers the skills-section tools (skill_template_view, ...) and chat.tools
-    registers the chat-section doc tools (document_search, document_read).
+    registers chat-section tools (chat_task_update, chat_subagent_create).
     """
 
     def test_keeps_skills_section_tools(self):
@@ -642,7 +642,7 @@ class FilterToSkillToolsTests(TestCase):
 
     def test_drops_chat_section_and_unknown_tools(self):
         result = filter_to_skill_tools(
-            ["skill_template_view", "document_search", "document_read", "totally_made_up"]
+            ["skill_template_view", "chat_task_update", "chat_subagent_create", "totally_made_up"]
         )
         self.assertEqual(result, ["skill_template_view"])
 

@@ -153,7 +153,9 @@ def get_preferences(user) -> ResolvedPreferences:
     all_tools_dict = registry.list_tools()
     # Always-on chat tools, split by audience. The main agent gets
     # main/shared; sub-agents get subagent/shared. A tool's audience is
-    # orthogonal to its section (see ContextAwareTool.audience).
+    # orthogonal to its section (see ContextAwareTool.audience). Sub-agents
+    # honor ``subagent_section`` (falling back to ``section``) so a tool can be
+    # skills-gated for the main agent yet always-on for sub-agents.
     chat_tools = [
         n for n, t in all_tools_dict.items()
         if getattr(t, "section", "chat") == "chat"
@@ -161,7 +163,7 @@ def get_preferences(user) -> ResolvedPreferences:
     ]
     subagent_chat_tools = [
         n for n, t in all_tools_dict.items()
-        if getattr(t, "section", "chat") == "chat"
+        if (getattr(t, "subagent_section", None) or getattr(t, "section", "chat")) == "chat"
         and getattr(t, "audience", "shared") in ("subagent", "shared")
     ]
 
@@ -422,10 +424,15 @@ def get_preferences(user) -> ResolvedPreferences:
     allowed_specializations = _resolve_skill_entries(get_subagent_skills(user))
 
     allowed_tools = base_allowed
-    # chat_generate_image is withheld unless image generation is enabled (a
-    # model resolves). Org tool toggles above can still disable it separately.
+    # chat_generate_image now lives behind the image_generator skill
+    # (section="skills"), but still requires a configured image model. Strip it
+    # from any enabled skill's resolved tools when no model resolves, so an
+    # active skill can't surface a dead tool. Org tool toggles above still apply.
     if not image_model:
-        allowed_tools = [t for t in allowed_tools if t != "chat_generate_image"]
+        for _entry in allowed_skills:
+            _entry["tool_names"] = [
+                t for t in _entry["tool_names"] if t != "chat_generate_image"
+            ]
 
     # Resolve subagent settings
     org_subagent_prefs = org_prefs.get("subagents", {})

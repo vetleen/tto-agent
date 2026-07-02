@@ -136,9 +136,10 @@ class PreferenceAudienceTests(TestCase):
 
     def test_main_only_tool_excluded_from_subagent_bucket(self):
         prefs = get_preferences(self.user)
-        # canvas_write is audience="main"; chat_task_update is shared.
-        self.assertIn("canvas_write", prefs.allowed_tools)
-        self.assertNotIn("canvas_write", prefs.allowed_subagent_tools)
+        # chat_subagent_create is audience="main" (always-on); chat_task_update is
+        # shared. (canvas_write is now skills-gated, so no longer a good probe here.)
+        self.assertIn("chat_subagent_create", prefs.allowed_tools)
+        self.assertNotIn("chat_subagent_create", prefs.allowed_subagent_tools)
         self.assertIn("chat_task_update", prefs.allowed_tools)
         self.assertIn("chat_task_update", prefs.allowed_subagent_tools)
 

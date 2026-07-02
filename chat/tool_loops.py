@@ -145,7 +145,7 @@ class LoopCreateTool(ContextAwareTool):
         "explicitly by ID/value or the loop runs without them."
     )
     args_schema: type[BaseModel] = LoopCreateInput
-    section: str = "chat"
+    section: str = "skills"
 
     def _run(
         self, prompt: str, cadence_kind: str = "interval", interval_value: int = 1,
@@ -214,7 +214,7 @@ class LoopListTool(ContextAwareTool):
         "stopping or editing it, or to report what automations are set up."
     )
     args_schema: type[BaseModel] = LoopListInput
-    section: str = "chat"
+    section: str = "skills"
 
     def _run(self, **kwargs) -> str:
         from chat.loop_service import list_loops_for_user
@@ -251,7 +251,7 @@ class LoopStopTool(ContextAwareTool):
         "chat_loop_edit(resume=true). Identify the loop by its id (use chat_loop_list to find it)."
     )
     args_schema: type[BaseModel] = LoopStopInput
-    section: str = "chat"
+    section: str = "skills"
 
     def _run(self, loop_id: str, **kwargs) -> str:
         from chat.loop_service import pause_loop
@@ -342,7 +342,7 @@ class LoopEditTool(ContextAwareTool):
         "first_run_mode to reschedule it."
     )
     args_schema: type[BaseModel] = LoopEditInput
-    section: str = "chat"
+    section: str = "skills"
 
     def _run(
         self, loop_id: str, prompt=None, cadence_kind=None, interval_value=None,

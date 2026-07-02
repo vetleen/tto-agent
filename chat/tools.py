@@ -361,6 +361,8 @@ class SearchDocumentsTool(ContextAwareTool):
     """Search data room documents using semantic similarity."""
 
     name: str = "document_search"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Searching documents..."
     end_label: str = "Searched documents"
     description: str = (
@@ -585,6 +587,8 @@ class ReadDocumentTool(ContextAwareTool):
     """Read the full text content of one or more documents by index number."""
 
     name: str = "document_read"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Reading document..."
     end_label: str = "Read document"
 
@@ -784,6 +788,7 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
 
     name: str = "canvas_save_to_document"
     audience: str = "main"
+    section: str = "skills"
     start_label: str = "Saving canvas to data room..."
     end_label: str = "Saved canvas to data room"
 
@@ -905,6 +910,8 @@ class ListDocumentsTool(ContextAwareTool):
     """List documents in the attached data rooms (paginated)."""
 
     name: str = "document_list"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Listing documents..."
     end_label: str = "Listed documents"
     description: str = (
@@ -970,6 +977,8 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
     """Open a data room document's working content into a canvas for editing."""
 
     name: str = "document_open_to_canvas"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Opening document..."
     end_label: str = "Opened document"
     description: str = (
@@ -1039,6 +1048,8 @@ class EditDocumentTool(ContextAwareTool):
     """Edit a data room document — targeted find-replace, or a full rewrite (creates a new version)."""
 
     name: str = "document_edit"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Editing document..."
     end_label: str = "Edited document"
     description: str = (
@@ -1122,6 +1133,8 @@ class ArchiveDocumentTool(ContextAwareTool):
     """Archive (soft-delete) or restore a document."""
 
     name: str = "document_archive"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Archiving document..."
     end_label: str = "Archived document"
     description: str = (
@@ -1147,6 +1160,8 @@ class RenameDocumentTool(ContextAwareTool):
     """Rename a document's display name."""
 
     name: str = "document_rename"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Renaming document..."
     end_label: str = "Renamed document"
     description: str = (
@@ -1172,6 +1187,8 @@ class ListVersionsTool(ContextAwareTool):
     """List a document's version history."""
 
     name: str = "document_version_list"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Listing versions..."
     end_label: str = "Listed versions"
     description: str = (
@@ -1205,6 +1222,8 @@ class RestoreVersionTool(ContextAwareTool):
     """Roll a document back to a prior version (instant — no reprocessing)."""
 
     name: str = "document_version_restore"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Restoring version..."
     end_label: str = "Restored version"
     description: str = (
@@ -1237,6 +1256,8 @@ class GetDocumentStatusTool(ContextAwareTool):
     """Report a document's processing/searchability status (incl. async quarantine verdict)."""
 
     name: str = "document_status"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Checking document status..."
     end_label: str = "Checked document status"
     description: str = (
@@ -1303,6 +1324,8 @@ class DocumentViewImageTool(ContextAwareTool):
     """Attach data-room image(s) to the conversation so the model can view them."""
 
     name: str = "document_view_image"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Viewing image..."
     end_label: str = "Viewed image"
     description: str = (

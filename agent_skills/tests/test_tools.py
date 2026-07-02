@@ -151,10 +151,10 @@ class EditSkillToolTests(TestCase):
         """Standard (chat-section) tools are silently removed from tool_names."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["skill_template_view", "canvas_write", "document_search"]},
+            updates={"tool_names": ["skill_template_view", "chat_task_update", "chat_subagent_create"]},
         ))
         self.assertEqual(result["status"], "ok")
-        # canvas_write and document_search are chat-section tools — silently removed
+        # chat_task_update and chat_subagent_create are chat-section tools — silently removed
         self.assertEqual(result["tool_names"], ["skill_template_view"])
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.tool_names, ["skill_template_view"])
@@ -163,7 +163,7 @@ class EditSkillToolTests(TestCase):
         """If only standard tools are passed, tool_names becomes empty."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["canvas_write", "canvas_edit"]},
+            updates={"tool_names": ["chat_task_update", "chat_subagent_create"]},
         ))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["tool_names"], [])
@@ -502,8 +502,8 @@ class ListSkillToolsToolTests(TestCase):
         tool_names = [t["name"] for t in result["tools"]]
         self.assertIn("skill_create", tool_names)
         self.assertIn("skill_tool_inspect", tool_names)
-        self.assertNotIn("canvas_write", tool_names)
-        self.assertNotIn("canvas_edit", tool_names)
+        self.assertNotIn("chat_task_update", tool_names)
+        self.assertNotIn("chat_subagent_create", tool_names)
 
     def test_each_entry_has_name_and_description(self):
         result = json.loads(self.tool._run())

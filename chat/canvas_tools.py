@@ -108,6 +108,7 @@ class ActiveCanvasTool(ContextAwareTool):
 
     name: str = "canvas_activate"
     audience: str = "main"
+    section: str = "skills"
     start_label: str = "Switching active canvases..."
     end_label: str = "Updated active canvases"
     description: str = (
@@ -149,6 +150,7 @@ class WriteCanvasTool(ContextAwareTool):
 
     name: str = "canvas_write"
     audience: str = "main"
+    section: str = "skills"
     start_label: str = "Writing document..."
     end_label: str = "Rewrote the canvas text from scratch"
     description: str = (
@@ -247,6 +249,7 @@ class EditCanvasTool(ContextAwareTool):
 
     name: str = "canvas_edit"
     audience: str = "main"
+    section: str = "skills"
     start_label: str = "Editing document..."
     end_label: str = "Edited the canvas text"
     description: str = (
@@ -352,6 +355,7 @@ class DeleteCanvasTool(ContextAwareTool):
 
     name: str = "canvas_delete"
     audience: str = "main"
+    section: str = "skills"
     start_label: str = "Deleting canvas..."
     end_label: str = "Deleted canvas"
     description: str = (

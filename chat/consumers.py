@@ -1337,7 +1337,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             organization_name=org_name,
             has_subagent_tool=self._has_tool("chat_subagent_create"),
             has_task_tool=self._has_tool("chat_task_update"),
-            has_image_tool=self._has_tool("chat_generate_image"),
             parallel_subagents=parallel_subagents,
         )
         available_skills_for_prompt = (

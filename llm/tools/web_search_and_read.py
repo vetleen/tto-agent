@@ -80,6 +80,8 @@ class WebSearchAndReadTool(ContextAwareTool):
     """Search the web and read the content of each result page."""
 
     name: str = "web_search_read"
+    section: str = "skills"
+    subagent_section: str = "chat"
     start_label: str = "Searching and reading web pages..."
     end_label: str = "Searched and read web pages"
     description: str = (

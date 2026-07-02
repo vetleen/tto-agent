@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -9,7 +10,14 @@ from django.test import TestCase, override_settings
 from accounts.models import Membership, Organization
 
 _ALLOWED_LLM = ["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano"]
-_TOOLS = {"document_search": None, "chat_generate_image": None}
+# chat_generate_image moved behind the image_generator skill (section="skills"),
+# so it is never an always-on tool; the image-model gate now governs whether the
+# active skill surfaces it (covered by agent_skills.ImageGeneratorGateTest). These
+# tests cover the image-model resolution cascade only.
+_TOOLS = {
+    "document_search": SimpleNamespace(section="chat", audience="shared"),
+    "chat_generate_image": SimpleNamespace(section="skills", audience="main"),
+}
 
 
 def _create_user(email="img@example.com"):
@@ -44,7 +52,8 @@ class ImagePreferenceCascadeTests(TestCase):
         prefs = self._prefs(_create_user())
         self.assertEqual(prefs.image_model, "gemini/gemini-2.5-flash-image")
         self.assertEqual(prefs.allowed_image_models, ["gemini/gemini-2.5-flash-image"])
-        self.assertIn("chat_generate_image", prefs.allowed_tools)
+        # Skills-gated now — not an always-on tool even when image gen is enabled.
+        self.assertNotIn("chat_generate_image", prefs.allowed_tools)
 
     def test_org_empty_list_disables(self):
         user = _create_user("img2@example.com")

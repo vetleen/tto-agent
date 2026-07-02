@@ -1,5 +1,6 @@
 """Unit tests for core.preferences cascading resolution."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -29,8 +30,14 @@ class NoOrgPreferencesTest(TestCase):
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_system_defaults(self, mock_registry, mock_allowed):
+        # Document tools are skills-gated (section="skills") for the main agent —
+        # behind the data_room_tools skill — but always-on for sub-agents via
+        # subagent_section="chat".
+        doc_tool = SimpleNamespace(
+            section="skills", subagent_section="chat", audience="shared",
+        )
         mock_registry.return_value.list_tools.return_value = {
-            "document_search": None, "document_read": None,
+            "document_search": doc_tool, "document_read": doc_tool,
         }
         user = _create_user()
         prefs = get_preferences(user)
@@ -41,8 +48,9 @@ class NoOrgPreferencesTest(TestCase):
         self.assertEqual(prefs.allowed_models, [
             "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         ])
-        self.assertIn("document_search", prefs.allowed_tools)
-        self.assertIn("document_read", prefs.allowed_tools)
+        self.assertNotIn("document_search", prefs.allowed_tools)
+        self.assertIn("document_search", prefs.allowed_subagent_tools)
+        self.assertIn("document_read", prefs.allowed_subagent_tools)
 
 
 class OrgRestrictsModelsTest(TestCase):
@@ -297,8 +305,8 @@ class SectionAwareToolFilteringTest(TestCase):
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
     def test_processing_tools_excluded_from_allowed_tools(self, mock_registry, mock_allowed):
-        chat_tool = MagicMock(section="chat")
-        proc_tool = MagicMock(section="document_processing")
+        chat_tool = MagicMock(section="chat", audience="shared")
+        proc_tool = MagicMock(section="document_processing", audience="shared")
 
         mock_registry.return_value.list_tools.return_value = {
             "document_search": chat_tool,
@@ -310,6 +318,46 @@ class SectionAwareToolFilteringTest(TestCase):
 
         self.assertIn("document_search", prefs.allowed_tools)
         self.assertNotIn("normalize_document", prefs.allowed_tools)
+
+
+class SubagentSectionOverrideTest(TestCase):
+    """``subagent_section`` lets a tool be skills-gated for the main agent yet
+    always-on for sub-agents (the documents / web pattern)."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_subagent_section_overrides_section_for_subagents(self, mock_registry, mock_allowed):
+        # section is set explicitly on every mock so getattr() sees a real value
+        # (a bare MagicMock auto-creates truthy attributes, which would defeat
+        # the ``subagent_section or section`` fallback).
+        always_on = MagicMock(section="chat", subagent_section=None, audience="shared")
+        doc_like = MagicMock(section="skills", subagent_section="chat", audience="shared")
+        pure_skill = MagicMock(section="skills", subagent_section=None, audience="shared")
+
+        mock_registry.return_value.list_tools.return_value = {
+            "always_on": always_on,
+            "doc_like": doc_like,
+            "pure_skill": pure_skill,
+        }
+
+        user = _create_user(email="subsection@example.com")
+        prefs = get_preferences(user)
+
+        # Main agent: only the always-on chat tool; both skills tools are gated.
+        self.assertIn("always_on", prefs.allowed_tools)
+        self.assertNotIn("doc_like", prefs.allowed_tools)
+        self.assertNotIn("pure_skill", prefs.allowed_tools)
+
+        # Sub-agents: the always-on tool AND the subagent_section="chat" tool;
+        # the pure skills tool stays gated for sub-agents too.
+        self.assertIn("always_on", prefs.allowed_subagent_tools)
+        self.assertIn("doc_like", prefs.allowed_subagent_tools)
+        self.assertNotIn("pure_skill", prefs.allowed_subagent_tools)
 
 
 class ParallelSubagentsTest(TestCase):

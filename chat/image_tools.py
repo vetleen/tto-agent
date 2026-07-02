@@ -46,6 +46,8 @@ class ChatGenerateImageTool(ContextAwareTool):
     """Generate (or edit) an image from a text prompt using the configured image model."""
 
     name: str = "chat_generate_image"
+    section: str = "skills"
+    audience: str = "main"
     start_label: str = "Generating image..."
     end_label: str = "Generated image"
 
