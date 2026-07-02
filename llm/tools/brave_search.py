@@ -391,7 +391,6 @@ class BraveSearchTool(ContextAwareTool):
     description: str = (
         "Search the web for current information using Brave Search. "
         "Use this when you need up-to-date information, facts, or data "
-        "that may not be in your training data. "
         "Use freshness to restrict results to a recent period, and "
         "categories to include news, discussions, videos or FAQ results."
     )
