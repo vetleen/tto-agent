@@ -10,6 +10,7 @@ from .forms import (
 )
 from .views.auth import (
     LoginView,
+    PasswordChangeView,
     PasswordResetView,
     no_org,
     suspended,
@@ -116,7 +117,7 @@ urlpatterns = [
     path("org/usage/", org_usage_page, name="org_usage"),
     path(
         "password_change/",
-        auth_views.PasswordChangeView.as_view(
+        PasswordChangeView.as_view(
             form_class=CustomPasswordChangeForm,
             success_url=reverse_lazy("accounts:password_change_done"),
         ),

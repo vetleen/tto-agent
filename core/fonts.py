@@ -234,8 +234,10 @@ def _face_from_asset(asset) -> FontFace | None:
 def _uploaded_resolution(requested, normalized, org):
     from accounts.models import FontAsset
 
-    rows = FontAsset.objects.filter(
-        organization=org, family_norm=normalized, embeddable=True
+    rows = list(
+        FontAsset.objects.filter(
+            organization=org, family_norm=normalized, embeddable=True
+        ).order_by("weight", "style", "-created_at")
     )
     faces = [f for f in (_face_from_asset(r) for r in rows) if f is not None]
     if not faces:
@@ -338,7 +340,7 @@ def _google_resolution(requested, normalized):
     rows = list(
         FontAsset.objects.filter(
             source=FontAsset.SOURCE_GOOGLE, organization__isnull=True, family_norm=normalized
-        )
+        ).order_by("weight", "style", "-created_at")
     )
     if not rows:
         entry = _google_family_map().get(normalized)
@@ -355,7 +357,7 @@ def _google_resolution(requested, normalized):
         rows = list(
             FontAsset.objects.filter(
                 source=FontAsset.SOURCE_GOOGLE, organization__isnull=True, family_norm=normalized
-            )
+            ).order_by("weight", "style", "-created_at")
         )
         if not rows:
             return None
@@ -470,6 +472,50 @@ def ingest_uploaded_font(org, *, filename, data, created_by=None, max_bytes=None
     if existing is not None:
         return existing
 
+    # Font name tables are attacker-controlled and can exceed the column width;
+    # truncate to the field limit so an over-long family name is stored cleanly
+    # instead of raising a Postgres DataError (unhandled 500) on insert.
+    cap = FontAsset._meta.get_field("family").max_length
+    family = family[:cap]
+    normalized = normalized[:cap]
+
+    ext = _EXT_FOR_FMT.get(meta["fmt"], "ttf")
+
+    # Dedupe by face identity (family/weight/style), not just content hash: a
+    # re-exported version of the same face has different bytes but must REPLACE
+    # the previous row — otherwise the family accumulates duplicate faces that
+    # emit conflicting @font-face rules and render nondeterministically.
+    dupes = list(
+        FontAsset.objects.filter(
+            organization=org,
+            source=FontAsset.SOURCE_UPLOAD,
+            family_norm=normalized,
+            weight=meta["weight"],
+            style=meta["style"],
+        ).order_by("created_at")
+    )
+    if dupes:
+        asset = dupes[0]
+        old_name = asset.blob.name
+        asset.family = family
+        asset.content_type = f"font/{meta['fmt']}"
+        asset.font_format = meta["fmt"]
+        asset.size_bytes = len(data)
+        asset.sha256 = sha
+        asset.embeddable = True
+        asset.created_by = created_by or asset.created_by
+        asset.blob.save(f"{asset.id}.{ext}", ContentFile(data), save=True)
+        if old_name and old_name != asset.blob.name:
+            try:
+                asset.blob.storage.delete(old_name)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to delete replaced font blob %s", old_name)
+        # Drop any stray extra rows for this face; their blobs are removed by
+        # the FontAsset post_delete signal.
+        for extra in dupes[1:]:
+            extra.delete()
+        return asset
+
     asset = FontAsset(
         organization=org,
         family=family,
@@ -484,7 +530,6 @@ def ingest_uploaded_font(org, *, filename, data, created_by=None, max_bytes=None
         embeddable=True,
         created_by=created_by,
     )
-    ext = _EXT_FOR_FMT.get(meta["fmt"], "ttf")
     asset.blob.save(f"{asset.id}.{ext}", ContentFile(data), save=True)
     return asset
 

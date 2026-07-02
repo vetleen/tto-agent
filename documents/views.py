@@ -15,6 +15,7 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
+from core.http import parse_json_object
 from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from .pii_labels import CRIMINAL_TOOLTIP, PILL_LABEL, SPECIAL_TOOLTIP, summarize_pii_keys
 
@@ -48,11 +49,8 @@ def _relative_upload_date(value):
 
 
 def _parse_json_body(request):
-    """Parse JSON request body. Returns (data, None) on success or (None, error response)."""
-    try:
-        return json.loads(request.body), None
-    except (json.JSONDecodeError, ValueError):
-        return None, JsonResponse({"error": "Invalid JSON"}, status=400)
+    """Parse a JSON object request body. Returns (dict, None) or (None, 400)."""
+    return parse_json_object(request)
 
 
 def _parse_document_ids(body):

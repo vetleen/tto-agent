@@ -900,6 +900,10 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
     def _is_suspended(self) -> bool:
         from accounts.models import Membership
 
+        # Staff (platform operators) are exempt, matching
+        # core.middleware.SuspensionMiddleware so HTTP and WebSocket agree.
+        if self.user.is_staff:
+            return False
         return Membership.objects.filter(
             user=self.user, is_suspended=True
         ).exists()

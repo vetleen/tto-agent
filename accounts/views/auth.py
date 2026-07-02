@@ -2,6 +2,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView as BaseLoginView
+from django.contrib.auth.views import PasswordChangeView as BasePasswordChangeView
 from django.contrib.auth.views import PasswordResetView as BasePasswordResetView
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
@@ -55,6 +56,17 @@ class LoginView(BaseLoginView):
 @method_decorator(ratelimit(key="ip", rate="3/h", method="POST", block=True), name="post")
 class PasswordResetView(BasePasswordResetView):
     extra_email_context = {"assistant_name": settings.ASSISTANT_NAME}
+
+
+# Throttle the authenticated password-change POST: without a limit the
+# old-password check is an unthrottled guessing oracle for anyone holding a
+# session. Keyed per-user (the requester is authenticated here); 10/h leaves
+# room for a legitimate mistyped current password.
+@method_decorator(
+    ratelimit(key="user", rate="10/h", method="POST", block=True), name="post"
+)
+class PasswordChangeView(BasePasswordChangeView):
+    pass
 
 
 def rate_limited(request, exception=None):

@@ -222,12 +222,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "title": cust.user_title,
             "description": cust.user_description,
         }
-        return bool(membership and membership.is_suspended)
+        # Staff (platform operators) are exempt from suspension, matching
+        # core.middleware.SuspensionMiddleware so HTTP and WebSocket agree.
+        return bool(membership and membership.is_suspended and not self.user.is_staff)
 
     @database_sync_to_async
     def _check_suspension(self) -> bool:
         """Lightweight re-check for mid-session suspension."""
         from accounts.models import Membership
+        if self.user.is_staff:
+            return False
         return Membership.objects.filter(
             user=self.user, is_suspended=True,
         ).exists()

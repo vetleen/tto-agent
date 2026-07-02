@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 
 from django.contrib.auth.decorators import login_required
@@ -18,14 +19,66 @@ from accounts.views._builders import (
     partition_transcription_models,
 )
 from accounts.views._helpers import org_admin_required
+from core.http import parse_json_object
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_json_body(request):
-    """Parse JSON request body. Returns (data, None) on success or (None, error response)."""
+    """Parse a JSON object request body. Returns (dict, None) or (None, 400).
+
+    Thin wrapper over core.http.parse_json_object (kept for the many call sites
+    in this module); rejects non-object bodies so handlers can call data.get().
+    """
+    return parse_json_object(request)
+
+
+def _str_field(data, key, default=""):
+    """Read a string field from a parsed JSON object, tolerating null/non-string.
+
+    Returns the stripped string for a string value, else ``default``. This keeps
+    ``{"key": null}`` / ``{"key": 5}`` from crashing ``.strip()`` (AttributeError
+    -> 500) and stops non-strings being coerced into junk like ``"None"``.
+    """
+    value = data.get(key, default)
+    return value.strip() if isinstance(value, str) else default
+
+
+def _reject_oversized_request(request, max_bytes, message="File is too large."):
+    """Return a 413 response if Content-Length exceeds ``max_bytes``, else None.
+
+    Rejects oversized uploads before ``request.FILES`` spools the whole multipart
+    body to disk. Residual: a chunked-transfer request that omits Content-Length
+    parses as 0 and slips past — Django still spools file parts to disk regardless,
+    so a hard cap needs a proxy/router-level body limit. This covers well-behaved
+    clients (the common case).
+    """
     try:
-        return json.loads(request.body), None
-    except (json.JSONDecodeError, ValueError):
-        return None, JsonResponse({"error": "Invalid JSON"}, status=400)
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    if content_length > max_bytes:
+        return JsonResponse({"error": message}, status=413)
+    return None
+
+
+def _delete_stored_file_on_commit(storage, name):
+    """Delete a stored file after the current transaction commits.
+
+    Used when replacing an image/logo blob so the old file is removed only once
+    the new DB reference is durable — a storage/DB failure then leaves the old
+    (working) file referenced instead of a dangling pointer.
+    """
+    if not name:
+        return
+
+    def _cleanup():
+        try:
+            storage.delete(name)
+        except Exception:
+            logger.exception("Failed to delete replaced file %s", name)
+
+    transaction.on_commit(_cleanup)
 
 
 @login_required
@@ -158,8 +211,8 @@ def preferences_models_update(request):
     if err:
         return err
 
-    tier = data.get("tier", "").strip()
-    model = data.get("model", "").strip() or None
+    tier = _str_field(data, "tier")
+    model = _str_field(data, "model") or None
 
     if tier not in ("primary", "mid", "cheap"):
         return JsonResponse({"error": "Invalid tier"}, status=400)
@@ -345,8 +398,8 @@ def preferences_feature_model_update(request):
     if err:
         return err
 
-    feature = data.get("feature", "").strip()
-    model = data.get("model", "").strip() or None
+    feature = _str_field(data, "feature")
+    model = _str_field(data, "model") or None
 
     if feature not in FEATURE_DEFAULTS:
         return JsonResponse({"error": "Unknown feature"}, status=400)
@@ -406,8 +459,9 @@ def org_settings_page(request):
         "subagent": {
             "label": "Sub-agent tools",
             "description": (
-                "Tools available specifically only to sub-agents of "
-                f"{django_settings.ASSISTANT_NAME}."
+                f"Tools available to sub-agents of {django_settings.ASSISTANT_NAME}. "
+                "Some (document and web tools) are also used by skills — disabling "
+                "one here disables it everywhere it appears."
             ),
         },
         "document_processing": {
@@ -442,10 +496,19 @@ def org_settings_page(request):
         }
     for name, tool in sorted(all_tools.items()):
         section_key = getattr(tool, "section", "chat")
+        audience = getattr(tool, "audience", "shared")
+        subagent_section = getattr(tool, "subagent_section", None)
         if section_key == "skills":
-            continue
-        if section_key == "chat":
-            bucket = "subagent" if getattr(tool, "audience", "shared") == "subagent" else "chat"
+            # Skills-section tools are managed under Skills — EXCEPT those that are
+            # always-on for sub-agents (subagent_section="chat"), which otherwise
+            # have no control surface here. Surface those under "Sub-agent tools";
+            # their org_tools toggle is the same global gate the resolver applies.
+            if subagent_section == "chat" and audience in ("subagent", "shared"):
+                bucket = "subagent"
+            else:
+                continue
+        elif section_key == "chat":
+            bucket = "subagent" if audience == "subagent" else "chat"
         else:
             bucket = section_key
         if bucket not in tool_sections:
@@ -509,8 +572,11 @@ def org_settings_page(request):
         mid: info.display_name for mid, info in get_all_transcription_models().items()
     }
 
+    # Intersect the org list with the system allow-list (mirroring the image path
+    # below and the save endpoint) so the dropdowns never offer a model that
+    # org_transcription_model_update would reject with a 400.
     effective_allowed = (
-        org_allowed_transcription
+        [m for m in org_allowed_transcription if m in system_transcription_models]
         if isinstance(org_allowed_transcription, list)
         else system_transcription_models
     )
@@ -617,8 +683,18 @@ def org_allowed_models_update(request):
         return err
 
     models = data.get("allowed_models", [])
-    if not isinstance(models, list):
-        return JsonResponse({"error": "allowed_models must be a list"}, status=400)
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+        return JsonResponse({"error": "allowed_models must be a list of strings"}, status=400)
+
+    # Chat can't run on zero models and the resolver treats an empty list as
+    # "no models" (not a friendly fallback), so unchecking everything must be
+    # rejected rather than silently allowing all. Leaving all boxes checked
+    # posts the full list, which the resolver already treats as "allow all".
+    if not models:
+        return JsonResponse(
+            {"error": "Select at least one model, or leave all selected to allow every model."},
+            status=400,
+        )
 
     # Validate all are in system allowlist
     system_models = get_allowed_models()
@@ -671,16 +747,25 @@ def org_styles_update(request):
 @login_required
 @require_POST
 @org_admin_required
+@ratelimit(key="user", rate="30/h", method="POST", block=True)
 def org_fonts_upload(request):
     """Upload one org brand-font face (.ttf/.otf/.woff/.woff2) for PDF export."""
     from core.fonts import ingest_uploaded_font, org_font_families
 
     membership = request.org_membership
+
+    max_bytes = getattr(django_settings, "FONT_UPLOAD_MAX_SIZE_BYTES", 5_000_000)
+    # Reject oversized requests from Content-Length BEFORE request.FILES spools the
+    # whole multipart body to disk (parity with the logo/avatar upload endpoints).
+    too_large = _reject_oversized_request(
+        request, max_bytes + 1_000_000, message="Font is too large."
+    )
+    if too_large:
+        return too_large
+
     upload = request.FILES.get("file")
     if not upload:
         return JsonResponse({"error": "No file uploaded."}, status=400)
-
-    max_bytes = getattr(django_settings, "FONT_UPLOAD_MAX_SIZE_BYTES", 5_000_000)
     if upload.size > max_bytes:
         return JsonResponse(
             {"error": f"Font is too large (max {max_bytes // 1_000_000} MB)."}, status=400
@@ -738,14 +823,13 @@ def org_logo_upload(request):
 
     membership = request.org_membership
 
-    # Reject oversized requests from Content-Length BEFORE request.FILES spools
-    # the whole multipart body to disk.
-    try:
-        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
-    except (TypeError, ValueError):
-        content_length = 0
-    if content_length > getattr(django_settings, "LOGO_REQUEST_MAX_BYTES", LOGO_REQUEST_MAX_BYTES):
-        return JsonResponse({"error": "Image is too large."}, status=413)
+    too_large = _reject_oversized_request(
+        request,
+        getattr(django_settings, "LOGO_REQUEST_MAX_BYTES", LOGO_REQUEST_MAX_BYTES),
+        message="Image is too large.",
+    )
+    if too_large:
+        return too_large
 
     upload = request.FILES.get("logo")
     if not upload:
@@ -757,11 +841,14 @@ def org_logo_upload(request):
         return JsonResponse({"error": str(exc)}, status=400)
 
     org = membership.org
-    # Drop the previous file first so a replacement doesn't leave an orphan.
-    if org.logo:
-        org.logo.delete(save=False)
+    # Save the new file first, then delete the old one only after the DB commit,
+    # so a storage failure leaves the old (working) logo referenced rather than a
+    # dangling pointer.
+    old_name = org.logo.name if org.logo else None
     org.logo.save(f"org_{org.pk}.{ext}", processed, save=False)
     org.save(update_fields=["logo"])
+    if old_name and old_name != org.logo.name:
+        _delete_stored_file_on_commit(org.logo.storage, old_name)
 
     return JsonResponse({"ok": True, "url": org.logo.url})
 
@@ -793,8 +880,8 @@ def org_allowed_transcription_models_update(request):
         return err
 
     models = data.get("allowed_transcription_models")
-    if not isinstance(models, list):
-        return JsonResponse({"error": "allowed_transcription_models must be a list"}, status=400)
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+        return JsonResponse({"error": "allowed_transcription_models must be a list of strings"}, status=400)
 
     system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
     invalid = [m for m in models if m not in system_models]
@@ -902,8 +989,8 @@ def org_allowed_image_models_update(request):
         return err
 
     models = data.get("allowed_image_models")
-    if not isinstance(models, list):
-        return JsonResponse({"error": "allowed_image_models must be a list"}, status=400)
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+        return JsonResponse({"error": "allowed_image_models must be a list of strings"}, status=400)
 
     system_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
     invalid = [m for m in models if m not in system_models]
@@ -958,18 +1045,26 @@ def org_models_update(request):
     if err:
         return err
 
-    tier = data.get("tier", "").strip()
-    model = data.get("model", "").strip() or None
+    tier = _str_field(data, "tier")
+    model = _str_field(data, "model") or None
 
     if tier not in ("primary", "mid", "cheap"):
         return JsonResponse({"error": "Invalid tier"}, status=400)
 
-    org_allowed = (membership.org.preferences or {}).get("allowed_models") or []
-
-    if model and org_allowed and model not in org_allowed:
-        return JsonResponse({"error": "Model not in org allowed list"}, status=400)
-
     if model:
+        # Validate against the effective allow-list (org subset ∩ system list),
+        # mirroring org_feature_model_update. The previous check skipped
+        # validation entirely when the org had no allowed_models, letting a model
+        # outside the system allow-list be stored and then silently dropped by the
+        # resolver at runtime.
+        from llm.service.policies import get_allowed_models
+
+        org_allowed = (membership.org.preferences or {}).get("allowed_models") or []
+        system_models = get_allowed_models()
+        effective = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
+        if model not in effective:
+            return JsonResponse({"error": "Model not in allowed list"}, status=400)
+
         from llm.model_registry import is_model_valid_for_slot
 
         if not is_model_valid_for_slot(model, tier):
@@ -998,7 +1093,7 @@ def org_tools_update(request):
     if err:
         return err
 
-    tool_name = data.get("name", "").strip()
+    tool_name = _str_field(data, "name")
     enabled = data.get("enabled", True)
 
     if not tool_name:
@@ -1217,7 +1312,7 @@ def org_skills_update(request):
     if err:
         return err
 
-    slug = data.get("slug", "").strip()
+    slug = _str_field(data, "slug")
     if not slug:
         return JsonResponse({"error": "Skill slug required"}, status=400)
 
@@ -1234,7 +1329,7 @@ def org_skills_update(request):
     if not slug_visible:
         return JsonResponse({"error": "Unknown skill"}, status=400)
 
-    tool_name = data.get("tool", "").strip() if "tool" in data else None
+    tool_name = _str_field(data, "tool") if "tool" in data else None
     enabled = data.get("enabled", True)
 
     def mutate(prefs):
@@ -1271,8 +1366,8 @@ def org_feature_model_update(request):
     if err:
         return err
 
-    feature = data.get("feature", "").strip()
-    model = data.get("model", "").strip() or None
+    feature = _str_field(data, "feature")
+    model = _str_field(data, "model") or None
 
     if feature not in FEATURE_DEFAULTS:
         return JsonResponse({"error": "Unknown feature"}, status=400)
@@ -1325,6 +1420,7 @@ def profile_page(request):
 def profile_update(request):
     import logging
 
+    from accounts.models import get_user_org
     from guardrails.classifier import classify_description_sync
 
     logger = logging.getLogger(__name__)
@@ -1335,10 +1431,15 @@ def profile_update(request):
 
     update_fields = []
     user = request.user
+    # These fields are user-scoped (no @org_admin_required), so resolve the org
+    # to key the guardrails classifier on the org's configured model / allow-list.
+    org = get_user_org(user)
+    org_id = org.pk if org else None
 
+    identity_texts = []
     for field in ("first_name", "last_name", "title"):
         if field in data:
-            val = str(data[field]).strip()
+            val = _str_field(data, field)
             if len(val) > MAX_NAME_LENGTH:
                 return JsonResponse(
                     {"error": f"{field.replace('_', ' ').capitalize()} must be {MAX_NAME_LENGTH} characters or fewer."},
@@ -1346,9 +1447,30 @@ def profile_update(request):
                 )
             setattr(user, field, val)
             update_fields.append(field)
+            if val:
+                identity_texts.append(val)
+
+    # Name/title flow into the assistant's system-prompt identity line, so scan
+    # them with the same adversarial-content classifier the description/soul/org
+    # fields use (org name is classified for exactly this reason).
+    if identity_texts:
+        try:
+            result = classify_description_sync(" ".join(identity_texts), user.pk, org_id)
+            if result.is_suspicious:
+                logger.warning("Profile name/title blocked for user %s: %s", user.pk, result.reasoning)
+                return JsonResponse(
+                    {"error": "Name could not be saved. Please revise and try again."},
+                    status=400,
+                )
+        except Exception:
+            logger.exception("Name classifier failed for user %s", user.pk)
+            return JsonResponse(
+                {"error": "Unable to verify your details right now. Please try again later."},
+                status=503,
+            )
 
     if "description" in data:
-        desc = str(data["description"]).strip()
+        desc = _str_field(data, "description")
         if len(desc) > MAX_DESCRIPTION_LENGTH:
             return JsonResponse(
                 {"error": f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."},
@@ -1356,7 +1478,7 @@ def profile_update(request):
             )
         if desc:
             try:
-                result = classify_description_sync(desc, user.pk)
+                result = classify_description_sync(desc, user.pk, org_id)
                 if result.is_suspicious:
                     logger.warning("Profile description blocked for user %s: %s", user.pk, result.reasoning)
                     return JsonResponse(
@@ -1406,17 +1528,14 @@ def profile_picture_update(request):
         process_profile_picture,
     )
 
-    # Reject oversized requests from Content-Length BEFORE request.FILES spools
-    # the whole multipart body to disk.
-    try:
-        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
-    except (TypeError, ValueError):
-        content_length = 0
     max_request_bytes = getattr(
         django_settings, "PROFILE_PICTURE_REQUEST_MAX_BYTES", PROFILE_PICTURE_REQUEST_MAX_BYTES
     )
-    if content_length > max_request_bytes:
-        return JsonResponse({"error": "Image is too large."}, status=413)
+    too_large = _reject_oversized_request(
+        request, max_request_bytes, message="Image is too large."
+    )
+    if too_large:
+        return too_large
 
     upload = request.FILES.get("picture")
     if not upload:
@@ -1432,11 +1551,20 @@ def profile_picture_update(request):
         return JsonResponse({"error": str(exc)}, status=400)
 
     user = request.user
-    # Drop any previous files first so a replacement doesn't leave orphans.
-    _delete_profile_picture_files(user)
+    # Save the new files first, then delete the previous blobs after the DB commit
+    # so a storage/DB failure leaves the old (working) avatar referenced rather
+    # than a dangling pointer.
+    old_original = user.profile_picture_original.name if user.profile_picture_original else None
+    old_picture = user.profile_picture.name if user.profile_picture else None
+    original_storage = user.profile_picture_original.storage
+    picture_storage = user.profile_picture.storage
     user.profile_picture_original.save(f"user_{user.pk}.{ext}", original, save=False)
     user.profile_picture.save(f"user_{user.pk}.{ext}", resized, save=False)
     user.save(update_fields=["profile_picture", "profile_picture_original"])
+    if old_original and old_original != user.profile_picture_original.name:
+        _delete_stored_file_on_commit(original_storage, old_original)
+    if old_picture and old_picture != user.profile_picture.name:
+        _delete_stored_file_on_commit(picture_storage, old_picture)
 
     return JsonResponse({"ok": True, "url": user.profile_picture.url})
 
@@ -1472,7 +1600,7 @@ def org_description_update(request):
     if err:
         return err
 
-    desc = str(data.get("description", "")).strip()
+    desc = _str_field(data, "description")
     if len(desc) > MAX_DESCRIPTION_LENGTH:
         return JsonResponse(
             {"error": f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."},
@@ -1546,7 +1674,7 @@ def soul_update(request):
     if err:
         return err
 
-    soul = str(data.get("soul", "")).strip()
+    soul = _str_field(data, "soul")
     if len(soul) > MAX_SOUL_LENGTH:
         return JsonResponse(
             {"error": f"SOUL must be {MAX_SOUL_LENGTH} characters or fewer."},
@@ -1609,7 +1737,7 @@ def org_soul_update(request):
     if err:
         return err
 
-    soul = str(data.get("soul", "")).strip()
+    soul = _str_field(data, "soul")
     if len(soul) > MAX_SOUL_LENGTH:
         return JsonResponse(
             {"error": f"SOUL must be {MAX_SOUL_LENGTH} characters or fewer."},
@@ -1675,7 +1803,7 @@ def org_name_update(request):
         return err
 
     # Collapse whitespace/newlines — the name reaches the assistant's identity line.
-    name = " ".join(str(data.get("name", "")).split())
+    name = " ".join(_str_field(data, "name").split())
     if not name:
         return JsonResponse({"error": "Organization name is required."}, status=400)
     if len(name) > MAX_ORG_NAME_LENGTH:

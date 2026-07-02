@@ -107,6 +107,27 @@ class PasswordResetRateLimitTests(TestCase):
         self.assertEqual(response.status_code, 429)
 
 
+@override_settings(**_RATE_LIMIT_SETTINGS, PASSWORD_HASHERS=_FAST_HASHERS)
+class PasswordChangeRateLimitTests(TestCase):
+    """The authenticated password-change POST is throttled so old_password can't
+    be used as an unthrottled guessing oracle by a session holder."""
+
+    def setUp(self) -> None:
+        cache.clear()
+        _pin_ratelimit_window(self)
+        self.url = reverse("accounts:password_change")
+        User.objects.create_user(email="pc@example.com", password="right-pass")
+        self.client.login(email="pc@example.com", password="right-pass")
+
+    def test_blocks_11th_post_in_one_hour(self) -> None:
+        payload = {"old_password": "wrong", "new_password1": "x", "new_password2": "x"}
+        for _ in range(10):
+            response = self.client.post(self.url, payload)
+            self.assertNotEqual(response.status_code, 429)
+        response = self.client.post(self.url, payload)
+        self.assertEqual(response.status_code, 429)
+
+
 @override_settings(**_RATE_LIMIT_SETTINGS)
 class XffSpoofingRegressionTests(TestCase):
     """The IP rate-limit key must use the LAST X-Forwarded-For entry.

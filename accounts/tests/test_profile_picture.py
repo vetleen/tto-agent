@@ -177,7 +177,10 @@ class ProfilePictureUploadViewTests(TestCase):
         first_storage = self.user.profile_picture.storage
         self.assertTrue(first_storage.exists(first))
 
-        self._post_image(name="second.png", size=(200, 200))
+        # The old file is deleted via transaction.on_commit (so a failed replace
+        # can't orphan the reference); execute those callbacks in the test.
+        with self.captureOnCommitCallbacks(execute=True):
+            self._post_image(name="second.png", size=(200, 200))
         self.user.refresh_from_db()
         second = self.user.profile_picture.name
         # New file present; if the path changed, the old one is gone.

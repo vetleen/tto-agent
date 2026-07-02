@@ -75,6 +75,26 @@ class ConsumerConnectTests(TransactionTestCase):
         self.assertEqual(msg["event_type"], "guardrail.suspended")
         await communicator.disconnect()
 
+    async def test_suspended_staff_user_allowed(self):
+        from accounts.models import Membership, Organization
+
+        # Staff (platform operators) are exempt from suspension over WebSocket,
+        # matching SuspensionMiddleware's HTTP behavior.
+        self.user.is_staff = True
+        await database_sync_to_async(self.user.save)(update_fields=["is_staff"])
+        org = await database_sync_to_async(Organization.objects.create)(
+            name="AcmeStaff", slug="acme-staff",
+        )
+        await database_sync_to_async(Membership.objects.create)(
+            user=self.user, org=org, is_suspended=True,
+        )
+        communicator = await self._communicator(self.user)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        # No suspended event is emitted for an exempt staff user.
+        self.assertTrue(await communicator.receive_nothing(timeout=1))
+        await communicator.disconnect()
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}

@@ -8,7 +8,11 @@ def nav_context(request):
     context = {
         "assistant_name": django_settings.ASSISTANT_NAME,
     }
-    if request.user.is_authenticated:
+    # `request.user` is absent when a request is rejected before
+    # AuthenticationMiddleware runs (e.g. DisallowedHost); the error handlers
+    # still render templates through this context processor, so guard it the
+    # way Django's own auth context processor does.
+    if hasattr(request, "user") and request.user.is_authenticated:
         # Read-only: the post_save signal creates UserSettings for every new
         # user, so a missing row just means defaults (no write per request).
         settings = UserSettings.objects.filter(user=request.user).first()

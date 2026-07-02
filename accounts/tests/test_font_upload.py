@@ -27,6 +27,31 @@ def _restricted_font_bytes():
     return buf.getvalue()
 
 
+def _renamed_font(family):
+    """Return Carlito bytes with its family name records overwritten."""
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(io.BytesIO(_carlito_bytes()))
+    for rec in font["name"].names:
+        if rec.nameID in (1, 16):
+            rec.string = family
+    buf = io.BytesIO()
+    font.save(buf)
+    return buf.getvalue()
+
+
+def _resave_diff(data):
+    """Re-serialize a font with a changed manufacturer record: different bytes,
+    same family/weight/style (exercises face-level dedupe, not the sha path)."""
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(io.BytesIO(data))
+    font["name"].setName("Different Vendor", 8, 3, 1, 0x409)
+    buf = io.BytesIO()
+    font.save(buf)
+    return buf.getvalue()
+
+
 def _upload(data, name="Carlito-Regular.ttf", content_type="font/ttf"):
     return SimpleUploadedFile(name, data, content_type=content_type)
 
@@ -84,6 +109,10 @@ class FontUploadEndpointTests(TestCase):
         self._login_admin()
         self.client.post(self.upload_url, {"file": _upload(_carlito_bytes())})
         self.assertEqual(FontAsset.objects.filter(organization=self.org).count(), 1)
+        asset = FontAsset.objects.get(organization=self.org)
+        blob_name = asset.blob.name
+        storage = asset.blob.storage
+        self.assertTrue(storage.exists(blob_name))
         resp = self.client.post(
             self.delete_url,
             data='{"family_norm": "carlito"}',
@@ -92,3 +121,31 @@ class FontUploadEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["fonts"], [])
         self.assertEqual(FontAsset.objects.filter(organization=self.org).count(), 0)
+        # The blob is cleaned by the post_delete signal (not fast-deleted).
+        self.assertFalse(storage.exists(blob_name))
+
+    def test_long_family_name_truncated_not_500(self):
+        self._login_admin()
+        cap = FontAsset._meta.get_field("family").max_length
+        resp = self.client.post(
+            self.upload_url, {"file": _upload(_renamed_font("A" * 200))}
+        )
+        self.assertEqual(resp.status_code, 200)
+        asset = FontAsset.objects.get(organization=self.org)
+        self.assertLessEqual(len(asset.family), cap)
+        self.assertLessEqual(len(asset.family_norm), cap)
+
+    def test_reupload_same_face_replaces_not_duplicates(self):
+        self._login_admin()
+        self.client.post(self.upload_url, {"file": _upload(_carlito_bytes())})
+        # Different bytes, same family/weight/style -> should replace, not add.
+        resp = self.client.post(
+            self.upload_url, {"file": _upload(_resave_diff(_carlito_bytes()))}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            FontAsset.objects.filter(
+                organization=self.org, family_norm="carlito", weight=400, style="normal",
+            ).count(),
+            1,
+        )

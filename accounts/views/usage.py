@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Sum
+from django.db.models.functions import Coalesce
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET
@@ -16,11 +17,19 @@ from accounts.views._helpers import org_admin_required
 
 
 def _parse_date(value):
-    """Parse a YYYY-MM-DD string, return a date or None."""
+    """Parse a YYYY-MM-DD string, return a date or None.
+
+    Dates outside a sane reporting range are treated as unparseable so the
+    window falls back to the default month rather than crashing later date
+    arithmetic (e.g. 9999-12-31 + 1 day -> OverflowError, or replace(year=10000)).
+    """
     try:
-        return date.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except (ValueError, TypeError):
         return None
+    if not (2000 <= parsed.year <= 2100):
+        return None
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -130,7 +139,9 @@ def usage_page(request):
     model_breakdown = (
         qs.values("model")
         .annotate(
-            cost=Sum("cost_usd"),
+            # Coalesce so NULL-cost groups sort as 0 (Postgres orders NULLS
+            # first on DESC, floating them above real spend) and render "$0".
+            cost=Coalesce(Sum("cost_usd"), Decimal("0")),
             calls=Count("id"),
             input_tokens=Sum("input_tokens"),
             output_tokens=Sum("output_tokens"),
@@ -164,7 +175,9 @@ def org_usage_page(request):
     user_breakdown = (
         qs.values("user_id", "user__email", "user__first_name", "user__last_name")
         .annotate(
-            cost=Sum("cost_usd"),
+            # Coalesce so NULL-cost groups sort as 0 rather than floating to the
+            # top of the table on Postgres (NULLS FIRST on DESC).
+            cost=Coalesce(Sum("cost_usd"), Decimal("0")),
             calls=Count("id"),
             input_tokens=Sum("input_tokens"),
             output_tokens=Sum("output_tokens"),
