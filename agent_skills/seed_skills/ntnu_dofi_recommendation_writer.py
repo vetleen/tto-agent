@@ -9,7 +9,7 @@ Draft NTNU Technology Transfer's initial assessment of ownership and \
 commercialization potential, and its recommendation for the further process, \
 following an invention disclosure (DOFI) at NTNU. Produces the recommendation letter and, \
 when the recommendation is to proceed, the accompanying power-of-attorney \
-(forvaltningsfullmakt) form.
+(PoA) form ("forvaltningsfullmakt").
 
 Use **only** for the initial recommendation letter and PoA request to NTNU.""",
     "instructions": """\
