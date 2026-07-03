@@ -600,6 +600,9 @@ class CreateSubagentToolTimeoutTests(TestCase):
         self.assertEqual(result, "Analysis complete: 3 claims found.")
         run = SubAgentRun.objects.first()
         self.assertEqual(run.timeout, 60)
+        # Sync inline delivery marks the run reported, so the consumer's
+        # _claim_unreported_subagents won't fire a duplicate seeded turn.
+        self.assertIsNotNone(run.reported_at)
 
     @patch("chat.tasks.run_subagent_task")
     @patch("chat.subagent_tool.time")

@@ -180,6 +180,13 @@ class CreateSubagentTool(ContextAwareTool):
             time.sleep(2)
             run.refresh_from_db()
             if run.status == SubAgentRun.Status.COMPLETED:
+                # We deliver the result inline this turn, so mark the run reported.
+                # Otherwise the consumer's _claim_unreported_subagents sees the
+                # hidden result message as unreported and fires a duplicate seeded
+                # orchestrator turn (double delivery + LLM cost).
+                from django.utils import timezone
+
+                SubAgentRun.objects.filter(pk=run.id).update(reported_at=timezone.now())
                 if run.result or run.canvas:
                     from chat.subagent_service import render_canvas_block
 

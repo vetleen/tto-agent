@@ -28,8 +28,29 @@ class _TurnState:
     user_message_id: object | None = None  # pk of the user message this turn guards
     guardrail_task: asyncio.Task | None = None
     guardrail_intercepted: bool = False
+    guardrail_redacted: bool = False
     warn_verdict: object | None = None
     modified_canvas_ids: set = field(default_factory=set)
+
+
+def _valid_uuids(values):
+    """Keep only well-formed UUID strings from a client-supplied id list.
+
+    A malformed ``attachment_id`` would otherwise be persisted into a message's
+    metadata and then raise ValidationError on every later turn's ``id__in`` load
+    — permanently bricking the thread.
+    """
+    import uuid as _uuid
+
+    out = []
+    for v in values or []:
+        try:
+            _uuid.UUID(str(v))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        out.append(str(v))
+    return out
+
 
 # Tool results whose ``status:ok`` + ``canvas_id`` payload should be broadcast to the
 # frontend as a ``canvas.updated`` event (creating/refreshing the canvas tab). Any tool
@@ -923,7 +944,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
 
         thread_id = data.get("thread_id")
-        attachment_ids = data.get("attachment_ids") or []
+        # Validate before the value is ever persisted into message metadata: a
+        # non-UUID here would raise on every later turn's attachment load.
+        attachment_ids = _valid_uuids(data.get("attachment_ids"))
 
         # Per-message model and thinking overrides
         requested_model = data.get("model") or None
@@ -1213,23 +1236,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 seed_mode=seed_mode,
             )
 
-            if self._stopped:
-                return
+            # Apply this turn's guardrail verdict: await the pipeline and redact
+            # any intercepted content. Runs here on the normal path and again in
+            # `finally` (idempotent) so a stop/disconnect race can't skip redaction.
+            await self._finalize_guardrail(thread, turn)
 
-            # Wait for THIS turn's guardrail pipeline to finish
-            if turn.guardrail_task and not turn.guardrail_task.done():
-                await turn.guardrail_task
-
-            # If the guardrail pipeline intercepted, redact messages and skip post-stream work
-            if turn.guardrail_intercepted:
-                await self._redact_messages(thread, from_message_id=turn.user_message_id)
-                redacted_ids = await self._redact_canvases(
-                    thread, turn,
-                )
-                for cid in redacted_ids:
-                    canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
-                    if canvas_data:
-                        await self._sink.send_event(canvas_data)
+            if self._stopped or turn.guardrail_intercepted:
+                # Stopped or intercepted → skip the post-stream work below.
                 return
 
             # Send guardrail warning after stream if the pipeline flagged but allowed
@@ -1266,9 +1279,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except Exception:
                 pass
         finally:
-            # Check for subagent results that arrived while the stream was running
+            # Redaction of guardrail-intercepted content must run even when the
+            # turn was stopped / cancelled / disconnected mid-flight (the try above
+            # returns early on stop). Idempotent via turn.guardrail_redacted.
+            await self._finalize_guardrail(thread, turn)
+
+            # Seed a continuation for any sub-agent result that arrived while the
+            # stream ran — but ONLY if this turn is still the current, live turn.
+            # A cancelled / superseded / disconnected turn (cancel_event set, or
+            # self._turn already replaced by a newer turn) must not spawn a second
+            # concurrent stream or stream onto a closed socket.
             if (
-                not self._stopped
+                self._turn is turn
+                and not self._stopped
+                and not turn.cancel_event.is_set()
                 and self._has_tool("chat_subagent_create")
                 and await self._claim_unreported_subagents(str(thread.id))
             ):
@@ -1276,6 +1300,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     {"thread_id": str(thread.id), "content": ""},
                     seed_mode=True,
                 )
+
+    async def _finalize_guardrail(self, thread, turn):
+        """Await this turn's guardrail pipeline and redact any intercepted content.
+
+        Idempotent (guarded by ``turn.guardrail_redacted``) so it can run both on
+        the normal post-stream path and again from ``finally`` — the latter ensures
+        a stop/disconnect that races a guardrail block still redacts the flagged
+        message and canvases instead of leaving them persisted.
+        """
+        if turn.guardrail_redacted:
+            return
+        if turn.guardrail_task and not turn.guardrail_task.done():
+            try:
+                await turn.guardrail_task
+            except asyncio.CancelledError:
+                pass
+        if turn.guardrail_intercepted:
+            turn.guardrail_redacted = True
+            await self._redact_messages(thread, from_message_id=turn.user_message_id)
+            redacted_ids = await self._redact_canvases(thread, turn)
+            for cid in redacted_ids:
+                canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
+                if canvas_data:
+                    await self._sink.send_event(canvas_data)
 
     async def _assemble_turn_inputs(
         self, thread, content, *,
@@ -2991,6 +3039,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _load_attachments(self, attachment_ids):
         from chat.models import ChatAttachment
 
+        # Drop any malformed ids so replaying a thread whose history already holds
+        # a bad attachment_id can't raise ValidationError and brick every turn.
+        attachment_ids = _valid_uuids(attachment_ids)
+        if not attachment_ids:
+            return {}
         atts = ChatAttachment.objects.filter(
             id__in=attachment_ids,
             uploaded_by=self.user,
