@@ -80,7 +80,24 @@ def to_langchain_messages(messages: List[Message], *, provider: str | None = Non
                     {"id": tc.id, "name": tc.name, "args": tc.arguments}
                     for tc in m.tool_calls
                 ]
-            lc_messages.append(AIMessage(content=m.content, tool_calls=tool_calls_lc or []))
+            # Echo the provider's native reasoning blocks (thinking /
+            # redacted_thinking, with signatures) when captured, instead of a
+            # plain-text rebuild. Anthropic 400s on a thinking+tool-use turn whose
+            # thinking blocks were dropped; langchain-anthropic re-appends the
+            # tool_use blocks from tool_calls, so [thinking, text] + tool_calls
+            # serializes to [thinking, text, tool_use] (thinking first, as
+            # required). Only Anthropic populates content_blocks, so other
+            # providers still send plain-string content.
+            content_blocks = (m.metadata or {}).get("content_blocks")
+            ai_content = content_blocks if content_blocks else m.content
+            # Restore provider replay state (e.g. Gemini function-call thought
+            # signatures) that our Message abstraction otherwise drops.
+            extra_kwargs = (m.metadata or {}).get("additional_kwargs") or {}
+            lc_messages.append(AIMessage(
+                content=ai_content,
+                tool_calls=tool_calls_lc or [],
+                additional_kwargs=extra_kwargs,
+            ))
         elif m.role == "tool" and m.tool_call_id:
             lc_messages.append(ToolMessage(content=m.content, tool_call_id=m.tool_call_id))
         else:

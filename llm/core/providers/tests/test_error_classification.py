@@ -96,6 +96,24 @@ class TestClassifyApiError(TestCase):
         )
         self.assertEqual(result.error_code, "unknown")
 
+    def test_400_budget_tokens_config_error_is_not_request_too_large(self):
+        # A thinking budget_tokens validation 400 mentions max_tokens but is a
+        # config bug — must NOT be classified request_too_large (shortening the
+        # conversation won't fix it); it falls through to unknown for Sentry.
+        result = classify_api_error(
+            _exc_with_status(400, "max_tokens must be greater than thinking.budget_tokens"),
+            "Anthropic",
+        )
+        self.assertEqual(result.error_code, "unknown")
+
+    def test_400_bare_token_word_not_request_too_large(self):
+        # A generic 400 merely containing the word "token" is not a size error.
+        result = classify_api_error(
+            _exc_with_status(400, "invalid token parameter"),
+            "OpenAI",
+        )
+        self.assertEqual(result.error_code, "unknown")
+
     def test_500_maps_to_server_error(self):
         result = classify_api_error(_exc_with_status(500), "Anthropic")
         self.assertEqual(result.error_code, "server_error")
@@ -247,6 +265,25 @@ class TestClassifyApiError(TestCase):
         result = classify_api_error(exc, "Gemini")
         self.assertEqual(result.error_code, "auth_error")
         self.assertFalse(_is_retryable_transient_error(exc))
+
+    def test_prose_unavailable_not_scanned_as_grpc_enum(self):
+        # A status-less error whose PROSE contains the lowercase word
+        # "unavailable" must NOT match the gRPC UNAVAILABLE enum (which would
+        # mis-classify it overloaded/503 and trigger ~3.5 min of retries).
+        exc = Exception("This feature is currently unavailable for the selected model.")
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "unknown")
+        self.assertFalse(_is_retryable_transient_error(exc))
+
+    def test_prose_internal_error_not_scanned_as_grpc_enum(self):
+        exc = Exception("An internal error occurred while parsing your request.")
+        self.assertEqual(classify_api_error(exc, "Gemini").error_code, "unknown")
+
+    def test_uppercase_grpc_enum_in_message_still_maps(self):
+        # The real google-genai format embeds the UPPERCASE enum verbatim, which
+        # must still be recognized.
+        exc = _gemini_exc(message="Error calling model (UNAVAILABLE): 503 UNAVAILABLE. {}")
+        self.assertEqual(classify_api_error(exc, "Gemini").error_code, "overloaded")
 
     def test_provider_label_appears_in_messages(self):
         """Provider label is included in user messages for most error codes."""

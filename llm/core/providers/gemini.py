@@ -15,6 +15,13 @@ _GEMINI_THINKING_BUDGETS = {
     "high": 24_576,
 }
 
+# langchain-google-genai stashes each function call's thought signature here
+# (keyed by tool_call id) on parse, and reads it back from an AIMessage's
+# additional_kwargs on re-send. Gemini 3 rejects a follow-up whose function call
+# is missing its signature (400 INVALID_ARGUMENT), so this map must survive our
+# Message round-trip.
+_GEMINI_FN_CALL_SIGNATURES_KEY = "__gemini_function_call_thought_signatures__"
+
 
 class GeminiChatModel(BaseLangChainChatModel):
     """ChatModel backed by LangChain's ChatGoogleGenerativeAI."""
@@ -62,6 +69,19 @@ class GeminiChatModel(BaseLangChainChatModel):
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         return client
+
+    def _extract_replay_metadata(self, lc_message) -> dict:
+        """Carry Gemini function-call thought signatures through the tool loop.
+
+        Our Message abstraction drops additional_kwargs, which is where
+        langchain-google-genai keeps the signatures; preserve just that map so
+        the follow-up request re-attaches each signature to its function call.
+        """
+        ak = getattr(lc_message, "additional_kwargs", None) or {}
+        sig_map = ak.get(_GEMINI_FN_CALL_SIGNATURES_KEY)
+        if sig_map:
+            return {"additional_kwargs": {_GEMINI_FN_CALL_SIGNATURES_KEY: sig_map}}
+        return {}
 
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         content = getattr(chunk, "content", None)

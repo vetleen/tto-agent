@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 from pydantic import BaseModel, Field
 
+from llm.core.providers.base import BaseLangChainChatModel
 from llm.pipelines.structured_output import StructuredOutputPipeline
 from llm.service.errors import LLMProviderError
 from llm.types.context import RunContext
@@ -47,8 +48,9 @@ class StructuredOutputPipelineTests(TestCase):
         }
         fake_client = MagicMock()
         fake_client.with_structured_output.return_value = fake_structured
-        fake_model = MagicMock()
-        fake_model._client = fake_client
+        # Real provider wrapper (mocked LC client) so generate_structured and the
+        # shared usage extraction actually run instead of being stubbed away.
+        fake_model = BaseLangChainChatModel(model_name="gpt-4o-mini", client=fake_client)
         mock_create.return_value = fake_model
 
         pipeline = StructuredOutputPipeline()
@@ -88,8 +90,9 @@ class StructuredOutputPipelineTests(TestCase):
         }
         fake_client = MagicMock()
         fake_client.with_structured_output.return_value = fake_structured
-        fake_model = MagicMock()
-        fake_model._client = fake_client
+        # Real provider wrapper (mocked LC client) so generate_structured and the
+        # shared usage extraction actually run instead of being stubbed away.
+        fake_model = BaseLangChainChatModel(model_name="gpt-4o-mini", client=fake_client)
         mock_create.return_value = fake_model
 
         pipeline = StructuredOutputPipeline()
@@ -122,8 +125,9 @@ class StructuredOutputPipelineTests(TestCase):
         ]
         fake_client = MagicMock()
         fake_client.with_structured_output.return_value = fake_structured
-        fake_model = MagicMock()
-        fake_model._client = fake_client
+        # Real provider wrapper (mocked LC client) so generate_structured and the
+        # shared usage extraction actually run instead of being stubbed away.
+        fake_model = BaseLangChainChatModel(model_name="gpt-4o-mini", client=fake_client)
         mock_create.return_value = fake_model
 
         pipeline = StructuredOutputPipeline()
@@ -148,8 +152,9 @@ class StructuredOutputPipelineTests(TestCase):
         }
         fake_client = MagicMock()
         fake_client.with_structured_output.return_value = fake_structured
-        fake_model = MagicMock()
-        fake_model._client = fake_client
+        # Real provider wrapper (mocked LC client) so generate_structured and the
+        # shared usage extraction actually run instead of being stubbed away.
+        fake_model = BaseLangChainChatModel(model_name="gpt-4o-mini", client=fake_client)
         mock_create.return_value = fake_model
 
         pipeline = StructuredOutputPipeline()
@@ -159,6 +164,28 @@ class StructuredOutputPipelineTests(TestCase):
         self.assertEqual(fake_structured.invoke.call_count, 2)
         self.assertIn("_TestSchema", str(ctx.exception))
         self.assertIn("output did not match schema", str(ctx.exception))
+
+    @patch("llm.core.providers.base._wait_before_retry", return_value=True)
+    @patch("llm.pipelines.structured_output.create_chat_model")
+    def test_run_transient_error_classified_not_generic(self, mock_create, _wait):
+        """A provider overload during a structured call is retried and raised as
+        the typed LLMOverloadedError, not a generic 'run failed' — so callers
+        (guardrails / PII gate) can tell retryable from fatal."""
+        from llm.service.errors import LLMOverloadedError
+
+        overloaded = Exception("overloaded")
+        overloaded.status_code = 529
+        fake_structured = MagicMock()
+        fake_structured.invoke.side_effect = overloaded
+        fake_client = MagicMock()
+        fake_client.with_structured_output.return_value = fake_structured
+        fake_model = BaseLangChainChatModel(model_name="gpt-4o-mini", client=fake_client)
+        fake_model._provider_label = "Anthropic"
+        mock_create.return_value = fake_model
+
+        pipeline = StructuredOutputPipeline()
+        with self.assertRaises(LLMOverloadedError):
+            pipeline.run(self._make_request())
 
     def test_stream_raises_not_implemented(self):
         pipeline = StructuredOutputPipeline()

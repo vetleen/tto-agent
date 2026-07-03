@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
+from langchain_core.messages import AIMessageChunk
 
 from llm.core.providers.base import BaseLangChainChatModel
 from llm.types.context import RunContext
@@ -34,14 +35,15 @@ class _FakeAIMessage:
         self.additional_kwargs = {}
 
 
-class _FakeChunk:
-    """Minimal stand-in for a LangChain AIMessageChunk."""
-
-    def __init__(self, content="Hi", usage_metadata=None, response_metadata=None):
-        self.content = content
-        self.usage_metadata = usage_metadata
-        self.response_metadata = response_metadata or {}
-        self.additional_kwargs = {}
+def _FakeChunk(content="Hi", usage_metadata=None, response_metadata=None):
+    """A real AIMessageChunk stand-in. stream() merges chunks via
+    add_ai_message_chunks, which needs the full chunk interface
+    (tool_call_chunks etc.), so a bare attribute holder no longer suffices."""
+    return AIMessageChunk(
+        content=content,
+        usage_metadata=usage_metadata,
+        response_metadata=response_metadata or {},
+    )
 
 
 class _TestModel(BaseLangChainChatModel):

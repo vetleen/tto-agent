@@ -10,31 +10,11 @@ from llm.core.model_factory import create_chat_model
 from llm.pipelines.base import BasePipeline
 from llm.pipelines.registry import get_pipeline_registry
 from llm.service.errors import LLMProviderError
-from llm.service.pricing import calculate_cost
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse, Usage
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_usage(model: str, raw_msg: object) -> Usage | None:
-    """Extract Usage from the raw AIMessage of a structured-output call."""
-    usage_meta = getattr(raw_msg, "usage_metadata", None)
-    if not (isinstance(usage_meta, dict) and usage_meta.get("output_tokens")):
-        return None
-    input_tokens = usage_meta.get("input_tokens")
-    output_tokens = usage_meta.get("output_tokens")
-    details = usage_meta.get("input_token_details") or {}
-    cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
-    cost = calculate_cost(model, input_tokens, output_tokens, cached_tokens)
-    return Usage(
-        prompt_tokens=input_tokens,
-        completion_tokens=output_tokens,
-        total_tokens=usage_meta.get("total_tokens"),
-        cached_tokens=cached_tokens,
-        cost_usd=float(cost) if cost is not None else None,
-    )
 
 
 def _sum_usage(a: Usage | None, b: Usage | None) -> Usage | None:
@@ -80,7 +60,7 @@ class StructuredOutputPipeline(BasePipeline):
 
         model = create_chat_model(request.model)
         lc_messages = to_langchain_messages(request.messages)
-        structured_model = model._client.with_structured_output(
+        structured_client = model._client.with_structured_output(
             output_schema, include_raw=True
         )
 
@@ -94,9 +74,15 @@ class StructuredOutputPipeline(BasePipeline):
             # warning when the field is populated. Suppress it.
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
-                result = structured_model.invoke(lc_messages)
+                # Route through the provider so transient errors are retried and
+                # classified into a typed LLMProviderError, instead of surfacing
+                # as a raw SDK exception the caller can't tell apart from fatal.
+                # Also reuses the base usage extraction (cache-write/reasoning).
+                result, attempt_usage = model.generate_structured(
+                    structured_client, lc_messages, request
+                )
 
-            usage = _sum_usage(usage, _extract_usage(request.model, result["raw"]))
+            usage = _sum_usage(usage, attempt_usage)
             parsed = result["parsed"]
             if parsed is not None:
                 break

@@ -81,13 +81,40 @@ class OpenAIChatModel(BaseLangChainChatModel):
             )
         return str(content) if content else ""
 
+    @staticmethod
+    def _extract_reasoning(additional: dict) -> str:
+        """Pull reasoning-summary text out of a chunk's additional_kwargs.
+
+        Chat Completions surfaces it as a plain string under ``reasoning_content``;
+        the Responses API (gpt-5.x) uses ``reasoning``, which is a summary string
+        or a ``{"summary": [{"type": "summary_text", "text": ...}]}`` dict. Reading
+        only ``reasoning_content`` left the thinking UI permanently empty for
+        Responses-API models. Best-effort: an unrecognized shape yields "" (the
+        prior no-thinking behavior), never an error.
+        """
+        rc = additional.get("reasoning_content")
+        if isinstance(rc, str) and rc:
+            return rc
+        reasoning = additional.get("reasoning")
+        if isinstance(reasoning, str):
+            return reasoning
+        if isinstance(reasoning, dict):
+            summary = reasoning.get("summary")
+            if isinstance(summary, list):
+                return "".join(
+                    part.get("text", "") for part in summary
+                    if isinstance(part, dict)
+                )
+            if isinstance(summary, str):
+                return summary
+        return ""
+
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         events: list[tuple[str, dict]] = []
-        # Check for reasoning content in additional_kwargs
         additional = getattr(chunk, "additional_kwargs", {}) or {}
-        reasoning = additional.get("reasoning_content", "")
+        reasoning = self._extract_reasoning(additional)
         if reasoning:
-            events.append(("thinking", {"text": str(reasoning)}))
+            events.append(("thinking", {"text": reasoning}))
         # Regular text content
         text = self._extract_text(getattr(chunk, "content", None))
         if text:

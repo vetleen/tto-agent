@@ -607,8 +607,26 @@ class SimpleChatPipeline(BasePipeline):
                 for tc in tool_call_dicts
             ]
             assistant_content = end_data.get("content", "")
+            assistant_meta = {}
+            content_blocks = end_data.get("content_blocks")
+            if content_blocks:
+                # Carry the provider's native thinking/redacted_thinking blocks
+                # (with signatures) so to_langchain_messages can echo them back —
+                # Anthropic 400s on a thinking+tool-use turn whose blocks were
+                # dropped and the assistant message rebuilt from plain text.
+                assistant_meta["content_blocks"] = content_blocks
+            replay_ak = end_data.get("additional_kwargs")
+            if replay_ak:
+                # e.g. Gemini function-call thought signatures — must round-trip
+                # or Gemini 3 rejects the follow-up with 400 INVALID_ARGUMENT.
+                assistant_meta["additional_kwargs"] = replay_ak
             new_messages = list(req.messages) + [
-                Message(role="assistant", content=assistant_content, tool_calls=parsed_tool_calls)
+                Message(
+                    role="assistant",
+                    content=assistant_content,
+                    tool_calls=parsed_tool_calls,
+                    metadata=assistant_meta,
+                )
             ]
 
             # Emit tool_start for all tool calls (show spinners simultaneously)

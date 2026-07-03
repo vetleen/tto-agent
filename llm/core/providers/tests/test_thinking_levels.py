@@ -254,6 +254,22 @@ class GeminiThinkingLevelTests(TestCase):
         self.assertEqual(call_kwargs["thinking_budget"], 8_192)
         self.assertTrue(call_kwargs["include_thoughts"])
 
+    def test_extract_replay_metadata_preserves_function_call_signatures(self):
+        from types import SimpleNamespace
+        key = "__gemini_function_call_thought_signatures__"
+        model = self._make_model()
+        msg = SimpleNamespace(additional_kwargs={key: {"tu1": "c2ln"}})
+        self.assertEqual(
+            model._extract_replay_metadata(msg),
+            {"additional_kwargs": {key: {"tu1": "c2ln"}}},
+        )
+
+    def test_extract_replay_metadata_empty_without_signatures(self):
+        from types import SimpleNamespace
+        model = self._make_model()
+        self.assertEqual(model._extract_replay_metadata(SimpleNamespace(additional_kwargs={})), {})
+        self.assertEqual(model._extract_replay_metadata(SimpleNamespace()), {})
+
     def test_non_thinking_model_ignores_level(self):
         model = self._make_model("gemini/gemini-fake-no-thinking")
         request = _make_request("high")

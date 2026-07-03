@@ -7,6 +7,7 @@ need to supply a configured LangChain chat model client.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
@@ -38,8 +39,23 @@ _RATE_LIMIT_INITIAL_WAIT = 30  # seconds
 _RATE_LIMIT_BACKOFF_FACTOR = 2
 _RATE_LIMIT_MAX_WAIT = 120  # seconds
 
-# Token-related keywords that indicate a request-too-large error on 400
-_TOKEN_KEYWORDS = ("token", "too long", "too large", "context length", "max_tokens")
+# Phrases in a 400 message that indicate a genuine request-too-large error.
+# Deliberately NOT a bare "token": a thinking budget_tokens validation error
+# ("max_tokens must be greater than thinking.budget_tokens") also mentions
+# tokens but is a config bug that shortening the conversation won't fix.
+_TOKEN_KEYWORDS = (
+    "too long",
+    "too large",
+    "context length",
+    "context window",
+    "maximum context",
+    "too many tokens",
+    "max_tokens",
+)
+# If any of these appear, it's a config error, not a size error — let it fall
+# through to the ``unknown`` catch-all so _highlight_if_unmapped surfaces it to
+# Sentry and a specific branch can be added later.
+_TOKEN_KEYWORD_EXCLUSIONS = ("budget_tokens",)
 
 
 @dataclass(frozen=True)
@@ -148,14 +164,17 @@ def _extract_status_code(exc: Exception) -> int | None:
             if mapped is not None:
                 return mapped
 
-    # 3. Last resort: scan the message text for a known gRPC status enum. Real
-    # google-genai errors embed it (e.g. "... (RESOURCE_EXHAUSTED): 429 ...").
+    # 3. Last resort: scan the message for a gRPC status enum as an UPPERCASE,
+    # word-bounded token. Real google-genai errors embed it verbatim (e.g.
+    # "... (RESOURCE_EXHAUSTED): 429 ..."). Case-sensitive and \b-bounded so an
+    # ordinary English word in a prose error message ("currently unavailable",
+    # "internal error") no longer matches an enum ("UNAVAILABLE", "INTERNAL")
+    # and get mis-classified as a retryable 503/500.
     text = str(exc)
     if cause is not None:
         text = f"{text} {cause}"
-    upper = text.upper()
     for enum, mapped in _GRPC_STATUS_TO_HTTP.items():
-        if enum in upper:
+        if re.search(rf"\b{enum}\b", text):
             return mapped
     return None
 
@@ -230,7 +249,11 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
             user_message=f"Authentication failed with {provider_label}. Please contact support.",
             log_level="error",
         )
-    if status == 400 and any(kw in msg_lower for kw in _TOKEN_KEYWORDS):
+    if (
+        status == 400
+        and any(kw in msg_lower for kw in _TOKEN_KEYWORDS)
+        and not any(fp in msg_lower for fp in _TOKEN_KEYWORD_EXCLUSIONS)
+    ):
         return ClassifiedError(
             error_code="request_too_large",
             user_message=(
@@ -489,6 +512,17 @@ class BaseLangChainChatModel(ChatModel):
             return []
         return [("token", {"text": str(text)})]
 
+    def _extract_replay_metadata(self, lc_message: object) -> dict:
+        """Provider-specific state that must be echoed back on the next turn.
+
+        Returns a dict merged into the assistant Message.metadata (and restored
+        by ``to_langchain_messages``). Default: nothing. Anthropic thinking blocks
+        travel via ``content_blocks``; providers that carry replay-critical state
+        in ``additional_kwargs`` (e.g. Gemini function-call thought signatures)
+        override this to return ``{"additional_kwargs": {...}}``.
+        """
+        return {}
+
     def _extract_stream_usage(self, last_chunk: object | None, output_text: str) -> dict:
         """Build usage dict from the final streaming chunk.
 
@@ -532,30 +566,27 @@ class BaseLangChainChatModel(ChatModel):
             callbacks.append(usage_cb)
         return callbacks
 
-    def generate(self, request: ChatRequest) -> ChatResponse:
-        lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
-        client = self._get_streaming_client(request)
-        callbacks = self._get_callbacks(request)
-        config = self._build_config(request, callbacks)
-        run_id = request.context.run_id if request.context else "n/a"
-        logger.info(
-            "LLM generate start model=%s provider=%s messages=%d run_id=%s",
-            self.name, self._provider_label, len(request.messages), run_id,
-        )
+    def _invoke_with_retries(self, invoke_fn, request: ChatRequest, run_id: str, op_label: str):
+        """Run *invoke_fn* under the shared transient-error retry + classification
+        loop and return its result.
 
-        result = None
+        Raises the classified ``LLMProviderError`` subclass on a non-retryable
+        error or once retries are exhausted. Shared by ``generate()`` and
+        ``generate_structured()`` so both get identical retry, error-classification,
+        and cancellation behavior (a structured call that bypassed this surfaced
+        raw SDK exceptions the caller couldn't tell apart from fatal errors).
+        """
         last_exc: Exception | None = None
         for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
             try:
-                result = client.invoke(lc_messages, config=config)
-                break
+                return invoke_fn()
             except Exception as exc:
                 if not _is_retryable_transient_error(exc):
                     classified = classify_api_error(exc, self._provider_label)
                     log_fn = getattr(logger, classified.log_level, logger.error)
                     log_fn(
-                        "LLM generate failed model=%s provider=%s error_code=%s run_id=%s",
-                        self.name, self._provider_label, classified.error_code, run_id,
+                        "LLM %s failed model=%s provider=%s error_code=%s run_id=%s",
+                        op_label, self.name, self._provider_label, classified.error_code, run_id,
                         exc_info=True,
                     )
                     _highlight_if_unmapped(classified, exc, self.name, self._provider_label, run_id)
@@ -573,9 +604,9 @@ class BaseLangChainChatModel(ChatModel):
                     err_code = classify_api_error(exc, self._provider_label).error_code
                     # Mid-retry: only the "retries exhausted" path below is alert-worthy.
                     logger.info(
-                        "LLM generate transient error model=%s provider=%s error_code=%s "
+                        "LLM %s transient error model=%s provider=%s error_code=%s "
                         "attempt=%d/%d waiting=%.0fs run_id=%s",
-                        self.name, self._provider_label, err_code,
+                        op_label, self.name, self._provider_label, err_code,
                         attempt + 1, _RATE_LIMIT_MAX_RETRIES + 1,
                         wait, run_id,
                     )
@@ -589,23 +620,83 @@ class BaseLangChainChatModel(ChatModel):
                         # Cancelled or deadline too close to wait out the
                         # backoff — treat as retries exhausted.
                         logger.info(
-                            "LLM generate retry wait aborted (cancelled or deadline) "
+                            "LLM %s retry wait aborted (cancelled or deadline) "
                             "model=%s provider=%s run_id=%s",
-                            self.name, self._provider_label, run_id,
+                            op_label, self.name, self._provider_label, run_id,
                         )
                         break
 
-        if result is None:
-            classified = classify_api_error(last_exc, self._provider_label)
-            logger.error(
-                "LLM generate transient retries exhausted model=%s provider=%s error_code=%s run_id=%s",
-                self.name, self._provider_label, classified.error_code, run_id,
-            )
-            exc_cls = exception_for_error_code(classified.error_code)
-            raise exc_cls(
-                classified.user_message,
-                error_code=classified.error_code,
-            ) from last_exc
+        classified = classify_api_error(last_exc, self._provider_label)
+        logger.error(
+            "LLM %s transient retries exhausted model=%s provider=%s error_code=%s run_id=%s",
+            op_label, self.name, self._provider_label, classified.error_code, run_id,
+        )
+        exc_cls = exception_for_error_code(classified.error_code)
+        raise exc_cls(
+            classified.user_message,
+            error_code=classified.error_code,
+        ) from last_exc
+
+    def _build_usage_from_message(self, result: object) -> Usage | None:
+        """Build a Usage (tokens + cost, incl. cache-write and reasoning) from a
+        raw LangChain message. Shared by generate() and generate_structured() so
+        cost accounting — cache-write especially — is identical across pipelines.
+        """
+        usage_meta = self._extract_usage_dict(result)
+        if not usage_meta:
+            return None
+        input_tokens = usage_meta.get("input_tokens")
+        output_tokens = usage_meta.get("output_tokens")
+        details = usage_meta.get("input_token_details") or {}
+        cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
+        cache_write_tokens = details.get("cache_creation") if isinstance(details, dict) else None
+        reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
+        cost = calculate_cost(
+            self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens,
+            cache_write_1h_tokens=self._extract_cache_write_1h_tokens(result),
+        )
+        return Usage(
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=usage_meta.get("total_tokens"),
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cost_usd=float(cost) if cost is not None else None,
+        )
+
+    def generate_structured(self, structured_client, lc_messages, request: ChatRequest, config=None):
+        """Invoke a ``with_structured_output()``-wrapped client under the shared
+        retry/classification loop. Returns ``(raw_result, Usage | None)``.
+
+        The structured pipeline keeps its own schema-parse retry; this adds the
+        provider's transient-error retry, typed-error classification, and
+        cancellation that a raw ``.invoke()`` bypassed.
+        """
+        run_id = request.context.run_id if request.context else "n/a"
+        result = self._invoke_with_retries(
+            lambda: structured_client.invoke(lc_messages, config=config),
+            request, run_id, "generate_structured",
+        )
+        raw = result.get("raw") if isinstance(result, dict) else None
+        usage = self._build_usage_from_message(raw) if raw is not None else None
+        return result, usage
+
+    def generate(self, request: ChatRequest) -> ChatResponse:
+        lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
+        client = self._get_streaming_client(request)
+        callbacks = self._get_callbacks(request)
+        config = self._build_config(request, callbacks)
+        run_id = request.context.run_id if request.context else "n/a"
+        logger.info(
+            "LLM generate start model=%s provider=%s messages=%d run_id=%s",
+            self.name, self._provider_label, len(request.messages), run_id,
+        )
+
+        result = self._invoke_with_retries(
+            lambda: client.invoke(lc_messages, config=config),
+            request, run_id, "generate",
+        )
 
         raw_content = getattr(result, "content", "") or ""
         content_blocks = None
@@ -616,9 +707,12 @@ class BaseLangChainChatModel(ChatModel):
             )
             full_blocks = [
                 block for block in raw_content
-                if isinstance(block, dict) and block.get("type") in ("thinking", "text")
+                if isinstance(block, dict)
+                and block.get("type") in ("thinking", "redacted_thinking", "text")
             ]
-            if any(b.get("type") == "thinking" for b in full_blocks):
+            if any(
+                b.get("type") in ("thinking", "redacted_thinking") for b in full_blocks
+            ):
                 content_blocks = full_blocks
         else:
             content = str(raw_content)
@@ -627,6 +721,7 @@ class BaseLangChainChatModel(ChatModel):
         msg_meta = {}
         if content_blocks:
             msg_meta["content_blocks"] = content_blocks
+        msg_meta.update(self._extract_replay_metadata(result))
         message = Message(
             role="assistant",
             content=content,
@@ -634,29 +729,7 @@ class BaseLangChainChatModel(ChatModel):
             metadata=msg_meta,
         )
 
-        usage = None
-        usage_meta = self._extract_usage_dict(result)
-        if usage_meta:
-            input_tokens = usage_meta.get("input_tokens")
-            output_tokens = usage_meta.get("output_tokens")
-            # Extract cached token count from input_token_details
-            details = usage_meta.get("input_token_details") or {}
-            cached_tokens = details.get("cache_read") if isinstance(details, dict) else None
-            cache_write_tokens = details.get("cache_creation") if isinstance(details, dict) else None
-            reasoning_tokens = self._extract_reasoning_tokens(usage_meta)
-            cost = calculate_cost(
-                self.name, input_tokens, output_tokens, cached_tokens, cache_write_tokens,
-                cache_write_1h_tokens=self._extract_cache_write_1h_tokens(result),
-            )
-            usage = Usage(
-                prompt_tokens=input_tokens,
-                completion_tokens=output_tokens,
-                total_tokens=usage_meta.get("total_tokens"),
-                cached_tokens=cached_tokens,
-                cache_write_tokens=cache_write_tokens,
-                reasoning_tokens=reasoning_tokens,
-                cost_usd=float(cost) if cost is not None else None,
-            )
+        usage = self._build_usage_from_message(result)
 
         resp_meta = self._extract_response_metadata(result)
         logger.info(
@@ -854,18 +927,24 @@ class BaseLangChainChatModel(ChatModel):
                     block.get("text", "") for block in raw_content
                     if isinstance(block, dict) and block.get("type") == "text"
                 )
-                # Preserve thinking+text blocks for conversation history
+                # Preserve thinking / redacted_thinking / text blocks (with
+                # signatures) for conversation history — Anthropic requires them
+                # echoed back unmodified on a thinking+tool-use turn.
                 full_blocks = [
                     block for block in raw_content
-                    if isinstance(block, dict) and block.get("type") in ("thinking", "text")
+                    if isinstance(block, dict)
+                    and block.get("type") in ("thinking", "redacted_thinking", "text")
                 ]
-                if any(b.get("type") == "thinking" for b in full_blocks):
+                if any(
+                    b.get("type") in ("thinking", "redacted_thinking") for b in full_blocks
+                ):
                     end_data["content_blocks"] = full_blocks
             else:
                 end_data["content"] = str(raw_content)
             tool_calls = parse_tool_calls_from_ai_message(accumulated)
             if tool_calls:
                 end_data["tool_calls"] = [tc.model_dump() for tc in tool_calls]
+            end_data.update(self._extract_replay_metadata(accumulated))
         logger.info(
             "LLM stream complete model=%s provider=%s "
             "output_tokens=%s cost_usd=%s run_id=%s",
