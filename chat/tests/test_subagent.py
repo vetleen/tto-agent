@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from chat.models import ChatMessage, ChatThread, SubAgentRun
 from chat.subagent_limits import (
+    STALE_RUNNING_MINUTES,
     _expire_stale_runs,
     check_subagent_limits,
     create_subagent_run_if_allowed,
@@ -517,7 +518,7 @@ class StaleRunExpirationTests(TestCase):
             prompt="stuck", status=SubAgentRun.Status.RUNNING,
         )
         SubAgentRun.objects.filter(pk=run.pk).update(
-            started_at=timezone.now() - timedelta(minutes=11),
+            started_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
         )
 
         expired = _expire_stale_runs()

@@ -189,13 +189,17 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
     run = SubAgentRun.objects.select_related("user", "thread").get(pk=run_id)
 
     try:
-        # Guarded transition: if the user cancelled while the run was PENDING
-        # (status already FAILED), don't resurrect it.
+        # Guarded transition: only (re-)enter from a non-terminal state. PENDING
+        # is the first run; RUNNING is a legitimate Celery retry after a retryable
+        # mid-run error (the service leaves the row RUNNING). A COMPLETED row must
+        # NOT be resurrected — a retry triggered by a transient error AFTER
+        # completion (e.g. persisting the result message) would otherwise flip it
+        # back to RUNNING and re-run the whole LLM job. FAILED is cancelled/terminal.
         started = SubAgentRun.objects.filter(pk=run_id).exclude(
-            status=SubAgentRun.Status.FAILED,
+            status__in=[SubAgentRun.Status.FAILED, SubAgentRun.Status.COMPLETED],
         ).update(status=SubAgentRun.Status.RUNNING, started_at=timezone.now())
         if not started:
-            logger.info("Sub-agent run %s was cancelled before starting; skipping", run_id)
+            logger.info("Sub-agent run %s already terminal; skipping re-entry", run_id)
             return
 
         user = run.user

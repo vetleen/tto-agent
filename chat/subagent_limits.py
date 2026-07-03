@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
@@ -14,7 +15,10 @@ SUBAGENT_MAX_SYSTEM = int(os.environ.get("SUBAGENT_MAX_SYSTEM", "8"))
 SUBAGENT_WORKER_SLOTS = int(os.environ.get("SUBAGENT_WORKER_SLOTS", "4"))
 
 STALE_PENDING_MINUTES = 7
-STALE_RUNNING_MINUTES = 10
+# Must comfortably exceed the Celery run_subagent_task hard time_limit (600s = 10
+# min) so the sweeper never expires a run the worker is still legitimately
+# executing (which would discard its completed result).
+STALE_RUNNING_MINUTES = 15
 
 
 def _expire_stale_runs() -> int:
@@ -45,9 +49,14 @@ def _expire_stale_runs() -> int:
     ).values_list("id", "thread_id"))
 
     expired = 0
+    # Re-assert the status in the UPDATE filter: a run that transitioned since the
+    # SELECT above (PENDING→RUNNING, or RUNNING→COMPLETED) must not be clobbered to
+    # FAILED — that would kill a legitimately-started run or discard a just-finished
+    # result.
     if stale_pending:
         expired += SubAgentRun.objects.filter(
             pk__in=[r[0] for r in stale_pending],
+            status=SubAgentRun.Status.PENDING,
         ).update(
             status=SubAgentRun.Status.FAILED,
             error="Expired: stuck in pending too long.",
@@ -56,6 +65,7 @@ def _expire_stale_runs() -> int:
     if stale_running:
         expired += SubAgentRun.objects.filter(
             pk__in=[r[0] for r in stale_running],
+            status=SubAgentRun.Status.RUNNING,
         ).update(
             status=SubAgentRun.Status.FAILED,
             error="Expired: stuck in running too long.",
@@ -137,14 +147,20 @@ def create_subagent_run_if_allowed(user, **run_kwargs):
     active_statuses = [SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING]
 
     with transaction.atomic():
-        locked_qs = SubAgentRun.objects.select_for_update().filter(
-            status__in=active_statuses,
-        )
-        user_count = locked_qs.filter(user=user).count()
+        # Lock the user row to serialize concurrent creates for the SAME user —
+        # the realistic race is one turn's parallel chat_subagent_create calls
+        # (simple_chat runs tool calls in a ThreadPoolExecutor). select_for_update
+        # on the COUNT query itself takes no lock (Django strips FOR UPDATE from
+        # aggregates), so the per-user cap needs a real row lock to hold. The
+        # system-wide cap stays best-effort.
+        get_user_model().objects.select_for_update().get(pk=user.pk)
+
+        active = SubAgentRun.objects.filter(status__in=active_statuses)
+        user_count = active.filter(user=user).count()
         if user_count >= SUBAGENT_MAX_PER_USER:
             return (None, "You have too many sub-agents running. Please wait for some to finish.")
 
-        system_count = locked_qs.count()
+        system_count = active.count()
         if system_count >= SUBAGENT_MAX_SYSTEM:
             return (None, "The system is busy. Please try again shortly.")
 

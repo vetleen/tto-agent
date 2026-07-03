@@ -65,10 +65,23 @@ class HeadlessTurnRunner(ChatConsumer):
         self.channel_name = None
 
     async def run_loop_turn(self, thread, content, *, history_mode, data_room_ids, active_skill_ids):
-        """Populate context, persist the loop prompt, and run one full turn."""
+        """Populate context, persist the loop prompt, and run one full turn.
+
+        Returns ``True`` if the turn ran, ``False`` if it was skipped because the
+        owner is suspended or over budget (the same gates the interactive receive
+        path enforces) — the caller advances the schedule but doesn't count the run.
+        """
         # Resolve org customization + preferences for this user (same helpers
         # the live consumer uses on connect / per message).
         await self._load_membership()
+        # Same gates the interactive path applies per message: a suspended or
+        # over-budget owner's loop must not spend on a headless turn.
+        if await self._check_suspension() or await self._check_budget_exceeded():
+            logger.info(
+                "Loop turn skipped for thread %s: owner suspended or over budget",
+                thread.id,
+            )
+            return False
         self.resolved_prefs = await self._resolve_preferences()
         self.data_room_ids = data_room_ids
         self.active_skill_ids = active_skill_ids
@@ -83,6 +96,7 @@ class HeadlessTurnRunner(ChatConsumer):
         await self.run_turn_to_completion(
             thread, content, history_mode=history_mode, is_loop_turn=True,
         )
+        return True
 
 
 def enqueue_due_loops() -> int:
@@ -142,24 +156,25 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
             ).values_list("skill_id", flat=True)
         ]
 
-        async_to_sync(runner.run_loop_turn)(
+        ran = async_to_sync(runner.run_loop_turn)(
             loop.thread, loop.prompt,
             history_mode=loop.history_mode,
             data_room_ids=data_room_ids,
             active_skill_ids=active_skill_ids,
         )
 
-        loop.runs_completed += 1
-        loop.last_result_at = timezone.now()
+        # A skipped run (suspended / over budget) still advances the schedule so
+        # the loop retries next cadence, but doesn't consume a run or a result.
         loop.consecutive_errors = 0
         loop.next_run = next_run_for_loop(loop, fire_time)
-        update_fields = [
-            "runs_completed", "last_result_at", "consecutive_errors",
-            "next_run", "updated_at",
-        ]
-        if loop.max_runs is not None and loop.runs_completed >= loop.max_runs:
-            loop.status = Loop.Status.PAUSED
-            update_fields.append("status")
+        update_fields = ["consecutive_errors", "next_run", "updated_at"]
+        if ran:
+            loop.runs_completed += 1
+            loop.last_result_at = timezone.now()
+            update_fields += ["runs_completed", "last_result_at"]
+            if loop.max_runs is not None and loop.runs_completed >= loop.max_runs:
+                loop.status = Loop.Status.PAUSED
+                update_fields.append("status")
         loop.save(update_fields=update_fields)
         if loop.status == Loop.Status.PAUSED:
             _mirror_archive_to_thread(loop, True)
@@ -172,9 +187,16 @@ def execute_loop_run(loop_id: uuid.UUID) -> None:
             loop.status = Loop.Status.PAUSED
             update_fields.append("status")
         else:
-            # Reschedule and try again on the next cadence tick.
-            loop.next_run = next_run_for_loop(loop, fire_time)
-            update_fields.append("next_run")
+            # Reschedule and try again on the next cadence tick. Guard the
+            # recompute: a broken schedule (e.g. a legacy loop with a bad tz)
+            # must not skip the consecutive_errors save below — otherwise the
+            # counter never persists, auto-pause never engages, and the loop
+            # hot-loops a full turn every tick.
+            try:
+                loop.next_run = next_run_for_loop(loop, fire_time)
+                update_fields.append("next_run")
+            except Exception:
+                logger.exception("Loop %s next_run recompute failed", loop_id)
         loop.save(update_fields=update_fields)
         if loop.status == Loop.Status.PAUSED:
             _mirror_archive_to_thread(loop, True)
@@ -233,15 +255,17 @@ def _parse_hhmm(value):
 def _parse_local_dt(value, tz_name, now):
     """Parse a 'YYYY-MM-DDTHH:MM' datetime-local string in tz into aware UTC."""
     from datetime import datetime as _dt
-    from zoneinfo import ZoneInfo
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     if not value:
         return None
     try:
         naive = _dt.strptime(value[:16], "%Y-%m-%dT%H:%M")
-    except (ValueError, TypeError):
+        # ZoneInfoNotFoundError (a KeyError subclass) is NOT caught by
+        # (ValueError, TypeError) — include it so a bad tz returns None, not a 500.
+        return naive.replace(tzinfo=ZoneInfo(tz_name)).astimezone(ZoneInfo("UTC"))
+    except (ValueError, TypeError, ZoneInfoNotFoundError):
         return None
-    return naive.replace(tzinfo=ZoneInfo(tz_name)).astimezone(ZoneInfo("UTC"))
 
 
 def _build_loop_fields(body, *, now, tz_name):
@@ -250,10 +274,22 @@ def _build_loop_fields(body, *, now, tz_name):
     Returns ``(fields, errors)``. ``fields`` is a dict ready to splat onto a
     Loop; ``errors`` is a list of user-facing strings.
     """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
     from chat.loop_schedule import compute_next_run
     from chat.models import Loop
 
     errors = []
+    # Validate the timezone up front so an invalid IANA name (e.g. an LLM passing
+    # "Oslo") never persists. An unvalidated tz becomes a poison row: the first
+    # fire runs, then compute_next_run raises ZoneInfoNotFoundError forever. Fall
+    # back to UTC only to let field-building finish — the error aborts the save.
+    try:
+        ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        errors.append(f"'{tz_name}' is not a valid time zone.")
+        tz_name = "UTC"
+
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         errors.append("Please enter a prompt for the loop to run.")
