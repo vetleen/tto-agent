@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid as uuid_lib
 from typing import Any
 
@@ -97,6 +98,8 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self.meeting_id: int | None = None
         self._stopped: bool = False
         self._stop_requested: bool = False
+        # Server-side session ceiling reference point (see _heartbeat_loop).
+        self._connected_monotonic: float = time.monotonic()
         self._pending_meta: list[dict[str, Any]] = []
         self._segment_index_base: int = 0
         self._segments_total: int = 0
@@ -224,10 +227,34 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         transports that kill idle connections (Heroku router, proxies) don't
         tear it down during a quiet stretch — e.g. when transcription of a
         chunk takes longer than usual and no other frames are flowing.
+
+        Also enforces the server-side session ceiling
+        (``MEETING_AUTO_STOP_MAX_SECONDS``, default 4h). Auto-stop is otherwise
+        client-enforced — and the heartbeat itself keeps the socket alive — so
+        a hung or malicious client could stream audio (billable Realtime
+        tokens) indefinitely. Hitting the ceiling finalizes exactly like a
+        user-initiated Stop: transcript preserved, status READY.
         """
+        max_seconds = getattr(settings, "MEETING_AUTO_STOP_MAX_SECONDS", 14400)
         try:
             while True:
                 await asyncio.sleep(MEETING_WS_HEARTBEAT_SECONDS)
+                if (
+                    max_seconds > 0
+                    and not self._stop_requested
+                    and not self._stopped
+                    and time.monotonic() - self._connected_monotonic >= max_seconds
+                ):
+                    logger.warning(
+                        "meetings: session ceiling (%ss) reached — force-stopping "
+                        "live transcription for meeting=%s",
+                        max_seconds, self.meeting_uuid,
+                    )
+                    await self._send_error(
+                        "Maximum session length reached — transcription stopped."
+                    )
+                    await self._handle_stop()
+                    return
                 try:
                     await self.send(text_data=json.dumps({"type": "ping"}))
                 except Exception:

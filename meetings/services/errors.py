@@ -71,6 +71,16 @@ def classify_transcription_error(exc: Exception) -> ClassifiedTranscriptionError
             log_level="warning",
         )
 
+    # Celery soft time limit: the upload ran longer than the task's wall-clock
+    # ceiling. The orchestrator persists whatever was transcribed before this
+    # propagates, so the user keeps a partial transcript.
+    if exc_name == "SoftTimeLimitExceeded":
+        return ClassifiedTranscriptionError(
+            error_code="timed_out",
+            user_message="Transcription ran out of time before finishing.",
+            log_level="warning",
+        )
+
     # ffmpeg split hung and was killed by the orchestrator's watchdog.
     if exc_name == "AudioSplitTimeoutError":
         return ClassifiedTranscriptionError(

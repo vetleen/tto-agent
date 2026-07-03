@@ -279,6 +279,12 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         # so a reconnect can't pair the next utterance with a stale offset. The
         # byte counter keeps running to preserve a continuous meeting timeline.
         self._speech_start_offsets.clear()
+        # Commits orphaned by the dropped socket can never produce a .completed
+        # on the new one. Reset the pairing so finalize()'s committed-vs-completed
+        # wait doesn't stall on ghosts and burn its full timeout on every Stop
+        # after a reconnect.
+        self._committed_count = 0
+        self._completed_count = 0
         self._ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
         await self._send_session_update()
         self._recv_task = asyncio.create_task(self._receive_loop())
@@ -314,7 +320,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                 "prefix_padding_ms": 200,
                 "silence_duration_ms": 600,
             },
-            "noise_reduction": {"type": "near_field"},
+            # far_field: meetings are typically captured by a laptop or
+            # conference-room mic at a distance, not a close-talking headset
+            # (which is what near_field is tuned for per OpenAI's docs).
+            "noise_reduction": {"type": "far_field"},
         }
         payload = json.dumps({
             "type": "session.update",
@@ -342,6 +351,13 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                     logger.warning("OpenAIRealtimeSession: non-JSON frame (%d bytes) — dropping", len(message))
                     continue
                 await self._dispatch_server_event(event.get("type", ""), event)
+            # Normal iteration end = the server closed the socket cleanly
+            # (e.g. session lifetime reached). Reconnect just like an abnormal
+            # drop — otherwise this is a silent stall: audio keeps flowing into
+            # a dead session and no error ever surfaces.
+            if not self._closed:
+                logger.warning("OpenAIRealtimeSession: server closed the socket; reconnecting")
+                asyncio.create_task(self._try_reconnect())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -407,6 +423,30 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
                 start_offset_seconds=start_bytes / (24_000 * 2),
             ))
             self._completed_count += 1
+            return
+        if evt_type == "conversation.item.input_audio_transcription.failed":
+            # A committed buffer whose transcription failed server-side. Without
+            # this branch the event fell into the ignored catch-all: the
+            # utterance was silently lost and _completed_count never caught up
+            # to _committed_count, so every later finalize() waited out its
+            # full timeout.
+            err = event.get("error") or {}
+            message = (err.get("message") or "") if isinstance(err, dict) else ""
+            logger.warning(
+                "OpenAIRealtimeSession: utterance transcription failed (item=%s): %s",
+                event.get("item_id", "") or "", message,
+            )
+            # The commit will never complete — advance the completed counter so
+            # finalize() doesn't stall, and drop the FIFO-paired start offset so
+            # the next utterance doesn't inherit a stale one.
+            self._completed_count += 1
+            if self._speech_start_offsets:
+                self._speech_start_offsets.popleft()
+            await self._events.put(SessionError(
+                code="utterance_failed",
+                message=message or "One utterance could not be transcribed.",
+                fatal=False,
+            ))
             return
         if evt_type == "error":
             err = event.get("error") or {}

@@ -532,3 +532,32 @@ class TranscriptionUsageExtractionTests(TestCase):
         self.assertEqual(log_kwargs["output_tokens"], 250)
         self.assertEqual(log_kwargs["total_tokens"], 1250)
         self.assertEqual(log_kwargs["audio_tokens"], 800)
+
+
+class SharedOpenAIClientTests(TestCase):
+    """Tests for the process-wide cached OpenAI client (_get_openai_client)."""
+
+    def test_client_cached_per_class_and_rebuilt_when_class_changes(self):
+        from llm.service import transcription_service as ts
+
+        with patch("openai.OpenAI") as first_cls:
+            c1 = ts._get_openai_client()
+            c2 = ts._get_openai_client()
+            # Same class -> one construction, same cached instance.
+            self.assertIs(c1, c2)
+            self.assertIs(c1, first_cls.return_value)
+            first_cls.assert_called_once()
+            # Explicit timeouts + retries are pinned at construction: the SDK
+            # default 600s read timeout would let one wedged request burn most
+            # of a Celery task's budget.
+            kwargs = first_cls.call_args.kwargs
+            self.assertEqual(kwargs["max_retries"], 2)
+            self.assertEqual(kwargs["timeout"].read, 300.0)
+            self.assertEqual(kwargs["timeout"].connect, 10.0)
+
+        with patch("openai.OpenAI") as second_cls:
+            # A different class object (a fresh test patch) must NOT be served
+            # the stale cached client — it gets one built from the new class.
+            c3 = ts._get_openai_client()
+            self.assertIs(c3, second_cls.return_value)
+            self.assertIsNot(c3, c1)

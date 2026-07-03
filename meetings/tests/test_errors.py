@@ -31,6 +31,10 @@ class AudioSplitTimeoutError(Exception):
     pass
 
 
+class SoftTimeLimitExceeded(Exception):
+    pass
+
+
 class ClassifyTranscriptionErrorTests(SimpleTestCase):
     def test_rate_limited_by_class_name(self):
         c = classify_transcription_error(RateLimitError("slow down"))
@@ -57,6 +61,15 @@ class ClassifyTranscriptionErrorTests(SimpleTestCase):
         )
         self.assertEqual(c.error_code, "undecodable_audio")
         self.assertEqual(c.log_level, "warning")
+
+    def test_soft_time_limit_maps_to_timed_out(self):
+        # Celery kills the upload task past its wall-clock ceiling; the user
+        # should see a friendly "ran out of time" message (with the partial
+        # transcript preserved by the orchestrator), not the generic fallback.
+        c = classify_transcription_error(SoftTimeLimitExceeded())
+        self.assertEqual(c.error_code, "timed_out")
+        self.assertEqual(c.log_level, "warning")
+        self.assertIn("ran out of time", c.user_message.lower())
 
     def test_split_timeout_by_class_name(self):
         c = classify_transcription_error(AudioSplitTimeoutError("hung"))

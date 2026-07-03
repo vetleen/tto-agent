@@ -151,7 +151,8 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(audio_input["transcription"]["language"], "en")
         self.assertIn("OncoBio Therapeutics", audio_input["transcription"]["prompt"])
         self.assertEqual(audio_input["turn_detection"]["type"], "server_vad")
-        self.assertEqual(audio_input["noise_reduction"], {"type": "near_field"})
+        # far_field: meetings are captured by laptop / room mics, not headsets.
+        self.assertEqual(audio_input["noise_reduction"], {"type": "far_field"})
 
     def test_completed_reports_utterance_start_offset_not_end(self):
         """start_offset_seconds must reflect where the utterance STARTED (the
@@ -407,6 +408,126 @@ class OpenAIRealtimeSessionTests(TestCase):
             isinstance(e, TranscriptCompleted) and e.text == "still here."
             for e in seen
         ))
+
+    def test_failed_utterance_surfaces_nonfatal_error_and_keeps_counters_paired(self):
+        # A committed buffer whose transcription fails server-side emits
+        # ``conversation.item.input_audio_transcription.failed``. It must
+        # (a) surface as a NON-fatal SessionError (the utterance is lost but
+        # the session is healthy), (b) advance the completed counter so
+        # finalize() doesn't wait out its full timeout for a .completed that
+        # will never come, and (c) drop the FIFO-paired speech-start offset so
+        # the next utterance doesn't inherit a stale one.
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+            {"type": "input_audio_buffer.speech_started"},
+            {"type": "input_audio_buffer.committed"},
+            {
+                "type": "conversation.item.input_audio_transcription.failed",
+                "item_id": "item_1",
+                "error": {"type": "server_error", "message": "processing failed"},
+            },
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            errors: list[SessionError] = []
+            async for evt in session.events():
+                if isinstance(evt, SessionError):
+                    errors.append(evt)
+                    break
+            await session.aclose()
+            return errors
+
+        errors = _run(run())
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].code, "utterance_failed")
+        self.assertFalse(errors[0].fatal)
+        self.assertEqual(session._committed_count, session._completed_count)
+        self.assertEqual(len(session._speech_start_offsets), 0)
+
+    def test_reconnect_resets_commit_completed_pairing(self):
+        # Commits orphaned by a dropped socket never produce a .completed on
+        # the new one. If _open() didn't reset the counters, finalize() would
+        # burn its full timeout on every Stop after any reconnect.
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            session._committed_count = 3
+            session._completed_count = 1
+            old_recv = session._recv_task
+            await session._open()  # what _try_reconnect calls
+            # The old recv task iterates the same fake socket; retire it so it
+            # doesn't outlive the test loop.
+            old_recv.cancel()
+            try:
+                await old_recv
+            except (asyncio.CancelledError, Exception):
+                pass
+            await session.aclose()
+
+        _run(run())
+        self.assertEqual(session._committed_count, 0)
+        self.assertEqual(session._completed_count, 0)
+
+    def test_clean_server_close_triggers_reconnect(self):
+        # The websockets library ends iteration *normally* on a clean close
+        # (e.g. the server retiring the session at its lifetime cap). That
+        # must schedule a reconnect exactly like an abnormal drop — the old
+        # code only reconnected from the exception path, so a clean close
+        # became a silent stall: audio kept flowing into a dead session.
+        from unittest.mock import patch as mock_patch
+
+        ws1 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        ws2 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_2"}},
+        ])
+        sockets = iter([ws1, ws2])
+
+        async def factory(api_key: str, url: str):
+            return next(sockets)
+
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=factory,
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            with mock_patch(
+                "meetings.services.realtime_session._RECONNECT_BACKOFFS",
+                (0.0,) * 8,
+            ):
+                await session.connect()
+                # Server closes ws1 cleanly: iteration ends without an exception.
+                ws1._queue.put_nowait(None)
+                states: list[str] = []
+                async for evt in session.events():
+                    if isinstance(evt, SessionStatus):
+                        states.append(evt.state)
+                        # initial connect + reconnecting + reconnected
+                        if states.count("connected") == 2:
+                            break
+                await session.aclose()
+                return states
+
+        states = _run(run())
+        self.assertIn("reconnecting", states)
+        self.assertEqual(states.count("connected"), 2)
 
     def test_aclose_emits_disconnected_status(self):
         ws = _FakeWebSocket(script=[

@@ -314,6 +314,36 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             self.assertEqual(ping["type"], "ping")
             await comm.disconnect()
 
+    async def test_session_ceiling_force_stops(self):
+        """The server-side session ceiling (MEETING_AUTO_STOP_MAX_SECONDS)
+        force-stops a session that outlives it — the cost backstop for a hung
+        client whose socket (kept alive by our own heartbeat) would otherwise
+        stream audio forever. Finalizes like a user Stop: error + stopped
+        frames, meeting READY.
+        """
+        with patch.object(consumers_module, "MEETING_WS_HEARTBEAT_SECONDS", 0.05):
+            with override_settings(MEETING_AUTO_STOP_MAX_SECONDS=0.01):
+                comm = _make_communicator(self.meeting.uuid, self.user)
+                connected, _ = await comm.connect()
+                self.assertTrue(connected)
+                msg = json.loads(await comm.receive_from())
+                self.assertEqual(msg["type"], "started")
+
+                # First heartbeat tick finds the ceiling already passed: the
+                # deterministic sequence is error then stopped (no ping — the
+                # ceiling check runs before the ping send).
+                msg = json.loads(await comm.receive_from(timeout=2))
+                self.assertEqual(msg["type"], "error")
+                self.assertIn("Maximum session length", msg["message"])
+                msg = json.loads(await comm.receive_from(timeout=2))
+                self.assertEqual(msg["type"], "stopped")
+
+                meeting = await database_sync_to_async(Meeting.objects.get)(
+                    pk=self.meeting.pk
+                )
+                self.assertEqual(meeting.status, Meeting.Status.READY)
+                await comm.disconnect()
+
     async def test_resume_continues_segment_index_base(self):
         # Pre-populate one segment so the resume reconnect picks up at index 1.
         await database_sync_to_async(MeetingTranscriptSegment.objects.create)(

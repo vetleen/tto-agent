@@ -183,9 +183,17 @@ def transcribe_meeting_chunk_task(
 # block below, so a Celery retry would FileNotFoundError immediately. Per-chunk
 # transient retries (network flake / 429s) happen inside the orchestrator at
 # the right level — see meetings/services/audio_transcription.py.
+#
+# Time limits are sized for the worst legal upload, not the typical one: the
+# 50 MB byte cap admits many hours of low-bitrate audio (e.g. ~7h at 16 kbps),
+# which the orchestrator processes as dozens of sequential ~5-min chunks. 3h
+# wall clock covers that with margin. If the soft limit still fires,
+# SoftTimeLimitExceeded surfaces inside the current chunk call, the
+# orchestrator persists the partial transcript, and the classifier maps it to
+# a friendly "ran out of time" message — no stranded LIVE_TRANSCRIBING row.
 @shared_task(
-    time_limit=1800,
-    soft_time_limit=1740,
+    time_limit=10800,
+    soft_time_limit=10500,
 )
 def transcribe_uploaded_audio_task(
     meeting_id: int,
@@ -248,8 +256,11 @@ def transcribe_uploaded_audio_task(
 
 
 # Sweeper staleness thresholds. Chunk segments transcribe within the chunk
-# task's 600s hard limit, so 15 min is safely past it; the upload task's hard
-# limit is 1800s, so 60 min clears it with margin.
+# task's 600s hard limit, so 15 min is safely past it. Upload staleness keys
+# off Meeting.updated_at, which a healthy upload run refreshes continuously
+# (per-chunk progress writes plus sub-second partial-transcript flushes), so
+# 60 min of *silence* means the task is dead — the threshold does not need to
+# cover the upload task's multi-hour wall-clock ceiling.
 STALE_SEGMENT_MINUTES = 15
 STALE_UPLOAD_MINUTES = 60
 
