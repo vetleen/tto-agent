@@ -40,6 +40,10 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
             data_room_id=data_room_id,
             status=DataRoomDocument.Status.READY,
             is_archived=False,
+            # A quarantined doc's description can derive from blocked content
+            # (finalize generates it before the PII verdict lands), so keep such
+            # docs out of the room blurb.
+            is_quarantined=False,
         )
         .exclude(description="")
         .order_by("?")[:10]

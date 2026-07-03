@@ -670,18 +670,21 @@ class ReadDocumentTool(ContextAwareTool):
                     })
                     continue
 
-            if doc.is_quarantined:
-                documents.append({
-                    "doc_index": idx,
-                    "error": "This document is quarantined and unavailable.",
-                })
-                continue
-
+            # Gate on the version actually served (the live searchable one) — the
+            # same thing document_search surfaces. Doc-level is_quarantined is a
+            # UNION over retained versions (a kept-but-blocked draft flags it even
+            # while the live version stays clean and searchable), so it must not
+            # gate read access. A quarantined version never becomes active; the
+            # version-level check is belt-and-braces.
             version = doc.active_searchable_version
-            if version is None:
+            if version is None or version.is_quarantined:
                 documents.append({
                     "doc_index": idx,
-                    "error": f"No document with index {idx} found.",
+                    "error": (
+                        "This document is quarantined and unavailable."
+                        if doc.is_quarantined
+                        else f"No document with index {idx} found."
+                    ),
                 })
                 continue
 
@@ -1279,8 +1282,9 @@ class GetDocumentStatusTool(ContextAwareTool):
     end_label: str = "Checked document status"
     description: str = (
         "Check a data room document's current state: ready, processing, quarantined, or failed — and "
-        "whether the working version differs from the live searchable version. Use this after saving "
-        "to learn the async processing/quarantine outcome."
+        "whether the working version differs from the live searchable version. Saves report their "
+        "scan verdict directly in the save result; use this for documents that process asynchronously "
+        "(e.g. fresh uploads) or to check a document's state before opening or editing it."
     )
     args_schema: type[BaseModel] = DocumentStatusInput
 
@@ -1314,8 +1318,9 @@ def _collect_doc_images(doc, max_images: int = 4):
     from chat.services import SUPPORTED_IMAGE_TYPES
 
     out: list = []
-    # Read the released/searchable version, not the working head — callers gate on
-    # status=READY + not quarantined, so the searchable version is set and scanned.
+    # Read the released/searchable version, falling back to the working head —
+    # callers gate on status=READY and on the quarantine flag of this same
+    # resolved version, so the bytes served here are scanned and not quarantined.
     version = getattr(doc, "active_searchable_version", None) or getattr(doc, "current_version", None)
     if version is None:
         return out
@@ -1372,11 +1377,19 @@ class DocumentViewImageTool(ContextAwareTool):
                 results.append(f"Document #{idx}: {err}")
                 continue
             # Same gate as document_read: don't attach bytes from a document that is
-            # still scanning (don't leak scan state) or quarantined.
+            # still scanning (don't leak scan state). Quarantine is gated on the
+            # version actually served (_collect_doc_images reads active, falling
+            # back to current) — doc-level is_quarantined is a union over retained
+            # versions and would wrongly refuse a document whose live version is
+            # clean (e.g. after a deferred draft).
             if doc.status != DataRoomDocument.Status.READY:
                 results.append(f"Document #{idx}: No document with index {idx} found.")
                 continue
-            if doc.is_quarantined:
+            ver = doc.active_searchable_version or doc.current_version
+            if ver is None:
+                results.append(f"Document #{idx}: No document with index {idx} found.")
+                continue
+            if ver.is_quarantined:
                 results.append(f"Document #{idx}: This document is quarantined and unavailable.")
                 continue
             images = _collect_doc_images(doc)
@@ -1385,9 +1398,8 @@ class DocumentViewImageTool(ContextAwareTool):
                 continue
             # For an image-as-document, surface a reusable embed token alongside
             # the bytes so the model can place it in a canvas or its reply.
-            ver = doc.active_searchable_version or doc.current_version
             token = ""
-            if ver is not None and getattr(ver, "parser_type", "") == "image":
+            if getattr(ver, "parser_type", "") == "image":
                 token = get_or_create_version_image_token(
                     version_id=ver.id, mime=doc.mime_type, description=doc.description,
                 )

@@ -147,6 +147,41 @@ class ViewImageGateTests(TestCase):
         self.assertIn("quarantined", msg)
         self.assertEqual(list(self.ctx.pending_image_assets), [])
 
+    def test_deferred_draft_does_not_block_live_version(self):
+        # Doc-level is_quarantined is a union over retained versions: a kept-but-
+        # blocked draft sets it while the live version stays clean. The tool must
+        # gate on the served (live) version — here the doc has no image, so the
+        # answer is "no viewable image", not a quarantine refusal.
+        from documents.services.versioning import recompute_document_sensitivity
+
+        doc = make_document(self.room, self.user, status=READY, chunks=["clean"])
+        make_version(
+            doc, version_index=1, status=READY, is_quarantined=True,
+            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT, chunks=["flagged"],
+            make_active=False,
+        )
+        recompute_document_sensitivity(doc.pk)
+        msg = self._view(doc)
+        self.assertIn("no viewable image found", msg)
+        self.assertNotIn("quarantined", msg)
+
+    def test_quarantined_draft_with_no_live_version_refuses(self):
+        # A brand-new doc whose only version is a kept-but-blocked draft (active
+        # pointer never advanced) must refuse — the fallback to the working head
+        # would otherwise serve quarantined bytes.
+        doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.user,
+            original_filename="q.png", status=READY,
+        )
+        make_version(
+            doc, version_index=0, status=READY, is_quarantined=True,
+            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT,
+            make_active=False,
+        )
+        msg = self._view(doc)
+        self.assertIn("quarantined", msg)
+        self.assertEqual(list(self.ctx.pending_image_assets), [])
+
 
 # ---------------------------------------------------------------------------
 # A5 — json_script escaping on the Loops page

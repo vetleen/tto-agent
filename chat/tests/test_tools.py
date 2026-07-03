@@ -350,6 +350,89 @@ class ReadDocumentToolTests(TestCase):
         self.assertIn("quarantined", d["error"].lower())
         self.assertNotIn("content", d)
 
+    def test_deferred_draft_does_not_block_reading_live_version(self):
+        """A kept-but-blocked draft flags the doc-level quarantine union while the
+        last good version stays live and searchable. Reading must serve the live
+        version (coherent with document_search), not refuse the whole document."""
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.versioning import recompute_document_sensitivity
+        from documents.tests._helpers import make_document, make_version
+
+        doc = make_document(
+            self.data_room, self.user, chunks=["Clean live content"],
+            original_filename="deferred.md",
+        )
+        make_version(
+            doc, version_index=1, status=DataRoomDocument.Status.READY,
+            is_quarantined=True,
+            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT,
+            chunks=["Blocked draft content"],
+            make_active=False,  # deferred: working head advances, live pointer doesn't
+        )
+        recompute_document_sensitivity(doc.pk)
+        self.assertTrue(DataRoomDocument.objects.get(pk=doc.pk).is_quarantined)
+
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        d = result["documents"][0]
+        self.assertNotIn("error", d)
+        self.assertIn("Clean live content", d["content"])
+        self.assertNotIn("Blocked draft content", d["content"])
+
+    def test_remediated_document_with_quarantined_history_is_readable(self):
+        """v0 was blocked and retained (deferred new doc), v1 is the clean
+        remediation and is live. The union flag stays set while v0 is retained;
+        reading must serve v1, not stay refused forever."""
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.versioning import recompute_document_sensitivity
+        from documents.tests._helpers import make_version
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="remediated.md", status=DataRoomDocument.Status.READY,
+        )
+        make_version(
+            doc, version_index=0, is_quarantined=True,
+            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT,
+            chunks=["Blocked original"], make_active=False,
+        )
+        make_version(
+            doc, version_index=1,
+            origin=DataRoomDocumentVersion.Origin.AGENT_CREATED,
+            chunks=["Clean remediated content"],
+        )
+        recompute_document_sensitivity(doc.pk)
+        self.assertTrue(DataRoomDocument.objects.get(pk=doc.pk).is_quarantined)
+
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        d = result["documents"][0]
+        self.assertNotIn("error", d)
+        self.assertIn("Clean remediated content", d["content"])
+        self.assertNotIn("Blocked original", d["content"])
+
+    def test_deferred_new_document_with_no_live_version_stays_dark(self):
+        """A brand-new doc whose only version is a kept-but-blocked draft has no
+        live version at all — reading refuses with the quarantine reason."""
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.versioning import recompute_document_sensitivity
+        from documents.tests._helpers import make_version
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="dark.md", status=DataRoomDocument.Status.READY,
+        )
+        make_version(
+            doc, version_index=0, is_quarantined=True,
+            origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT,
+            chunks=["Blocked only version"], make_active=False,
+        )
+        recompute_document_sensitivity(doc.pk)
+
+        result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
+        d = result["documents"][0]
+        self.assertIn("error", d)
+        self.assertIn("quarantined", d["error"].lower())
+        self.assertNotIn("content", d)
+
     def test_image_document_includes_embed_token(self):
         from documents.tests._helpers import make_version
 

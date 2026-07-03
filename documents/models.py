@@ -181,7 +181,6 @@ class DataRoomDocumentVersion(models.Model):
         UPLOADED = "uploaded", "Uploaded"
         AGENT_CREATED = "agent_created", "Agent created"
         CANVAS_EXPORT = "canvas_export", "Canvas export"
-        USER_EDIT = "user_edit", "User edit"
         RESTORE = "restore", "Restore"
 
     document = models.ForeignKey(

@@ -183,3 +183,41 @@ class FinalizeVersionEagerTests(TestCase):
             finalize_version(doc.current_version_id, eager=True)
         doc.refresh_from_db()
         self.assertEqual(doc.active_searchable_version_id, doc.current_version_id)
+
+    @override_settings(**_MODELS)
+    def test_quarantined_first_version_clears_description(self):
+        """With no released version, the description was generated from blocked
+        content only — it must be dropped (a later clean save regenerates it)."""
+        from documents.tasks import finalize_version
+        doc = self._held_version()
+        with patch("documents.services.pii_scan.resolve_pii_gate", return_value=_GATE_ON), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", side_effect=_article9), \
+             patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value={"description": "Sensitive summary", "tags": {}, "document_date": None}):
+            finalize_version(doc.current_version_id, eager=True)
+        doc.refresh_from_db()
+        self.assertEqual(doc.description, "")
+        self.assertIsNone(doc.active_searchable_version_id)
+        self.assertEqual(doc.status, Status.READY)
+        self.assertTrue(doc.current_version.is_quarantined)
+
+    @override_settings(**_MODELS)
+    def test_quarantined_draft_keeps_description_of_released_version(self):
+        """A blocked draft on a doc with a live version must not clobber the
+        description, which derives from previously released content."""
+        from documents.tests._helpers import make_document, make_version
+        from documents.tasks import finalize_version
+        doc = make_document(
+            self.data_room, self.user, chunks=["clean"], original_filename="live.md",
+            description="Existing summary",
+        )
+        make_version(doc, version_index=1, status=Status.SCANNING, searchable=False,
+                     origin=Origin.CANVAS_EXPORT, chunks=[{"text": "draft"}],
+                     make_active=False)
+        with patch("documents.services.pii_scan.resolve_pii_gate", return_value=_GATE_ON), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", side_effect=_article9):
+            finalize_version(doc.current_version_id, eager=True)
+        doc.refresh_from_db()
+        self.assertEqual(doc.description, "Existing summary")
+        self.assertEqual(doc.active_searchable_version.version_index, 0)
+        self.assertTrue(doc.current_version.is_quarantined)

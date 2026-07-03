@@ -253,10 +253,14 @@ def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None)
         else:
             # Quarantined: do not advance active. For a fresh upload (no prior active
             # version) mark the document READY so the UI shows processing finished;
-            # retrieval still surfaces nothing because active stays None.
+            # retrieval still surfaces nothing because active stays None. Also drop
+            # the description: with no released version it derives solely from
+            # blocked content (it is generated above, before the PII verdict) and
+            # would otherwise surface in search results after a later remediation.
+            # A clean version regenerates it (generation triggers on empty).
             if doc.active_searchable_version_id is None:
                 DataRoomDocument.objects.filter(pk=document_id).update(
-                    status=Status.READY, updated_at=timezone.now()
+                    status=Status.READY, description="", updated_at=timezone.now()
                 )
             recompute_document_sensitivity(document_id)
 

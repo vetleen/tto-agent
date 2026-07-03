@@ -271,8 +271,9 @@ def open_working_version(document):
 def document_status(document) -> dict:
     """Report processing/searchability state of a document for the agent.
 
-    The async quarantine/processing verdict reaches the agent here, since save
-    returns before the pipeline finishes.
+    Agent saves are scanned synchronously and report their verdict inline
+    (documents.services.sync_scan); this covers the still-async paths — uploads
+    and meeting exports — and working-vs-live divergence after a deferred draft.
     """
     from documents.models import DataRoomDocument
 
