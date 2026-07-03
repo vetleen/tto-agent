@@ -693,7 +693,12 @@ class BaseLangChainChatModel(ChatModel):
         callbacks = self._get_callbacks(request)
         config = self._build_config(request, callbacks)
         last_chunk = None
-        accumulated = None  # AIMessageChunk accumulator for tool_calls aggregation
+        # Collect chunks and merge once after the stream (add_ai_message_chunks
+        # below) rather than `accumulated + chunk` per token, which re-merges the
+        # whole message on every chunk — O(n^2) over the response length on the
+        # hot streaming path. The live UI stream is driven per-chunk by
+        # _parse_chunk and does not depend on this accumulation.
+        chunks: list = []
         output_text_parts: list[str] = []
         # True once any token/thinking event has been yielded in the current
         # attempt. A retry after that point would replay already-delivered
@@ -707,7 +712,7 @@ class BaseLangChainChatModel(ChatModel):
             try:
                 for chunk in client.stream(lc_messages, config=config):
                     last_chunk = chunk
-                    accumulated = chunk if accumulated is None else accumulated + chunk
+                    chunks.append(chunk)
 
                     for event_type, event_data in self._parse_chunk(chunk):
                         if event_type == "token":
@@ -821,6 +826,15 @@ class BaseLangChainChatModel(ChatModel):
                 run_id=run_id,
             )
             return
+
+        # Merge all streamed chunks in a single pass — avoids the per-token
+        # O(n^2) accumulation. Chunks persist across a pre-content retry, so this
+        # reduces exactly what `accumulated + chunk` did before.
+        if chunks:
+            from langchain_core.messages.ai import add_ai_message_chunks
+            accumulated = add_ai_message_chunks(chunks[0], *chunks[1:])
+        else:
+            accumulated = None
 
         # Use accumulated (not last_chunk) for usage and metadata extraction.
         # LangChain may append a trailing empty chunk with chunk_position="last"

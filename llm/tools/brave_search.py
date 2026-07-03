@@ -7,65 +7,26 @@ import json
 import logging
 import os
 import re
-import threading
 import time
 
 import requests
 from pydantic import BaseModel, Field
 
 from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
+from llm.tools._throttle import (
+    BACKOFF_BASE as _BACKOFF_BASE,
+    MAX_RETRIES as _MAX_RETRIES,
+    RATE_LIMIT_BACKOFF_SCHEDULE as _RATE_LIMIT_BACKOFF_SCHEDULE,
+    TokenBucketRateLimiter as _TokenBucketRateLimiter,
+    parse_rpm as _parse_rpm,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class _TokenBucketRateLimiter:
-    """Process-wide token bucket that gates outgoing requests."""
-
-    def __init__(self, requests_per_second: float, burst: int = 1):
-        self._rps = requests_per_second
-        self._max_tokens = burst
-        self._tokens = float(burst)
-        self._last_refill = time.monotonic()
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                self._tokens = min(
-                    self._max_tokens,
-                    self._tokens + (now - self._last_refill) * self._rps,
-                )
-                self._last_refill = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                wait = (1.0 - self._tokens) / self._rps
-            time.sleep(wait)
-
-
-def _parse_rpm(env_value: str | None, default: int = 45) -> int:
-    """Parse a requests-per-minute env var, falling back to *default*.
-
-    Guards module import (a malformed value must not abort registration of the
-    whole llm app) and the token-bucket divisor (0/negative would raise
-    ZeroDivisionError on the second acquire).
-    """
-    try:
-        rpm = int(env_value) if env_value is not None else default
-    except (TypeError, ValueError):
-        return default
-    return rpm if rpm > 0 else default
-
 
 _BRAVE_SEARCH_RPM = _parse_rpm(os.environ.get("BRAVE_SEARCH_RPM"), 45)
 _brave_rate_limiter = _TokenBucketRateLimiter(
     requests_per_second=_BRAVE_SEARCH_RPM / 60.0, burst=1
 )
-
-_MAX_RETRIES = 3
-_BACKOFF_BASE = 0.5
-_RATE_LIMIT_BACKOFF_SCHEDULE: list[float] = [5.0, 15.0, 30.0, 60.0]
 
 # Brave freshness presets (pd/pw/pm/py) or a custom YYYY-MM-DDtoYYYY-MM-DD range.
 _FRESHNESS_PRESET_RE = re.compile(r"^p[dwmy]$")

@@ -103,15 +103,18 @@ def _serialize_tool_schemas(tool_schemas: list | None, tool_names: list | None =
     return result
 
 
-def _resolve_user(user_id: str | None):
-    """Look up the User FK from a string user_id. Returns None on any failure."""
-    if not user_id:
-        return None
+def _user_fk_id(user_id: str | None) -> int | None:
+    """Coerce a context user_id string to the FK value, without a DB lookup.
+
+    Passing the id straight to ``user_id=`` on create avoids a per-log ``User``
+    SELECT on every call. The FK is nullable + ``on_delete=SET_NULL``; the rare
+    case where the id references an already-deleted user raises IntegrityError on
+    insert, which the caller's best-effort try/except swallows — losing one cost
+    log for a mid-call user deletion is acceptable versus a SELECT on every write.
+    """
     try:
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-        return User.objects.filter(pk=user_id).first()
-    except Exception:
+        return int(user_id) if user_id else None
+    except (TypeError, ValueError):
         return None
 
 
@@ -141,7 +144,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
         context = request.context
         metadata = response.metadata or {}
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",
@@ -282,7 +285,7 @@ def log_stream(
         if error_event is not None:
             err_data = error_event.data or {}
             LLMCallLog.objects.create(
-                user=_resolve_user(context.user_id if context else None),
+                user_id=_user_fk_id(context.user_id if context else None),
                 run_id=context.run_id if context else "",
                 trace_id=(context.trace_id if context else "") or "",
                 conversation_id=(context.conversation_id if context else "") or "",
@@ -309,7 +312,7 @@ def log_stream(
             return
 
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",
@@ -351,7 +354,7 @@ def log_error(
 
         context = request.context
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",
@@ -400,7 +403,7 @@ def log_transcription(
             from llm.types.context import RunContext
 
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",
@@ -444,7 +447,7 @@ def log_transcription_error(
         from llm.models import LLMCallLog
 
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",
@@ -497,7 +500,7 @@ def log_image_generation(
         action = "image edit" if is_edit else "image generation"
         size = f"{width}x{height}" if width and height else "?"
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",
@@ -537,7 +540,7 @@ def log_image_generation_error(
 
         action = "image edit" if is_edit else "image generation"
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",
@@ -595,7 +598,7 @@ def log_transcription_streaming(
 
         label = "realtime utterance" if kind == "realtime_utterance" else "realtime session"
         LLMCallLog.objects.create(
-            user=_resolve_user(context.user_id if context else None),
+            user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
             conversation_id=(context.conversation_id if context else "") or "",

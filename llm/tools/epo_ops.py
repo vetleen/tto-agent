@@ -33,37 +33,14 @@ import requests
 from pydantic import BaseModel, Field
 
 from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
+from llm.tools._throttle import (
+    BACKOFF_BASE as _BACKOFF_BASE,
+    MAX_RETRIES as _MAX_RETRIES,
+    RATE_LIMIT_BACKOFF_SCHEDULE as _RATE_LIMIT_BACKOFF_SCHEDULE,
+    TokenBucketRateLimiter as _TokenBucketRateLimiter,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# --------------------------------------------------------------------------- #
-# Rate limiter (copied from brave_search to keep OPS throttling independent).
-# --------------------------------------------------------------------------- #
-class _TokenBucketRateLimiter:
-    """Process-wide token bucket that gates outgoing requests."""
-
-    def __init__(self, requests_per_second: float, burst: int = 1):
-        self._rps = requests_per_second
-        self._max_tokens = burst
-        self._tokens = float(burst)
-        self._last_refill = time.monotonic()
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                self._tokens = min(
-                    self._max_tokens,
-                    self._tokens + (now - self._last_refill) * self._rps,
-                )
-                self._last_refill = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                wait = (1.0 - self._tokens) / self._rps
-            time.sleep(wait)
 
 
 def _rpm() -> int:
@@ -78,10 +55,6 @@ def _rpm() -> int:
 
 _ops_rate_limiter = _TokenBucketRateLimiter(requests_per_second=_rpm() / 60.0, burst=1)
 _token_lock = threading.Lock()
-
-_MAX_RETRIES = 3
-_BACKOFF_BASE = 0.5
-_RATE_LIMIT_BACKOFF_SCHEDULE: list[float] = [5.0, 15.0, 30.0, 60.0]
 
 _TOKEN_CACHE_KEY = "epo_ops_access_token_v1"
 _TOKEN_FALLBACK_TTL = 1140  # OPS tokens last ~20min; used if expires_in is absent
