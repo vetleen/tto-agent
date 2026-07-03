@@ -488,8 +488,15 @@ class SimpleChatPipelineTests(TestCase):
         with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
             mock_create.return_value = fake_model
-            response = SimpleChatPipeline().run(request)
+            # The crash must be logged (not silently swallowed) so a regression
+            # is visible in Sentry, while the error is still returned to the model.
+            with self.assertLogs("llm.pipelines.simple_chat", level="ERROR") as logs:
+                response = SimpleChatPipeline().run(request)
 
+        self.assertTrue(
+            any("document_search" in line for line in logs.output),
+            "tool crash should be logged at ERROR with the tool name",
+        )
         self.assertEqual(fake_model.generate.call_count, 2)
         second_req = fake_model.generate.call_args_list[1][0][0]
         tool_msg = second_req.messages[2]

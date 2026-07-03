@@ -29,6 +29,11 @@ from llm.types.context import RunContext
 
 logger = logging.getLogger(__name__)
 
+# Generous total request timeout (milliseconds — google-genai HttpOptions unit)
+# so a hung Gemini connection can't block the calling thread (and the chat turn
+# or worker) forever. The call has no timeout otherwise.
+_IMAGE_GEN_TIMEOUT_MS = 120_000
+
 
 @dataclass
 class InputImage:
@@ -155,11 +160,15 @@ class ImageGenerationService:
 
     def _client(self):
         from google import genai
+        from google.genai import types
 
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise LLMProviderError("GEMINI_API_KEY is not configured")
-        return genai.Client(api_key=api_key)
+        return genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=_IMAGE_GEN_TIMEOUT_MS),
+        )
 
     def _call_gemini(self, info, prompt, input_images, aspect_ratio):
         """Call Gemini generate_content with the image response modality.

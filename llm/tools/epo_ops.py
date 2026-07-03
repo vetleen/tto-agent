@@ -38,6 +38,7 @@ from llm.tools._throttle import (
     MAX_RETRIES as _MAX_RETRIES,
     RATE_LIMIT_BACKOFF_SCHEDULE as _RATE_LIMIT_BACKOFF_SCHEDULE,
     TokenBucketRateLimiter as _TokenBucketRateLimiter,
+    deadline_capped_wait as _deadline_capped_wait,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,9 +225,17 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
                 wait = _RATE_LIMIT_BACKOFF_SCHEDULE[min(attempt, len(_RATE_LIMIT_BACKOFF_SCHEDULE) - 1)]
                 logger.warning("EPO OPS %s (attempt %d), waiting %.1fs", status, attempt + 1, wait)
                 if attempt < _MAX_RETRIES:
-                    time.sleep(wait)
-                    continue
-            if status is not None and status < 500:
+                    nap, may_retry = _deadline_capped_wait(wait, context)
+                    if nap > 0:
+                        time.sleep(nap)
+                    if may_retry:
+                        continue
+                    break  # run deadline reached during backoff — stop retrying
+            # 429 is transient (rate limit). On the final attempt it must NOT
+            # fall into this permanent-client-error branch, or the model is told
+            # a rate limit "will not resolve by retrying" and abandons search;
+            # let it drop to the terminal "unavailable after retries" message.
+            if status is not None and status < 500 and status != 429:
                 logger.warning("EPO OPS client error %s path=%s", status, path)
                 if status == 404:
                     return {"error": "No matching patent record was found (EPO OPS 404)."}
@@ -247,7 +256,11 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
             return {"error": "EPO OPS returned an unreadable response."}
 
         if attempt < _MAX_RETRIES:
-            time.sleep(_BACKOFF_BASE * (2 ** attempt))
+            nap, may_retry = _deadline_capped_wait(_BACKOFF_BASE * (2 ** attempt), context)
+            if nap > 0:
+                time.sleep(nap)
+            if not may_retry:
+                break  # run deadline reached during backoff — stop retrying
 
     logger.error("EPO OPS failed after retries path=%s", path, exc_info=last_exc)
     return {"error": "EPO OPS is currently unavailable after retries. Consider reporting this to the user."}
@@ -347,17 +360,24 @@ def _build_cql(
 
 
 _PUBNUM_STRIP_RE = re.compile(r"[\s.,/\-]+")
+_PUBNUM_VALID_RE = re.compile(r"^[A-Z0-9]+$")
 
 
 def _normalize_pubnumber(raw: str) -> str:
     """Normalize a publication number to compact uppercase form.
 
     ``"EP 1 000 000 A1"`` / ``"ep1000000a1"`` / ``"EP.1000000.A1"`` →
-    ``"EP1000000A1"``. Kind code (if present) is kept.
+    ``"EP1000000A1"``. Kind code (if present) is kept. Returns ``""`` for input
+    that isn't a valid publication number after stripping formatting separators —
+    a real number is letters+digits only, so anything else (``?``, ``#``, ``%``,
+    …) would inject into the OPS URL path and is rejected here.
     """
     if not raw:
         return ""
-    return _PUBNUM_STRIP_RE.sub("", raw.strip().upper())
+    n = _PUBNUM_STRIP_RE.sub("", raw.strip().upper())
+    if not _PUBNUM_VALID_RE.match(n):
+        return ""
+    return n
 
 
 _DOCDB_SPLIT_RE = re.compile(r"^([A-Z]{2})(\d+)([A-Z]\d?)?$")
@@ -378,7 +398,9 @@ def _docdb_ref(raw: str) -> tuple[str, str] | None:
     m = _DOCDB_SPLIT_RE.match(n)
     if m:
         country, number, kind = m.group(1), m.group(2), (m.group(3) or "")
-        return "docdb", f"{country}.{number}.{kind}"
+        # Skip an empty kind so a kind-less number yields "EP.1000000", not the
+        # trailing-dot "EP.1000000." that OPS rejects with a 404.
+        return "docdb", ".".join(part for part in (country, number, kind) if part)
     return "epodoc", re.sub(r"([A-Z]{2}\d+)[A-Z]\d?$", r"\1", n)
 
 
@@ -813,7 +835,7 @@ class PatentEpoOpsGetTool(ContextAwareTool):
 
         ref = _docdb_ref(publication_number)
         if ref is None:
-            return "Patent retrieval error: a publication number is required."
+            return "Patent retrieval error: a valid publication number is required."
         fmt, path_number = ref
         display = _normalize_pubnumber(publication_number)
         parts = (parts or "biblio").strip().lower()
@@ -875,7 +897,7 @@ class PatentEpoOpsFamilyTool(ContextAwareTool):
 
         ref = _docdb_ref(publication_number)
         if ref is None:
-            return "Patent family error: a publication number is required."
+            return "Patent family error: a valid publication number is required."
         fmt, path_number = ref
         display = _normalize_pubnumber(publication_number)
 

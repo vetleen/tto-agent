@@ -18,6 +18,7 @@ from llm.tools._throttle import (
     MAX_RETRIES as _MAX_RETRIES,
     RATE_LIMIT_BACKOFF_SCHEDULE as _RATE_LIMIT_BACKOFF_SCHEDULE,
     TokenBucketRateLimiter as _TokenBucketRateLimiter,
+    deadline_capped_wait as _deadline_capped_wait,
     parse_rpm as _parse_rpm,
 )
 
@@ -244,19 +245,20 @@ def _search_core(
                 )
                 logger.warning("Brave Search rate limited (attempt %d), waiting %.1fs", attempt + 1, wait)
                 if attempt < _MAX_RETRIES:
-                    time.sleep(wait)
-                    continue
+                    nap, may_retry = _deadline_capped_wait(wait, context)
+                    if nap > 0:
+                        time.sleep(nap)
+                    if may_retry:
+                        continue
+                    break  # run deadline reached during backoff — stop retrying
             elif response.status_code < 500:
-                body = ""
                 detail = ""
                 try:
-                    body = response.text[:500]
                     detail = response.json().get("error", {}).get("detail", "")
                 except Exception:
                     pass
                 logger.warning(
-                    "Brave Search client error %d query=%r body=%s",
-                    response.status_code, query, body,
+                    "Brave Search client error %d query=%r", response.status_code, query
                 )
                 error_msg = f"Brave Search API error {response.status_code}"
                 if detail:
@@ -282,7 +284,11 @@ def _search_core(
             raise
 
         if attempt < _MAX_RETRIES:
-            time.sleep(_BACKOFF_BASE * (2 ** attempt))
+            nap, may_retry = _deadline_capped_wait(_BACKOFF_BASE * (2 ** attempt), context)
+            if nap > 0:
+                time.sleep(nap)
+            if not may_retry:
+                break  # run deadline reached during backoff — stop retrying
 
     if isinstance(last_exc, requests.exceptions.HTTPError) and getattr(
         getattr(last_exc, "response", None), "status_code", None

@@ -322,6 +322,25 @@ class WebFetchCacheTests(TestCase):
         self.assertNotIn("Error fetching", result2)
         mock_get.assert_called()
 
+    def test_empty_extraction_not_cached(self):
+        # A successful-but-empty extraction (JS page, Jina down) must not be
+        # pinned for an hour, else re-fetches keep returning "0 of 0".
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _cache_result
+
+        cache.clear()
+        out = _cache_result(cache, "wf-empty", {"url": "u", "content": ""})
+        self.assertEqual(out["content"], "")        # still returned to the caller
+        self.assertIsNone(cache.get("wf-empty"))     # but not cached
+
+    def test_nonempty_extraction_cached(self):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _cache_result
+
+        cache.clear()
+        _cache_result(cache, "wf-full", {"url": "u", "content": "hello"})
+        self.assertIsNotNone(cache.get("wf-full"))
+
     @patch("llm.tools.web_fetch._pinned_get")
     def test_cache_connection_error_falls_through(self, mock_get):
         mock_get.return_value = _mock_response(
@@ -652,6 +671,16 @@ class EnforceSizeAndBufferTests(TestCase):
         resp.headers["Content-Length"] = "not-a-number"
         _enforce_size_and_buffer(resp, max_bytes=1000)  # must not raise
         self.assertEqual(resp._content, b"ok")
+
+    def test_rejects_slow_drip_past_deadline(self):
+        # Tiny chunks that never trip the byte cap, but the total download time
+        # is forced past the deadline -> Timeout, so a slow-drip server can't pin
+        # the connection indefinitely (the per-read socket timeout wouldn't fire).
+        resp = _mock_response(chunks=[b"a", b"b", b"c"], content_length=None)
+        with patch("llm.tools.web_fetch.time.monotonic", side_effect=[0.0, 0.05, 5.0]):
+            with self.assertRaises(req_lib.exceptions.Timeout):
+                _enforce_size_and_buffer(resp, max_bytes=1000, max_seconds=0.1)
+        resp.close.assert_called_once()
 
 
 @override_settings(

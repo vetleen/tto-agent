@@ -17,6 +17,34 @@ BACKOFF_BASE = 0.5
 RATE_LIMIT_BACKOFF_SCHEDULE: list[float] = [5.0, 15.0, 30.0, 60.0]
 
 
+def deadline_capped_wait(seconds: float, context=None) -> tuple[float, bool]:
+    """Compute a retry-backoff wait that never runs past the run deadline.
+
+    Tool retry loops execute on worker threads with no cancel signal, so the run
+    deadline (``RunContext.remaining_seconds()``) is the only way to interrupt a
+    long rate-limit backoff. Returns ``(sleep_seconds, may_retry)``: how long to
+    sleep (never past the deadline) and whether the caller may retry afterward
+    (False once the deadline is reached — the caller should surface a terminal
+    "temporarily unavailable" result). The caller performs the actual
+    ``time.sleep`` so it stays observable/patchable in the tool module.
+    ``context`` is duck-typed: any object exposing ``remaining_seconds()`` works;
+    None means no deadline.
+    """
+    remaining = None
+    fn = getattr(context, "remaining_seconds", None)
+    if callable(fn):
+        remaining = fn()
+    if remaining is None:
+        return seconds, True
+    if remaining <= 0:
+        return 0.0, False
+    if seconds >= remaining:
+        # Sleeping the full backoff would reach the deadline: wait out the
+        # remaining budget, then stop.
+        return remaining, False
+    return seconds, True
+
+
 def parse_rpm(env_value: str | None, default: int) -> int:
     """Parse a requests-per-minute value, falling back to *default*.
 

@@ -174,6 +174,11 @@ class SimpleChatPipeline(BasePipeline):
                 result = tool.invoke(tc.arguments)
                 result_str = result if isinstance(result, str) else json.dumps(result)
             except Exception as e:
+                # Surface the crash: without this an unexpected tool exception is
+                # silently returned to the model as {"error": ...} with no log or
+                # Sentry event, so a regression is invisible until someone reads
+                # a chat transcript.
+                logger.exception("Tool %s raised during execution", tc.name)
                 result_str = json.dumps({"error": str(e)})
             finally:
                 close_old_connections()

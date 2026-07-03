@@ -38,6 +38,17 @@ class RunContext(BaseModel):
     # skill's tools without re-deriving org tool-toggle filtering.
     skill_tool_map: dict = Field(default_factory=dict)
 
+    def remaining_seconds(self) -> Optional[float]:
+        """Seconds left before this run's deadline, or None if no deadline is set.
+
+        Negative once the deadline has passed. Lets tool retry/backoff loops —
+        which have no cancel signal — avoid sleeping past the run's deadline.
+        """
+        if self.deadline_seconds is None:
+            return None
+        elapsed = (datetime.now(timezone.utc) - self.started_at).total_seconds()
+        return self.deadline_seconds - elapsed
+
     @classmethod
     def create(
         cls,

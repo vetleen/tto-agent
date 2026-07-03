@@ -222,10 +222,19 @@ class DocdbRefTests(TestCase):
         self.assertEqual(_docdb_ref("EP 1000000 A1"), ("docdb", "EP.1000000.A1"))
 
     def test_no_kind(self):
-        self.assertEqual(_docdb_ref("EP1000000"), ("docdb", "EP.1000000."))
+        # A kind-less number must NOT produce a trailing dot ("EP.1000000."),
+        # which OPS rejects with a 404.
+        self.assertEqual(_docdb_ref("EP1000000"), ("docdb", "EP.1000000"))
 
     def test_empty(self):
         self.assertIsNone(_docdb_ref(""))
+
+    def test_injection_chars_rejected(self):
+        # ?, #, % survive the separator strip and would inject into the OPS URL
+        # path; normalization must reject them (-> None), not pass them through.
+        for bad in ("EP1000000A1#x", "EP1000000A1?q=1", "EP1000000%2e"):
+            self.assertEqual(_normalize_pubnumber(bad), "")
+            self.assertIsNone(_docdb_ref(bad))
 
 
 class EspacenetUrlTests(TestCase):
@@ -386,6 +395,10 @@ class OpsRequestTests(TestCase):
         data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
         self.assertIn("error", data)
         self.assertEqual(mock_get.call_count, 4)  # 1 + 3 retries
+        # A rate limit is transient: the final-attempt 429 must NOT be reported
+        # as a permanent client error (which would make the agent give up).
+        self.assertNotIn("will not resolve by retrying", data["error"])
+        self.assertIn("unavailable after retries", data["error"])
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_oversized_response(self, mock_get):

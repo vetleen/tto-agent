@@ -206,15 +206,27 @@ class _PinnedIPAdapter(HTTPAdapter):
         return self.poolmanager.connection_from_host(**host_params, pool_kwargs=pool_kwargs)
 
 
-def _enforce_size_and_buffer(resp: requests.Response, max_bytes: int) -> None:
-    """Enforce a hard byte ceiling while reading, then buffer the body.
+# Total wall-clock cap on downloading a single response body. The per-socket
+# read timeout (15s) does NOT bound total time: a server that trickles a few
+# bytes just inside each read window can hold the connection open indefinitely
+# without ever exceeding the byte cap. This cap is generous — a page that needs
+# longer than this to send its body is the server's problem, not ours.
+_MAX_DOWNLOAD_SECONDS = 30.0
+
+
+def _enforce_size_and_buffer(
+    resp: requests.Response, max_bytes: int, max_seconds: float = _MAX_DOWNLOAD_SECONDS
+) -> None:
+    """Enforce a hard byte ceiling and total-time cap while reading, then buffer.
 
     Fast-rejects when ``Content-Length`` already exceeds the cap, but does not
     trust it (chunked / lying servers): the limit is also enforced while
-    streaming. On success the full body is stored on ``resp._content`` so
-    ``resp.text`` / ``resp.content`` (and their charset detection) behave
-    exactly as a non-streamed response would. Raises ``_ResponseTooLarge`` and
-    closes the response when the cap is exceeded.
+    streaming. A total-elapsed deadline additionally guards against slow-drip
+    servers that never trip the per-read socket timeout. On success the full body
+    is stored on ``resp._content`` so ``resp.text`` / ``resp.content`` (and their
+    charset detection) behave exactly as a non-streamed response would. Raises
+    ``_ResponseTooLarge`` or ``requests.exceptions.Timeout`` and closes the
+    response when a cap is exceeded.
     """
     content_length = resp.headers.get("Content-Length")
     if content_length is not None:
@@ -229,9 +241,15 @@ def _enforce_size_and_buffer(resp: requests.Response, max_bytes: int) -> None:
 
     chunks: list[bytes] = []
     total = 0
+    deadline = time.monotonic() + max_seconds
     for chunk in resp.iter_content(chunk_size=65536):
         if not chunk:
             continue
+        if time.monotonic() > deadline:
+            resp.close()
+            raise requests.exceptions.Timeout(
+                f"Response body download exceeded {max_seconds:.0f}s (slow server); aborted"
+            )
         total += len(chunk)
         if total > max_bytes:
             resp.close()
@@ -444,7 +462,14 @@ def _extract_content(cleaned_html: str, soup: BeautifulSoup) -> tuple[str, str]:
 
 
 def _cache_result(cache, cache_key: str, result: dict) -> dict:
-    """Cache a successful fetch result dict (full content) and return it."""
+    """Cache a successful fetch result dict (full content) and return it.
+
+    Skips an empty extraction (no content) so a transient failure — a
+    JS-rendered page, or Jina being down/declined — isn't pinned for the full
+    hour; the next fetch of that URL can try again instead of re-serving "0 of 0".
+    """
+    if not (result.get("content") or "").strip():
+        return result
     try:
         cache.set(cache_key, json.dumps(result), timeout=3600)
     except Exception:

@@ -121,16 +121,25 @@ class WebSearchAndReadTool(ContextAwareTool):
             return "No results found."
 
         def _fetch_one(item: dict) -> dict:
-            url = item.get("url", "")
-            if not url:
-                return {**item, "content": "", "fetch_error": "No URL"}
+            # Runs on ThreadPoolExecutor worker threads for multi-result fetches.
+            # _fetch_core does ORM writes (the guardrail web-content scan), whose
+            # thread-local DB connections must be released or they leak against
+            # the connection cap — mirrors _execute_tool_calls in simple_chat.
+            from django.db import close_old_connections
+
             try:
-                fetched = _fetch_core(url, cache, context=self.context)
-                if "error" in fetched:
-                    return {**item, "content": "", "fetch_error": fetched["error"]}
-                return {**item, "content": fetched.get("content", "")}
-            except Exception as e:
-                return {**item, "content": "", "fetch_error": str(e)}
+                url = item.get("url", "")
+                if not url:
+                    return {**item, "content": "", "fetch_error": "No URL"}
+                try:
+                    fetched = _fetch_core(url, cache, context=self.context)
+                    if "error" in fetched:
+                        return {**item, "content": "", "fetch_error": fetched["error"]}
+                    return {**item, "content": fetched.get("content", "")}
+                except Exception as e:
+                    return {**item, "content": "", "fetch_error": str(e)}
+            finally:
+                close_old_connections()
 
         if len(results) == 1:
             enriched = [_fetch_one(results[0])]
