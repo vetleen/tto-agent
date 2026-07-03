@@ -12,6 +12,7 @@ import os
 import threading
 from typing import Any
 
+from llm.model_registry import get_model_info
 from llm.service.errors import LLMConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -43,15 +44,31 @@ _AUTO_DETECT: dict[str, str] = {
     "gemini-": "google_genai",
 }
 
-# Models requiring OpenAI's Responses API
+# Fallback prefix set for OpenAI's Responses API — used only for models not in
+# the registry (registered models carry ModelInfo.uses_responses_api).
 _RESPONSES_API_PREFIXES = ("gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
+
+
+def _uses_responses_api(api_model: str) -> bool:
+    """Whether *api_model* needs OpenAI's Responses API. Registry-first; prefix
+    match only for unregistered names."""
+    info = get_model_info(api_model)
+    if info is not None:
+        return info.uses_responses_api
+    return any(api_model.startswith(p) for p in _RESPONSES_API_PREFIXES)
 
 
 def _parse_provider(model_name: str) -> tuple[str, str]:
     """Parse provider and API model name from a model string.
 
-    Returns (provider, api_model) tuple.
+    Returns (provider, api_model) tuple. Consults the registry first so a
+    registered model resolves even if its name doesn't fit the prefix
+    conventions; unregistered names fall back to prefix detection.
     """
+    info = get_model_info(model_name)
+    if info is not None:
+        return info.provider, info.api_model
+
     for prefix, provider in _EXPLICIT_PREFIXES.items():
         if model_name.startswith(prefix):
             return provider, model_name[len(prefix):]
@@ -99,7 +116,7 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
         # flag; retention is governed by the Google Cloud / AI Studio org
         # settings.
         kwargs["store"] = False
-        if any(api_model.startswith(p) for p in _RESPONSES_API_PREFIXES):
+        if _uses_responses_api(api_model):
             kwargs["use_responses_api"] = True
     return kwargs
 

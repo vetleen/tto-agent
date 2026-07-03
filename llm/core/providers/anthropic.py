@@ -4,6 +4,7 @@ import logging
 
 from llm.core.model_factory import create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
+from llm.model_registry import get_model_info
 from llm.types.requests import ChatRequest
 
 logger = logging.getLogger(__name__)
@@ -13,14 +14,6 @@ _ANTHROPIC_THINKING = {
     "medium": {"budget": 10_000, "max_tokens": 16_384},
     "high": {"budget": 32_000, "max_tokens": 40_000},
 }
-
-_ADAPTIVE_THINKING_MODELS = frozenset({
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    # Sonnet 5 is adaptive-thinking-only (no extended thinking); the fixed
-    # budget_tokens path 400s on it, so it must route through adaptive.
-    "claude-sonnet-5",
-})
 
 
 class AnthropicChatModel(BaseLangChainChatModel):
@@ -38,7 +31,10 @@ class AnthropicChatModel(BaseLangChainChatModel):
         self._api_model = api_model
 
     def _uses_adaptive_thinking(self) -> bool:
-        return self._api_model in _ADAPTIVE_THINKING_MODELS
+        # Registry-driven: adaptive-only models 400 on the extended budget_tokens
+        # path. Unregistered models fall back to extended (thinking_mode None).
+        info = get_model_info(self.name)
+        return info is not None and info.thinking_mode == "adaptive"
 
     # -- Thinking / extended-thinking support --
 

@@ -329,10 +329,10 @@ class TranscriptionService:
             # duration locally for cost tracking.
             kwargs["response_format"] = "json"
 
-        # chunking_strategy is only supported by the gpt-4o transcription family;
-        # whisper-1 rejects it. Required for diarize on >30s input; for 4o/4o-mini
-        # it prevents output truncation on segments >8 minutes.
-        if info.api_model.startswith("gpt-4o"):
+        # chunking_strategy prevents output truncation on >8-min segments and is
+        # required for diarize on >30s input; whisper-1 rejects it. Driven by the
+        # registry capability flag so a new model can't silently miss it.
+        if info.supports_chunking_strategy:
             kwargs["chunking_strategy"] = "auto"
 
         if prompt and not info.supports_diarization:

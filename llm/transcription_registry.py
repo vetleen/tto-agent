@@ -45,6 +45,10 @@ class TranscriptionModelInfo:
     supports_live_streaming: bool = False       # Realtime API / live WS path
     supports_output_streaming: bool = False     # stream=True on batch transcription
     supports_diarization: bool = False          # returns speaker-labelled segments
+    # chunking_strategy="auto" — supported by the gpt-4o transcription family
+    # (prevents output truncation on >8-min segments; required for diarize on
+    # >30s input). whisper-1 rejects it, so it defaults off.
+    supports_chunking_strategy: bool = False
 
 
 _TRANSCRIPTION_MODELS: dict[str, TranscriptionModelInfo] = {
@@ -52,6 +56,7 @@ _TRANSCRIPTION_MODELS: dict[str, TranscriptionModelInfo] = {
         display_name="GPT-4o Transcribe",
         provider="openai",
         api_model="gpt-4o-transcribe",
+        supports_chunking_strategy=True,
         # OpenAI pricing page: $2.50 / 1M input tokens, $10.00 / 1M output tokens,
         # with a documented $0.006 / minute *estimate* (used only when a response
         # arrives without usage info — gpt-4o-transcribe normally returns usage).
@@ -66,6 +71,7 @@ _TRANSCRIPTION_MODELS: dict[str, TranscriptionModelInfo] = {
         display_name="GPT-4o Mini Transcribe",
         provider="openai",
         api_model="gpt-4o-mini-transcribe",
+        supports_chunking_strategy=True,
         # OpenAI pricing page: $1.25 / 1M input tokens, $5.00 / 1M output tokens,
         # with a documented $0.003 / minute estimate.
         price_per_minute=Decimal("0.003"),
@@ -79,6 +85,7 @@ _TRANSCRIPTION_MODELS: dict[str, TranscriptionModelInfo] = {
         display_name="GPT-4o Transcribe (Diarized)",
         provider="openai",
         api_model="gpt-4o-transcribe-diarize",
+        supports_chunking_strategy=True,
         # Same token pricing as full 4o-transcribe per OpenAI docs. The
         # diarize variant returns speaker-labelled segments but is batch-only
         # (no streaming, no Realtime API support).

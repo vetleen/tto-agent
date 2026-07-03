@@ -33,6 +33,17 @@ class ModelInfo:
     # for only the very best models of the moment.
     cutting_edge: bool = False
     supports_thinking: bool = False
+    # Thinking routing for Anthropic: "adaptive" (thinking={"type":"adaptive"})
+    # or "extended" (thinking={"type":"enabled","budget_tokens":...}); None for
+    # providers that don't use this split. An adaptive-only model 400s on the
+    # extended budget_tokens path, so this MUST be correct for every Anthropic
+    # thinking model.
+    thinking_mode: str | None = None
+    # Whether the model picker offers the "max" thinking level. A UX choice —
+    # currently only the adaptive Opus models, deliberately not Sonnet 5.
+    supports_max_effort: bool = False
+    # OpenAI models that require the Responses API (vs Chat Completions).
+    uses_responses_api: bool = False
     # Modalities the model accepts as input and can produce as output. "image"
     # implies vision (see the supports_vision property); "pdf" means the provider
     # accepts a native PDF document block. output_modalities is reserved for
@@ -62,6 +73,7 @@ _MODELS: dict[str, ModelInfo] = {
         tier=TIER_STANDARD,
         cutting_edge=True,
         supports_thinking=True,
+        uses_responses_api=True,
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
@@ -74,6 +86,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gpt-5.4",
         tier=TIER_STANDARD,
         supports_thinking=True,
+        uses_responses_api=True,
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("1.75"),
@@ -86,6 +99,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gpt-5.4-mini",
         tier=TIER_MID,
         supports_thinking=False,
+        uses_responses_api=True,
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("0.25"),
@@ -98,6 +112,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gpt-5.4-nano",
         tier=TIER_CHEAP,
         supports_thinking=False,
+        uses_responses_api=True,
         input_modalities=("text", "image", "pdf"),
         context_window=128_000,
         input_price=Decimal("0.05"),
@@ -112,6 +127,8 @@ _MODELS: dict[str, ModelInfo] = {
         tier=TIER_STANDARD,
         cutting_edge=True,
         supports_thinking=True,
+        thinking_mode="adaptive",
+        supports_max_effort=True,
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
@@ -126,6 +143,8 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-opus-4-7",
         tier=TIER_STANDARD,
         supports_thinking=True,
+        thinking_mode="adaptive",
+        supports_max_effort=True,
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
@@ -140,6 +159,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-opus-4-6",
         tier=TIER_STANDARD,
         supports_thinking=True,
+        thinking_mode="extended",
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("5.00"),
@@ -154,6 +174,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-sonnet-5",
         tier=TIER_STANDARD,
         supports_thinking=True,
+        thinking_mode="adaptive",
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         # Long-term pricing ($3/$15). Introductory $2/$10 (through 2026-08-31)
@@ -170,6 +191,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-sonnet-4-6",
         tier=TIER_STANDARD,
         supports_thinking=True,
+        thinking_mode="extended",
         input_modalities=("text", "image", "pdf"),
         context_window=1_000_000,
         input_price=Decimal("3.00"),
@@ -184,6 +206,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-haiku-4-5",
         tier=TIER_MID,
         supports_thinking=True,
+        thinking_mode="extended",
         input_modalities=("text", "image", "pdf"),
         context_window=200_000,
         input_price=Decimal("1.00"),

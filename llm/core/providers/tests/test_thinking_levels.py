@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from llm.core.providers.anthropic import AnthropicChatModel, _ADAPTIVE_THINKING_MODELS, _ANTHROPIC_THINKING
+from llm.core.providers.anthropic import AnthropicChatModel, _ANTHROPIC_THINKING
 from llm.core.providers.gemini import GeminiChatModel, _GEMINI_THINKING_BUDGETS
 from llm.core.providers.openai import OpenAIChatModel
 from llm.types.requests import ChatRequest

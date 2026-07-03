@@ -90,16 +90,12 @@ def supports_thinking(model_id: str) -> bool:
     return False
 
 
-_MAX_EFFORT_MODELS = {"claude-opus-4-7", "claude-opus-4-8"}
-
-
 def get_thinking_levels(model_id: str) -> list[str]:
     """Return the thinking levels available for a model."""
     if not supports_thinking(model_id):
         return []
     info = get_model_info(model_id)
-    api_model = info.api_model if info else ""
-    if api_model in _MAX_EFFORT_MODELS:
+    if info is not None and info.supports_max_effort:
         return ["low", "medium", "high", "max"]
     return ["low", "medium", "high"]
 
