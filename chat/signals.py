@@ -55,3 +55,27 @@ def delete_file_on_chat_attachment_delete(sender, instance, **kwargs):
             instance.pk,
             name,
         )
+
+
+@receiver(post_delete, sender="chat.Asset")
+def delete_blob_on_asset_delete(sender, instance, **kwargs):
+    # A *reference* (version-owned) asset has a blank blob — its bytes live on the
+    # data-room version and must NOT be deleted here; only blob-owning assets
+    # (generated / attached images) carry a file to clean up (the guards below
+    # skip the blank case). Without this, deleting a thread/canvas/message — or the
+    # enforce_retention GDPR purge — cascades the Asset rows but orphans the image
+    # blobs in storage (personal data surviving the purge + unbounded growth).
+    file_field = instance.blob
+    if not file_field:
+        return
+    name = file_field.name
+    if not name:
+        return
+    try:
+        file_field.storage.delete(name)
+    except Exception:
+        logger.exception(
+            "Failed to delete blob for Asset id=%s path=%s",
+            instance.pk,
+            name,
+        )

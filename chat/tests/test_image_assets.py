@@ -51,6 +51,44 @@ class AssetModelTests(TestCase):
 
 
 @override_settings(MEDIA_ROOT=_MEDIA)
+class AssetBlobCleanupTests(TestCase):
+    """Group D: deleting an Asset must delete its stored blob (a reference asset
+    with a blank blob is a safe no-op), including via cascade / retention purge."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="blobclean@test.com", password="pw")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.canvas = ChatCanvas.objects.create(thread=self.thread, title="C", content="")
+
+    def test_blob_deleted_on_asset_delete(self):
+        asset = _make_asset(canvas=self.canvas)
+        storage, name = asset.blob.storage, asset.blob.name
+        self.assertTrue(storage.exists(name))
+        asset.delete()
+        self.assertFalse(storage.exists(name))
+
+    def test_reference_asset_delete_is_noop(self):
+        from documents.models import DataRoom
+        from documents.tests._helpers import make_document
+
+        room = DataRoom.objects.create(name="R", slug="r", created_by=self.user)
+        doc = make_document(room, self.user, chunks=["x"])
+        asset = Asset.objects.create(
+            version=doc.current_version, blob="", content_type="image/png", size_bytes=0,
+        )
+        asset.delete()  # blank blob → no storage call, no error
+
+    def test_blob_cleaned_on_cascade_delete(self):
+        # Registering the post_delete receiver also stops Django fast-deleting the
+        # cascaded Asset rows (which skipped signals) — the blob is now cleaned up.
+        asset = _make_asset(canvas=self.canvas)
+        storage, name = asset.blob.storage, asset.blob.name
+        self.assertTrue(storage.exists(name))
+        self.thread.delete()
+        self.assertFalse(storage.exists(name))
+
+
+@override_settings(MEDIA_ROOT=_MEDIA)
 class ServeAssetTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user(email="own@test.com", password="pw")
