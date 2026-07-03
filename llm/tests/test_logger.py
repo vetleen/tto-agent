@@ -536,10 +536,12 @@ class CancelledStreamLoggingTests(TestCase):
     """Interrupted streams (no message_end) estimate output tokens so cost stays
     visible; explicit user cancellations are logged with status CANCELLED."""
 
-    def _request(self, cancel_event=None, model="gpt-5.4-mini"):
+    def _request(self, cancel_event=None, cancel_check=None, model="gpt-5.4-mini"):
         params = {}
         if cancel_event is not None:
             params["_cancel_event"] = cancel_event
+        if cancel_check is not None:
+            params["_cancel_check"] = cancel_check
         return ChatRequest(
             messages=[Message(role="user", content="Hello")],
             stream=True,
@@ -614,6 +616,48 @@ class CancelledStreamLoggingTests(TestCase):
         log = _get_log(request)
         self.assertEqual(log.status, "success")
         self.assertEqual(log.output_tokens, 1)
+
+    def test_subagent_cancel_check_true_logged_cancelled(self):
+        """Sub-agent runs cancel via a _cancel_check callable (DB poll), not a
+        threading.Event. An interrupted stream whose _cancel_check() returns True
+        must be logged CANCELLED (was previously SUCCESS)."""
+        request = self._request(cancel_check=lambda: True)
+        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "cancelled")
+
+    def test_subagent_cancel_check_false_stays_success(self):
+        request = self._request(cancel_check=lambda: False)
+        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "success")
+
+
+class LogStreamErrorUsageTests(TestCase):
+    """A stream that ends in an error event but also carries a usage-only
+    message_end (emitted by the tool loop so mid-loop cost isn't lost) must be
+    logged ERROR — the error event takes precedence — WITH the usage."""
+
+    def test_error_with_usage_message_end_logs_error_and_usage(self):
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="error", data={
+                "message": "Provider overloaded", "error_code": "overloaded",
+            }, sequence=2, run_id=run_id),
+            StreamEvent(event_type="message_end", data={
+                "input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
+            }, sequence=3, run_id=run_id),
+        ]
+        log_stream(request, events, duration_ms=100)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "error")            # error event wins
+        self.assertEqual(log.input_tokens, 100)          # usage still logged
+        self.assertEqual(log.output_tokens, 20)
 
 
 class LogErrorTests(TestCase):

@@ -500,10 +500,33 @@ class SimpleChatPipeline(BasePipeline):
                         run_id=run_id,
                     )
                     sequence += 1
+                # Per-token break honors only the in-memory cancel_event (the
+                # main-chat Stop). Sub-agents cancel via _cancel_check, a DB poll
+                # that must NOT run per token — they break at the iteration
+                # boundaries below (_is_cancelled) instead.
                 if cancel_event and cancel_event.is_set():
                     break
             # Yield a sentinel to pass end_data back
             yield (end_data, sequence, saw_error)
+
+        def _usage_message_end() -> StreamEvent:
+            """A message_end carrying only the accumulated usage (no content),
+            emitted on error paths so the ERROR row logs real tokens/cost from
+            earlier tool-loop iterations instead of NULL."""
+            return StreamEvent(
+                event_type="message_end",
+                data={
+                    "input_tokens": agg_input_tokens,
+                    "output_tokens": agg_output_tokens,
+                    "total_tokens": agg_total_tokens,
+                    "cached_tokens": agg_cached_tokens or None,
+                    "cache_write_tokens": agg_cache_write_tokens or None,
+                    "reasoning_tokens": agg_reasoning_tokens or None,
+                    "cost_usd": agg_cost_usd,
+                },
+                sequence=sequence,
+                run_id=run_id,
+            )
 
         for i in range(max_iterations):
             if _is_cancelled():
@@ -527,9 +550,21 @@ class SimpleChatPipeline(BasePipeline):
                     end_data, sequence, saw_error = item
 
             if saw_error:
-                # The provider already yielded an error event and stopped.
-                # Don't fabricate a message_end — log_stream would record
-                # this failed turn as SUCCESS.
+                # The provider already yielded an error event and stopped. Emit a
+                # message_end carrying the usage accumulated from earlier
+                # iterations so the ERROR row logs real tokens/cost instead of
+                # NULL: log_stream keys status off the error event (ERROR) and
+                # reads usage from this message_end. Safe for the UI — the error
+                # handler already finalized the stream element, so a trailing
+                # message_end is a no-op there.
+                yield _usage_message_end()
+                return
+
+            if _is_cancelled():
+                # Cancelled mid-stream: return WITHOUT a message_end so log_stream
+                # sees an interrupted stream (-> CANCELLED with token estimation),
+                # not a normally-completed final iteration. Closes the race where
+                # an empty end_data looked like "no tool calls = final".
                 return
 
             # Accumulate usage from this iteration
@@ -679,7 +714,10 @@ class SimpleChatPipeline(BasePipeline):
             else:
                 end_data, sequence, saw_error = item
         if saw_error:
-            # Error event already forwarded; no synthetic message_end.
+            # Error event already forwarded. Emit a usage-only message_end so the
+            # ERROR row logs the tokens/cost accumulated across the tool loop
+            # (log_stream still logs ERROR from the error event).
+            yield _usage_message_end()
             return
         # Add aggregate usage to final message_end
         agg_input_tokens += end_data.get("input_tokens") or 0

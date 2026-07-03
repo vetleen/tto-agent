@@ -256,9 +256,19 @@ def log_stream(
             )
             if streamed_text:
                 output_tokens = count_tokens(streamed_text)
-        cancel_event = (request.params or {}).get("_cancel_event")
+        params = request.params or {}
+        cancel_event = params.get("_cancel_event")
+        cancel_check = params.get("_cancel_check")
+        # Honor BOTH cancel signals: the consumer path sets a threading.Event
+        # (_cancel_event); sub-agent runs cancel via a _cancel_check callable
+        # (DB poll — True once the run is marked FAILED). Without the second
+        # check, an aborted sub-agent stream was logged SUCCESS. cancel_check()
+        # only runs when interrupted (no message_end/error), so it's bounded.
         was_cancelled = bool(
-            interrupted and cancel_event is not None and cancel_event.is_set()
+            interrupted and (
+                (cancel_event is not None and cancel_event.is_set())
+                or (cancel_check is not None and cancel_check())
+            )
         )
 
         cost_raw = end_data.get("cost_usd")

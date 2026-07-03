@@ -663,9 +663,9 @@ class SimpleChatPipelineTests(TestCase):
 
         def fake_final_stream(req):
             yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
-            for t in ["The ", "result ", "is ", "3", ".", " Done"]:
-                yield StreamEvent(event_type="token", data={"text": t}, sequence=2, run_id="")
-            yield StreamEvent(event_type="message_end", data={"content": "The result is 3. Done"}, sequence=3, run_id="")
+            for i in range(20):
+                yield StreamEvent(event_type="token", data={"text": f"t{i} "}, sequence=2, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "done"}, sequence=3, run_id="")
 
         fake_model = MagicMock()
         fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
@@ -675,9 +675,12 @@ class SimpleChatPipelineTests(TestCase):
             events = list(SimpleChatPipeline().stream(request))
 
         tokens = [e for e in events if e.event_type == "token"]
-        self.assertEqual(len(tokens), 6)  # all tokens streamed through
-        # Per-iteration polling: a few checks, far fewer than the 6 tokens.
-        self.assertLessEqual(cancel_check.call_count, 4)
+        self.assertEqual(len(tokens), 20)  # all tokens streamed through
+        # Per-iteration polling: a small constant number of checks (loop-top,
+        # post-stream, post-tool_start per iteration), far fewer than 20 tokens —
+        # cancel_check must never be polled per token (it is a DB query).
+        self.assertLessEqual(cancel_check.call_count, 6)
+        self.assertLess(cancel_check.call_count, len(tokens))
 
     def test_stream_cancel_event_unset_completes_normally(self):
         """Passing only the consumer's ``_cancel_event`` (unset) is unaffected by
@@ -949,9 +952,11 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(end_data["total_tokens"], 1600)
         self.assertAlmostEqual(end_data["cost_usd"], 0.03)
 
-    def test_stream_error_event_suppresses_message_end(self):
-        """A provider error event must end the stream without a synthetic
-        message_end — otherwise log_stream records the failed turn as SUCCESS."""
+    def test_stream_error_emits_usage_only_message_end(self):
+        """A provider error ends the stream with a USAGE-ONLY message_end (so the
+        ERROR row can log accumulated tokens/cost) — never content/tool_calls.
+        log_stream keys status off the error event, so it still logs ERROR even
+        with this message_end present (see the logger tests)."""
         mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
@@ -980,10 +985,15 @@ class SimpleChatPipelineTests(TestCase):
         error_events = [e for e in events if e.event_type == "error"]
         end_events = [e for e in events if e.event_type == "message_end"]
         self.assertEqual(len(error_events), 1)
-        self.assertEqual(len(end_events), 0)
+        self.assertEqual(len(end_events), 1)
+        # Usage-only: no content / tool_calls leak into the terminal event (so
+        # the frontend's post-error message_end stays a no-op).
+        self.assertNotIn("content", end_events[0].data)
+        self.assertNotIn("tool_calls", end_events[0].data)
+        self.assertIn("input_tokens", end_events[0].data)
 
-    def test_stream_error_in_final_exhaustion_stream_suppresses_message_end(self):
-        """Same guarantee for the tool-stripped final stream after exhaustion."""
+    def test_stream_error_in_final_exhaustion_stream_emits_usage_message_end(self):
+        """Same usage-only message_end for the tool-stripped final stream."""
         mock_tool = self._make_mock_tool("document_search")
         request = ChatRequest(
             messages=[Message(role="user", content="Hi")],
@@ -1009,7 +1019,51 @@ class SimpleChatPipelineTests(TestCase):
             events = list(SimpleChatPipeline().stream(request))
 
         self.assertEqual(len([e for e in events if e.event_type == "error"]), 1)
-        self.assertEqual(len([e for e in events if e.event_type == "message_end"]), 0)
+        end_events = [e for e in events if e.event_type == "message_end"]
+        self.assertEqual(len(end_events), 1)
+        self.assertNotIn("content", end_events[0].data)
+
+    def test_stream_error_message_end_carries_prior_iteration_usage(self):
+        """When a later tool-loop iteration errors, usage from earlier successful
+        iterations must survive in the message_end so the ERROR row isn't logged
+        with NULL tokens/cost (the whole point of the usage-only message_end)."""
+        mock_tool = self._make_mock_tool("document_search")
+        mock_tool._return_value = '{"result": 3}'
+        request = ChatRequest(
+            messages=[Message(role="user", content="go")],
+            stream=True, model="gpt-4o-mini", tools=["document_search"],
+            context=RunContext.create(),
+        )
+
+        def iter1_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
+                "cost_usd": 0.01,
+                "tool_calls": [{"id": "s1", "name": "document_search", "arguments": {"a": 1, "b": 2}}],
+            }, sequence=2, run_id="")
+
+        def iter2_error(req):
+            yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="error", data={
+                "message": "Provider overloaded", "error_code": "overloaded",
+            }, sequence=2, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [iter1_stream(None), iter2_error(None)]
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            events = list(SimpleChatPipeline().stream(request))
+
+        self.assertEqual(len([e for e in events if e.event_type == "error"]), 1)
+        end_events = [e for e in events if e.event_type == "message_end"]
+        self.assertEqual(len(end_events), 1)
+        # Iteration 1's usage/cost survived the iteration-2 error.
+        self.assertEqual(end_events[0].data["input_tokens"], 100)
+        self.assertEqual(end_events[0].data["output_tokens"], 20)
+        self.assertAlmostEqual(end_events[0].data["cost_usd"], 0.01)
 
     def test_run_tool_loop_aggregates_cache_and_reasoning_tokens(self):
         """cache_write and reasoning tokens must aggregate across iterations too."""
