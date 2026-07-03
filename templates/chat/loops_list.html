@@ -233,12 +233,16 @@
   </div>
 </div>
 
+{{ loops_json|json_script:"loops-data" }}
+{{ data_rooms_json|json_script:"data-rooms-data" }}
+{{ skills_json|json_script:"skills-data" }}
+{{ model_choices_json|json_script:"model-choices-data" }}
 <script nonce="{{ request.csp_nonce }}">
 (function () {
-  var LOOPS = {{ loops_json|safe }};
-  var DATA_ROOMS = {{ data_rooms_json|safe }};
-  var SKILLS = {{ skills_json|safe }};
-  var MODEL_CHOICES = {{ model_choices_json|safe }};
+  var LOOPS = JSON.parse(document.getElementById('loops-data').textContent);
+  var DATA_ROOMS = JSON.parse(document.getElementById('data-rooms-data').textContent);
+  var SKILLS = JSON.parse(document.getElementById('skills-data').textContent);
+  var MODEL_CHOICES = JSON.parse(document.getElementById('model-choices-data').textContent);
   var PREFERRED_MODEL = "{{ preferred_chat_model|escapejs }}";
   var UUID0 = '00000000-0000-0000-0000-000000000000';
   var CREATE_URL = "{% url 'loop_create' %}";

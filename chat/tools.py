@@ -978,7 +978,10 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
 
     name: str = "document_open_to_canvas"
     section: str = "skills"
-    subagent_section: str = "chat"
+    # Canvas-mutating: writes/activates ChatCanvas on context.conversation_id,
+    # which for a sub-agent is the PARENT thread. Main-only, like every other
+    # canvas tool — must never run in a sub-agent.
+    audience: str = "main"
     start_label: str = "Opening document..."
     end_label: str = "Opened document"
     description: str = (
@@ -997,7 +1000,7 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
             activate_canvas,
             create_canvas_checkpoint,
         )
-        from documents.services.versioning import open_working_version
+        from documents.services.versioning import document_status, open_working_version
 
         context = self.context
         thread_id = context.conversation_id if context else None
@@ -1007,6 +1010,20 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         doc, err = _resolve_document(context, doc_index, data_room_id)
         if err:
             return json.dumps({"error": err})
+        # Gate on scan status: a still-scanning upload must not be surfaced into a
+        # canvas (which is injected into the prompt + shown in the UI) before its
+        # PII/guardrail scan finishes. A quarantined *agent-authored* draft is
+        # status READY (release sets READY, only withholds the searchable pointer),
+        # so it reads "quarantined" here and stays remediable via the block-reason
+        # check below — only "processing"/"failed" are refused.
+        state = document_status(doc)["state"]
+        if state == "processing":
+            return json.dumps({"error": (
+                "This document is still processing (scanning for sensitive content). "
+                "Try again once it's ready."
+            )})
+        if state == "failed":
+            return json.dumps({"error": "This document failed processing and can't be opened."})
         locked = _agent_edit_block_reason(doc)
         if locked:
             return json.dumps({"error": locked})
@@ -1297,7 +1314,9 @@ def _collect_doc_images(doc, max_images: int = 4):
     from chat.services import SUPPORTED_IMAGE_TYPES
 
     out: list = []
-    version = getattr(doc, "current_version", None)
+    # Read the released/searchable version, not the working head — callers gate on
+    # status=READY + not quarantined, so the searchable version is set and scanned.
+    version = getattr(doc, "active_searchable_version", None) or getattr(doc, "current_version", None)
     if version is None:
         return out
     if getattr(version, "parser_type", "") == "image":
@@ -1340,6 +1359,7 @@ class DocumentViewImageTool(ContextAwareTool):
         import base64
 
         from chat.assets import get_or_create_version_image_token
+        from documents.models import DataRoomDocument
 
         if not doc_indices or not isinstance(doc_indices, list):
             raise ValueError("document_view_image requires a non-empty 'doc_indices' list")
@@ -1351,13 +1371,21 @@ class DocumentViewImageTool(ContextAwareTool):
             if err:
                 results.append(f"Document #{idx}: {err}")
                 continue
+            # Same gate as document_read: don't attach bytes from a document that is
+            # still scanning (don't leak scan state) or quarantined.
+            if doc.status != DataRoomDocument.Status.READY:
+                results.append(f"Document #{idx}: No document with index {idx} found.")
+                continue
+            if doc.is_quarantined:
+                results.append(f"Document #{idx}: This document is quarantined and unavailable.")
+                continue
             images = _collect_doc_images(doc)
             if not images:
                 results.append(f"Document #{idx} ('{doc.original_filename}'): no viewable image found.")
                 continue
             # For an image-as-document, surface a reusable embed token alongside
             # the bytes so the model can place it in a canvas or its reply.
-            ver = doc.current_version
+            ver = doc.active_searchable_version or doc.current_version
             token = ""
             if ver is not None and getattr(ver, "parser_type", "") == "image":
                 token = get_or_create_version_image_token(

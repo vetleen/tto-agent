@@ -904,6 +904,24 @@ def _fix_table_trailing_content(doc):
 _HR_DIVIDER_MARKER = "\uE000"  # private-use char, never in real content
 _HR_RE = re.compile(r"<hr\s*/?>")
 
+# Canvas content is user-controlled. Legitimate images are embedded upstream as
+# data: URLs; any other <img src> (e.g. markdown ![](http://\u2026)) would make the
+# DOCX renderer (html2docx.load_external_image \u2192 urllib.urlopen) fetch a
+# remote/file URL server-side \u2014 SSRF / local-file read. Drop non-data <img> tags
+# at the shared HTML choke point. (The PDF path also has _safe_url_fetcher.)
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_IMG_SRC_RE = re.compile(r"""\bsrc\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+
+
+def _strip_remote_images(html: str) -> str:
+    def _repl(m):
+        tag = m.group(0)
+        src_m = _IMG_SRC_RE.search(tag)
+        src = (src_m.group(1) if src_m else "").strip()
+        return tag if src.lower().startswith("data:") else ""
+
+    return _IMG_TAG_RE.sub(_repl, html)
+
 
 def _render_dividers(doc):
     """Turn the assistant's ``---`` thematic breaks into a divider rule.
@@ -993,6 +1011,7 @@ def _canvas_content_to_html(content, base_url, user, *, inline_image_width=False
     content = _embed_file_tokens(content, base_url, user)
     content, image_pcts = _embed_image_tokens(content, user, inline_width=inline_image_width)
     html_content = md.markdown(content, extensions=["tables", "fenced_code", MarkExtension()])
+    html_content = _strip_remote_images(html_content)
     return html_content, image_pcts
 
 
@@ -1649,12 +1668,16 @@ def loops_list(request):
         "paused_loops": paused_loops,
         "data_rooms": data_rooms,
         "skills": skills,
-        "data_rooms_json": _json.dumps([{"id": r["pk"], "name": r["name"]} for r in data_rooms]),
-        "skills_json": _json.dumps(skills),
-        "model_choices_json": _json.dumps(model_choices),
+        # Raw objects, not json.dumps strings: the template embeds them with the
+        # {{ …|json_script }} tag, which escapes </script> / < / > (json.dumps does
+        # not) — an assistant-authored loop prompt can otherwise break out of the
+        # inline <script>.
+        "data_rooms_json": [{"id": r["pk"], "name": r["name"]} for r in data_rooms],
+        "skills_json": skills,
+        "model_choices_json": model_choices,
         "preferred_chat_model": preferred_chat_model,
         "preferred_chat_model_display": get_display_name(preferred_chat_model),
-        "loops_json": _json.dumps(loops_json),
+        "loops_json": loops_json,
         "assistant_name": django_settings.ASSISTANT_NAME,
         # /loop prefill / deep-links
         "open_create": request.GET.get("new") == "1",

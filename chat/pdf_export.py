@@ -44,6 +44,23 @@ def weasyprint_available() -> bool:
     return True
 
 
+def _safe_url_fetcher(url, *args, **kwargs):
+    """Block server-side fetches of remote/local URLs during canvas export.
+
+    Canvas content is user-controlled; the only legitimate resources are inline
+    ``data:`` URIs (images are embedded as data-URLs upstream). Refusing every
+    other scheme stops SSRF (e.g. ``http://169.254.169.254/…``) and local-file
+    reads (``file:///…``) via ``<img src>`` / CSS ``url()`` / ``@import``.
+    WeasyPrint catches the error per-resource and renders a placeholder, so the
+    PDF still produces.
+    """
+    if url.startswith("data:"):
+        from weasyprint.urls import default_url_fetcher
+
+        return default_url_fetcher(url, *args, **kwargs)
+    raise ValueError(f"Blocked non-data URL in canvas export: {url[:60]}")
+
+
 def _wrap(html_body: str, title: str) -> str:
     # Tag markdown tables (bare ``<table>``) with the class our CSS targets; the
     # inline-styled email-block tables (``<table style=…>``) are left untouched.
@@ -68,6 +85,6 @@ def render_canvas_pdf(html_body: str, *, title: str, css: str) -> bytes:
 
     _install_weasyprint_log_filter()
     font_config = FontConfiguration()
-    document = HTML(string=_wrap(html_body, title))
+    document = HTML(string=_wrap(html_body, title), url_fetcher=_safe_url_fetcher)
     stylesheet = CSS(string=css, font_config=font_config)
     return document.write_pdf(stylesheets=[stylesheet], font_config=font_config)
