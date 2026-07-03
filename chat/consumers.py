@@ -1179,11 +1179,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             max_context_tokens = prefs.max_context_tokens if prefs else None
 
+            # A server-seeded continuation (e.g. a background sub-agent finished)
+            # on a "fresh" loop thread must not replay the whole 1:1 loop thread —
+            # that backlog grows unbounded across passes and overflows the context
+            # window. Scope it to the current pass instead. Human messages and
+            # conversational loops keep full history.
+            history_mode = "conversational"
+            if seed_mode and await self._is_fresh_loop_thread(thread.id):
+                history_mode = "loop_pass"
+
             # Gather history + context and build the layered system prompt.
             static_system, history, semi_static_system, dynamic_context, meta = (
                 await self._assemble_turn_inputs(
                     thread, content,
                     model=model, max_context_tokens=max_context_tokens,
+                    history_mode=history_mode,
                 )
             )
 
@@ -1325,6 +1335,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if canvas_data:
                     await self._sink.send_event(canvas_data)
 
+    @database_sync_to_async
+    def _is_fresh_loop_thread(self, thread_id):
+        """True when this thread is a loop thread whose history mode is ``fresh``.
+
+        Used to scope auto-triggered continuations (sub-agent completions) to the
+        current pass so a fresh loop's unbounded 1:1 thread isn't replayed wholesale.
+        """
+        from chat.models import Loop
+
+        loop = Loop.objects.filter(thread_id=thread_id).only("history_mode").first()
+        return loop is not None and loop.history_mode == Loop.HistoryMode.FRESH
+
     async def _assemble_turn_inputs(
         self, thread, content, *,
         model, max_context_tokens,
@@ -1336,11 +1358,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         headless loop turn (``run_turn_to_completion``). Returns
         ``(static_system, history, semi_static_system, dynamic_context, meta)``.
 
-        ``history_mode``:
+        ``history_mode`` (turn-level; distinct from the persisted
+        ``Loop.history_mode`` field which is only ``fresh``/``conversational``):
           - ``"conversational"``: token-aware history from the thread (rolling
             summary + recent window) — the normal chat behaviour.
           - ``"fresh"``: no prior conversation; history is just the current user
             message (``content``) so each scheduled run starts clean.
+          - ``"loop_pass"``: history scoped to the current loop pass (messages at
+            or after the latest ``loop_run`` marker) — used for the auto-triggered
+            continuation after a background sub-agent finishes on a fresh loop
+            thread, so it sees its own pass + the sub-agent result but not the
+            unbounded cross-pass backlog.
         """
         prefs = self.resolved_prefs
 
@@ -1353,6 +1381,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             history_result = await self._load_history(
                 thread, model=model, max_context_tokens=max_context_tokens,
+                scope_to_current_pass=(history_mode == "loop_pass"),
             )
             history = history_result["messages"]
             meta = history_result["meta"]
@@ -3147,7 +3176,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ChatThread.objects.filter(pk=thread.pk).update(title=title)
 
     @database_sync_to_async
-    def _load_history(self, thread, model=None, max_context_tokens=None):
+    def _load_history(self, thread, model=None, max_context_tokens=None, scope_to_current_pass=False):
         """Load token-aware conversation history with a recency overlap window.
 
         The most recent *overlap_tokens* worth of messages are always included as
@@ -3157,6 +3186,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         When *model* is provided the token budget scales with the model's context
         window (up to 150k).  Falls back to the legacy ``MAX_HISTORY_TOKENS``
         constant when unknown.
+
+        When *scope_to_current_pass* is True, history is restricted to messages at
+        or after the latest ``loop_run`` marker (the current fresh-loop pass) and
+        the cross-pass rolling summary is ignored — so an auto-triggered
+        continuation (a background sub-agent finishing) sees its own pass + the
+        sub-agent result without replaying the unbounded 1:1 loop thread. It also
+        forces ``needs_summary`` False: a scoped pass must never trigger
+        summarization, which would write a partial summary onto the loop thread.
+        Falls back to normal (unscoped) behaviour if no marker exists.
 
         Returns a dict with:
         - ``messages``: list of message dicts to send to the LLM
@@ -3172,16 +3210,32 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Refresh summary fields which may have been updated by a background task
         thread.refresh_from_db(fields=["summary", "summary_token_count", "summary_up_to_message_id"])
 
+        # Loop-pass scoping: bound history to the current pass (>= the latest
+        # loop_run marker) and drop the cross-pass summary from the budget.
+        pass_start = None
+        if scope_to_current_pass:
+            marker = (
+                ChatMessage.objects
+                .filter(thread=thread, role="user", metadata__loop_run=True)
+                .order_by("-created_at").first()
+            )
+            if marker is not None:
+                pass_start = marker.created_at
+        scoped = pass_start is not None
+        summary_token_count = 0 if scoped else thread.summary_token_count
+
         # Load ALL messages newest-first (needed to build the overlap window).
-        all_msgs = list(
+        msgs_qs = (
             ChatMessage.objects.filter(thread=thread)
             .exclude(is_redacted=True)
             # UI-only markers (e.g. canvas-deleted pills) never reach the LLM.
             # has_key is NULL-safe — `exclude(metadata__ui_only=True)` would also
             # drop every message whose metadata lacks the key (NULL gotcha).
             .exclude(metadata__has_key="ui_only")
-            .order_by("-created_at")
         )
+        if pass_start is not None:
+            msgs_qs = msgs_qs.filter(created_at__gte=pass_start)
+        all_msgs = list(msgs_qs.order_by("-created_at"))
         total_messages = len(all_msgs)
 
         if not all_msgs:
@@ -3210,12 +3264,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # 2. Fill remaining budget with unsummarised messages between the
         #    summary cutoff and the start of the overlap window.
         remaining_budget = max(
-            0, max_history_tokens - thread.summary_token_count - overlap_tokens_used
+            0, max_history_tokens - summary_token_count - overlap_tokens_used
         )
         add_qs = ChatMessage.objects.filter(
             thread=thread,
             created_at__lt=oldest_overlap.created_at,
         ).exclude(is_redacted=True).exclude(metadata__has_key="ui_only").order_by("-created_at")
+        if pass_start is not None:
+            add_qs = add_qs.filter(created_at__gte=pass_start)
         if thread.summary_up_to_message_id:
             cutoff_msg = ChatMessage.objects.filter(
                 id=thread.summary_up_to_message_id,
@@ -3239,7 +3295,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 4. Build message list
         messages: list[dict] = []
-        if thread.summary:
+        if thread.summary and not scoped:
             messages.append({
                 "role": "system",
                 "content": f"Summary of earlier conversation:\n{thread.summary}",
@@ -3301,8 +3357,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "meta": {
                 "total_messages": total_messages,
                 "included_messages": len(included),
-                "has_summary": bool(thread.summary),
-                "needs_summary": needs_summary,
+                # A scoped loop pass hides the cross-pass summary and must never
+                # trigger summarization (it would summarize a partial pass onto
+                # the loop thread), so both flags are forced False when scoped.
+                "has_summary": bool(thread.summary) and not scoped,
+                "needs_summary": needs_summary and not scoped,
             },
         }
 

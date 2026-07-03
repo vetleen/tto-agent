@@ -1,11 +1,14 @@
 """Tests for the token-aware _load_history in ChatConsumer."""
 
+from datetime import timedelta
+
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.test import TransactionTestCase
+from django.utils import timezone
 
 from chat.consumers import MAX_HISTORY_TOKENS, OVERLAP_TOKENS, ChatConsumer
-from chat.models import ChatMessage, ChatThread
+from chat.models import ChatMessage, ChatThread, Loop
 from core.tokens import count_tokens
 
 User = get_user_model()
@@ -256,3 +259,134 @@ class LoadHistoryTests(TransactionTestCase):
 
         user_msgs = [m for m in messages if m["role"] == "user"]
         self.assertEqual(len(user_msgs), 2)
+
+
+class LoopPassScopingTests(TransactionTestCase):
+    """`_load_history(scope_to_current_pass=True)` limits history to the current
+    loop pass (messages at/after the latest ``loop_run`` marker), skips the
+    cross-pass summary, and never asks for summarization.
+
+    This is the post-sub-agent continuation on a fresh loop thread: it must see
+    its own pass + the sub-agent result, not the unbounded 1:1 loop backlog.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="scope@example.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.consumer = ChatConsumer()
+        self.base = timezone.now() - timedelta(hours=1)
+
+    @database_sync_to_async
+    def _make_msg_at(self, content, minutes, role="user", metadata=None, hidden=False):
+        """Create a message with an explicit created_at (auto_now_add can't be
+        set on create, so update() it afterwards for deterministic ordering)."""
+        msg = ChatMessage.objects.create(
+            thread=self.thread, role=role, content=content,
+            token_count=count_tokens(content),
+            metadata=metadata or {}, is_hidden_from_user=hidden,
+        )
+        ChatMessage.objects.filter(pk=msg.pk).update(
+            created_at=self.base + timedelta(minutes=minutes)
+        )
+        msg.refresh_from_db(fields=["created_at"])
+        return msg
+
+    @database_sync_to_async
+    def _update_thread(self, **kwargs):
+        ChatThread.objects.filter(pk=self.thread.pk).update(**kwargs)
+
+    async def _build_two_pass_thread(self):
+        """Prior pass (should be excluded) then current pass + sub-agent result."""
+        await self._make_msg_at("old prompt", 0, metadata={"loop_run": True})
+        await self._make_msg_at("PRIOR_REPLY", 1, role="assistant")
+        await self._make_msg_at("CURRENT_PROMPT", 10, metadata={"loop_run": True})
+        await self._make_msg_at("Started the scan.", 11, role="assistant")
+        await self._make_msg_at(
+            "[Sub-agent result: abcd1234]\nFINDINGS", 12,
+            metadata={"source": "subagent", "subagent_run_id": "abcd1234"},
+            hidden=True,
+        )
+
+    async def test_scope_excludes_prior_pass_keeps_current(self):
+        await self._build_two_pass_thread()
+        result = await self.consumer._load_history(
+            self.thread, scope_to_current_pass=True
+        )
+        blob = " ".join(m["content"] for m in result["messages"])
+        self.assertNotIn("old prompt", blob)
+        self.assertNotIn("PRIOR_REPLY", blob)
+        self.assertIn("CURRENT_PROMPT", blob)
+        self.assertIn("FINDINGS", blob)
+        # No cross-pass summary system message.
+        self.assertFalse(any(m["role"] == "system" for m in result["messages"]))
+
+    async def test_unscoped_control_includes_prior_pass(self):
+        """Same thread, without scoping, replays everything (the buggy behaviour)."""
+        await self._build_two_pass_thread()
+        result = await self.consumer._load_history(self.thread)
+        blob = " ".join(m["content"] for m in result["messages"])
+        self.assertIn("PRIOR_REPLY", blob)
+        self.assertIn("FINDINGS", blob)
+
+    async def test_scope_skips_cross_pass_summary(self):
+        marker = await self._make_msg_at("CURRENT_PROMPT", 10, metadata={"loop_run": True})
+        await self._make_msg_at("Reply.", 11, role="assistant")
+        summary_text = "Summary of many earlier passes."
+        await self._update_thread(
+            summary=summary_text,
+            summary_token_count=count_tokens(summary_text),
+            summary_up_to_message_id=marker.id,
+        )
+        result = await self.consumer._load_history(
+            self.thread, scope_to_current_pass=True
+        )
+        self.assertFalse(result["meta"]["has_summary"])
+        self.assertFalse(any(m["role"] == "system" for m in result["messages"]))
+
+    async def test_scope_forces_needs_summary_false(self):
+        """A large current pass must not trigger summarization when scoped —
+        that would write a partial summary onto the fresh loop thread."""
+        await self._make_msg_at("CURRENT_PROMPT", 10, metadata={"loop_run": True})
+        big = "word " * 5000  # ~5k tokens
+        for i in range(6):  # ~30k tokens > MAX_HISTORY_TOKENS budget
+            await self._make_msg_at(big, 11 + i, role="assistant")
+
+        scoped = await self.consumer._load_history(
+            self.thread, scope_to_current_pass=True
+        )
+        self.assertFalse(scoped["meta"]["needs_summary"])
+        # Control: unscoped, the same overflow does ask for summarization.
+        unscoped = await self.consumer._load_history(self.thread)
+        self.assertTrue(unscoped["meta"]["needs_summary"])
+
+    async def test_scope_fallback_when_no_marker(self):
+        """No loop_run marker → behave exactly like an unscoped load."""
+        await self._make_msg_at("Just a message", 0)
+        await self._make_msg_at("Another one", 1, role="assistant")
+        scoped = await self.consumer._load_history(
+            self.thread, scope_to_current_pass=True
+        )
+        self.assertEqual(scoped["meta"]["total_messages"], 2)
+        self.assertEqual(scoped["meta"]["included_messages"], 2)
+
+    async def test_is_fresh_loop_thread_detection(self):
+        # Fresh loop → True
+        fresh = await database_sync_to_async(Loop.objects.create)(
+            thread=self.thread, created_by=self.user, prompt="p",
+            history_mode=Loop.HistoryMode.FRESH,
+            cadence_kind=Loop.Cadence.INTERVAL, interval_seconds=3600,
+            next_run=self.base,
+        )
+        self.assertTrue(await self.consumer._is_fresh_loop_thread(self.thread.id))
+
+        # Conversational loop → False
+        await database_sync_to_async(
+            Loop.objects.filter(pk=fresh.pk).update
+        )(history_mode=Loop.HistoryMode.CONVERSATIONAL)
+        self.assertFalse(await self.consumer._is_fresh_loop_thread(self.thread.id))
+
+        # Non-loop thread → False
+        other = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user
+        )
+        self.assertFalse(await self.consumer._is_fresh_loop_thread(other.id))
