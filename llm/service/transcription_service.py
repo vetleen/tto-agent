@@ -531,7 +531,7 @@ def _get_audio_duration_seconds(file_path: Path) -> float:
             return 0.0
         return duration_ms / 1000.0
     except Exception:
-        logger.info("could not compute audio duration for %s", file_path)
+        logger.warning("could not compute audio duration for %s", file_path, exc_info=True)
         return 0.0
 
 

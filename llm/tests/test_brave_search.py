@@ -11,9 +11,29 @@ from llm.tools.brave_search import (
     _normalize_categories,
     _parse_rate_limit_reset,
     _parse_retry_after,
+    _parse_rpm,
     _TokenBucketRateLimiter,
     _validate_freshness,
 )
+
+
+class ParseRpmTests(TestCase):
+    """A bad BRAVE_SEARCH_RPM must not abort import or divide-by-zero."""
+
+    def test_valid_value(self):
+        self.assertEqual(_parse_rpm("90", default=45), 90)
+
+    def test_missing_uses_default(self):
+        self.assertEqual(_parse_rpm(None, default=45), 45)
+
+    def test_malformed_uses_default(self):
+        self.assertEqual(_parse_rpm("abc", default=45), 45)
+        self.assertEqual(_parse_rpm("4.5", default=45), 45)  # non-integer string
+
+    def test_zero_or_negative_uses_default(self):
+        # 0 would make the token-bucket divisor raise ZeroDivisionError.
+        self.assertEqual(_parse_rpm("0", default=45), 45)
+        self.assertEqual(_parse_rpm("-5", default=45), 45)
 
 
 def _mock_ok(payload=None):

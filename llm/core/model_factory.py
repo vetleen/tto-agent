@@ -175,13 +175,12 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
     return client
 
 
-def create_chat_model(model_name: str, *, fallback_models: list[str] | None = None, **overrides):
+def create_chat_model(model_name: str, **overrides):
     """Create a ChatModel instance using init_chat_model for provider detection.
 
     Args:
         model_name: Model name with optional provider prefix
             (e.g. "gpt-5-mini", "anthropic/claude-sonnet-4-6").
-        fallback_models: Optional list of fallback model names (not yet implemented).
         **overrides: Additional kwargs passed to init_chat_model.
 
     Returns:
@@ -208,8 +207,6 @@ def create_chat_model(model_name: str, *, fallback_models: list[str] | None = No
     provider, api_model = _parse_provider(model_name)
     provider_kwargs = _get_provider_kwargs(provider, api_model)
     provider_kwargs.update(overrides)
-
-    # TODO: when fallback_models is provided, chain via .with_fallbacks()
 
     lc_client = _build_client(provider, api_model, provider_kwargs)
 

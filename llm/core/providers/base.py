@@ -731,6 +731,7 @@ class BaseLangChainChatModel(ChatModel):
                         logger.error(
                             "LLM stream transient error mid-stream model=%s provider=%s error_code=%s run_id=%s",
                             self.name, self._provider_label, mid_classified.error_code, run_id,
+                            exc_info=exc,
                         )
                         yield StreamEvent(
                             event_type="error",
@@ -808,6 +809,7 @@ class BaseLangChainChatModel(ChatModel):
             logger.error(
                 "LLM stream transient retries exhausted model=%s provider=%s error_code=%s run_id=%s",
                 self.name, self._provider_label, classified.error_code, run_id,
+                exc_info=last_exc,
             )
             yield StreamEvent(
                 event_type="error",

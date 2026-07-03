@@ -7,10 +7,6 @@ from django.test import TestCase, override_settings
 from llm.tools.web_search_and_read import WebSearchAndReadTool
 
 
-def _no_ssrf_check(url):
-    return None
-
-
 def _search_data(results=None):
     """Build a _search_core-shaped result dict."""
     if results is None:
@@ -28,7 +24,6 @@ def _search_data(results=None):
     BRAVE_SEARCH_API_KEY="test-key",
     JINA_API_KEY="",  # disable the Jina fallback so fetch-error tests make no real network call
 )
-@patch("llm.tools.web_fetch._check_url_ssrf", _no_ssrf_check)
 class WebSearchAndReadTests(TestCase):
 
     def setUp(self):

@@ -69,7 +69,11 @@ class _TokenBucketRateLimiter:
 def _rpm() -> int:
     from django.conf import settings
 
-    return int(getattr(settings, "EPO_OPS_RPM", 30) or 30)
+    try:
+        rpm = int(getattr(settings, "EPO_OPS_RPM", 30))
+    except (TypeError, ValueError):
+        return 30
+    return rpm if rpm > 0 else 30
 
 
 _ops_rate_limiter = _TokenBucketRateLimiter(requests_per_second=_rpm() / 60.0, burst=1)
@@ -250,12 +254,7 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
                     time.sleep(wait)
                     continue
             if status is not None and status < 500:
-                body = ""
-                try:
-                    body = response.text[:300]
-                except Exception:
-                    pass
-                logger.warning("EPO OPS client error %s path=%s body=%s", status, path, body)
+                logger.warning("EPO OPS client error %s path=%s", status, path)
                 if status == 404:
                     return {"error": "No matching patent record was found (EPO OPS 404)."}
                 return {"error": f"EPO OPS request failed ({status}). This will not resolve by retrying."}
@@ -277,7 +276,7 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
         if attempt < _MAX_RETRIES:
             time.sleep(_BACKOFF_BASE * (2 ** attempt))
 
-    logger.error("EPO OPS failed after retries path=%s: %s", path, last_exc)
+    logger.error("EPO OPS failed after retries path=%s", path, exc_info=last_exc)
     return {"error": "EPO OPS is currently unavailable after retries. Consider reporting this to the user."}
 
 

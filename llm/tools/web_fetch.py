@@ -177,15 +177,6 @@ def _resolve_and_validate(url: str) -> tuple[str | None, str | None]:
     return validated_ip, None
 
 
-def _check_url_ssrf(url: str) -> str | None:
-    """Return an error message if the URL targets a private/internal host, else None.
-
-    Thin wrapper over :func:`_resolve_and_validate` kept for callers/tests that
-    only need the boolean-ish verdict.
-    """
-    return _resolve_and_validate(url)[1]
-
-
 class _PinnedIPAdapter(HTTPAdapter):
     """Routes the TCP connection to a pre-validated IP while keeping TLS SNI and
     certificate verification bound to the original hostname.

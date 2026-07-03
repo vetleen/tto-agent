@@ -14,14 +14,6 @@ from llm.model_registry import get_model_info
 _ONE_MILLION = Decimal("1000000")
 
 
-def _normalize_model_name(model: str) -> str:
-    """Strip provider prefixes like ``openai/``, ``anthropic/``, ``gemini/``."""
-    for prefix in ("openai/", "anthropic/", "gemini/"):
-        if model.startswith(prefix):
-            return model[len(prefix):]
-    return model
-
-
 def get_model_pricing(model: str) -> Optional[Tuple[Decimal, Decimal, Decimal, Decimal]]:
     """Return ``(input, cached_input, cache_write, output)`` per-1M-token prices, or *None*."""
     info = get_model_info(model)

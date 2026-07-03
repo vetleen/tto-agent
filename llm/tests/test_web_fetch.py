@@ -15,7 +15,6 @@ from llm.tools.web_fetch import (
     _PinnedIPAdapter,
     _ResponseTooLarge,
     _SSRFBlocked,
-    _check_url_ssrf,
     _enforce_size_and_buffer,
     _fetch_via_jina,
     _is_private_ip,
@@ -436,7 +435,7 @@ class SSRFProtectionTests(TestCase):
         mock_dns.return_value = [
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80)),
         ]
-        result = _check_url_ssrf("http://evil.com")
+        result = _resolve_and_validate("http://evil.com")[1]
         self.assertIsNotNone(result)
         self.assertIn("private", result.lower())
 
@@ -445,7 +444,7 @@ class SSRFProtectionTests(TestCase):
         mock_dns.return_value = [
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 80)),
         ]
-        result = _check_url_ssrf("http://example.com")
+        result = _resolve_and_validate("http://example.com")[1]
         self.assertIsNone(result)
 
     @patch("llm.tools.web_fetch.socket.getaddrinfo")
@@ -453,7 +452,7 @@ class SSRFProtectionTests(TestCase):
         mock_dns.return_value = [
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.169.254", 80)),
         ]
-        result = _check_url_ssrf("http://169.254.169.254/latest/meta-data/")
+        result = _resolve_and_validate("http://169.254.169.254/latest/meta-data/")[1]
         self.assertIsNotNone(result)
 
     # -- _resolve_and_validate (resolve-once-return-IP) --

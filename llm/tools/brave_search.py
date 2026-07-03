@@ -44,7 +44,21 @@ class _TokenBucketRateLimiter:
             time.sleep(wait)
 
 
-_BRAVE_SEARCH_RPM = int(os.environ.get("BRAVE_SEARCH_RPM", "45"))
+def _parse_rpm(env_value: str | None, default: int = 45) -> int:
+    """Parse a requests-per-minute env var, falling back to *default*.
+
+    Guards module import (a malformed value must not abort registration of the
+    whole llm app) and the token-bucket divisor (0/negative would raise
+    ZeroDivisionError on the second acquire).
+    """
+    try:
+        rpm = int(env_value) if env_value is not None else default
+    except (TypeError, ValueError):
+        return default
+    return rpm if rpm > 0 else default
+
+
+_BRAVE_SEARCH_RPM = _parse_rpm(os.environ.get("BRAVE_SEARCH_RPM"), 45)
 _brave_rate_limiter = _TokenBucketRateLimiter(
     requests_per_second=_BRAVE_SEARCH_RPM / 60.0, burst=1
 )
@@ -318,7 +332,7 @@ def _search_core(
             " Consider reporting this to the user rather than continuing to search.",
             "results": [],
         }
-    logger.error("Brave Search failed after retries query=%r: %s", query, last_exc)
+    logger.error("Brave Search failed after retries query=%r", query, exc_info=last_exc)
     return {
         "error": "Brave Search failed after retries."
         " Web search is currently unavailable."
