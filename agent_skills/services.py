@@ -259,11 +259,15 @@ def get_skill_for_user(user, skill_id: str) -> AgentSkill | None:
     - org: user must be a member of that org
     - user: must be the creator
     """
+    from django.core.exceptions import ValidationError
+
     from accounts.models import Membership
 
     try:
         skill = AgentSkill.objects.get(pk=skill_id, is_active=True)
-    except AgentSkill.DoesNotExist:
+    except (AgentSkill.DoesNotExist, ValidationError, ValueError):
+        # pk is a UUIDField: a non-UUID skill_id (e.g. a tampered POST value)
+        # raises ValidationError, not DoesNotExist — treat it as "no such skill".
         return None
 
     all_disabled, system_disabled = _org_disabled_info(user)

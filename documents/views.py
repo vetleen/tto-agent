@@ -1,7 +1,5 @@
 import json
 import logging
-import ntpath
-import os
 
 from django.conf import settings
 from django.db import IntegrityError
@@ -15,6 +13,7 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
+from core.files import safe_filename
 from core.http import parse_json_object
 from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from .pii_labels import CRIMINAL_TOOLTIP, PILL_LABEL, SPECIAL_TOOLTIP, summarize_pii_keys
@@ -264,23 +263,12 @@ def data_room_documents(request, data_room_id):
 
 
 def _safe_original_filename(filename: str, max_length: int = 255) -> str:
-    """Normalize and cap client-provided file names for safe persistence/display."""
-    raw = (filename or "").strip()
-    if not raw:
-        return "document"
-    # Handle both Unix and Windows style paths that may be sent by clients.
-    name = os.path.basename(ntpath.basename(raw)).strip()
-    if not name:
-        return "document"
-    if len(name) <= max_length:
-        return name
-    base, ext = os.path.splitext(name)
-    if not ext:
-        return name[:max_length]
-    reserved = len(ext)
-    if reserved >= max_length:
-        return name[:max_length]
-    return f"{base[: max_length - reserved]}{ext}"
+    """Normalize and cap client-provided file names for safe persistence/display.
+
+    Thin wrapper over the shared ``core.files.safe_filename`` (with a
+    document-flavoured fallback) so the documents and meetings apps can't drift.
+    """
+    return safe_filename(filename, fallback="document", max_length=max_length)
 
 
 def _allowed_extension(filename: str) -> bool:

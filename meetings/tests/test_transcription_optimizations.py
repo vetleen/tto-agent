@@ -31,6 +31,7 @@ from meetings.services.audio_transcription import (
     DEFAULT_TARGET_CHUNK_SECONDS,
     ChunkBoundary,
     _PartialTranscriptFlusher,
+    _resolve_upload_speed_up_factor,
     orchestrate_upload_transcription,
     plan_chunk_boundaries,
 )
@@ -72,8 +73,20 @@ class SpeedUpFactorTests(TestCase):
         self.assertEqual(_resolve_speed_up_factor(1.0), 1.0)
 
     @override_settings(MEETING_UPLOAD_SPEED_UP_FACTOR=2.5)
-    def test_resolve_speed_up_reads_setting_when_none_explicit(self):
-        self.assertEqual(_resolve_speed_up_factor(None), 2.5)
+    def test_llm_resolve_speed_up_is_settings_blind(self):
+        # The llm helper no longer reads the meetings setting — None means 1.0,
+        # so a documents-app transcription can't silently inherit the speed-up.
+        self.assertEqual(_resolve_speed_up_factor(None), 1.0)
+        self.assertEqual(_resolve_speed_up_factor(), 1.0)
+
+    @override_settings(MEETING_UPLOAD_SPEED_UP_FACTOR=2.5)
+    def test_upload_factor_reads_meeting_setting(self):
+        # The meetings-owned resolver is where the setting read now lives.
+        self.assertEqual(_resolve_upload_speed_up_factor(), 2.5)
+
+    @override_settings(MEETING_UPLOAD_SPEED_UP_FACTOR=9.0)
+    def test_upload_factor_is_clamped(self):
+        self.assertEqual(_resolve_upload_speed_up_factor(), 3.0)
 
     def test_ffmpeg_command_includes_atempo_when_factor_above_one(self):
         """Verify the atempo filter is present in the ffmpeg args for speed-up."""
@@ -236,12 +249,11 @@ class ChunkPlannerSpeedUpAwarenessTests(TestCase):
         factor: float,
         target_chunk_seconds: int = DEFAULT_TARGET_CHUNK_SECONDS,
     ) -> int:
-        from llm.service import _audio_subprocess
+        from meetings.services import audio_transcription
 
-        # plan_chunk_boundaries is pure math after a metadata-only probe; it
-        # imports _resolve_speed_up_factor lazily, so patch it on the source
-        # module (the local import resolves the attribute at call time).
-        with patch.object(_audio_subprocess, "_resolve_speed_up_factor", return_value=factor):
+        # plan_chunk_boundaries reads the factor via the meetings-owned resolver;
+        # patch that so the test controls the factor directly.
+        with patch.object(audio_transcription, "_resolve_upload_speed_up_factor", return_value=factor):
             boundaries = plan_chunk_boundaries(
                 int(duration_seconds * 1000),
                 target_chunk_seconds=target_chunk_seconds,

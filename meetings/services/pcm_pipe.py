@@ -46,16 +46,18 @@ PCM_SAMPLE_RATE = 24_000
 PCM_SAMPLE_BYTES = 2       # 16-bit
 PCM_CHANNELS = 1
 
-# 40ms slices at 24kHz mono PCM16 = 960 samples * 2 bytes = 1920 bytes.
-# Smaller slices mean lower latency to the Realtime server (each append
-# gets VAD-processed sooner) but more WebSocket frames per second.
-DEFAULT_FRAME_MS = 40
-DEFAULT_FRAME_BYTES = (PCM_SAMPLE_RATE * DEFAULT_FRAME_MS // 1000) * PCM_SAMPLE_BYTES * PCM_CHANNELS  # 1920
+# 200ms slices at 24kHz mono PCM16 = 4800 samples * 2 bytes = 9600 bytes.
+# Bigger slices mean far fewer upstream WebSocket frames per second (~5/s vs
+# ~25/s at 40ms) — each carries JSON+base64 framing overhead. The added latency
+# is imperceptible: server-VAD keys on a 600ms silence window, so +160ms of
+# batching stays well under it.
+DEFAULT_FRAME_MS = 200
+DEFAULT_FRAME_BYTES = (PCM_SAMPLE_RATE * DEFAULT_FRAME_MS // 1000) * PCM_SAMPLE_BYTES * PCM_CHANNELS  # 9600
 
-# Bounded ring of decoded PCM frames waiting for the forwarder task. Five
-# seconds at our frame size is ~125 frames — enough smoothing for transient
-# forwarder delays without risking unbounded memory on a stuck session.
-_STDOUT_QUEUE_MAX_FRAMES = 125
+# Bounded ring of decoded PCM frames waiting for the forwarder task. ~5 seconds
+# at our frame size is ~25 frames — enough smoothing for transient forwarder
+# delays without risking unbounded memory on a stuck session.
+_STDOUT_QUEUE_MAX_FRAMES = 25
 
 _EOF = b""  # sentinel marking stdout EOF
 
@@ -238,7 +240,9 @@ class PcmPipe:
                 line = stderr.readline()
                 if not line:
                     return
-                logger.info(
+                # ffmpeg diagnostics are not business events — keep them at DEBUG
+                # (local only) so they don't stream into Sentry breadcrumbs in prod.
+                logger.debug(
                     "ffmpeg: %s", line.decode("utf-8", errors="replace").rstrip()
                 )
         except Exception:

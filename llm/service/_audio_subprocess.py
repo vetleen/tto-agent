@@ -62,27 +62,24 @@ def ffprobe_duration_ms(file_path: Path) -> int | None:
         return None
 
 
-def _resolve_speed_up_factor(explicit: float | None) -> float:
-    """Resolve the audio speed-up factor for upload chunks.
+def _resolve_speed_up_factor(factor: float | None = None) -> float:
+    """Clamp an audio speed-up factor to a sensible range.
 
-    Pull from Django settings when no explicit value is supplied. Clamp to a
-    sensible range — atempo preserves quality well up to ~2x, degrades at 3x,
-    and ffmpeg's single atempo filter supports 0.5–100 (we chain higher values
-    if needed, but anything above 3x drops too much intelligibility for
-    transcription).
+    ``None`` means "no speed-up" (1.0). Clamp to a sensible range — atempo
+    preserves quality well up to ~2x, degrades at 3x, and ffmpeg's single
+    atempo filter supports 0.5–100 (we chain higher values if needed, but
+    anything above 3x drops too much intelligibility for transcription).
+
+    This helper is deliberately settings-blind: the caller owns *where* the
+    factor comes from, so llm has no knowledge of any app-specific config (a
+    meetings setting must not silently speed up a documents-app transcription).
     """
-    if explicit is not None:
-        factor = explicit
-    else:
-        try:
-            from django.conf import settings as _settings
-            factor = float(getattr(_settings, "MEETING_UPLOAD_SPEED_UP_FACTOR", 1.0))
-        except Exception:
-            factor = 1.0
+    if factor is None:
+        return 1.0
     if factor < 0.5:
-        factor = 0.5
+        return 0.5
     if factor > 3.0:
-        factor = 3.0
+        return 3.0
     return factor
 
 
@@ -104,11 +101,11 @@ def ffmpeg_extract_chunk(
     Always re-encodes to MP3 at 128 kbps mono 16 kHz.  This is safe for
     all input formats and the OpenAI transcription API accepts MP3.
 
-    When ``speed_up_factor`` (or the ``MEETING_UPLOAD_SPEED_UP_FACTOR``
-    setting) is > 1.0, the output audio is time-compressed via the
-    ``atempo`` filter — a 60s source becomes 30s of audio at factor=2.0.
-    This roughly halves the tokens OpenAI bills for, with near-zero
-    intelligibility loss up to 2x.
+    When ``speed_up_factor`` is > 1.0, the output audio is time-compressed
+    via the ``atempo`` filter — a 60s source becomes 30s of audio at
+    factor=2.0. This roughly halves the tokens OpenAI bills for, with
+    near-zero intelligibility loss up to 2x. The factor defaults to 1.0 (no
+    speed-up); callers that want it pass it explicitly.
 
     Returns the Path to the output temp file.  Caller must delete it.
     Raises ``subprocess.CalledProcessError`` on ffmpeg failure.

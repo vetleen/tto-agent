@@ -6,13 +6,11 @@ calls ``/v1/audio/transcriptions``. Latency to first text on screen is
 (``"type": "transcription"`` session) so audio can stream in continuously
 and text deltas stream back within ~1s of speech.
 
-The abstract base ``RealtimeTranscriptionSession`` defines the interface
-the WebSocket consumer talks to. The concrete
-``OpenAIRealtimeSession`` is the only shipping implementation; the
-abstraction exists so a future ``deepgram/*`` or ``assemblyai/*``
-registry entry can plug in without touching the consumer or ffmpeg
-pipeline. Factory ``build_realtime_session`` dispatches on the provider
-declared in the transcription registry.
+``OpenAIRealtimeSession`` is the only shipping implementation and is what
+the WebSocket consumer talks to. Factory ``build_realtime_session``
+dispatches on the provider declared in the transcription registry, so a
+future ``deepgram/*`` or ``assemblyai/*`` backend can plug in there
+without touching the consumer or ffmpeg pipeline.
 
 Event shape emitted to the consumer (kept provider-neutral so alternate
 backends can conform):
@@ -28,19 +26,15 @@ short outages don't drop audio.
 """
 from __future__ import annotations
 
-import abc
 import asyncio
 import base64
 import json
 import logging
 import os
 import random
-import threading
 import time
-import uuid
 from collections import deque
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import AsyncIterator, Optional
 
 from llm.transcription_registry import get_transcription_model_info
@@ -101,68 +95,6 @@ class UnsupportedModelError(RealtimeSessionError):
 
 
 # ---------------------------------------------------------------------------
-# Abstract base
-# ---------------------------------------------------------------------------
-
-
-class RealtimeTranscriptionSession(abc.ABC):
-    """Bidirectional streaming transcription session (audio in → text out).
-
-    Subclasses own one provider-specific WebSocket. The consumer interacts
-    only with the methods on this base class.
-    """
-
-    def __init__(
-        self,
-        *,
-        model_id: str,
-        prompt: str | None = None,
-        language: str | None = None,
-    ):
-        self.model_id = model_id
-        self.prompt = prompt
-        self.language = language
-        self._events: asyncio.Queue[SessionEvent] = asyncio.Queue(maxsize=256)
-
-    @abc.abstractmethod
-    async def connect(self) -> None:
-        """Open the session and prepare it to receive audio."""
-
-    @abc.abstractmethod
-    async def send_pcm(self, frame: bytes) -> None:
-        """Forward a PCM16 frame (24kHz mono LE) to the provider."""
-
-    @abc.abstractmethod
-    async def finalize(self, timeout: float = 3.0) -> None:
-        """Flush pending audio and wait briefly for final ``.completed`` events."""
-
-    @abc.abstractmethod
-    async def aclose(self) -> None:
-        """Release all resources. Safe to call multiple times."""
-
-    async def events(self) -> AsyncIterator[SessionEvent]:
-        """Yield structured events produced by the provider.
-
-        Terminates when the session is closed. Consumers treat
-        ``SessionError(fatal=True)`` as a signal to tear down.
-        """
-        while True:
-            evt = await self._events.get()
-            yield evt
-            if isinstance(evt, SessionStatus) and evt.state == "disconnected":
-                return
-
-    def pending_event_count(self) -> int:
-        """Events produced but not yet consumed.
-
-        Teardown uses this to give the event-consumer task a bounded moment to
-        dequeue and persist the trailing ``.completed`` that ``finalize()``
-        waited for, before it gets cancelled.
-        """
-        return self._events.qsize()
-
-
-# ---------------------------------------------------------------------------
 # OpenAI implementation
 # ---------------------------------------------------------------------------
 
@@ -208,7 +140,7 @@ async def _default_ws_connect(api_key: str, url: str):
     )
 
 
-class OpenAIRealtimeSession(RealtimeTranscriptionSession):
+class OpenAIRealtimeSession:
     """Open a direct WebSocket to OpenAI's Realtime transcription endpoint.
 
     Connects to ``wss://api.openai.com/v1/realtime?intent=transcription``
@@ -231,7 +163,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         _ws_connect_factory=None,   # test seam; replaces _default_ws_connect
         _api_key: str | None = None,
     ):
-        super().__init__(model_id=model_id, prompt=prompt, language=language)
+        self.model_id = model_id
+        self.prompt = prompt
+        self.language = language
+        self._events: asyncio.Queue[SessionEvent] = asyncio.Queue(maxsize=256)
         info = get_transcription_model_info(model_id)
         if info is None:
             raise UnsupportedModelError(f"Unknown transcription model: {model_id}")
@@ -243,6 +178,10 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         self._api_model = info.api_model
         self._ws = None
         self._recv_task: Optional[asyncio.Task] = None
+        # Reconnect runs as a fire-and-forget task; we hold a reference so aclose
+        # can cancel a reconnect that is sleeping in backoff (otherwise it would
+        # wake after aclose and reopen a fresh, leaked, billable session).
+        self._reconnect_task: Optional[asyncio.Task] = None
         self._closed = False
         self._session_id: str | None = None
         self._replay_buffer: deque[bytes] = deque()
@@ -272,7 +211,32 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         await self._open()
         await self._events.put(SessionStatus(state="connected"))
 
+    async def events(self) -> AsyncIterator[SessionEvent]:
+        """Yield structured events produced by the provider.
+
+        Terminates when the session is closed. Consumers treat
+        ``SessionError(fatal=True)`` as a signal to tear down.
+        """
+        while True:
+            evt = await self._events.get()
+            yield evt
+            if isinstance(evt, SessionStatus) and evt.state == "disconnected":
+                return
+
+    def pending_event_count(self) -> int:
+        """Events produced but not yet consumed.
+
+        Teardown uses this to give the event-consumer task a bounded moment to
+        dequeue and persist the trailing ``.completed`` that ``finalize()``
+        waited for, before it gets cancelled.
+        """
+        return self._events.qsize()
+
     async def _open(self) -> None:
+        if self._closed:
+            # A reconnect scheduled before aclose() must not resurrect the
+            # session after it's been closed.
+            raise RealtimeSessionError("session is closed")
         if not self._api_key:
             raise RealtimeSessionError("OPENAI_API_KEY is not set")
         # Drop any utterance-start offsets left pending from a dropped connection
@@ -357,13 +321,13 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             # a dead session and no error ever surfaces.
             if not self._closed:
                 logger.warning("OpenAIRealtimeSession: server closed the socket; reconnecting")
-                asyncio.create_task(self._try_reconnect())
+                self._reconnect_task = asyncio.create_task(self._try_reconnect())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("OpenAIRealtimeSession: recv loop ended (%s)", exc)
             if not self._closed:
-                asyncio.create_task(self._try_reconnect())
+                self._reconnect_task = asyncio.create_task(self._try_reconnect())
 
     async def _dispatch_server_event(self, evt_type: str, event: dict) -> None:
         self._server_event_count += 1
@@ -498,6 +462,11 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         await self._events.put(SessionStatus(state="reconnecting"))
         await asyncio.sleep(backoff)
 
+        if self._closed:
+            # aclose() ran during the backoff sleep — do not reopen a socket
+            # that nothing will ever close.
+            return
+
         # Tear down the old socket so _open can re-enter cleanly.
         try:
             if self._ws is not None:
@@ -510,7 +479,7 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             await self._open()
         except Exception as exc:
             logger.warning("OpenAIRealtimeSession: reconnect failed (%s); scheduling retry", exc)
-            asyncio.create_task(self._try_reconnect())
+            self._reconnect_task = asyncio.create_task(self._try_reconnect())
             return
 
         # Replay the last few seconds of PCM so the remote side doesn't lose
@@ -598,6 +567,15 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
             return
         self._closed = True
         self._speech_start_offsets.clear()
+        # Cancel a reconnect that may be sleeping in backoff so it can't wake
+        # after close and reopen a fresh, leaked, billable session.
+        if self._reconnect_task is not None:
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reconnect_task = None
         if self._recv_task is not None:
             self._recv_task.cancel()
             try:
@@ -611,7 +589,14 @@ class OpenAIRealtimeSession(RealtimeTranscriptionSession):
         except Exception:
             pass
         self._ws = None
-        await self._events.put(SessionStatus(state="disconnected"))
+        # Best-effort courtesy event. Must not block: if the consumer task has
+        # already died, nobody is draining the queue and a blocking put() here
+        # would hang teardown forever (and leak the ffmpeg pipe the caller
+        # closes only after this returns).
+        try:
+            self._events.put_nowait(SessionStatus(state="disconnected"))
+        except asyncio.QueueFull:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -624,8 +609,8 @@ def build_realtime_session(
     model_id: str,
     prompt: str | None = None,
     language: str | None = None,
-) -> RealtimeTranscriptionSession:
-    """Return a provider-appropriate ``RealtimeTranscriptionSession``.
+) -> OpenAIRealtimeSession:
+    """Return a provider-appropriate realtime transcription session.
 
     The consumer calls this with whatever model the user picked. We look
     up the provider from the registry so adding a Deepgram or
@@ -646,7 +631,6 @@ def build_realtime_session(
 
 
 __all__ = [
-    "RealtimeTranscriptionSession",
     "OpenAIRealtimeSession",
     "build_realtime_session",
     "TranscriptDelta",

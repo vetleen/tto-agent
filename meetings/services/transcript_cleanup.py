@@ -51,11 +51,6 @@ REDUNDANCY_GATE = 0.5
 # Texts shorter than this can't host a meaningful loop worth the work.
 _MIN_TEXT_CHARS = 80
 
-# Optional fuzzy merge of *near*-equal consecutive units (handles loops where
-# each repeat varies slightly). 0.0 disables it (default); set e.g. 0.92 to
-# enable. Off by default because exact/normalized matching is the low-risk path.
-FUZZY_THRESHOLD = 0.0
-
 # A substring of 4..200 chars repeated 3+ times back-to-back (the unit + 2 more).
 # Non-greedy so it locks onto the *shortest* repeating unit; DOTALL so a loop
 # spanning newlines still matches.
@@ -75,16 +70,6 @@ _NORM_STRIP = " \t.,!?…- "
 def _normalize_unit(unit: str) -> str:
     """Comparison key for a sentence/clause: case-, space- and edge-punctuation-insensitive."""
     return re.sub(r"\s+", " ", unit).strip().lower().strip(_NORM_STRIP)
-
-
-def _keys_equal(a: str, b: str) -> bool:
-    if a == b:
-        return True
-    if FUZZY_THRESHOLD > 0 and a and b:
-        import difflib
-
-        return difflib.SequenceMatcher(None, a, b).ratio() >= FUZZY_THRESHOLD
-    return False
 
 
 def _redundant_enough(text: str) -> bool:
@@ -129,7 +114,7 @@ def _collapse_sentence_runs(text: str) -> str:
             i += 1
             continue
         j = i + 1
-        while j < n and _keys_equal(key, _normalize_unit(units[j])):
+        while j < n and key == _normalize_unit(units[j]):
             j += 1
         if j - i >= MIN_RUN:
             out.append(unit)  # keep only the first occurrence of the run

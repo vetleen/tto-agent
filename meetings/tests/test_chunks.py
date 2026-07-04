@@ -10,6 +10,8 @@ from django.test import TestCase, override_settings
 
 from meetings.models import Meeting, MeetingTranscriptSegment
 from meetings.services.chunks import (
+    _ext_for_mime,
+    append_segment_text_to_transcript,
     cleanup_temp,
     recompute_meeting_transcript,
     write_chunk_stream_to_temp,
@@ -207,3 +209,63 @@ class RecomputeTranscriptTests(TestCase):
         # Raw segment row is untouched and fully recoverable.
         seg.refresh_from_db()
         self.assertEqual(seg.text.count("en del penger"), 40)
+
+
+class ExtForMimeTests(TestCase):
+    def test_roundtrips_upload_mimes(self):
+        # The upload view builds mime as f"audio/{ext}"; these must resolve back
+        # to the real container extension (not the webm fallback) so ffmpeg /
+        # the OpenAI API can sniff the format from the temp file name.
+        self.assertEqual(_ext_for_mime("audio/mp3"), "mp3")
+        self.assertEqual(_ext_for_mime("audio/mpeg"), "mp3")
+        self.assertEqual(_ext_for_mime("audio/m4a"), "m4a")
+        self.assertEqual(_ext_for_mime("audio/x-m4a"), "m4a")
+        self.assertEqual(_ext_for_mime("audio/mp4"), "mp4")
+        self.assertEqual(_ext_for_mime("audio/mpga"), "mpga")
+        self.assertEqual(_ext_for_mime("audio/wav"), "wav")
+
+    def test_strips_codec_params(self):
+        self.assertEqual(_ext_for_mime("audio/webm;codecs=opus"), "webm")
+
+    def test_unknown_falls_back_to_webm(self):
+        self.assertEqual(_ext_for_mime("application/x-bogus"), "webm")
+        self.assertEqual(_ext_for_mime(""), "webm")
+
+
+class AppendSegmentTranscriptTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="append@example.com", password="pw")
+        self.meeting = Meeting.objects.create(name="M", slug="m-append", created_by=self.user)
+
+    def test_append_matches_recompute_output(self):
+        # Appending sequentially should produce the same transcript a full
+        # rebuild would, for strictly append-ordered segments.
+        for idx, text in enumerate(["first", "second", "third"]):
+            MeetingTranscriptSegment.objects.create(
+                meeting=self.meeting, segment_index=idx, text=text,
+                status=MeetingTranscriptSegment.Status.READY,
+            )
+            append_segment_text_to_transcript(self.meeting.id, text)
+        self.meeting.refresh_from_db()
+        appended = self.meeting.transcript
+        self.assertEqual(appended, recompute_meeting_transcript(self.meeting.id))
+        self.assertEqual(appended, "first\n\nsecond\n\nthird")
+
+    def test_append_applies_collapse_repetitions(self):
+        looped = "Ja, det er en del penger. " * 40
+        result = append_segment_text_to_transcript(self.meeting.id, looped)
+        self.assertEqual(result.count("en del penger"), 1)
+
+    def test_empty_cleaned_text_is_noop(self):
+        append_segment_text_to_transcript(self.meeting.id, "hello")
+        before = Meeting.objects.get(pk=self.meeting.id).transcript
+        append_segment_text_to_transcript(self.meeting.id, "")
+        after = Meeting.objects.get(pk=self.meeting.id).transcript
+        self.assertEqual(before, after)
+
+    def test_append_from_empty_has_no_leading_separator(self):
+        result = append_segment_text_to_transcript(self.meeting.id, "opening line")
+        self.assertEqual(result, "opening line")
+
+    def test_missing_meeting_returns_empty(self):
+        self.assertEqual(append_segment_text_to_transcript(9_999_999, "x"), "")

@@ -122,10 +122,10 @@ class PcmPipeTests(unittest.TestCase):
             f"expected ~{expected_bytes} bytes of PCM, got {total}",
         )
 
-    def test_frame_size_matches_40ms_slices(self):
+    def test_frame_size_matches_200ms_slices(self):
         # Sanity check: our declared frame size matches the math we use
-        # elsewhere (24kHz * 40ms * 2 bytes/sample = 1920).
-        self.assertEqual(DEFAULT_FRAME_BYTES, 1920)
+        # elsewhere (24kHz * 200ms * 2 bytes/sample = 9600).
+        self.assertEqual(DEFAULT_FRAME_BYTES, 9600)
 
     def test_headerless_prefix_skipped_then_decodes(self):
         """Header-less bytes before the init segment are skipped; valid audio decodes."""

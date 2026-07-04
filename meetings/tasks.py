@@ -69,8 +69,22 @@ def transcribe_meeting_chunk_task(
     User = get_user_model()
     meeting_uuid = None
     try:
+        from django.db.models.functions import Right
+
+        from .services.audio_transcription import (
+            LIVE_PROMPT_TAIL_CHARS,
+            build_transcription_prompt,
+        )
         try:
-            meeting = Meeting.objects.get(pk=meeting_id)
+            # Defer the (potentially hundreds of KB) transcript column and fetch
+            # only its last LIVE_PROMPT_TAIL_CHARS via SQL — the full column never
+            # leaves Postgres just to build a 1200-char prompt tail.
+            meeting = (
+                Meeting.objects
+                .defer("transcript")
+                .annotate(transcript_tail=Right("transcript", LIVE_PROMPT_TAIL_CHARS))
+                .get(pk=meeting_id)
+            )
             meeting_uuid = str(meeting.uuid)
         except Meeting.DoesNotExist:
             logger.warning("transcribe_meeting_chunk_task: meeting %s not found", meeting_id)
@@ -94,12 +108,9 @@ def transcribe_meeting_chunk_task(
 
         # Build a transcription prompt from meeting metadata + tail of the
         # already-transcribed transcript so the model has continuity for
-        # proper nouns and jargon across chunks.
-        from .services.audio_transcription import (
-            LIVE_PROMPT_TAIL_CHARS,
-            build_transcription_prompt,
-        )
-        prior_tail = (meeting.transcript or "")[-LIVE_PROMPT_TAIL_CHARS:] or None
+        # proper nouns and jargon across chunks. (transcript_tail is the last
+        # LIVE_PROMPT_TAIL_CHARS, fetched via SQL above.)
+        prior_tail = (meeting.transcript_tail or "") or None
         prompt = build_transcription_prompt(meeting, prior_tail=prior_tail)
 
         # Effective language: the meeting's own choice, else the resolved
@@ -214,9 +225,14 @@ def transcribe_uploaded_audio_task(
     from .models import Meeting
     from .services.audio_transcription import orchestrate_upload_transcription
 
-    local_path = download_chunk_to_local(temp_path)
+    local_path = None
     try:
         try:
+            # Inside the try so a storage/download failure still hits the
+            # defensive FAILED update below and the finally's cleanup_temp,
+            # instead of stranding the meeting in LIVE_TRANSCRIBING and leaking
+            # the uploaded audio.
+            local_path = download_chunk_to_local(temp_path)
             orchestrate_upload_transcription(
                 meeting_id=meeting_id,
                 temp_path=local_path,
@@ -250,7 +266,7 @@ def transcribe_uploaded_audio_task(
             # in finally) and Celery would just log a redundant traceback.
             return
     finally:
-        if str(local_path) != temp_path:
+        if local_path is not None and str(local_path) != temp_path:
             local_path.unlink(missing_ok=True)
         cleanup_temp(temp_path)
 
@@ -263,6 +279,13 @@ def transcribe_uploaded_audio_task(
 # cover the upload task's multi-hour wall-clock ceiling.
 STALE_SEGMENT_MINUTES = 15
 STALE_UPLOAD_MINUTES = 60
+# Live-path staleness. The WS heartbeat/disconnect normally move a live meeting
+# out of LIVE_TRANSCRIBING, but a hard dyno death (SIGKILL, Daphne crash) skips
+# disconnect() and strands it — which then blocks the per-user transcription
+# gate for ALL of that user's meetings. 6h is comfortably past the 4h
+# MEETING_AUTO_STOP_MAX_SECONDS session ceiling, so a healthy live session is
+# never swept mid-recording.
+STALE_LIVE_HOURS = 6
 
 
 @shared_task(time_limit=60)
@@ -279,12 +302,15 @@ def expire_stale_transcriptions() -> int:
     - Upload-path meetings stay LIVE_TRANSCRIBING forever, which also blocks
       the per-user "already transcribing" gate in meetings.views. Stale ones
       are marked FAILED (mirrors the defensive update in
-      ``transcribe_uploaded_audio_task``). Live-path LIVE_TRANSCRIBING is
-      WS-managed (Stop/disconnect set READY/INTERRUPTED) and is left alone —
-      hence the ``transcript_source`` filter.
+      ``transcribe_uploaded_audio_task``).
+    - Live-path meetings are normally finalized by the WS consumer
+      (Stop/disconnect set READY/INTERRUPTED), but a hard dyno death skips that,
+      so live-source rows older than ``STALE_LIVE_HOURS`` (beyond the session
+      ceiling) are marked INTERRUPTED — the transcript content is valid, so this
+      is not a FAILED.
 
     Like chat.tasks.expire_stale_subagent_runs, transient DB unavailability is
-    logged at INFO and skipped — the next beat tick retries.
+    logged at WARNING and skipped — the next beat tick retries.
     """
     from datetime import timedelta
 
@@ -342,8 +368,25 @@ def expire_stale_transcriptions() -> int:
                 stale_uploads,
             )
             handled += stale_uploads
+
+        stale_live = Meeting.objects.filter(
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+            transcript_source=Meeting.TranscriptSource.LIVE,
+            updated_at__lt=now - timedelta(hours=STALE_LIVE_HOURS),
+        ).update(
+            status=Meeting.Status.INTERRUPTED,
+            transcription_error="Transcription was interrupted.",
+            ended_at=now,
+        )
+        if stale_live:
+            logger.warning(
+                "expire_stale_transcriptions: %s live meeting(s) stuck in "
+                "LIVE_TRANSCRIBING marked INTERRUPTED",
+                stale_live,
+            )
+            handled += stale_live
     except (OperationalError, InterfaceError):
-        logger.info(
+        logger.warning(
             "Skipping stale transcription sweep: database temporarily unavailable; "
             "will retry on next beat tick.",
             exc_info=True,

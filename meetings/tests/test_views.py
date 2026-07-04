@@ -820,3 +820,71 @@ class MeetingRateLimitTests(TestCase):
             self.assertNotEqual(response.status_code, 429)
         response = self.client.post(url)
         self.assertEqual(response.status_code, 429)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class MeetingReviewFixTests(TestCase):
+    """Covers the review-batch view fixes: delete guard, metadata caps,
+    malformed data-room id, and slug collision handling."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="fixv@example.com", password="pw")
+        self.client.force_login(self.user)
+        self.meeting = Meeting.objects.create(
+            name="Fix meeting", slug="m-fixv", created_by=self.user,
+        )
+
+    def test_delete_refused_while_live_transcribing(self):
+        self.meeting.status = Meeting.Status.LIVE_TRANSCRIBING
+        self.meeting.save(update_fields=["status"])
+        response = self.client.post(reverse("meeting_delete", args=[self.meeting.uuid]))
+        self.assertEqual(response.status_code, 302)
+        # Row still exists (delete refused).
+        self.assertTrue(Meeting.objects.filter(pk=self.meeting.pk).exists())
+
+    def test_delete_allowed_when_not_live(self):
+        response = self.client.post(reverse("meeting_delete", args=[self.meeting.uuid]))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Meeting.objects.filter(pk=self.meeting.pk).exists())
+
+    def test_update_metadata_caps_agenda_length(self):
+        url = reverse("meeting_update_metadata", args=[self.meeting.uuid])
+        response = self.client.post(url, {"agenda": "x" * 50_000})
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(len(self.meeting.agenda), 20_000)
+
+    @override_settings(MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES=10)
+    def test_update_metadata_rejects_oversized_transcript(self):
+        url = reverse("meeting_update_metadata", args=[self.meeting.uuid])
+        response = self.client.post(url, {"transcript": "way too many bytes"})
+        self.assertEqual(response.status_code, 400)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.transcript, "")
+
+    def test_save_to_data_room_malformed_uuid_is_not_500(self):
+        self.meeting.transcript = "Some content."
+        self.meeting.save(update_fields=["transcript"])
+        url = reverse("meeting_save_to_data_room", args=[self.meeting.uuid])
+        response = self.client.post(url, {"data_room_id": "not-a-uuid"})
+        # Friendly redirect, not a 500.
+        self.assertEqual(response.status_code, 302)
+
+    def test_slug_collision_switches_to_random_suffix(self):
+        from django.utils import timezone
+        from django.utils.text import slugify
+        date_part = timezone.localtime(timezone.now()).strftime("%y%m%d")
+        base = slugify(f"{date_part} - New meeting")
+        # Occupy base + -1..-3 so the next create must use a random suffix.
+        for s in [base, f"{base}-1", f"{base}-2", f"{base}-3"]:
+            Meeting.objects.create(name="x", slug=s, created_by=self.user)
+        response = self.client.post(reverse("meeting_create"))
+        self.assertEqual(response.status_code, 302)
+        created = Meeting.objects.filter(created_by=self.user).exclude(
+            slug__in=[base, f"{base}-1", f"{base}-2", f"{base}-3"]
+        ).exclude(slug="m-fixv")
+        self.assertTrue(created.exists())
+        new_slug = created.first().slug
+        self.assertTrue(new_slug.startswith(f"{base}-"))
+        # Random suffix is 4 chars, not a small sequential integer.
+        self.assertEqual(len(new_slug), len(base) + 1 + 4)

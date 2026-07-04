@@ -110,13 +110,14 @@ class ExpireStaleTranscriptionsTests(TestCase):
         meeting.refresh_from_db()
         self.assertEqual(meeting.status, Meeting.Status.LIVE_TRANSCRIBING)
 
-    def test_live_meeting_never_swept(self):
-        """Live-path LIVE_TRANSCRIBING is WS-managed (Stop/disconnect handle
-        it) — only the upload path goes through Celery and can be stranded."""
+    def test_live_meeting_not_swept_within_window(self):
+        """A live-path meeting within STALE_LIVE_HOURS (6h) is left alone — a
+        healthy live session is normally WS-managed (Stop/disconnect). A meeting
+        with an unset source is never swept at any age."""
         live = self._make_upload_meeting(
             minutes_old=180, source=Meeting.TranscriptSource.LIVE, slug="m-live",
         )
-        unset = self._make_upload_meeting(minutes_old=180, source="", slug="m-unset")
+        unset = self._make_upload_meeting(minutes_old=600, source="", slug="m-unset")
 
         handled = expire_stale_transcriptions()
 
@@ -125,6 +126,26 @@ class ExpireStaleTranscriptionsTests(TestCase):
         unset.refresh_from_db()
         self.assertEqual(live.status, Meeting.Status.LIVE_TRANSCRIBING)
         self.assertEqual(unset.status, Meeting.Status.LIVE_TRANSCRIBING)
+
+    def test_live_meeting_swept_after_six_hours_marked_interrupted(self):
+        """A live-path meeting stranded past the 6h ceiling (dyno died before
+        disconnect ran) is recovered as INTERRUPTED — not FAILED, since the
+        transcript content is valid."""
+        live = self._make_upload_meeting(
+            minutes_old=7 * 60, source=Meeting.TranscriptSource.LIVE, slug="m-live-stale",
+        )
+        live.transcript = "Real transcript content."
+        live.save(update_fields=["transcript"])
+
+        handled = expire_stale_transcriptions()
+
+        self.assertEqual(handled, 1)
+        live.refresh_from_db()
+        self.assertEqual(live.status, Meeting.Status.INTERRUPTED)
+        self.assertIn("interrupted", live.transcription_error)
+        self.assertIsNotNone(live.ended_at)
+        # Transcript content is preserved (this is why it's INTERRUPTED not FAILED).
+        self.assertEqual(live.transcript, "Real transcript content.")
 
     def test_swallows_transient_db_error(self):
         from django.db.utils import OperationalError

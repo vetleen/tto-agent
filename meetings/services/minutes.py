@@ -42,15 +42,30 @@ def _build_seed_message(
     skill_name: str = "Meeting Summarizer",
     attachment_count: int = 0,
 ) -> str:
+    from chat.services import CANVAS_MAX_CHARS
+
     transcript = meeting.transcript or ""
     n_chars = len(transcript)
+    duration = _format_duration_minutes(meeting.duration_seconds)
     parts: list[str] = []
-    parts.append(
-        f"The user opened this thread to create meeting minutes (or a summary) "
-        f"for **{meeting.name}**. A transcript of the meeting "
-        f"({n_chars} characters, {_format_duration_minutes(meeting.duration_seconds)} "
-        f'of audio, transcribed via `{model_label}`) is preloaded in the canvas titled "{canvas_title}".'
-    )
+    if n_chars <= CANVAS_MAX_CHARS:
+        parts.append(
+            f"The user opened this thread to create meeting minutes (or a summary) "
+            f"for **{meeting.name}**. A transcript of the meeting "
+            f"({n_chars} characters, {duration} of audio, transcribed via "
+            f'`{model_label}`) is preloaded in the canvas titled "{canvas_title}".'
+        )
+    else:
+        # The canvas only holds the first CANVAS_MAX_CHARS characters; tell the
+        # model explicitly rather than claiming the full transcript is preloaded.
+        parts.append(
+            f"The user opened this thread to create meeting minutes (or a summary) "
+            f"for **{meeting.name}**. The meeting transcript is {n_chars} characters "
+            f"({duration} of audio, transcribed via `{model_label}`); only the first "
+            f"{CANVAS_MAX_CHARS:,} characters are preloaded in the canvas titled "
+            f'"{canvas_title}" — the remainder was truncated to fit, so the end of '
+            f"the meeting is not shown in the canvas."
+        )
     if meeting.agenda and meeting.agenda.strip():
         parts.append(f"Agenda: {meeting.agenda.strip()}")
     if meeting.participants and meeting.participants.strip():
@@ -88,7 +103,7 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
     ``ChatAttachment`` instances and *skipped* is a list of
     ``(original_filename, reason)`` tuples.
     """
-    from django.core.files.base import ContentFile
+    from django.core.files import File
     from chat.models import ChatAttachment
     from chat.services import (
         SUPPORTED_ATTACHMENT_TYPES,
@@ -112,17 +127,20 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
             skipped.append((ma.original_filename, "too large"))
             continue
         try:
+            # Stream the copy through storage rather than reading the whole
+            # attachment into memory (up to 25 files x tens of MB per request on
+            # a 512MB dyno). File(fh) lets the backend copy in chunks; create
+            # inside the `with` so the handle stays open during the copy.
             with ma.file.open("rb") as fh:
-                data = fh.read()
-            att = ChatAttachment.objects.create(
-                thread=thread,
-                message=None,
-                uploaded_by=user,
-                file=ContentFile(data, name=ma.original_filename),
-                original_filename=(ma.original_filename or "")[:255],
-                content_type=ct,
-                size_bytes=len(data),
-            )
+                att = ChatAttachment.objects.create(
+                    thread=thread,
+                    message=None,
+                    uploaded_by=user,
+                    file=File(fh, name=ma.original_filename),
+                    original_filename=(ma.original_filename or "")[:255],
+                    content_type=ct,
+                    size_bytes=ma.size_bytes or 0,
+                )
             accepted.append(att)
         except Exception:
             logger.exception(
@@ -181,7 +199,9 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
 
     thread = ChatThread.objects.create(
         created_by=user,
-        title=f"Minutes for {meeting.name}",
+        # ChatThread.title is CharField(max_length=255) and meeting.name can be
+        # a full 255 chars, so cap (matches the canvas_title truncation below).
+        title=f"Minutes for {meeting.name}"[:255],
         metadata={
             "source_meeting_id": str(meeting.uuid),
             "pending_initial_turn": True,

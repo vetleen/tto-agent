@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 import uuid as uuid_lib
 from typing import Any
@@ -45,6 +46,11 @@ MEETING_WS_HEARTBEAT_SECONDS = 20
 # is genuinely common; two strikes means the chain is bad enough that chunked
 # is the better experience even though it's slower.
 REALTIME_FAILURE_BUDGET = 2
+
+# Max chunk_meta frames buffered without a matching binary frame. Each binary
+# frame consumes one; a client that streams chunk_meta without audio would
+# otherwise grow this list without bound (RSS DoS on a shared dyno).
+_PENDING_META_MAX = 16
 
 # Marker text format inserted into the transcript when transcription was
 # interrupted. The leading/trailing em-dashes give it visual separation from
@@ -96,7 +102,6 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self.user = self.scope.get("user")
         self.meeting_uuid: str | None = None
         self.meeting_id: int | None = None
-        self._stopped: bool = False
         self._stop_requested: bool = False
         # Server-side session ceiling reference point (see _heartbeat_loop).
         self._connected_monotonic: float = time.monotonic()
@@ -174,7 +179,6 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._model_id = meeting["model_id"]
         self._realtime_mode = meeting.get("live_mode") or "chunked"
         self._realtime_language = meeting.get("forced_language") or ""
-        self._realtime_prompt = meeting.get("prompt") or ""
         self._live_segment_counter = self._segment_index_base
         self._group_name = f"meetings.{self.meeting_uuid}"
 
@@ -209,7 +213,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 await self._teardown_realtime()
             except Exception:
                 logger.exception("disconnect: realtime teardown failed")
-        if self.meeting_id and not self._stopped and not self._stop_requested:
+        if self.meeting_id and not self._stop_requested:
             try:
                 await self._finalize_meeting(interrupted=True)
             except Exception:
@@ -242,7 +246,6 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 if (
                     max_seconds > 0
                     and not self._stop_requested
-                    and not self._stopped
                     and time.monotonic() - self._connected_monotonic >= max_seconds
                 ):
                     logger.warning(
@@ -300,22 +303,36 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         try:
             segment_index = int(payload["segment_index"])
             byte_length = int(payload["byte_length"])
+            # Parse the offset here too — a non-numeric value used to escape this
+            # try and crash receive(), which (Channels only catches StopConsumer)
+            # tore down the consumer WITHOUT running disconnect(), stranding the
+            # meeting in LIVE_TRANSCRIBING.
+            start_offset_seconds = float(payload.get("start_offset_seconds") or 0.0)
         except (KeyError, ValueError, TypeError):
             await self._send_error("chunk_meta missing or malformed segment_index/byte_length.")
             return
-        if segment_index < 0 or byte_length <= 0:
+        if segment_index < 0 or byte_length <= 0 or not math.isfinite(start_offset_seconds):
+            # isfinite guards against NaN/Infinity (which float() accepts) reaching
+            # the DB and the outgoing JSON (json.dumps emits literal NaN, which the
+            # browser's JSON.parse rejects).
             await self._send_error("chunk_meta has invalid values.")
             return
         max_bytes = getattr(settings, "MEETING_CHUNK_MAX_BYTES", 20 * 1024 * 1024)
         if byte_length > max_bytes:
             await self._send_error(f"chunk too large: {byte_length} > {max_bytes}")
             return
+        if len(self._pending_meta) >= _PENDING_META_MAX:
+            await self._send_error(
+                "Too many chunk_meta messages without matching audio frames."
+            )
+            await self.close(code=4400)
+            return
         # Push onto the pending queue. The next binary frame will consume it.
         self._pending_meta.append({
             "segment_index": segment_index,
             "byte_length": byte_length,
             "mime": str(payload.get("mime") or "audio/webm"),
-            "start_offset_seconds": float(payload.get("start_offset_seconds") or 0.0),
+            "start_offset_seconds": start_offset_seconds,
         })
 
     async def _handle_binary_frame(self, raw: bytes) -> None:
@@ -438,19 +455,23 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._pcm_pipe = PcmPipe(mime=mime)
         await self._pcm_pipe.start()
 
-        self._realtime_session = build_realtime_session(
-            model_id=self._model_id,
-            prompt=self._realtime_prompt or None,
-            language=self._realtime_language or None,
-        )
+        # Build + connect inside the try so ANY post-start failure unwinds the
+        # ffmpeg pipe — including build_realtime_session raising for a model that
+        # doesn't support live streaming. Otherwise the pipe (ffmpeg process + 2
+        # reader threads) leaks, since disconnect's teardown is gated on
+        # _realtime_started which is still False here.
         try:
+            self._realtime_session = build_realtime_session(
+                model_id=self._model_id,
+                language=self._realtime_language or None,
+            )
             await self._realtime_session.connect()
         except Exception:
-            # Unwind the pipe so we don't leak ffmpeg on connect failure.
             try:
                 await self._pcm_pipe.aclose()
             finally:
                 self._pcm_pipe = None
+                self._realtime_session = None
             raise
 
         # Keep a handle on the consume task: teardown lets it drain the trailing
@@ -571,7 +592,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         """
         from django.db import transaction
         from .models import Meeting, MeetingTranscriptSegment
-        from .services.chunks import recompute_meeting_transcript
+        from .services.chunks import append_segment_text_to_transcript
 
         try:
             with transaction.atomic():
@@ -585,7 +606,10 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                     status=MeetingTranscriptSegment.Status.READY,
                     transcribed_at=timezone.now(),
                 )
-                recompute_meeting_transcript(self.meeting_id)
+                # Realtime segments are strictly append-ordered (allocator hands
+                # out max+1 under the same lock), so append instead of the
+                # O(N^2) full rebuild.
+                append_segment_text_to_transcript(self.meeting_id, text)
             self._segments_total += 1
 
             # Cost logging — never raises. Realtime is officially priced per
@@ -790,21 +814,24 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         """Persist a single marker segment. Returns the allocated segment_index."""
         from django.db import transaction
         from .models import MeetingTranscriptSegment
-        from .services.chunks import recompute_meeting_transcript
+        from .services.chunks import append_segment_text_to_transcript
 
+        marker_text = _format_interruption_marker_text(gap_seconds)
         try:
             with transaction.atomic():
                 idx = self._allocate_next_segment_index_locked()
                 MeetingTranscriptSegment.objects.create(
                     meeting_id=self.meeting_id,
                     segment_index=idx,
-                    text=_format_interruption_marker_text(gap_seconds),
+                    text=marker_text,
                     transcription_model=_INTERRUPT_MARKER_MODEL,
                     start_offset_seconds=0.0,
                     status=MeetingTranscriptSegment.Status.READY,
                     transcribed_at=timezone.now(),
                 )
-                recompute_meeting_transcript(self.meeting_id)
+                # Marker index is max+1 (append at end), same as realtime
+                # utterances, so the O(1) append matches a full rebuild.
+                append_segment_text_to_transcript(self.meeting_id, marker_text)
             self._interruption_started_at = None
             return idx
         except Exception:
@@ -856,6 +883,15 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         if not new_model:
             await self._send_error("set_model: missing model_id")
             return
+        # A model can't be swapped into an already-running realtime session — the
+        # OpenAI session keeps transcribing with the model it was built with, so
+        # persisted segments and cost logs would be stamped with a model that
+        # didn't produce them.
+        if self._realtime_started:
+            await self._send_error(
+                "set_model: cannot switch models while a live session is active."
+            )
+            return
         try:
             allowed = await self._get_allowed_transcription_models()
         except Exception:
@@ -863,6 +899,18 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         if new_model not in allowed:
             await self._send_error(f"set_model: '{new_model}' is not allowed for this user")
             return
+        # In realtime mode the next frame builds the session with this model; a
+        # batch-only model would make build_realtime_session raise. Reject it here
+        # (with a clear message) rather than letting it fall back to chunked.
+        if self._realtime_mode != "chunked":
+            from llm.transcription_registry import get_transcription_model_info
+
+            info = get_transcription_model_info(new_model)
+            if info is None or not info.supports_live_streaming:
+                await self._send_error(
+                    f"set_model: '{new_model}' does not support live streaming."
+                )
+                return
         self._model_id = new_model
         try:
             await self._persist_meeting_model(new_model)
@@ -882,14 +930,25 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             duration_seconds, segments_total, segments_failed = await self._finalize_meeting(interrupted=False)
         except Exception:
             logger.exception("_handle_stop: finalize failed")
-            duration_seconds, segments_total, segments_failed = 0, self._segments_total, self._segments_failed
+            # Don't report success on a failed finalize. Un-claim the stop so
+            # disconnect() retries finalize (interrupted=True) instead of leaving
+            # the meeting stranded in LIVE_TRANSCRIBING — the live-source sweeper
+            # only rescues it after a long window.
+            self._stop_requested = False
+            await self._send_error(
+                "Could not finalize the transcription — your transcript is preserved."
+            )
+            try:
+                await self.close()
+            except Exception:
+                pass
+            return
         await self.send(text_data=json.dumps({
             "type": "stopped",
             "duration_seconds": duration_seconds,
             "segments_total": segments_total,
             "segments_failed": segments_failed,
         }))
-        self._stopped = True
         try:
             await self.close()
         except Exception:
@@ -953,12 +1012,10 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
         # One transcription at a time per user. Exclude this meeting so resuming
         # / reconnecting to it isn't counted as a second concurrent session.
-        if (
-            Meeting.objects
-            .filter(created_by_id=self.user.id, status=Meeting.Status.LIVE_TRANSCRIBING)
-            .exclude(pk=meeting.pk)
-            .exists()
-        ):
+        # Shared with the HTTP upload path via services.gates so both agree.
+        from .services.gates import user_has_active_transcription
+
+        if user_has_active_transcription(self.user, exclude_pk=meeting.pk):
             logger.info(
                 "_load_and_lock_meeting: refused WS connect for meeting %s — "
                 "user %s already has an active transcription",
@@ -974,8 +1031,11 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         if (
             meeting.transcript_source == Meeting.TranscriptSource.AUDIO_UPLOAD
             and meeting.status == Meeting.Status.LIVE_TRANSCRIBING
-            and meeting.transcription_chunks_done < meeting.transcription_chunks_total
         ):
+            # NOTE: don't gate on chunks_done < chunks_total — chunks_total stays
+            # 0 for single-chunk uploads and during the multi-chunk planning
+            # window, so that comparison was 0 < 0 (never true) exactly when an
+            # upload was in flight. Status + source is the reliable signal.
             logger.info(
                 "_load_and_lock_meeting: refused WS connect for meeting %s — "
                 "audio upload transcription in progress (%d/%d chunks)",
@@ -1078,8 +1138,8 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         #
         # The upload/chunked path still builds + passes a prompt (incl.
         # prior_tail): full ~30s chunks give the model enough real audio to
-        # anchor on, so it transcribes rather than echoes.
-        prompt = ""
+        # anchor on, so it transcribes rather than echoes. The realtime session
+        # is therefore built with no prompt at all (see _start_realtime_session).
 
         # Transition the meeting to LIVE_TRANSCRIBING (preserve started_at on resume).
         update_fields = ["status", "transcript_source", "updated_at"]
@@ -1109,7 +1169,6 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 meeting.forced_language,
                 getattr(prefs, "transcription_language", "auto"),
             ),
-            "prompt": prompt,
         }
 
     @database_sync_to_async

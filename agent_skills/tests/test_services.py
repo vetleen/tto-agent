@@ -199,6 +199,12 @@ class GetSkillForUserTests(TestCase):
         self.assertIsNotNone(get_skill_for_user(self.user, str(skill.pk)))
         self.assertIsNone(get_skill_for_user(self.other_user, str(skill.pk)))
 
+    def test_malformed_skill_id_returns_none_not_500(self):
+        # pk is a UUIDField: a non-UUID id must be treated as "no such skill"
+        # (returns None) rather than raising ValidationError up to the caller.
+        self.assertIsNone(get_skill_for_user(self.user, "not-a-uuid"))
+        self.assertIsNone(get_skill_for_user(self.user, ""))
+
     def test_nonexistent_skill_returns_none(self):
         import uuid
         self.assertIsNone(get_skill_for_user(self.user, str(uuid.uuid4())))

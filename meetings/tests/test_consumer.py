@@ -815,22 +815,89 @@ class RealtimePromptSeedingTests(TransactionTestCase):
         with patch("core.preferences.get_preferences", return_value=prefs):
             return await consumer._load_and_lock_meeting(meeting.uuid)
 
-    async def test_realtime_prompt_is_empty(self):
-        marker = "REGURGITATION_CANARY_PHRASE"
+    async def test_load_and_lock_carries_no_prompt(self):
+        # The dead prompt plumbing was removed: the result dict no longer carries
+        # a prompt key at all (there is nothing to seed).
         result = await self._seed_prompt_for(
-            transcript=f"...{marker} and then the deadline would slip.",
+            transcript="...REGURGITATION_CANARY and then the deadline would slip.",
         )
-
         self.assertTrue(result["ok"])
         self.assertNotEqual(result["live_mode"], "chunked")
-        prompt = result["prompt"]
-        # No prompt is seeded on the realtime path — nothing for the model to
-        # regurgitate on short/quiet utterances.
-        self.assertEqual(prompt, "")
-        # Neither the meeting name (metadata bias) nor the prior-transcript tail
-        # leaks into the live prompt.
-        self.assertNotIn("Innovasjon Norge Sync", prompt)
-        self.assertNotIn(marker, prompt)
+        self.assertNotIn("prompt", result)
+
+    async def test_realtime_session_built_without_prompt(self):
+        # gpt-4o-transcribe regurgitates a realtime `prompt` verbatim on short
+        # utterances, so the session must be built with NO prompt. (Regression
+        # guard for meeting da1c8903, 2026-06-30.)
+        from meetings.services import pcm_pipe as pcm_pipe_mod
+        from meetings.services import realtime_session as rt_mod
+
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="Innovasjon Norge Sync",
+            slug="rt-prompt-build",
+            created_by=self.user,
+        )
+        consumer = MeetingTranscribeConsumer()
+        consumer.user = self.user
+        consumer.meeting_id = meeting.id
+        consumer.meeting_uuid = str(meeting.uuid)
+        consumer._model_id = "openai/gpt-4o-transcribe"
+        consumer._realtime_language = "no"
+        consumer._total_pcm_bytes = 0  # normally set in connect()
+
+        captured: dict = {}
+
+        class _FakePipe:
+            stats = None
+
+            def __init__(self, *a, **k):
+                pass
+
+            async def start(self):
+                pass
+
+            async def read_frames(self):
+                if False:
+                    yield b""
+
+            async def aclose(self):
+                pass
+
+        class _FakeSession:
+            async def connect(self):
+                pass
+
+            async def events(self):
+                await asyncio.sleep(3600)
+                if False:
+                    yield None
+
+            async def send_pcm(self, frame):
+                pass
+
+            def pending_event_count(self):
+                return 0
+
+            async def finalize(self, timeout=2.0):
+                pass
+
+            async def aclose(self):
+                pass
+
+        def _fake_build(**kwargs):
+            captured.update(kwargs)
+            return _FakeSession()
+
+        with patch.object(pcm_pipe_mod, "PcmPipe", _FakePipe), \
+                patch.object(rt_mod, "build_realtime_session", _fake_build):
+            await consumer._start_realtime_session("audio/webm")
+            try:
+                # No prompt is passed, so the session-layer default (None) is used.
+                self.assertIsNone(captured.get("prompt"))
+                self.assertEqual(captured.get("model_id"), "openai/gpt-4o-transcribe")
+                self.assertEqual(captured.get("language"), "no")
+            finally:
+                await consumer._teardown_realtime()
 
 
 class RealtimeLanguageResolutionTests(TransactionTestCase):

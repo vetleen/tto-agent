@@ -88,6 +88,28 @@ class CreateMinutesThreadTests(TestCase):
         self.assertIn("Meeting Summarizer skill", content)
         self.assertNotIn("playbook", content.lower())
 
+    def test_thread_title_truncated_for_long_meeting_name(self):
+        self.meeting.name = "N" * 250
+        self.meeting.save(update_fields=["name"])
+        thread, err = create_minutes_thread(self.user, self.meeting)
+        self.assertIsNone(err)
+        self.assertLessEqual(len(thread.title), 255)
+
+    def test_seed_notes_truncation_for_oversized_transcript(self):
+        from chat.services import CANVAS_MAX_CHARS
+
+        self.meeting.transcript = "word " * (CANVAS_MAX_CHARS // 2)  # well over the cap
+        self.meeting.save(update_fields=["transcript"])
+        thread, _ = create_minutes_thread(self.user, self.meeting)
+
+        canvas = ChatCanvas.objects.get(thread=thread)
+        self.assertEqual(len(canvas.content), CANVAS_MAX_CHARS)  # canvas is capped
+
+        seed = ChatMessage.objects.get(thread=thread, is_hidden_from_user=True)
+        # The seed must state truncation, not claim the full transcript is preloaded.
+        self.assertIn("truncated", seed.content.lower())
+        self.assertIn(f"{CANVAS_MAX_CHARS:,}", seed.content)
+
     def test_refuses_meeting_without_transcript(self):
         m = Meeting.objects.create(name="Empty", slug="empty-m", created_by=self.user)
         thread, err = create_minutes_thread(self.user, m)

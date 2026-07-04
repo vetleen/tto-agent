@@ -64,6 +64,24 @@ AUDIO_SPLIT_TIMEOUT_SECONDS = 120    # safety net: kill the split if ffmpeg hang
 OUTPUT_MP3_BYTES_PER_SECOND = 16_000
 
 
+def _resolve_upload_speed_up_factor() -> float:
+    """Read the meetings-owned ``MEETING_UPLOAD_SPEED_UP_FACTOR`` (clamped).
+
+    The setting read lives here (not in llm) so the generic
+    ``ffmpeg_extract_chunk`` stays a plain parameterized helper — a documents-app
+    transcription must not silently inherit the meetings speed-up. llm's
+    ``_resolve_speed_up_factor`` just clamps the value.
+    """
+    from llm.service._audio_subprocess import _resolve_speed_up_factor
+
+    try:
+        from django.conf import settings
+        raw = float(getattr(settings, "MEETING_UPLOAD_SPEED_UP_FACTOR", 1.0))
+    except Exception:
+        return 1.0
+    return _resolve_speed_up_factor(raw)
+
+
 class AudioSplitTimeoutError(RuntimeError):
     """Raised when the audio splitting operation exceeds AUDIO_SPLIT_TIMEOUT_SECONDS."""
 
@@ -178,8 +196,7 @@ def plan_chunk_boundaries(
     # bytes (max_bytes). Without this the planner treats N source-seconds as
     # if the API saw N seconds — even though at factor=2 the API only sees
     # N/2 — causing over-chunking.
-    from llm.service._audio_subprocess import _resolve_speed_up_factor
-    factor = _resolve_speed_up_factor(None)
+    factor = _resolve_upload_speed_up_factor()
 
     # Size cap in output seconds: safe_bytes / bytes_per_output_second.
     safe_output_bytes = int(max_bytes * 0.8)
@@ -289,11 +306,13 @@ def _extract_chunk(source_path: Path, boundary: ChunkBoundary, max_bytes: int) -
             boundary.index,
             output_prefix="meet_upload_seg",
             timeout=AUDIO_SPLIT_TIMEOUT_SECONDS,
+            speed_up_factor=_resolve_upload_speed_up_factor(),
         )
     except subprocess.TimeoutExpired as exc:
         logger.error(
             "audio chunk %d extraction timed out after %ds for %s",
             boundary.index, AUDIO_SPLIT_TIMEOUT_SECONDS, source_path,
+            exc_info=True,
         )
         raise AudioSplitTimeoutError(
             f"Audio chunk {boundary.index} extraction timed out after "
@@ -390,9 +409,10 @@ def combine_existing_and_new_transcript(existing: str, new_text: str) -> str:
 
 
 # Minimum interval between partial-transcript DB writes during streaming.
-# The UI polls Meeting.transcript; writing on every delta would hammer the DB
-# (dozens of deltas/sec) without measurably improving the poll experience.
-_PARTIAL_TRANSCRIPT_FLUSH_SECONDS = 0.5
+# Each flush rewrites the full (growing) transcript column, and the UI polls
+# Meeting.transcript only every ~3s (static/meetings/transcribe.js), so a
+# sub-second cadence just multiplies DB/WAL writes the poll never observes.
+_PARTIAL_TRANSCRIPT_FLUSH_SECONDS = 2.5
 
 
 def orchestrate_upload_transcription(

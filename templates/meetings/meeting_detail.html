@@ -536,6 +536,22 @@
 
     var file = files[0];
 
+    // The upload/attachment inputs are single-file (no `multiple`) and the
+    // server reads exactly one file, so assigning the whole FileList would
+    // silently drop the rest \u2014 and route by files[0] while the server keeps
+    // the LAST. Narrow to just files[0] and warn if more were dropped.
+    if (files.length > 1) {
+      var banner = document.getElementById('transcribe-inline-error-banner');
+      var bannerLabel = document.getElementById('transcribe-inline-error-banner-label');
+      if (banner && bannerLabel) {
+        bannerLabel.textContent = 'Only one file can be uploaded at a time \u2014 using "' + file.name + '".';
+        banner.classList.remove('hidden');
+        setTimeout(function () { banner.classList.add('hidden'); }, 8000);
+      }
+    }
+    var single = new DataTransfer();
+    single.items.add(file);
+
     if (isTranscriptOrAudio(file)) {
       var uploadForm = document.getElementById('upload-form');
       if (!uploadForm) return;
@@ -549,14 +565,14 @@
       if (labelText) labelText.textContent = 'Uploading\u2026';
       if (label) label.classList.add('pointer-events-none', 'opacity-60');
 
-      fileInput.files = files;
+      fileInput.files = single.files;
       uploadForm.submit();
     } else {
       var attachForm = document.getElementById('attachment-upload-form');
       if (!attachForm) return;
       var attachInput = attachForm.querySelector('input[type="file"]');
       if (!attachInput) return;
-      attachInput.files = files;
+      attachInput.files = single.files;
       attachForm.submit();
     }
   });

@@ -1,4 +1,4 @@
-"""Tests for the provider-agnostic RealtimeTranscriptionSession.
+"""Tests for the realtime transcription session.
 
 ``OpenAIRealtimeSession`` opens a raw WebSocket to
 ``wss://api.openai.com/v1/realtime?intent=transcription`` and speaks
@@ -16,11 +16,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from unittest.mock import patch
 
 from django.test import TestCase
 
 from meetings.services.realtime_session import (
     OpenAIRealtimeSession,
+    RealtimeSessionError,
     SessionError,
     SessionStatus,
     TranscriptCompleted,

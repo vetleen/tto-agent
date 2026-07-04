@@ -21,16 +21,20 @@ import tempfile
 from pathlib import Path
 
 from django.conf import settings
-from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
 from django.utils import timezone
+
+from core.file_types import extension_for_mime
 
 from .transcript_cleanup import collapse_repetitions
 
 logger = logging.getLogger(__name__)
 
 
+# Local fallback map for MIME types the shared core.file_types table does not
+# resolve (e.g. audio/mpga, which no FILE_TYPES row lists in accepted_mimes).
+# Prefer core.file_types.extension_for_mime — see _ext_for_mime.
 _MIME_TO_EXT = {
     "audio/webm": "webm",
     "audio/webm;codecs=opus": "webm",
@@ -38,6 +42,7 @@ _MIME_TO_EXT = {
     "audio/ogg;codecs=opus": "ogg",
     "audio/mp4": "mp4",
     "audio/mpeg": "mp3",
+    "audio/mpga": "mpga",
     "audio/wav": "wav",
     "audio/x-wav": "wav",
     "audio/flac": "flac",
@@ -48,9 +53,20 @@ _CHUNK_STORAGE_PREFIX = "_meeting_chunks"
 
 
 def _ext_for_mime(mime: str) -> str:
+    """Resolve a storage/temp-file extension from an audio MIME type.
+
+    Consults the shared ``core.file_types`` table first (so audio/mp3, audio/m4a,
+    audio/mp4, etc. round-trip correctly), then a small local fallback for MIME
+    types that table doesn't list, then defaults to ``webm``. The extension must
+    reflect the real container so ffmpeg/ffprobe and the OpenAI upload API can
+    sniff the format from the file name (see download_chunk_to_local).
+    """
     if not mime:
         return "webm"
     normalized = mime.lower().split(";")[0].strip()
+    ext = extension_for_mime(normalized)
+    if ext:
+        return ext
     return _MIME_TO_EXT.get(normalized) or _MIME_TO_EXT.get(mime.lower(), "webm")
 
 
@@ -83,25 +99,14 @@ def write_chunk_to_temp(meeting_uuid, segment_index: int, raw_bytes: bytes, mime
     ``MEETING_CHUNK_TEMP_DIR`` and the returned string is the absolute path.
 
     Caller is responsible for calling ``cleanup_temp`` after transcription.
+
+    This is a thin wrapper over :func:`write_chunk_stream_to_temp` for callers
+    that already hold the bytes in memory (e.g. a small realtime WebSocket
+    delta); the storage-routing, validation and naming logic lives in one place.
     """
-    if not isinstance(segment_index, int) or segment_index < 0:
-        raise ValueError(f"invalid segment_index: {segment_index!r}")
-
-    if _uses_remote_storage():
-        key = _storage_key(meeting_uuid, segment_index, mime)
-        default_storage.save(key, ContentFile(raw_bytes))
-        return key
-
-    # Local filesystem path (dev / single-dyno).
-    base = Path(getattr(settings, "MEETING_CHUNK_TEMP_DIR", ""))
-    if not str(base):
-        raise RuntimeError("MEETING_CHUNK_TEMP_DIR is not configured")
-    target_dir = base / _safe_uuid_dir(meeting_uuid)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"{segment_index:06d}.{_ext_for_mime(mime)}"
-    with open(target, "wb") as f:
-        f.write(raw_bytes)
-    return str(target)
+    return write_chunk_stream_to_temp(
+        meeting_uuid, segment_index, io.BytesIO(raw_bytes), mime
+    )
 
 
 def _iter_chunks(fileobj, chunk_size: int = 1024 * 1024):
@@ -246,3 +251,40 @@ def recompute_meeting_transcript(meeting_id: int) -> str:
         meeting.transcript_updated_at = timezone.now()
         meeting.save(update_fields=["transcript", "transcript_updated_at", "updated_at"])
         return joined
+
+
+def append_segment_text_to_transcript(meeting_id: int, text: str) -> str:
+    """Append a single new segment's text to ``Meeting.transcript`` in O(1).
+
+    Counterpart to :func:`recompute_meeting_transcript` for the realtime persist
+    path, where segment indices are allocated strictly sequentially under the
+    same ``select_for_update`` lock, so the new segment is always the highest
+    index and a plain append is equivalent to a full rebuild — without the
+    O(N^2) cost of re-fetching and re-cleaning every prior segment on every
+    utterance.
+
+    Applies the *same* per-segment ``collapse_repetitions`` cleanup and the same
+    ``"\\n\\n"`` join rule as the full rebuild, and re-stamps ``retain_until`` via
+    ``Meeting.save`` identically. Only safe for strictly append-ordered writers:
+    the chunked (out-of-order) path and finalize keep the full rebuild.
+    """
+    from meetings.models import Meeting
+
+    cleaned = collapse_repetitions(text) if text else ""
+
+    with transaction.atomic():
+        try:
+            meeting = Meeting.objects.select_for_update().get(pk=meeting_id)
+        except Meeting.DoesNotExist:
+            return ""
+
+        if not cleaned:
+            # Mirrors recompute, which skips falsy/empty cleaned segments.
+            return meeting.transcript
+
+        meeting.transcript = (
+            f"{meeting.transcript}\n\n{cleaned}" if meeting.transcript else cleaned
+        )
+        meeting.transcript_updated_at = timezone.now()
+        meeting.save(update_fields=["transcript", "transcript_updated_at", "updated_at"])
+        return meeting.transcript

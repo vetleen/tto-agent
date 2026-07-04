@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import logging
-import ntpath
-import os
 from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.crypto import get_random_string
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
+from core.files import safe_filename
+
 from .models import Meeting, MeetingAttachment
+from .services.gates import user_has_active_transcription
 
 logger = logging.getLogger(__name__)
 
@@ -27,50 +30,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _safe_filename(filename: str, max_length: int = 255) -> str:
-    """Normalize and cap client-provided file names. Mirrors documents/views.py."""
-    raw = (filename or "").strip()
-    if not raw:
-        return "file"
-    name = os.path.basename(ntpath.basename(raw)).strip()
-    if not name:
-        return "file"
-    if len(name) <= max_length:
-        return name
-    base, ext = os.path.splitext(name)
-    if not ext:
-        return name[:max_length]
-    reserved = len(ext)
-    if reserved >= max_length:
-        return name[:max_length]
-    return f"{base[: max_length - reserved]}{ext}"
-
-
 def _user_can_access_meeting(user, meeting: Meeting) -> bool:
     return meeting.created_by_id == user.id
 
 
 def _user_can_modify_meeting(user, meeting: Meeting) -> bool:
     return meeting.created_by_id == user.id
-
-
-def _user_has_active_transcription(user, *, exclude_pk=None) -> bool:
-    """True when *user* already has a meeting actively transcribing.
-
-    "Actively transcribing" = ``status == LIVE_TRANSCRIBING``, which covers both
-    the live-recording path and the audio-upload path (the upload view/orchestrator
-    hold the meeting in that state until the Celery job finishes). This is the
-    single source of truth for the "one transcription at a time per user" cap.
-
-    Pass ``exclude_pk`` to ignore a specific meeting (e.g. the one being resumed)
-    so reconnecting to an already-live meeting isn't treated as a second session.
-    """
-    qs = Meeting.objects.filter(
-        created_by=user, status=Meeting.Status.LIVE_TRANSCRIBING
-    )
-    if exclude_pk is not None:
-        qs = qs.exclude(pk=exclude_pk)
-    return qs.exists()
 
 
 def _format_relative(value):
@@ -101,7 +66,14 @@ def _format_relative(value):
 @login_required
 @require_http_methods(["GET"])
 def meeting_list(request):
-    all_meetings = Meeting.objects.filter(created_by=request.user).order_by("-updated_at")
+    # Only the columns the list template renders — never pull the transcript /
+    # agenda / participants / description TEXT columns for a page that shows
+    # name, status badge and a relative timestamp.
+    all_meetings = (
+        Meeting.objects.filter(created_by=request.user)
+        .only("uuid", "name", "status", "updated_at", "is_archived")
+        .order_by("-updated_at")
+    )
     active = [m for m in all_meetings if not m.is_archived]
     archived = [m for m in all_meetings if m.is_archived]
     for m in active:
@@ -130,7 +102,17 @@ def meeting_create(request):
     n = 0
     meeting = None
     while True:
-        slug = base_slug if n == 0 else f"{base_slug}-{n}"
+        # Meeting.slug is globally unique and the default name is date-only, so
+        # every user shares one per-day base slug. Sequential suffixes would cap
+        # the whole platform at ~50 default-named meetings/day; after a few
+        # collisions switch to a short random suffix to sidestep the shared
+        # namespace entirely.
+        if n == 0:
+            slug = base_slug
+        elif n <= 3:
+            slug = f"{base_slug}-{n}"
+        else:
+            slug = f"{base_slug}-{get_random_string(4).lower()}"
         try:
             with transaction.atomic():
                 meeting = Meeting.objects.create(
@@ -157,7 +139,6 @@ def meeting_detail(request, meeting_uuid):
     if not _user_can_access_meeting(request.user, meeting):
         return redirect("meeting_list")
 
-    segments = list(meeting.segments.all().order_by("segment_index"))
     attachments = list(meeting.attachments.all().order_by("-uploaded_at"))
 
     from documents.models import DataRoom, DataRoomDocument
@@ -296,7 +277,6 @@ def meeting_detail(request, meeting_uuid):
         "meetings/meeting_detail.html",
         {
             "meeting": meeting,
-            "segments": segments,
             "attachments": attachments,
             "user_data_rooms": user_data_rooms,
             "saved_doc_groups": saved_doc_groups,
@@ -357,6 +337,15 @@ def meeting_delete(request, meeting_uuid):
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
         return redirect("meeting_list")
+    # Refuse to delete a meeting mid-transcription: the live WS consumer would
+    # keep streaming billable audio into a now-dangling meeting row (every
+    # persist failing silently). Make the user stop it first.
+    if meeting.status == Meeting.Status.LIVE_TRANSCRIBING:
+        messages.error(
+            request,
+            "This meeting is currently transcribing. Stop the transcription before deleting it.",
+        )
+        return redirect("meeting_list")
     meeting.delete()
     messages.success(request, "Meeting deleted.")
     return redirect("meeting_list")
@@ -383,10 +372,23 @@ def meeting_update_metadata(request, meeting_uuid):
                 if not value:
                     return JsonResponse({"error": "Name cannot be empty."}, status=400)
                 value = value[:255]
+            else:
+                # Cap free-text metadata. Unbounded agenda/participants/description
+                # flow untruncated into build_transcription_prompt on every chunk;
+                # a multi-MB blob triggers per-chunk strip-and-retry (double API
+                # calls) or provider rejection.
+                value = value[:20_000]
             setattr(meeting, field, value)
             fields.append(field)
     if "transcript" in request.POST:
-        meeting.transcript = request.POST["transcript"]
+        raw_transcript = request.POST["transcript"]
+        max_bytes = getattr(settings, "MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES", 2_000_000)
+        if len(raw_transcript.encode("utf-8")) > max_bytes:
+            return JsonResponse(
+                {"error": f"Transcript is too large (max {max_bytes // 1024} KB)."},
+                status=400,
+            )
+        meeting.transcript = raw_transcript
         meeting.transcript_updated_at = timezone.now()
         fields.extend(["transcript", "transcript_updated_at"])
     if "transcription_model" in request.POST:
@@ -525,7 +527,7 @@ def meeting_upload(request, meeting_uuid):
         messages.error(request, "Please choose a file to upload.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    safe_name = _safe_filename(file_obj.name, max_length=255)
+    safe_name = safe_filename(file_obj.name, max_length=255)
     ext = (safe_name.rsplit(".", 1)[-1].lower()) if "." in safe_name else ""
     transcript_exts = getattr(settings, "MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS", {"txt", "md"})
 
@@ -568,7 +570,9 @@ def meeting_save_to_data_room(request, meeting_uuid):
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
     try:
         data_room = DataRoom.objects.get(uuid=data_room_id)
-    except (DataRoom.DoesNotExist, ValueError):
+    except (DataRoom.DoesNotExist, ValidationError, ValueError):
+        # UUIDField raises ValidationError (not ValueError) for a non-UUID
+        # data_room_id, so without ValidationError a tampered value 500s.
         messages.error(request, "Data room not found.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
     if data_room.created_by_id != request.user.id:
@@ -607,13 +611,13 @@ def meeting_save_to_data_room(request, meeting_uuid):
     from documents.services.versioning import create_version
 
     payload = body.encode("utf-8")
-    safe_filename = _safe_filename(filename, max_length=180)
-    file_obj = ContentFile(payload, name=safe_filename)
+    export_name = safe_filename(filename, max_length=180)
+    file_obj = ContentFile(payload, name=export_name)
     doc = DataRoomDocument.objects.create(
         data_room=data_room,
         uploaded_by=request.user,
         original_file=file_obj,
-        original_filename=safe_filename,
+        original_filename=export_name,
         mime_type=mime,
         size_bytes=len(payload),
         status=DataRoomDocument.Status.UPLOADED,
@@ -623,7 +627,7 @@ def meeting_save_to_data_room(request, meeting_uuid):
     try:
         version = create_version(
             doc, content=body, origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT,
-            created_by=request.user, native_filename=safe_filename, mime_type=mime,
+            created_by=request.user, native_filename=export_name, mime_type=mime,
             size_bytes=len(payload), enqueue=True,
         )
     except Exception as exc:
@@ -662,7 +666,7 @@ def meeting_upload_transcript(request, meeting_uuid):
         messages.error(request, "Please choose a transcript file to upload.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    safe_name = _safe_filename(file_obj.name, max_length=255)
+    safe_name = safe_filename(file_obj.name, max_length=255)
     ext = (safe_name.rsplit(".", 1)[-1].lower()) if "." in safe_name else ""
     allowed = getattr(settings, "MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS", {"txt", "md"})
     if ext not in allowed:
@@ -713,7 +717,7 @@ def meeting_upload_audio(request, meeting_uuid):
 
     # One transcription at a time per user. No exclude_pk: a second upload to
     # the same meeting (or any upload while another meeting is live) is refused.
-    if _user_has_active_transcription(request.user):
+    if user_has_active_transcription(request.user):
         messages.error(
             request,
             "You already have a transcription in progress — wait for it to finish or stop it first.",
@@ -725,7 +729,7 @@ def meeting_upload_audio(request, meeting_uuid):
         messages.error(request, "Please choose an audio file to upload.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    safe_name = _safe_filename(file_obj.name, max_length=180)
+    safe_name = safe_filename(file_obj.name, max_length=180)
     ext = (safe_name.rsplit(".", 1)[-1].lower()) if "." in safe_name else ""
     if ext not in AUDIO_EXTENSIONS:
         messages.error(request, f"That audio format isn't supported. Use one of: {', '.join(sorted(AUDIO_EXTENSIONS))}.")
@@ -848,7 +852,7 @@ def meeting_upload_attachment(request, meeting_uuid):
         )
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    safe_name = _safe_filename(file_obj.name, max_length=255)
+    safe_name = safe_filename(file_obj.name, max_length=255)
     MeetingAttachment.objects.create(
         meeting=meeting,
         uploaded_by=request.user,
