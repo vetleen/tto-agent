@@ -20,6 +20,15 @@ class MeetingSummarizerSeedTests(TestCase):
         self.assertEqual(skill.tool_names, [])
         self.assertIn("transcript", skill.instructions.lower())
 
+    def test_instructions_name_no_specific_tool(self):
+        # The skill must reference the canvas generically, never a specific tool
+        # name (brittle — the agent activates the canvas skill for the tools).
+        AgentSkill.objects.filter(slug="meeting-summarizer").delete()
+        seed_system_skills()
+        skill = AgentSkill.objects.get(slug="meeting-summarizer", level="system")
+        self.assertNotIn("canvas_write", skill.instructions)
+        self.assertIn("canvas", skill.instructions.lower())
+
     def test_seed_is_idempotent(self):
         seed_system_skills()
         seed_system_skills()

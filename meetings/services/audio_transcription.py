@@ -250,6 +250,7 @@ def _plan_upload_chunks(
     target_chunk_seconds: int,
     overlap_seconds: int,
     meeting_id: int,
+    duration_ms: int | None = None,
 ) -> list[ChunkBoundary] | None:
     """Probe the source and plan its chunk boundaries.
 
@@ -257,6 +258,9 @@ def _plan_upload_chunks(
     be read — the caller then transcribes the original file directly (no split,
     no speed-up), after we've checked it isn't over the API size limit. Returns
     a (possibly empty) list of :class:`ChunkBoundary` otherwise.
+
+    ``duration_ms`` may be passed by a caller that already probed it (avoids a
+    redundant ffprobe); when ``None`` it is probed here.
     """
     from llm.service._audio_subprocess import ffmpeg_available, ffprobe_duration_ms
 
@@ -267,7 +271,8 @@ def _plan_upload_chunks(
         )
         return None
 
-    duration_ms = ffprobe_duration_ms(source_path)
+    if duration_ms is None:
+        duration_ms = ffprobe_duration_ms(source_path)
     if duration_ms is None:
         logger.warning(
             "ffprobe could not determine duration for %s; transcribing as a single file",
@@ -490,6 +495,13 @@ def orchestrate_upload_transcription(
 
     expected_overlap_chars = overlap_seconds * CHARS_PER_OVERLAP_SECOND
 
+    # Probe the real audio length once (metadata-only ffprobe) — reused both for
+    # chunk planning and as the meeting's duration_seconds (the true "N minutes
+    # of audio", not the task's wall-clock processing time). None if unprobeable.
+    from llm.service._audio_subprocess import ffprobe_duration_ms
+
+    real_duration_ms = ffprobe_duration_ms(temp_path)
+
     # Probe + plan boundaries before touching any meeting state. This is a
     # metadata-only ffprobe plus arithmetic — no audio is decoded and no temp
     # files are written yet, so a planning failure can't leave progress fields
@@ -499,6 +511,7 @@ def orchestrate_upload_transcription(
         target_chunk_seconds=target_chunk_seconds,
         overlap_seconds=overlap_seconds,
         meeting_id=meeting_id,
+        duration_ms=real_duration_ms,
     )
 
     # Single-pass fallback: ffmpeg/ffprobe unavailable -> transcribe the
@@ -516,7 +529,7 @@ def orchestrate_upload_transcription(
         )
         text = result.text or ""
         combined = combine_existing_and_new_transcript(existing_transcript, text)
-        _finalize_meeting_success(meeting_id, combined, model_id)
+        _finalize_meeting_success(meeting_id, combined, model_id, real_duration_ms=real_duration_ms)
         return combined
 
     if not boundaries:
@@ -549,7 +562,7 @@ def orchestrate_upload_transcription(
             )
             text = result.text or ""
             combined = combine_existing_and_new_transcript(existing_transcript, text)
-            _finalize_meeting_success(meeting_id, combined, model_id)
+            _finalize_meeting_success(meeting_id, combined, model_id, real_duration_ms=real_duration_ms)
             return combined
         finally:
             if current_path is not None:
@@ -678,7 +691,7 @@ def orchestrate_upload_transcription(
             current_path.unlink(missing_ok=True)
 
     combined = combine_existing_and_new_transcript(existing_transcript, running_new_transcript)
-    _finalize_meeting_success(meeting_id, combined, model_id)
+    _finalize_meeting_success(meeting_id, combined, model_id, real_duration_ms=real_duration_ms)
     return combined
 
 
@@ -776,14 +789,22 @@ class _PartialTranscriptFlusher:
             logger.exception("partial transcript flush failed for meeting=%s", self._meeting_id)
 
 
-def _finalize_meeting_success(meeting_id: int, text: str, model_id: str) -> None:
+def _finalize_meeting_success(
+    meeting_id: int, text: str, model_id: str, real_duration_ms: int | None = None,
+) -> None:
     from meetings.models import Meeting
 
     ended = timezone.now()
-    meeting = Meeting.objects.filter(pk=meeting_id).only("started_at").first()
-    duration = None
-    if meeting and meeting.started_at:
-        duration = max(0, int((ended - meeting.started_at).total_seconds()))
+    if real_duration_ms is not None:
+        # Real recorded audio length (probed via ffprobe) — the right value for
+        # "N minutes of audio". Falls back to wall-clock (task processing time)
+        # only when the probe failed.
+        duration = max(0, round(real_duration_ms / 1000))
+    else:
+        meeting = Meeting.objects.filter(pk=meeting_id).only("started_at").first()
+        duration = None
+        if meeting and meeting.started_at:
+            duration = max(0, int((ended - meeting.started_at).total_seconds()))
     Meeting.objects.filter(pk=meeting_id).update(
         transcript=text or "",
         transcript_source=Meeting.TranscriptSource.AUDIO_UPLOAD,

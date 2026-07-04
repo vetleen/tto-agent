@@ -23,9 +23,12 @@ import time
 import uuid as uuid_lib
 from typing import Any
 
+from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
+from django.core.cache import cache
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from core.languages import effective_meeting_language
@@ -51,6 +54,12 @@ REALTIME_FAILURE_BUDGET = 2
 # frame consumes one; a client that streams chunk_meta without audio would
 # otherwise grow this list without bound (RSS DoS on a shared dyno).
 _PENDING_META_MAX = 16
+
+# TTL for the per-meeting presence lock that rejects a second concurrent live
+# session on the same meeting. > 2x the heartbeat so a live session keeps it
+# fresh; a hard-crashed session's lock expires within this window so a genuine
+# reconnect isn't blocked for long.
+MEETING_LIVE_LOCK_TTL_SECONDS = 45
 
 # Marker text format inserted into the transcript when transcription was
 # interrupted. The leading/trailing em-dashes give it visual separation from
@@ -103,6 +112,11 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self.meeting_uuid: str | None = None
         self.meeting_id: int | None = None
         self._stop_requested: bool = False
+        # Per-meeting presence lock (C4c); set from _load_and_lock_meeting.
+        self._presence_lock_key: str | None = None
+        # Guards against double-counting this session's duration if finalize
+        # runs twice (stop-failure retry on disconnect) — see _finalize_meeting.
+        self._duration_committed: bool = False
         # Server-side session ceiling reference point (see _heartbeat_loop).
         self._connected_monotonic: float = time.monotonic()
         self._pending_meta: list[dict[str, Any]] = []
@@ -179,6 +193,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._model_id = meeting["model_id"]
         self._realtime_mode = meeting.get("live_mode") or "chunked"
         self._realtime_language = meeting.get("forced_language") or ""
+        self._presence_lock_key = meeting.get("presence_lock_key")
         self._live_segment_counter = self._segment_index_base
         self._group_name = f"meetings.{self.meeting_uuid}"
 
@@ -223,6 +238,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 await self.channel_layer.group_discard(self._group_name, self.channel_name)
             except Exception:
                 pass
+        await self._release_presence_lock()
 
     async def _heartbeat_loop(self):
         """Send a lightweight ping frame at a fixed cadence.
@@ -243,6 +259,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         try:
             while True:
                 await asyncio.sleep(MEETING_WS_HEARTBEAT_SECONDS)
+                # Keep our per-meeting presence lock fresh so it outlives the
+                # session but expires soon after a hard crash (see C4c).
+                await self._refresh_presence_lock()
                 if (
                     max_seconds > 0
                     and not self._stop_requested
@@ -960,6 +979,27 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         except Exception:
             pass
 
+    @property
+    def _lock_owner(self) -> str:
+        # Channels always sets self.channel_name for a real connection; the
+        # id() fallback keeps the presence lock coherent in unit tests that
+        # drive the consumer without the ASGI layer.
+        return getattr(self, "channel_name", None) or f"conn-{id(self)}"
+
+    @sync_to_async
+    def _refresh_presence_lock(self) -> None:
+        # Only refresh a lock we still own (own-lock check), so a successor's
+        # lock is never extended by a laggard predecessor.
+        if self._presence_lock_key and cache.get(self._presence_lock_key) == self._lock_owner:
+            cache.set(self._presence_lock_key, self._lock_owner, MEETING_LIVE_LOCK_TTL_SECONDS)
+
+    @sync_to_async
+    def _release_presence_lock(self) -> None:
+        # Only delete a lock we still own, so we never drop a successor's lock.
+        if self._presence_lock_key and cache.get(self._presence_lock_key) == self._lock_owner:
+            cache.delete(self._presence_lock_key)
+            self._presence_lock_key = None
+
     # -------------------------------------------------- channel-layer handlers
 
     async def segment_ready(self, event):
@@ -1044,6 +1084,24 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 meeting.transcription_chunks_total,
             )
             return {"ok": False, "code": 4409}
+
+        # If the meeting already has a transcript (from an audio/text upload,
+        # which creates NO segment rows) and no segments yet, seed it as
+        # segment 0 so recompute/append preserve it instead of wiping it to the
+        # segments-only join. The unique (meeting, segment_index) constraint +
+        # get_or_create make this idempotent and race-safe.
+        if (meeting.transcript or "").strip() and not (
+            MeetingTranscriptSegment.objects.filter(meeting=meeting).exists()
+        ):
+            MeetingTranscriptSegment.objects.get_or_create(
+                meeting=meeting,
+                segment_index=0,
+                defaults={
+                    "text": meeting.transcript,
+                    "status": MeetingTranscriptSegment.Status.READY,
+                    "start_offset_seconds": 0.0,
+                },
+            )
 
         max_existing = (
             MeetingTranscriptSegment.objects
@@ -1150,7 +1208,24 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             update_fields.append("started_at")
         meeting.transcription_error = ""
         update_fields.append("transcription_error")
-        meeting.save(update_fields=update_fields)
+        try:
+            # Savepoint so the one-live-transcription-per-user constraint rolls
+            # back cleanly on a race instead of poisoning the surrounding txn.
+            with transaction.atomic():
+                meeting.save(update_fields=update_fields)
+        except IntegrityError:
+            return {"ok": False, "code": 4409}
+
+        # Reject a second concurrent live session on THIS meeting (e.g. two
+        # tabs). The per-user constraint above doesn't catch it — the row is
+        # already LIVE, so re-setting LIVE creates no new key. A per-meeting
+        # presence lock does. A genuine reconnect after a hard crash still
+        # works once the lock TTL expires (the heartbeat refreshes it). Acquired
+        # here (sync context) rather than in connect() so a rejected 2nd tab
+        # only ever re-writes an already-LIVE row.
+        presence_lock_key = f"meeting_live_session:{meeting.uuid}"
+        if not cache.add(presence_lock_key, self._lock_owner, MEETING_LIVE_LOCK_TTL_SECONDS):
+            return {"ok": False, "code": 4409}
 
         return {
             "ok": True,
@@ -1169,6 +1244,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 meeting.forced_language,
                 getattr(prefs, "transcription_language", "auto"),
             ),
+            "presence_lock_key": presence_lock_key,
         }
 
     @database_sync_to_async
@@ -1221,19 +1297,27 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         from .services.chunks import recompute_meeting_transcript
 
         ended = timezone.now()
-        duration_seconds = 0
         try:
             meeting = Meeting.objects.get(pk=self.meeting_id)
         except Meeting.DoesNotExist:
             return 0, self._segments_total, self._segments_failed
 
-        if meeting.started_at:
-            duration_seconds = max(0, int((ended - meeting.started_at).total_seconds()))
+        # Accumulate THIS connection's recorded wall time (monotonic span) onto
+        # the stored total, so resume sessions add up and the idle gap between
+        # them is excluded — unlike now-minus-started_at, which spans the gap.
+        # The _duration_committed guard makes a retry (stop-failure → disconnect)
+        # a no-op instead of double-counting.
+        session_seconds = (
+            0 if self._duration_committed
+            else max(0, int(time.monotonic() - self._connected_monotonic))
+        )
+        new_duration = (meeting.duration_seconds or 0) + session_seconds
 
         meeting.status = Meeting.Status.INTERRUPTED if interrupted else Meeting.Status.READY
         meeting.ended_at = ended
-        meeting.duration_seconds = duration_seconds
+        meeting.duration_seconds = new_duration
         meeting.save(update_fields=["status", "ended_at", "duration_seconds", "updated_at"])
+        self._duration_committed = True
 
         recompute_meeting_transcript(self.meeting_id)
 
@@ -1242,4 +1326,4 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             meeting_id=self.meeting_id,
             status=MeetingTranscriptSegment.Status.FAILED,
         ).count()
-        return duration_seconds, total, failed
+        return new_duration, total, failed

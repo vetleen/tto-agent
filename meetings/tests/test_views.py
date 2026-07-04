@@ -315,6 +315,44 @@ class MeetingAttachmentViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(MeetingAttachment.objects.filter(meeting=self.meeting).count(), 1)
 
+    def test_stores_canonical_content_type_not_browser_mime(self):
+        # A .csv often arrives as application/vnd.ms-excel; we must store the
+        # canonical MIME (text/csv) so the minutes copy never drops it.
+        f = SimpleUploadedFile(
+            "data.csv", b"a,b,c\n1,2,3", content_type="application/vnd.ms-excel",
+        )
+        response = self.client.post(
+            reverse("meeting_upload_attachment", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        att = MeetingAttachment.objects.get(meeting=self.meeting)
+        self.assertEqual(att.content_type, "text/csv")
+
+    def test_docx_octet_stream_stored_as_canonical(self):
+        f = SimpleUploadedFile(
+            "notes.docx", b"PK\x03\x04 fake", content_type="application/octet-stream",
+        )
+        response = self.client.post(
+            reverse("meeting_upload_attachment", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        att = MeetingAttachment.objects.get(meeting=self.meeting)
+        self.assertIn("wordprocessingml", att.content_type)
+
+    @patch("chat.services.max_size_for_content_type", return_value=5)
+    def test_rejects_oversized_for_type(self, _mock):
+        # A non-PDF over chat's per-type cap is rejected at upload (so the copy
+        # never silently drops it later), even under the larger meeting ceiling.
+        f = SimpleUploadedFile("photo.png", b"\x89PNG" + b"x" * 50, content_type="image/png")
+        response = self.client.post(
+            reverse("meeting_upload_attachment", args=[self.meeting.uuid]),
+            {"file": f},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(MeetingAttachment.objects.filter(meeting=self.meeting).count(), 0)
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class MeetingMetadataUpdateTests(TestCase):

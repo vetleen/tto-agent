@@ -259,11 +259,13 @@
       <form id="summarize-form" method="post" action="{% url 'meeting_create_minutes_thread' meeting_uuid=meeting.uuid %}" class="inline-flex">
         {% csrf_token %}
         <input type="hidden" name="skill_id" id="summarize-skill-id" value="{{ effective_summarizer_id }}">
+        {# Set to "1" by the dropdown JS when the user actively picks an option, so the server persists the choice. #}
+        <input type="hidden" name="skill_explicit" id="summarize-skill-explicit" value="">
         <div class="inline-flex rounded-base" role="group">
           <button type="submit" data-disable-while-busy {% if not meeting.transcript %}disabled{% endif %}
                   data-wf-ai-trigger data-busy-label="Summarizing…"
-                  class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium {% if summarizer_skills|length > 1 %}rounded-s-base{% else %}rounded-base{% endif %} text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="{% if not meeting.transcript %}Add a transcript first.{% else %}Summarize with {{ effective_summarizer_name }}{% endif %}">
+                  class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium {% if summarizer_skills %}rounded-s-base{% else %}rounded-base{% endif %} text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="{% if not meeting.transcript %}Add a transcript first.{% elif effective_summarizer_name %}Summarize with {{ effective_summarizer_name }}{% else %}Summarize meeting in chat{% endif %}">
             <span class="wf-ai-icon" data-wf-ai-icon aria-hidden="true">
               <svg class="wf-star-1" width="13" height="13" viewBox="0 0 24 24"><path d="M12 1.5l2.7 7.8 7.8 2.7-7.8 2.7L12 22.5l-2.7-7.8-7.8-2.7 7.8-2.7Z" fill="currentColor" fill-opacity="1"/></svg>
               <svg class="wf-star-2" width="7" height="7" viewBox="0 0 24 24"><path d="M12 1.5l2.7 7.8 7.8 2.7-7.8 2.7L12 22.5l-2.7-7.8-7.8-2.7 7.8-2.7Z" fill="currentColor" fill-opacity="0.85"/></svg>
@@ -272,7 +274,7 @@
             <span class="wf-ai-spinner hidden" data-wf-ai-spinner aria-hidden="true"></span>
             <span data-wf-ai-label>Summarize meeting in chat</span>
           </button>
-          {% if summarizer_skills|length > 1 %}
+          {% if summarizer_skills %}
           <button type="button" {% if not meeting.transcript %}disabled{% endif %}
                   data-dropdown-toggle="summarizer-skill-dropdown" data-wf-ai-sibling
                   class="inline-flex items-center text-on-brand bg-brand hover:bg-brand-strong focus:ring-4 focus:outline-none focus:ring-brand-medium font-medium rounded-e-base text-sm px-2 py-2 border-l border-white/25 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -283,7 +285,7 @@
         </div>
       </form>
 
-      {% if summarizer_skills|length > 1 %}
+      {% if summarizer_skills %}
       <div id="summarizer-skill-dropdown" class="z-50 hidden min-w-56 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
         <div class="px-3 py-2 text-xs font-medium text-body border-b border-default">Summarizer skill</div>
         {% for skill in summarizer_skills %}
@@ -299,6 +301,16 @@
           {% if skill.level == "user" %}<span class="text-xs text-body">(yours)</span>{% elif skill.level == "org" %}<span class="text-xs text-body">(org)</span>{% endif %}
         </button>
         {% endfor %}
+        <button type="button"
+                class="summarizer-skill-option inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary text-left gap-2 border-t border-default"
+                data-skill-id="none"
+                data-skill-name="No skill">
+          <svg class="summarizer-check w-4 h-4 shrink-0 {% if not effective_summarizer_id %}text-fg-brand{% else %}text-transparent{% endif %}"
+               xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/>
+          </svg>
+          <span>No skill</span>
+        </button>
       </div>
       {% endif %}
 
@@ -460,16 +472,19 @@
 
 </div>
 
-{% if summarizer_skills|length > 1 %}
+{% if summarizer_skills %}
 <script nonce="{{ request.csp_nonce }}">
 (function() {
   var skillInput = document.getElementById('summarize-skill-id');
+  var explicitInput = document.getElementById('summarize-skill-explicit');
   var buttons = document.querySelectorAll('.summarizer-skill-option');
   buttons.forEach(function(btn) {
     btn.addEventListener('click', function() {
-      var skillId = this.dataset.skillId;
+      var skillId = this.dataset.skillId;   // a skill id, or "none"
       var skillName = this.dataset.skillName;
-      skillInput.value = skillId;
+      skillInput.value = (skillId === 'none') ? '' : skillId;
+      // Mark this as an active choice so the server persists it as the default.
+      if (explicitInput) explicitInput.value = '1';
       // Update checkmarks
       buttons.forEach(function(b) {
         var svg = b.querySelector('.summarizer-check');
@@ -483,8 +498,10 @@
       });
       // Update tooltip on main button
       var mainBtn = document.querySelector('#summarize-form button[type="submit"]');
-      if (mainBtn && mainBtn.title) {
-        mainBtn.title = 'Summarize with ' + skillName;
+      if (mainBtn) {
+        mainBtn.title = (skillId === 'none')
+          ? 'Summarize meeting in chat'
+          : 'Summarize with ' + skillName;
       }
     });
   });

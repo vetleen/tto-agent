@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from meetings.models import (
@@ -37,6 +37,46 @@ class MeetingModelTests(TestCase):
         Meeting.objects.create(name="A", slug="dup", created_by=self.user)
         with self.assertRaises(IntegrityError):
             Meeting.objects.create(name="B", slug="dup", created_by=self.user)
+
+    def test_one_live_transcription_per_user(self):
+        Meeting.objects.create(
+            name="A", slug="live-a", created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Meeting.objects.create(
+                    name="B", slug="live-b", created_by=self.user,
+                    status=Meeting.Status.LIVE_TRANSCRIBING,
+                )
+
+    def test_two_users_each_live_allowed(self):
+        other = User.objects.create_user(email="m2@example.com", password="pw")
+        Meeting.objects.create(
+            name="A", slug="live-u1", created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+        )
+        # Different user → no conflict.
+        Meeting.objects.create(
+            name="B", slug="live-u2", created_by=other,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+        )
+
+    def test_live_plus_non_live_allowed(self):
+        # The constraint is partial (only LIVE_TRANSCRIBING rows), so a user can
+        # have one live meeting alongside any number of READY/etc. meetings.
+        Meeting.objects.create(
+            name="A", slug="live-only", created_by=self.user,
+            status=Meeting.Status.LIVE_TRANSCRIBING,
+        )
+        Meeting.objects.create(
+            name="B", slug="ready-1", created_by=self.user,
+            status=Meeting.Status.READY,
+        )
+        Meeting.objects.create(
+            name="C", slug="ready-2", created_by=self.user,
+            status=Meeting.Status.READY,
+        )
 
 
 class MeetingTranscriptSegmentTests(TestCase):

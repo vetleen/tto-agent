@@ -256,12 +256,16 @@ def meeting_detail(request, meeting_uuid):
     selected_supports_live = bool(selected_info.supports_live_streaming) if selected_info else False
     selected_supports_diarization = bool(selected_info.supports_diarization) if selected_info else False
 
-    from meetings.services.minutes import get_eligible_summarizer_skills, resolve_summarizer_skill
+    from meetings.services.minutes import (
+        get_eligible_summarizer_skills,
+        resolve_default_summarizer_skill,
+    )
 
     summarizer_skills = get_eligible_summarizer_skills(request.user)
-    effective_summarizer = resolve_summarizer_skill(request.user)
+    effective_summarizer = resolve_default_summarizer_skill(request.user)
+    # effective_summarizer may be None = the user's default is "no skill".
     effective_summarizer_id = str(effective_summarizer.id) if effective_summarizer else ""
-    effective_summarizer_name = effective_summarizer.name if effective_summarizer else "Meeting Summarizer"
+    effective_summarizer_name = effective_summarizer.name if effective_summarizer else ""
 
     # File-picker accept list for the attachment input, derived from the same
     # capability table the upload view validates against. Includes image/* so
@@ -781,9 +785,21 @@ def meeting_upload_audio(request, meeting_uuid):
     meeting.transcript_source = Meeting.TranscriptSource.AUDIO_UPLOAD
     meeting.started_at = meeting.started_at or timezone.now()
     meeting.transcription_error = ""
-    meeting.save(update_fields=[
-        "status", "transcript_source", "started_at", "transcription_error", "updated_at",
-    ])
+    try:
+        # Savepoint so a race that trips the one-live-transcription-per-user
+        # constraint rolls back cleanly instead of poisoning the request txn.
+        with transaction.atomic():
+            meeting.save(update_fields=[
+                "status", "transcript_source", "started_at", "transcription_error", "updated_at",
+            ])
+    except IntegrityError:
+        from meetings.services.chunks import cleanup_temp
+        cleanup_temp(str(temp_path))  # the audio was already written above — don't leak it
+        messages.error(
+            request,
+            "You already have a transcription running — wait for it to finish or stop it first.",
+        )
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
     try:
         transcribe_uploaded_audio_task.delay(
@@ -833,15 +849,18 @@ def meeting_upload_attachment(request, meeting_uuid):
         messages.error(request, f"This meeting already has the maximum of {max_count} attachments.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    max_bytes = getattr(settings, "MEETING_ATTACHMENT_MAX_BYTES", 26_214_400)
-    if (file_obj.size or 0) > max_bytes:
-        messages.error(request, f"Attachment is too large (max {max_bytes // (1024 * 1024)} MB).")
-        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-
-    # Validate file type against the unified capability table. Meeting
-    # attachments are copied into the "minutes with Wilfred" chat thread, so
-    # they accept exactly what chat can consume (images, PDFs, Word docs, text).
-    from core.file_types import MEETING_ATTACHMENT_KINDS, allowed_extensions
+    # Validate the extension against the unified capability table, then derive
+    # the CANONICAL content type from the (trusted) extension and store that —
+    # not the browser-reported MIME. Meeting attachments are copied into the
+    # "minutes with Wilfred" chat thread, which validates by canonical MIME and
+    # per-type size; keeping acceptance in lock-step here means an accepted file
+    # is never silently dropped during that copy.
+    from chat.services import max_size_for_content_type
+    from core.file_types import (
+        MEETING_ATTACHMENT_KINDS,
+        allowed_extensions,
+        canonical_mime_for_extension,
+    )
 
     name = file_obj.name or ""
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
@@ -852,13 +871,25 @@ def meeting_upload_attachment(request, meeting_uuid):
         )
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
+    canonical_ct = canonical_mime_for_extension(ext) or ""
+    # Enforce the tighter of the meeting ceiling and chat's per-type cap
+    # (10MB non-PDF / 30MB PDF) so nothing accepted here fails the copy on size.
+    max_bytes = getattr(settings, "MEETING_ATTACHMENT_MAX_BYTES", 26_214_400)
+    effective_max = min(max_bytes, max_size_for_content_type(canonical_ct))
+    if (file_obj.size or 0) > effective_max:
+        messages.error(
+            request,
+            f"Attachment is too large (max {effective_max // (1024 * 1024)} MB for this file type).",
+        )
+        return redirect("meeting_detail", meeting_uuid=meeting.uuid)
+
     safe_name = safe_filename(file_obj.name, max_length=255)
     MeetingAttachment.objects.create(
         meeting=meeting,
         uploaded_by=request.user,
         file=file_obj,
         original_filename=safe_name,
-        content_type=getattr(file_obj, "content_type", "") or "",
+        content_type=canonical_ct,
         size_bytes=file_obj.size or 0,
     )
     meeting.save(update_fields=["updated_at"])
@@ -889,7 +920,11 @@ def meeting_delete_attachment(request, meeting_uuid, attachment_id):
 def meeting_create_minutes_thread(request, meeting_uuid):
     from agent_skills.services import get_skill_for_user
 
-    from .services.minutes import create_minutes_thread
+    from .services.minutes import (
+        create_minutes_thread,
+        resolve_default_summarizer_skill,
+        set_default_summarizer_preference,
+    )
 
     meeting = get_object_or_404(Meeting, uuid=meeting_uuid)
     if not _user_can_modify_meeting(request.user, meeting):
@@ -898,11 +933,26 @@ def meeting_create_minutes_thread(request, meeting_uuid):
         messages.error(request, "This meeting has no transcript yet.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    # Resolve skill: explicit POST param (transient, not persisted) > system default
+    # Resolve the summarizer skill. When the user made an ACTIVE choice in the
+    # picker (skill_explicit=1 — set by the dropdown JS), persist it as their
+    # default for future meetings. A non-explicit submit just uses the resolved
+    # default without persisting.
     skill_id = (request.POST.get("skill_id") or "").strip()
-    summarizer_skill = None
-    if skill_id:
+    explicit = request.POST.get("skill_explicit") == "1"
+    no_skill = not skill_id or skill_id.lower() == "none"
+
+    if explicit and no_skill:
+        set_default_summarizer_preference(request.user, None)
+        summarizer_skill = None
+    elif not no_skill:
         summarizer_skill = get_skill_for_user(request.user, skill_id)
+        if summarizer_skill is not None:
+            if explicit:
+                set_default_summarizer_preference(request.user, str(summarizer_skill.id))
+        else:
+            summarizer_skill = resolve_default_summarizer_skill(request.user)
+    else:
+        summarizer_skill = resolve_default_summarizer_skill(request.user)
 
     thread, err = create_minutes_thread(request.user, meeting, summarizer_skill=summarizer_skill)
     if err or thread is None:

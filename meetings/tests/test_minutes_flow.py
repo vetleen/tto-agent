@@ -116,11 +116,18 @@ class CreateMinutesThreadTests(TestCase):
         self.assertIsNone(thread)
         self.assertIsNotNone(err)
 
-    def test_returns_error_when_skill_missing(self):
+    def test_no_skill_creates_valid_thread_without_chatthreadskill(self):
+        # "No skill" is now a valid outcome — a missing/disabled summarizer must
+        # yield a working thread (drafted by the model itself), not an error.
+        from chat.models import ChatThreadSkill
+
         AgentSkill.objects.filter(slug="meeting-summarizer").delete()
         thread, err = create_minutes_thread(self.user, self.meeting)
-        self.assertIsNone(thread)
-        self.assertIsNotNone(err)
+        self.assertIsNone(err)
+        self.assertIsNotNone(thread)
+        self.assertEqual(ChatThreadSkill.objects.filter(thread=thread).count(), 0)
+        seed = ChatMessage.objects.get(thread=thread, is_hidden_from_user=True)
+        self.assertNotIn("Use the attached", seed.content)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -151,6 +158,39 @@ class MeetingCreateMinutesViewTests(TestCase):
         response = self.client.post(reverse("meeting_create_minutes_thread", args=[m.uuid]))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(ChatThread.objects.filter(created_by=self.user).count(), 0)
+
+    def test_explicit_no_skill_persists_preference(self):
+        from accounts.models import UserSettings
+
+        self.client.post(
+            reverse("meeting_create_minutes_thread", args=[self.meeting.uuid]),
+            {"skill_id": "none", "skill_explicit": "1"},
+        )
+        prefs = UserSettings.objects.get(user=self.user).preferences
+        self.assertIsNone(prefs["meetings"]["summarizer_skill_id"])
+
+    def test_explicit_skill_choice_persists_id(self):
+        from accounts.models import UserSettings
+        from agent_skills.models import AgentSkill
+
+        skill = AgentSkill.objects.get(slug="meeting-summarizer", level="system")
+        self.client.post(
+            reverse("meeting_create_minutes_thread", args=[self.meeting.uuid]),
+            {"skill_id": str(skill.id), "skill_explicit": "1"},
+        )
+        prefs = UserSettings.objects.get(user=self.user).preferences
+        self.assertEqual(prefs["meetings"]["summarizer_skill_id"], str(skill.id))
+
+    def test_non_explicit_submit_does_not_persist(self):
+        from accounts.models import UserSettings
+
+        self.client.post(
+            reverse("meeting_create_minutes_thread", args=[self.meeting.uuid]),
+            {"skill_id": "none"},  # no skill_explicit flag
+        )
+        settings_row = UserSettings.objects.filter(user=self.user).first()
+        prefs = (settings_row.preferences if settings_row else {}) or {}
+        self.assertNotIn("summarizer_skill_id", prefs.get("meetings", {}))
 
 
 class GetEligibleSummarizerSkillsTests(TestCase):
@@ -183,25 +223,80 @@ class GetEligibleSummarizerSkillsTests(TestCase):
         ids = {s.id for s in skills}
         self.assertIn(user_skill.id, ids)
 
+    def test_excludes_subagent_audience_skill(self):
+        # A minutes thread is a MAIN thread — sub-agent specializations must not
+        # be offered (nor attachable).
+        sub = AgentSkill.objects.create(
+            slug="sub-spec", name="Sub Spec", instructions="x",
+            level="user", created_by=self.user, tool_names=[], audience="subagent",
+        )
+        ids = {s.id for s in get_eligible_summarizer_skills(self.user)}
+        self.assertNotIn(sub.id, ids)
 
-class ResolveSummarizerSkillTests(TestCase):
+
+class DefaultSummarizerOrgGateTests(TestCase):
+    def setUp(self):
+        from accounts.models import Membership, Organization
+
+        AgentSkill.objects.filter(slug="meeting-summarizer").delete()
+        self.system_skill = _seed_meeting_summarizer()
+        self.user = User.objects.create_user(email="orggate@example.com", password="pw")
+        self.org = Organization.objects.create(name="Org", slug="org-gate")
+        Membership.objects.create(user=self.user, org=self.org)
+
+    def test_org_member_without_enablement_gets_no_default(self):
+        from meetings.services.minutes import resolve_default_summarizer_skill
+
+        # System seed skills are OFF by default for org members.
+        self.assertIsNone(resolve_default_summarizer_skill(self.user))
+
+    def test_org_member_with_enablement_gets_skill(self):
+        from meetings.services.minutes import resolve_default_summarizer_skill
+
+        self.org.preferences = {"skills": {"meeting-summarizer": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+        skill = resolve_default_summarizer_skill(self.user)
+        self.assertEqual(skill.id, self.system_skill.id)
+
+
+class ResolveDefaultSummarizerSkillTests(TestCase):
     def setUp(self):
         AgentSkill.objects.filter(slug="meeting-summarizer").delete()
         self.system_skill = _seed_meeting_summarizer()
         self.user = User.objects.create_user(email="resolve@example.com", password="pw")
 
-    def test_returns_system_default(self):
-        from meetings.services.minutes import resolve_summarizer_skill
+    def test_returns_system_default_for_no_org_user(self):
+        from meetings.services.minutes import resolve_default_summarizer_skill
 
-        skill = resolve_summarizer_skill(self.user)
+        # No-org user: the gate leaves system skills accessible, so the default
+        # is the meeting-summarizer.
+        skill = resolve_default_summarizer_skill(self.user)
         self.assertEqual(skill.id, self.system_skill.id)
 
     def test_returns_none_when_missing(self):
-        from meetings.services.minutes import resolve_summarizer_skill
+        from meetings.services.minutes import resolve_default_summarizer_skill
 
         AgentSkill.objects.filter(slug="meeting-summarizer").delete()
-        skill = resolve_summarizer_skill(self.user)
-        self.assertIsNone(skill)
+        self.assertIsNone(resolve_default_summarizer_skill(self.user))
+
+    def test_saved_preference_none_returns_no_skill(self):
+        from meetings.services.minutes import (
+            resolve_default_summarizer_skill,
+            set_default_summarizer_preference,
+        )
+
+        set_default_summarizer_preference(self.user, None)  # explicit "no skill"
+        self.assertIsNone(resolve_default_summarizer_skill(self.user))
+
+    def test_saved_preference_specific_skill_resolves(self):
+        from meetings.services.minutes import (
+            resolve_default_summarizer_skill,
+            set_default_summarizer_preference,
+        )
+
+        set_default_summarizer_preference(self.user, str(self.system_skill.id))
+        skill = resolve_default_summarizer_skill(self.user)
+        self.assertEqual(skill.id, self.system_skill.id)
 
 
 class CreateMinutesThreadWithSkillTests(TestCase):

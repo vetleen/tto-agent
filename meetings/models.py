@@ -97,6 +97,18 @@ class Meeting(models.Model):
             # concurrency check in the upload view and the live WS consumer.
             models.Index(fields=["created_by", "status"]),
         ]
+        constraints = [
+            # At most one live transcription per user at the DB level — the
+            # Python gate (services.gates.user_has_active_transcription) is a
+            # check-then-act that concurrent requests can race past.
+            models.UniqueConstraint(
+                fields=["created_by"],
+                # Raw value of Status.LIVE_TRANSCRIBING (Status isn't in Meta's
+                # scope), matching the constraint style in agent_skills.models.
+                condition=models.Q(status="live_transcribing"),
+                name="meetings_one_live_transcription_per_user",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.name

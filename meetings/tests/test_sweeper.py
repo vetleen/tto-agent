@@ -34,9 +34,12 @@ class ExpireStaleTranscriptionsTests(TestCase):
         return segment
 
     def _make_upload_meeting(self, minutes_old=0, status=Meeting.Status.LIVE_TRANSCRIBING,
-                             source=Meeting.TranscriptSource.AUDIO_UPLOAD, slug="m-upload"):
+                             source=Meeting.TranscriptSource.AUDIO_UPLOAD, slug="m-upload",
+                             user=None):
+        # A user can have at most one LIVE meeting (DB constraint), so callers
+        # that need several LIVE rows must pass distinct users.
         meeting = Meeting.objects.create(
-            name="Upload", slug=slug, created_by=self.user,
+            name="Upload", slug=slug, created_by=user or self.user,
             status=status, transcript_source=source,
         )
         Meeting.objects.filter(pk=meeting.pk).update(
@@ -114,10 +117,14 @@ class ExpireStaleTranscriptionsTests(TestCase):
         """A live-path meeting within STALE_LIVE_HOURS (6h) is left alone — a
         healthy live session is normally WS-managed (Stop/disconnect). A meeting
         with an unset source is never swept at any age."""
+        # Distinct users: one user can only have a single LIVE meeting.
+        other = User.objects.create_user(email="sweep2@example.com", password="pw")
         live = self._make_upload_meeting(
             minutes_old=180, source=Meeting.TranscriptSource.LIVE, slug="m-live",
         )
-        unset = self._make_upload_meeting(minutes_old=600, source="", slug="m-unset")
+        unset = self._make_upload_meeting(
+            minutes_old=600, source="", slug="m-unset", user=other,
+        )
 
         handled = expire_stale_transcriptions()
 

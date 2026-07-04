@@ -23,6 +23,7 @@ from meetings.services.audio_transcription import (
     AudioSplitTimeoutError,
     ChunkBoundary,
     _extract_chunk,
+    _finalize_meeting_success,
     _plan_upload_chunks,
     build_transcription_prompt,
     orchestrate_upload_transcription,
@@ -813,3 +814,31 @@ class OrchestratorTests(TestCase):
         self.assertIn("Failed on chunk 2/3", m.transcription_error)
         self.assertEqual(m.transcription_chunks_total, 0)
         self.assertEqual(m.transcription_chunks_done, 0)
+
+
+class FinalizeMeetingSuccessDurationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="fin@example.com", password="pw")
+
+    def test_uses_real_audio_duration_when_provided(self):
+        m = Meeting.objects.create(name="M", slug="m-fin", created_by=self.user)
+        _finalize_meeting_success(
+            m.id, "transcript text", "openai/gpt-4o-transcribe", real_duration_ms=125_000,
+        )
+        m.refresh_from_db()
+        self.assertEqual(m.duration_seconds, 125)  # 125000 ms -> 125 s of audio
+        self.assertEqual(m.status, Meeting.Status.READY)
+
+    def test_falls_back_to_wall_clock_when_no_real_duration(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        m = Meeting.objects.create(name="M", slug="m-fin2", created_by=self.user)
+        Meeting.objects.filter(pk=m.id).update(
+            started_at=timezone.now() - timedelta(seconds=40),
+        )
+        _finalize_meeting_success(m.id, "text", "model", real_duration_ms=None)
+        m.refresh_from_db()
+        self.assertGreaterEqual(m.duration_seconds, 39)
+        self.assertLessEqual(m.duration_seconds, 120)

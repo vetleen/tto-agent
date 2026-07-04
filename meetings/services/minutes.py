@@ -11,21 +11,72 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Sentinel: create_minutes_thread(summarizer_skill=_UNSET) resolves the user's
+# default; passing None explicitly means "no skill" (a valid choice).
+_UNSET = object()
+
 
 def get_eligible_summarizer_skills(user):
-    """Return all skills accessible to *user* that can drive a meeting summarization thread."""
-    from agent_skills.services import get_accessible_skills
+    """Return the skills offered in the summarizer picker.
 
-    return sorted(get_accessible_skills(user), key=lambda s: s.name)
+    Uses ``get_available_skills`` so only *main-audience* skills appear — the
+    minutes thread is a main thread, and sub-agent specializations must never be
+    attachable there. Also org-gated and per-user-selection-aware.
+    """
+    from agent_skills.services import get_available_skills
+
+    return get_available_skills(user)
 
 
-def resolve_summarizer_skill(user):
-    """Return the system meeting-summarizer skill."""
-    from agent_skills.models import AgentSkill
+def _default_summarizer_skill(user):
+    """The org-gated, selection-aware default summarizer skill, or None.
 
-    return AgentSkill.objects.filter(
-        slug="meeting-summarizer", level="system", is_active=True,
-    ).first()
+    Routes through ``get_available_skills`` (same visibility as the picker) so an
+    org that hasn't enabled the system meeting-summarizer — or a user who
+    disabled it — gets no default instead of a silently-dropped skill.
+    """
+    from agent_skills.services import get_available_skills
+
+    return next(
+        (s for s in get_available_skills(user) if s.slug == "meeting-summarizer"),
+        None,
+    )
+
+
+def resolve_default_summarizer_skill(user):
+    """Resolve which summarizer skill to default the picker/thread to.
+
+    Order: the user's saved preference (a still-accessible skill, or an explicit
+    "no skill"), else the org-enabled meeting-summarizer, else None. ``None`` is
+    a valid outcome meaning "create the thread without a skill".
+    """
+    from agent_skills.services import get_skill_for_user
+    from core.preferences import _get_user_preferences
+
+    meetings_prefs = _get_user_preferences(user).get("meetings") or {}
+    if "summarizer_skill_id" in meetings_prefs:
+        saved = meetings_prefs["summarizer_skill_id"]
+        if saved is None:
+            return None  # explicit "no skill"
+        skill = get_skill_for_user(user, saved)  # gated; None if gone/inaccessible
+        if skill is not None:
+            return skill
+        # Stale/inaccessible saved choice → fall through to the org default.
+    return _default_summarizer_skill(user)
+
+
+def set_default_summarizer_preference(user, skill_id_or_none):
+    """Persist the user's summarizer choice.
+
+    ``skill_id_or_none`` is a skill-id string, or ``None`` for an explicit
+    "no skill". Stored in ``UserSettings.preferences["meetings"]`` (no migration).
+    """
+    from accounts.services import update_user_preferences
+
+    def mutate(prefs):
+        prefs.setdefault("meetings", {})["summarizer_skill_id"] = skill_id_or_none
+
+    update_user_preferences(user, mutate)
 
 
 def _format_duration_minutes(seconds) -> str:
@@ -39,7 +90,7 @@ def _build_seed_message(
     meeting,
     canvas_title: str,
     model_label: str,
-    skill_name: str = "Meeting Summarizer",
+    skill_name: str | None = None,
     attachment_count: int = 0,
 ) -> str:
     from chat.services import CANVAS_MAX_CHARS
@@ -79,14 +130,17 @@ def _build_seed_message(
             "from the meeting (e.g. slides, agendas, notes). Use them alongside "
             "the transcript when drafting the minutes."
         )
-    parts.append(
+    final = (
         "Your job is to produce well-structured meeting minutes (or a summary) "
         "and draft them into a new canvas. "
         "If important context is missing — attendees, meeting purpose, the boundary "
         "between decisions and action items — greet the user briefly and ask one "
-        f"focused question before drafting. Use the attached {skill_name} skill "
-        "to complete the task. Iterate with the user until they are satisfied."
+        "focused question before drafting. "
     )
+    if skill_name:
+        final += f"Use the attached {skill_name} skill to complete the task. "
+    final += "Iterate with the user until they are satisfied."
+    parts.append(final)
     return " ".join(parts)
 
 
@@ -172,11 +226,13 @@ def _build_attachments_disclaimer(accepted_count: int, skipped: list[tuple[str, 
     return " ".join(parts)
 
 
-def create_minutes_thread(user, meeting, summarizer_skill=None):
-    """Create a ChatThread pre-loaded with a summarizer skill.
+def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
+    """Create a ChatThread for drafting minutes, optionally pre-loaded with a skill.
 
-    *summarizer_skill* overrides the cascade resolution when provided.
-    Returns ``(thread, error_message)``: exactly one is non-None.
+    ``summarizer_skill``: pass ``_UNSET`` (default) to resolve the user's default
+    via :func:`resolve_default_summarizer_skill`; pass a skill to attach it; pass
+    ``None`` to create the thread with **no** skill (a valid choice — the model
+    drafts the minutes itself). Returns ``(thread, error_message)``.
     """
     from chat.models import ChatCanvas, ChatMessage, ChatThread, ChatThreadSkill
     from chat.services import (
@@ -185,14 +241,9 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
         set_active_canvas,
     )
 
-    if summarizer_skill is None:
-        summarizer_skill = resolve_summarizer_skill(user)
-    if summarizer_skill is None:
-        logger.error(
-            "create_minutes_thread: No eligible summarizer skill found "
-            "(did the post_migrate seed run?)"
-        )
-        return None, "Meeting summarization is unavailable right now (skill missing)."
+    if summarizer_skill is _UNSET:
+        summarizer_skill = resolve_default_summarizer_skill(user)
+    # summarizer_skill is now an AgentSkill or None (None = no-skill, valid).
 
     if not (meeting.transcript or "").strip():
         return None, "This meeting has no transcript yet."
@@ -207,7 +258,8 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
             "pending_initial_turn": True,
         },
     )
-    ChatThreadSkill.objects.create(thread=thread, skill=summarizer_skill)
+    if summarizer_skill is not None:
+        ChatThreadSkill.objects.create(thread=thread, skill=summarizer_skill)
 
     # Preload the transcript into a canvas so Wilfred sees it as the active
     # canvas (its content is injected into the per-turn prompt). Truncate to
@@ -239,7 +291,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=None):
         meeting,
         canvas_title,
         model_label,
-        skill_name=summarizer_skill.name,
+        skill_name=(summarizer_skill.name if summarizer_skill else None),
         attachment_count=len(accepted),
     )
     ChatMessage.objects.create(
