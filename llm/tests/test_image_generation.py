@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
@@ -166,3 +166,54 @@ class ServiceTests(TestCase):
         svc = ImageGenerationService()
         with self.assertRaises(ValueError):
             svc.generate("x", "nope/nope")
+
+
+class ClientAuthTests(TestCase):
+    """_client() picks Vertex AI when a service account is configured, else the
+    Gemini Developer API key."""
+
+    def test_uses_vertex_when_configured(self):
+        creds = object()
+        cfg = {
+            "vertexai": True,
+            "project": "wilfred-505110",
+            "location": "eu",
+            "credentials": creds,
+        }
+        with patch("llm.core.google_auth.get_vertex_config", return_value=cfg), patch(
+            "google.genai.Client"
+        ) as mock_client:
+            mock_client.return_value = MagicMock()
+            ImageGenerationService()._client()
+
+        _, kwargs = mock_client.call_args
+        self.assertTrue(kwargs["vertexai"])
+        self.assertEqual(kwargs["project"], "wilfred-505110")
+        self.assertEqual(kwargs["location"], "eu")
+        self.assertIs(kwargs["credentials"], creds)
+        self.assertNotIn("api_key", kwargs)
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False)
+    def test_uses_api_key_when_not_configured(self):
+        with patch("llm.core.google_auth.get_vertex_config", return_value=None), patch(
+            "google.genai.Client"
+        ) as mock_client:
+            mock_client.return_value = MagicMock()
+            ImageGenerationService()._client()
+
+        _, kwargs = mock_client.call_args
+        self.assertEqual(kwargs["api_key"], "test-key")
+        self.assertNotIn("vertexai", kwargs)
+
+    def test_raises_when_no_auth_configured(self):
+        from llm.service.errors import LLMProviderError
+
+        import os
+
+        with patch("llm.core.google_auth.get_vertex_config", return_value=None), patch.dict(
+            "os.environ", {}, clear=False
+        ):
+            os.environ.pop("GEMINI_API_KEY", None)
+            os.environ.pop("GOOGLE_API_KEY", None)
+            with self.assertRaises(LLMProviderError):
+                ImageGenerationService()._client()

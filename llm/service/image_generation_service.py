@@ -162,13 +162,26 @@ class ImageGenerationService:
         from google import genai
         from google.genai import types
 
+        from llm.core.google_auth import get_vertex_config
+
+        http_options = types.HttpOptions(timeout=_IMAGE_GEN_TIMEOUT_MS)
+
+        # Prefer Vertex AI when a service account is configured (staging/prod);
+        # fall back to the Gemini Developer API key otherwise (local dev).
+        vertex_config = get_vertex_config()
+        if vertex_config is not None:
+            return genai.Client(
+                vertexai=True,
+                project=vertex_config["project"],
+                location=vertex_config["location"],
+                credentials=vertex_config["credentials"],
+                http_options=http_options,
+            )
+
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise LLMProviderError("GEMINI_API_KEY is not configured")
-        return genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=_IMAGE_GEN_TIMEOUT_MS),
-        )
+        return genai.Client(api_key=api_key, http_options=http_options)
 
     def _call_gemini(self, info, prompt, input_images, aspect_ratio):
         """Call Gemini generate_content with the image response modality.

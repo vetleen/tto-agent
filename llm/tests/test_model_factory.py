@@ -289,6 +289,88 @@ class ProviderKwargsTests(SimpleTestCase):
         self.assertNotIn("store", kwargs)
 
 
+class GoogleVertexKwargsTests(SimpleTestCase):
+    """When a service account is configured, google_genai clients must be built
+    with the Vertex AI kwargs (vertexai/project/location/credentials); otherwise
+    they must not appear."""
+
+    def setUp(self):
+        clear_client_cache()
+
+    def tearDown(self):
+        clear_client_cache()
+
+    _VERTEX = {
+        "vertexai": True,
+        "project": "wilfred-505110",
+        "location": "eu",
+        "credentials": object(),
+    }
+
+    @patch("llm.core.google_auth.get_vertex_config")
+    def test_vertex_kwargs_injected_when_configured(self, mock_cfg):
+        mock_cfg.return_value = dict(self._VERTEX)
+        with patch("llm.core.model_factory.init_chat_model") as mock_init:
+            mock_init.return_value = MagicMock()
+            from llm.core.model_factory import create_chat_model
+
+            create_chat_model("gemini/gemini-3.5-flash")
+            call_kwargs = mock_init.call_args[1]
+            self.assertTrue(call_kwargs["vertexai"])
+            self.assertEqual(call_kwargs["project"], "wilfred-505110")
+            self.assertEqual(call_kwargs["location"], "eu")
+            self.assertIs(call_kwargs["credentials"], self._VERTEX["credentials"])
+            # google_genai never sets stream_usage.
+            self.assertNotIn("stream_usage", call_kwargs)
+
+    @patch("llm.core.google_auth.get_vertex_config")
+    def test_no_vertex_kwargs_when_not_configured(self, mock_cfg):
+        mock_cfg.return_value = None
+        with patch("llm.core.model_factory.init_chat_model") as mock_init:
+            mock_init.return_value = MagicMock()
+            from llm.core.model_factory import create_chat_model
+
+            create_chat_model("gemini/gemini-3.5-flash")
+            call_kwargs = mock_init.call_args[1]
+            for key in ("vertexai", "project", "location", "credentials"):
+                self.assertNotIn(key, call_kwargs)
+
+    @patch("llm.core.google_auth.get_vertex_config")
+    def test_variant_client_carries_vertex_kwargs(self, mock_cfg):
+        """The thinking-variant path must also land on Vertex."""
+        mock_cfg.return_value = dict(self._VERTEX)
+        with patch("llm.core.model_factory.init_chat_model") as mock_init:
+            mock_init.return_value = MagicMock()
+            from llm.core.model_factory import create_variant_client
+
+            create_variant_client(
+                "gemini-3.5-flash",
+                provider="google_genai",
+                thinking_budget=1024,
+                include_thoughts=True,
+            )
+            call_kwargs = mock_init.call_args[1]
+            self.assertTrue(call_kwargs["vertexai"])
+            self.assertEqual(call_kwargs["location"], "eu")
+            self.assertIs(call_kwargs["credentials"], self._VERTEX["credentials"])
+            # Variant-specific kwargs still flow through.
+            self.assertEqual(call_kwargs["thinking_budget"], 1024)
+
+    @patch("llm.core.google_auth.get_vertex_config")
+    def test_other_providers_unaffected(self, mock_cfg):
+        """Vertex config must not leak onto non-Gemini providers."""
+        mock_cfg.return_value = dict(self._VERTEX)
+        with patch("llm.core.model_factory.init_chat_model") as mock_init:
+            mock_init.return_value = MagicMock()
+            from llm.core.model_factory import create_chat_model
+
+            create_chat_model("openai/gpt-5-mini")
+            call_kwargs = mock_init.call_args[1]
+            self.assertNotIn("vertexai", call_kwargs)
+            self.assertNotIn("credentials", call_kwargs)
+            mock_cfg.assert_not_called()
+
+
 class RateLimiterTests(SimpleTestCase):
     """Test rate limiter singleton behavior."""
 

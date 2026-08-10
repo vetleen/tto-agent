@@ -108,6 +108,17 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
     # stream_usage is supported by OpenAI and Anthropic but not Google
     if provider != "google_genai":
         kwargs["stream_usage"] = True
+    if provider == "google_genai":
+        # When a service account is configured (staging/prod), steer Gemini onto
+        # the Vertex AI backend (project/location/credentials + explicit
+        # vertexai=True). Absent that, these stay unset and the SDK uses the
+        # API-key path (local dev). Applied here so the base client AND the
+        # thinking-variant client (create_variant_client) both inherit it.
+        from llm.core.google_auth import get_vertex_config
+
+        vertex_config = get_vertex_config()
+        if vertex_config is not None:
+            kwargs.update(vertex_config)
     if provider == "openai":
         # GDPR: opt out of OpenAI's 30-day prompt/response retention. Applies
         # to both Chat Completions and Responses API clients.
