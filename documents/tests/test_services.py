@@ -174,6 +174,45 @@ class SemanticChunkTests(TestCase):
         self.assertEqual(result[0]["text"], "Real content.")
         self.assertEqual(result[1]["text"], "More content.")
 
+    @unittest.skipIf(not LANGCHAIN_OPENAI_AVAILABLE, "langchain-openai not installed")
+    @patch("langchain_experimental.text_splitter.SemanticChunker")
+    @patch("langchain_openai.OpenAIEmbeddings")
+    def test_semantic_chunk_falls_back_when_embedding_fails(self, mock_embeddings_cls, mock_chunker_cls):
+        """When the embedding API errors (e.g. 429 out-of-credits), the split
+        degrades to a token-based fallback instead of raising."""
+        from documents.services.chunking import semantic_chunk
+
+        mock_chunker = MagicMock()
+        mock_chunker.create_documents.side_effect = RuntimeError(
+            "Error code: 429 - credit_balance_exhausted"
+        )
+        mock_chunker_cls.return_value = mock_chunker
+
+        text = "Row one of a table.\nRow two of a table.\nRow three of a table."
+        result = semantic_chunk(text)
+        # No exception, and every non-empty input yields at least one chunk.
+        self.assertGreaterEqual(len(result), 1)
+        self.assertTrue(all(c["text"].strip() for c in result))
+        self.assertEqual([c["chunk_index"] for c in result], list(range(len(result))))
+        # The original content survives the fallback.
+        self.assertIn("Row one", result[0]["text"])
+
+    @unittest.skipIf(not LANGCHAIN_OPENAI_AVAILABLE, "langchain-openai not installed")
+    @patch("langchain_experimental.text_splitter.SemanticChunker")
+    @patch("langchain_openai.OpenAIEmbeddings")
+    def test_semantic_chunk_falls_back_when_no_chunks(self, mock_embeddings_cls, mock_chunker_cls):
+        """A successful call that returns nothing usable still yields a chunk
+        for non-empty input (falls back rather than returning [])."""
+        from documents.services.chunking import semantic_chunk
+
+        mock_chunker = MagicMock()
+        mock_chunker.create_documents.return_value = []
+        mock_chunker_cls.return_value = mock_chunker
+
+        result = semantic_chunk("Some real content that must not vanish.")
+        self.assertEqual(len(result), 1)
+        self.assertIn("real content", result[0]["text"])
+
 
 class VectorStoreTests(TestCase):
     @patch("documents.services.vector_store._get_vector_store")

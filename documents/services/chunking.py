@@ -674,28 +674,80 @@ def structure_aware_chunk(text: str) -> list[dict[str, Any]]:
     return chunks
 
 
+def _fallback_chunk(text: str, target: int) -> list[dict[str, Any]]:
+    """Embedding-free splitter used when semantic chunking is unavailable.
+
+    Greedily groups lines under the ``target`` token budget so document
+    processing degrades gracefully instead of failing outright when the
+    embedding API is down, rate-limited, or out of credits. Line-based
+    grouping keeps table rows and list items intact for the common case
+    (an oversized table/list block delegated from structure_aware_chunk).
+    A single line longer than the target is emitted on its own.
+    """
+    chunks: list[dict[str, Any]] = []
+    current: list[str] = []
+    current_tokens = 0
+
+    def _flush() -> None:
+        nonlocal current, current_tokens
+        joined = "\n".join(current).strip()
+        if joined:
+            chunks.append({
+                "text": joined,
+                "token_count": _count_tokens(joined),
+                "chunk_index": len(chunks),
+            })
+        current = []
+        current_tokens = 0
+
+    for line in text.split("\n"):
+        line_tokens = _count_tokens(line)
+        if current and current_tokens + line_tokens > target:
+            _flush()
+        current.append(line)
+        current_tokens += line_tokens
+    _flush()
+
+    return chunks
+
+
 def semantic_chunk(text: str) -> list[dict[str, Any]]:
     """Split text into semantic chunks using embedding-based breakpoints.
 
     Uses SemanticChunker from langchain_experimental with OpenAI embeddings.
     Returns flat list of dicts: {text, token_count, chunk_index}.
+
+    If the embedding API is unavailable (e.g. 429 out-of-credits, timeout,
+    or provider outage), falls back to a deterministic token-based split so
+    document processing degrades gracefully rather than failing — mirroring
+    the non-critical handling of the separate vector-embedding step.
     """
     if not text.strip():
         return []
 
-    from langchain_experimental.text_splitter import SemanticChunker
-    from langchain_openai import OpenAIEmbeddings
+    from django.conf import settings
+    target = getattr(settings, "TARGET_CHUNK_TOKENS", 768)
 
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-large",
-    )
-    chunker = SemanticChunker(
-        embeddings,
-        breakpoint_threshold_type="percentile",
-        breakpoint_threshold_amount=90,
-    )
+    try:
+        from langchain_experimental.text_splitter import SemanticChunker
+        from langchain_openai import OpenAIEmbeddings
 
-    docs = chunker.create_documents([text])
+        embeddings = OpenAIEmbeddings(
+            model="text-embedding-3-large",
+        )
+        chunker = SemanticChunker(
+            embeddings,
+            breakpoint_threshold_type="percentile",
+            breakpoint_threshold_amount=90,
+        )
+        docs = chunker.create_documents([text])
+    except Exception as exc:
+        logger.warning(
+            "semantic_chunk: embedding split unavailable (%s); using token fallback",
+            exc,
+        )
+        return _fallback_chunk(text, target)
+
     chunks = []
     for doc in docs:
         chunk_text = doc.page_content.strip()
@@ -705,5 +757,10 @@ def semantic_chunk(text: str) -> list[dict[str, Any]]:
                 "token_count": _count_tokens(chunk_text),
                 "chunk_index": len(chunks),
             })
+
+    # A successful call that yields nothing usable also falls back so callers
+    # never receive an empty split for non-empty input.
+    if not chunks:
+        return _fallback_chunk(text, target)
 
     return chunks
