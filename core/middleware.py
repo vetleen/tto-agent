@@ -47,6 +47,39 @@ class RequestIDMiddleware:
             _request_id_var.reset(token)
 
 
+class CanonicalHostMiddleware:
+    """Permanent-redirect the ``www`` subdomain to the bare canonical host.
+
+    Active only when ``settings.CANONICAL_HOST`` is set (production sets it to
+    ``wilfred.work``). It fires for exactly one host — ``www.<CANONICAL_HOST>`` —
+    and 301s to the same URL on the bare domain, preserving scheme, path and
+    query string. Every other host passes straight through: the bare canonical
+    domain, ``*.herokuapp.com`` (the Heroku app URL / router health checks),
+    staging and localhost are untouched, so environments that leave the setting
+    empty behave exactly as before.
+
+    Placed right after ``SecurityMiddleware`` so the redirect happens before the
+    session/auth/DB stack runs. ``SecurityMiddleware``'s HTTP->HTTPS redirect
+    still goes first, so an ``http://www`` request costs two 301 hops
+    (http->https, then www->apex) — standard and cached by the browser.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from django.conf import settings
+
+        canonical = getattr(settings, "CANONICAL_HOST", "") or ""
+        if canonical and request.get_host().lower() == f"www.{canonical.lower()}":
+            from django.http import HttpResponsePermanentRedirect
+
+            return HttpResponsePermanentRedirect(
+                f"{request.scheme}://{canonical}{request.get_full_path()}"
+            )
+        return self.get_response(request)
+
+
 class SuspensionMiddleware:
     """Redirect suspended non-staff users to the suspended page.
 

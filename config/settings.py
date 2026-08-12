@@ -154,6 +154,11 @@ else:
     # Default: local dev + Heroku (*.herokuapp.com). Override with DJANGO_ALLOWED_HOSTS for custom domains.
     ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", ".herokuapp.com"]
 
+# Canonical host: when set, core.middleware.CanonicalHostMiddleware 301-redirects
+# www.<host> to the bare <host> (production sets DJANGO_CANONICAL_HOST=wilfred.work).
+# Empty (the default) disables the redirect, so local dev and staging are unaffected.
+CANONICAL_HOST = os.environ.get("DJANGO_CANONICAL_HOST", "").strip()
+
 INTERNAL_IPS = [
     "127.0.0.1",
 ]
@@ -255,6 +260,7 @@ if USING_ANYMAIL:
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "core.middleware.CanonicalHostMiddleware",
     "csp.middleware.CSPMiddleware",
     "core.middleware.RequestIDMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
