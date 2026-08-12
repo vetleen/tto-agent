@@ -1,8 +1,12 @@
-"""Tests for email block rendering in canvas export."""
+"""Tests for email block rendering and chat email-card controls."""
 
-from django.test import TestCase
+from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
+from django.urls import reverse
 
 from chat.services import EMAIL_BLOCK_RE, replace_email_with_html
+
+User = get_user_model()
 
 
 class EmailBlockRegexTests(TestCase):
@@ -132,3 +136,27 @@ class ReplaceEmailWithHtmlTests(TestCase):
         self.assertNotIn("```email", result)
         self.assertIn("a@b.com", result)
         self.assertIn("<table", result)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class EmailCopyUiTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="emailcopy@example.com", password="testpass"
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.client.force_login(self.user)
+
+    def test_chat_includes_clean_email_body_copy_action(self):
+        response = self.client.get(reverse("chat_home"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="email-copy-btn"')
+        self.assertContains(
+            response, "writeEmailBodyToClipboard(bodyEl.innerHTML, plainText)"
+        )
+        self.assertContains(response, "var copyDisabled = parsed.body ? '' : ' disabled'")
+        self.assertContains(response, "'text/html': htmlBlob")
+        self.assertContains(response, "'text/plain': textBlob")
+        self.assertContains(response, "clipboard.writeText(plainText)")
