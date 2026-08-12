@@ -323,7 +323,9 @@ See `.env.example` for the full list with comments. Key production variables:
 
 - `SESSION_COOKIE_SECURE=True` — HTTPS-only session cookies
 - `CSRF_COOKIE_SECURE=True` — HTTPS-only CSRF tokens
-- `SECURE_HSTS_SECONDS=3600` — HTTP Strict Transport Security
+- `SECURE_HSTS_SECONDS=31536000` — enforce HTTPS in browsers for one year
+- `SECURE_HSTS_INCLUDE_SUBDOMAINS=True` — apply HSTS to every subdomain
+- `SECURE_HSTS_PRELOAD=False` — deliberately not requesting browser preload-list inclusion
 - `SECURE_SSL_REDIRECT=True` — HTTP → HTTPS redirect
 
 ## First Deploy Gotchas
@@ -332,7 +334,7 @@ See `.env.example` for the full list with comments. Key production variables:
 
 **Secret key rotation:** The dev `SECRET_KEY` in `.env` must not be reused in production. Generate a fresh `DJANGO_SECRET_KEY` for Heroku config vars. Rotate any API keys that have appeared in the repo history.
 
-**HSTS max-age:** Currently set to 1 hour (`SECURE_HSTS_SECONDS=3600`). Bump to a longer duration (e.g., 31536000 / 1 year) once HTTPS is confirmed stable.
+**HSTS policy:** Production uses a one-year HSTS policy with `includeSubDomains` after HTTPS was verified on `wilfred.work` and `www.wilfred.work`. Provision valid HTTPS before creating any additional subdomain, including internal subdomains, because browsers that have visited the apex domain will require HTTPS for them. Keep `SECURE_HSTS_PRELOAD=False` unless the entire domain namespace has been inventoried, HTTPS has remained stable long-term, and the operational consequences described at [hstspreload.org](https://hstspreload.org/) are accepted. Enabling the directive alone does not add the domain to browser preload lists; submission is a separate, difficult-to-reverse step.
 
 ## Common Issues
 
