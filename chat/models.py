@@ -6,6 +6,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from chat.loop_defaults import DEFAULT_LOOP_MAX_RUNS
 from core.retention import RETENTION_PERIODS
 
 
@@ -183,10 +184,12 @@ class Loop(models.Model):
     next_run = models.DateTimeField(db_index=True)
 
     # --- Run limits / state ---
-    # Optional run cap. NULL means "unlimited" — the loop runs until the user
-    # pauses it (the default for new loops). A positive integer makes the loop
+    # Optional run cap. New loops default to a finite safety cap; NULL remains
+    # an explicit "unlimited" opt-out. A positive integer makes the loop
     # auto-pause once ``runs_completed`` reaches it.
-    max_runs = models.PositiveIntegerField(null=True, blank=True, default=None)
+    max_runs = models.PositiveIntegerField(
+        null=True, blank=True, default=DEFAULT_LOOP_MAX_RUNS,
+    )
     runs_completed = models.PositiveIntegerField(default=0)
     status = models.CharField(
         max_length=8, choices=Status.choices, default=Status.ACTIVE, db_index=True,

@@ -13,6 +13,7 @@ import uuid as uuid_mod
 
 from pydantic import BaseModel, Field
 
+from chat.loop_defaults import DEFAULT_LOOP_MAX_RUNS
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 
@@ -117,8 +118,11 @@ class LoopCreateInput(ReasonBaseModel):
     )
     model: str = Field(default="", description="Model ID for the loop's turns. Omit for the preferred chat model.")
     max_runs: int | None = Field(
-        default=None,
-        description="Auto-pause the loop after this many runs. Omit or 0 for unlimited (runs until paused).",
+        default=DEFAULT_LOOP_MAX_RUNS,
+        description=(
+            "Auto-pause the loop after this many successful runs. Defaults to 50; "
+            "pass 0 or null for unlimited (runs until paused)."
+        ),
     )
 
 
@@ -153,7 +157,7 @@ class LoopCreateTool(ContextAwareTool):
         clock_weekday: int = 0, history_mode: str = "fresh",
         first_run_mode: str = "now", first_run_at: str = "", tz: str = "",
         data_room_ids: list | None = None, skill_ids: list | None = None, model: str = "",
-        max_runs: int | None = None, **kwargs,
+        max_runs: int | None = DEFAULT_LOOP_MAX_RUNS, **kwargs,
     ) -> str:
         from chat.loop_service import create_loop
 

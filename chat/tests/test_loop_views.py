@@ -38,6 +38,8 @@ class LoopViewTests(TestCase):
         resp = self.client.get(reverse("loops_list"))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Loops")
+        self.assertEqual(resp.context["default_loop_max_runs"], 50)
+        self.assertContains(resp, 'id="loop-maxruns-unlimited"')
 
     def test_create_makes_loop_and_thread(self):
         resp = self._create()
@@ -49,9 +51,9 @@ class LoopViewTests(TestCase):
         self.assertEqual(loop.interval_seconds, 6 * 3600)
         self.assertEqual(loop.history_mode, "fresh")
         self.assertTrue(ChatThread.objects.filter(id=data["thread_id"]).exists())
-        # No run cap by default: the loop runs until paused.
-        self.assertIsNone(data["max_runs"])
-        self.assertIsNone(loop.max_runs)
+        # New loops have a finite safety cap unless the user opts out.
+        self.assertEqual(data["max_runs"], 50)
+        self.assertEqual(loop.max_runs, 50)
 
     def test_create_with_max_runs_sets_cap(self):
         resp = self._create(max_runs=25)
@@ -64,6 +66,20 @@ class LoopViewTests(TestCase):
         data = resp.json()
         self.assertIsNone(data["max_runs"])
         self.assertIsNone(Loop.objects.get(id=data["loop_id"]).max_runs)
+
+    def test_create_null_max_runs_is_unlimited(self):
+        resp = self._create(max_runs=None)
+        data = resp.json()
+        self.assertIsNone(data["max_runs"])
+        self.assertIsNone(Loop.objects.get(id=data["loop_id"]).max_runs)
+
+    def test_create_rejects_invalid_max_runs(self):
+        for value in (-1, 1.5, "forever"):
+            with self.subTest(value=value):
+                resp = self._create(max_runs=value)
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn("Run limit must be", resp.json()["error"])
+        self.assertEqual(Loop.objects.count(), 0)
 
     def test_create_requires_prompt(self):
         resp = self._create(prompt="   ")
@@ -103,6 +119,21 @@ class LoopViewTests(TestCase):
         self.assertEqual(loop.prompt, "New prompt.")
         self.assertEqual(loop.history_mode, "conversational")
         self.assertEqual(loop.interval_seconds, 2 * 3600)
+        self.assertEqual(loop.max_runs, 50)  # omitted on edit preserves the cap
+
+    def test_edit_omitting_max_runs_preserves_unlimited(self):
+        loop_id = self._create(max_runs=None).json()["loop_id"]
+        resp = self.client.post(
+            reverse("loop_edit", args=[loop_id]),
+            data=json.dumps({
+                "prompt": "Still unlimited.", "history_mode": "fresh",
+                "cadence_kind": "interval", "interval_value": 2,
+                "interval_unit": "hours", "first_run_mode": "keep",
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(Loop.objects.get(id=loop_id).max_runs)
 
     def test_edit_keep_preserves_next_run(self):
         loop_id = self._create().json()["loop_id"]

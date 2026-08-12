@@ -17,6 +17,7 @@ from asgiref.sync import async_to_sync
 from django.utils import timezone
 
 from chat.consumers import ChatConsumer
+from chat.loop_defaults import DEFAULT_LOOP_MAX_RUNS
 from chat.loop_schedule import next_run_for_loop
 from chat.sinks import BroadcastSink
 
@@ -229,16 +230,25 @@ def _parse_int(value, *, default, lo, hi):
 def _parse_max_runs(value):
     """Normalize a run-cap payload value into ``int >= 1`` or ``None``.
 
-    ``None``, ``""``, ``0``, the string ``"unlimited"``, and anything
-    unparseable all mean "no cap" (the loop runs until paused).
+    ``None``, ``""``, ``0``, and the string ``"unlimited"`` mean "no cap"
+    (the loop runs until paused). Other invalid values are rejected so a typo
+    can never silently remove the safety cap.
     """
-    if value in (None, "", "unlimited"):
+    if value is None or value == "" or value == 0:
         return None
+    if isinstance(value, str) and value.lower() == "unlimited":
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("Run limit must be a positive whole number or unlimited.")
     try:
         n = int(value)
     except (TypeError, ValueError):
+        raise ValueError("Run limit must be a positive whole number or unlimited.")
+    if n == 0:
         return None
-    return n if n >= 1 else None
+    if n < 0:
+        raise ValueError("Run limit must be a positive whole number or unlimited.")
+    return n
 
 
 def _parse_hhmm(value):
@@ -268,7 +278,7 @@ def _parse_local_dt(value, tz_name, now):
         return None
 
 
-def _build_loop_fields(body, *, now, tz_name):
+def _build_loop_fields(body, *, now, tz_name, default_max_runs):
     """Validate + normalize a loop create/edit payload into model field values.
 
     Returns ``(fields, errors)``. ``fields`` is a dict ready to splat onto a
@@ -345,9 +355,15 @@ def _build_loop_fields(body, *, now, tz_name):
     else:
         next_run = now
 
-    # Run cap is optional: an integer >= 1 auto-pauses the loop at that many
-    # runs; None (the default) means it runs until the user pauses it.
-    max_runs = _parse_max_runs(body.get("max_runs"))
+    # A missing value uses the caller's context-sensitive default: 50 for a
+    # create, or the stored value for an edit. Explicit unlimited values remain
+    # NULL. This distinction is lost if ``body.get`` is used without a default.
+    raw_max_runs = body["max_runs"] if "max_runs" in body else default_max_runs
+    try:
+        max_runs = _parse_max_runs(raw_max_runs)
+    except ValueError as exc:
+        errors.append(str(exc))
+        max_runs = default_max_runs
 
     fields = {
         "prompt": prompt,
@@ -440,7 +456,10 @@ def create_loop(*, user, body, now, tz_name):
 
     from chat.models import ChatThread, Loop
 
-    fields, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
+    fields, errors = _build_loop_fields(
+        body, now=now, tz_name=tz_name,
+        default_max_runs=DEFAULT_LOOP_MAX_RUNS,
+    )
     if errors:
         return None, errors
     if fields["next_run"] is None:  # "keep" has no meaning on create
@@ -467,7 +486,9 @@ def update_loop(*, loop, user, body, now, tz_name):
     """
     from chat.models import Loop
 
-    fields, errors = _build_loop_fields(body, now=now, tz_name=tz_name)
+    fields, errors = _build_loop_fields(
+        body, now=now, tz_name=tz_name, default_max_runs=loop.max_runs,
+    )
     if errors:
         return None, errors
 

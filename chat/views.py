@@ -1637,6 +1637,7 @@ def loops_list(request):
     from django.conf import settings as django_settings
     from django.db.models import F
 
+    from chat.loop_defaults import DEFAULT_LOOP_MAX_RUNS
     from chat.loop_service import _loop_form_json
     from chat.models import Loop
     from core.preferences import get_preferences
@@ -1677,6 +1678,7 @@ def loops_list(request):
         "model_choices_json": model_choices,
         "preferred_chat_model": preferred_chat_model,
         "preferred_chat_model_display": get_display_name(preferred_chat_model),
+        "default_loop_max_runs": DEFAULT_LOOP_MAX_RUNS,
         "loops_json": loops_json,
         "assistant_name": django_settings.ASSISTANT_NAME,
         # /loop prefill / deep-links

@@ -176,13 +176,24 @@
               </div>
             </div>
 
-            {# Run cap — mirrors the memory line; click the value to set or clear a limit #}
-            <div style="margin-top:16px;display:flex;align-items:center;flex-wrap:wrap;gap:7px;">
-              <span style="font-size:13.5px;color:var(--color-body-subtle);">Runs for</span>
-              <button type="button" data-act="editMaxRuns" id="loop-maxruns-btn" style="font-family:var(--font-sans);font-size:13.5px;font-weight:600;color:var(--color-fg-brand);background:transparent;border:0;border-bottom:1.5px dotted var(--color-forest-400);padding:0 1px 1px;cursor:pointer;">unlimited</button>
-              <input type="number" min="1" id="loop-maxruns-input" inputmode="numeric" placeholder="∞" style="display:none;width:72px;font-family:var(--font-mono);font-size:13.5px;color:var(--color-heading);background:var(--color-neutral-primary-soft);border:1px solid var(--color-brand-subtle);border-radius:6px;padding:2px 8px;box-shadow:var(--shadow-inset);">
-              <span style="font-size:13.5px;color:var(--color-body-subtle);">turns</span>
-            </div>
+            {# Run cap — finite by default, with an explicit unlimited opt-out. #}
+            <fieldset style="margin-top:16px;border:0;padding:0;">
+              <legend style="font-size:13.5px;color:var(--color-body-subtle);margin-bottom:8px;">Run limit</legend>
+              <div style="display:flex;align-items:center;flex-wrap:wrap;gap:9px;">
+                <label style="display:inline-flex;align-items:center;gap:5px;font-size:13.5px;color:var(--color-body);cursor:pointer;">
+                  <input type="radio" name="loop-run-limit" id="loop-maxruns-limited" value="limited" checked style="accent-color:var(--color-brand);">
+                  Limited to
+                </label>
+                <span id="loop-maxruns-value-wrap" style="display:inline-flex;align-items:center;gap:6px;">
+                  <input type="number" min="1" step="1" required id="loop-maxruns-input" inputmode="numeric" value="{{ default_loop_max_runs }}" aria-label="Maximum loop runs" style="width:72px;font-family:var(--font-mono);font-size:13.5px;color:var(--color-heading);background:var(--color-neutral-primary-soft);border:1px solid var(--color-brand-subtle);border-radius:6px;padding:2px 8px;box-shadow:var(--shadow-inset);">
+                  <span style="font-size:13.5px;color:var(--color-body-subtle);">runs</span>
+                </span>
+                <label style="display:inline-flex;align-items:center;gap:5px;font-size:13.5px;color:var(--color-body);cursor:pointer;">
+                  <input type="radio" name="loop-run-limit" id="loop-maxruns-unlimited" value="unlimited" style="accent-color:var(--color-brand);">
+                  Unlimited
+                </label>
+              </div>
+            </fieldset>
           </div>
 
           {# Memory #}
@@ -244,6 +255,7 @@
   var SKILLS = JSON.parse(document.getElementById('skills-data').textContent);
   var MODEL_CHOICES = JSON.parse(document.getElementById('model-choices-data').textContent);
   var PREFERRED_MODEL = "{{ preferred_chat_model|escapejs }}";
+  var DEFAULT_LOOP_MAX_RUNS = {{ default_loop_max_runs }};
   var UUID0 = '00000000-0000-0000-0000-000000000000';
   var CREATE_URL = "{% url 'loop_create' %}";
   var EDIT_URL_TPL = "{% url 'loop_edit' loop_id='00000000-0000-0000-0000-000000000000' %}";
@@ -261,8 +273,10 @@
   var submitBtn = document.getElementById('loop-submit');
   var submitLabel = document.getElementById('loop-submit-label');
   var pauseBtn = document.getElementById('loop-pause');
-  var maxRunsBtn = document.getElementById('loop-maxruns-btn');
   var maxRunsInput = document.getElementById('loop-maxruns-input');
+  var maxRunsLimited = document.getElementById('loop-maxruns-limited');
+  var maxRunsUnlimited = document.getElementById('loop-maxruns-unlimited');
+  var maxRunsValueWrap = document.getElementById('loop-maxruns-value-wrap');
   var segEls = Array.prototype.slice.call(modal.querySelectorAll('.wf-seg'));
   var dayEls = Array.prototype.slice.call(modal.querySelectorAll('.wf-daybtn'));
   function el(id) { return document.getElementById(id); }
@@ -270,7 +284,7 @@
 
   // ---- state ----
   var MAX_LOOP_SKILLS = 5;
-  var S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: null, model: PREFERRED_MODEL };
+  var S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: DEFAULT_LOOP_MAX_RUNS, lastFiniteMaxRuns: DEFAULT_LOOP_MAX_RUNS, model: PREFERRED_MODEL };
 
   // ---- schedule math (preview only; server is authoritative) ----
   function clampN(n) { return Math.max(1, Math.min(99, n)); }
@@ -354,31 +368,39 @@
       b.style.borderColor = on ? 'var(--color-copper-400)' : 'var(--color-default-subtle)';
     });
     el('loop-memory-btn').textContent = S.memory === 'fresh' ? 'wiped clean' : 'kept';
-    maxRunsBtn.textContent = S.maxRuns == null ? 'unlimited' : String(S.maxRuns);
+    var unlimited = S.maxRuns == null;
+    maxRunsLimited.checked = !unlimited;
+    maxRunsUnlimited.checked = unlimited;
+    maxRunsInput.disabled = unlimited;
+    maxRunsValueWrap.style.display = unlimited ? 'none' : 'inline-flex';
+    if (!unlimited) maxRunsInput.value = String(S.maxRuns);
     var lbl = el('loop-model-label');
     if (lbl) { var mc = MODEL_CHOICES.filter(function (m) { return m.id === S.model; })[0]; lbl.textContent = mc ? mc.display : (S.model || 'default'); lbl.title = lbl.textContent; }
     renderChips(); renderPreview(); updateSubmitDisabled();
   }
 
-  // ---- run cap inline editor (swaps the value for a number input) ----
-  function startEditMaxRuns() {
-    maxRunsInput.value = S.maxRuns == null ? '' : String(S.maxRuns);
-    maxRunsBtn.style.display = 'none';
-    maxRunsInput.style.display = 'inline-block';
-    maxRunsInput.focus(); maxRunsInput.select();
-  }
-  function commitMaxRuns() {
-    var v = parseInt(maxRunsInput.value, 10);
-    S.maxRuns = (!isNaN(v) && v >= 1) ? v : null;  // blank / 0 / invalid → unlimited
-    maxRunsInput.style.display = 'none';
-    maxRunsBtn.style.display = '';
-    render();
-  }
-  maxRunsInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); maxRunsInput.blur(); }
-    else if (e.key === 'Escape') { e.preventDefault(); maxRunsInput.value = S.maxRuns == null ? '' : String(S.maxRuns); maxRunsInput.blur(); }
+  // ---- run cap ----
+  maxRunsInput.addEventListener('input', function () {
+    var v = Number(maxRunsInput.value);
+    if (Number.isInteger(v) && v >= 1) {
+      S.maxRuns = v;
+      S.lastFiniteMaxRuns = v;
+      renderPreview();
+    }
   });
-  maxRunsInput.addEventListener('blur', commitMaxRuns);
+  maxRunsLimited.addEventListener('change', function () {
+    if (!maxRunsLimited.checked) return;
+    S.maxRuns = S.lastFiniteMaxRuns || DEFAULT_LOOP_MAX_RUNS;
+    render();
+    maxRunsInput.focus(); maxRunsInput.select();
+  });
+  maxRunsUnlimited.addEventListener('change', function () {
+    if (!maxRunsUnlimited.checked) return;
+    var v = Number(maxRunsInput.value);
+    if (Number.isInteger(v) && v >= 1) S.lastFiniteMaxRuns = v;
+    S.maxRuns = null;
+    render();
+  });
 
   // ---- menus ----
   function menuItem(act, id, label) { return '<button type="button" class="wf-menuitem" data-act="' + act + '" data-id="' + escapeHtml(String(id)) + '" style="display:block;width:100%;text-align:left;font-family:var(--font-sans);font-size:13px;color:var(--color-body);background:transparent;border:0;border-radius:5px;padding:8px 10px;cursor:pointer;">' + escapeHtml(label) + '</button>'; }
@@ -422,7 +444,7 @@
     else { S.preset = 'Custom'; S.unit = 'minutes'; S.n = Math.max(1, Math.round(secs / 60)); }
   }
   function openCreate(prefill) {
-    S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: null, model: PREFERRED_MODEL };
+    S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: 'fresh', maxRuns: DEFAULT_LOOP_MAX_RUNS, lastFiniteMaxRuns: DEFAULT_LOOP_MAX_RUNS, model: PREFERRED_MODEL };
     form.dataset.loopId = ''; form.dataset.restart = '';
     el('loop-modal-title').textContent = 'Create new loop';
     submitLabel.textContent = 'Create loop';
@@ -430,12 +452,12 @@
     ta.value = (prefill && prefill.prompt) || '';
     if (prefill && prefill.intervalSeconds) applyInterval(prefill.intervalSeconds);
     timeInput.value = S.time;
-    maxRunsInput.style.display = 'none'; maxRunsBtn.style.display = '';
     render(); show();
   }
   function openEdit(id) {
     var d = LOOPS[id]; if (!d) return;
-    S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: d.history_mode || 'fresh', maxRuns: (d.max_runs || null), model: d.model || PREFERRED_MODEL };
+    var storedMaxRuns = d.max_runs == null ? null : d.max_runs;
+    S = { rooms: [], skills: [], preset: 'Daily', n: 6, unit: 'hours', time: '09:00', weekday: 0, memory: d.history_mode || 'fresh', maxRuns: storedMaxRuns, lastFiniteMaxRuns: storedMaxRuns || DEFAULT_LOOP_MAX_RUNS, model: d.model || PREFERRED_MODEL };
     form.dataset.loopId = id;
     var paused = d.status === 'paused';
     form.dataset.restart = paused ? '1' : '';
@@ -453,7 +475,6 @@
     (d.data_room_ids || []).forEach(function (pk) { var r = DATA_ROOMS.find(function (x) { return x.id === pk; }); if (r) S.rooms.push({ id: r.id, name: r.name }); });
     (d.skill_ids || []).forEach(function (sid) { var s = SKILLS.find(function (x) { return String(x.id) === String(sid); }); if (s && S.skills.length < MAX_LOOP_SKILLS) S.skills.push({ id: s.id, name: s.name, emoji: s.emoji }); });
     timeInput.value = S.time;
-    maxRunsInput.style.display = 'none'; maxRunsBtn.style.display = '';
     render(); show();
   }
 
@@ -527,7 +548,6 @@
     if (a === 'cycleUnit') { var U = ['minutes', 'hours', 'days']; S.unit = U[(U.indexOf(S.unit) + 1) % 3]; render(); return; }
     if (a === 'setDay') { S.weekday = parseInt(t.dataset.day, 10); render(); return; }
     if (a === 'toggleMemory') { S.memory = S.memory === 'fresh' ? 'conversational' : 'fresh'; render(); return; }
-    if (a === 'editMaxRuns') { startEditMaxRuns(); return; }
   });
   modal.addEventListener('mousedown', function (e) {
     if (e.target.hasAttribute('data-loop-scrim') || e.target.hasAttribute('data-loop-overlay')) hide();

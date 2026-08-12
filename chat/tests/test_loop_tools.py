@@ -119,9 +119,16 @@ class CreateLoopToolTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(Loop.objects.count(), 0)
 
-    def test_create_defaults_to_unlimited(self):
-        # No run cap unless the agent asks for one.
-        result = _invoke(LoopCreateTool, {"prompt": "Run forever."}, self.ctx)
+    def test_create_defaults_to_fifty_runs(self):
+        result = _invoke(LoopCreateTool, {"prompt": "Use the default cap."}, self.ctx)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["max_runs"], 50)
+        self.assertEqual(Loop.objects.get(id=result["loop_id"]).max_runs, 50)
+
+    def test_create_with_zero_max_runs_is_unlimited(self):
+        result = _invoke(LoopCreateTool, {
+            "prompt": "Run until stopped.", "max_runs": 0,
+        }, self.ctx)
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(result["max_runs"])
         self.assertIsNone(Loop.objects.get(id=result["loop_id"]).max_runs)
