@@ -9,7 +9,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentVersion
@@ -273,3 +273,34 @@ class ScanDispatchRetryRecoveryTests(TestCase):
         self.assertEqual(version.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
         self.assertEqual(version.requeue_count, 1)
         mock_delay.assert_called_once_with(doc.current_version_id)
+
+
+@override_settings(
+    CACHES={"default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "kick-test",
+    }}
+)
+class FinalizeRecoveryKickTests(TestCase):
+    """A successful finalize opportunistically kicks the sweeper (Option 2), throttled
+    to ~once/45s so a draining batch fires it roughly once rather than per-document."""
+
+    @patch("documents.tasks.requeue_stale_documents.delay")
+    @patch("documents.tasks.finalize_version")  # no-op the real finalize body
+    def test_finalize_kick_fires_once_then_throttles(self, _mock_final, mock_requeue):
+        from django.core.cache import cache
+        from documents.tasks import finalize_document_metadata
+
+        cache.clear()
+        finalize_document_metadata(1)  # throttle key free → kicks recovery
+        finalize_document_metadata(2)  # key held → skipped
+        self.assertEqual(mock_requeue.call_count, 1)
+
+    @patch("documents.tasks.requeue_stale_documents.delay", side_effect=RuntimeError("broker down"))
+    @patch("documents.tasks.finalize_version")
+    def test_finalize_survives_kick_dispatch_failure(self, _mock_final, _mock_requeue):
+        from django.core.cache import cache
+        from documents.tasks import finalize_document_metadata
+
+        cache.clear()
+        # A broker blip on the recovery kick must not propagate out of finalize.
+        finalize_document_metadata(1)

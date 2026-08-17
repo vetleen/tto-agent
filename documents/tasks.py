@@ -195,7 +195,10 @@ def requeue_stale_documents() -> int:
             _mirror_doc_status([version_id], Status.SCANNING, now, error="")
             try:
                 scan_document_version.delay(version_id)
-                logger.warning(
+                # INFO, not WARNING: a routine, successful auto-recovery — logging it
+                # at WARNING floods Sentry (WILFRED-6Z). The exhausted/failed paths
+                # below stay at WARNING.
+                logger.info(
                     "requeue_stale_documents: version_id=%s scan re-dispatched", version_id,
                 )
                 handled += 1
@@ -259,6 +262,20 @@ def finalize_document_metadata(self, version_id: int) -> None:
         raise self.retry(countdown=30 * (2 ** self.request.retries))
 
     finalize_version(version_id, eager=False, on_pii_retry=_on_pii_retry)
+
+    # Event-driven recovery: a successful finalize means the broker is healthy and a
+    # worker slot is freeing, so opportunistically sweep any scan-retry stragglers as
+    # a batch drains — much faster than waiting for the 5-min beat. Throttled to
+    # ~once/45s via a fail-open cache lock: if Redis is down, add() returns False and
+    # we skip (recovery should only fire when Redis is reachable anyway). Best-effort —
+    # a broker blip on the dispatch must not fail this finalize.
+    try:
+        from django.core.cache import cache
+
+        if cache.add("scan_retry_recover_kick", "1", 45):
+            requeue_stale_documents.delay()
+    except Exception:
+        logger.debug("finalize_document_metadata: recovery kick skipped", exc_info=True)
 
 
 def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None) -> None:
