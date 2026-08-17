@@ -724,7 +724,10 @@ CHANNEL_LAYERS = {
 # Cache (Redis DB 1; DB 0 is Celery/channels)
 _cache_redis_base = _redis_url.rsplit("/", 1)[0] if "/" in _redis_url.split("://", 1)[-1] else _redis_url
 _cache_config: dict = {
-    "BACKEND": "django.core.cache.backends.redis.RedisCache",
+    # Fail-open subclass of the built-in RedisCache: a transient Redis blip (the
+    # shared 20-connection Mini cap being briefly exceeded) degrades a cache read
+    # to a miss instead of 500-ing the request. See core/cache.py.
+    "BACKEND": "core.cache.ResilientRedisCache",
     "LOCATION": f"{_cache_redis_base}/1",
 }
 if _redis_is_tls:
