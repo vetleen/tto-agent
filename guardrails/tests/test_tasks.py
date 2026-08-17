@@ -134,9 +134,11 @@ class ScanDocumentChunksTest(TestCase):
         )
         self.mock_finalize.assert_called_once_with(self.version.id)
 
-    def test_finalize_handoff_failure_marks_scan_failed(self):
-        """If the finalize dispatch fails, the held document fails closed (SCAN_FAILED)."""
+    def test_finalize_handoff_failure_marks_scan_failed_with_retry_marker(self):
+        """A finalize-dispatch (broker) failure fails closed but with the transient
+        retry marker, so requeue_stale_documents auto-retries it."""
         from guardrails.tasks import scan_document_version
+        from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
 
         self.document.status = DataRoomDocument.Status.SCANNING
         self.document.save(update_fields=["status"])
@@ -146,7 +148,10 @@ class ScanDocumentChunksTest(TestCase):
         scan_document_version(self.version.id)
 
         self.document.refresh_from_db()
+        self.version.refresh_from_db()
         self.assertEqual(self.document.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(self.version.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(self.version.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
 
     @patch("guardrails.tasks._scan_chunks_for_version", side_effect=RuntimeError("boom"))
     def test_scan_failure_marks_scan_failed_and_skips_finalize(self, _mock_scan):

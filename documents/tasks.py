@@ -62,7 +62,7 @@ def requeue_stale_documents() -> int:
 
     from documents.models import DataRoomDocument, DataRoomDocumentVersion
     from documents.services.process_document import STALE_PROCESSING_MINUTES
-    from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+    from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE, SCAN_FAILED_MESSAGE
 
     Status = DataRoomDocument.Status
     now = timezone.now()
@@ -98,7 +98,7 @@ def requeue_stale_documents() -> int:
                     processing_error="Processing was interrupted repeatedly and has been stopped.",
                     updated_at=now,
                 )
-                _mirror_terminal_doc_status(failed_ids, Status.FAILED, now)
+                _mirror_doc_status(failed_ids, Status.FAILED, now)
                 logger.warning(
                     "requeue_stale_documents: %s version(s) exceeded %s requeues, marked FAILED",
                     len(failed_ids), MAX_REQUEUES,
@@ -135,12 +135,85 @@ def requeue_stale_documents() -> int:
                 processing_error=SCAN_FAILED_MESSAGE,
                 updated_at=now,
             )
-            _mirror_terminal_doc_status(stuck_ids, Status.SCAN_FAILED, now, error=SCAN_FAILED_MESSAGE)
+            _mirror_doc_status(stuck_ids, Status.SCAN_FAILED, now, error=SCAN_FAILED_MESSAGE)
             logger.warning(
                 "requeue_stale_documents: %s version(s) stuck in SCANNING marked SCAN_FAILED",
                 len(stuck_ids),
             )
             handled += len(stuck_ids)
+
+        # Transient scan-dispatch failures self-heal: versions the dispatch sites
+        # marked SCAN_FAILED only because the broker was briefly unreachable
+        # (SCAN_DISPATCH_RETRY_MESSAGE) are re-dispatched here once it's healthy,
+        # bounded by requeue_count. Recovery mirrors documents.views.document_rescan.
+        from guardrails.tasks import scan_document_version
+
+        retry_marked = Q(
+            status=Status.SCAN_FAILED, processing_error=SCAN_DISPATCH_RETRY_MESSAGE,
+        )
+        # Retries exhausted → terminal (the generic message stops the sweeper from
+        # picking it up again; the user can still rescan manually).
+        exhausted_scan_ids = list(
+            DataRoomDocumentVersion.objects.filter(
+                retry_marked, requeue_count__gte=MAX_REQUEUES,
+            ).values_list("pk", flat=True)
+        )
+        if exhausted_scan_ids:
+            DataRoomDocumentVersion.objects.filter(pk__in=exhausted_scan_ids).update(
+                status=Status.SCAN_FAILED,
+                processing_error=SCAN_FAILED_MESSAGE,
+                updated_at=now,
+            )
+            _mirror_doc_status(
+                exhausted_scan_ids, Status.SCAN_FAILED, now, error=SCAN_FAILED_MESSAGE,
+            )
+            logger.warning(
+                "requeue_stale_documents: %s scan-dispatch retries exhausted, marked SCAN_FAILED",
+                len(exhausted_scan_ids),
+            )
+            handled += len(exhausted_scan_ids)
+
+        # Retryable → reset to SCANNING and re-dispatch the scan.
+        retry_scan_ids = list(
+            DataRoomDocumentVersion.objects.filter(
+                retry_marked, requeue_count__lt=MAX_REQUEUES,
+            ).values_list("pk", flat=True)
+        )
+        for version_id in retry_scan_ids:
+            # Re-check the marker at write time and claim a retry slot. Set SCANNING
+            # BEFORE dispatch — finalize's release is gated on status=SCANNING.
+            claimed = DataRoomDocumentVersion.objects.filter(
+                retry_marked, pk=version_id, requeue_count__lt=MAX_REQUEUES,
+            ).update(
+                status=Status.SCANNING,
+                processing_error=None,
+                requeue_count=F("requeue_count") + 1,
+                updated_at=now,
+            )
+            if not claimed:
+                continue
+            _mirror_doc_status([version_id], Status.SCANNING, now, error="")
+            try:
+                scan_document_version.delay(version_id)
+                logger.warning(
+                    "requeue_stale_documents: version_id=%s scan re-dispatched", version_id,
+                )
+                handled += 1
+            except Exception:
+                # Broker still down — revert to the retry marker so the next tick
+                # retries; the requeue_count increment above bounds a long outage.
+                DataRoomDocumentVersion.objects.filter(pk=version_id).update(
+                    status=Status.SCAN_FAILED,
+                    processing_error=SCAN_DISPATCH_RETRY_MESSAGE,
+                    updated_at=now,
+                )
+                _mirror_doc_status(
+                    [version_id], Status.SCAN_FAILED, now, error=SCAN_DISPATCH_RETRY_MESSAGE,
+                )
+                logger.warning(
+                    "requeue_stale_documents: version_id=%s scan re-dispatch failed; will retry next tick",
+                    version_id,
+                )
     except (OperationalError, InterfaceError):
         logger.info(
             "Skipping stale document sweep: database temporarily unavailable; "
@@ -152,12 +225,13 @@ def requeue_stale_documents() -> int:
     return handled
 
 
-def _mirror_terminal_doc_status(version_ids, status, now, error=None):
-    """Mirror a terminal version status onto documents that have no live version yet.
+def _mirror_doc_status(version_ids, status, now, error=None):
+    """Mirror a version status onto documents that have no live version yet.
 
     Only fresh uploads (active_searchable_version is None) whose current_version is
     one of these versions are mirrored — an edit that fails leaves the previously
-    live version untouched, so the document is not "stuck".
+    live version untouched, so the document is not "stuck". Used for both terminal
+    states and the transient SCANNING re-dispatch (pass ``error=""`` to clear it).
     """
     from documents.models import DataRoomDocument
 

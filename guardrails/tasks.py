@@ -105,11 +105,15 @@ def scan_document_version(self, version_id: int) -> None:
         from documents.tasks import finalize_document_metadata
         finalize_document_metadata.delay(version_id)
     except Exception:
+        # The scan itself is done; only the hand-off dispatch failed. A broker blip
+        # is transient — mark with the retry marker so requeue_stale_documents
+        # re-dispatches once the broker recovers (bounded), not a terminal failure.
+        from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
         logger.exception(
-            "scan_document_version: finalize hand-off failed version_id=%s; marking scan_failed",
+            "scan_document_version: finalize hand-off failed version_id=%s; marking scan_failed (auto-retry)",
             version_id,
         )
-        _mark_scan_failed(version_id)
+        _mark_scan_failed(version_id, message=SCAN_DISPATCH_RETRY_MESSAGE)
 
 
 def _scan_chunks_for_version(version) -> None:
@@ -565,20 +569,25 @@ def _build_neighbor_context(version_id: int, chunk_index: int, snippet_chars: in
     return "\n\n".join(parts)
 
 
-def _mark_scan_failed(version_id: int) -> None:
+def _mark_scan_failed(version_id: int, message: str | None = None) -> None:
     """Fail a held version closed. Conditional update — a no-op if the version
     already left SCANNING (deleted, or released by another path), mirroring
-    ``finalize_document_metadata._mark_scan_failed``."""
+    ``finalize_document_metadata._mark_scan_failed``.
+
+    ``message`` overrides the processing_error (e.g. the transient dispatch-retry
+    marker so the sweeper auto-retries); defaults to the terminal SCAN_FAILED_MESSAGE.
+    """
     from django.utils import timezone
 
     from documents.models import DataRoomDocument, DataRoomDocumentVersion
     from documents.services.pii_scan import SCAN_FAILED_MESSAGE
 
+    msg = message or SCAN_FAILED_MESSAGE
     updated = DataRoomDocumentVersion.objects.filter(
         pk=version_id, status=DataRoomDocument.Status.SCANNING,
     ).update(
         status=DataRoomDocument.Status.SCAN_FAILED,
-        processing_error=SCAN_FAILED_MESSAGE,
+        processing_error=msg,
         updated_at=timezone.now(),
     )
     if updated:
@@ -587,7 +596,7 @@ def _mark_scan_failed(version_id: int) -> None:
         if version and version.document.active_searchable_version_id in (None, version_id):
             DataRoomDocument.objects.filter(pk=version.document_id).update(
                 status=DataRoomDocument.Status.SCAN_FAILED,
-                processing_error=SCAN_FAILED_MESSAGE,
+                processing_error=msg,
                 updated_at=timezone.now(),
             )
 

@@ -101,6 +101,12 @@ convictions, charges, or offences.
 # Shown as processing_error when a gated document's PII scan can't run/complete.
 SCAN_FAILED_MESSAGE = "Couldn't check this document for sensitive data — retry the scan."
 
+# processing_error marker for a scan that failed only because the Celery broker was
+# briefly unreachable at dispatch (not a real scan failure). requeue_stale_documents
+# auto-retries versions carrying this message; exhausting the retries converts it to
+# the terminal SCAN_FAILED_MESSAGE.
+SCAN_DISPATCH_RETRY_MESSAGE = "Couldn't reach the scanner — retrying automatically."
+
 # All category field names, in schema order
 PII_CATEGORIES = [
     "pii_ordinary_identity",

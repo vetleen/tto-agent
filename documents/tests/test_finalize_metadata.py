@@ -594,12 +594,15 @@ class ProcessDocumentGateTests(TestCase):
         self.assertIsNone(doc.processing_error)
 
     @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
-    def test_scan_dispatch_failure_marks_scan_failed(self):
-        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+    def test_scan_dispatch_failure_marks_scan_failed_with_retry_marker(self):
+        # A broker blip at dispatch is transient: the version fails closed but with
+        # the retry marker so requeue_stale_documents auto-retries it (B-robust),
+        # rather than the terminal SCAN_FAILED_MESSAGE.
+        from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
 
         doc = self._run_process(MagicMock(side_effect=RuntimeError("broker down")))
         self.assertEqual(doc.status, DataRoomDocument.Status.SCAN_FAILED)
-        self.assertEqual(doc.processing_error, SCAN_FAILED_MESSAGE)
+        self.assertEqual(doc.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
 
 
 class ScanGateTransitionTests(TestCase):

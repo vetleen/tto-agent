@@ -358,12 +358,15 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
                 from guardrails.tasks import scan_document_version
                 scan_document_version.delay(version.id)
             except Exception:
-                from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+                # A broker blip at dispatch is transient — mark with the retry
+                # marker so requeue_stale_documents re-dispatches the scan once the
+                # broker recovers (bounded), rather than failing the document closed.
+                from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
                 logger.exception(
-                    "process_document_version: version_id=%s guardrail scan dispatch failed; marking scan_failed", version_id,
+                    "process_document_version: version_id=%s guardrail scan dispatch failed; marking scan_failed (auto-retry)", version_id,
                 )
                 version.status = "scan_failed"
-                version.processing_error = SCAN_FAILED_MESSAGE
+                version.processing_error = SCAN_DISPATCH_RETRY_MESSAGE
                 version.save(update_fields=["status", "processing_error", "updated_at"])
                 _mirror_doc_status(doc, version, "scan_failed")
 

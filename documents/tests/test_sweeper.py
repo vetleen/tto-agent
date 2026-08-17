@@ -13,7 +13,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentVersion
-from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE, SCAN_FAILED_MESSAGE
 from documents.tasks import MAX_REQUEUES, requeue_stale_documents
 from documents.tests._helpers import make_version
 
@@ -186,3 +186,90 @@ class RequeueStaleDocumentsTests(TestCase):
         ):
             with self.assertRaises(ProgrammingError):
                 requeue_stale_documents()
+
+
+class ScanDispatchRetryRecoveryTests(TestCase):
+    """The sweeper auto-recovers versions a broker blip left SCAN_FAILED with the
+    transient SCAN_DISPATCH_RETRY_MESSAGE marker (B-robust)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="scanretry@example.com", password="pw")
+        self.data_room = DataRoom.objects.create(
+            name="ScanRetry", slug="scanretry", created_by=self.user,
+        )
+
+    def _scan_failed(self, *, marker, requeue_count=0):
+        """A fresh-upload document whose (v0) version is SCAN_FAILED with *marker*."""
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="doc.txt",
+            status=DataRoomDocument.Status.SCAN_FAILED,
+        )
+        version = make_version(
+            doc, status=DataRoomDocument.Status.SCAN_FAILED, make_active=False, searchable=False,
+        )
+        DataRoomDocumentVersion.objects.filter(pk=version.pk).update(
+            processing_error=marker, requeue_count=requeue_count,
+        )
+        doc.refresh_from_db()
+        return doc
+
+    def _version(self, doc):
+        return DataRoomDocumentVersion.objects.get(pk=doc.current_version_id)
+
+    @patch("guardrails.tasks.scan_document_version.delay")
+    def test_retryable_marker_redispatched(self, mock_delay):
+        doc = self._scan_failed(marker=SCAN_DISPATCH_RETRY_MESSAGE, requeue_count=0)
+
+        requeue_stale_documents()
+
+        version = self._version(doc)
+        self.assertEqual(version.status, DataRoomDocument.Status.SCANNING)
+        self.assertIsNone(version.processing_error)
+        self.assertEqual(version.requeue_count, 1)
+        mock_delay.assert_called_once_with(doc.current_version_id)
+        # Mirrored onto the fresh-upload document.
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+
+    @patch("guardrails.tasks.scan_document_version.delay")
+    def test_exhausted_marker_goes_terminal(self, mock_delay):
+        doc = self._scan_failed(marker=SCAN_DISPATCH_RETRY_MESSAGE, requeue_count=MAX_REQUEUES)
+
+        requeue_stale_documents()
+
+        version = self._version(doc)
+        self.assertEqual(version.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(version.processing_error, SCAN_FAILED_MESSAGE)  # terminal now
+        mock_delay.assert_not_called()
+
+    @patch("guardrails.tasks.scan_document_version.delay")
+    def test_genuine_scan_failed_untouched(self, mock_delay):
+        # A real scan failure (terminal message, not the retry marker) is left alone.
+        doc = self._scan_failed(marker=SCAN_FAILED_MESSAGE, requeue_count=0)
+
+        requeue_stale_documents()
+
+        version = self._version(doc)
+        self.assertEqual(version.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(version.processing_error, SCAN_FAILED_MESSAGE)
+        self.assertEqual(version.requeue_count, 0)
+        mock_delay.assert_not_called()
+
+    @patch(
+        "guardrails.tasks.scan_document_version.delay",
+        side_effect=RuntimeError("broker still down"),
+    )
+    def test_broker_still_down_reverts_to_retry_marker(self, mock_delay):
+        doc = self._scan_failed(marker=SCAN_DISPATCH_RETRY_MESSAGE, requeue_count=0)
+
+        requeue_stale_documents()
+
+        version = self._version(doc)
+        # Reverted to SCAN_FAILED + the retry marker so the next tick retries; the
+        # attempt is still counted (bounds a sustained outage).
+        self.assertEqual(version.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(version.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
+        self.assertEqual(version.requeue_count, 1)
+        mock_delay.assert_called_once_with(doc.current_version_id)
