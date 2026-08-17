@@ -19,6 +19,18 @@ class ResolveThreadModelTests(SimpleTestCase):
         prefs = _prefs(["a", "b"], top="a", mid="b", cheap="c")
         self.assertEqual(resolve_thread_model("b", prefs), "b")
 
+    def test_stored_thread_model_wins_over_org_chat_default(self):
+        prefs = _prefs(
+            ["org-default", "thread-choice"],
+            top="org-default",
+            mid="thread-choice",
+            cheap="cheap",
+            chat="org-default",
+        )
+        self.assertEqual(
+            resolve_thread_model("thread-choice", prefs), "thread-choice"
+        )
+
     def test_empty_uses_chat_feature_model(self):
         prefs = _prefs(["a", "b"], top="a", mid="b", cheap="c", chat="b")
         self.assertEqual(resolve_thread_model("", prefs), "b")

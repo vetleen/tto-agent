@@ -928,6 +928,43 @@ class FeatureModelOverrideTest(TestCase):
         self.assertEqual(prefs.feature_models["chat"], "openai/gpt-5.4")
 
     @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.6-sol",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.6-luna",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_chat_override_becomes_new_thread_default(self, mock_registry, mock_allowed):
+        from core.preferences import resolve_thread_model
+
+        mock_registry.return_value.list_tools.return_value = {}
+        user = _create_user(email="org-chat-default@example.com")
+        org = Organization.objects.create(
+            name="Chat Default Org",
+            slug="chat-default-org",
+            preferences={
+                "allowed_models": [
+                    "openai/gpt-5.6-sol",
+                    "openai/gpt-5.6-luna",
+                    "openai/gpt-5.4-nano",
+                ],
+                "feature_models": {"chat": "openai/gpt-5.6-luna"},
+            },
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+
+        self.assertEqual(
+            prefs.feature_models["chat"], "openai/gpt-5.6-luna"
+        )
+        self.assertEqual(
+            resolve_thread_model("", prefs), "openai/gpt-5.6-luna"
+        )
+
+    @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
         LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",

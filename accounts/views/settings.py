@@ -444,6 +444,7 @@ def org_settings_page(request):
 
     org_feature_models = org_prefs.get("feature_models", {})
     _ORG_FEATURE_META = {
+        "chat": ("Chat", "The default model for new chats. Members can still choose a different model for an individual conversation."),
         "message_summary": ("Message summary", "When conversations get long, this model summarizes the chat history to stay within the context window."),
         "guardrails_classifier": ("Guardrails classifier", "Screens every user message and profile description for adversarial or policy-violating content. A cheap, fast model is ideal here since it only flags content for further review."),
         "guardrails_reviewer": ("Guardrails reviewer", "Reviews content flagged by the classifier and decides whether action is needed (warn, block message, ban user, etc.). A stronger model is recommended since it actually makes the final decision."),

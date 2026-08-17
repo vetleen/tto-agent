@@ -231,6 +231,24 @@ class OrgSettingsAccessTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, f"{settings.ASSISTANT_NAME} Chat")
 
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_chat_feature_override_is_rendered(self, mock_reg, mock_models):
+        mock_reg.return_value.list_tools.return_value = {}
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        chat_row = next(
+            row for row in response.context["org_features"] if row["key"] == "chat"
+        )
+        self.assertEqual(chat_row["label"], "Chat")
+        self.assertIn("openai/gpt-5.6-luna", chat_row["eligible_models"])
+        self.assertContains(response, "The default model for new chats.")
+
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")
     def test_skills_section_tools_excluded_from_tool_sections(self, mock_reg, mock_models):
@@ -1370,6 +1388,7 @@ class OrgFeatureModelUpdateTests(TestCase):
         self.org = Organization.objects.create(name="FeatOrg", slug="featorg", preferences={
             "allowed_models": [
                 "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+                "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
             ],
         })
         Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
@@ -1396,12 +1415,29 @@ class OrgFeatureModelUpdateTests(TestCase):
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
     ])
-    def test_rejects_user_scoped_feature(self, mock_models):
+    def test_sets_chat_default(self, mock_models):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"feature": "chat", "model": "openai/gpt-5.4"}),
+            json.dumps({"feature": "chat", "model": "openai/gpt-5.6-luna"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["feature_models"]["chat"], "openai/gpt-5.6-luna"
+        )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    def test_rejects_tier_managed_feature(self, mock_models):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "thread_title", "model": "openai/gpt-5.4-nano"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
@@ -1412,10 +1448,10 @@ class OrgFeatureModelUpdateTests(TestCase):
     ])
     def test_rejects_too_low_tier(self, mock_models):
         self.client.login(email=self.admin_user.email, password=self.password)
-        # guardrails_reviewer requires standard tier minimum
+        # Chat allows mid-tier models but not cheap-tier models.
         response = self.client.post(
             self.url,
-            json.dumps({"feature": "guardrails_reviewer", "model": "openai/gpt-5.4-nano"}),
+            json.dumps({"feature": "chat", "model": "openai/gpt-5.4-nano"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)

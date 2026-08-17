@@ -2,6 +2,7 @@
 
 import json
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -327,6 +328,24 @@ class ChatHomeModelChoicesTests(TestCase):
         response = self.client.get(reverse("chat_home"))
         self.assertIn("default_model", response.context)
         self.assertTrue(len(response.context["default_model"]) > 0)
+
+    @patch("core.preferences.get_preferences")
+    def test_new_chat_uses_org_chat_feature_override(self, mock_preferences):
+        from core.preferences import ResolvedPreferences
+
+        mock_preferences.return_value = ResolvedPreferences(
+            top_model="openai/gpt-5.6-sol",
+            mid_model="openai/gpt-5.6-luna",
+            cheap_model="openai/gpt-5.4-nano",
+            allowed_models=["openai/gpt-5.6-sol", "openai/gpt-5.6-luna"],
+            feature_models={"chat": "openai/gpt-5.6-luna"},
+        )
+
+        response = self.client.get(reverse("chat_home"))
+
+        self.assertEqual(
+            response.context["default_model"], "openai/gpt-5.6-luna"
+        )
 
     def test_attach_accept_offers_photo_picker(self):
         # The attachment file input must advertise image types + image/* so iOS

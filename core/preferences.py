@@ -73,9 +73,9 @@ class FeatureDefault:
     default_slot: tier used by default ("primary", "mid", "cheap").
     min_tier: minimum model tier allowed ("cheap", "mid", "standard", "premium").
     scope: "org" exposes a dedicated organization override; "user" identifies
-        features that follow the organization's tier defaults. Chat is the only
-        such feature that can also be overridden, and that override is stored on
-        the individual thread rather than in user settings.
+        features that follow the organization's tier defaults. Chat also allows
+        an individual thread override, stored on the thread rather than in user
+        settings.
     required_modality: when set (e.g. "image"), only models whose input
         modalities include it are eligible, and the feature is *unavailable*
         when the effective allow-list has no capable model.
@@ -89,7 +89,7 @@ class FeatureDefault:
 
 # Per-feature model catalog.
 FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
-    "chat": FeatureDefault("primary", "standard", "user"),
+    "chat": FeatureDefault("primary", "mid", "org"),
     "thread_title": FeatureDefault("cheap", "cheap", "user"),
     "thread_emoji": FeatureDefault("cheap", "cheap", "user"),
     "canvas_title": FeatureDefault("cheap", "cheap", "user"),
