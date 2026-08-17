@@ -134,6 +134,30 @@ class DataRoomDocument(models.Model):
     def display_name(self) -> str:
         return self.name or self.original_filename
 
+    @staticmethod
+    def presentation_status(status, processing_error):
+        """Map a stored status to what the UI shows. A scan_failed carrying the
+        transient dispatch-retry marker reads as the presentation-only
+        ``scan_retrying`` (queued) state — it will self-heal, so it must not look
+        like a terminal failure. Everything else is its real status. Shared by the
+        ``display_status`` property and the document_status poll view so they agree.
+        """
+        from documents.services.pii_scan import (
+            SCAN_DISPATCH_RETRY_MESSAGE,
+            SCAN_RETRYING_STATUS,
+        )
+
+        if (
+            status == DataRoomDocument.Status.SCAN_FAILED
+            and processing_error == SCAN_DISPATCH_RETRY_MESSAGE
+        ):
+            return SCAN_RETRYING_STATUS
+        return status
+
+    @property
+    def display_status(self):
+        return self.presentation_status(self.status, self.processing_error)
+
     class Meta:
         ordering = ["-uploaded_at"]
         constraints = [

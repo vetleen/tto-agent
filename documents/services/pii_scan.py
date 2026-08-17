@@ -107,6 +107,11 @@ SCAN_FAILED_MESSAGE = "Couldn't check this document for sensitive data — retry
 # the terminal SCAN_FAILED_MESSAGE.
 SCAN_DISPATCH_RETRY_MESSAGE = "Couldn't reach the scanner — retrying automatically."
 
+# Presentation-only status (NOT a DB Status value): a scan_failed version carrying the
+# transient retry marker renders in the UI as "queued/retrying" rather than "failed".
+# See DataRoomDocument.presentation_status / display_status.
+SCAN_RETRYING_STATUS = "scan_retrying"
+
 # All category field names, in schema order
 PII_CATEGORIES = [
     "pii_ordinary_identity",

@@ -18,6 +18,7 @@
     uploaded: SPINNER,
     processing: SPINNER,
     scanning: SPINNER,
+    scan_retrying: SPINNER,
     scan_failed: '<svg class="w-4 h-4 text-fg-warning" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>',
     ready: '<svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>',
     failed: '<svg class="w-4 h-4 text-red-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>'
@@ -27,6 +28,7 @@
     uploaded: 'Processing…',
     processing: 'Processing…',
     scanning: 'Checking for sensitive data — not available to ' + assistantName + ' until the check completes.',
+    scan_retrying: 'Queued — retrying automatically…',
     scan_failed: 'Sensitive-data check failed — retry the scan.',
     failed: 'Processing failed.'
   };
@@ -51,7 +53,7 @@
     document.querySelectorAll('[data-doc-id]').forEach(function (row) {
       var status = row.dataset.status;
       var note = row.querySelector('.doc-scan-note');
-      var wanted = (status === 'scanning' || status === 'scan_failed') && row.dataset.list === 'active';
+      var wanted = (status === 'scanning' || status === 'scan_retrying' || status === 'scan_failed') && row.dataset.list === 'active';
       if (!wanted) {
         if (note) note.remove();
         return;
@@ -67,6 +69,10 @@
       if (status === 'scanning') {
         label.className = 'text-xs text-body-subtle italic';
         label.textContent = 'Checking for sensitive data…';
+      } else if (status === 'scan_retrying') {
+        // Transient broker blip — self-healing, so read as queued, not failed.
+        label.className = 'text-xs text-body-subtle italic';
+        label.textContent = 'Queued — retrying automatically…';
       } else {
         label.className = 'text-xs text-fg-warning font-medium';
         label.textContent = 'Sensitive-data check failed';

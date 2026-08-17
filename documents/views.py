@@ -647,8 +647,10 @@ def document_status(request, data_room_id):
     if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     statuses = {
-        str(pk): status
-        for pk, status in data_room.documents.filter(is_archived=False).values_list("id", "status")
+        str(pk): DataRoomDocument.presentation_status(status, err)
+        for pk, status, err in data_room.documents.filter(is_archived=False).values_list(
+            "id", "status", "processing_error"
+        )
     }
     return JsonResponse({"statuses": statuses})
 

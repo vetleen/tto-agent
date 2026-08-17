@@ -239,3 +239,22 @@ class DataRoomDocumentStatusTests(TestCase):
         self.assertEqual(DataRoomDocument.Status.SCAN_FAILED, "scan_failed")
         self.assertEqual(DataRoomDocument.Status.READY, "ready")
         self.assertEqual(DataRoomDocument.Status.FAILED, "failed")
+
+    def test_presentation_status_maps_retry_marker_to_scan_retrying(self):
+        from documents.services.pii_scan import (
+            SCAN_DISPATCH_RETRY_MESSAGE,
+            SCAN_FAILED_MESSAGE,
+            SCAN_RETRYING_STATUS,
+        )
+
+        Status = DataRoomDocument.Status
+        ps = DataRoomDocument.presentation_status
+        # scan_failed + retry marker -> presentation-only "scan_retrying".
+        self.assertEqual(
+            ps(Status.SCAN_FAILED, SCAN_DISPATCH_RETRY_MESSAGE), SCAN_RETRYING_STATUS
+        )
+        # A genuine scan failure stays scan_failed.
+        self.assertEqual(ps(Status.SCAN_FAILED, SCAN_FAILED_MESSAGE), Status.SCAN_FAILED)
+        # Other statuses pass through untouched.
+        self.assertEqual(ps(Status.READY, None), Status.READY)
+        self.assertEqual(ps(Status.SCANNING, None), Status.SCANNING)
