@@ -65,8 +65,7 @@ class ImagePreferenceCascadeTests(TestCase):
         self.assertEqual(prefs.image_model, "")
         self.assertNotIn("chat_generate_image", prefs.allowed_tools)
 
-    def test_user_override(self):
-        # Two allowed models so the user's pick is meaningfully different.
+    def test_stored_user_override_is_ignored(self):
         with override_settings(
             IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"]
         ):
@@ -77,7 +76,25 @@ class ImagePreferenceCascadeTests(TestCase):
                 user, lambda p: p.__setitem__("image_models", {"default": "gemini/gemini-3-pro-image"})
             )
             prefs = self._prefs(user)
-            self.assertEqual(prefs.image_model, "gemini/gemini-3-pro-image")
+            self.assertEqual(prefs.image_model, "gemini/gemini-2.5-flash-image")
+
+    def test_org_default_applies(self):
+        with override_settings(
+            IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"]
+        ):
+            user = _create_user("img-org@example.com")
+            org = Organization.objects.create(
+                name="Image Org",
+                slug="image-org",
+                preferences={
+                    "allowed_image_models": [
+                        "gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"
+                    ],
+                    "image_models": {"default": "gemini/gemini-3-pro-image"},
+                },
+            )
+            Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+            self.assertEqual(self._prefs(user).image_model, "gemini/gemini-3-pro-image")
 
 
 @override_settings(

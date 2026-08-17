@@ -320,6 +320,8 @@ class ChatHomeModelChoicesTests(TestCase):
             self.assertIn("id", c)
             self.assertIn("display_name", c)
             self.assertIn("supports_thinking", c)
+            self.assertIn("thinking_levels", c)
+            self.assertIn("default_thinking_level", c)
 
     def test_context_includes_default_model(self):
         response = self.client.get(reverse("chat_home"))
@@ -346,7 +348,17 @@ class ChatHomeModelChoicesTests(TestCase):
         response = self.client.get(reverse("chat_home"))
         self.assertContains(response, 'id="model-selector-btn"')
         self.assertContains(response, 'id="model-selector-dropdown"')
-        self.assertContains(response, 'name="thinking-level"')
+        self.assertContains(response, 'id="reasoning-toggle"')
+        self.assertContains(response, 'id="reasoning-level-picker"')
+        self.assertContains(response, 'id="reasoning-level-select"')
+        self.assertContains(response, 'style="min-width: 8rem"')
+
+    def test_reasoning_preference_is_scoped_to_the_current_thread(self):
+        response = self.client.get(reverse("chat_home"))
+        self.assertContains(response, "chat_reasoning_levels_by_thread")
+        self.assertContains(response, "chat_enabled_reasoning_levels_by_thread")
+        self.assertNotContains(response, "chat_reasoning_levels_by_model")
+        self.assertNotContains(response, "chat_enabled_reasoning_levels_by_model")
 
     def test_csp_header_enforced_with_nonce(self):
         """The page carries a strict, nonce-based Content-Security-Policy and its

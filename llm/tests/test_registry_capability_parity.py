@@ -1,62 +1,50 @@
-"""Golden parity guard for the model-capability registry refactor.
+"""Capability consistency checks across registries and provider routing."""
 
-Per-model capability knowledge (adaptive vs extended thinking, max-effort,
-Responses-API, provider resolution, transcription chunking) was moved out of
-scattered hardcoded sets/prefix lists into the registries. These tests assert
-the registry-derived values still exactly match the *old* logic for every
-registered model, so the refactor is provably behavior-preserving — and a new
-model that omits a load-bearing flag (e.g. an adaptive-only Anthropic model
-without thinking_mode) is caught here instead of 400-ing in production.
-"""
+from django.test import SimpleTestCase
 
-from django.test import TestCase
-
-from llm.core.model_factory import _parse_provider, _RESPONSES_API_PREFIXES
-from llm.model_registry import _MODELS, get_model_info
+from llm.core.model_factory import _RESPONSES_API_PREFIXES, _parse_provider
+from llm.model_registry import _MODELS
 from llm.transcription_registry import _TRANSCRIPTION_MODELS
 
-# The exact hardcoded sets/rules this refactor replaced.
-_OLD_ADAPTIVE = {"claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5"}
-_OLD_MAX_EFFORT = {"claude-opus-4-7", "claude-opus-4-8"}
+_ADAPTIVE_ANTHROPIC = {
+    "claude-fable-5",
+    "claude-opus-5",
+    "claude-opus-4-6",
+    "claude-sonnet-5",
+}
 
 
-class ModelRegistryCapabilityParityTests(TestCase):
-    def test_thinking_mode_matches_old_adaptive_set(self):
+class ModelRegistryCapabilityTests(SimpleTestCase):
+    def test_anthropic_reasoning_transport_is_correct(self):
+        for model_id, info in _MODELS.items():
+            if info.provider != "anthropic":
+                continue
+            with self.subTest(model=model_id):
+                expected = "adaptive" if info.api_model in _ADAPTIVE_ANTHROPIC else "extended"
+                self.assertEqual(info.thinking_mode, expected)
+
+    def test_reasoning_defaults_are_valid(self):
         for model_id, info in _MODELS.items():
             with self.subTest(model=model_id):
-                is_adaptive = info.thinking_mode == "adaptive"
-                self.assertEqual(is_adaptive, info.api_model in _OLD_ADAPTIVE)
+                if info.supports_thinking:
+                    self.assertIn(info.default_reasoning_level, info.reasoning_levels)
 
-    def test_every_thinking_anthropic_model_declares_a_mode(self):
-        # A thinking-capable Anthropic model with thinking_mode=None would route
-        # through the extended budget_tokens path — which 400s for adaptive-only
-        # models. Force an explicit choice.
-        for model_id, info in _MODELS.items():
-            if info.provider == "anthropic" and info.supports_thinking:
-                with self.subTest(model=model_id):
-                    self.assertIn(info.thinking_mode, ("adaptive", "extended"))
-
-    def test_supports_max_effort_matches_old_set(self):
+    def test_responses_api_flags_match_openai_family(self):
         for model_id, info in _MODELS.items():
             with self.subTest(model=model_id):
-                self.assertEqual(info.supports_max_effort, info.api_model in _OLD_MAX_EFFORT)
-
-    def test_uses_responses_api_matches_old_prefix_rule(self):
-        for model_id, info in _MODELS.items():
-            with self.subTest(model=model_id):
-                old = info.provider == "openai" and any(
-                    info.api_model.startswith(p) for p in _RESPONSES_API_PREFIXES
+                expected = info.provider == "openai" and any(
+                    info.api_model.startswith(prefix) for prefix in _RESPONSES_API_PREFIXES
                 )
-                self.assertEqual(info.uses_responses_api, old)
+                self.assertEqual(info.uses_responses_api, expected)
 
-    def test_parse_provider_matches_registry_for_every_model(self):
+    def test_parse_provider_matches_registry(self):
         for model_id, info in _MODELS.items():
             with self.subTest(model=model_id):
                 self.assertEqual(_parse_provider(model_id), (info.provider, info.api_model))
 
 
-class TranscriptionCapabilityParityTests(TestCase):
-    def test_supports_chunking_strategy_matches_gpt4o_rule(self):
+class TranscriptionCapabilityTests(SimpleTestCase):
+    def test_chunking_strategy_matches_gpt4o_rule(self):
         for model_id, info in _TRANSCRIPTION_MODELS.items():
             with self.subTest(model=model_id):
                 self.assertEqual(

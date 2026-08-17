@@ -46,7 +46,7 @@ _AUTO_DETECT: dict[str, str] = {
 
 # Fallback prefix set for OpenAI's Responses API — used only for models not in
 # the registry (registered models carry ModelInfo.uses_responses_api).
-_RESPONSES_API_PREFIXES = ("gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
+_RESPONSES_API_PREFIXES = ("gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
 
 
 def _uses_responses_api(api_model: str) -> bool:
@@ -129,6 +129,10 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
         kwargs["store"] = False
         if _uses_responses_api(api_model):
             kwargs["use_responses_api"] = True
+            # With store=False, reasoning output items must be replayed by the
+            # caller during tool loops. Request their encrypted representation
+            # so the provider wrapper can preserve it in Message metadata.
+            kwargs["include"] = ["reasoning.encrypted_content"]
     return kwargs
 
 
@@ -208,7 +212,7 @@ def create_chat_model(model_name: str, **overrides):
 
     Args:
         model_name: Model name with optional provider prefix
-            (e.g. "gpt-5-mini", "anthropic/claude-sonnet-4-6").
+            (e.g. "gpt-5.6-terra", "anthropic/claude-sonnet-5").
         **overrides: Additional kwargs passed to init_chat_model.
 
     Returns:

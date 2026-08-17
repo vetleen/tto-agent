@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-import logging
-
 from llm.core.model_factory import create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
 from llm.model_registry import get_model_info
 from llm.types.requests import ChatRequest
-
-logger = logging.getLogger(__name__)
-
-_GEMINI_THINKING_BUDGETS = {
-    "low": 1_024,
-    "medium": 8_192,
-    "high": 24_576,
-}
 
 # langchain-google-genai stashes each function call's thought signature here
 # (keyed by tool_call id) on parse, and reads it back from an AIMessage's
@@ -45,27 +35,14 @@ class GeminiChatModel(BaseLangChainChatModel):
 
     def _get_streaming_client(self, request: ChatRequest):
         client = self._client
-        level = request.params.get("thinking_level", "off")
-        if level != "off" and self._supports_thinking():
-            if level == "max":
-                # Gemini has no "max" level; clamp to the largest budget
-                # instead of silently falling back to the medium default.
-                level = "high"
-            budget = _GEMINI_THINKING_BUDGETS.get(level, 8_192)
-            try:
-                client = create_variant_client(
-                    self._api_model,
-                    provider="google_genai",
-                    thinking_budget=budget,
-                    include_thoughts=True,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to create thinking-enabled Gemini client; "
-                    "falling back to standard client.",
-                    exc_info=True,
-                )
-                client = self._client
+        level = request.params.get("thinking_level")
+        if level is not None and self._supports_thinking():
+            client = create_variant_client(
+                self._api_model,
+                provider="google_genai",
+                thinking_level=level,
+                include_thoughts=True,
+            )
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         return client

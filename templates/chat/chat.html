@@ -127,20 +127,18 @@
         </div>
       </div>
       <div id="thinking-control" class="hidden items-center gap-1.5 ml-2">
-        <span class="text-xs text-body/60">Thinking</span>
-        <button type="button" id="thinking-toggle" role="switch" aria-checked="false"
-          class="relative inline-flex h-4.5 w-8 shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-neutral-tertiary transition-colors duration-200 focus:outline-none focus:ring-1 focus:ring-brand focus:ring-offset-1"
-        >
-          <span id="thinking-toggle-knob" class="pointer-events-none inline-block h-3.5 w-3.5 translate-x-0 rounded-full bg-white shadow ring-0 transition-transform duration-200"></span>
+        <span class="text-xs text-body/60">Reasoning</span>
+        <button type="button" id="reasoning-toggle" role="switch" aria-checked="false"
+          aria-label="Toggle reasoning" aria-controls="reasoning-level-picker"
+          class="relative inline-flex h-4.5 w-8 shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-neutral-tertiary transition-colors duration-200 focus:outline-none focus:ring-1 focus:ring-brand focus:ring-offset-1">
+          <span id="reasoning-toggle-knob" class="pointer-events-none inline-block h-3.5 w-3.5 translate-x-0 rounded-full bg-white shadow ring-0 transition-transform duration-200"></span>
         </button>
-        <div id="thinking-slider" class="hidden items-center gap-1.5 text-xs text-body/60">
-          <label for="thinking-low" class="select-none cursor-pointer">Low</label>
-          <input id="thinking-low" type="radio" name="thinking-level" value="low" class="thinking-stop cursor-pointer">
-          <input id="thinking-medium" type="radio" name="thinking-level" value="medium" class="thinking-stop cursor-pointer">
-          <input id="thinking-high" type="radio" name="thinking-level" value="high" class="thinking-stop cursor-pointer">
-          <label id="thinking-high-label" for="thinking-high" class="select-none cursor-pointer">High</label>
-          <input id="thinking-max" type="radio" name="thinking-level" value="max" class="thinking-stop thinking-stop-max cursor-pointer" style="display:none">
-          <label for="thinking-max" class="select-none cursor-pointer thinking-stop-max" style="display:none">Max</label>
+        <div id="reasoning-level-picker" class="hidden items-center">
+          <label for="reasoning-level-select" class="sr-only">Reasoning level</label>
+          <select id="reasoning-level-select"
+            class="text-xs text-body bg-neutral-primary-soft border border-default-medium rounded-base px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand"
+            style="min-width: 8rem" aria-label="Reasoning level">
+          </select>
         </div>
       </div>
     </div>
@@ -772,21 +770,55 @@
   const MODEL_CHOICES = JSON.parse('{{ model_choices_json|escapejs }}');
   const DEFAULT_MODEL = "{{ default_model|escapejs }}";
   const DEFAULT_MODEL_DISPLAY = "{{ default_model_display|escapejs }}";
-  // The user's preferred chat model (from settings) — what a NEW thread resets
-  // to. A loaded thread's own model arrives via the thread.loaded event.
-  const PREFERRED_CHAT_MODEL = "{{ preferred_chat_model|escapejs }}";
-  const PREFERRED_CHAT_MODEL_DISPLAY = "{{ preferred_chat_model_display|escapejs }}";
+  // New threads use the organization's chat default. A loaded thread's manual
+  // override arrives via the thread.loaded event.
   let selectedModel = DEFAULT_MODEL;
-  let thinkingLevel = "off";
+  let thinkingLevel = null;
+  let reasoningThreadId = THREAD_ID || null;
+  let reasoningLevelsByModel = {};
+  let enabledReasoningLevelsByModel = {};
+  let reasoningLevelsByThread = {};
+  let enabledReasoningLevelsByThread = {};
 
-  // Thinking level still persists per tab; the model now follows the thread
-  // (new threads default to the user's preferred chat model).
-  (function restoreThinkingLevel() {
-    const storedLevel = sessionStorage.getItem("chat_thinking_level");
-    if (storedLevel && ["off", "low", "medium", "high", "max"].indexOf(storedLevel) !== -1) {
-      thinkingLevel = storedLevel;
+  // Reasoning choices are scoped to one chat thread. A fresh chat starts from
+  // the organization model and that model's registry default.
+  try {
+    reasoningLevelsByThread = JSON.parse(
+      sessionStorage.getItem("chat_reasoning_levels_by_thread") || "{}"
+    ) || {};
+  } catch (e) {
+    reasoningLevelsByThread = {};
+  }
+  try {
+    enabledReasoningLevelsByThread = JSON.parse(
+      sessionStorage.getItem("chat_enabled_reasoning_levels_by_thread") || "{}"
+    ) || {};
+  } catch (e) {
+    enabledReasoningLevelsByThread = {};
+  }
+
+  function loadReasoningStateForThread(threadId) {
+    reasoningThreadId = threadId || null;
+    reasoningLevelsByModel = reasoningThreadId
+      ? (reasoningLevelsByThread[reasoningThreadId] || {})
+      : {};
+    enabledReasoningLevelsByModel = reasoningThreadId
+      ? (enabledReasoningLevelsByThread[reasoningThreadId] || {})
+      : {};
+  }
+
+  function adoptReasoningStateForCreatedThread(threadId) {
+    var draftLevels = reasoningLevelsByModel;
+    var draftEnabledLevels = enabledReasoningLevelsByModel;
+    loadReasoningStateForThread(threadId);
+    if (draftLevels[selectedModel]) {
+      reasoningLevelsByModel[selectedModel] = draftLevels[selectedModel];
     }
-  })();
+    if (draftEnabledLevels[selectedModel]) {
+      enabledReasoningLevelsByModel[selectedModel] = draftEnabledLevels[selectedModel];
+    }
+  }
+  loadReasoningStateForThread(reasoningThreadId);
 
   // -- Thread cost display (element removed; no-op stub for WebSocket handlers) --
   function updateThreadCost(costUsd) {}
@@ -2040,20 +2072,20 @@
   var modelSelectorDropdown = document.getElementById('model-selector-dropdown');
   var modelOptionsContainer = document.getElementById('model-options');
   var thinkingControl = document.getElementById('thinking-control');
-  var thinkingToggle = document.getElementById('thinking-toggle');
-  var thinkingToggleKnob = document.getElementById('thinking-toggle-knob');
-  var thinkingSlider = document.getElementById('thinking-slider');
-  var thinkingStops = document.querySelectorAll('.thinking-stop');
+  var reasoningToggle = document.getElementById('reasoning-toggle');
+  var reasoningToggleKnob = document.getElementById('reasoning-toggle-knob');
+  var reasoningLevelPicker = document.getElementById('reasoning-level-picker');
+  var reasoningLevelSelect = document.getElementById('reasoning-level-select');
 
-  // Build the muted capability (★) + price ($) glyphs shown on the right of
-  // each model row. Stars are filled-of-4 (empty ones dimmed) so the scale is
-  // self-evident; the 4th star marks manually-curated "cutting edge" models.
+  // Build the muted performance (★) + price ($) glyphs shown on the right of
+  // each model row. Four stars come from price tiers; the fifth is reserved for
+  // manually curated flagship models.
   // Price is 1-5 filled "$" right-aligned in a fixed column.
   function modelMetaHtml(m) {
     var html = '';
     if (m.capability_level > 0) {
       var stars = '';
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < 5; i++) {
         stars += (i < m.capability_level) ? '★' : '<span style="opacity:.4">☆</span>';
       }
       html += '<span style="letter-spacing:.06em;white-space:nowrap">' + stars + '</span>';
@@ -2083,7 +2115,7 @@
         selectedModel = m.id;
         modelSelectorLabel.textContent = m.display_name;
         renderModelOptions();
-        updateThinkingVisibility();
+        updateReasoningControl();
         modelSelectorDropdown.classList.add('hidden');
       });
       modelOptionsContainer.appendChild(btn);
@@ -2093,50 +2125,117 @@
   function showEl(el) { el.classList.remove('hidden'); el.classList.add('flex'); }
   function hideEl(el) { el.classList.add('hidden'); el.classList.remove('flex'); }
 
-  function setThinkingToggleState(on) {
-    if (on) {
-      thinkingToggle.setAttribute('aria-checked', 'true');
-      thinkingToggle.classList.remove('bg-neutral-tertiary');
-      thinkingToggle.classList.add('bg-brand');
-      thinkingToggleKnob.classList.remove('translate-x-0');
-      thinkingToggleKnob.classList.add('translate-x-3.5');
-      showEl(thinkingSlider);
-    } else {
-      thinkingToggle.setAttribute('aria-checked', 'false');
-      thinkingToggle.classList.remove('bg-brand');
-      thinkingToggle.classList.add('bg-neutral-tertiary');
-      thinkingToggleKnob.classList.remove('translate-x-3.5');
-      thinkingToggleKnob.classList.add('translate-x-0');
-      hideEl(thinkingSlider);
+  function reasoningLevelLabel(level) {
+    var labels = {
+      minimal: 'Minimal', low: 'Low',
+      medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max'
+    };
+    return labels[level] || level;
+  }
+
+  function isReasoningDisabledLevel(level) {
+    return level === 'off' || level === 'none';
+  }
+
+  function reasoningDisabledLevel(levels) {
+    if (levels.indexOf('off') !== -1) return 'off';
+    if (levels.indexOf('none') !== -1) return 'none';
+    return null;
+  }
+
+  function getEnabledReasoningLevels(levels) {
+    return levels.filter(function(level) { return !isReasoningDisabledLevel(level); });
+  }
+
+  function chooseEnabledReasoningLevel(current, enabledLevels) {
+    var savedEnabled = enabledReasoningLevelsByModel[selectedModel];
+    if (enabledLevels.indexOf(savedEnabled) !== -1) return savedEnabled;
+    var saved = reasoningLevelsByModel[selectedModel];
+    if (enabledLevels.indexOf(saved) !== -1) return saved;
+    if (current && enabledLevels.indexOf(current.default_thinking_level) !== -1) {
+      return current.default_thinking_level;
+    }
+    if (enabledLevels.indexOf('medium') !== -1) return 'medium';
+    return enabledLevels[0] || null;
+  }
+
+  function setReasoningToggleState(on, locked) {
+    reasoningToggle.setAttribute('aria-checked', on ? 'true' : 'false');
+    reasoningToggle.setAttribute('aria-disabled', locked ? 'true' : 'false');
+    reasoningToggle.disabled = locked;
+    reasoningToggle.title = locked
+      ? 'This model always uses reasoning.'
+      : (on ? 'Turn reasoning off' : 'Turn reasoning on');
+    reasoningToggle.classList.toggle('bg-brand', on);
+    reasoningToggle.classList.toggle('bg-neutral-tertiary', !on);
+    reasoningToggle.classList.toggle('cursor-pointer', !locked);
+    reasoningToggle.classList.toggle('cursor-not-allowed', locked);
+    reasoningToggle.classList.toggle('opacity-60', locked);
+    reasoningToggleKnob.classList.toggle('translate-x-3.5', on);
+    reasoningToggleKnob.classList.toggle('translate-x-0', !on);
+  }
+
+  function persistReasoningLevel() {
+    if (selectedModel && thinkingLevel) {
+      reasoningLevelsByModel[selectedModel] = thinkingLevel;
+      if (!isReasoningDisabledLevel(thinkingLevel)) {
+        enabledReasoningLevelsByModel[selectedModel] = thinkingLevel;
+      }
+      if (reasoningThreadId) {
+        reasoningLevelsByThread[reasoningThreadId] = reasoningLevelsByModel;
+        enabledReasoningLevelsByThread[reasoningThreadId] = enabledReasoningLevelsByModel;
+        sessionStorage.setItem(
+          'chat_reasoning_levels_by_thread', JSON.stringify(reasoningLevelsByThread)
+        );
+        sessionStorage.setItem(
+          'chat_enabled_reasoning_levels_by_thread',
+          JSON.stringify(enabledReasoningLevelsByThread)
+        );
+      }
     }
   }
 
-  function setActiveThinkingStop(level) {
-    thinkingStops.forEach(function(stop) {
-      stop.checked = (stop.value === level);
-    });
-  }
-
-  function updateThinkingVisibility() {
+  function updateReasoningControl() {
     var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
-    if (current && current.supports_thinking) {
-      showEl(thinkingControl);
-    } else {
+    var levels = current && current.thinking_levels ? current.thinking_levels : [];
+    if (!current || levels.length === 0) {
       hideEl(thinkingControl);
-      thinkingLevel = "off";
-      setThinkingToggleState(false);
-      sessionStorage.setItem('chat_thinking_level', 'off');
+      thinkingLevel = null;
+      reasoningLevelSelect.innerHTML = '';
+      return;
     }
-    var maxStops = document.querySelectorAll('.thinking-stop-max');
-    var highLabel = document.getElementById('thinking-high-label');
-    var hasMax = current && current.thinking_levels && current.thinking_levels.indexOf('max') !== -1;
-    maxStops.forEach(function(el) { el.style.display = hasMax ? '' : 'none'; });
-    if (highLabel) highLabel.style.display = hasMax ? 'none' : '';
-    if (thinkingLevel === 'max' && !hasMax) {
-      thinkingLevel = 'high';
-      setActiveThinkingStop('high');
-      sessionStorage.setItem('chat_thinking_level', 'high');
+
+    var disableLevel = reasoningDisabledLevel(levels);
+    var enabledLevels = getEnabledReasoningLevels(levels);
+    var enabledLevel = chooseEnabledReasoningLevel(current, enabledLevels);
+    var saved = reasoningLevelsByModel[selectedModel];
+    thinkingLevel = levels.indexOf(saved) !== -1
+      ? saved
+      : current.default_thinking_level;
+    if (levels.indexOf(thinkingLevel) === -1) {
+      thinkingLevel = disableLevel || enabledLevel;
     }
+    if (!disableLevel && isReasoningDisabledLevel(thinkingLevel)) {
+      thinkingLevel = enabledLevel;
+    }
+
+    reasoningLevelSelect.innerHTML = '';
+    enabledLevels.forEach(function(level) {
+      var option = document.createElement('option');
+      option.value = level;
+      option.textContent = reasoningLevelLabel(level);
+      reasoningLevelSelect.appendChild(option);
+    });
+    var isOn = !isReasoningDisabledLevel(thinkingLevel);
+    reasoningLevelSelect.value = isOn ? thinkingLevel : enabledLevel;
+    setReasoningToggleState(isOn, !disableLevel);
+    if (isOn && enabledLevels.length) {
+      showEl(reasoningLevelPicker);
+    } else {
+      hideEl(reasoningLevelPicker);
+    }
+    persistReasoningLevel();
+    showEl(thinkingControl);
   }
 
   // Initialize
@@ -2146,14 +2245,7 @@
       modelSelectorLabel.textContent = current.display_name;
     }
     renderModelOptions();
-    if (thinkingLevel !== "off") {
-      setThinkingToggleState(true);
-      setActiveThinkingStop(thinkingLevel);
-    } else {
-      setThinkingToggleState(false);
-      setActiveThinkingStop("medium");
-    }
-    updateThinkingVisibility();
+    updateReasoningControl();
   })();
 
   if (modelSelectorBtn && modelSelectorDropdown) {
@@ -2168,27 +2260,38 @@
     });
   }
 
-  if (thinkingToggle) {
-    thinkingToggle.addEventListener('click', function() {
-      var isOn = thinkingToggle.getAttribute('aria-checked') === 'true';
-      if (isOn) {
-        thinkingLevel = "off";
-        setThinkingToggleState(false);
-      } else {
-        thinkingLevel = "medium";
-        setThinkingToggleState(true);
-        setActiveThinkingStop("medium");
-      }
-      sessionStorage.setItem('chat_thinking_level', thinkingLevel);
+  if (reasoningLevelSelect) {
+    reasoningLevelSelect.addEventListener('change', function() {
+      thinkingLevel = reasoningLevelSelect.value;
+      persistReasoningLevel();
     });
   }
 
-  thinkingStops.forEach(function(stop) {
-    stop.addEventListener('change', function() {
-      thinkingLevel = stop.value;
-      sessionStorage.setItem('chat_thinking_level', thinkingLevel);
+  if (reasoningToggle) {
+    reasoningToggle.addEventListener('click', function() {
+      var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
+      var levels = current && current.thinking_levels ? current.thinking_levels : [];
+      var disableLevel = reasoningDisabledLevel(levels);
+      if (!disableLevel) return;
+
+      var isOn = reasoningToggle.getAttribute('aria-checked') === 'true';
+      if (isOn) {
+        thinkingLevel = disableLevel;
+        setReasoningToggleState(false, false);
+        hideEl(reasoningLevelPicker);
+      } else {
+        var enabledLevel = chooseEnabledReasoningLevel(
+          current, getEnabledReasoningLevels(levels)
+        );
+        if (!enabledLevel) return;
+        thinkingLevel = enabledLevel;
+        reasoningLevelSelect.value = enabledLevel;
+        setReasoningToggleState(true, false);
+        showEl(reasoningLevelPicker);
+      }
+      persistReasoningLevel();
     });
-  });
+  }
 
   // -- Task Plan --
   var taskPlanCard = document.getElementById("task-plan-card");
@@ -2600,7 +2703,15 @@
       return;
     }
     if (et === "canvas.checkpoints") { renderCheckpointHistory(data.checkpoints || []); return; }
-    if (et === "thread.created") { activeThreadId = data.thread_id; addThreadToSidebar(data.thread_id, "New chat"); canvasUpdateExportLink(); updateThreadCost(0); return; }
+    if (et === "thread.created") {
+      activeThreadId = data.thread_id;
+      adoptReasoningStateForCreatedThread(data.thread_id);
+      persistReasoningLevel();
+      addThreadToSidebar(data.thread_id, "New chat");
+      canvasUpdateExportLink();
+      updateThreadCost(0);
+      return;
+    }
     if (et === "thread.cost_updated") { updateThreadCost(data.thread_cost_usd); return; }
     if (et === "thread.title_updated") {
       var tid = data.thread_id, title = data.title || "";
@@ -2608,6 +2719,7 @@
       return;
     }
     if (et === "thread.loaded") {
+      loadReasoningStateForThread(data.thread_id || activeThreadId);
       // Replace data room pills with loaded thread's rooms
       attachedRoomsContainer.innerHTML = "";
       attachedDataRoomIds = [];
@@ -2629,7 +2741,7 @@
         selectedModel = data.model;
         if (modelSelectorLabel && data.model_display) modelSelectorLabel.textContent = data.model_display;
         if (typeof renderModelOptions === 'function') renderModelOptions();
-        if (typeof updateThinkingVisibility === 'function') updateThinkingVisibility();
+        if (typeof updateReasoningControl === 'function') updateReasoningControl();
       }
       return;
     }

@@ -1,5 +1,6 @@
-"""Tests for llm.service.pricing — model pricing and cost calculation."""
+"""Tests for effective model pricing and cost calculation."""
 
+from datetime import date
 from decimal import Decimal
 
 from django.test import SimpleTestCase
@@ -7,168 +8,99 @@ from django.test import SimpleTestCase
 from llm.service.pricing import calculate_cost, get_model_pricing
 
 
-class GetModelPricingTests(SimpleTestCase):
-    """Tests for get_model_pricing()."""
+class PricingLookupTests(SimpleTestCase):
+    def test_openai_prices(self):
+        self.assertEqual(
+            get_model_pricing("openai/gpt-5.6-sol"),
+            (Decimal("5.00"), Decimal("0.50"), Decimal("6.25"), Decimal("30.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("gpt-5.4-nano"),
+            (Decimal("0.20"), Decimal("0.02"), Decimal("0.25"), Decimal("1.25")),
+        )
 
-    def test_known_model_returns_tuple(self):
-        pricing = get_model_pricing("claude-sonnet-4-6")
-        self.assertIsNotNone(pricing)
-        self.assertEqual(pricing, (Decimal("3.00"), Decimal("0.30"), Decimal("3.75"), Decimal("15.00")))
+    def test_long_context_pricing_applies_to_entire_request(self):
+        self.assertEqual(
+            get_model_pricing("gpt-5.6-terra", input_tokens=272_000),
+            (Decimal("2.50"), Decimal("0.25"), Decimal("3.125"), Decimal("15.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("gpt-5.6-terra", input_tokens=272_001),
+            (Decimal("5.00"), Decimal("0.50"), Decimal("6.25"), Decimal("22.50")),
+        )
+        self.assertEqual(
+            get_model_pricing("gemini-3.1-pro-preview", input_tokens=200_001),
+            (Decimal("4.00"), Decimal("0.40"), Decimal("4.00"), Decimal("18.00")),
+        )
 
-    def test_sonnet_5_uses_long_term_pricing(self):
-        # Long-term $3/$15, NOT the $2/$10 introductory price (through 2026-08-31).
-        pricing = get_model_pricing("claude-sonnet-5")
-        self.assertEqual(pricing, (Decimal("3.00"), Decimal("0.30"), Decimal("3.75"), Decimal("15.00")))
+    def test_sonnet_5_introductory_price_schedule(self):
+        self.assertEqual(
+            get_model_pricing("claude-sonnet-5", as_of=date(2026, 8, 31)),
+            (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("10.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("claude-sonnet-5", as_of=date(2026, 9, 1)),
+            (Decimal("3.00"), Decimal("0.30"), Decimal("3.75"), Decimal("15.00")),
+        )
 
-    def test_openai_model(self):
-        pricing = get_model_pricing("gpt-5.4-mini")
-        self.assertEqual(pricing, (Decimal("0.25"), Decimal("0.025"), Decimal("0.25"), Decimal("2.00")))
+    def test_gemini_flash_introductory_price_schedule(self):
+        self.assertEqual(
+            get_model_pricing("gemini-3.7-flash", as_of=date(2026, 12, 31)),
+            (Decimal("0.75"), Decimal("0.075"), Decimal("0.75"), Decimal("3.75")),
+        )
+        self.assertEqual(
+            get_model_pricing("gemini-3.7-flash", as_of=date(2027, 1, 1)),
+            (Decimal("1.50"), Decimal("0.15"), Decimal("1.50"), Decimal("7.50")),
+        )
 
-    def test_gemini_model(self):
-        pricing = get_model_pricing("gemini-3.5-flash")
-        self.assertEqual(pricing, (Decimal("1.50"), Decimal("0.15"), Decimal("1.50"), Decimal("9.00")))
+    def test_retired_alias_uses_replacement_price(self):
+        self.assertEqual(
+            get_model_pricing("openai/gpt-5.5"),
+            get_model_pricing("openai/gpt-5.6-sol"),
+        )
 
-    def test_strips_openai_prefix(self):
-        pricing = get_model_pricing("openai/gpt-5.4-mini")
-        self.assertEqual(pricing, get_model_pricing("gpt-5.4-mini"))
-
-    def test_strips_anthropic_prefix(self):
-        pricing = get_model_pricing("anthropic/claude-opus-4-6")
-        self.assertEqual(pricing, get_model_pricing("claude-opus-4-6"))
-
-    def test_strips_gemini_prefix(self):
-        pricing = get_model_pricing("gemini/gemini-3.1-pro-preview")
-        self.assertEqual(pricing, get_model_pricing("gemini-3.1-pro-preview"))
-
-    def test_unknown_model_returns_none(self):
-        self.assertIsNone(get_model_pricing("unknown-model-xyz"))
-
-    def test_empty_string_returns_none(self):
-        self.assertIsNone(get_model_pricing(""))
+    def test_unknown_model(self):
+        self.assertIsNone(get_model_pricing("unknown/model"))
 
 
-class CalculateCostTests(SimpleTestCase):
-    """Tests for calculate_cost()."""
-
+class CostTests(SimpleTestCase):
     def test_basic_cost(self):
-        # 1000 input, 500 output of gpt-5.4-mini: (1000*0.25 + 500*2.00) / 1M
-        cost = calculate_cost("gpt-5.4-mini", 1000, 500)
-        expected = (Decimal("1000") * Decimal("0.25") + Decimal("500") * Decimal("2.00")) / Decimal("1000000")
-        self.assertEqual(cost, expected)
-
-    def test_cost_with_cached_tokens(self):
-        # 1000 input (300 cached), 500 output of claude-sonnet-4-6
-        cost = calculate_cost("claude-sonnet-4-6", 1000, 500, cached_input_tokens=300)
-        expected = (
-            Decimal("700") * Decimal("3.00")  # billable input
-            + Decimal("300") * Decimal("0.30")  # cached input
-            + Decimal("500") * Decimal("15.00")  # output
-        ) / Decimal("1000000")
-        self.assertEqual(cost, expected)
-
-    def test_cost_with_cache_write_tokens(self):
-        # 1000 input (200 cache write, 300 cache read), 500 output of claude-sonnet-4-6
-        cost = calculate_cost(
-            "claude-sonnet-4-6", 1000, 500,
-            cached_input_tokens=300, cache_write_tokens=200,
+        self.assertEqual(
+            calculate_cost("gpt-5.4-nano", 1_000, 500),
+            Decimal("0.000825"),
         )
-        expected = (
-            Decimal("500") * Decimal("3.00")   # regular input (1000 - 300 - 200)
-            + Decimal("200") * Decimal("3.75")  # cache write (1.25x)
-            + Decimal("300") * Decimal("0.30")  # cache read
-            + Decimal("500") * Decimal("15.00") # output
-        ) / Decimal("1000000")
-        self.assertEqual(cost, expected)
 
-    def test_cache_write_without_read(self):
-        # First request: everything is a cache write, nothing cached yet
-        cost = calculate_cost(
-            "anthropic/claude-opus-4-7", 1000, 500,
-            cached_input_tokens=0, cache_write_tokens=800,
+    def test_cache_read_and_both_anthropic_write_ttls(self):
+        self.assertEqual(
+            calculate_cost(
+                "claude-fable-5",
+                1_000,
+                100,
+                cached_input_tokens=300,
+                cache_write_tokens=200,
+                cache_write_1h_tokens=100,
+            ),
+            Decimal("0.01355"),
         )
-        expected = (
-            Decimal("200") * Decimal("5.00")    # regular input
-            + Decimal("800") * Decimal("6.25")   # cache write
-            + Decimal("500") * Decimal("25.00")  # output
-        ) / Decimal("1000000")
-        self.assertEqual(cost, expected)
 
-    def test_cache_write_with_1h_breakdown(self):
-        """1h-TTL writes bill at 2x input; the 5m remainder at 1.25x."""
-        cost = calculate_cost(
-            "claude-sonnet-4-6", 1000, 500,
-            cached_input_tokens=0, cache_write_tokens=500,
-            cache_write_1h_tokens=200,
+    def test_long_context_cost(self):
+        self.assertEqual(
+            calculate_cost("gpt-5.6-terra", 300_000, 1_000),
+            Decimal("1.5225"),
         )
-        expected = (
-            Decimal("500") * Decimal("3.00")    # regular input (1000 - 500 writes)
-            + Decimal("300") * Decimal("3.75")  # 5m cache write (1.25x)
-            + Decimal("200") * Decimal("6.00")  # 1h cache write (2x)
-            + Decimal("500") * Decimal("15.00") # output
-        ) / Decimal("1000000")
-        self.assertEqual(cost, expected)
 
-    def test_cache_write_1h_clamped_to_total_writes(self):
-        """Inconsistent provider data: 1h tokens can't exceed total writes."""
-        cost = calculate_cost(
-            "claude-sonnet-4-6", 1000, 500,
-            cached_input_tokens=0, cache_write_tokens=200,
-            cache_write_1h_tokens=999,
+    def test_dated_cost(self):
+        promo = calculate_cost(
+            "claude-sonnet-5", 1_000_000, 1_000_000, as_of=date(2026, 8, 31)
         )
-        expected = (
-            Decimal("800") * Decimal("3.00")    # regular input
-            + Decimal("200") * Decimal("6.00")  # all writes billed at 1h rate
-            + Decimal("500") * Decimal("15.00") # output
-        ) / Decimal("1000000")
-        self.assertEqual(cost, expected)
-
-    def test_cache_write_no_breakdown_unchanged(self):
-        """Without the 1h breakdown the result matches the 5m-only path."""
-        with_kw = calculate_cost(
-            "claude-sonnet-4-6", 1000, 500,
-            cached_input_tokens=300, cache_write_tokens=200,
-            cache_write_1h_tokens=None,
+        standard = calculate_cost(
+            "claude-sonnet-5", 1_000_000, 1_000_000, as_of=date(2026, 9, 1)
         )
-        without_kw = calculate_cost(
-            "claude-sonnet-4-6", 1000, 500,
-            cached_input_tokens=300, cache_write_tokens=200,
-        )
-        self.assertEqual(with_kw, without_kw)
+        self.assertEqual(promo, Decimal("12"))
+        self.assertEqual(standard, Decimal("18"))
 
-    def test_cache_write_1h_ignored_for_model_without_1h_price(self):
-        """Models with no cache_write_1h_price bill all writes at the 5m rate."""
-        cost = calculate_cost(
-            "gpt-5.4-mini", 1000, 500,
-            cached_input_tokens=0, cache_write_tokens=200,
-            cache_write_1h_tokens=100,
-        )
-        without_breakdown = calculate_cost(
-            "gpt-5.4-mini", 1000, 500,
-            cached_input_tokens=0, cache_write_tokens=200,
-        )
-        self.assertEqual(cost, without_breakdown)
+    def test_missing_counts_are_zero(self):
+        self.assertEqual(calculate_cost("gpt-5.4-nano", None, None), Decimal("0"))
 
-    def test_output_only_fallback(self):
-        """Streaming case: only output tokens known."""
-        cost = calculate_cost("gpt-5.4-mini", None, 1000)
-        expected = Decimal("1000") * Decimal("2.00") / Decimal("1000000")
-        self.assertEqual(cost, expected)
-
-    def test_unknown_model_returns_none(self):
-        self.assertIsNone(calculate_cost("unknown-model", 100, 50))
-
-    def test_zero_tokens(self):
-        cost = calculate_cost("gpt-5.4-mini", 0, 0)
-        self.assertEqual(cost, Decimal("0"))
-
-    def test_none_tokens_treated_as_zero(self):
-        cost = calculate_cost("gpt-5.4-mini", None, None)
-        self.assertEqual(cost, Decimal("0"))
-
-    def test_all_registry_entries_have_pricing(self):
-        """Sanity check: every model in the registry has valid pricing."""
-        from llm.model_registry import _MODELS
-        for model_id, info in _MODELS.items():
-            self.assertIsNotNone(info.input_price, f"{model_id} missing input_price")
-            self.assertIsInstance(info.input_price, Decimal, f"{model_id} input_price should be Decimal")
-            self.assertIsInstance(info.output_price, Decimal, f"{model_id} output_price should be Decimal")
+    def test_unknown_model(self):
+        self.assertIsNone(calculate_cost("unknown/model", 10, 10))

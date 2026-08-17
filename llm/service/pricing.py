@@ -6,6 +6,7 @@ the USD cost of a single LLM call.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Optional, Tuple
 
@@ -14,17 +15,59 @@ from llm.model_registry import get_model_info
 _ONE_MILLION = Decimal("1000000")
 
 
-def get_model_pricing(model: str) -> Optional[Tuple[Decimal, Decimal, Decimal, Decimal]]:
-    """Return ``(input, cached_input, cache_write, output)`` per-1M-token prices, or *None*."""
+def _effective_prices(
+    model: str,
+    *,
+    input_tokens: int | None = None,
+    as_of: date | None = None,
+) -> tuple[Decimal, Decimal, Decimal, Decimal | None, Decimal] | None:
+    """Resolve dated and long-context pricing for one request."""
     info = get_model_info(model)
-    if info and info.input_price is not None:
-        return (
-            info.input_price,
-            info.cached_input_price or Decimal("0"),
-            info.cache_write_price or info.input_price,
-            info.output_price or Decimal("0"),
-        )
-    return None
+    if info is None or info.input_price is None:
+        return None
+
+    effective_date = as_of or date.today()
+    inp = info.input_price
+    cached = info.cached_input_price or Decimal("0")
+    write = info.cache_write_price or inp
+    write_1h = info.cache_write_1h_price
+    out = info.output_price or Decimal("0")
+
+    for change in sorted(info.price_changes, key=lambda item: item.starts_on):
+        if change.starts_on > effective_date:
+            break
+        inp = change.input_price
+        cached = change.cached_input_price
+        write = change.cache_write_price or inp
+        write_1h = change.cache_write_1h_price
+        out = change.output_price
+
+    if (
+        input_tokens is not None
+        and info.long_context_threshold is not None
+        and input_tokens > info.long_context_threshold
+    ):
+        inp = info.long_context_input_price or inp
+        cached = info.long_context_cached_input_price or cached
+        write = info.long_context_cache_write_price or inp
+        write_1h = info.long_context_cache_write_1h_price
+        out = info.long_context_output_price or out
+
+    return inp, cached, write, write_1h, out
+
+
+def get_model_pricing(
+    model: str,
+    input_tokens: int | None = None,
+    *,
+    as_of: date | None = None,
+) -> Optional[Tuple[Decimal, Decimal, Decimal, Decimal]]:
+    """Return effective ``(input, cached, cache_write, output)`` prices per 1M."""
+    prices = _effective_prices(model, input_tokens=input_tokens, as_of=as_of)
+    if prices is None:
+        return None
+    inp, cached, write, _write_1h, out = prices
+    return inp, cached, write, out
 
 
 def calculate_cost(
@@ -35,6 +78,7 @@ def calculate_cost(
     cache_write_tokens: Optional[int] = None,
     *,
     cache_write_1h_tokens: Optional[int] = None,
+    as_of: date | None = None,
 ) -> Optional[Decimal]:
     """Compute the USD cost of a call, or *None* if pricing is unknown.
 
@@ -45,11 +89,11 @@ def calculate_cost(
     breakdown is absent — or the model has no 1h rate configured — all cache
     writes bill at the 5m rate, matching the pre-breakdown behavior.
     """
-    pricing = get_model_pricing(model)
-    if pricing is None:
+    prices = _effective_prices(model, input_tokens=input_tokens, as_of=as_of)
+    if prices is None:
         return None
 
-    inp_price, cached_price, write_price, out_price = pricing
+    inp_price, cached_price, write_price, write_1h_configured, out_price = prices
     inp = Decimal(input_tokens or 0)
     out = Decimal(output_tokens or 0)
     cached = Decimal(cached_input_tokens or 0)
@@ -57,12 +101,10 @@ def calculate_cost(
 
     written_1h = Decimal(0)
     write_1h_price = Decimal(0)
-    if cache_write_1h_tokens:
-        info = get_model_info(model)
-        if info and info.cache_write_1h_price is not None:
-            # Clamp to the total write count in case of inconsistent data.
-            written_1h = min(Decimal(cache_write_1h_tokens), written)
-            write_1h_price = info.cache_write_1h_price
+    if cache_write_1h_tokens and write_1h_configured is not None:
+        # Clamp to the total write count in case of inconsistent data.
+        written_1h = min(Decimal(cache_write_1h_tokens), written)
+        write_1h_price = write_1h_configured
     written_5m = written - written_1h
 
     # Cache reads and writes are subsets of input tokens, each billed at

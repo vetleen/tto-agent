@@ -70,6 +70,28 @@ OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when mode
 MESSAGE_MAX_CHARS = 75_000
 
 
+def _resolve_reasoning_level(model: str | None, requested: object) -> str | None:
+    """Apply a model's default or reject a level that its API cannot accept."""
+    if not model:
+        return None
+    from llm.model_registry import get_model_info
+
+    info = get_model_info(model)
+    if info is None or not info.reasoning_levels:
+        if requested in (None, "", "off", "none"):
+            return None
+        raise ValueError(f"{model} does not support configurable reasoning")
+    if requested in (None, ""):
+        return info.default_reasoning_level
+    if not isinstance(requested, str) or requested not in info.reasoning_levels:
+        allowed = ", ".join(info.reasoning_levels)
+        raise ValueError(
+            f"Reasoning level '{requested}' is not available for {info.display_name}. "
+            f"Choose one of: {allowed}."
+        )
+    return requested
+
+
 def _prepend_preamble_to_last_user_message(messages, preamble: str) -> None:
     """Splice ``preamble`` onto the last user message in ``messages`` in place.
 
@@ -950,9 +972,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Per-message model and thinking overrides
         requested_model = data.get("model") or None
-        thinking_level = data.get("thinking_level", "off")
-        if thinking_level not in ("off", "low", "medium", "high", "max"):
-            thinking_level = "off"
+        if requested_model:
+            from llm.model_registry import canonical_model_id
+
+            requested_model = canonical_model_id(requested_model) or requested_model
+        thinking_level = data.get("thinking_level")
 
         # Allow payload to specify data_room_ids (e.g. for new threads)
         payload_room_ids = data.get("data_room_ids")
@@ -1172,6 +1196,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 model = requested_model
             else:
                 model = resolve_thread_model(thread.model, prefs) if prefs else None
+
+            try:
+                thinking_level = _resolve_reasoning_level(model, thinking_level)
+            except ValueError as exc:
+                await self._sink.send_event({
+                    "event_type": "error",
+                    "data": {"message": str(exc), "error_code": "invalid_reasoning_level"},
+                })
+                return
 
             # Remember the effective model on the thread so reopening honors it.
             if model and thread.model != model:
@@ -1456,7 +1489,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def run_turn_to_completion(
         self, thread, content, *,
         history_mode="conversational", is_loop_turn=False,
-        requested_model=None, thinking_level="off",
+        requested_model=None, thinking_level=None,
     ):
         """Run one agent turn to completion, awaiting the full stream.
 
@@ -1473,6 +1506,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             model = requested_model
         else:
             model = resolve_thread_model(thread.model, prefs) if prefs else None
+        thinking_level = _resolve_reasoning_level(model, thinking_level)
         max_context_tokens = prefs.max_context_tokens if prefs else None
 
         static_system, history, semi_static_system, dynamic_context, meta = (
@@ -1507,7 +1541,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self, thread, system_prompt, history,
         semi_static_system="",
         dynamic_context="",
-        requested_model=None, thinking_level="off", resolved_model=None,
+        requested_model=None, thinking_level=None, resolved_model=None,
         turn=None, seed_mode=False, is_loop_turn=False,
     ):
         from llm import get_llm_service
@@ -1584,6 +1618,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 model = requested_model
             else:
                 model = resolve_thread_model(thread.model, prefs) if prefs else None
+        thinking_level = _resolve_reasoning_level(model, thinking_level)
 
         # Web tools always available; document tools only with data rooms; canvas tools always
         from llm.tools.registry import get_tool_registry
@@ -1671,6 +1706,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             async for event in service.astream("simple_chat", request, cancel_event=turn.cancel_event):
                 event_data = event.model_dump()
+                if (
+                    event.event_type == "message_end"
+                    and event.data.get("stop_reason") == "refusal"
+                    and not accumulated_content.strip()
+                ):
+                    # Claude Fable reports some refusals as a successful HTTP
+                    # response. Surface an actionable message even when the
+                    # provider supplied no text block to render.
+                    stream_error = True
+                    await self._sink.send_event({
+                        "event_type": "error",
+                        "data": {
+                            "message": "The selected model declined this request.",
+                            "error_code": "model_refusal",
+                        },
+                    })
                 # Never leak the raw provider exception string to the client. The
                 # user-facing `message` (curated by classify_api_error) and
                 # `error_code` are kept; `details` stays server-side only (it's

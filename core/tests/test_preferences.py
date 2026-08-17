@@ -81,8 +81,8 @@ class OrgRestrictsModelsTest(TestCase):
         ])
 
 
-class UserPicksModelTest(TestCase):
-    """User's choice wins when it's in the effective allowed list."""
+class UserModelOverrideIgnoredTest(TestCase):
+    """Stored user model choices do not override organization/system defaults."""
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -93,7 +93,7 @@ class UserPicksModelTest(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "anthropic/claude-sonnet-4-6",
     ])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_user_choice_wins(self, mock_registry, mock_allowed):
+    def test_stored_user_choice_is_ignored(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user()
@@ -109,7 +109,7 @@ class UserPicksModelTest(TestCase):
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.top_model, "anthropic/claude-sonnet-4-6")
+        self.assertEqual(prefs.top_model, "openai/gpt-5.4")
 
 
 class UserPicksOutsideAllowedTest(TestCase):
@@ -609,8 +609,7 @@ class TranscriptionModelCascadeTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_user_picks_allowed(self, mock_registry, mock_allowed):
-        """User picks an allowed transcription model."""
+    def test_stored_user_transcription_model_is_ignored(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="tx-user-picks@example.com")
@@ -621,7 +620,7 @@ class TranscriptionModelCascadeTest(TestCase):
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-transcribe")
+        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -662,22 +661,18 @@ class TranscriptionModelCascadeTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_live_model_follows_user_default_when_no_live_override(self, mock_registry, mock_allowed):
-        """The live model follows the user's GENERAL default when they haven't
-        set a dedicated 'live' override — not the system mini fallback.
-
-        Regression: clicking Transcribe always used gpt-4o-mini-transcribe even
-        when the user's default was gpt-4o-transcribe, because the live cascade
-        never consulted the 'default' key.
-        """
+    def test_live_model_follows_org_default_when_no_live_override(self, mock_registry, mock_allowed):
+        """The live model follows the organization's general default."""
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="tx-live-follows-default@example.com")
-        settings = UserSettings.objects.get(user=user)
-        settings.preferences = {
+        org = Organization.objects.create(name="TxDefault", slug="tx-default", preferences={
+            "allowed_transcription_models": [
+                "openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"
+            ],
             "transcription_models": {"default": "openai/gpt-4o-transcribe"},
-        }
-        settings.save()
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
         self.assertEqual(prefs.transcription_model, "openai/gpt-4o-transcribe")
@@ -693,19 +688,21 @@ class TranscriptionModelCascadeTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_explicit_live_override_wins_over_default(self, mock_registry, mock_allowed):
-        """An explicit 'live' override is still honored over the general default."""
+    def test_explicit_org_live_override_wins_over_default(self, mock_registry, mock_allowed):
+        """An explicit organization live override wins over its general default."""
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="tx-live-override@example.com")
-        settings = UserSettings.objects.get(user=user)
-        settings.preferences = {
+        org = Organization.objects.create(name="TxLive", slug="tx-live", preferences={
+            "allowed_transcription_models": [
+                "openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"
+            ],
             "transcription_models": {
                 "default": "openai/gpt-4o-transcribe",
                 "live": "openai/gpt-4o-mini-transcribe",
             },
-        }
-        settings.save()
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
         self.assertEqual(prefs.transcription_model_live, "openai/gpt-4o-mini-transcribe")
@@ -849,8 +846,7 @@ class TierConstraintTest(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_mid_slot_accepts_standard_model(self, mock_registry, mock_allowed):
-        """Standard model can be used for the mid slot."""
+    def test_stored_user_mid_model_is_ignored(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="tier-mid-std@example.com")
@@ -859,7 +855,7 @@ class TierConstraintTest(TestCase):
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.mid_model, "openai/gpt-5.4")
+        self.assertEqual(prefs.mid_model, "openai/gpt-5.4-mini")
 
 
 class FallbackWarningsTest(TestCase):
@@ -941,7 +937,7 @@ class FeatureModelOverrideTest(TestCase):
         "gemini/gemini-3.1-flash-lite",
     ])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_user_feature_override(self, mock_registry, mock_allowed):
+    def test_stored_user_feature_override_is_ignored(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="feat-override@example.com")
@@ -950,7 +946,7 @@ class FeatureModelOverrideTest(TestCase):
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.feature_models["thread_title"], "gemini/gemini-3.1-flash-lite")
+        self.assertEqual(prefs.feature_models["thread_title"], "openai/gpt-5.4-nano")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",

@@ -14,8 +14,12 @@ def get_display_name(model_id: str) -> str:
     Examples:
         anthropic/claude-sonnet-4-5-20250929 -> Claude Sonnet 4.5
         openai/gpt-5-mini -> GPT-5 Mini
-        gemini/gemini-3.5-flash -> Gemini 3.5 Flash
+        gemini/gemini-3.7-flash -> Gemini 3.7 Flash
     """
+    info = get_model_info(model_id)
+    if info is not None:
+        return info.display_name
+
     name = model_id
 
     # Strip provider prefix
@@ -76,11 +80,11 @@ def supports_thinking(model_id: str) -> bool:
     if lower.startswith("anthropic/"):
         return True
 
-    # OpenAI reasoning models: o1, o3, o4 series and GPT-5.4+
+    # OpenAI reasoning models: o1, o3, o4 series and recent GPT-5 families
     name = lower.split("/", 1)[-1] if "/" in lower else lower
     if re.match(r"^o[134]\b", name):
         return True
-    if name.startswith("gpt-5.5") or name.startswith("gpt-5.4") or name.startswith("gpt-5.2-pro"):
+    if name.startswith(("gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")):
         return True
 
     # Models with "thinking" in their name
@@ -92,12 +96,21 @@ def supports_thinking(model_id: str) -> bool:
 
 def get_thinking_levels(model_id: str) -> list[str]:
     """Return the thinking levels available for a model."""
+    info = get_model_info(model_id)
+    if info is not None:
+        return list(info.reasoning_levels)
     if not supports_thinking(model_id):
         return []
-    info = get_model_info(model_id)
-    if info is not None and info.supports_max_effort:
-        return ["low", "medium", "high", "max"]
     return ["low", "medium", "high"]
+
+
+def get_default_thinking_level(model_id: str) -> str | None:
+    """Return the model's default reasoning level, if it supports reasoning."""
+    info = get_model_info(model_id)
+    if info is not None:
+        return info.default_reasoning_level
+    levels = get_thinking_levels(model_id)
+    return "off" if "off" in levels else (levels[0] if levels else None)
 
 
 def supports_vision(model_id: str) -> bool:
@@ -167,26 +180,28 @@ def get_price_level(model_id: str) -> int:
     ``<=1 -> 1``, ``<=5 -> 2``, ``<=15 -> 3``, ``<=50 -> 4``, ``>50 -> 5``.
     Drives the ``$``-``$$$$$`` glyphs in the chat model picker.
     """
-    info = get_model_info(model_id)
-    if info is None or info.output_price is None:
+    from llm.service.pricing import get_model_pricing
+
+    pricing = get_model_pricing(model_id)
+    if pricing is None:
         return 0
+    output_price = pricing[3]
     for threshold, level in _PRICE_THRESHOLDS:
-        if info.output_price <= threshold:
+        if output_price <= threshold:
             return level
     return 5
 
 
 def get_capability_level(model_id: str) -> int:
-    """Return a 1-4 capability rating (0 if unknown).
+    """Return a 1-5 performance rating (0 if unknown).
 
-    The first three stars come from tier (``cheap -> 1``, ``mid -> 2``,
-    ``standard -> 3``); the manually-curated ``cutting_edge`` registry flag
-    awards a 4th. Drives the star glyphs in the chat model picker.
+    Four stars come from the input-price tier (cheap through premium); the
+    manually curated ``flagship`` marker awards a fifth.
     """
     info = get_model_info(model_id)
     if info is None:
         return 0
-    return TIER_ORDER.get(info.tier, 0) + 1 + (1 if info.cutting_edge else 0)
+    return TIER_ORDER.get(info.tier, 0) + 1 + (1 if info.flagship else 0)
 
 
 def _format_output_price(price: Decimal) -> str:
@@ -199,14 +214,17 @@ def _format_output_price(price: Decimal) -> str:
 def get_model_meta_tooltip(model_id: str) -> str | None:
     """Hover text combining standing and output price, or None if unknown.
 
-    Cutting-edge models lead with "Cutting edge" (explaining their 4th star);
-    others show their tier. Example: ``"Cutting edge · $30 / 1M output tokens"``.
+    Flagship models lead with "Flagship" (explaining their fifth star); others
+    show their price-derived tier. Example: ``"Flagship · $30 / 1M output tokens"``.
     """
+    from llm.service.pricing import get_model_pricing
+
     info = get_model_info(model_id)
-    if info is None or info.output_price is None:
+    pricing = get_model_pricing(model_id)
+    if info is None or pricing is None:
         return None
-    label = "Cutting edge" if info.cutting_edge else info.tier.capitalize()
+    label = "Flagship" if info.flagship else info.tier.capitalize()
     return (
         f"{label} · "
-        f"{_format_output_price(info.output_price)} / 1M output tokens"
+        f"{_format_output_price(pricing[3])} / 1M output tokens"
     )

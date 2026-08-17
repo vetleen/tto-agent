@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import logging
-
 from llm.core.model_factory import create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
 from llm.model_registry import get_model_info
 from llm.types.requests import ChatRequest
-
-logger = logging.getLogger(__name__)
 
 _ANTHROPIC_THINKING = {
     "low": {"budget": 4_096, "max_tokens": 16_384},
@@ -40,17 +36,12 @@ class AnthropicChatModel(BaseLangChainChatModel):
 
     def _get_streaming_client(self, request: ChatRequest):
         client = self._client
-        level = request.params.get("thinking_level", "off")
+        level = request.params.get("thinking_level")
 
-        if level != "off":
+        if level not in (None, "off"):
             if self._uses_adaptive_thinking():
                 client = self._get_adaptive_thinking_client(level)
             else:
-                if level == "max":
-                    # "max" only exists for adaptive-thinking models; clamp to
-                    # the largest extended-thinking budget instead of silently
-                    # disabling thinking.
-                    level = "high"
                 if level in _ANTHROPIC_THINKING:
                     client = self._get_extended_thinking_client(level)
 
@@ -65,37 +56,22 @@ class AnthropicChatModel(BaseLangChainChatModel):
 
     def _get_extended_thinking_client(self, level: str):
         cfg = _ANTHROPIC_THINKING[level]
-        try:
-            return create_variant_client(
-                self._api_model,
-                provider="anthropic",
-                thinking={"type": "enabled", "budget_tokens": cfg["budget"]},
-                max_tokens=cfg["max_tokens"],
-            )
-        except Exception:
-            logger.warning(
-                "Failed to create thinking-enabled Anthropic client; "
-                "falling back to standard client.",
-                exc_info=True,
-            )
-            return self._client
+        return create_variant_client(
+            self._api_model,
+            provider="anthropic",
+            thinking={"type": "enabled", "budget_tokens": cfg["budget"]},
+            max_tokens=cfg["max_tokens"],
+        )
 
     def _get_adaptive_thinking_client(self, level: str):
-        try:
-            return create_variant_client(
-                self._api_model,
-                provider="anthropic",
-                thinking={"type": "adaptive", "display": "summarized"},
-                effort=level,
-                max_tokens=128_000,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to create adaptive-thinking Anthropic client; "
-                "falling back to standard client.",
-                exc_info=True,
-            )
-            return self._client
+        info = get_model_info(self.name)
+        return create_variant_client(
+            self._api_model,
+            provider="anthropic",
+            thinking={"type": "adaptive", "display": "summarized"},
+            output_config={"effort": level},
+            max_tokens=info.max_output_tokens if info else 128_000,
+        )
 
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         content = getattr(chunk, "content", None)
@@ -112,6 +88,12 @@ class AnthropicChatModel(BaseLangChainChatModel):
                         results.append(("thinking", {"text": text}))
                 elif block_type == "text":
                     text = block.get("text", "")
+                    if text:
+                        results.append(("token", {"text": text}))
+                elif block_type == "refusal":
+                    # Fable may return HTTP 200 with stop_reason=refusal. Keep
+                    # any provider explanation visible instead of dropping it.
+                    text = block.get("refusal") or block.get("text") or ""
                     if text:
                         results.append(("token", {"text": text}))
             return results

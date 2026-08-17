@@ -1,306 +1,151 @@
-"""Tests for provider thinking level support."""
+"""Tests for model-specific provider reasoning parameters."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase
 
-from llm.core.providers.anthropic import AnthropicChatModel, _ANTHROPIC_THINKING
-from llm.core.providers.gemini import GeminiChatModel, _GEMINI_THINKING_BUDGETS
+from llm.core.providers.anthropic import AnthropicChatModel
+from llm.core.providers.gemini import GeminiChatModel
 from llm.core.providers.openai import OpenAIChatModel
 from llm.types.requests import ChatRequest
 
 
-def _make_request(thinking_level="off", tools=None):
+def _request(level):
     return ChatRequest(
         messages=[{"role": "user", "content": "hi"}],
         model="test",
         stream=True,
-        params={"thinking_level": thinking_level},
-        tools=tools or [],
+        params={"thinking_level": level},
+        tools=[],
     )
 
 
-class AnthropicThinkingLevelTests(TestCase):
-
-    def _make_model(self):
+class AnthropicReasoningTests(SimpleTestCase):
+    def test_off_uses_base_client(self):
         client = MagicMock()
-        return AnthropicChatModel("anthropic/claude-sonnet-4-6", client)
-
-    def test_off_returns_standard_client_with_cache_control(self):
-        model = self._make_model()
-        request = _make_request("off")
-        client = model._get_streaming_client(request)
-        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
-        self.assertIs(client, model._client.bind.return_value)
+        model = AnthropicChatModel("anthropic/claude-opus-5", client)
+        result = model._get_streaming_client(_request("off"))
+        self.assertIs(result, client.bind.return_value)
+        client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
 
     @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_low_creates_variant_with_4k_budget(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("low")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking"]["budget_tokens"], 4_096)
-        self.assertEqual(call_kwargs["max_tokens"], 16_384)
+    def test_adaptive_effort_is_sent_in_output_config(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-fable-5", MagicMock())
+        model._get_streaming_client(_request("xhigh"))
+        kwargs = create_variant.call_args.kwargs
+        self.assertEqual(kwargs["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(kwargs["output_config"], {"effort": "xhigh"})
+        self.assertEqual(kwargs["max_tokens"], 128_000)
 
     @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_medium_creates_variant_with_10k_budget(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("medium")
-        model._get_streaming_client(request)
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking"]["budget_tokens"], 10_000)
+    def test_opus_46_uses_adaptive_thinking(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-opus-4-6", MagicMock())
+        model._get_streaming_client(_request("max"))
+        self.assertEqual(create_variant.call_args.kwargs["thinking"]["type"], "adaptive")
+        self.assertEqual(create_variant.call_args.kwargs["output_config"], {"effort": "max"})
 
     @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_high_creates_variant_with_32k_budget(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("high")
-        model._get_streaming_client(request)
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking"]["budget_tokens"], 32_000)
-        self.assertEqual(call_kwargs["max_tokens"], 40_000)
+    def test_haiku_keeps_budgeted_extended_thinking(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-haiku-4-5", MagicMock())
+        model._get_streaming_client(_request("medium"))
+        kwargs = create_variant.call_args.kwargs
+        self.assertEqual(kwargs["thinking"], {"type": "enabled", "budget_tokens": 10_000})
+        self.assertEqual(kwargs["max_tokens"], 16_384)
 
-    @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_fallback_on_create_failure(self, mock_create):
-        mock_create.side_effect = Exception("API error")
-        model = self._make_model()
-        request = _make_request("high")
-        client = model._get_streaming_client(request)
-        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
-        self.assertIs(client, model._client.bind.return_value)
+    def test_refusal_content_is_visible(self):
+        model = AnthropicChatModel("anthropic/claude-fable-5", MagicMock())
+        chunk = SimpleNamespace(content=[{"type": "refusal", "refusal": "I can't help."}])
+        self.assertEqual(model._parse_chunk(chunk), [("token", {"text": "I can't help."})])
 
-    @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_max_clamps_to_high_on_non_adaptive_model(self, mock_create):
-        """"max" only exists for adaptive models; on Sonnet it must clamp to
-        the high extended-thinking budget instead of silently disabling
-        thinking."""
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("max")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking"]["budget_tokens"], 32_000)
+    @patch("llm.core.providers.anthropic.create_variant_client", side_effect=ValueError("bad effort"))
+    def test_invalid_provider_config_is_not_silently_disabled(self, _create_variant):
+        model = AnthropicChatModel("anthropic/claude-opus-5", MagicMock())
+        with self.assertRaisesRegex(ValueError, "bad effort"):
+            model._get_streaming_client(_request("high"))
 
 
-class AnthropicAdaptiveThinkingTests(TestCase):
-
-    def _make_model(self):
-        client = MagicMock()
-        return AnthropicChatModel("anthropic/claude-opus-4-7", client)
-
-    def test_off_returns_standard_client_with_cache_control(self):
-        model = self._make_model()
-        request = _make_request("off")
-        client = model._get_streaming_client(request)
-        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
-        self.assertIs(client, model._client.bind.return_value)
-
-    @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_low_creates_adaptive_variant(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("low")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking"], {"type": "adaptive", "display": "summarized"})
-        self.assertEqual(call_kwargs["effort"], "low")
-        self.assertEqual(call_kwargs["max_tokens"], 128_000)
-
-    @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_medium_creates_adaptive_variant(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("medium")
-        model._get_streaming_client(request)
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["effort"], "medium")
-
-    @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_high_creates_adaptive_variant(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("high")
-        model._get_streaming_client(request)
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["effort"], "high")
-
-    @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_max_creates_adaptive_variant(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model()
-        request = _make_request("max")
-        model._get_streaming_client(request)
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["effort"], "max")
-
-    @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_fallback_on_create_failure(self, mock_create):
-        mock_create.side_effect = Exception("API error")
-        model = self._make_model()
-        request = _make_request("high")
-        client = model._get_streaming_client(request)
-        model._client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
-        self.assertIs(client, model._client.bind.return_value)
-
-    def test_opus_46_still_uses_extended_thinking(self):
-        client = MagicMock()
-        model = AnthropicChatModel("anthropic/claude-opus-4-6", client)
-        self.assertFalse(model._uses_adaptive_thinking())
-
-    def test_opus_47_uses_adaptive_thinking(self):
-        client = MagicMock()
-        model = AnthropicChatModel("anthropic/claude-opus-4-7", client)
-        self.assertTrue(model._uses_adaptive_thinking())
-
-    def test_opus_48_uses_adaptive_thinking(self):
-        client = MagicMock()
-        model = AnthropicChatModel("anthropic/claude-opus-4-8", client)
-        self.assertTrue(model._uses_adaptive_thinking())
-
-    def test_sonnet_5_uses_adaptive_thinking(self):
-        # Sonnet 5 has no extended thinking; it must route through the adaptive
-        # path (the fixed budget_tokens path 400s on it).
-        client = MagicMock()
-        model = AnthropicChatModel("anthropic/claude-sonnet-5", client)
-        self.assertTrue(model._uses_adaptive_thinking())
-
-
-class OpenAIThinkingLevelTests(TestCase):
-
-    def _make_model(self, name="openai/gpt-5.4"):
-        client = MagicMock()
-        return OpenAIChatModel(name, client)
-
-    def test_off_returns_standard_client(self):
-        model = self._make_model()
-        request = _make_request("off")
-        client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
-
+class OpenAIReasoningTests(SimpleTestCase):
     @patch("llm.core.providers.openai.create_variant_client")
-    def test_gpt54_supports_reasoning(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model("openai/gpt-5.4")
-        request = _make_request("medium")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["model_kwargs"]["reasoning_effort"], "medium")
+    def test_all_gpt56_levels_are_forwarded_without_clamping(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        for level in ("none", "low", "medium", "high", "xhigh", "max"):
+            with self.subTest(level=level):
+                create_variant.reset_mock()
+                model._get_streaming_client(_request(level))
+                reasoning = create_variant.call_args.kwargs["reasoning"]
+                self.assertEqual(reasoning["effort"], level)
+                if level == "none":
+                    self.assertNotIn("summary", reasoning)
+                else:
+                    self.assertEqual(reasoning["summary"], "auto")
 
-    @patch("llm.core.providers.openai.create_variant_client")
-    def test_o3_supports_reasoning(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model("openai/o3")
-        request = _make_request("high")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["model_kwargs"]["reasoning_effort"], "high")
-
-    def test_non_reasoning_model_ignores_level(self):
-        model = self._make_model("openai/gpt-5-mini")
-        request = _make_request("high")
-        client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
-
-    @patch("llm.core.providers.openai.create_variant_client")
-    def test_level_maps_directly_to_reasoning_effort(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model("openai/gpt-5.4")
-        for level in ("low", "medium", "high"):
-            mock_create.reset_mock()
-            request = _make_request(level)
-            model._get_streaming_client(request)
-            call_kwargs = mock_create.call_args[1]
-            self.assertEqual(call_kwargs["model_kwargs"]["reasoning_effort"], level)
-
-    @patch("llm.core.providers.openai.create_variant_client")
-    def test_max_clamps_to_high(self, mock_create):
-        """OpenAI has no "max" reasoning_effort — it must clamp to "high"."""
-        mock_create.return_value = MagicMock()
-        model = self._make_model("openai/gpt-5.4")
-        request = _make_request("max")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["model_kwargs"]["reasoning_effort"], "high")
-
-
-class GeminiThinkingLevelTests(TestCase):
-
-    def _make_model(self, name="gemini/gemini-3.5-flash"):
-        client = MagicMock()
-        return GeminiChatModel(name, client)
-
-    def test_off_returns_standard_client(self):
-        model = self._make_model()
-        request = _make_request("off")
-        client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
-
-    @patch("llm.core.providers.gemini.create_variant_client")
-    def test_thinking_enabled_creates_variant(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model("gemini/gemini-3.5-flash")
-        request = _make_request("medium")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking_budget"], 8_192)
-        self.assertTrue(call_kwargs["include_thoughts"])
-
-    def test_extract_replay_metadata_preserves_function_call_signatures(self):
-        from types import SimpleNamespace
-        key = "__gemini_function_call_thought_signatures__"
-        model = self._make_model()
-        msg = SimpleNamespace(additional_kwargs={key: {"tu1": "c2ln"}})
+    def test_reasoning_summary_is_parsed_from_responses_content(self):
+        model = OpenAIChatModel("openai/gpt-5.6-terra", MagicMock())
+        chunk = SimpleNamespace(
+            additional_kwargs={},
+            content=[
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Plan"}]},
+                {"type": "text", "text": "Answer"},
+            ],
+        )
         self.assertEqual(
-            model._extract_replay_metadata(msg),
-            {"additional_kwargs": {key: {"tu1": "c2ln"}}},
+            model._parse_chunk(chunk),
+            [("thinking", {"text": "Plan"}), ("token", {"text": "Answer"})],
         )
 
-    def test_extract_replay_metadata_empty_without_signatures(self):
-        from types import SimpleNamespace
-        model = self._make_model()
-        self.assertEqual(model._extract_replay_metadata(SimpleNamespace(additional_kwargs={})), {})
-        self.assertEqual(model._extract_replay_metadata(SimpleNamespace()), {})
+    def test_encrypted_reasoning_is_preserved_for_replay(self):
+        model = OpenAIChatModel("openai/gpt-5.6-terra", MagicMock())
+        content = [
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": "cipher", "summary": []},
+            {"type": "text", "text": "Calling a tool"},
+            {"type": "function_call", "name": "lookup"},
+        ]
+        self.assertEqual(
+            model._extract_replay_metadata(SimpleNamespace(content=content)),
+            {"content_blocks": content[:2]},
+        )
 
-    def test_non_thinking_model_ignores_level(self):
-        model = self._make_model("gemini/gemini-fake-no-thinking")
-        request = _make_request("high")
-        client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
+    @patch("llm.core.providers.openai.create_variant_client", side_effect=ValueError("bad effort"))
+    def test_invalid_provider_config_is_not_silently_disabled(self, _create_variant):
+        model = OpenAIChatModel("openai/gpt-5.6-terra", MagicMock())
+        with self.assertRaisesRegex(ValueError, "bad effort"):
+            model._get_streaming_client(_request("max"))
+
+
+class GeminiReasoningTests(SimpleTestCase):
+    @patch("llm.core.providers.gemini.create_variant_client")
+    def test_thinking_level_is_sent_as_string(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = GeminiChatModel("gemini/gemini-3.7-flash", MagicMock())
+        model._get_streaming_client(_request("medium"))
+        self.assertEqual(create_variant.call_args.kwargs["thinking_level"], "medium")
+        self.assertTrue(create_variant.call_args.kwargs["include_thoughts"])
+        self.assertNotIn("thinking_budget", create_variant.call_args.kwargs)
 
     @patch("llm.core.providers.gemini.create_variant_client")
-    def test_high_uses_correct_budget(self, mock_create):
-        mock_create.return_value = MagicMock()
-        model = self._make_model("gemini/gemini-3.1-pro-preview")
-        request = _make_request("high")
-        model._get_streaming_client(request)
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking_budget"], 24_576)
+    def test_flash_lite_minimal_is_forwarded(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = GeminiChatModel("gemini/gemini-3.5-flash-lite", MagicMock())
+        model._get_streaming_client(_request("minimal"))
+        self.assertEqual(create_variant.call_args.kwargs["thinking_level"], "minimal")
 
-    @patch("llm.core.providers.gemini.create_variant_client")
-    def test_fallback_on_create_failure(self, mock_create):
-        mock_create.side_effect = Exception("API error")
-        model = self._make_model("gemini/gemini-3.5-flash")
-        request = _make_request("medium")
-        client = model._get_streaming_client(request)
-        self.assertIs(client, model._client)
+    def test_function_call_thought_signature_is_preserved(self):
+        key = "__gemini_function_call_thought_signatures__"
+        model = GeminiChatModel("gemini/gemini-3.7-flash", MagicMock())
+        self.assertEqual(
+            model._extract_replay_metadata(
+                SimpleNamespace(additional_kwargs={key: {"call_1": "signature"}})
+            ),
+            {"additional_kwargs": {key: {"call_1": "signature"}}},
+        )
 
-    @patch("llm.core.providers.gemini.create_variant_client")
-    def test_max_clamps_to_high_budget(self, mock_create):
-        """Gemini has no "max" level — it must clamp to the high budget
-        instead of silently defaulting to medium."""
-        mock_create.return_value = MagicMock()
-        model = self._make_model("gemini/gemini-3.5-flash")
-        request = _make_request("max")
-        model._get_streaming_client(request)
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        self.assertEqual(call_kwargs["thinking_budget"], 24_576)
+    @patch("llm.core.providers.gemini.create_variant_client", side_effect=ValueError("bad effort"))
+    def test_invalid_provider_config_is_not_silently_disabled(self, _create_variant):
+        model = GeminiChatModel("gemini/gemini-3.7-flash", MagicMock())
+        with self.assertRaisesRegex(ValueError, "bad effort"):
+            model._get_streaming_client(_request("medium"))

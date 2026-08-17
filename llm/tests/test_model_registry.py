@@ -1,270 +1,197 @@
-"""Tests for llm.model_registry — unified model metadata registry."""
+"""Tests for the curated model registry."""
 
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import SimpleTestCase
 
 from llm.model_registry import (
-    SLOT_ALLOWED_TIERS,
     TIER_CHEAP,
     TIER_MID,
+    TIER_PREMIUM,
     TIER_STANDARD,
-    ModelInfo,
+    canonical_model_id,
     get_model_info,
     get_model_tier,
     get_models_at_or_above_tier,
     get_models_by_tier,
     get_models_for_slot,
+    get_performance_tier,
+    get_registered_model_ids,
     is_model_valid_for_slot,
+    normalize_model_ids,
 )
 
 
-class GetModelInfoTests(TestCase):
+EXPECTED_IDS = [
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-5.6-luna",
+    "openai/gpt-5.4-nano",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-opus-5",
+    "anthropic/claude-opus-4-6",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-4-5",
+    "gemini/gemini-3.1-pro-preview",
+    "gemini/gemini-3.7-flash",
+    "gemini/gemini-3.5-flash-lite",
+]
 
-    def test_known_model_full_id(self):
-        info = get_model_info("openai/gpt-5.4")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.display_name, "GPT-5.4")
-        self.assertEqual(info.provider, "openai")
-        self.assertEqual(info.api_model, "gpt-5.4")
 
-    def test_known_model_bare_name(self):
-        info = get_model_info("claude-sonnet-4-6")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.provider, "anthropic")
+class RegistryTests(SimpleTestCase):
+    def test_curated_set_is_exact(self):
+        self.assertEqual(get_registered_model_ids(), EXPECTED_IDS)
+
+    def test_every_model_has_complete_core_metadata(self):
+        for model_id in EXPECTED_IDS:
+            with self.subTest(model=model_id):
+                info = get_model_info(model_id)
+                self.assertIsNotNone(info)
+                self.assertIn(
+                    info.tier,
+                    (TIER_CHEAP, TIER_MID, TIER_STANDARD, TIER_PREMIUM),
+                )
+                self.assertGreater(info.context_window, 0)
+                self.assertGreater(info.max_output_tokens, 0)
+                self.assertIn("text", info.input_modalities)
+                self.assertTrue(info.supports_vision)
+                self.assertIsNotNone(info.input_price)
+                self.assertIsNotNone(info.output_price)
+                self.assertIn(info.default_reasoning_level, info.reasoning_levels)
+
+    def test_exact_reasoning_capabilities(self):
+        expected = {
+            "openai/gpt-5.6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
+            "openai/gpt-5.6-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
+            "openai/gpt-5.6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
+            "openai/gpt-5.4-nano": (("none", "low", "medium", "high", "xhigh"), "none"),
+            "anthropic/claude-fable-5": (("low", "medium", "high", "xhigh", "max"), "high"),
+            "anthropic/claude-opus-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
+            "anthropic/claude-opus-4-6": (("off", "low", "medium", "high", "max"), "off"),
+            "anthropic/claude-sonnet-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
+            "anthropic/claude-haiku-4-5": (("off", "low", "medium", "high"), "off"),
+            "gemini/gemini-3.1-pro-preview": (("low", "medium", "high"), "high"),
+            "gemini/gemini-3.7-flash": (("low", "medium", "high"), "medium"),
+            "gemini/gemini-3.5-flash-lite": (("minimal", "low", "medium", "high"), "minimal"),
+        }
+        for model_id, (levels, default) in expected.items():
+            with self.subTest(model=model_id):
+                info = get_model_info(model_id)
+                self.assertEqual(info.reasoning_levels, levels)
+                self.assertEqual(info.default_reasoning_level, default)
+
+    def test_context_and_output_limits(self):
+        self.assertEqual(get_model_info("gpt-5.6-sol").context_window, 1_050_000)
+        self.assertEqual(get_model_info("gpt-5.6-sol").max_output_tokens, 128_000)
+        self.assertEqual(get_model_info("gpt-5.4-nano").context_window, 400_000)
+        self.assertEqual(get_model_info("claude-haiku-4-5").max_output_tokens, 64_000)
+        self.assertEqual(get_model_info("gemini-3.7-flash").context_window, 1_048_576)
+
+    def test_flagship_pricing_is_present(self):
+        info = get_model_info("openai/gpt-5.6-sol")
+        self.assertEqual(info.input_price, Decimal("5.00"))
+        self.assertEqual(info.cache_write_price, Decimal("6.25"))
+        self.assertEqual(info.output_price, Decimal("30.00"))
+        self.assertEqual(info.long_context_threshold, 272_000)
+        self.assertEqual(info.long_context_output_price, Decimal("45.00"))
+
+    def test_anthropic_thinking_transport_is_explicit(self):
+        for model_id in EXPECTED_IDS:
+            info = get_model_info(model_id)
+            if info.provider == "anthropic":
+                self.assertIn(info.thinking_mode, ("adaptive", "extended"))
+        self.assertEqual(get_model_info("claude-opus-4-6").thinking_mode, "adaptive")
+        self.assertEqual(get_model_info("claude-haiku-4-5").thinking_mode, "extended")
 
     def test_unknown_model_returns_none(self):
-        self.assertIsNone(get_model_info("unknown/model-xyz"))
+        self.assertIsNone(get_model_info("unknown/model"))
 
-    def test_anthropic_models_support_thinking(self):
-        for model_id in [
-            "anthropic/claude-opus-4-8",
-            "anthropic/claude-opus-4-7",
-            "anthropic/claude-opus-4-6",
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-haiku-4-5",
-        ]:
-            info = get_model_info(model_id)
-            self.assertIsNotNone(info, f"{model_id} not found")
-            self.assertTrue(info.supports_thinking, f"{model_id} should support thinking")
 
-    def test_gpt5_5_supports_thinking(self):
-        info = get_model_info("openai/gpt-5.5")
-        self.assertTrue(info.supports_thinking)
+class ReplacementTests(SimpleTestCase):
+    def test_retired_models_map_to_approved_replacements(self):
+        expected = {
+            "openai/gpt-5.5": "openai/gpt-5.6-sol",
+            "openai/gpt-5.4": "openai/gpt-5.6-terra",
+            "openai/gpt-5.4-mini": "openai/gpt-5.6-luna",
+            "anthropic/claude-opus-4-8": "anthropic/claude-opus-5",
+            "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
+            "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
+            "gemini/gemini-3.5-flash": "gemini/gemini-3.7-flash",
+            "gemini/gemini-3.1-flash-lite": "gemini/gemini-3.5-flash-lite",
+        }
+        for retired, replacement in expected.items():
+            with self.subTest(model=retired):
+                self.assertEqual(canonical_model_id(retired), replacement)
+                self.assertEqual(get_model_info(retired), get_model_info(replacement))
 
-    def test_gpt5_4_supports_thinking(self):
-        info = get_model_info("openai/gpt-5.4")
-        self.assertTrue(info.supports_thinking)
+    def test_bare_names_are_normalized(self):
+        self.assertEqual(canonical_model_id("gpt-5.6-terra"), "openai/gpt-5.6-terra")
+        self.assertEqual(canonical_model_id("claude-opus-5"), "anthropic/claude-opus-5")
+        self.assertEqual(canonical_model_id("gemini-3.7-flash"), "gemini/gemini-3.7-flash")
 
-    def test_gpt5_mini_no_thinking(self):
-        info = get_model_info("openai/gpt-5.4-mini")
-        self.assertFalse(info.supports_thinking)
-
-    def test_gemini_models_support_thinking(self):
-        for model_id in [
-            "gemini/gemini-3.1-pro-preview",
-            "gemini/gemini-3.5-flash",
-            "gemini/gemini-3.1-flash-lite",
-        ]:
-            info = get_model_info(model_id)
-            self.assertIsNotNone(info, f"{model_id} not found")
-            self.assertTrue(info.supports_thinking, f"{model_id} should support thinking")
-
-    def test_all_registered_models_have_vision(self):
-        for model_id in [
-            "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
-            "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-6",
-            "gemini/gemini-3.5-flash", "gemini/gemini-3.1-flash-lite",
-        ]:
-            info = get_model_info(model_id)
-            self.assertIsNotNone(info)
-            self.assertTrue(info.supports_vision, f"{model_id} should support vision")
-
-    def test_gpt5_5_lookup_and_pricing(self):
-        info = get_model_info("openai/gpt-5.5")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.display_name, "GPT-5.5")
-        self.assertEqual(info.provider, "openai")
-        self.assertEqual(info.api_model, "gpt-5.5")
-        self.assertEqual(info.context_window, 1_000_000)
-        self.assertEqual(info.input_price, Decimal("5.00"))
-        self.assertEqual(info.cached_input_price, Decimal("0.50"))
-        self.assertEqual(info.output_price, Decimal("30.00"))
-
-    def test_cutting_edge_curated_set(self):
-        # Cutting edge is a hand-curated flagship marker that awards a 4th
-        # capability star. Exactly these two carry it today; this guards
-        # against an accidental flag elsewhere.
-        from llm.model_registry import _MODELS
-
-        cutting_edge = {mid for mid, info in _MODELS.items() if info.cutting_edge}
+    def test_list_normalization_deduplicates_replacements(self):
         self.assertEqual(
-            cutting_edge,
-            {"openai/gpt-5.5", "anthropic/claude-opus-4-8"},
+            normalize_model_ids(["openai/gpt-5.5", "openai/gpt-5.6-sol", "bogus"]),
+            ["openai/gpt-5.6-sol"],
         )
 
-    def test_cutting_edge_defaults_false(self):
-        self.assertFalse(get_model_info("anthropic/claude-opus-4-6").cutting_edge)
-        self.assertFalse(get_model_info("openai/gpt-5.4").cutting_edge)
 
-    def test_context_windows(self):
-        self.assertEqual(get_model_info("openai/gpt-5.5").context_window, 1_000_000)
-        self.assertEqual(get_model_info("openai/gpt-5.4").context_window, 1_000_000)
-        self.assertEqual(get_model_info("openai/gpt-5.4-nano").context_window, 128_000)
-        self.assertEqual(get_model_info("anthropic/claude-opus-4-7").context_window, 1_000_000)
-        self.assertEqual(get_model_info("anthropic/claude-opus-4-6").context_window, 1_000_000)
-        self.assertEqual(get_model_info("anthropic/claude-sonnet-4-6").context_window, 1_000_000)
+class TierTests(SimpleTestCase):
+    def test_input_price_intervals_define_tiers(self):
+        self.assertEqual(get_performance_tier(Decimal("0.50")), TIER_CHEAP)
+        self.assertEqual(get_performance_tier(Decimal("0.51")), TIER_MID)
+        self.assertEqual(get_performance_tier(Decimal("1.50")), TIER_MID)
+        self.assertEqual(get_performance_tier(Decimal("1.51")), TIER_STANDARD)
+        self.assertEqual(get_performance_tier(Decimal("4.99")), TIER_STANDARD)
+        self.assertEqual(get_performance_tier(Decimal("5.00")), TIER_PREMIUM)
 
-    def test_pricing(self):
-        info = get_model_info("openai/gpt-5.4")
-        self.assertEqual(info.input_price, Decimal("1.75"))
-        self.assertEqual(info.cached_input_price, Decimal("0.175"))
-        self.assertEqual(info.output_price, Decimal("14.00"))
+    def test_tier_sets(self):
+        self.assertEqual(
+            get_models_by_tier(TIER_CHEAP),
+            ["openai/gpt-5.4-nano", "gemini/gemini-3.5-flash-lite"],
+        )
+        self.assertEqual(
+            get_models_by_tier(TIER_MID),
+            ["openai/gpt-5.6-luna", "anthropic/claude-haiku-4-5", "gemini/gemini-3.7-flash"],
+        )
+        self.assertIn("openai/gpt-5.6-terra", get_models_by_tier(TIER_STANDARD))
+        self.assertEqual(
+            get_models_by_tier(TIER_PREMIUM),
+            [
+                "openai/gpt-5.6-sol",
+                "anthropic/claude-fable-5",
+                "anthropic/claude-opus-5",
+                "anthropic/claude-opus-4-6",
+            ],
+        )
 
-    def test_opus_47_pricing(self):
-        info = get_model_info("anthropic/claude-opus-4-7")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.input_price, Decimal("5.00"))
-        self.assertEqual(info.cached_input_price, Decimal("0.50"))
-        self.assertEqual(info.output_price, Decimal("25.00"))
-
-    def test_opus_48_lookup_and_pricing(self):
-        info = get_model_info("anthropic/claude-opus-4-8")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.display_name, "Claude Opus 4.8")
-        self.assertEqual(info.provider, "anthropic")
-        self.assertEqual(info.api_model, "claude-opus-4-8")
-        self.assertEqual(info.context_window, 1_000_000)
-        self.assertEqual(info.input_price, Decimal("5.00"))
-        self.assertEqual(info.cached_input_price, Decimal("0.50"))
-        self.assertEqual(info.cache_write_price, Decimal("6.25"))
-        self.assertEqual(info.output_price, Decimal("25.00"))
-
-    def test_bare_name_normalisation(self):
-        """Bare model names resolve via prefix scanning."""
-        info = get_model_info("gpt-5.4")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.provider, "openai")
-
-        info = get_model_info("gemini-3.5-flash")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.provider, "google_genai")
-
-        info = get_model_info("claude-opus-4-7")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.provider, "anthropic")
-
-
-class TierClassificationTests(TestCase):
-
-    def test_all_models_have_a_tier(self):
-        from llm.model_registry import _MODELS
-        for model_id, info in _MODELS.items():
-            self.assertIn(info.tier, (TIER_CHEAP, TIER_MID, TIER_STANDARD), f"{model_id} has invalid tier")
-
-    def test_cheap_models(self):
-        cheap = get_models_by_tier(TIER_CHEAP)
-        self.assertIn("openai/gpt-5.4-nano", cheap)
-        self.assertIn("gemini/gemini-3.1-flash-lite", cheap)
-        self.assertNotIn("openai/gpt-5.4", cheap)
-
-    def test_mid_models(self):
-        mid = get_models_by_tier(TIER_MID)
-        self.assertIn("openai/gpt-5.4-mini", mid)
-        self.assertIn("anthropic/claude-haiku-4-5", mid)
-        self.assertNotIn("openai/gpt-5.4-nano", mid)
-
-    def test_standard_models(self):
-        standard = get_models_by_tier(TIER_STANDARD)
-        self.assertIn("openai/gpt-5.5", standard)
-        self.assertIn("openai/gpt-5.4", standard)
-        self.assertIn("anthropic/claude-opus-4-8", standard)
-        self.assertIn("anthropic/claude-opus-4-7", standard)
-        self.assertIn("anthropic/claude-opus-4-6", standard)
-        self.assertIn("anthropic/claude-sonnet-4-6", standard)
-        self.assertIn("gemini/gemini-3.1-pro-preview", standard)
-        self.assertIn("gemini/gemini-3.5-flash", standard)
-        self.assertNotIn("openai/gpt-5.4-mini", standard)
-
-    def test_get_model_tier(self):
-        self.assertEqual(get_model_tier("openai/gpt-5.4-nano"), TIER_CHEAP)
-        self.assertEqual(get_model_tier("openai/gpt-5.4-mini"), TIER_MID)
-        self.assertEqual(get_model_tier("openai/gpt-5.4"), TIER_STANDARD)
-        self.assertIsNone(get_model_tier("unknown/model"))
-
-
-class SlotValidationTests(TestCase):
-
-    def test_cheap_slot_accepts_only_cheap(self):
+    def test_slot_validation(self):
         self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4-nano", "cheap"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-mini", "cheap"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4", "cheap"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.6-luna", "cheap"))
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-luna", "mid"))
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-terra", "mid"))
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-terra", "primary"))
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-sol", "primary"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.6-luna", "primary"))
 
-    def test_mid_slot_accepts_mid_and_standard(self):
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4-mini", "mid"))
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4", "mid"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-nano", "mid"))
-
-    def test_primary_slot_accepts_only_standard(self):
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4", "primary"))
-        self.assertTrue(is_model_valid_for_slot("anthropic/claude-sonnet-4-6", "primary"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-mini", "primary"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-nano", "primary"))
-
-    def test_unknown_model_returns_false(self):
-        self.assertFalse(is_model_valid_for_slot("unknown/model", "cheap"))
-        self.assertFalse(is_model_valid_for_slot("unknown/model", "primary"))
-
-    def test_unknown_slot_allows_any_model(self):
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4", "nonexistent"))
-
-
-class GetModelsForSlotTests(TestCase):
-
-    def test_cheap_slot_returns_only_cheap(self):
-        models = get_models_for_slot("cheap")
-        for m in models:
-            self.assertEqual(get_model_tier(m), TIER_CHEAP)
-
-    def test_mid_slot_returns_mid_and_standard(self):
-        models = get_models_for_slot("mid")
-        for m in models:
-            self.assertIn(get_model_tier(m), (TIER_MID, TIER_STANDARD))
-
-    def test_primary_slot_returns_only_standard(self):
-        models = get_models_for_slot("primary")
-        for m in models:
-            self.assertEqual(get_model_tier(m), TIER_STANDARD)
-
-    def test_filtered_by_allowed_models(self):
+    def test_get_models_for_slot_canonicalizes_filter(self):
         allowed = ["openai/gpt-5.4-nano", "openai/gpt-5.4"]
-        cheap = get_models_for_slot("cheap", allowed)
-        self.assertEqual(cheap, ["openai/gpt-5.4-nano"])
-        primary = get_models_for_slot("primary", allowed)
-        self.assertEqual(primary, ["openai/gpt-5.4"])
+        self.assertEqual(get_models_for_slot("cheap", allowed), ["openai/gpt-5.4-nano"])
+        self.assertEqual(get_models_for_slot("primary", allowed), ["openai/gpt-5.6-terra"])
 
-    def test_empty_allowed_returns_all_for_slot(self):
-        models = get_models_for_slot("cheap", [])
-        self.assertTrue(len(models) >= 2)
+    def test_at_or_above_tier(self):
+        self.assertEqual(len(get_models_at_or_above_tier(TIER_CHEAP)), len(EXPECTED_IDS))
+        self.assertNotIn("openai/gpt-5.4-nano", get_models_at_or_above_tier(TIER_MID))
+        for model_id in get_models_at_or_above_tier(TIER_STANDARD):
+            self.assertIn(get_model_tier(model_id), (TIER_STANDARD, TIER_PREMIUM))
 
-    def test_no_allowed_returns_all_for_slot(self):
-        models = get_models_for_slot("cheap")
-        self.assertTrue(len(models) >= 2)
-
-
-class GetModelsAtOrAboveTierTests(TestCase):
-
-    def test_at_or_above_cheap_returns_all(self):
-        from llm.model_registry import _MODELS
-        models = get_models_at_or_above_tier(TIER_CHEAP)
-        self.assertEqual(len(models), len(_MODELS))
-
-    def test_at_or_above_mid_excludes_cheap(self):
-        models = get_models_at_or_above_tier(TIER_MID)
-        for m in models:
-            self.assertNotEqual(get_model_tier(m), TIER_CHEAP)
-
-    def test_at_or_above_standard_excludes_cheap_and_mid(self):
-        models = get_models_at_or_above_tier(TIER_STANDARD)
-        for m in models:
-            self.assertEqual(get_model_tier(m), TIER_STANDARD)
+    def test_only_sol_and_fable_are_flagships(self):
+        flagships = [
+            model_id
+            for model_id in EXPECTED_IDS
+            if get_model_info(model_id).flagship
+        ]
+        self.assertEqual(
+            flagships,
+            ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"],
+        )

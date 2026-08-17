@@ -24,14 +24,14 @@ class ParseProviderTests(SimpleTestCase):
         self.assertEqual(api_model, "gpt-5-mini")
 
     def test_explicit_anthropic_prefix(self):
-        provider, api_model = _parse_provider("anthropic/claude-sonnet-4-6")
+        provider, api_model = _parse_provider("anthropic/claude-sonnet-5")
         self.assertEqual(provider, "anthropic")
-        self.assertEqual(api_model, "claude-sonnet-4-6")
+        self.assertEqual(api_model, "claude-sonnet-5")
 
     def test_explicit_gemini_prefix(self):
-        provider, api_model = _parse_provider("gemini/gemini-3.5-flash")
+        provider, api_model = _parse_provider("gemini/gemini-3.7-flash")
         self.assertEqual(provider, "google_genai")
-        self.assertEqual(api_model, "gemini-3.5-flash")
+        self.assertEqual(api_model, "gemini-3.7-flash")
 
     def test_auto_detect_gpt(self):
         provider, api_model = _parse_provider("gpt-5-mini")
@@ -75,9 +75,9 @@ class DetectProviderTests(SimpleTestCase):
     block-building for multimodal messages relies on this."""
 
     def test_explicit_prefix(self):
-        self.assertEqual(detect_provider("anthropic/claude-sonnet-4-6"), "anthropic")
+        self.assertEqual(detect_provider("anthropic/claude-sonnet-5"), "anthropic")
         self.assertEqual(detect_provider("openai/gpt-5-mini"), "openai")
-        self.assertEqual(detect_provider("gemini/gemini-3.5-flash"), "google_genai")
+        self.assertEqual(detect_provider("gemini/gemini-3.7-flash"), "google_genai")
 
     def test_prefix_less_claude(self):
         self.assertEqual(detect_provider("claude-sonnet-4-6"), "anthropic")
@@ -212,7 +212,7 @@ class ClientCacheTests(SimpleTestCase):
         mock_init.side_effect = lambda *a, **kw: MagicMock()
 
         model1 = create_chat_model("gpt-5-mini")
-        model2 = create_chat_model("claude-sonnet-4-6")
+        model2 = create_chat_model("claude-sonnet-5")
 
         self.assertEqual(mock_init.call_count, 2)
         self.assertIsNot(model1._client, model2._client)
@@ -225,9 +225,9 @@ class ClientCacheTests(SimpleTestCase):
 
         mock_init.side_effect = lambda *a, **kw: MagicMock()
 
-        base = create_chat_model("claude-sonnet-4-6")
+        base = create_chat_model("claude-sonnet-5")
         variant = create_variant_client(
-            "claude-sonnet-4-6", "anthropic",
+            "claude-sonnet-5", "anthropic",
             thinking={"type": "enabled", "budget_tokens": 32_000},
             max_tokens=40_000,
         )
@@ -244,11 +244,11 @@ class ClientCacheTests(SimpleTestCase):
         mock_init.return_value = MagicMock()
 
         v1 = create_variant_client(
-            "claude-sonnet-4-6", "anthropic",
+            "claude-sonnet-5", "anthropic",
             thinking={"type": "enabled", "budget_tokens": 32_000},
         )
         v2 = create_variant_client(
-            "claude-sonnet-4-6", "anthropic",
+            "claude-sonnet-5", "anthropic",
             thinking={"type": "enabled", "budget_tokens": 32_000},
         )
 
@@ -276,9 +276,10 @@ class ProviderKwargsTests(SimpleTestCase):
         self.assertIs(kwargs["store"], False)
 
     def test_openai_store_false_for_responses_api(self):
-        kwargs = _get_provider_kwargs("openai", "gpt-5.4")
+        kwargs = _get_provider_kwargs("openai", "gpt-5.6-terra")
         self.assertIs(kwargs["store"], False)
         self.assertTrue(kwargs.get("use_responses_api"))
+        self.assertEqual(kwargs["include"], ["reasoning.encrypted_content"])
 
     def test_anthropic_has_no_store_flag(self):
         kwargs = _get_provider_kwargs("anthropic", "claude-sonnet-4-6")
@@ -314,7 +315,7 @@ class GoogleVertexKwargsTests(SimpleTestCase):
             mock_init.return_value = MagicMock()
             from llm.core.model_factory import create_chat_model
 
-            create_chat_model("gemini/gemini-3.5-flash")
+            create_chat_model("gemini/gemini-3.7-flash")
             call_kwargs = mock_init.call_args[1]
             self.assertTrue(call_kwargs["vertexai"])
             self.assertEqual(call_kwargs["project"], "wilfred-505110")
@@ -330,7 +331,7 @@ class GoogleVertexKwargsTests(SimpleTestCase):
             mock_init.return_value = MagicMock()
             from llm.core.model_factory import create_chat_model
 
-            create_chat_model("gemini/gemini-3.5-flash")
+            create_chat_model("gemini/gemini-3.7-flash")
             call_kwargs = mock_init.call_args[1]
             for key in ("vertexai", "project", "location", "credentials"):
                 self.assertNotIn(key, call_kwargs)
@@ -344,9 +345,9 @@ class GoogleVertexKwargsTests(SimpleTestCase):
             from llm.core.model_factory import create_variant_client
 
             create_variant_client(
-                "gemini-3.5-flash",
+                "gemini-3.7-flash",
                 provider="google_genai",
-                thinking_budget=1024,
+                thinking_level="low",
                 include_thoughts=True,
             )
             call_kwargs = mock_init.call_args[1]
@@ -354,7 +355,7 @@ class GoogleVertexKwargsTests(SimpleTestCase):
             self.assertEqual(call_kwargs["location"], "eu")
             self.assertIs(call_kwargs["credentials"], self._VERTEX["credentials"])
             # Variant-specific kwargs still flow through.
-            self.assertEqual(call_kwargs["thinking_budget"], 1024)
+            self.assertEqual(call_kwargs["thinking_level"], "low")
 
     @patch("llm.core.google_auth.get_vertex_config")
     def test_other_providers_unaffected(self, mock_cfg):

@@ -54,7 +54,7 @@ class ResolvedPreferences:
     transcription_model_upload: str = ""
     # Image generation. ``image_model`` is the resolved default ("" = disabled,
     # which also withholds the chat_generate_image tool). ``allowed_image_models``
-    # is the org-filtered list the user may choose from.
+    # is the org-filtered list available to image-generation features.
     image_model: str = ""
     allowed_image_models: list[str] = field(default_factory=list)
     live_transcription_mode: str = "chunked"
@@ -71,8 +71,11 @@ class FeatureDefault:
     """Per-feature model-selection policy.
 
     default_slot: tier used by default ("primary", "mid", "cheap").
-    min_tier: minimum model tier allowed ("cheap", "mid", "standard").
-    scope: "user" = user can override, "org" = org admin can override.
+    min_tier: minimum model tier allowed ("cheap", "mid", "standard", "premium").
+    scope: "org" exposes a dedicated organization override; "user" identifies
+        features that follow the organization's tier defaults. Chat is the only
+        such feature that can also be overridden, and that override is stored on
+        the individual thread rather than in user settings.
     required_modality: when set (e.g. "image"), only models whose input
         modalities include it are eligible, and the feature is *unavailable*
         when the effective allow-list has no capable model.
@@ -105,7 +108,35 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
 
 # Map a model's registry tier to the preference slot used for fallback.
-_TIER_TO_SLOT = {"standard": "primary", "mid": "mid", "cheap": "cheap"}
+_TIER_TO_SLOT = {
+    "premium": "primary",
+    "standard": "primary",
+    "mid": "mid",
+    "cheap": "cheap",
+}
+
+
+def _canonical_model_choice(value: str | None) -> str | None:
+    """Map stored legacy model IDs to their curated replacements."""
+    if not value:
+        return value
+    from llm.model_registry import canonical_model_id
+
+    return canonical_model_id(value) or value
+
+
+def _match_allowed_model(value: str | None, allowed: list[str]) -> str | None:
+    """Return the representation of *value* present in an allow-list.
+
+    Real policy output is canonical. Keeping the direct-match branch also makes
+    callers that inject a legacy allow-list migrate coherently as one unit.
+    """
+    if not value:
+        return value
+    if value in allowed:
+        return value
+    canonical = _canonical_model_choice(value)
+    return canonical if canonical in allowed else value
 
 
 def resolve_thread_model(stored_model: str | None, prefs: ResolvedPreferences) -> str:
@@ -113,9 +144,10 @@ def resolve_thread_model(stored_model: str | None, prefs: ResolvedPreferences) -
 
     - If the thread's stored model is still allowed, honor it.
     - If it's set but no longer allowed (e.g. the org removed it), fall back to
-      the user's *current* model for the same tier (mid→mid_model, etc.).
-    - If the thread has no stored model, use the user's preferred chat model.
+      the organization's current model for the same tier.
+    - If the thread has no stored model, use the organization's chat default.
     """
+    stored_model = _match_allowed_model(stored_model, prefs.allowed_models)
     if stored_model and stored_model in prefs.allowed_models:
         return stored_model
     if stored_model:
@@ -137,10 +169,10 @@ def _get_system_model_defaults() -> dict[str, str]:
 
 
 def get_preferences(user) -> ResolvedPreferences:
-    """Resolve cascading preferences for a user: System -> Org -> User.
+    """Resolve effective preferences for a user.
 
-    Returns ResolvedPreferences with the effective model for each tier,
-    the allowed models list, and the allowed tools list.
+    Model choices resolve System -> Organization. Personal preferences still
+    apply to non-model settings such as theme, language, and context limits.
     """
     from llm.service.policies import get_allowed_models
     from llm.tools.registry import get_tool_registry
@@ -175,13 +207,16 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # Effective allowed models: org restricts to a subset of system
     if org_allowed and isinstance(org_allowed, list):
-        effective_allowed = [m for m in org_allowed if m in system_allowed]
+        effective_allowed = []
+        for model_id in org_allowed:
+            matched = _match_allowed_model(model_id, system_allowed)
+            if matched in system_allowed and matched not in effective_allowed:
+                effective_allowed.append(matched)
     else:
         effective_allowed = list(system_allowed)
 
     # --- User level ---
     user_prefs = _get_user_preferences(user)
-    user_models = user_prefs.get("models", {})
     user_theme = user_prefs.get("theme", "light")
     allow_agent_attach_skills = bool(user_prefs.get("allow_agent_attach_skills", True))
 
@@ -189,7 +224,7 @@ def get_preferences(user) -> ResolvedPreferences:
     from llm.model_registry import get_models_for_slot
 
     top_model = _resolve_tier(
-        user_choice=user_models.get("primary"),
+        user_choice=None,
         org_default=org_models.get("primary"),
         system_default=sys_models["primary"],
         effective_allowed=effective_allowed,
@@ -197,7 +232,7 @@ def get_preferences(user) -> ResolvedPreferences:
         slot="primary",
     )
     mid_model = _resolve_tier(
-        user_choice=user_models.get("mid"),
+        user_choice=None,
         org_default=org_models.get("mid"),
         system_default=sys_models["mid"],
         effective_allowed=effective_allowed,
@@ -205,7 +240,7 @@ def get_preferences(user) -> ResolvedPreferences:
         slot="mid",
     )
     cheap_model = _resolve_tier(
-        user_choice=user_models.get("cheap"),
+        user_choice=None,
         org_default=org_models.get("cheap"),
         system_default=sys_models["cheap"],
         effective_allowed=effective_allowed,
@@ -230,7 +265,6 @@ def get_preferences(user) -> ResolvedPreferences:
 
     org_transcription_allowed = org_prefs.get("allowed_transcription_models") if org_prefs else None
     org_transcription_models = org_prefs.get("transcription_models", {}) if org_prefs else {}
-    user_transcription_models = user_prefs.get("transcription_models", {}) if user_prefs else {}
 
     # Org restricts to subset of system; explicitly empty list = disabled
     if org_transcription_allowed is not None and isinstance(org_transcription_allowed, list):
@@ -241,7 +275,7 @@ def get_preferences(user) -> ResolvedPreferences:
 
     if effective_transcription_allowed:
         transcription_model = _resolve_tier(
-            user_choice=user_transcription_models.get("default"),
+            user_choice=None,
             org_default=org_transcription_models.get("default"),
             system_default=system_transcription_default,
             effective_allowed=effective_transcription_allowed,
@@ -254,8 +288,8 @@ def get_preferences(user) -> ResolvedPreferences:
     # Capability-specific defaults. The pool of viable models for each path
     # is the effective allow-list filtered by the relevant capability flag.
     # Diarize models, whisper-1, or any model without ``supports_live_streaming``
-    # are dropped from the live pool so a user with "openai/gpt-4o-transcribe-
-    # diarize" as their default can still start a live recording — the server
+    # are dropped from the live pool so an org with "openai/gpt-4o-transcribe-
+    # diarize" as its default can still start a live recording — the server
     # picks the first live-capable model from the allow-list instead.
     from llm.transcription_registry import get_transcription_model_info
 
@@ -279,13 +313,9 @@ def get_preferences(user) -> ResolvedPreferences:
     # model per path without touching the generic TRANSCRIPTION_DEFAULT_MODEL
     # (which stays around as the ultimate fallback).
     #
-    # When neither an explicit *live* override (user/org "live" key) nor an ops
-    # TRANSCRIPTION_DEFAULT_MODEL_LIVE is set, fall back to the user's resolved
-    # GENERAL default (the "default" key) rather than the system mini default.
-    # Product rule: live transcription uses the user's default model unless a
-    # per-meeting override is set. Without this, a user who set their default to
-    # gpt-4o-transcribe silently got gpt-4o-mini-transcribe on the live path
-    # (the live cascade never consulted the "default" key). If the general
+    # When neither an explicit org "live" override nor an ops
+    # TRANSCRIPTION_DEFAULT_MODEL_LIVE is set, fall back to the organization's
+    # resolved general default. If that general
     # default isn't live-capable (e.g. a diarize/batch-only model), _resolve_tier
     # drops it against the live pool and picks the first live-capable model.
     system_default_live = (
@@ -302,7 +332,7 @@ def get_preferences(user) -> ResolvedPreferences:
         if not pool:
             return ""
         return _resolve_tier(
-            user_choice=user_transcription_models.get(key),
+            user_choice=None,
             org_default=org_transcription_models.get(key),
             system_default=system_default,
             effective_allowed=pool,
@@ -320,7 +350,6 @@ def get_preferences(user) -> ResolvedPreferences:
 
     org_image_allowed = org_prefs.get("allowed_image_models") if org_prefs else None
     org_image_models = org_prefs.get("image_models", {}) if org_prefs else {}
-    user_image_models = user_prefs.get("image_models", {}) if user_prefs else {}
 
     if org_image_allowed is not None and isinstance(org_image_allowed, list):
         effective_image_allowed = [m for m in org_image_allowed if m in system_image_allowed]
@@ -329,7 +358,7 @@ def get_preferences(user) -> ResolvedPreferences:
 
     if effective_image_allowed:
         image_model = _resolve_tier(
-            user_choice=user_image_models.get("default"),
+            user_choice=None,
             org_default=org_image_models.get("default"),
             system_default=system_image_default,
             effective_allowed=effective_image_allowed,
@@ -453,7 +482,6 @@ def get_preferences(user) -> ResolvedPreferences:
     from llm.model_registry import TIER_ORDER, get_model_tier
 
     slot_model = {"primary": top_model, "mid": mid_model, "cheap": cheap_model}
-    user_feature_prefs = user_prefs.get("feature_models") or {}
     org_feature_prefs = org_prefs.get("feature_models") or {}
 
     feature_models: dict[str, str] = {}
@@ -465,12 +493,9 @@ def get_preferences(user) -> ResolvedPreferences:
         else:
             pool = effective_allowed
 
-        override = None
-        if fdef.scope == "user":
-            override = user_feature_prefs.get(fkey)
-        if not override:
-            override = org_feature_prefs.get(fkey)
+        override = org_feature_prefs.get(fkey)
 
+        override = _match_allowed_model(override, pool)
         if override and override in pool:
             tier = get_model_tier(override)
             if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(fdef.min_tier, 0):
@@ -520,13 +545,16 @@ def _resolve_tier(
 ) -> str:
     """Resolve a single model tier using the cascade.
 
-    1. User's choice if set AND in effective allowed list AND valid for slot
-    2. Org's default if set AND in effective allowed list AND valid for slot
-    3. System env var default if in effective allowed list AND valid for slot
-    4. First model in effective allowed list that is valid for slot
-    5. Empty string (no valid model available)
+    ``user_choice`` remains for internal compatibility, but normal preference
+    resolution intentionally passes ``None``: persistent model selection is
+    organization-managed. Resolution order is org default, system default,
+    first valid allowed model, then empty string.
     """
     from llm.model_registry import is_model_valid_for_slot
+
+    user_choice = _match_allowed_model(user_choice, effective_allowed)
+    org_default = _match_allowed_model(org_default, effective_allowed)
+    system_default = _match_allowed_model(system_default, effective_allowed) or ""
 
     def _valid(model_id: str | None) -> bool:
         if not model_id or model_id not in effective_allowed:
@@ -558,10 +586,9 @@ def _resolve_tier(
 
 
 def get_tier_defaults(user) -> dict[str, str]:
-    """Return the resolved default model for each tier, *excluding* the user's own choices.
+    """Return each organization-resolved tier default.
 
-    This is what the user sees as "Default" — i.e. what would apply if they pick no model.
-    Cascade: org default → system default → first allowed.
+    Cascade: organization default → system default → first allowed.
     """
     from llm.service.policies import get_allowed_models
 
@@ -573,7 +600,11 @@ def get_tier_defaults(user) -> dict[str, str]:
     org_models = org_prefs.get("models", {})
 
     if org_allowed and isinstance(org_allowed, list):
-        effective_allowed = [m for m in org_allowed if m in system_allowed]
+        effective_allowed = []
+        for model_id in org_allowed:
+            matched = _match_allowed_model(model_id, system_allowed)
+            if matched in system_allowed and matched not in effective_allowed:
+                effective_allowed.append(matched)
     else:
         effective_allowed = list(system_allowed)
 
@@ -660,12 +691,18 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
     org_prefs = org.preferences or {}
     org_allowed = org_prefs.get("allowed_models")
     if org_allowed and isinstance(org_allowed, list):
-        effective_allowed = [m for m in org_allowed if m in system_allowed]
+        effective_allowed = []
+        for model_id in org_allowed:
+            matched = _match_allowed_model(model_id, system_allowed)
+            if matched in system_allowed and matched not in effective_allowed:
+                effective_allowed.append(matched)
     else:
         effective_allowed = list(system_allowed)
 
     # Check org-level feature override
-    override = (org_prefs.get("feature_models") or {}).get(feature_key)
+    override = _match_allowed_model(
+        (org_prefs.get("feature_models") or {}).get(feature_key), effective_allowed
+    )
     if override and override in effective_allowed:
         tier = get_model_tier(override)
         if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(min_tier, 0):

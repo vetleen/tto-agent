@@ -106,12 +106,10 @@ def theme_update(request):
 @login_required
 @require_GET
 def settings_page(request):
-    from core.preferences import get_preferences, get_tier_defaults
+    from core.preferences import get_preferences
 
     prefs = get_preferences(request.user)
     user_settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    user_models = (user_settings.preferences or {}).get("models", {})
-    tier_defaults = get_tier_defaults(request.user)
 
     from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, _get_org_preferences
 
@@ -121,10 +119,6 @@ def settings_page(request):
         org_max_context = DEFAULT_MAX_CONTEXT_TOKENS
     user_max_context = (user_settings.preferences or {}).get("max_context_tokens")
 
-    user_transcription_prefs = (user_settings.preferences or {}).get("transcription_models", {})
-    user_transcription_model = user_transcription_prefs.get("default")
-    user_transcription_model_live = user_transcription_prefs.get("live")
-    user_transcription_model_upload = user_transcription_prefs.get("upload")
     user_live_transcription_mode = (user_settings.preferences or {}).get("live_transcription_mode", "")
 
     # Default transcription language: the user's raw override (blank = inherit),
@@ -139,173 +133,48 @@ def settings_page(request):
     org_default_language = org_prefs.get("transcription_language") or DEFAULT_TRANSCRIPTION_LANGUAGE
     org_default_language_label = language_label(org_default_language)
 
-    from llm.transcription_registry import get_all_transcription_models
-    all_models = get_all_transcription_models()
-    transcription_model_display = {mid: info.display_name for mid, info in all_models.items()}
-
-    live_capable_models, upload_capable_models = partition_transcription_models(
-        prefs.allowed_transcription_models
-    )
-
-    user_image_model = (user_settings.preferences or {}).get("image_models", {}).get("default")
-    from llm.image_generation_registry import get_image_generation_models
-    image_model_display = {mid: info.display_name for mid, info in get_image_generation_models().items()}
-
-    user_feature_models = (user_settings.preferences or {}).get("feature_models", {})
-    _USER_FEATURE_META = {
-        "chat": ("Chat", "The primary model used for conversations."),
-        "thread_title": ("Thread title", "Generates a short title for new chat threads."),
-        "thread_emoji": ("Thread emoji", "Picks an emoji when you use the /tag command on a chat thread."),
-        "canvas_title": ("Canvas title", "Generates a title when a new canvas is created."),
-        "image_description": ("Image description", f"Describes images pasted or uploaded in chat so {django_settings.ASSISTANT_NAME} can understand them."),
-    }
-    user_features = build_feature_rows(
-        "user",
-        user_feature_models,
-        prefs.allowed_models,
-        _USER_FEATURE_META,
-        resolved=prefs.feature_models,
-    )
-
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
-        "user_models": json.dumps(user_models),
-        "allowed_models": prefs.allowed_models,
         "org_max_context_tokens": org_max_context,
         "user_max_context_tokens": user_max_context,
         "allowed_transcription_models": prefs.allowed_transcription_models,
-        "live_capable_transcription_models": live_capable_models,
-        "upload_capable_transcription_models": upload_capable_models,
-        "user_transcription_model": user_transcription_model or "",
-        "user_transcription_model_live": user_transcription_model_live or "",
-        "user_transcription_model_upload": user_transcription_model_upload or "",
-        "resolved_transcription_model": prefs.transcription_model,
-        "resolved_transcription_model_live": prefs.transcription_model_live,
-        "resolved_transcription_model_upload": prefs.transcription_model_upload,
         "user_live_transcription_mode": user_live_transcription_mode,
         "resolved_live_transcription_mode": prefs.live_transcription_mode,
         "user_transcription_language": user_transcription_language or "",
         "org_default_language_label": org_default_language_label,
         "transcription_language_choices": TRANSCRIPTION_LANGUAGE_CHOICES,
         "resolved_transcription_language": prefs.transcription_language,
-        "transcription_model_display": transcription_model_display,
-        "allowed_image_models": prefs.allowed_image_models,
-        "user_image_model": user_image_model or "",
-        "resolved_image_model": prefs.image_model,
-        "image_model_display": image_model_display,
         "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
         "assistant_name": django_settings.ASSISTANT_NAME,
         "preference_warnings": prefs.warnings,
-        "user_features": user_features,
-        "tiers": build_tier_rows(tier_defaults, prefs.allowed_models),
     })
 
 
 @login_required
 @require_POST
 def preferences_models_update(request):
-    """Update user's preferred model for a tier."""
-    from core.preferences import get_preferences
-
-    data, err = _parse_json_body(request)
-    if err:
-        return err
-
-    tier = _str_field(data, "tier")
-    model = _str_field(data, "model") or None
-
-    if tier not in ("primary", "mid", "cheap"):
-        return JsonResponse({"error": "Invalid tier"}, status=400)
-
-    # Validate model is in the user's allowed list and correct tier
-    if model:
-        from llm.model_registry import is_model_valid_for_slot
-
-        prefs = get_preferences(request.user)
-        if model not in prefs.allowed_models:
-            return JsonResponse({"error": "Model not allowed"}, status=400)
-        if not is_model_valid_for_slot(model, tier):
-            return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
-
-    def mutate(prefs):
-        models = prefs.get("models", {})
-        models[tier] = model
-        prefs["models"] = models
-
-    update_user_preferences(request.user, mutate)
-
-    return JsonResponse({"ok": True, "tier": tier, "model": model})
+    """Reject obsolete persistent model overrides."""
+    return JsonResponse(
+        {"error": "Model defaults are managed by your organization."}, status=403
+    )
 
 
 @login_required
 @require_POST
 def preferences_transcription_model_update(request):
-    """Update a user's preferred transcription model.
-
-    Accepts ``kind`` in the POST body: ``default`` (generic fallback),
-    ``live`` (used when starting a live meeting — must be a streaming-
-    capable model), or ``upload`` (used for uploaded audio files).
-    Missing / unknown ``kind`` is treated as ``default`` for backwards
-    compatibility with older clients.
-    """
-    from core.preferences import get_preferences
-    from llm.transcription_registry import get_transcription_model_info
-
-    data, err = _parse_json_body(request)
-    if err:
-        return err
-
-    model = (data.get("model") or "").strip() or None
-    kind = (data.get("kind") or "default").strip().lower()
-    if kind not in ("default", "live", "upload"):
-        return JsonResponse({"error": "Invalid kind"}, status=400)
-
-    if model:
-        prefs = get_preferences(request.user)
-        if model not in prefs.allowed_transcription_models:
-            return JsonResponse({"error": "Model not allowed"}, status=400)
-        if kind == "live":
-            info = get_transcription_model_info(model)
-            if info is None or not info.supports_live_streaming:
-                return JsonResponse(
-                    {"error": "This model cannot be used for live transcription."},
-                    status=400,
-                )
-
-    def mutate(prefs):
-        transcription_models = prefs.get("transcription_models", {})
-        transcription_models[kind] = model
-        prefs["transcription_models"] = transcription_models
-
-    update_user_preferences(request.user, mutate)
-
-    return JsonResponse({"ok": True, "model": model, "kind": kind})
+    """Reject obsolete persistent transcription-model overrides."""
+    return JsonResponse(
+        {"error": "Model defaults are managed by your organization."}, status=403
+    )
 
 
 @login_required
 @require_POST
 def preferences_image_model_update(request):
-    """Update a user's preferred image generation model (must be org-allowed)."""
-    from core.preferences import get_preferences
-
-    data, err = _parse_json_body(request)
-    if err:
-        return err
-
-    model = (data.get("model") or "").strip() or None
-    if model:
-        prefs = get_preferences(request.user)
-        if model not in prefs.allowed_image_models:
-            return JsonResponse({"error": "Model not allowed"}, status=400)
-
-    def mutate(prefs):
-        image_models = prefs.get("image_models", {})
-        image_models["default"] = model
-        prefs["image_models"] = image_models
-
-    update_user_preferences(request.user, mutate)
-
-    return JsonResponse({"ok": True, "model": model})
+    """Reject obsolete persistent image-model overrides."""
+    return JsonResponse(
+        {"error": "Model defaults are managed by your organization."}, status=403
+    )
 
 
 @login_required
@@ -390,41 +259,10 @@ def preferences_agent_attach_skills_update(request):
 @login_required
 @require_POST
 def preferences_feature_model_update(request):
-    """Update user's preferred model for a specific feature."""
-    from core.preferences import FEATURE_DEFAULTS, get_preferences
-    from llm.model_registry import TIER_ORDER, get_model_tier
-
-    data, err = _parse_json_body(request)
-    if err:
-        return err
-
-    feature = _str_field(data, "feature")
-    model = _str_field(data, "model") or None
-
-    if feature not in FEATURE_DEFAULTS:
-        return JsonResponse({"error": "Unknown feature"}, status=400)
-
-    _fdef = FEATURE_DEFAULTS[feature]
-    min_tier, scope = _fdef.min_tier, _fdef.scope
-    if scope != "user":
-        return JsonResponse({"error": "This feature is not user-configurable"}, status=400)
-
-    if model:
-        prefs = get_preferences(request.user)
-        if model not in prefs.allowed_models:
-            return JsonResponse({"error": "Model not allowed"}, status=400)
-        tier = get_model_tier(model)
-        if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
-            return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
-
-    def mutate(prefs):
-        feature_models = prefs.get("feature_models", {})
-        feature_models[feature] = model
-        prefs["feature_models"] = feature_models
-
-    update_user_preferences(request.user, mutate)
-
-    return JsonResponse({"ok": True, "feature": feature, "model": model})
+    """Reject obsolete persistent feature-model overrides."""
+    return JsonResponse(
+        {"error": "Model defaults are managed by your organization."}, status=403
+    )
 
 
 # ---- Organization Settings Page ----

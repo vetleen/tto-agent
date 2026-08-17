@@ -5,7 +5,7 @@
 {% block content %}
 <main class="mx-auto max-w-4xl px-6 py-16">
   <h1 class="text-3xl sm:text-4xl font-semibold text-heading">Settings</h1>
-  <p class="mt-2 text-sm text-body">Manage your workspace preferences and models.</p>
+  <p class="mt-2 text-sm text-body">Manage your workspace preferences.</p>
 
   {% if preference_warnings %}
   <div class="mt-8 space-y-3">
@@ -21,10 +21,7 @@
       <ul class="space-y-0.5 text-sm">
         <li><a href="#profile" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Profile</a></li>
         <li><a href="#appearance" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Appearance</a></li>
-        <li><a href="#models" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">AI models</a></li>
-        {% if user_features %}<li><a href="#features" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Feature overrides</a></li>{% endif %}
         {% if allowed_transcription_models %}<li><a href="#transcription" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Transcription</a></li>{% endif %}
-        {% if allowed_image_models %}<li><a href="#image-generation" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Image generation</a></li>{% endif %}
         <li><a href="#autonomy" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Autonomy</a></li>
         <li><a href="#context" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
         <li><a href="#account" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Account</a></li>
@@ -89,114 +86,15 @@
         </div>
       </section>
 
-      <!-- AI Models -->
-      <section id="models" class="scroll-mt-24">
-        <div class="mb-3">
-          <h2 class="text-base font-semibold text-heading">AI models</h2>
-          <p class="mt-0.5 text-sm text-body">Choose your preferred model for each tier. "Default" uses your organization or system default.</p>
-        </div>
-        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
-          <div class="divide-y divide-default">
-            {% for tier in tiers %}
-            <div class="px-5 py-4">
-              <label class="block text-sm font-medium text-heading" for="model-{{ tier.key }}">
-                {{ tier.label }}
-              </label>
-              <p class="text-xs text-body mt-0.5">{{ tier.desc }}</p>
-              <select
-                id="model-{{ tier.key }}"
-                data-tier="{{ tier.key }}"
-                class="model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-              >
-                <option value="">Default ({{ tier.default_model }})</option>
-                {% for model in tier.slot_models %}
-                <option value="{{ model }}">{{ model }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            {% endfor %}
-          </div>
-        </div>
-      </section>
-
-      <!-- Feature Model Overrides -->
-      {% if user_features %}
-      <section id="features" class="scroll-mt-24">
-        <div class="mb-3">
-          <h2 class="text-base font-semibold text-heading">Feature model overrides</h2>
-          <p class="mt-0.5 text-sm text-body">Override the model used for specific features. "Default" uses the tier model selected above.</p>
-        </div>
-        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
-          <div class="divide-y divide-default">
-            {% for feature in user_features %}
-            <div class="px-5 py-4">
-              <label class="block text-sm font-medium text-heading" for="feature-model-{{ feature.key }}">
-                {{ feature.label }}
-              </label>
-              {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
-              <select
-                id="feature-model-{{ feature.key }}"
-                data-feature="{{ feature.key }}"
-                class="feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-              >
-                <option value="">Use my default {{ feature.default_slot }} model (recommended)</option>
-                {% for model in feature.eligible_models %}
-                <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            {% endfor %}
-          </div>
-        </div>
-      </section>
-      {% endif %}
-
       <!-- Transcription -->
       {% if allowed_transcription_models %}
       <section id="transcription" class="scroll-mt-24">
         <div class="mb-3">
           <h2 class="text-base font-semibold text-heading">Transcription</h2>
-          <p class="mt-0.5 text-sm text-body">Choose your preferred models for audio transcription. Live and file-upload paths can use different models — e.g. a streaming model for live meetings and a diarization model for uploads.</p>
+          <p class="mt-0.5 text-sm text-body">Configure your personal transcription behavior. Models are managed by your organization.</p>
         </div>
         <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
           <div class="divide-y divide-default">
-            <div class="px-5 py-4">
-              <label class="block text-sm font-medium text-heading" for="transcription-model-live">
-                Live transcription model
-              </label>
-              <p class="text-xs text-body mt-0.5">Used when you click Start transcription on a meeting.</p>
-              <select
-                id="transcription-model-live"
-                data-kind="live"
-                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-              >
-                <option value="">Default ({{ resolved_transcription_model_live }})</option>
-                {% for model in live_capable_transcription_models %}
-                <option value="{{ model }}" {% if user_transcription_model_live == model %}selected{% endif %}>{{ model }}</option>
-                {% endfor %}
-              </select>
-              {% if not live_capable_transcription_models %}
-              <p class="mt-2 text-xs text-fg-warning">None of your allowed models support live streaming, so live transcription is unavailable. Ask an admin to enable a streaming-capable model.</p>
-              {% endif %}
-            </div>
-
-            <div class="px-5 py-4">
-              <label class="block text-sm font-medium text-heading" for="transcription-model-upload">
-                File-upload transcription model
-              </label>
-              <p class="text-xs text-body mt-0.5">Used when you upload an audio file to a meeting or data room.</p>
-              <select
-                id="transcription-model-upload"
-                data-kind="upload"
-                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-              >
-                <option value="">Default ({{ resolved_transcription_model_upload }})</option>
-                {% for model in upload_capable_transcription_models %}
-                <option value="{{ model }}" {% if user_transcription_model_upload == model %}selected{% endif %}>{{ model }}</option>
-                {% endfor %}
-              </select>
-            </div>
-
             <div class="px-5 py-4">
               <label class="block text-sm font-medium text-heading" for="transcription-language">
                 Default language
@@ -226,35 +124,6 @@
                 <option value="realtime_with_fallback" {% if user_live_transcription_mode == "realtime_with_fallback" %}selected{% endif %}>Try realtime, fall back to chunked</option>
                 <option value="realtime" {% if user_live_transcription_mode == "realtime" %}selected{% endif %}>Realtime only</option>
                 <option value="chunked" {% if user_live_transcription_mode == "chunked" %}selected{% endif %}>Chunked (legacy)</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </section>
-      {% endif %}
-
-      <!-- Image generation -->
-      {% if allowed_image_models %}
-      <section id="image-generation" class="scroll-mt-24">
-        <div class="mb-3">
-          <h2 class="text-base font-semibold text-heading">Image generation</h2>
-          <p class="mt-0.5 text-sm text-body">Choose your preferred model for when {{ assistant_name }} generates or edits images in chat.</p>
-        </div>
-        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
-          <div class="divide-y divide-default">
-            <div class="px-5 py-4">
-              <label class="block text-sm font-medium text-heading" for="image-model">
-                Image model
-              </label>
-              <p class="text-xs text-body mt-0.5">Used by {{ assistant_name }}'s image tool in chat.</p>
-              <select
-                id="image-model"
-                class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-              >
-                <option value="">Default ({{ resolved_image_model }})</option>
-                {% for model in allowed_image_models %}
-                <option value="{{ model }}" {% if user_image_model == model %}selected{% endif %}>{{ model }}</option>
-                {% endfor %}
               </select>
             </div>
           </div>
@@ -329,78 +198,7 @@
 
 <script nonce="{{ request.csp_nonce }}">
 (function() {
-  // Set initial select values from server data
-  var userModels = JSON.parse('{{ user_models|escapejs }}');
-  document.querySelectorAll('.model-select').forEach(function(sel) {
-    var tier = sel.dataset.tier;
-    var val = (userModels && userModels[tier]) || '';
-    sel.value = val;
-  });
-
-  // Handle model preference changes
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-  document.querySelectorAll('.model-select').forEach(function(sel) {
-    sel.addEventListener('change', function() {
-      var tier = this.dataset.tier;
-      var model = this.value;
-      fetch('{% url "accounts:preferences_models_update" %}', {
-        method: 'POST',
-        headers: {
-          'X-CSRFToken': csrf,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ tier: tier, model: model }),
-        credentials: 'same-origin',
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error) {
-          alert(data.error);
-          sel.value = '';
-        }
-      });
-    });
-  });
-
-  // Feature model overrides
-  document.querySelectorAll('.feature-model-select').forEach(function(sel) {
-    sel.addEventListener('change', function() {
-      var feature = this.dataset.feature;
-      var model = this.value;
-      fetch('{% url "accounts:preferences_feature_model_update" %}', {
-        method: 'POST',
-        headers: {
-          'X-CSRFToken': csrf,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ feature: feature, model: model }),
-        credentials: 'same-origin',
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error) {
-          alert(data.error);
-          sel.value = '';
-        }
-      });
-    });
-  });
-
-  // Transcription model preferences (live + upload) — the server distinguishes
-  // via the ``kind`` field so we can post to the same endpoint.
-  ['transcription-model-live', 'transcription-model-upload'].forEach(function(id) {
-    var sel = document.getElementById(id);
-    if (!sel) return;
-    sel.addEventListener('change', function() {
-      fetch('{% url "accounts:preferences_transcription_model_update" %}', {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.value, kind: this.dataset.kind }),
-        credentials: 'same-origin',
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error) {
-          alert(data.error);
-          sel.value = '';
-        }
-      });
-    });
-  });
 
   // Live transcription mode (chunked / realtime / realtime_with_fallback)
   var modeSelect = document.getElementById('live-transcription-mode');
@@ -433,24 +231,6 @@
         if (data.error) {
           alert(data.error);
           langSelect.value = '';
-        }
-      });
-    });
-  }
-
-  // Image generation model preference
-  var imageModelSelect = document.getElementById('image-model');
-  if (imageModelSelect) {
-    imageModelSelect.addEventListener('change', function() {
-      fetch('{% url "accounts:preferences_image_model_update" %}', {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.value }),
-        credentials: 'same-origin',
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error) {
-          alert(data.error);
-          imageModelSelect.value = '';
         }
       });
     });

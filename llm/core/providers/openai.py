@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import logging
-
 from llm.core.model_factory import create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
 from llm.model_registry import get_model_info
 from llm.types.requests import ChatRequest
 
-logger = logging.getLogger(__name__)
-
 # Fallback prefixes for reasoning support of models NOT in the registry
 # (registered models report ModelInfo.supports_thinking, preferred below).
-_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
+_REASONING_PREFIXES = (
+    "o1", "o3", "o4", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro",
+)
 
 
 class OpenAIChatModel(BaseLangChainChatModel):
@@ -40,25 +38,16 @@ class OpenAIChatModel(BaseLangChainChatModel):
 
     def _get_streaming_client(self, request: ChatRequest):
         client = self._client
-        level = request.params.get("thinking_level", "off")
-        if level == "max":
-            # OpenAI's reasoning_effort has no "max"; clamp to the highest
-            # supported effort instead of sending a value the API rejects.
-            level = "high"
-        if level != "off" and self._supports_reasoning():
-            try:
-                client = create_variant_client(
-                    self._api_model,
-                    provider="openai",
-                    model_kwargs={"reasoning_effort": level},
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to create reasoning-enabled OpenAI client; "
-                    "falling back to standard client.",
-                    exc_info=True,
-                )
-                client = self._client
+        level = request.params.get("thinking_level")
+        if level is not None and self._supports_reasoning():
+            reasoning = {"effort": level}
+            if level != "none":
+                reasoning["summary"] = "auto"
+            client = create_variant_client(
+                self._api_model,
+                provider="openai",
+                reasoning=reasoning,
+            )
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         return client
@@ -108,14 +97,51 @@ class OpenAIChatModel(BaseLangChainChatModel):
                 return summary
         return ""
 
+    @staticmethod
+    def _extract_reasoning_blocks(content) -> str:
+        """Extract Responses API summary deltas from normalized content blocks."""
+        if not isinstance(content, list):
+            return ""
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "reasoning":
+                continue
+            reasoning = block.get("reasoning")
+            if isinstance(reasoning, str):
+                parts.append(reasoning)
+            summary = block.get("summary")
+            if isinstance(summary, list):
+                parts.extend(
+                    item.get("text", "") for item in summary
+                    if isinstance(item, dict)
+                )
+            elif isinstance(summary, str):
+                parts.append(summary)
+        return "".join(parts)
+
+    def _extract_replay_metadata(self, lc_message) -> dict:
+        """Preserve GPT-5.6 encrypted reasoning items when Responses uses store=False."""
+        content = getattr(lc_message, "content", None)
+        if not isinstance(content, list):
+            return {}
+        blocks = [
+            dict(block) for block in content
+            if isinstance(block, dict)
+            and block.get("type") in ("reasoning", "text", "output_text")
+        ]
+        if any(block.get("type") == "reasoning" for block in blocks):
+            return {"content_blocks": blocks}
+        return {}
+
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         events: list[tuple[str, dict]] = []
         additional = getattr(chunk, "additional_kwargs", {}) or {}
-        reasoning = self._extract_reasoning(additional)
+        content = getattr(chunk, "content", None)
+        reasoning = self._extract_reasoning(additional) or self._extract_reasoning_blocks(content)
         if reasoning:
             events.append(("thinking", {"text": reasoning}))
         # Regular text content
-        text = self._extract_text(getattr(chunk, "content", None))
+        text = self._extract_text(content)
         if text:
             events.append(("token", {"text": text}))
         return events

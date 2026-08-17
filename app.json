@@ -51,7 +51,7 @@
       "description": "Comma-separated provider/model allowlist."
     },
     "LLM_DEFAULT_MODEL": {
-      "description": "Primary model, e.g. openai/gpt-5.4."
+      "description": "Primary model, e.g. openai/gpt-5.6-terra."
     },
     "LLM_DEFAULT_MID_MODEL": {
       "description": "Mid-tier model for sub-agents."

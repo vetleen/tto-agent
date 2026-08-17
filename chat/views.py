@@ -620,6 +620,7 @@ def chat_home(request):
     from core.preferences import get_preferences
     from llm.display import (
         get_capability_level,
+        get_default_thinking_level,
         get_display_name,
         get_model_meta_tooltip,
         get_price_level,
@@ -648,6 +649,7 @@ def chat_home(request):
             "supports_thinking": supports_thinking(m),
             "supports_vision": supports_vision(m),
             "thinking_levels": get_thinking_levels(m),
+            "default_thinking_level": get_default_thinking_level(m),
             "price_level": get_price_level(m),
             "capability_level": get_capability_level(m),
             "meta_tooltip": get_model_meta_tooltip(m),
@@ -667,7 +669,7 @@ def chat_home(request):
         thread.save(update_fields=["metadata"])
 
     # Model picker default: the loaded thread's effective model (honoring its
-    # stored choice, with tier fallback), or the user's preferred chat model for
+    # stored choice, with tier fallback), or the organization's chat default for
     # a new thread.
     from core.preferences import resolve_thread_model
 

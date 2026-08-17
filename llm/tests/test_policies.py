@@ -59,10 +59,10 @@ class PoliciesTests(TestCase):
             },
             clear=False,
         ):
-            self.assertEqual(resolve_model("openai/gpt-5.4"), "openai/gpt-5.4")
+            self.assertEqual(resolve_model("openai/gpt-5.4"), "openai/gpt-5.6-terra")
             self.assertEqual(
                 resolve_model("anthropic/claude-sonnet-4-6"),
-                "anthropic/claude-sonnet-4-6",
+                "anthropic/claude-sonnet-5",
             )
 
     def test_resolve_model_none_uses_default_when_allowed(self):
@@ -74,7 +74,7 @@ class PoliciesTests(TestCase):
             },
             clear=False,
         ):
-            self.assertEqual(resolve_model(None), "anthropic/claude-sonnet-4-6")
+            self.assertEqual(resolve_model(None), "anthropic/claude-sonnet-5")
 
     def test_resolve_model_none_default_not_in_allowed_uses_first_allowed(self):
         with patch.dict(
@@ -85,7 +85,7 @@ class PoliciesTests(TestCase):
             },
             clear=False,
         ):
-            self.assertEqual(resolve_model(None), "openai/gpt-5.4")
+            self.assertEqual(resolve_model(None), "openai/gpt-5.6-terra")
 
     def test_resolve_model_none_no_default_uses_first_allowed(self):
         with patch.dict(
@@ -97,7 +97,7 @@ class PoliciesTests(TestCase):
             },
             clear=False,
         ):
-            self.assertEqual(resolve_model(None), "anthropic/claude-sonnet-4-6")
+            self.assertEqual(resolve_model(None), "anthropic/claude-sonnet-5")
 
     def test_get_allowed_models_drops_unregistered_entries(self):
         """Env entries without a registry hit never reach callers."""
@@ -108,7 +108,7 @@ class PoliciesTests(TestCase):
         ):
             self.assertEqual(
                 get_allowed_models(),
-                ["openai/gpt-5.4", "anthropic/claude-sonnet-4-6"],
+                ["openai/gpt-5.6-terra", "anthropic/claude-sonnet-5"],
             )
 
     def test_get_env_unregistered_models_lists_dropped_entries(self):

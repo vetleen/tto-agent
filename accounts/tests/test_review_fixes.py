@@ -61,15 +61,14 @@ class JsonBodyHardeningTests(TestCase):
         resp = self._post_raw("accounts:org_allowed_models_update", "5")
         self.assertEqual(resp.status_code, 400)
 
-    def test_null_field_value_returns_400_not_500(self):
-        # {"tier": null} previously crashed None.strip() -> 500.
+    def test_obsolete_user_model_endpoint_is_forbidden(self):
         member = _verified_user("jsonmember@example.com")
         self.client.logout()
         self.client.login(email=member.email, password="test-pass-123")
         resp = self._post_raw(
             "accounts:preferences_models_update", json.dumps({"tier": None, "model": "x"})
         )
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 403)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

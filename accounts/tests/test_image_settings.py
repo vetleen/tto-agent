@@ -136,22 +136,29 @@ class UserImageModelUpdateTests(TestCase):
         self.user = _verified("imguser@example.com")
         self.url = reverse("accounts:preferences_image_model_update")
 
-    def test_set_allowed_model(self):
+    def test_rejects_persistent_image_model(self):
+        settings_obj, _ = UserSettings.objects.get_or_create(user=self.user)
+        settings_obj.preferences = {
+            "image_models": {"default": "gemini/gemini-3-pro-image"}
+        }
+        settings_obj.save()
         self.client.login(email=self.user.email, password=self.password)
         response = self.client.post(
             self.url,
             json.dumps({"model": "gemini/gemini-2.5-flash-image"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 200)
-        settings = UserSettings.objects.get(user=self.user)
+        self.assertEqual(response.status_code, 403)
+        settings_obj.refresh_from_db()
         self.assertEqual(
-            settings.preferences["image_models"]["default"], "gemini/gemini-2.5-flash-image"
+            settings_obj.preferences["image_models"]["default"],
+            "gemini/gemini-3-pro-image",
         )
 
-    def test_reject_not_allowed(self):
-        self.client.login(email=self.user.email, password=self.password)
+    def test_requires_login(self):
         response = self.client.post(
-            self.url, json.dumps({"model": "gemini/gemini-3-pro-image"}), content_type="application/json"
+            self.url,
+            json.dumps({"model": "gemini/gemini-2.5-flash-image"}),
+            content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 302)

@@ -29,16 +29,16 @@ def get_allowed_models() -> List[str]:
     them). Startup emits a warning for each mismatch via ``LlmConfig.ready``
     so ops can see dropped entries in Sentry.
     """
-    from llm.model_registry import get_model_info
+    from llm.model_registry import normalize_model_ids
 
-    return [m for m in _get_env_allowed_models() if get_model_info(m) is not None]
+    return normalize_model_ids(_get_env_allowed_models())
 
 
 def get_env_unregistered_models() -> List[str]:
     """Env-listed models not found in the registry. Drives the startup warning."""
-    from llm.model_registry import get_model_info
+    from llm.model_registry import canonical_model_id
 
-    return [m for m in _get_env_allowed_models() if get_model_info(m) is None]
+    return [m for m in _get_env_allowed_models() if canonical_model_id(m) is None]
 
 
 def resolve_model(requested: Optional[str] = None) -> str:
@@ -57,15 +57,22 @@ def resolve_model(requested: Optional[str] = None) -> str:
         )
 
     if requested is not None:
-        if requested not in allowed:
+        from llm.model_registry import canonical_model_id
+
+        canonical = canonical_model_id(requested)
+        if canonical not in allowed:
             raise LLMPolicyDenied(
                 f"Model '{requested}' is not in LLM_ALLOWED_MODELS. Allowed: {allowed}"
             )
-        return requested
+        return canonical
 
     default = _get_default_model_env()
-    if default and default in allowed:
-        return default
+    if default:
+        from llm.model_registry import canonical_model_id
+
+        canonical_default = canonical_model_id(default)
+        if canonical_default in allowed:
+            return canonical_default
     return allowed[0]
 
 
