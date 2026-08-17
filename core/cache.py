@@ -117,3 +117,21 @@ class ResilientRedisCache(RedisCache):
         except _BLIP:
             self._degraded("has_key", key)
             return False
+
+    def incr(self, key, delta=1, version=None):
+        # ValueError (missing key) is NOT caught — django-ratelimit relies on it.
+        # On a connection blip, fail open to a minimal count so rate limiting reads
+        # "under limit" and allows the request (this is what makes the existing
+        # RATELIMIT_FAIL_OPEN actually effective under a Redis outage).
+        try:
+            return super().incr(key, delta, version)
+        except _BLIP:
+            self._degraded("incr", key)
+            return delta
+
+    def decr(self, key, delta=1, version=None):
+        try:
+            return super().decr(key, delta, version)
+        except _BLIP:
+            self._degraded("decr", key)
+            return -delta

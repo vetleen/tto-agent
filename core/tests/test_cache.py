@@ -52,6 +52,24 @@ class ResilientRedisCacheUnitTests(SimpleTestCase):
         with patch(f"{_PARENT}.has_key", side_effect=RedisConnectionError("boom")):
             self.assertIs(self.cache.has_key("k"), False)
 
+    def test_incr_fails_open_on_blip(self):
+        # django-ratelimit's cache.incr must not 500 the request on a Redis blip;
+        # it fails open to a minimal count so the rate-limit check reads under-limit.
+        with patch(f"{_PARENT}.incr", side_effect=RedisConnectionError("boom")):
+            self.assertEqual(self.cache.incr("rl:key"), 1)
+            self.assertEqual(self.cache.incr("rl:key", 5), 5)
+
+    def test_decr_fails_open_on_blip(self):
+        with patch(f"{_PARENT}.decr", side_effect=RedisConnectionError("boom")):
+            self.assertEqual(self.cache.decr("rl:key"), -1)
+
+    def test_incr_value_error_still_propagates(self):
+        # Missing-key ValueError is part of the incr contract django-ratelimit
+        # depends on — it must NOT be swallowed as if it were a blip.
+        with patch(f"{_PARENT}.incr", side_effect=ValueError("missing key")):
+            with self.assertRaises(ValueError):
+                self.cache.incr("rl:key")
+
     def test_non_blip_error_propagates(self):
         # A real bug (not a transient connection error) must NOT be swallowed.
         with patch(f"{_PARENT}.get", side_effect=ValueError("bug")):
