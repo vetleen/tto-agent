@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from django.conf import settings
 from django.test import SimpleTestCase
 
 
@@ -47,3 +48,28 @@ class ProcfileWorkerCommandTests(SimpleTestCase):
     def test_embedded_beat_enabled(self):
         # -B embeds the scheduler in the single worker dyno (see RUNBOOK).
         self.assertIn("-B", self._worker_line().split())
+
+
+class BrokerResilienceSettingsTests(SimpleTestCase):
+    """Guard the broker-blip resilience settings.
+
+    Regression test for a production incident: a batch document upload saturated the
+    20-connection Mini Redis cap, Heroku dropped the over-limit TLS handshakes
+    (``SSL: UNEXPECTED_EOF``), and both Celery dispatch sites permanently marked the
+    documents ``SCAN_FAILED``. The publish-retry policy rides out the blip and the
+    bounded pool stops the worker saturating the cap by itself. If these are dropped,
+    a transient blip silently fails documents again.
+    """
+
+    def test_publish_retry_enabled(self):
+        self.assertIs(settings.CELERY_TASK_PUBLISH_RETRY, True)
+
+    def test_publish_retry_policy_spans_a_blip(self):
+        policy = settings.CELERY_TASK_PUBLISH_RETRY_POLICY
+        # Enough retries with backoff to outlast the default ~0.6s window.
+        self.assertGreaterEqual(policy["max_retries"], 3)
+        self.assertGreater(policy["interval_max"], 0)
+
+    def test_broker_pool_is_bounded(self):
+        # Kept well under the 20-connection cap so the worker leaves headroom.
+        self.assertLessEqual(settings.CELERY_BROKER_POOL_LIMIT, 5)

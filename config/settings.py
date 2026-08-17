@@ -660,6 +660,23 @@ if _celery_broker_url.startswith("rediss://"):
 else:
     CELERY_BROKER_URL = _celery_broker_url
 
+# Ride out transient broker-connection blips (e.g. Heroku Redis dropping over-limit
+# TLS handshakes under a batch fan-out — SSL: UNEXPECTED_EOF) instead of failing the
+# publish. The default publish-retry window (~0.6s) is too short to outlast a
+# connection-cap burst; this spans ~8s of exponential backoff. Every .delay() /
+# apply_async() publish inherits it — a kombu publish-level reconnect that does NOT
+# re-run the task body. See RUNBOOK.md / the Redis TLS note above.
+CELERY_TASK_PUBLISH_RETRY = True
+CELERY_TASK_PUBLISH_RETRY_POLICY = {
+    "max_retries": 4,
+    "interval_start": 0.5,
+    "interval_step": 1.0,
+    "interval_max": 4.0,
+}
+# Bound the worker's own broker-connection footprint so a 16-thread batch fan-out can't
+# saturate the 20-connection Mini Redis cap by itself (default is 10). Tunable.
+CELERY_BROKER_POOL_LIMIT = 4
+
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
