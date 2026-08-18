@@ -48,7 +48,7 @@
   }
 
   // Inline note next to the filename for scan states ("what's the holdup"),
-  // plus a Retry button for scan_failed. Built with DOM APIs only.
+  // plus a Retry button for scan_failed / scan_retrying. Built with DOM APIs only.
   function syncScanNotes() {
     document.querySelectorAll('[data-doc-id]').forEach(function (row) {
       var status = row.dataset.status;
@@ -80,11 +80,15 @@
       label.title = statusTitle(row);
       note.appendChild(label);
 
-      if (status === 'scan_failed' && rescanUrlFor(row.dataset.docId)) {
+      // Manual override for both the terminal failure and the auto-retrying state
+      // (an impatient user can force an immediate rescan rather than wait for the
+      // sweeper). Both hit the same rescan endpoint; the underlying status is
+      // scan_failed either way, which document_rescan accepts.
+      if ((status === 'scan_failed' || status === 'scan_retrying') && rescanUrlFor(row.dataset.docId)) {
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'retry-scan-btn inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base';
-        btn.textContent = 'Retry scan';
+        btn.textContent = status === 'scan_retrying' ? 'Retry now' : 'Retry scan';
         note.appendChild(btn);
       }
 

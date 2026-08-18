@@ -261,18 +261,33 @@ class ScanDispatchRetryRecoveryTests(TestCase):
         "guardrails.tasks.scan_document_version.delay",
         side_effect=RuntimeError("broker still down"),
     )
-    def test_broker_still_down_reverts_to_retry_marker(self, mock_delay):
+    def test_broker_still_down_reverts_without_spending_budget(self, mock_delay):
         doc = self._scan_failed(marker=SCAN_DISPATCH_RETRY_MESSAGE, requeue_count=0)
 
         requeue_stale_documents()
 
         version = self._version(doc)
-        # Reverted to SCAN_FAILED + the retry marker so the next tick retries; the
-        # attempt is still counted (bounds a sustained outage).
+        # Reverted to SCAN_FAILED + the retry marker so the next tick retries — but a
+        # dispatch that failed on a busy broker must NOT burn a retry attempt, or a
+        # choppy broker at recovery time could terminally fail a never-scanned doc.
         self.assertEqual(version.status, DataRoomDocument.Status.SCAN_FAILED)
         self.assertEqual(version.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
-        self.assertEqual(version.requeue_count, 1)
+        self.assertEqual(version.requeue_count, 0)  # budget intact
         mock_delay.assert_called_once_with(doc.current_version_id)
+
+    @patch("guardrails.tasks.scan_document_version.delay", side_effect=RuntimeError("down"))
+    def test_repeated_broker_failures_never_exhaust(self, _mock_delay):
+        # Three failed recovery attempts in a row must leave the version retryable
+        # (still scan_failed + marker, requeue_count 0), never terminally failed.
+        doc = self._scan_failed(marker=SCAN_DISPATCH_RETRY_MESSAGE, requeue_count=0)
+
+        for _ in range(3):
+            requeue_stale_documents()
+
+        version = self._version(doc)
+        self.assertEqual(version.status, DataRoomDocument.Status.SCAN_FAILED)
+        self.assertEqual(version.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
+        self.assertEqual(version.requeue_count, 0)
 
 
 @override_settings(

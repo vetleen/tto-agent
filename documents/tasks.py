@@ -180,14 +180,19 @@ def requeue_stale_documents() -> int:
             ).values_list("pk", flat=True)
         )
         for version_id in retry_scan_ids:
-            # Re-check the marker at write time and claim a retry slot. Set SCANNING
-            # BEFORE dispatch — finalize's release is gated on status=SCANNING.
+            # Claim via the status transition (scan_failed -> scanning); the
+            # conditional update guards against a concurrent sweep grabbing the same
+            # version. Set SCANNING BEFORE dispatch — finalize's release is gated on
+            # status=SCANNING. Do NOT spend a requeue_count here: a re-dispatch that
+            # fails on a busy broker is not the document's fault and must not consume
+            # the (poison-doc) retry budget, or a choppy broker at recovery time could
+            # terminally fail a never-scanned document. Only a *successful* re-dispatch
+            # counts (below).
             claimed = DataRoomDocumentVersion.objects.filter(
                 retry_marked, pk=version_id, requeue_count__lt=MAX_REQUEUES,
             ).update(
                 status=Status.SCANNING,
                 processing_error=None,
-                requeue_count=F("requeue_count") + 1,
                 updated_at=now,
             )
             if not claimed:
@@ -195,16 +200,9 @@ def requeue_stale_documents() -> int:
             _mirror_doc_status([version_id], Status.SCANNING, now, error="")
             try:
                 scan_document_version.delay(version_id)
-                # INFO, not WARNING: a routine, successful auto-recovery — logging it
-                # at WARNING floods Sentry (WILFRED-6Z). The exhausted/failed paths
-                # below stay at WARNING.
-                logger.info(
-                    "requeue_stale_documents: version_id=%s scan re-dispatched", version_id,
-                )
-                handled += 1
             except Exception:
-                # Broker still down — revert to the retry marker so the next tick
-                # retries; the requeue_count increment above bounds a long outage.
+                # Broker still down — revert to the retry marker with the budget
+                # INTACT so the next tick retries once the broker is reachable again.
                 DataRoomDocumentVersion.objects.filter(pk=version_id).update(
                     status=Status.SCAN_FAILED,
                     processing_error=SCAN_DISPATCH_RETRY_MESSAGE,
@@ -217,6 +215,19 @@ def requeue_stale_documents() -> int:
                     "requeue_stale_documents: version_id=%s scan re-dispatch failed; will retry next tick",
                     version_id,
                 )
+                continue
+            # Re-dispatch succeeded — now spend the retry attempt. This bounds a
+            # genuine scan-retry loop (dispatch keeps succeeding but the scan/hand-off
+            # keeps failing): after MAX_REQUEUES it exhausts to a terminal SCAN_FAILED.
+            DataRoomDocumentVersion.objects.filter(pk=version_id).update(
+                requeue_count=F("requeue_count") + 1,
+            )
+            # INFO, not WARNING: a routine, successful auto-recovery — logging it at
+            # WARNING floods Sentry (WILFRED-6Z). Exhausted/failed paths stay WARNING.
+            logger.info(
+                "requeue_stale_documents: version_id=%s scan re-dispatched", version_id,
+            )
+            handled += 1
     except (OperationalError, InterfaceError):
         logger.info(
             "Skipping stale document sweep: database temporarily unavailable; "
