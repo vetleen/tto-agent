@@ -1649,10 +1649,12 @@ class SoulUpdateTests(TestCase):
         self.assertEqual(response.status_code, 503)
 
     def test_too_long_returns_400(self):
+        from accounts.agent_customization import MAX_SOUL_LENGTH
+
         self.client.login(email=self.user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"soul": "x" * 5001}),
+            json.dumps({"soul": "x" * (MAX_SOUL_LENGTH + 1)}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)

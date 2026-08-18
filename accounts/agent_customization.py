@@ -112,7 +112,7 @@ DEFAULT_USER_NAME = "[anonymous user]"
 DEFAULT_USER_TITLE = "Knowledge Worker"
 DEFAULT_ALLOW_USER_SOUL = True
 
-MAX_SOUL_LENGTH = 75000
+MAX_SOUL_LENGTH = 25000
 
 
 def org_allows_user_soul(org: Organization | None) -> bool:
