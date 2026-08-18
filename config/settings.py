@@ -29,6 +29,23 @@ from core.ip_access import parse_ip_allowlist
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _env_int(name, default):
+    """Read an int from an env var, falling back to ``default`` on a missing,
+    empty, or non-numeric value — so a fat-fingered or empty config var can't
+    crash the app at boot. (Heroku's ``config:set`` can silently write an empty
+    string on this setup, and a bare ``int("")`` would raise at import time and
+    take the whole app down.) ``default`` may be an int or an int-parsable string.
+    """
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        warnings.warn(f"Invalid integer for env var {name!r}={raw!r}; using default {default!r}.")
+        return int(default)
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -415,7 +432,7 @@ if USING_ANYMAIL:
         "MAILGUN_API_URL": os.getenv("MAILGUN_API_URL", ""),
     }
 
-PASSWORD_RESET_TIMEOUT = int(os.environ.get("DJANGO_PASSWORD_RESET_TIMEOUT", "3600"))
+PASSWORD_RESET_TIMEOUT = _env_int("DJANGO_PASSWORD_RESET_TIMEOUT", "3600")
 
 # Rate limiting (django-ratelimit)
 RATELIMIT_VIEW = "accounts.views.auth.rate_limited"
@@ -456,7 +473,7 @@ BUDGET_STATUS_CACHE_SECONDS = 0 if TESTING else int(
 )
 
 # Email verification (24 hours in seconds)
-EMAIL_VERIFICATION_TIMEOUT = int(os.environ.get("EMAIL_VERIFICATION_TIMEOUT", "86400"))
+EMAIL_VERIFICATION_TIMEOUT = _env_int("EMAIL_VERIFICATION_TIMEOUT", "86400")
 EMAIL_VERIFICATION_REQUIRED = _get_env_bool(
     os.environ.get("EMAIL_VERIFICATION_REQUIRED"), True
 )
@@ -534,11 +551,11 @@ elif not DEBUG and not _is_test_run and not _get_env_bool(
 
 # Web fetch: hard ceiling on bytes downloaded from a (user/LLM-supplied) URL,
 # enforced while streaming so a malicious/huge response can't exhaust worker memory.
-WEB_FETCH_MAX_RESPONSE_BYTES = int(os.environ.get("WEB_FETCH_MAX_RESPONSE_BYTES", "10000000"))  # 10 MB
+WEB_FETCH_MAX_RESPONSE_BYTES = _env_int("WEB_FETCH_MAX_RESPONSE_BYTES", "10000000")  # 10 MB
 
 # Document upload and chunking (MVP)
 DATA_UPLOAD_MAX_NUMBER_FILES = 100
-DOCUMENT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000"))  # 50 MB
+DOCUMENT_UPLOAD_MAX_SIZE_BYTES = _env_int("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000")  # 50 MB
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and
@@ -559,40 +576,40 @@ DOCUMENT_EXTENSION_MIME_MAP = _extension_mime_map_for_kinds(DATA_ROOM_KINDS)
 # Per-request upload cap, enforced from Content-Length BEFORE the body is
 # parsed/spooled to disk (fits one 50 MB audio file plus multipart overhead;
 # the upload UI sends one file per request). Per-file caps still apply.
-DOCUMENT_UPLOAD_REQUEST_MAX_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_REQUEST_MAX_BYTES", "60000000"))  # 60 MB
+DOCUMENT_UPLOAD_REQUEST_MAX_BYTES = _env_int("DOCUMENT_UPLOAD_REQUEST_MAX_BYTES", "60000000")  # 60 MB
 # Max documents a single user may have "in flight" (uploaded/processing/scanning or
 # auto-retrying) at once, across all their data rooms. Server-authoritative backstop
 # for the client-side per-drag limit — bounds concurrent processing load (the shared
 # Redis) and blocks drip-feeding a second batch into an already-processing window.
-DOCUMENT_MAX_IN_FLIGHT_PER_USER = int(os.environ.get("DOCUMENT_MAX_IN_FLIGHT_PER_USER", "100"))
+DOCUMENT_MAX_IN_FLIGHT_PER_USER = _env_int("DOCUMENT_MAX_IN_FLIGHT_PER_USER", "100")
 # Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
-DOCX_MAX_UNCOMPRESSED_BYTES = int(os.environ.get("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000"))  # 250 MB
-DOCUMENT_MAX_EXTRACTED_CHARS = int(os.environ.get("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000"))  # 20M chars
-DOCUMENT_ATTACHMENT_MAX_BYTES = int(os.environ.get("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000"))  # 20 MB
+DOCX_MAX_UNCOMPRESSED_BYTES = _env_int("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
+DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000")  # 20M chars
+DOCUMENT_ATTACHMENT_MAX_BYTES = _env_int("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000")  # 20 MB
 # Embedded-image extraction from PDFs (see core.pdf): skip images whose smaller
 # side is below this many pixels, and cap how many distinct images are stored per
 # PDF so a pathological deck can't fan out into thousands of assets.
-PDF_MIN_IMAGE_DIMENSION = int(os.environ.get("PDF_MIN_IMAGE_DIMENSION", "32"))
-PDF_MAX_EMBEDDED_IMAGES = int(os.environ.get("PDF_MAX_EMBEDDED_IMAGES", "200"))
-TARGET_CHUNK_TOKENS = int(os.environ.get("TARGET_CHUNK_TOKENS", "768"))
-MAX_CHUNK_TOKENS = int(os.environ.get("MAX_CHUNK_TOKENS", "1200"))
-CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", "100"))
+PDF_MIN_IMAGE_DIMENSION = _env_int("PDF_MIN_IMAGE_DIMENSION", "32")
+PDF_MAX_EMBEDDED_IMAGES = _env_int("PDF_MAX_EMBEDDED_IMAGES", "200")
+TARGET_CHUNK_TOKENS = _env_int("TARGET_CHUNK_TOKENS", "768")
+MAX_CHUNK_TOKENS = _env_int("MAX_CHUNK_TOKENS", "1200")
+CHUNK_OVERLAP_TOKENS = _env_int("CHUNK_OVERLAP_TOKENS", "100")
 CHUNKING_STRATEGY = os.environ.get("CHUNKING_STRATEGY", "structure_aware")
 
-RETRIEVAL_CONTEXT_TARGET_TOKENS = int(os.environ.get("RETRIEVAL_CONTEXT_TARGET_TOKENS", "1200"))
+RETRIEVAL_CONTEXT_TARGET_TOKENS = _env_int("RETRIEVAL_CONTEXT_TARGET_TOKENS", "1200")
 # On the Heroku worker dyno this is shadowed to RERANK_ON_WORKER (default false)
 # via the Procfile, so subagent searches skip FlashRank to stay under the worker
 # memory cap. Web / main-chat reranking uses this app-wide value. See RUNBOOK
 # "Worker pool & concurrency".
 RERANK_ENABLED = _get_env_bool(os.environ.get("RERANK_ENABLED"), True)
-RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "5"))
+RERANK_TOP_N = _env_int("RERANK_TOP_N", "5")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 # Chunks embedded per store.add_documents() flush in add_chunk_vectors. Caps the
 # peak vector memory held at once on the worker (~batch_size x embedding dims).
-EMBEDDING_BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "256"))
+EMBEDDING_BATCH_SIZE = _env_int("EMBEDDING_BATCH_SIZE", "256")
 # Token budget per PII-scan window. The full-document PII scan reads chunks in
 # windows of this size so a long document never materializes all its text at once.
-PII_SCAN_WINDOW_TOKENS = int(os.environ.get("PII_SCAN_WINDOW_TOKENS", "6000"))
+PII_SCAN_WINDOW_TOKENS = _env_int("PII_SCAN_WINDOW_TOKENS", "6000")
 # pgvector: use same DB as Django when DATABASE_URL is Postgres
 PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATABASE_URL", ""))
 
@@ -612,7 +629,7 @@ JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 EPO_OPS_KEY = os.environ.get("EPO_OPS_KEY", "")
 EPO_OPS_SECRET = os.environ.get("EPO_OPS_SECRET", "")
 EPO_OPS_BASE_URL = os.environ.get("EPO_OPS_BASE_URL", "https://ops.epo.org/3.2")
-EPO_OPS_RPM = int(os.environ.get("EPO_OPS_RPM", "30"))  # OPS fair-use throttle
+EPO_OPS_RPM = _env_int("EPO_OPS_RPM", "30")  # OPS fair-use throttle
 # Jina Reader endpoint. The former EU endpoint (eu.r.jina.ai) no longer
 # resolves (2026-06); override here if Jina ships a new regional endpoint.
 JINA_READER_BASE_URL = os.environ.get("JINA_READER_BASE_URL", "https://r.jina.ai")
@@ -626,11 +643,11 @@ TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "ope
 TRANSCRIPTION_DEFAULT_MODEL_LIVE = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_LIVE", "")
 TRANSCRIPTION_DEFAULT_MODEL_UPLOAD = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
 TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,openai/gpt-4o-transcribe-diarize").split(",") if m.strip()]
-AUDIO_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"))  # 50 MB
+AUDIO_UPLOAD_MAX_SIZE_BYTES = _env_int("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000")  # 50 MB
 
 # Org brand-font upload (PDF export). A single font face is small; cap well below
 # image/doc uploads. Used by the font-upload endpoint and the resolver.
-FONT_UPLOAD_MAX_SIZE_BYTES = int(os.environ.get("FONT_UPLOAD_MAX_SIZE_BYTES", "5000000"))  # 5 MB
+FONT_UPLOAD_MAX_SIZE_BYTES = _env_int("FONT_UPLOAD_MAX_SIZE_BYTES", "5000000")  # 5 MB
 # Google Fonts Developer API key. Empty disables the auto-fetch tier of the font
 # resolver (it falls through to substitute/fallback). See core/fonts.py.
 GOOGLE_FONTS_API_KEY = os.environ.get("GOOGLE_FONTS_API_KEY", "")
@@ -643,26 +660,26 @@ IMAGE_ALLOWED_MODELS = [m.strip() for m in os.environ.get("IMAGE_ALLOWED_MODELS"
 
 # Meetings settings
 MEETING_CHUNK_TEMP_DIR = os.environ.get("MEETING_CHUNK_TEMP_DIR", str(MEDIA_ROOT / "_meeting_chunks"))
-MEETING_AUTO_STOP_DEFAULT_SECONDS = int(os.environ.get("MEETING_AUTO_STOP_DEFAULT_SECONDS", "3600"))
-MEETING_AUTO_STOP_MAX_SECONDS = int(os.environ.get("MEETING_AUTO_STOP_MAX_SECONDS", "14400"))
-MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES", "2000000"))  # 2 MB
+MEETING_AUTO_STOP_DEFAULT_SECONDS = _env_int("MEETING_AUTO_STOP_DEFAULT_SECONDS", "3600")
+MEETING_AUTO_STOP_MAX_SECONDS = _env_int("MEETING_AUTO_STOP_MAX_SECONDS", "14400")
+MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES = _env_int("MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES", "2000000")  # 2 MB
 MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS = {"txt", "md"}
-MEETING_AUDIO_UPLOAD_MAX_BYTES = int(os.environ.get("MEETING_AUDIO_UPLOAD_MAX_BYTES", "50000000"))  # 50 MB
-MEETING_CHUNK_MAX_BYTES = int(os.environ.get("MEETING_CHUNK_MAX_BYTES", str(20 * 1024 * 1024)))  # 20 MB per WS chunk
+MEETING_AUDIO_UPLOAD_MAX_BYTES = _env_int("MEETING_AUDIO_UPLOAD_MAX_BYTES", "50000000")  # 50 MB
+MEETING_CHUNK_MAX_BYTES = _env_int("MEETING_CHUNK_MAX_BYTES", str(20 * 1024 * 1024))  # 20 MB per WS chunk
 # Floor for a chunked-mode WS frame. A real ~30s WebM chunk is hundreds of KB;
 # a 250ms streaming-continuation burst (leaked from a mis-torn-down realtime
 # recorder) is a few KB and undecodable. The consumer allows one undersized
 # frame (a legit short final chunk) but drops a *run* of them — see
 # MeetingTranscribeConsumer._handle_binary_frame.
-MEETING_CHUNK_MIN_BYTES = int(os.environ.get("MEETING_CHUNK_MIN_BYTES", str(8 * 1024)))  # 8 KB
+MEETING_CHUNK_MIN_BYTES = _env_int("MEETING_CHUNK_MIN_BYTES", str(8 * 1024))  # 8 KB
 # Audio speed-up factor applied to uploaded meeting audio chunks before sending
 # to OpenAI. 2.0 roughly halves the tokens billed with minimal intelligibility
 # loss; 1.0 disables the speed-up. Clamped to [0.5, 3.0] in code.
 MEETING_UPLOAD_SPEED_UP_FACTOR = float(os.environ.get("MEETING_UPLOAD_SPEED_UP_FACTOR", "2.0"))
 # Per-file size cap and per-meeting count cap for supporting attachments
 # (slides, agenda PDFs, etc.). Distinct from the transcript/audio caps above.
-MEETING_ATTACHMENT_MAX_BYTES = int(os.environ.get("MEETING_ATTACHMENT_MAX_BYTES", "26214400"))  # 25 MB
-MEETING_ATTACHMENT_MAX_COUNT = int(os.environ.get("MEETING_ATTACHMENT_MAX_COUNT", "25"))
+MEETING_ATTACHMENT_MAX_BYTES = _env_int("MEETING_ATTACHMENT_MAX_BYTES", "26214400")  # 25 MB
+MEETING_ATTACHMENT_MAX_COUNT = _env_int("MEETING_ATTACHMENT_MAX_COUNT", "25")
 
 # --- Redis connections: Celery broker, Channels layer, and cache ---
 # Heroku Data for Redis serves a self-signed cert chain that fails default TLS
