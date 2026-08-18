@@ -16,6 +16,8 @@ from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.security.websocket import AllowedHostsOriginValidator
 from django.core.asgi import get_asgi_application
 
+from core.ip_access import ClientIPAllowlistASGIMiddleware
+
 # Windows Python 3.10+ defaults to SelectorEventLoop for asyncio, which does
 # NOT implement ``subprocess_exec``. The realtime live-transcription path
 # spawns ``ffmpeg`` via ``asyncio.create_subprocess_exec`` to decode WebM/Opus
@@ -42,9 +44,11 @@ application = ProtocolTypeRouter(
         "http": django_asgi_app,
         # AllowedHostsOriginValidator rejects WebSocket handshakes whose Origin is
         # not in ALLOWED_HOSTS, defending against cross-site WebSocket hijacking.
-        "websocket": AllowedHostsOriginValidator(
-            AuthMiddlewareStack(
-                URLRouter(websocket_urlpatterns),
+        "websocket": ClientIPAllowlistASGIMiddleware(
+            AllowedHostsOriginValidator(
+                AuthMiddlewareStack(
+                    URLRouter(websocket_urlpatterns),
+                )
             )
         ),
     }

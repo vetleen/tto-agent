@@ -2411,6 +2411,16 @@
         updateConnectionStatus(false, false);
         if (currentStreamingElement) { finishStreaming("Lost the connection — please try again."); }
         clearTimeout(streamingTimeout);
+        if (event.code === 4413) {
+          const statusText = document.getElementById("connection-text");
+          const reconnectBtn = document.getElementById("reconnect-btn");
+          if (statusText) {
+            statusText.textContent = "Access denied from this network. Connect to the NTNU VPN and reload.";
+            statusText.className = "text-xs text-body text-danger";
+          }
+          if (reconnectBtn) reconnectBtn.classList.add("hidden");
+          return;
+        }
         if (event.code !== 1000 && event.code !== 4403 && reconnectAttempts < maxReconnectAttempts) {
           const delay = 1000 * Math.pow(2, reconnectAttempts); reconnectAttempts++;
           reconnectTimeout = setTimeout(connect, delay);

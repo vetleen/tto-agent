@@ -23,6 +23,8 @@ from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 from sentry_sdk.integrations.logging import LoggingIntegration, ignore_logger
 
+from core.ip_access import parse_ip_allowlist
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -154,6 +156,17 @@ else:
     # Default: local dev + Heroku (*.herokuapp.com). Override with DJANGO_ALLOWED_HOSTS for custom domains.
     ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", ".herokuapp.com"]
 
+# Optional inbound client-IP gate. Empty disables it so local development and
+# newly provisioned apps remain reachable until an explicit range is configured.
+_allowed_ip_ranges = os.environ.get("DJANGO_ALLOWED_IP_RANGES", "")
+try:
+    CLIENT_IP_ALLOWLIST = parse_ip_allowlist(_allowed_ip_ranges)
+except ValueError as exc:
+    raise ImproperlyConfigured(
+        "DJANGO_ALLOWED_IP_RANGES must be a comma-separated list of valid "
+        "CIDRs or IP addresses."
+    ) from exc
+
 # Canonical host: when set, core.middleware.CanonicalHostMiddleware 301-redirects
 # www.<host> to the bare <host> (production sets DJANGO_CANONICAL_HOST=wilfred.work).
 # Empty (the default) disables the redirect, so local dev and staging are unaffected.
@@ -264,6 +277,7 @@ MIDDLEWARE = [
     "csp.middleware.CSPMiddleware",
     "core.middleware.RequestIDMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    "core.middleware.ClientIPAllowlistMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

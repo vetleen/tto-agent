@@ -1,0 +1,12 @@
+{% extends "errors/_error_base.html" %}
+
+{% block error_code %}403{% endblock %}
+{% block error_code_color %}text-fg-danger{% endblock %}
+{% block error_title %}Access denied{% endblock %}
+{% block error_body %}Access from your current network is denied. Connect to the NTNU VPN, then try again.{% endblock %}
+
+{% block error_actions %}
+<div class="mt-8">
+  <a href="" class="inline-flex items-center rounded-base bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong focus:outline-none focus:ring-4 focus:ring-brand-medium transition-colors">Try again</a>
+</div>
+{% endblock error_actions %}
