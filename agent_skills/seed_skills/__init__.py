@@ -9,9 +9,8 @@ from agent_skills.seed_skills.skill_creator import SKILL_CREATOR
 from agent_skills.seed_skills.web_deep_researcher import WEB_DEEP_RESEARCHER
 from agent_skills.seed_skills.web_research_tools import WEB_RESEARCH_TOOLS
 from agent_skills.seed_skills.web_researcher import WEB_RESEARCHER
-from agent_skills.seed_skills.written_assignment_writer import WRITTEN_ASSIGNMENT_WRITER
 
-SYSTEM_SKILLS = [SKILL_CREATOR, WRITTEN_ASSIGNMENT_WRITER, WEB_DEEP_RESEARCHER, WEB_RESEARCHER, PATENT_SEARCHER, IMAGE_GENERATOR, ASSISTANT_LOOP_TOOLS, CANVAS_COLLABORATOR, DATA_ROOM_TOOLS, WEB_RESEARCH_TOOLS]
+SYSTEM_SKILLS = [SKILL_CREATOR, WEB_DEEP_RESEARCHER, WEB_RESEARCHER, PATENT_SEARCHER, IMAGE_GENERATOR, ASSISTANT_LOOP_TOOLS, CANVAS_COLLABORATOR, DATA_ROOM_TOOLS, WEB_RESEARCH_TOOLS]
 
 # Cross-app seed skill from the meetings app. Wrapped in try/except so
 # the agent_skills app remains importable even if `meetings` is removed

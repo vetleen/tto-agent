@@ -208,11 +208,6 @@ class SeedSystemSkillsTests(TestCase):
         self.assertTrue(
             AgentSkill.objects.filter(slug="skill-creator", level="system").exists()
         )
-        self.assertTrue(
-            AgentSkill.objects.filter(
-                slug="written-assignment-writer", level="system"
-            ).exists()
-        )
 
     def test_seed_is_idempotent(self):
         from agent_skills.seed_skills import SYSTEM_SKILLS, seed_system_skills
@@ -264,16 +259,3 @@ class SeedSystemSkillsTests(TestCase):
         seed_system_skills()
         skill.refresh_from_db()
         self.assertEqual(skill.updated_at, ts_before)
-
-    def test_written_assignment_writer_fields(self):
-        from agent_skills.seed_skills import seed_system_skills
-
-        seed_system_skills()
-
-        skill = AgentSkill.objects.get(
-            slug="written-assignment-writer", level="system"
-        )
-        self.assertEqual(skill.name, "Written Assignment Writer")
-        self.assertIn("college-level", skill.description)
-        self.assertIn("Decode the prompt", skill.instructions)
-        self.assertEqual(skill.tool_names, [])
