@@ -40,17 +40,20 @@ class SkillToolAudienceOkTests(TestCase):
 
 class FilterToSkillToolsAudienceTests(TestCase):
     def test_keeps_shared_tool_for_subagent_skill(self):
-        # skill_template_view is a section="skills", audience="shared" tool.
+        # web_fetch is a section="skills", audience="shared" tool.
         self.assertEqual(
-            filter_to_skill_tools(["skill_template_view"], skill_audience="subagent"),
-            ["skill_template_view"],
+            filter_to_skill_tools(["web_fetch"], skill_audience="subagent"),
+            ["web_fetch"],
         )
 
-    def test_drops_main_tool_for_subagent_skill(self):
-        # skill_create is section="skills", audience="main".
+    def test_template_view_is_main_only(self):
         self.assertEqual(
-            filter_to_skill_tools(["skill_create"], skill_audience="subagent"),
+            filter_to_skill_tools(["skill_template_view"], skill_audience="subagent"),
             [],
+        )
+        self.assertEqual(
+            filter_to_skill_tools(["skill_template_view"], skill_audience="main"),
+            ["skill_template_view"],
         )
 
     def test_no_audience_keeps_section_skills_tools(self):
@@ -124,9 +127,25 @@ class SeedWebResearcherTests(TestCase):
         skill = AgentSkill.objects.filter(slug="web-researcher", level="system").first()
         self.assertIsNotNone(skill)
         self.assertEqual(skill.audience, "subagent")
-        # Carries skill_template_view (shared) and a report template.
-        self.assertIn("skill_template_view", skill.tool_names)
+        self.assertNotIn("skill_template_view", skill.tool_names)
         self.assertTrue(skill.templates.filter(name="Research Findings Report").exists())
+
+    def test_reseed_removes_stale_template_view_from_subagent_skills(self):
+        from agent_skills.seed_skills import seed_system_skills
+
+        skills = AgentSkill.objects.filter(
+            slug__in=["web-researcher", "patent-searcher"], level="system",
+        )
+        for skill in skills:
+            skill.tool_names = [*skill.tool_names, "skill_template_view"]
+            skill.save(update_fields=["tool_names"])
+
+        seed_system_skills()
+
+        for skill in AgentSkill.objects.filter(
+            slug__in=["web-researcher", "patent-searcher"], level="system",
+        ):
+            self.assertNotIn("skill_template_view", skill.tool_names)
 
 
 class PreferenceAudienceTests(TestCase):
@@ -147,13 +166,13 @@ class PreferenceAudienceTests(TestCase):
         AgentSkill.objects.create(
             slug="my-spec", name="My Spec", level="user", created_by=self.user,
             audience="subagent",
-            tool_names=["skill_template_view", "skill_create"],
+            tool_names=["skill_template_view", "web_fetch", "skill_create"],
         )
         prefs = get_preferences(self.user)
         specs = {s["slug"]: s for s in prefs.allowed_specializations}
         self.assertIn("my-spec", specs)
-        # skill_template_view (shared) kept; skill_create (main) dropped.
-        self.assertEqual(specs["my-spec"]["tool_names"], ["skill_template_view"])
+        # Only the shared tool survives; both main-only tools are dropped.
+        self.assertEqual(specs["my-spec"]["tool_names"], ["web_fetch"])
         # And it must not leak into the main-agent skills list.
         self.assertNotIn("my-spec", {s["slug"] for s in prefs.allowed_skills})
 

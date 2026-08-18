@@ -23,6 +23,7 @@ from chat.subagent_limits import (
 from chat.subagent_prompts import build_subagent_system_prompt
 from chat.subagent_service import resolve_subagent_model, resolve_subagent_tools
 from chat.subagent_tool import CreateSubagentTool
+from chat.tool_groups import DATA_ROOM_TOOL_NAMES
 from core.preferences import ResolvedPreferences
 from llm.types.context import RunContext
 
@@ -44,6 +45,7 @@ def _prefs(**overrides):
         # (canvas/subagent/skill tools are audience="main" and excluded upstream).
         allowed_subagent_tools=[
             "document_search", "document_read", "web_fetch", "web_search",
+            "subagent_canvas_load_template",
         ],
         allowed_skills=[],
         allowed_specializations=[],
@@ -177,11 +179,14 @@ class ResolveSubagentToolsTests(TestCase):
         self.assertIn("document_search", tools)
         self.assertIn("document_read", tools)
 
-    def test_removes_doc_tools_without_data_rooms(self):
-        prefs = _prefs()
+    def test_removes_all_data_room_tools_without_data_rooms(self):
+        prefs = _prefs(allowed_subagent_tools=[
+            *DATA_ROOM_TOOL_NAMES,
+            "web_fetch",
+        ])
         tools = resolve_subagent_tools(prefs, data_room_ids=[])
-        self.assertNotIn("document_search", tools)
-        self.assertNotIn("document_read", tools)
+        self.assertTrue(DATA_ROOM_TOOL_NAMES.isdisjoint(tools))
+        self.assertIn("web_fetch", tools)
 
     def test_keeps_web_tools(self):
         prefs = _prefs()
@@ -189,32 +194,44 @@ class ResolveSubagentToolsTests(TestCase):
         self.assertIn("web_fetch", tools)
         self.assertIn("web_search", tools)
 
-    def test_no_specialization_means_no_skill_tools(self):
-        """Without a specialization the sub-agent gets no skill-section tools."""
+    def test_no_specialization_hides_loader_and_skill_tools(self):
+        """A general sub-agent gets neither specialization tools nor its loader."""
         prefs = _prefs(allowed_specializations=[{
             "id": "1", "slug": "web-researcher", "name": "Web Researcher",
-            "emoji": "", "description": "", "tool_names": ["skill_template_view"],
+            "emoji": "", "description": "", "tool_names": ["specialized_tool"],
         }])
         tools = resolve_subagent_tools(prefs, data_room_ids=[])
-        self.assertNotIn("skill_template_view", tools)
+        self.assertNotIn("specialized_tool", tools)
+        self.assertNotIn("subagent_canvas_load_template", tools)
 
     def test_specialization_adds_its_tools(self):
         """A spawned specialization contributes its (already filtered) tools."""
         prefs = _prefs(allowed_specializations=[{
             "id": "1", "slug": "web-researcher", "name": "Web Researcher",
-            "emoji": "", "description": "", "tool_names": ["skill_template_view"],
+            "emoji": "", "description": "", "tool_names": ["specialized_tool"],
         }])
         tools = resolve_subagent_tools(
             prefs, data_room_ids=[], specialization_slug="web-researcher",
         )
-        self.assertIn("skill_template_view", tools)
+        self.assertIn("specialized_tool", tools)
+        self.assertIn("subagent_canvas_load_template", tools)
 
-    def test_unknown_specialization_adds_nothing(self):
+    def test_unknown_specialization_adds_nothing_and_hides_loader(self):
         prefs = _prefs()
         tools = resolve_subagent_tools(
             prefs, data_room_ids=[], specialization_slug="does-not-exist",
         )
-        self.assertNotIn("skill_template_view", tools)
+        self.assertNotIn("subagent_canvas_load_template", tools)
+
+    def test_specialization_cannot_restore_data_room_tools_without_rooms(self):
+        prefs = _prefs(allowed_specializations=[{
+            "id": "1", "slug": "document-worker", "name": "Document Worker",
+            "emoji": "", "description": "", "tool_names": ["document_edit"],
+        }])
+        tools = resolve_subagent_tools(
+            prefs, data_room_ids=[], specialization_slug="document-worker",
+        )
+        self.assertNotIn("document_edit", tools)
 
 
 # ---------------------------------------------------------------------------

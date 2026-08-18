@@ -1621,19 +1621,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thinking_level = _resolve_reasoning_level(model, thinking_level)
 
         # Web tools always available; document tools only with data rooms; canvas tools always
+        from chat.tool_groups import DATA_ROOM_TOOL_NAMES
         from llm.tools.registry import get_tool_registry
-        doc_tools = {
-            "document_search", "document_read", "canvas_save_to_document",
-            "document_list", "document_open_to_canvas", "document_edit",
-            "document_archive", "document_rename",
-            "document_version_list", "document_version_restore", "document_status",
-            "document_view_image",
-        }
         all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
         if self.data_room_ids:
             tools = list(all_tools)
         else:
-            tools = [t for t in all_tools if t not in doc_tools]
+            tools = [t for t in all_tools if t not in DATA_ROOM_TOOL_NAMES]
 
         # Extend with skill-specific tools, unioned across every attached skill
         # (filtered through prefs.allowed_skills). Whenever prefs exist, trust

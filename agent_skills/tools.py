@@ -693,7 +693,7 @@ class ViewTemplateTool(ContextAwareTool):
     """View the content of a template from an attached skill."""
 
     name: str = "skill_template_view"
-    audience: str = "shared"
+    audience: str = "main"
     start_label: str = "Loading template..."
     end_label: str = "Viewed template"
     description: str = (

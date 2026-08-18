@@ -69,21 +69,29 @@ def resolve_subagent_tools(
     already audience-filtered and org-toggle-filtered in
     ``prefs.allowed_specializations``.
     """
+    from chat.tool_groups import DATA_ROOM_TOOL_NAMES
+
     tools = list(prefs.allowed_subagent_tools)
+    spec = next(
+        (s for s in prefs.allowed_specializations if s["slug"] == specialization_slug),
+        None,
+    ) if specialization_slug else None
 
+    if spec:
+        for t in spec["tool_names"]:
+            if t not in tools:
+                tools.append(t)
+
+    # The template loader resolves against the run's specialization. Hide it
+    # from general agents and from runs whose specialization was revoked after
+    # they were queued.
+    if spec is None:
+        tools = [t for t in tools if t != "subagent_canvas_load_template"]
+
+    # Apply context gates after specialization tools are merged so a custom
+    # specialization cannot reintroduce tools that are unusable without rooms.
     if not data_room_ids:
-        doc_tools = {"document_search", "document_read"}
-        tools = [t for t in tools if t not in doc_tools]
-
-    if specialization_slug:
-        spec = next(
-            (s for s in prefs.allowed_specializations if s["slug"] == specialization_slug),
-            None,
-        )
-        if spec:
-            for t in spec["tool_names"]:
-                if t not in tools:
-                    tools.append(t)
+        tools = [t for t in tools if t not in DATA_ROOM_TOOL_NAMES]
 
     return tools
 
