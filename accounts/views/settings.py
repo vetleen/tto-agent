@@ -421,6 +421,24 @@ def org_settings_page(request):
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
     )
 
+    # Full (allowed-independent) eligible model lists per tier and per feature.
+    # The Model-defaults and Feature-override dropdowns are server-rendered only
+    # with the currently-allowed models; the client uses this to re-populate them
+    # live when the admin toggles the allowed-models checklist (no page reload).
+    from llm.model_registry import get_models_for_slot
+    model_options = {
+        "tiers": {
+            key: get_models_for_slot(key, system_models)
+            for key in ("primary", "mid", "cheap")
+        },
+        "features": {
+            row["key"]: row["eligible_models"]
+            for row in build_feature_rows(
+                "org", org_feature_models, system_models, _ORG_FEATURE_META
+            )
+        },
+    }
+
     from core.fonts import org_font_families
     from core.styles import FONT_CHOICES, get_org_styles
 
@@ -468,6 +486,7 @@ def org_settings_page(request):
         "image_model_display": image_model_display,
         "org_features": org_features,
         "tiers": build_tier_rows(system_defaults, effective_org_allowed),
+        "model_options_json": json.dumps(model_options),
     })
 
 

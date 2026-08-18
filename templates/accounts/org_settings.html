@@ -753,6 +753,9 @@
   var orgModels = JSON.parse('{{ org_models_json|escapejs }}');
   var orgTools = JSON.parse('{{ org_tools_json|escapejs }}');
   var skillsData = JSON.parse('{{ skills_data_json|escapejs }}');
+  // Full eligible-model lists per tier / feature, independent of what's
+  // currently allowed — used to re-populate the dropdowns live (see below).
+  var modelOptions = JSON.parse('{{ model_options_json|escapejs }}');
 
   // --- Monthly Budgets section ---
   var budgetPerUserInput = document.getElementById('monthly-budget-per-user');
@@ -793,6 +796,35 @@
     sel.value = (orgModels && orgModels[tier]) || '';
   });
 
+  // Re-populate the Model-defaults and Feature-override dropdowns to match the
+  // currently-allowed models — live, without a page reload. Each <select>'s
+  // first <option> is the placeholder (system/org default) and is always kept;
+  // the rest are rebuilt from the full eligible list (modelOptions), filtered to
+  // allowed models. A selection that's no longer allowed falls back to the
+  // placeholder — exactly what a reload would show (the stored override is
+  // ignored server-side until it's allowed again).
+  function repopulateModelSelects(allowedSet) {
+    function rebuild(sel, fullList) {
+      var prev = sel.value;
+      while (sel.options.length > 1) { sel.remove(1); }
+      (fullList || []).forEach(function(mid) {
+        if (!allowedSet.has(mid)) return;
+        var opt = document.createElement('option');
+        opt.value = mid;
+        opt.textContent = mid;
+        sel.appendChild(opt);
+      });
+      // Restoring an absent value leaves the select on the placeholder ('').
+      sel.value = prev;
+    }
+    document.querySelectorAll('.org-model-select').forEach(function(sel) {
+      rebuild(sel, modelOptions.tiers[sel.dataset.tier]);
+    });
+    document.querySelectorAll('.org-feature-model-select').forEach(function(sel) {
+      rebuild(sel, modelOptions.features[sel.dataset.feature]);
+    });
+  }
+
   // Save allowed models on each checkbox change
   document.querySelectorAll('.allowed-model-checkbox').forEach(function(cb) {
     cb.addEventListener('change', function() {
@@ -800,6 +832,7 @@
       document.querySelectorAll('.allowed-model-checkbox:checked').forEach(function(c) {
         checked.push(c.value);
       });
+      repopulateModelSelects(new Set(checked));
       fetch('{% url "accounts:org_allowed_models_update" %}', {
         method: 'POST',
         headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
