@@ -213,11 +213,6 @@ class SeedSystemSkillsTests(TestCase):
                 slug="written-assignment-writer", level="system"
             ).exists()
         )
-        self.assertTrue(
-            AgentSkill.objects.filter(
-                slug="rcn-qualification-grant-drafter", level="system"
-            ).exists()
-        )
 
     def test_seed_is_idempotent(self):
         from agent_skills.seed_skills import SYSTEM_SKILLS, seed_system_skills
@@ -230,105 +225,20 @@ class SeedSystemSkillsTests(TestCase):
             len(SYSTEM_SKILLS),
         )
 
-    def test_rcn_qualification_grant_fields(self):
-        from agent_skills.seed_skills import seed_system_skills
-
-        seed_system_skills()
-
-        skill = AgentSkill.objects.get(
-            slug="rcn-qualification-grant-drafter", level="system"
-        )
-        self.assertEqual(skill.name, "RCN Qualification Grant Application Drafter")
-        self.assertIn("Kvalifiseringsprosjekt", skill.description)
-        self.assertIn("Forskningsrådet", skill.description)
-        self.assertIn("Phase 1", skill.instructions)
-        self.assertIn("Phase 4", skill.instructions)
-        self.assertIn("triggering effect", skill.instructions.lower())
-        self.assertEqual(
-            skill.tool_names, ["skill_template_view", "skill_template_load"]
-        )
-        # Verify both templates were created
-        self.assertTrue(skill.templates.filter(name="Disposition").exists())
-        self.assertTrue(skill.templates.filter(name="Project Description").exists())
-        self.assertEqual(skill.templates.count(), 2)
-        # Verify template content
-        disposition = skill.templates.get(name="Disposition")
-        self.assertIn("Gap Analysis", disposition.content)
-        self.assertIn("Triggering effect", disposition.content)
-        project_desc = skill.templates.get(name="Project Description")
-        self.assertIn("trigger effect", project_desc.content)
-
-    def test_rcn_verification_grant_fields(self):
-        from agent_skills.seed_skills import seed_system_skills
-
-        seed_system_skills()
-
-        skill = AgentSkill.objects.get(
-            slug="rcn-verification-grant-drafter", level="system"
-        )
-        self.assertEqual(skill.name, "RCN Verification Grant Application Drafter")
-        self.assertIn("Verifiseringsprosjekt", skill.description)
-        self.assertIn("Forskningsrådet", skill.description)
-        self.assertIn("Phase 1", skill.instructions)
-        self.assertIn("Phase 4", skill.instructions)
-        self.assertIn("triggering effect", skill.instructions.lower())
-        self.assertEqual(
-            skill.tool_names, ["skill_template_view", "skill_template_load"]
-        )
-        # Verify both templates were created
-        self.assertTrue(skill.templates.filter(name="Disposition").exists())
-        self.assertTrue(skill.templates.filter(name="Application Form").exists())
-        self.assertEqual(skill.templates.count(), 2)
-        # Verify template content
-        disposition = skill.templates.get(name="Disposition")
-        self.assertIn("Gap Analysis", disposition.content)
-        self.assertIn("Triggering effect", disposition.content)
-        app_form = skill.templates.get(name="Application Form")
-        self.assertIn("Arbeidspakke", app_form.content)
-        self.assertIn("Hovedmål", app_form.content)
-
-    def test_ntnu_dofi_recommendation_writer_fields(self):
-        from agent_skills.seed_skills import seed_system_skills
-
-        seed_system_skills()
-
-        skill = AgentSkill.objects.get(
-            slug="ntnu-dofi-recommendation-writer", level="system"
-        )
-        self.assertEqual(skill.name, "NTNU DOFI Recommendation Writer")
-        self.assertIn("DOFI", skill.description)
-        self.assertIn("Phase 1", skill.instructions)
-        self.assertIn("Phase 3", skill.instructions)
-        self.assertIn("power of attorney", skill.instructions.lower())
-        self.assertIn("freedom-to-operate", skill.instructions.lower())
-        self.assertEqual(
-            skill.tool_names, ["skill_template_view", "skill_template_load"]
-        )
-        # Verify both templates were created
-        self.assertTrue(skill.templates.filter(name="DOFI Recommendation").exists())
-        self.assertTrue(skill.templates.filter(name="Power of Attorney").exists())
-        self.assertEqual(skill.templates.count(), 2)
-        # Verify template content
-        recommendation = skill.templates.get(name="DOFI Recommendation")
-        self.assertIn("IP-ownership assessment", recommendation.content)
-        poa = skill.templates.get(name="Power of Attorney")
-        self.assertIn("FORVALTNINGSFULLMAKT", poa.content)
-        self.assertIn("samarbeidsavtalen", poa.content)
-
     def test_seed_creates_and_updates_templates(self):
         from agent_skills.seed_skills import seed_system_skills
 
         seed_system_skills()
 
         skill = AgentSkill.objects.get(
-            slug="rcn-qualification-grant-drafter", level="system"
+            slug="patent-searcher", level="system"
         )
-        self.assertEqual(skill.templates.count(), 2)
+        self.assertEqual(skill.templates.count(), 1)
 
         # Running seed again is idempotent — same count, no duplicates
         seed_system_skills()
         skill.refresh_from_db()
-        self.assertEqual(skill.templates.count(), 2)
+        self.assertEqual(skill.templates.count(), 1)
 
         # Skills without templates key should not have templates deleted
         skill_creator = AgentSkill.objects.get(
@@ -367,41 +277,3 @@ class SeedSystemSkillsTests(TestCase):
         self.assertIn("college-level", skill.description)
         self.assertIn("Decode the prompt", skill.instructions)
         self.assertEqual(skill.tool_names, [])
-
-    def test_market_analyzer_fields(self):
-        from agent_skills.seed_skills import seed_system_skills
-
-        seed_system_skills()
-
-        skill = AgentSkill.objects.get(slug="market-analyzer", level="system")
-        self.assertEqual(skill.name, "Market Analyzer")
-        # Description routes correctly and stays within the model cap.
-        self.assertIn("decision-grade", skill.description)
-        self.assertIn("DOFI", skill.description)
-        self.assertIn("not a substitute for customer interviews", skill.description)
-        self.assertLessEqual(len(skill.description), 1024)
-
-        # Instructions carry the guided multi-phase structure, the desktop-only
-        # boundary, decision-language recommendation, and the market-analysis
-        # substance (buying unit, substitutes, patent-as-signal).
-        self.assertIn("Phase 1", skill.instructions)
-        self.assertIn("Phase 2", skill.instructions)
-        self.assertIn("Step 12", skill.instructions)
-        self.assertIn("desktop research", skill.instructions)
-        self.assertIn("decision language", skill.instructions)
-        self.assertIn("buying unit", skill.instructions)
-        self.assertIn("substitute", skill.instructions)
-        self.assertIn("patent landscape", skill.instructions)
-        self.assertIn("freedom-to-operate", skill.instructions)
-
-        self.assertEqual(
-            skill.tool_names, ["skill_template_view", "skill_template_load"]
-        )
-
-        # Exactly the report template, with its key anchors.
-        self.assertEqual(skill.templates.count(), 1)
-        report = skill.templates.get(name="Market Analysis Report")
-        self.assertIn("TAM", report.content)
-        self.assertIn("SOM", report.content)
-        self.assertIn("Market access", report.content)
-        self.assertIn("Search log", report.content)
