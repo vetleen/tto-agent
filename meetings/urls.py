@@ -5,6 +5,8 @@ from . import views
 urlpatterns = [
     path("", views.meeting_list, name="meeting_list"),
     path("create/", views.meeting_create, name="meeting_create"),
+    path("bulk-archive/", views.meeting_bulk_archive, name="meeting_bulk_archive"),
+    path("bulk-delete/", views.meeting_bulk_delete, name="meeting_bulk_delete"),
     path("<uuid:meeting_uuid>/", views.meeting_detail, name="meeting_detail"),
     path("<uuid:meeting_uuid>/rename/", views.meeting_rename, name="meeting_rename"),
     path("<uuid:meeting_uuid>/archive/", views.meeting_archive, name="meeting_archive"),

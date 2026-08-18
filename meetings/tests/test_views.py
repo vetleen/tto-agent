@@ -1,6 +1,7 @@
 """View tests for the meetings app."""
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -926,3 +927,148 @@ class MeetingReviewFixTests(TestCase):
         self.assertTrue(new_slug.startswith(f"{base}-"))
         # Random suffix is 4 chars, not a small sequential integer.
         self.assertEqual(len(new_slug), len(base) + 1 + 4)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class MeetingBulkActionTests(TestCase):
+    """Bulk archive/restore/delete endpoints for the meetings list."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="bulk@example.com", password="pw")
+        self.other = User.objects.create_user(email="bulk-other@example.com", password="pw")
+        self.client.force_login(self.user)
+
+    def _mk(self, slug, **kwargs):
+        return Meeting.objects.create(
+            name=kwargs.pop("name", slug), slug=slug, created_by=kwargs.pop("created_by", self.user), **kwargs
+        )
+
+    def _post_json(self, urlname, payload):
+        return self.client.post(
+            reverse(urlname), data=json.dumps(payload), content_type="application/json"
+        )
+
+    # ── archive / restore ──────────────────────────────────────────────
+    def test_bulk_archive_sets_is_archived(self):
+        a = self._mk("bulk-a1")
+        b = self._mk("bulk-a2")
+        resp = self._post_json(
+            "meeting_bulk_archive",
+            {"meeting_uuids": [str(a.uuid), str(b.uuid)], "action": "archive"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["updated"], 2)
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertTrue(a.is_archived)
+        self.assertTrue(b.is_archived)
+
+    def test_bulk_restore_clears_is_archived(self):
+        a = self._mk("bulk-r1", is_archived=True)
+        b = self._mk("bulk-r2", is_archived=True)
+        resp = self._post_json(
+            "meeting_bulk_archive",
+            {"meeting_uuids": [str(a.uuid), str(b.uuid)], "action": "restore"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["updated"], 2)
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertFalse(a.is_archived)
+        self.assertFalse(b.is_archived)
+
+    def test_bulk_archive_rejects_bad_action(self):
+        a = self._mk("bulk-a-bad")
+        resp = self._post_json(
+            "meeting_bulk_archive", {"meeting_uuids": [str(a.uuid)], "action": "nope"}
+        )
+        self.assertEqual(resp.status_code, 400)
+        a.refresh_from_db()
+        self.assertFalse(a.is_archived)
+
+    # ── delete ─────────────────────────────────────────────────────────
+    def test_bulk_delete_removes_meetings(self):
+        a = self._mk("bulk-d1")
+        b = self._mk("bulk-d2")
+        resp = self._post_json(
+            "meeting_bulk_delete", {"meeting_uuids": [str(a.uuid), str(b.uuid)]}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["deleted"], 2)
+        self.assertFalse(Meeting.objects.filter(uuid__in=[a.uuid, b.uuid]).exists())
+
+    def test_bulk_delete_skips_live_transcribing(self):
+        live = self._mk("bulk-d-live", status=Meeting.Status.LIVE_TRANSCRIBING)
+        ok = self._mk("bulk-d-ok")
+        resp = self._post_json(
+            "meeting_bulk_delete", {"meeting_uuids": [str(live.uuid), str(ok.uuid)]}
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["deleted"], 1)
+        self.assertEqual(body["skipped_live"], 1)
+        # The live meeting survives; the ready one is gone.
+        self.assertTrue(Meeting.objects.filter(uuid=live.uuid).exists())
+        self.assertFalse(Meeting.objects.filter(uuid=ok.uuid).exists())
+
+    # ── ownership isolation ────────────────────────────────────────────
+    def test_bulk_archive_ignores_other_users_meetings(self):
+        mine = self._mk("bulk-own-mine")
+        theirs = self._mk("bulk-own-theirs", created_by=self.other)
+        resp = self._post_json(
+            "meeting_bulk_archive",
+            {"meeting_uuids": [str(mine.uuid), str(theirs.uuid)], "action": "archive"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["updated"], 1)
+        theirs.refresh_from_db()
+        self.assertFalse(theirs.is_archived)
+
+    def test_bulk_delete_ignores_other_users_meetings(self):
+        mine = self._mk("bulk-del-mine")
+        theirs = self._mk("bulk-del-theirs", created_by=self.other)
+        resp = self._post_json(
+            "meeting_bulk_delete",
+            {"meeting_uuids": [str(mine.uuid), str(theirs.uuid)]},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["deleted"], 1)
+        self.assertTrue(Meeting.objects.filter(uuid=theirs.uuid).exists())
+        self.assertFalse(Meeting.objects.filter(uuid=mine.uuid).exists())
+
+    # ── payload validation ─────────────────────────────────────────────
+    def test_bulk_missing_uuids_is_400(self):
+        for urlname in ("meeting_bulk_archive", "meeting_bulk_delete"):
+            resp = self._post_json(urlname, {"action": "archive"})
+            self.assertEqual(resp.status_code, 400)
+
+    def test_bulk_empty_uuids_is_400(self):
+        resp = self._post_json(
+            "meeting_bulk_archive", {"meeting_uuids": [], "action": "archive"}
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_bulk_malformed_uuid_is_400(self):
+        resp = self._post_json(
+            "meeting_bulk_delete", {"meeting_uuids": ["not-a-uuid"]}
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_bulk_invalid_json_is_400(self):
+        resp = self.client.post(
+            reverse("meeting_bulk_delete"), data="not json", content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    # ── auth / method ──────────────────────────────────────────────────
+    def test_bulk_requires_login(self):
+        self.client.logout()
+        resp = self._post_json(
+            "meeting_bulk_delete", {"meeting_uuids": [str(self._mk("bulk-auth").uuid)]}
+        )
+        self.assertEqual(resp.status_code, 302)
+
+    def test_bulk_endpoints_are_post_only(self):
+        for urlname in ("meeting_bulk_archive", "meeting_bulk_delete"):
+            resp = self.client.get(reverse(urlname))
+            self.assertEqual(resp.status_code, 405)

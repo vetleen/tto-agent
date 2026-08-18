@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from urllib.parse import urlencode
 
 from django.conf import settings
@@ -18,6 +19,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
 from core.files import safe_filename
+from core.http import parse_json_object
 
 from .models import Meeting, MeetingAttachment
 from .services.gates import user_has_active_transcription
@@ -353,6 +355,76 @@ def meeting_delete(request, meeting_uuid):
     meeting.delete()
     messages.success(request, "Meeting deleted.")
     return redirect("meeting_list")
+
+
+def _parse_meeting_uuids(body):
+    """Validate ``meeting_uuids`` from a bulk-action JSON body.
+
+    Returns ``(list[str], None)`` on success or ``(None, JsonResponse(400))``
+    when the value is missing/empty or contains a malformed UUID.
+    """
+    raw = body.get("meeting_uuids")
+    if not isinstance(raw, list) or not raw:
+        return None, JsonResponse(
+            {"error": "meeting_uuids must be a non-empty list"}, status=400
+        )
+    try:
+        return [str(uuid.UUID(str(x))) for x in raw], None
+    except (TypeError, ValueError, AttributeError):
+        return None, JsonResponse(
+            {"error": "meeting_uuids must be valid UUIDs"}, status=400
+        )
+
+
+@login_required
+@require_POST
+def meeting_bulk_archive(request):
+    """Archive or restore several of the caller's meetings in one request."""
+    body, err = parse_json_object(request)
+    if err:
+        return err
+    uuids, err = _parse_meeting_uuids(body)
+    if err:
+        return err
+    action = body.get("action")
+    if action not in ("archive", "restore"):
+        return JsonResponse(
+            {"error": "action must be 'archive' or 'restore'"}, status=400
+        )
+    is_archived = action == "archive"
+    # Scope to the caller's own meetings so uuids for other users' rows are no-ops.
+    updated = Meeting.objects.filter(
+        uuid__in=uuids, created_by=request.user
+    ).update(is_archived=is_archived, updated_at=timezone.now())
+    return JsonResponse({"updated": updated})
+
+
+@login_required
+@require_POST
+def meeting_bulk_delete(request):
+    """Hard-delete several of the caller's meetings, skipping live ones."""
+    body, err = parse_json_object(request)
+    if err:
+        return err
+    uuids, err = _parse_meeting_uuids(body)
+    if err:
+        return err
+    qs = Meeting.objects.filter(uuid__in=uuids, created_by=request.user)
+    # Never hard-delete a meeting mid-transcription — the live WS consumer would
+    # keep streaming billable audio into a now-dangling row (see meeting_delete).
+    live_names = list(
+        qs.filter(status=Meeting.Status.LIVE_TRANSCRIBING).values_list(
+            "name", flat=True
+        )
+    )
+    deleted, _ = qs.exclude(status=Meeting.Status.LIVE_TRANSCRIBING).delete()
+    if live_names:
+        messages.error(
+            request,
+            f"{len(live_names)} meeting(s) are still transcribing and were not "
+            "deleted. Stop transcription first.",
+        )
+    return JsonResponse({"deleted": deleted, "skipped_live": len(live_names)})
 
 
 @login_required
