@@ -65,6 +65,9 @@ yarn-error.log*
 *~
 .cursor/
 
+# Machine-specific agent instructions
+/AGENTS.md
+
 # OS
 .DS_Store
 .DS_Store?
