@@ -106,6 +106,22 @@ load.
 
 **Provisioning a fresh app:** `app.json` declares the stack, buildpacks, add-ons, formation, and config-var names, so a new app can be created from the manifest (Heroku "Deploy" button or `heroku` setup) instead of re-running the steps by hand. Buildpacks and config vars are **per-app** — `pipelines:promote` copies only the slug, not these — so each app (staging, production) needs them set once. The pgbouncer buildpack is what provides `bin/start-pgbouncer`; without it the wrapped Procfile lines fail.
 
+**Inbound IP allowlist:** `DJANGO_ALLOWED_IP_RANGES` accepts comma-separated
+individual addresses or CIDRs and gates both HTTP and WebSocket access. Empty or
+unset disables the gate. Production is restricted to NTNU's verified public range:
+
+```bash
+heroku config:set DJANGO_ALLOWED_IP_RANGES=129.241.0.0/16 -a wilfred-production
+```
+
+Test a changed range on staging from both an allowed network and an outside
+network before setting it on production. Invalid values fail application startup.
+For emergency recovery, disable the gate (the config change restarts the web dyno):
+
+```bash
+heroku config:unset DJANGO_ALLOWED_IP_RANGES -a wilfred-production
+```
+
 ### Rollback
 
 ```bash
@@ -294,6 +310,7 @@ See `.env.example` for the full list with comments. Key production variables:
 |----------|----------|---------|
 | `DJANGO_SECRET_KEY` | Yes | Cryptographic signing (sessions, CSRF) |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | Yes | Comma-separated origins for CSRF (e.g., `https://app.herokuapp.com`) |
+| `DJANGO_ALLOWED_IP_RANGES` | No | Comma-separated inbound IP/CIDR allowlist for HTTP and WebSockets; empty disables it. Production: `129.241.0.0/16`. |
 | `DATABASE_URL` | Auto | Postgres connection (set by Heroku add-on) |
 | `REDIS_URL` | Auto | Redis connection (set by Heroku add-on) |
 | `CELERY_WORKER_CONCURRENCY` | No | threads-pool worker thread count (default 8; ≈ max worker DB connections). Raise to ~16–20 on a 40-connection Postgres plan. |

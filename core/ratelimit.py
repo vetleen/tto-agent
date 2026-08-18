@@ -1,6 +1,8 @@
 """Rate-limit helpers for django-ratelimit (client IP behind Heroku, key callables)."""
 from __future__ import annotations
 
+from core.ip_access import client_ip_from_request
+
 
 def client_ip(request) -> str:
     """Return the real client IP behind the Heroku router.
@@ -13,12 +15,7 @@ def client_ip(request) -> str:
     via RATELIMIT_IP_META_KEY. django-ratelimit calls this as ``fn(request)``
     and applies IPv4 /32 or IPv6 /64 masking to the returned string.
     """
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        ip = xff.rsplit(",", 1)[-1].strip()
-        if ip:
-            return ip
-    return request.META.get("REMOTE_ADDR", "")
+    return client_ip_from_request(request)
 
 
 def login_username_or_ip(group, request) -> str:

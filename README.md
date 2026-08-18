@@ -151,6 +151,7 @@ Use `.env` (from `.env.example`). Key variables:
 | Variable | Purpose |
 |----------|---------|
 | `DJANGO_SECRET_KEY` | Required when `DEBUG=False` |
+| `DJANGO_ALLOWED_IP_RANGES` | Optional inbound IP/CIDR allowlist; empty disables it |
 | `REDIS_URL` | Redis for Channels and Celery (default `redis://127.0.0.1:6379/0`) |
 | `DATABASE_URL` | Postgres; SQLite if unset |
 | `PGVECTOR_CONNECTION` | Optional; defaults to `DATABASE_URL` for embeddings |

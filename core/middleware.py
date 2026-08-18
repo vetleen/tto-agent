@@ -2,6 +2,10 @@ import contextvars
 import logging
 import uuid
 
+from django.conf import settings
+
+from core.ip_access import client_ip_from_request, client_ip_is_allowed
+
 
 # A ContextVar, not threading.local: under ASGI (Daphne) the sync middleware and
 # sync views of *different concurrent requests* interleave on one shared thread
@@ -45,6 +49,34 @@ class RequestIDMiddleware:
             return response
         finally:
             _request_id_var.reset(token)
+
+
+class ClientIPAllowlistMiddleware:
+    """Return a branded 403 before sessions/auth for disallowed client IPs."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        networks = settings.CLIENT_IP_ALLOWLIST
+        if not networks:
+            return self.get_response(request)
+
+        # WhiteNoise is placed immediately before this middleware, but retain
+        # the explicit exemption so tests and alternative static serving setups
+        # keep the denial page's stylesheet and brand assets available.
+        static_url = getattr(settings, "STATIC_URL", "/static/")
+        if static_url and request.path_info.startswith(static_url):
+            return self.get_response(request)
+
+        if client_ip_is_allowed(client_ip_from_request(request), networks):
+            return self.get_response(request)
+
+        from django.shortcuts import render
+
+        response = render(request, "errors/ip_denied.html", status=403)
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class CanonicalHostMiddleware:

@@ -29,6 +29,7 @@
     4403: 'You don’t have access to transcribe this meeting.',
     4404: 'This meeting is unavailable for transcription right now.',
     4409: 'You already have a meeting transcribing. Stop it before starting another.',
+    4413: 'Access denied from this network. Connect to the NTNU VPN and reload.',
   };
   // Watchdog fires if we haven't uploaded a chunk in 2× the segment duration,
   // indicating MediaRecorder has stalled (common when the tab is backgrounded

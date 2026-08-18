@@ -37,6 +37,7 @@
       </p>
       <h1 class="mt-4 font-serif font-semibold text-[clamp(28px,4vw,44px)] leading-[1.08] tracking-[-0.02em] text-heading">{% block error_title %}Page not found{% endblock %}</h1>
       <p class="mt-4 text-[15px] leading-[1.6] text-body-subtle max-w-md">{% block error_body %}{% endblock %}</p>
+      {% block error_actions %}
       <div class="mt-8 flex items-center gap-5">
         <a href="/" class="inline-flex items-center rounded-base bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:bg-brand-strong focus:outline-none focus:ring-4 focus:ring-brand-medium transition-colors">Go home</a>
         {% block error_back %}
@@ -46,6 +47,7 @@
         </button>
         {% endblock error_back %}
       </div>
+      {% endblock error_actions %}
     </div>
   </div>
 </main>

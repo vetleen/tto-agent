@@ -33,6 +33,10 @@
     "DJANGO_ALLOWED_HOSTS": {
       "description": "Comma-separated hostnames, e.g. your-app.herokuapp.com."
     },
+    "DJANGO_ALLOWED_IP_RANGES": {
+      "description": "Optional comma-separated inbound client IPs/CIDRs. Empty allows all clients; NTNU example: 129.241.0.0/16.",
+      "required": false
+    },
     "DJANGO_CSRF_TRUSTED_ORIGINS": {
       "description": "Comma-separated origins, e.g. https://your-app.herokuapp.com. Required or form posts return 403."
     },
