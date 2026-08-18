@@ -354,10 +354,12 @@
       return r.json().then(function(d) { return { ok: r.ok, d: d }; });
     }).then(function(res) {
       if (!res.ok || res.d.error) { showErr(res.d.error || 'Upload failed.'); return; }
-      // Cache-bust: replacing within the same month reuses the same URL.
-      var sep = res.d.url.indexOf('?') === -1 ? '?' : '&';
+      // Each upload gets a unique filename (storage file_overwrite=False), so the
+      // URL is always new — no cache-busting needed. Do NOT append a query param:
+      // on S3 the URL is a presigned (querystring_auth) link and an extra param
+      // breaks its signature, yielding a 403 / broken image until a page reload.
       var img = document.createElement('img');
-      img.src = res.d.url + sep + 't=' + Date.now();
+      img.src = res.d.url;
       img.alt = '';
       img.className = 'h-full w-full object-cover';
       preview.removeAttribute('style');
