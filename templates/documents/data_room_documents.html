@@ -54,7 +54,7 @@
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
     <input class="cursor-pointer border border-default bg-neutral-primary-soft text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept="{{ upload_accept }}" required multiple aria-describedby="file_input_help">
-        <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md,{% if upload_images_enabled %} images,{% endif %} and audio files. Max 50 MB per file, up to 100 files at a time.</p>
+        <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .msg, .eml, .txt, .md,{% if upload_images_enabled %} images,{% endif %} and audio files. Max 50 MB per file, up to 100 files processing at a time.</p>
       </div>
       <button id="upload-btn" type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         Add to data room
@@ -396,12 +396,15 @@
 
     function validateFiles(fileList) {
       var valid = [];
-      if (fileList.length > MAX_FILES) {
-        addError('You can upload up to ' + MAX_FILES + ' files at once. You selected ' + fileList.length + ' — please choose fewer.');
-        return valid;
+      var files = Array.prototype.slice.call(fileList);
+      // Fill-slots: queue at most MAX_FILES per drop (the server enforces the real
+      // per-user in-flight cap; this just avoids firing hundreds of requests).
+      if (files.length > MAX_FILES) {
+        addError("That's a lot of files at once — only the first " + MAX_FILES + " were queued. Add the rest once these finish.");
+        files = files.slice(0, MAX_FILES);
       }
-      for (var i = 0; i < fileList.length; i++) {
-        var f = fileList[i];
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i];
         var ext = getExtension(f.name);
         if (f.size <= 0) {
           addError(f.name + ': file is empty.');
@@ -497,6 +500,15 @@
           // Check the status before parsing: 429/413 may carry a non-JSON body,
           // and "network error" would be a misleading message for them.
           if (resp.status === 429) {
+            var capData = null;
+            try { capData = await resp.json(); } catch (e) { /* rate-limit 429 has no JSON body */ }
+            if (capData && capData.code === 'in_flight_cap') {
+              // Per-user in-flight cap reached — the rest can't go through until some
+              // finish (the client can't pre-count across data rooms). Stop here.
+              addError(capData.error);
+              failed += (valid.length - i);
+              break;
+            }
             failed++;
             addError(valid[i].name + ': too many uploads right now — wait a moment and try again.');
             continue;

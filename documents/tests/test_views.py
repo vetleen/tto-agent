@@ -1527,3 +1527,117 @@ class DocumentRateLimitTests(TestCase):
                 f.name = f"rl-{i}.txt"
                 response = self.client.post(url, {"file": f}, follow=True)
                 self.assertNotEqual(response.status_code, 429)
+
+
+class DocumentUploadInFlightCapTests(TestCase):
+    """Server-enforced per-user in-flight upload cap (documents.views.document_upload).
+
+    The cap counts non-terminal docs (uploaded/processing/scanning or auto-retrying)
+    across all a user's data rooms; terminal docs (ready/failed/genuine scan_failed)
+    don't count. It fills the remaining slots and rejects the overflow.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="capuser@example.com", password="testpass")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.data_room = DataRoom.objects.create(name="Cap", slug="cap-room", created_by=self.user)
+        self.url = reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid})
+
+    def _in_flight(self, n, status=DataRoomDocument.Status.PROCESSING, processing_error=None, data_room=None):
+        for i in range(n):
+            DataRoomDocument.objects.create(
+                data_room=data_room or self.data_room,
+                uploaded_by=self.user,
+                original_filename=f"inflight{i}.txt",
+                status=status,
+                processing_error=processing_error,
+            )
+
+    def _upload(self, files):
+        return self.client.post(self.url, {"file": files}, HTTP_ACCEPT="application/json")
+
+    @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=2)
+    @patch("documents.tasks.process_document_task.delay")
+    def test_at_cap_returns_429_and_creates_nothing(self, _delay):
+        self.client.force_login(self.user)
+        self._in_flight(2)
+        f = BytesIO(b"hello world"); f.name = "new.txt"
+
+        resp = self._upload(f)
+
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.json()["code"], "in_flight_cap")
+        self.assertFalse(
+            DataRoomDocument.objects.filter(uploaded_by=self.user, original_filename="new.txt").exists()
+        )
+
+    @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=2)
+    @patch("documents.tasks.process_document_task.delay")
+    def test_fills_remaining_slots_and_rejects_overflow(self, _delay):
+        self.client.force_login(self.user)
+        self._in_flight(1)  # one slot remaining
+        files = []
+        for i in range(3):
+            b = BytesIO(b"hello world"); b.name = f"m{i}.txt"; files.append(b)
+
+        resp = self._upload(files)
+
+        self.assertEqual(resp.status_code, 200)
+        created = DataRoomDocument.objects.filter(
+            uploaded_by=self.user, original_filename__startswith="m"
+        ).count()
+        self.assertEqual(created, 1)  # only the free slot filled
+        self.assertTrue(any("too many files" in e.lower() for e in resp.json().get("errors", [])))
+
+    @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
+    @patch("documents.tasks.process_document_task.delay")
+    def test_terminal_docs_do_not_count(self, _delay):
+        self.client.force_login(self.user)
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="ready.txt", status=DataRoomDocument.Status.READY,
+        )
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="failed.txt", status=DataRoomDocument.Status.SCAN_FAILED,
+            processing_error="a real scan failure",
+        )
+        f = BytesIO(b"hello world"); f.name = "ok.txt"
+
+        resp = self._upload(f)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(
+            DataRoomDocument.objects.filter(uploaded_by=self.user, original_filename="ok.txt").exists()
+        )
+
+    @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
+    @patch("documents.tasks.process_document_task.delay")
+    def test_auto_retrying_doc_counts_as_in_flight(self, _delay):
+        from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
+
+        self.client.force_login(self.user)
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="retry.txt", status=DataRoomDocument.Status.SCAN_FAILED,
+            processing_error=SCAN_DISPATCH_RETRY_MESSAGE,
+        )
+        f = BytesIO(b"hello world"); f.name = "blocked.txt"
+
+        resp = self._upload(f)
+
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.json()["code"], "in_flight_cap")
+
+    @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
+    @patch("documents.tasks.process_document_task.delay")
+    def test_cap_is_per_user_across_data_rooms(self, _delay):
+        self.client.force_login(self.user)
+        other_room = DataRoom.objects.create(name="Other", slug="cap-other", created_by=self.user)
+        self._in_flight(1, data_room=other_room)
+        f = BytesIO(b"hello world"); f.name = "blocked.txt"
+
+        resp = self._upload(f)  # to self.data_room, but the user is at cap elsewhere
+
+        self.assertEqual(resp.status_code, 429)

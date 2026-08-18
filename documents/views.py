@@ -344,6 +344,23 @@ def document_upload(request, data_room_id):
     errors = []
     created_docs = []
 
+    # In-flight cap: how many more this user may start right now, across all their
+    # data rooms. "In flight" = non-terminal (uploaded/processing/scanning or
+    # auto-retrying), which is what still consumes worker + Redis capacity. The
+    # client mirrors this best-effort, but the server is authoritative (a non-JS
+    # <form multiple> submit or the API bypasses the client entirely).
+    from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
+
+    Status = DataRoomDocument.Status
+    in_flight_cap = getattr(settings, "DOCUMENT_MAX_IN_FLIGHT_PER_USER", 100)
+    in_flight = DataRoomDocument.objects.filter(uploaded_by=request.user).filter(
+        Q(status__in=[Status.UPLOADED, Status.PROCESSING, Status.SCANNING])
+        | Q(status=Status.SCAN_FAILED, processing_error=SCAN_DISPATCH_RETRY_MESSAGE)
+    ).count()
+    remaining_slots = max(0, in_flight_cap - in_flight)
+    cap_hit = False
+    IN_FLIGHT_CAP_MESSAGE = "You're uploading too many files — wait for some to finish before adding more."
+
     for file_obj in files:
         safe_filename = _safe_original_filename(file_obj.name, max_length=75)
         file_ext = (safe_filename.rsplit(".", 1)[-1].lower()) if "." in safe_filename else ""
@@ -379,6 +396,14 @@ def document_upload(request, data_room_id):
             if not feature_is_available(request.user, "document_image_description"):
                 errors.append(f"{safe_filename}: image uploads require a vision-capable model, which isn't enabled for your organization.")
                 continue
+        # Fill the remaining in-flight slots, then stop (fill-slots overflow). One
+        # generic message covers the rest — a per-file line for a large overflow
+        # would just spam the error list. Only files that pass every other check
+        # count against the cap; invalid files got their own error above.
+        if len(created_docs) >= remaining_slots:
+            cap_hit = True
+            errors.append(IN_FLIGHT_CAP_MESSAGE)
+            break
         stored_filename = _safe_original_filename(file_obj.name, max_length=180)
         file_obj.name = stored_filename
         doc = DataRoomDocument.objects.create(
@@ -418,6 +443,13 @@ def document_upload(request, data_room_id):
                 "document": {"id": doc.id, "filename": doc.original_filename, "status": doc.status},
                 "errors": errors,
             })
+        if cap_hit:
+            # Distinct from the 600/h rate-limit 429 (via `code`) so the client can
+            # show the in-flight message and stop its sequential upload loop.
+            return JsonResponse(
+                {"status": "error", "code": "in_flight_cap", "error": IN_FLIGHT_CAP_MESSAGE},
+                status=429,
+            )
         return JsonResponse({"status": "error", "error": errors[0] if errors else "Upload failed."}, status=400)
 
     if created_docs:

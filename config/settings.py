@@ -560,6 +560,11 @@ DOCUMENT_EXTENSION_MIME_MAP = _extension_mime_map_for_kinds(DATA_ROOM_KINDS)
 # parsed/spooled to disk (fits one 50 MB audio file plus multipart overhead;
 # the upload UI sends one file per request). Per-file caps still apply.
 DOCUMENT_UPLOAD_REQUEST_MAX_BYTES = int(os.environ.get("DOCUMENT_UPLOAD_REQUEST_MAX_BYTES", "60000000"))  # 60 MB
+# Max documents a single user may have "in flight" (uploaded/processing/scanning or
+# auto-retrying) at once, across all their data rooms. Server-authoritative backstop
+# for the client-side per-drag limit — bounds concurrent processing load (the shared
+# Redis) and blocks drip-feeding a second batch into an already-processing window.
+DOCUMENT_MAX_IN_FLIGHT_PER_USER = int(os.environ.get("DOCUMENT_MAX_IN_FLIGHT_PER_USER", "100"))
 # Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
 DOCX_MAX_UNCOMPRESSED_BYTES = int(os.environ.get("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000"))  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = int(os.environ.get("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000"))  # 20M chars
