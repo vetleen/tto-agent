@@ -119,8 +119,6 @@ def settings_page(request):
         org_max_context = DEFAULT_MAX_CONTEXT_TOKENS
     user_max_context = (user_settings.preferences or {}).get("max_context_tokens")
 
-    user_live_transcription_mode = (user_settings.preferences or {}).get("live_transcription_mode", "")
-
     # Default transcription language: the user's raw override (blank = inherit),
     # and the label of what they'd inherit (org default, else system auto-detect)
     # to show on the inherit option.
@@ -138,8 +136,6 @@ def settings_page(request):
         "org_max_context_tokens": org_max_context,
         "user_max_context_tokens": user_max_context,
         "allowed_transcription_models": prefs.allowed_transcription_models,
-        "user_live_transcription_mode": user_live_transcription_mode,
-        "resolved_live_transcription_mode": prefs.live_transcription_mode,
         "user_transcription_language": user_transcription_language or "",
         "org_default_language_label": org_default_language_label,
         "transcription_language_choices": TRANSCRIPTION_LANGUAGE_CHOICES,
@@ -175,39 +171,6 @@ def preferences_image_model_update(request):
     return JsonResponse(
         {"error": "Model defaults are managed by your organization."}, status=403
     )
-
-
-@login_required
-@require_POST
-def preferences_live_transcription_mode_update(request):
-    """Update the user's live transcription mode preference.
-
-    Values: ``chunked``, ``realtime``, ``realtime_with_fallback``. An
-    empty string / missing value clears the user's override and lets the
-    org or system default take effect.
-    """
-    from core.preferences import LIVE_TRANSCRIPTION_MODES
-
-    data, err = _parse_json_body(request)
-    if err:
-        return err
-
-    mode = (data.get("mode") or "").strip().lower() or None
-    if mode and mode not in LIVE_TRANSCRIPTION_MODES:
-        return JsonResponse(
-            {"error": f"Invalid mode. Choose from {list(LIVE_TRANSCRIPTION_MODES)}."},
-            status=400,
-        )
-
-    def mutate(prefs):
-        if mode is None:
-            prefs.pop("live_transcription_mode", None)
-        else:
-            prefs["live_transcription_mode"] = mode
-
-    update_user_preferences(request.user, mutate)
-
-    return JsonResponse({"ok": True, "mode": mode})
 
 
 @login_required

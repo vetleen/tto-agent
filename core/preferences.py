@@ -17,11 +17,11 @@ MIN_CONTEXT_TOKENS = 10_000
 # can't poison downstream token math.
 MAX_CONTEXT_TOKENS = 2_000_000
 
-# Live transcription path preference — cascades system → org → user → meeting.
-# "chunked" (default) uses the HTTP /v1/audio/transcriptions batching path;
-# "realtime" opens an OpenAI Realtime session for sub-second latency;
-# "realtime_with_fallback" tries realtime and falls back to chunked on connect
-# failure. Invalid values fall back to "chunked".
+# Live transcription runtime modes. Every session resolves to
+# "realtime_with_fallback" (tries the OpenAI Realtime session, falls back to the
+# HTTP /v1/audio/transcriptions chunked path on connect failure) — there is no
+# user- or org-facing choice. "chunked" and "realtime" remain valid downstream
+# runtime values (e.g. a session that has fallen back reports "chunked").
 LIVE_TRANSCRIPTION_MODES = ("chunked", "realtime", "realtime_with_fallback")
 
 
@@ -57,7 +57,7 @@ class ResolvedPreferences:
     # is the org-filtered list available to image-generation features.
     image_model: str = ""
     allowed_image_models: list[str] = field(default_factory=list)
-    live_transcription_mode: str = "chunked"
+    live_transcription_mode: str = "realtime_with_fallback"
     # Default transcription language (system → org → user). Always resolves to a
     # concrete value: "auto" (auto-detect, the system default) or a code like "no".
     transcription_language: str = "auto"
@@ -367,16 +367,11 @@ def get_preferences(user) -> ResolvedPreferences:
     else:
         image_model = ""
 
-    # --- Live transcription mode (user override only; system default is fixed) ---
-    # Every org gets realtime-with-fallback — realtime when it works, legacy
-    # chunked otherwise. Individual users can opt themselves into a specific
-    # path via the settings page (rarely needed, exposed mainly for debugging).
-    # There is no org-level override because no org has asked for one and
-    # the complexity isn't worth a hypothetical need.
-    user_live_mode = user_prefs.get("live_transcription_mode")
-    resolved_live_mode = user_live_mode or "realtime_with_fallback"
-    if resolved_live_mode not in LIVE_TRANSCRIPTION_MODES:
-        resolved_live_mode = "realtime_with_fallback"
+    # --- Live transcription mode (fixed) ---
+    # Always realtime-with-fallback: realtime when it connects, legacy chunked
+    # otherwise. There is no user or org override — the picker was removed
+    # because the default serves everyone. Any stale stored value is ignored.
+    resolved_live_mode = "realtime_with_fallback"
 
     # --- Default transcription language (user override → org default → system) ---
     # Empty/absent at a layer means "not set here" → inherit. "auto" is an

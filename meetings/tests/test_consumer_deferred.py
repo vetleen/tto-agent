@@ -16,7 +16,7 @@ from django.test import TransactionTestCase, override_settings
 
 from meetings.consumers import MeetingTranscribeConsumer
 from meetings.models import Meeting, MeetingTranscriptSegment
-from meetings.tests.test_consumer import _make_communicator
+from meetings.tests.test_consumer import _make_communicator, _patch_chunked_mode
 
 User = get_user_model()
 
@@ -39,21 +39,18 @@ _CONSUMER_OVERRIDES = dict(
 
 
 async def _chunked_user(email):
-    from accounts.models import UserSettings
-
-    user = await database_sync_to_async(User.objects.create_user)(
+    # Chunked routing is pinned via _patch_chunked_mode in each class's setUp
+    # (the live-mode picker was removed), so this just creates a plain user.
+    return await database_sync_to_async(User.objects.create_user)(
         email=email, password="pw",
     )
-    await database_sync_to_async(UserSettings.objects.update_or_create)(
-        user=user, defaults={"preferences": {"live_transcription_mode": "chunked"}},
-    )
-    return user
 
 
 @override_settings(**_CONSUMER_OVERRIDES)
 class SeedTranscriptOnConnectTests(TransactionTestCase):
     def setUp(self):
         Meeting.objects.all().delete()
+        _patch_chunked_mode(self)
 
     async def test_seeds_existing_transcript_as_segment_zero(self):
         user = await _chunked_user("c1-seed@example.com")
@@ -107,6 +104,7 @@ class PresenceLockTests(TransactionTestCase):
     def setUp(self):
         from django.core.cache import cache
         Meeting.objects.all().delete()
+        _patch_chunked_mode(self)
         cache.clear()
 
     async def test_second_tab_same_meeting_rejected_4409(self):
@@ -168,6 +166,7 @@ class PresenceLockTests(TransactionTestCase):
 class FinalizeDurationTests(TransactionTestCase):
     def setUp(self):
         Meeting.objects.all().delete()
+        _patch_chunked_mode(self)
 
     def _consumer(self, meeting_id, connected_monotonic):
         consumer = MeetingTranscribeConsumer()

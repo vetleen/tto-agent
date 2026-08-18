@@ -36,6 +36,30 @@ def _make_communicator(meeting_uuid, user):
     return communicator
 
 
+def _patch_chunked_mode(test_case):
+    """Pin the resolved live mode to ``chunked`` for the duration of a test.
+
+    The live-transcription-path picker was removed — resolution is always
+    ``realtime_with_fallback``, so these chunked-path tests can no longer force
+    the branch via a user preference. Instead we wrap the real ``get_preferences``
+    (keeping every other resolved value intact) and override just the mode, so
+    the consumer takes the chunked branch and doesn't reach for the ffmpeg /
+    Realtime path these tests don't exercise. The patcher is stopped on cleanup.
+    """
+    import core.preferences as prefs_mod
+
+    real_get_preferences = prefs_mod.get_preferences
+
+    def _chunked(user):
+        prefs = real_get_preferences(user)
+        prefs.live_transcription_mode = "chunked"
+        return prefs
+
+    patcher = patch("core.preferences.get_preferences", side_effect=_chunked)
+    patcher.start()
+    test_case.addCleanup(patcher.stop)
+
+
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
     # Pin chunk persistence to the local filesystem: with AWS_STORAGE_BUCKET_NAME
@@ -55,22 +79,18 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
     """TransactionTestCase because we use database_sync_to_async.
 
     These tests cover the chunked (Celery) live-transcription path. The
-    realtime path has its own test module. We pin the live mode to
-    "chunked" via a user-level preference so the consumer takes the
-    chunked branch regardless of the shipping default.
+    realtime path has its own test module. We pin the resolved live mode to
+    "chunked" (see _patch_chunked_mode) so the consumer takes the chunked
+    branch regardless of the shipping default (realtime_with_fallback).
     """
 
     def setUp(self):
-        from accounts.models import UserSettings
         Meeting.objects.all().delete()
         self.user = User.objects.create_user(email="cons@example.com", password="pw")
-        # Opt this user into chunked mode — the shipping default is
-        # realtime_with_fallback which would otherwise route binary frames
-        # to the ffmpeg/Realtime path that these tests aren't exercising.
-        UserSettings.objects.update_or_create(
-            user=self.user,
-            defaults={"preferences": {"live_transcription_mode": "chunked"}},
-        )
+        # Force chunked routing — the shipping default is realtime_with_fallback,
+        # which would otherwise route binary frames to the ffmpeg/Realtime path
+        # that these tests aren't exercising.
+        _patch_chunked_mode(self)
         self.meeting = Meeting.objects.create(
             name="M", slug="m-cons", created_by=self.user,
         )
