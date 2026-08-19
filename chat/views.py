@@ -998,12 +998,20 @@ def _canvas_content_to_html(content, base_url, user, *, inline_image_width=False
     import markdown as md
 
     from chat.markdown_export import MarkExtension
-    from chat.services import normalize_heading_levels, render_citations, replace_email_with_html
+    from chat.services import (
+        normalize_heading_levels,
+        normalize_list_boundaries,
+        render_citations,
+        replace_email_with_html,
+    )
 
     # Promote headings so the doc's top level is H1 (LLMs often start at ##).
     content = normalize_heading_levels(content)
     # Footnote citations [^1] → superscripts + numbered Sources list.
     content = render_citations(content)
+    # Marked (canvas preview) accepts lists directly after prose, while the
+    # Python-Markdown exporter requires a blank block boundary.
+    content = normalize_list_boundaries(content)
     content = replace_email_with_html(content)
     # Resolve file-download tokens to absolute hyperlinks first (they persist as
     # links, not embedded bytes), then image-asset tokens to embedded <img>

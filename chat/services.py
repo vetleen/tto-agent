@@ -35,6 +35,17 @@ EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
 _ATX_HEADING_RE = re.compile(r"^( {0,3})(#{1,6})(\s.*|)$")
 # Fenced code delimiter: 3+ backticks or tildes, optionally indented/with info.
 _CODE_FENCE_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
+# A blockquote prefix is part of the block container rather than the content.
+# Capturing it separately lets export normalizers insert a quote-preserving
+# blank line (``>``) without changing the quoted content itself.
+_BLOCKQUOTE_PREFIX_RE = re.compile(r"^(?P<quote>(?: {0,3}>[ \t]?)*)(?P<content>.*)$")
+# Marked/CommonMark accepts lists that interrupt a paragraph; Python-Markdown
+# requires a blank line there. Keep the item body non-empty because an empty
+# marker cannot interrupt a paragraph in CommonMark either.
+_LIST_ITEM_RE = re.compile(
+    r"^(?P<indent> {0,3})(?:(?P<bullet>[-+*])|(?P<number>\d{1,9})(?P<delimiter>[.)]))[ \t]+(?P<body>\S.*)$"
+)
+_THEMATIC_BREAK_RE = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
 
 
 def _iter_markdown_lines_skipping_code(lines):
@@ -58,6 +69,126 @@ def _iter_markdown_lines_skipping_code(lines):
             yield line, True
             continue
         yield line, fence_char is not None
+
+
+def _split_blockquote_prefix(line):
+    """Return ``(literal_prefix, quote_depth, content)`` for one Markdown line."""
+    match = _BLOCKQUOTE_PREFIX_RE.match(line)
+    prefix = match.group("quote")
+    return prefix, prefix.count(">"), match.group("content")
+
+
+def normalize_list_boundaries(markdown: str) -> str:
+    """Make preview-style tight lists parse as lists during server export.
+
+    The browser preview uses Marked (CommonMark/GFM), which lets ``1. item`` or
+    ``- item`` interrupt the preceding paragraph. Python-Markdown, used by the
+    DOCX/PDF pipeline, instead keeps those lines in the paragraph unless a blank
+    line comes first. Insert that missing boundary in the transient export copy,
+    and translate recognized ``1)`` list runs to the dotted form that
+    Python-Markdown supports.
+
+    Fenced code is never rewritten. Blockquote prefixes are retained, so a
+    tight quoted list gets a quote-only separator rather than leaving the quote.
+    """
+    if not markdown:
+        return markdown
+
+    lines = markdown.split("\n")
+    out = []
+
+    # Per blockquote depth, remember whether the previous block has ended and
+    # which list indents are active. Keeping an active list through lazy
+    # continuation lines prevents extra blanks between items.
+    at_boundary = {0: True}
+    active_lists = {}
+    fences = {}
+
+    for line in lines:
+        quote_prefix, quote_depth, content = _split_blockquote_prefix(line)
+        fence = _CODE_FENCE_RE.match(content)
+        active_fence = fences.get(quote_depth)
+
+        if active_fence is not None:
+            out.append(line)
+            if fence:
+                marker = fence.group(2)
+                if marker[0] == active_fence[0] and len(marker) >= active_fence[1]:
+                    del fences[quote_depth]
+                    at_boundary[quote_depth] = True
+                    active_lists = {key: value for key, value in active_lists.items() if key[0] != quote_depth}
+            continue
+
+        if fence:
+            marker = fence.group(2)
+            fences[quote_depth] = (marker[0], len(marker))
+            out.append(line)
+            active_lists = {key: value for key, value in active_lists.items() if key[0] != quote_depth}
+            continue
+
+        # A completely blank line separates blocks at every quote depth. A
+        # quote-only line separates blocks within that quoted container.
+        if not line.strip():
+            out.append(line)
+            at_boundary = {depth: True for depth in at_boundary}
+            at_boundary[0] = True
+            active_lists.clear()
+            continue
+        if not content.strip():
+            out.append(line)
+            at_boundary[quote_depth] = True
+            active_lists = {key: value for key, value in active_lists.items() if key[0] != quote_depth}
+            continue
+
+        # Headings and thematic breaks already close a paragraph, so a list on
+        # the next line needs no inserted blank. They do close any prior list.
+        if _ATX_HEADING_RE.match(content) or _THEMATIC_BREAK_RE.match(content):
+            out.append(line)
+            at_boundary[quote_depth] = True
+            active_lists = {key: value for key, value in active_lists.items() if key[0] != quote_depth}
+            continue
+
+        item = _LIST_ITEM_RE.match(content)
+        if item:
+            indent = len(item.group("indent"))
+            key = (quote_depth, indent)
+            signature = (
+                ("bullet", item.group("bullet"))
+                if item.group("bullet")
+                else ("ordered", item.group("delimiter"))
+            )
+            same_list = active_lists.get(key) == signature
+            nested_list = any(
+                depth == quote_depth and open_indent < indent for depth, open_indent in active_lists
+            )
+            switches_list_type = key in active_lists and not same_list
+            inside_list = same_list or nested_list
+            separated = at_boundary.get(quote_depth, True)
+            number = item.group("number")
+            interrupts_paragraph = item.group("bullet") is not None or number == "1"
+            recognized = separated or inside_list or switches_list_type or interrupts_paragraph
+
+            if recognized:
+                if not separated and not inside_list:
+                    out.append(quote_prefix.rstrip())
+
+                # Python-Markdown does not recognize CommonMark's ``N)`` form.
+                # Change only runs that Marked recognizes as lists; numeric prose
+                # such as ``Planning\n2) later`` remains untouched.
+                if item.group("delimiter") == ")":
+                    delimiter_start = item.start("delimiter")
+                    content = content[:delimiter_start] + "." + content[delimiter_start + 1 :]
+                    line = quote_prefix + content
+
+                out.append(line)
+                active_lists[key] = signature
+                at_boundary[quote_depth] = False
+                continue
+
+        out.append(line)
+        at_boundary[quote_depth] = False
+
+    return "\n".join(out)
 
 
 def normalize_heading_levels(markdown: str) -> str:

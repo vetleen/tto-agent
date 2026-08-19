@@ -448,6 +448,31 @@ class CanvasExportViewTests(TestCase):
         # The literal == markers must not survive into the document text.
         self.assertNotIn("==", "".join(r.text for r in runs))
 
+    def test_export_turns_tight_ordered_list_into_word_list(self):
+        """A preview-style list without a preceding blank stays a real list."""
+        self.canvas.content = (
+            "**Recommended next actions:**\n"
+            "1. Grant power.\n"
+            "2. Support the grant.\n"
+            "3. Plan a review."
+        )
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        labels = [p for p in doc.paragraphs if p.text == "Recommended next actions:"]
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0].style.name, "Normal")
+
+        items = [p.text for p in doc.paragraphs if p.style.name == "List Number"]
+        self.assertEqual(items, ["Grant power.", "Support the grant.", "Plan a review."])
+        self.assertNotIn("1. Grant power.", labels[0].text)
+
     def test_export_applies_org_styles(self):
         """The export should apply the exporting user's org styles to the .docx."""
         from accounts.models import Membership, Organization
