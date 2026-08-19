@@ -1,5 +1,5 @@
 {% comment %}
-The three skill tiers (your / org / built-in) for one audience tab.
+The three skill tiers (your / org / system) for one audience tab.
 Params:
   audience      — "main" | "subagent"; carried into create/import/copy actions
   user_rows, org_rows, system_rows — annotated rows for this audience
@@ -76,7 +76,7 @@ Params:
 <section class="mb-8">
   <div class="flex items-center justify-between gap-4 mb-3">
     <h2 class="flex items-baseline gap-2 min-w-0 text-base font-semibold text-heading">
-      Built-in skills
+      System skills
       <span class="wf-mono text-xs font-normal text-body-subtle">{{ system_rows|length }}</span>
     </h2>
   </div>
@@ -84,7 +84,7 @@ Params:
     {% for row in system_rows %}
       {% include "agent_skills/_skill_row.html" with row=row section="system" audience=audience is_first=forloop.first is_last=forloop.last %}
     {% empty %}
-    <p class="px-5 py-6 text-body text-sm">No built-in skills available.</p>
+    <p class="px-5 py-6 text-body text-sm">No system skills available.</p>
     {% endfor %}
   </div>
 </section>

@@ -20,7 +20,7 @@
   }
 
   function levelLabel(level) {
-    if (level === "system") return "built-in";
+    if (level === "system") return "system";
     if (level === "org") return "organization";
     if (level === "user") return "your";
     return level;

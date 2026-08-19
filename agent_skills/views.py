@@ -97,7 +97,7 @@ def _relative_date(value) -> str:
     return "1 year ago" if years == 1 else f"{years} years ago"
 
 
-_LEVEL_DISPLAY = {"system": "built-in", "org": "organization", "user": "your"}
+_LEVEL_DISPLAY = {"system": "system", "org": "organization", "user": "your"}
 
 
 def _annotate_skills(
@@ -664,7 +664,7 @@ def skills_demote(request, skill_id):
 @login_required
 @require_POST
 def skills_copy_to_org(request, skill_id):
-    """Copy a skill (e.g. a built-in) into the org as a new org skill."""
+    """Copy a skill (e.g. a system skill) into the org as a new org skill."""
     skill = get_skill_for_user(request.user, str(skill_id))
     if skill is None:
         return redirect("agent_skills_list")

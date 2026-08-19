@@ -46,7 +46,7 @@ class SkillsListViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Your skills")
         self.assertContains(response, "Acme")
-        self.assertContains(response, "Built-in skills")
+        self.assertContains(response, "System skills")
         self.assertContains(response, "Sys X")
         self.assertContains(response, "Org X")
         self.assertContains(response, "My X")
@@ -203,7 +203,7 @@ class SkillsDetailViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
 
     def test_system_skill_read_only_but_has_preview_toggles(self):
-        # Built-in (system) skills are not editable, but the detail page still
+        # System skills are not editable, but the detail page still
         # offers the markdown preview toggles so users can read the rendered
         # version (which the client-side JS shows by default).
         system_skill = AgentSkill.objects.create(
@@ -576,7 +576,7 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         self.assertEqual(copy.templates.count(), 2)
 
     def test_standalone_copy_to_org_url_preserves_templates(self):
-        """The dropdown Copy-as-org URL (shown for built-in skills) preserves templates.
+        """The dropdown Copy-as-org URL (shown for system skills) preserves templates.
 
         A system skill can't be *moved* into the org (promote), so its dropdown
         offers a copy-to-org instead — which must carry templates across.

@@ -62,7 +62,7 @@
   //
   // On read-only skills (o.readOnly) pass o.defaultPreview to open in the rendered
   // view: the button then toggles to the raw markdown source instead of an editor,
-  // so built-in skills read as formatted text by default but the source stays a
+  // so system skills read as formatted text by default but the source stays a
   // click away.
   function mountMarkdownEditor(o) {
     var textarea = o.textarea;
@@ -99,7 +99,7 @@
           preview.innerHTML = renderMarkdown(ed.getValue());
           preview.classList.remove("hidden");
           wrapper.classList.add("hidden");
-          // On read-only skills (built-in, or org skills for non-admins) the
+          // On read-only skills (system, or org skills for non-admins) the
           // raw view isn't editable, so "Edit" would mislead — call it
           // "View markdown" instead.
           var rawLabel = o.readOnly ? "View markdown" : "Edit";
@@ -329,7 +329,7 @@
 
   // ----- Save buttons -----
   function levelLabel(level) {
-    if (level === "system") return "built-in";
+    if (level === "system") return "system";
     if (level === "org") return "organization";
     return level;
   }
