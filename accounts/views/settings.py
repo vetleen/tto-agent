@@ -1243,6 +1243,7 @@ def profile_update(request):
 
     from accounts.models import get_user_org
     from guardrails.classifier import classify_description_sync
+    from guardrails.service import record_identity_field_block
 
     logger = logging.getLogger(__name__)
 
@@ -1276,11 +1277,16 @@ def profile_update(request):
     # fields use (org name is classified for exactly this reason).
     if identity_texts:
         try:
-            result = classify_description_sync(" ".join(identity_texts), user.pk, org_id)
+            identity_text = " ".join(identity_texts)
+            result = classify_description_sync(identity_text, user.pk, org_id)
             if result.is_suspicious:
                 logger.warning("Profile name/title blocked for user %s: %s", user.pk, result.reasoning)
+                record_identity_field_block(
+                    user=user, org_id=org_id, field="profile_name",
+                    text=identity_text, result=result,
+                )
                 return JsonResponse(
-                    {"error": "Name could not be saved. Please revise and try again."},
+                    {"error": "The text wasn't saved because it may contain unsafe instructions. Please edit and try again."},
                     status=400,
                 )
         except Exception:
@@ -1302,8 +1308,12 @@ def profile_update(request):
                 result = classify_description_sync(desc, user.pk, org_id)
                 if result.is_suspicious:
                     logger.warning("Profile description blocked for user %s: %s", user.pk, result.reasoning)
+                    record_identity_field_block(
+                        user=user, org_id=org_id, field="profile_description",
+                        text=desc, result=result,
+                    )
                     return JsonResponse(
-                        {"error": "Description could not be saved. Please revise and try again."},
+                        {"error": "The text wasn't saved because it may contain unsafe instructions. Please edit and try again."},
                         status=400,
                     )
             except Exception:
@@ -1411,7 +1421,8 @@ def profile_picture_delete(request):
 def org_description_update(request):
     import logging
 
-    from guardrails.classifier import classify_description_sync
+    from guardrails.classifier import classify_org_description_sync
+    from guardrails.service import record_identity_field_block
 
     logger = logging.getLogger(__name__)
 
@@ -1430,14 +1441,18 @@ def org_description_update(request):
 
     if desc:
         try:
-            result = classify_description_sync(desc, request.user.pk, membership.org_id)
+            result = classify_org_description_sync(desc, request.user.pk, membership.org_id)
             if result.is_suspicious:
                 logger.warning(
                     "Org description blocked for org %s by user %s: %s",
                     membership.org_id, request.user.pk, result.reasoning,
                 )
+                record_identity_field_block(
+                    user=request.user, org_id=membership.org_id, field="org_description",
+                    text=desc, result=result,
+                )
                 return JsonResponse(
-                    {"error": "Description could not be saved. Please revise and try again."},
+                    {"error": "The text wasn't saved because it may contain unsafe instructions. Please edit and try again."},
                     status=400,
                 )
         except Exception:
@@ -1484,6 +1499,7 @@ def soul_update(request):
     from accounts.agent_customization import MAX_SOUL_LENGTH, org_allows_user_soul
     from accounts.models import get_user_org
     from guardrails.classifier import classify_soul_sync
+    from guardrails.service import record_identity_field_block
 
     logger = logging.getLogger(__name__)
 
@@ -1507,8 +1523,12 @@ def soul_update(request):
             result = classify_soul_sync(soul, request.user.pk, org.pk if org else None)
             if result.is_suspicious:
                 logger.warning("Personal SOUL blocked for user %s: %s", request.user.pk, result.reasoning)
+                record_identity_field_block(
+                    user=request.user, org_id=org.pk if org else None, field="soul",
+                    text=soul, result=result,
+                )
                 return JsonResponse(
-                    {"error": "SOUL could not be saved. Please revise and try again."},
+                    {"error": "The text wasn't saved because it may contain unsafe instructions. Please edit and try again."},
                     status=400,
                 )
         except Exception:
@@ -1549,6 +1569,7 @@ def org_soul_update(request):
 
     from accounts.agent_customization import MAX_SOUL_LENGTH
     from guardrails.classifier import classify_soul_sync
+    from guardrails.service import record_identity_field_block
 
     logger = logging.getLogger(__name__)
 
@@ -1573,8 +1594,12 @@ def org_soul_update(request):
                     "Org SOUL blocked for org %s by user %s: %s",
                     membership.org_id, request.user.pk, result.reasoning,
                 )
+                record_identity_field_block(
+                    user=request.user, org_id=membership.org_id, field="org_soul",
+                    text=soul, result=result,
+                )
                 return JsonResponse(
-                    {"error": "SOUL could not be saved. Please revise and try again."},
+                    {"error": "The text wasn't saved because it may contain unsafe instructions. Please edit and try again."},
                     status=400,
                 )
         except Exception:
@@ -1614,6 +1639,7 @@ def org_name_update(request):
     import logging
 
     from guardrails.classifier import classify_description_sync
+    from guardrails.service import record_identity_field_block
 
     logger = logging.getLogger(__name__)
 
@@ -1640,8 +1666,12 @@ def org_name_update(request):
                 "Org name blocked for org %s by user %s: %s",
                 membership.org_id, request.user.pk, result.reasoning,
             )
+            record_identity_field_block(
+                user=request.user, org_id=membership.org_id, field="org_name",
+                text=name, result=result,
+            )
             return JsonResponse(
-                {"error": "Name could not be saved. Please revise and try again."},
+                {"error": "The text wasn't saved because it may contain unsafe instructions. Please edit and try again."},
                 status=400,
             )
     except Exception:

@@ -45,7 +45,11 @@
           <label class="block text-sm font-medium text-heading" for="org-name">Name</label>
           <input type="text" id="org-name" maxlength="255" value="{{ cust.org_name }}"
             class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium">
-          <p id="org-name-error" class="text-xs text-fg-danger hidden mt-1.5"></p>
+          <div class="mt-3 flex items-center gap-2">
+            <button type="button" id="org-name-save" disabled
+              class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
+            <p id="org-name-status" class="text-xs hidden"></p>
+          </div>
         </div>
 
         <div class="rounded-base border border-default bg-neutral-primary-soft p-4">
@@ -55,8 +59,12 @@
             style="min-height: 4.75rem; max-height: 15rem;"
             class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ org_description_raw }}</textarea>
           <div class="flex items-center justify-between mt-1.5">
-            <p id="org-desc-error" class="text-xs text-fg-danger hidden"></p>
             <p class="text-xs text-body ml-auto"><span id="org-desc-count">{{ org_description_raw|length }}</span> / 5000</p>
+          </div>
+          <div class="mt-3 flex items-center gap-2">
+            <button type="button" id="org-desc-save" disabled
+              class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
+            <p id="org-desc-status" class="text-xs hidden"></p>
           </div>
         </div>
       </div>
@@ -108,8 +116,12 @@
             style="min-height: 4.75rem; max-height: 15rem;"
             class="mt-2 block w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium resize-y">{{ user.description }}</textarea>
           <div class="flex items-center justify-between mt-1.5">
-            <p id="profile-desc-error" class="text-xs text-fg-danger hidden"></p>
             <p class="text-xs text-body ml-auto"><span id="profile-desc-count">{{ user.description|length }}</span> / 5000</p>
+          </div>
+          <div class="mt-3 flex items-center gap-2">
+            <button type="button" id="profile-save" disabled
+              class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-base text-sm px-4 py-2 focus:outline-none">Save</button>
+            <p id="profile-status" class="text-xs hidden"></p>
           </div>
         </div>
       </div>
@@ -186,19 +198,49 @@
 <script nonce="{{ request.csp_nonce }}">
 (function() {
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var SPINNER = '<svg class="inline-block w-3.5 h-3.5 animate-spin mr-1" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>';
 
-  function showStatus(el, msg, isError) {
+  // Status line shared by every editor: a spinner while the (LLM-backed) guardrail
+  // check runs, then a neutral "Saved" or a danger-styled warning.
+  // kind: 'checking' | 'success' | 'error' | 'hidden'.
+  function setStatus(el, kind, msg) {
     if (!el) return;
-    el.textContent = msg;
     el.classList.remove('hidden', 'text-fg-danger', 'text-body');
-    el.classList.add(isError ? 'text-fg-danger' : 'text-body');
+    if (kind === 'hidden') { el.textContent = ''; el.classList.add('hidden'); return; }
+    if (kind === 'checking') { el.classList.add('text-body'); el.innerHTML = SPINNER + 'Checking…'; return; }
+    el.classList.add(kind === 'error' ? 'text-fg-danger' : 'text-body');
+    el.textContent = msg;
+  }
+
+  // Run a guarded save: disable the button, show the spinner, POST, then report.
+  // On any error the user's edits are left untouched (never cleared) so they can
+  // revise and retry; the server persists nothing on a block.
+  function runSave(o) {
+    o.button.disabled = true;
+    setStatus(o.status, 'checking');
+    fetch(o.url, {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify(o.buildBody()),
+      credentials: 'same-origin',
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data && data.error) {
+        setStatus(o.status, 'error', data.error);
+      } else {
+        if (o.onSaved) o.onSaved();
+        setStatus(o.status, 'success', 'Saved');
+      }
+      o.refresh();
+    }).catch(function() {
+      setStatus(o.status, 'error', 'Could not save. Please try again.');
+      o.refresh();
+    });
   }
 
   // Mount the shared CodeMirror markdown editor (WilfredEditor, as used on the
   // skill editor) over a textarea: hide the textarea but keep it value-synced so
-  // the existing save logic and any form posts still read textarea.value.
-  // Returns the editor adapter, or null if the bundle isn't loaded (in which case
-  // the plain textarea stays visible as a graceful fallback).
+  // any form posts still read textarea.value. Returns the editor adapter, or null
+  // if the bundle isn't loaded (the plain textarea stays as a graceful fallback).
   function mountEditor(textarea, opts) {
     opts = opts || {};
     if (!textarea || !window.WilfredEditor) return null;
@@ -221,121 +263,143 @@
     return ed;
   }
 
-  // --- About you ---
-  var saveTimer = null;
-  var descError = document.getElementById('profile-desc-error');
-  var descCount = document.getElementById('profile-desc-count');
-  var descTextarea = document.getElementById('profile-description');
+  // A single rich-editor field with an explicit Save button (and optional Reset,
+  // used by the SOUL editors). Save stays disabled until the value changes.
+  function setupEditorField(opts) {
+    var ta = document.getElementById(opts.textarea);
+    if (!ta) return;
+    var saveBtn = document.getElementById(opts.save);
+    var resetBtn = opts.reset ? document.getElementById(opts.reset) : null;
+    var count = opts.count ? document.getElementById(opts.count) : null;
+    var status = document.getElementById(opts.status);
+    var initial = ta.value;
 
-  function saveProfile() {
-    if (descError) descError.classList.add('hidden');
-    var body = {
-      first_name: document.getElementById('profile-first-name').value,
-      last_name: document.getElementById('profile-last-name').value,
-      title: document.getElementById('profile-title').value,
-      description: descTextarea ? descTextarea.value : '',
-    };
-    fetch('{% url "accounts:profile_update" %}', {
-      method: 'POST',
-      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      credentials: 'same-origin',
-    }).then(function(r) { return r.json(); }).then(function(data) {
-      if (data.error && descError) {
-        descError.textContent = data.error;
-        descError.classList.remove('hidden');
-      }
+    var ed = mountEditor(ta, {
+      maxLength: opts.maxLength, minHeight: opts.minHeight, maxHeight: opts.maxHeight,
+      onChange: function(val) {
+        if (count) count.textContent = val.length;
+        if (saveBtn) saveBtn.disabled = (val === initial);
+        setStatus(status, 'hidden');
+      },
     });
-  }
+    function curVal() { return ed ? ed.getValue() : ta.value; }
+    function refresh() {
+      if (count) count.textContent = curVal().length;
+      if (saveBtn) saveBtn.disabled = (curVal() === initial);
+    }
+    if (!ed) {
+      ta.addEventListener('input', function() { refresh(); setStatus(status, 'hidden'); });
+    }
+    refresh();
 
-  // One-line fields save on blur.
-  ['profile-first-name', 'profile-last-name', 'profile-title'].forEach(function(id) {
-    var el = document.getElementById(id);
-    if (el) el.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
-  });
-
-  // Description uses the rich editor: update count + debounced save on change,
-  // and save when the editor loses focus.
-  var descEd = mountEditor(descTextarea, {
-    maxLength: 5000, minHeight: '10rem', maxHeight: '24rem',
-    onChange: function(val) {
-      if (descCount) descCount.textContent = val.length;
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(saveProfile, 1500);
-    },
-  });
-  if (descEd) {
-    descEd.view.contentDOM.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
-  } else if (descTextarea) {
-    descTextarea.addEventListener('input', function() {
-      if (descCount) descCount.textContent = this.value.length;
-      clearTimeout(saveTimer); saveTimer = setTimeout(saveProfile, 1500);
-    });
-    descTextarea.addEventListener('blur', function() { clearTimeout(saveTimer); saveProfile(); });
-  }
-
-  // --- Organization (admin auto-save) ---
-  {% if cust.is_org_admin %}
-  var orgNameInput = document.getElementById('org-name');
-  var orgNameError = document.getElementById('org-name-error');
-  if (orgNameInput) {
-    var orgNameTimer = null;
-    function saveOrgName() {
-      if (orgNameError) orgNameError.classList.add('hidden');
-      fetch('{% url "accounts:org_name_update" %}', {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: orgNameInput.value }),
-        credentials: 'same-origin',
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error && orgNameError) {
-          orgNameError.textContent = data.error;
-          orgNameError.classList.remove('hidden');
-        }
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function() {
+        if (curVal() === initial) return;
+        runSave({
+          button: saveBtn, status: status, url: opts.saveUrl,
+          buildBody: function() { var b = {}; b[opts.bodyKey] = curVal(); return b; },
+          onSaved: function() { initial = curVal(); },
+          refresh: refresh,
+        });
       });
     }
-    orgNameInput.addEventListener('blur', function() { clearTimeout(orgNameTimer); saveOrgName(); });
-    orgNameInput.addEventListener('input', function() {
-      clearTimeout(orgNameTimer);
-      orgNameTimer = setTimeout(saveOrgName, 1500);
+
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function() {
+        resetBtn.disabled = true;
+        fetch(opts.resetUrl, {
+          method: 'POST',
+          headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+          body: '{}',
+          credentials: 'same-origin',
+        }).then(function(r) { return r.json(); }).then(function(data) {
+          resetBtn.disabled = false;
+          if (data.error) { setStatus(status, 'error', data.error); return; }
+          var v = data.soul || '';
+          if (ed) ed.setValue(v);
+          ta.value = v;
+          initial = v;
+          refresh();
+          setStatus(status, 'success', 'Reset to default.');
+        }).catch(function() {
+          resetBtn.disabled = false;
+          setStatus(status, 'error', 'Could not reset. Please try again.');
+        });
+      });
+    }
+  }
+
+  // A single one-line <input> with an explicit Save button (org name).
+  function setupInputField(opts) {
+    var input = document.getElementById(opts.input);
+    if (!input) return;
+    var saveBtn = document.getElementById(opts.save);
+    var status = document.getElementById(opts.status);
+    var initial = input.value;
+    function refresh() { if (saveBtn) saveBtn.disabled = (input.value === initial); }
+    input.addEventListener('input', function() { refresh(); setStatus(status, 'hidden'); });
+    refresh();
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function() {
+        if (input.value === initial) return;
+        runSave({
+          button: saveBtn, status: status, url: opts.saveUrl,
+          buildBody: function() { var b = {}; b[opts.bodyKey] = input.value; return b; },
+          onSaved: function() { initial = input.value; },
+          refresh: refresh,
+        });
+      });
+    }
+  }
+
+  // "About you" — first/last/title/description save together via one endpoint.
+  function setupProfileForm() {
+    var saveBtn = document.getElementById('profile-save');
+    if (!saveBtn) return;
+    var fn = document.getElementById('profile-first-name');
+    var ln = document.getElementById('profile-last-name');
+    var title = document.getElementById('profile-title');
+    var descTa = document.getElementById('profile-description');
+    var count = document.getElementById('profile-desc-count');
+    var status = document.getElementById('profile-status');
+
+    var ed = mountEditor(descTa, {
+      maxLength: 5000, minHeight: '10rem', maxHeight: '24rem',
+      onChange: function(val) { if (count) count.textContent = val.length; refresh(); setStatus(status, 'hidden'); },
+    });
+    function descVal() { return ed ? ed.getValue() : (descTa ? descTa.value : ''); }
+    function snapshot() { return JSON.stringify([fn ? fn.value : '', ln ? ln.value : '', title ? title.value : '', descVal()]); }
+    var initial = snapshot();
+    function refresh() { saveBtn.disabled = (snapshot() === initial); }
+    [fn, ln, title].forEach(function(el) { if (el) el.addEventListener('input', function() { refresh(); setStatus(status, 'hidden'); }); });
+    if (!ed && descTa) {
+      descTa.addEventListener('input', function() { if (count) count.textContent = this.value.length; refresh(); setStatus(status, 'hidden'); });
+    }
+    refresh();
+
+    saveBtn.addEventListener('click', function() {
+      if (snapshot() === initial) return;
+      runSave({
+        button: saveBtn, status: status, url: '{% url "accounts:profile_update" %}',
+        buildBody: function() { return { first_name: fn ? fn.value : '', last_name: ln ? ln.value : '', title: title ? title.value : '', description: descVal() }; },
+        onSaved: function() { initial = snapshot(); },
+        refresh: refresh,
+      });
     });
   }
 
-  var orgDescTextarea = document.getElementById('org-description');
-  var orgDescCount = document.getElementById('org-desc-count');
-  var orgDescError = document.getElementById('org-desc-error');
-  var orgDescTimer = null;
-  function saveOrgDescription() {
-    if (!orgDescTextarea) return;
-    if (orgDescError) orgDescError.classList.add('hidden');
-    fetch('{% url "accounts:org_description_update" %}', {
-      method: 'POST',
-      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description: orgDescTextarea.value }),
-      credentials: 'same-origin',
-    }).then(function(r) { return r.json(); }).then(function(data) {
-      if (data.error && orgDescError) {
-        orgDescError.textContent = data.error;
-        orgDescError.classList.remove('hidden');
-      }
-    });
-  }
-  var orgDescEd = mountEditor(orgDescTextarea, {
-    maxLength: 5000, minHeight: '10rem', maxHeight: '24rem',
-    onChange: function(val) {
-      if (orgDescCount) orgDescCount.textContent = val.length;
-      clearTimeout(orgDescTimer); orgDescTimer = setTimeout(saveOrgDescription, 1500);
-    },
+  setupProfileForm();
+
+  {% if cust.is_org_admin %}
+  setupInputField({
+    input: 'org-name', save: 'org-name-save', status: 'org-name-status',
+    saveUrl: '{% url "accounts:org_name_update" %}', bodyKey: 'name',
   });
-  if (orgDescEd) {
-    orgDescEd.view.contentDOM.addEventListener('blur', function() { clearTimeout(orgDescTimer); saveOrgDescription(); });
-  } else if (orgDescTextarea) {
-    orgDescTextarea.addEventListener('input', function() {
-      if (orgDescCount) orgDescCount.textContent = this.value.length;
-      clearTimeout(orgDescTimer); orgDescTimer = setTimeout(saveOrgDescription, 1500);
-    });
-    orgDescTextarea.addEventListener('blur', function() { clearTimeout(orgDescTimer); saveOrgDescription(); });
-  }
+  setupEditorField({
+    textarea: 'org-description', save: 'org-desc-save', status: 'org-desc-status', count: 'org-desc-count',
+    saveUrl: '{% url "accounts:org_description_update" %}', bodyKey: 'description',
+    maxLength: 5000, minHeight: '10rem', maxHeight: '24rem',
+  });
 
   var allowToggle = document.getElementById('allow-user-soul-toggle');
   if (allowToggle) {
@@ -352,96 +416,18 @@
   }
   {% endif %}
 
-  // --- SOUL editors (rich editor, explicit save + reset, change-detected) ---
-  function setupSoulEditor(opts) {
-    var ta = document.getElementById(opts.textarea);
-    if (!ta) return;
-    var saveBtn = document.getElementById(opts.save);
-    var resetBtn = document.getElementById(opts.reset);
-    var count = document.getElementById(opts.count);
-    var status = document.getElementById(opts.status);
-    var initial = ta.value;
-
-    var ed = mountEditor(ta, {
-      maxLength: 25000, minHeight: '12rem', maxHeight: '28rem',
-      onChange: function(val) {
-        if (count) count.textContent = val.length;
-        if (saveBtn) saveBtn.disabled = (val === initial);
-        if (status) status.classList.add('hidden');
-      },
-    });
-    function curVal() { return ed ? ed.getValue() : ta.value; }
-    function refresh() {
-      if (count) count.textContent = curVal().length;
-      if (saveBtn) saveBtn.disabled = (curVal() === initial);
-    }
-    if (!ed) {
-      ta.addEventListener('input', function() { refresh(); if (status) status.classList.add('hidden'); });
-    }
-    refresh();
-
-    if (saveBtn) {
-      saveBtn.addEventListener('click', function() {
-        if (curVal() === initial) return;
-        saveBtn.disabled = true;
-        fetch(opts.saveUrl, {
-          method: 'POST',
-          headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ soul: curVal() }),
-          credentials: 'same-origin',
-        }).then(function(r) { return r.json(); }).then(function(data) {
-          if (data.error) {
-            showStatus(status, data.error, true);
-          } else {
-            initial = curVal();
-            showStatus(status, 'Saved', false);
-          }
-          refresh();
-        }).catch(function() {
-          showStatus(status, 'Could not save. Please try again.', true);
-          refresh();
-        });
-      });
-    }
-
-    if (resetBtn) {
-      resetBtn.addEventListener('click', function() {
-        resetBtn.disabled = true;
-        fetch(opts.resetUrl, {
-          method: 'POST',
-          headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
-          body: '{}',
-          credentials: 'same-origin',
-        }).then(function(r) { return r.json(); }).then(function(data) {
-          resetBtn.disabled = false;
-          if (data.error) {
-            showStatus(status, data.error, true);
-            return;
-          }
-          var v = data.soul || '';
-          if (ed) ed.setValue(v);
-          ta.value = v;
-          initial = v;
-          refresh();
-          showStatus(status, 'Reset to default.', false);
-        }).catch(function() {
-          resetBtn.disabled = false;
-          showStatus(status, 'Could not reset. Please try again.', true);
-        });
-      });
-    }
-  }
-
-  setupSoulEditor({
+  setupEditorField({
     textarea: 'user-soul', save: 'user-soul-save', reset: 'user-soul-reset',
     count: 'user-soul-count', status: 'user-soul-status',
     saveUrl: '{% url "accounts:soul_update" %}', resetUrl: '{% url "accounts:soul_reset" %}',
+    bodyKey: 'soul', maxLength: 25000, minHeight: '12rem', maxHeight: '28rem',
   });
   {% if cust.is_org_admin %}
-  setupSoulEditor({
+  setupEditorField({
     textarea: 'org-soul', save: 'org-soul-save', reset: 'org-soul-reset',
     count: 'org-soul-count', status: 'org-soul-status',
     saveUrl: '{% url "accounts:org_soul_update" %}', resetUrl: '{% url "accounts:org_soul_reset" %}',
+    bodyKey: 'soul', maxLength: 25000, minHeight: '12rem', maxHeight: '28rem',
   });
   {% endif %}
 })();

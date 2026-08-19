@@ -291,7 +291,7 @@ class LlmEndpointRateLimitTests(TestCase):
             user=self.admin_user, org=self.org, role=Membership.Role.ADMIN
         )
 
-        for target in ("classify_description_sync", "classify_soul_sync"):
+        for target in ("classify_description_sync", "classify_org_description_sync", "classify_soul_sync"):
             patcher = patch(f"guardrails.classifier.{target}", return_value=_CLEAN)
             patcher.start()
             self.addCleanup(patcher.stop)

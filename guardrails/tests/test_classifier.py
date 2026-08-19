@@ -9,6 +9,7 @@ from guardrails.classifier import (
     GuardrailModelUnavailableError,
     classify_description_sync,
     classify_message,
+    classify_org_description_sync,
     classify_soul_sync,
 )
 from guardrails.schemas import ClassifierResult
@@ -240,3 +241,57 @@ class ClassifySoulSyncTest(TestCase):
         self.assertIn("personality", system_msg)
         # The SOUL prompt must explicitly permit legitimate persona/style config.
         self.assertIn("ALLOW", system_msg)
+
+
+class ClassifyOrgDescriptionSyncTest(TestCase):
+    """Test the synchronous organization-description classifier (policy-aware)."""
+
+    @override_settings(LLM_DEFAULT_CHEAP_MODEL="test-cheap-model")
+    @patch("guardrails.classifier._get_llm_service")
+    def test_uses_org_description_specific_prompt(self, mock_get_service):
+        """Org description uses a policy-aware prompt, not the strict bio one."""
+        mock_service = MagicMock()
+        mock_get_service.return_value = mock_service
+        mock_service.run_structured.return_value = (
+            ClassifierResult(
+                is_suspicious=False, concern_tags=[], confidence=0.0, reasoning="Clean.",
+            ),
+            MagicMock(total_tokens=50),
+        )
+
+        classify_org_description_sync(
+            "As a general rule we do not perform FTO analyses as a standard activity.",
+            user_id=1,
+        )
+
+        call_args = mock_service.run_structured.call_args
+        request = call_args[0][0]
+        system_msg = request.messages[0].content
+        self.assertIn("ORGANIZATION DESCRIPTION", system_msg)
+        # It must explicitly permit operating policy, unlike the strict bio prompt.
+        self.assertIn("ALLOW", system_msg)
+        self.assertNotIn("profile description", system_msg)
+
+    @override_settings(LLM_DEFAULT_CHEAP_MODEL="test-cheap-model")
+    @patch("guardrails.classifier._get_llm_service")
+    def test_returns_classifier_result(self, mock_get_service):
+        mock_service = MagicMock()
+        mock_get_service.return_value = mock_service
+        mock_service.run_structured.return_value = (
+            ClassifierResult(
+                is_suspicious=False, concern_tags=[], confidence=0.05,
+                reasoning="Legitimate operating policy.",
+            ),
+            MagicMock(total_tokens=60),
+        )
+
+        result = classify_org_description_sync(
+            "We do not perform FTO analyses; prefer prior-art searches.", user_id=1,
+        )
+        self.assertFalse(result.is_suspicious)
+
+    @patch("core.preferences.resolve_org_feature_model", return_value="")
+    def test_no_model_configured_fails_closed(self, _mock_resolve):
+        """The view's except-path turns this into a 503; the save is rejected."""
+        with self.assertRaises(GuardrailModelUnavailableError):
+            classify_org_description_sync("test", user_id=1)

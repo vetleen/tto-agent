@@ -320,6 +320,43 @@ def _create_event_sync(
     )
 
 
+def record_identity_field_block(*, user, org_id, field, text, result):
+    """Persist a GuardrailEvent for a blocked identity-field classifier hit.
+
+    Called from the sync settings views when a classify_*_sync check flags a name,
+    profile description, org description, or SOUL field before it is saved. Best
+    effort: failing to write the audit row must never break the user's request
+    (the HTTP 400 block is returned regardless), so exceptions are swallowed and
+    logged. The specific field is recorded as a ``field:<name>`` tag so a single
+    IDENTITY_FIELD trigger source stays queryable per field.
+    """
+    from guardrails.models import GuardrailEvent
+
+    try:
+        confidence = float(getattr(result, "confidence", 0.0) or 0.0)
+        severity = (
+            GuardrailEvent.Severity.HIGH if confidence >= 0.8 else GuardrailEvent.Severity.MEDIUM
+        )
+        tags = list(getattr(result, "concern_tags", None) or []) + [f"field:{field}"]
+        _create_event_sync(
+            user=user,
+            org_id=org_id,
+            thread_id=None,
+            trigger_source=GuardrailEvent.TriggerSource.IDENTITY_FIELD,
+            check_type=GuardrailEvent.CheckType.CLASSIFIER,
+            tags=tags,
+            confidence=confidence,
+            severity=severity,
+            action_taken=GuardrailEvent.ActionTaken.BLOCKED,
+            raw_input=text,
+            reviewer_output=getattr(result, "reasoning", None),
+        )
+    except Exception:
+        logger.exception(
+            "record_identity_field_block: failed to write GuardrailEvent (field=%s)", field,
+        )
+
+
 async def _create_event_async(**kwargs):
     """Create a GuardrailEvent from async context."""
     from asgiref.sync import sync_to_async

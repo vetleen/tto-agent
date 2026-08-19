@@ -7,6 +7,10 @@ from celery.signals import setup_logging, task_failure, task_postrun, task_preru
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 app = Celery("config")
 app.config_from_object("django.conf:settings", namespace="CELERY")
+# Opt in explicitly to retrying the broker connection during worker startup.
+# This is the Celery 6 default; setting it silences the CPendingDeprecationWarning
+# and locks current behaviour in ahead of that upgrade.
+app.conf.broker_connection_retry_on_startup = True
 # Prefork pool causes PermissionError on Windows (billiard semaphores). Use solo.
 if sys.platform == "win32":
     app.conf.worker_pool = "solo"
