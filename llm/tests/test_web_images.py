@@ -3,19 +3,33 @@
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
+import requests as req_lib
 from bs4 import BeautifulSoup
 from django.test import TestCase, override_settings
 
 from llm.tests.test_web_fetch import _mock_response
+
+
+def _jina_resp_with_images(content, images):
+    """A mocked Jina JSON response carrying a data.images summary."""
+    payload = {"code": 200, "status": 20000,
+               "data": {"title": "T", "content": content, "images": images}}
+    r = _mock_response(content_type="application/json", text=json.dumps(payload))
+    r.json.return_value = payload
+    return r
 from llm.tools.web_fetch import (
     WebFetchTool,
     _RedirectBlocked,
     _build_image_manifest,
     _extract_image_candidates,
+    _images_from_jina,
+    _pinned_get,
     _pinned_get_following_redirects,
+    _strip_for_images,
     _strip_hidden_elements,
     _truncate_filename,
 )
@@ -26,7 +40,7 @@ _BASE = "https://example.com/article/"
 _PAGE = """
 <html><head><title>Doc</title></head><body>
   <header><img src="logo.png" class="site-logo" alt="Logo"></header>
-  <nav><a href="/other"><img src="thumb.png" alt="Other article"></a></nav>
+  <nav><a href="/other"><img src="thumb.png" class="teaser-thumbnail" alt="Other article"></a></nav>
   <main>
     <figure><img src="diagram.png" alt="A detailed diagram of the process"></figure>
     <p><img src="/media/photo.jpg" alt="A photo"></p>
@@ -41,8 +55,9 @@ _PAGE = """
 
 
 def _candidates(html, base=_BASE):
+    # Mirror the real image path: the lighter clean that keeps chrome/aria-hidden.
     soup = BeautifulSoup(html, "html.parser")
-    _strip_hidden_elements(soup)
+    _strip_for_images(soup)
     return _extract_image_candidates(soup, base)
 
 
@@ -92,6 +107,93 @@ class ExtractImageCandidatesTests(TestCase):
         out = _truncate_filename("a" * 100 + ".jpeg")
         self.assertTrue(out.endswith(".jpeg"))
         self.assertIn("…", out)
+
+    def test_logo_and_plugin_urls_dropped_by_path(self):
+        # With chrome kept, WordPress header/partner logos come in — filter them
+        # by the URL (filename 'logo', or a plugin/flag asset dir), keeping the
+        # real content image.
+        html = """
+        <main>
+          <img src="/wp-content/uploads/2020/inven2_logo.png" alt="Inven2 logo">
+          <img src="/wp-content/plugins/wpml/res/flags/no.png" alt="Norsk">
+          <figure><img src="/wp-content/uploads/2026/story-photo.jpg" alt="A photo"></figure>
+        </main>
+        """
+        urls = [c["url"] for c in _candidates(html)]
+        self.assertEqual(urls, ["https://example.com/wp-content/uploads/2026/story-photo.jpg"])
+
+
+class PortalAndAriaHiddenTests(TestCase):
+    """The image path keeps semantic chrome and aria-hidden figures (portal/
+    homepage content lives there), while the text path still strips both."""
+
+    def test_content_images_in_chrome_and_aria_hidden_survive(self):
+        # Mirrors NRK's homepage: teaser images inside nav/aside, each wrapped in
+        # an aria-hidden <figure> (decorative but visible).
+        html = """
+        <html><body>
+          <nav><figure aria-hidden="true"><img src="/lead.jpg" alt=""></figure></nav>
+          <aside><figure aria-hidden="true"><img src="/side.png" alt=""></figure></aside>
+          <header><img src="brand.png" class="site-logo"></header>
+        </body></html>
+        """
+        urls = [c["url"] for c in _candidates(html)]
+        self.assertIn("https://example.com/lead.jpg", urls)   # nav + aria-hidden
+        self.assertIn("https://example.com/side.png", urls)   # aside + aria-hidden
+        self.assertNotIn("https://example.com/brand.png", urls)  # logo class filtered
+
+    def test_visually_hidden_images_still_dropped_on_image_path(self):
+        html = """
+        <main>
+          <div style="display:none"><img src="/invisible.png" alt="x"></div>
+          <figure aria-hidden="true"><img src="/visible.png" alt="ok"></figure>
+        </main>
+        """
+        urls = [c["url"] for c in _candidates(html)]
+        self.assertIn("https://example.com/visible.png", urls)
+        self.assertNotIn("https://example.com/invisible.png", urls)
+
+    def test_text_path_still_strips_aria_hidden(self):
+        # aria-hidden hides injection payloads from the reading text — must stay
+        # removed on the text path even though the image path keeps it.
+        html = (
+            "<html><body><main><p>Visible body</p>"
+            '<div aria-hidden="true">SECRET-INJECTION</div></main></body></html>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        _strip_hidden_elements(soup)
+        text = soup.get_text()
+        self.assertIn("Visible body", text)
+        self.assertNotIn("SECRET-INJECTION", text)
+
+
+class ImagesFromJinaTests(TestCase):
+    """Jina Reader is the dominant fetch path (many sites 400/421 the direct,
+    IP-pinned fetch), so image discovery must work from its data.images summary."""
+
+    def test_parses_summary_dict(self):
+        data = {"images": {
+            "Image 1": "https://x/a.jpg",
+            "Image 2: A red car": "https://x/b.png",
+            "logo": "https://x/site-logo.png",         # 'logo' in path -> dropped
+            "Image 3": "https://x/icon-sprite.svg",    # svg -> dropped
+            "Image 4": "data:image/png;base64,AAA",    # data uri -> dropped
+            "Image 5": "https://x/a.jpg",              # dup -> collapsed
+            "Image 6": "https://x/wp-content/plugins/wpml/res/flags/no.png",  # plugin flag
+            "Image 7": "https://x/wp-content/uploads/2020/hero_logo.png",     # logo filename
+        }}
+        out = _images_from_jina(data)
+        self.assertEqual([c["url"] for c in out], ["https://x/a.jpg", "https://x/b.png"])
+        self.assertEqual(out[0]["alt"], "")            # generic "Image 1" -> no alt
+        self.assertEqual(out[1]["alt"], "A red car")   # "Image 2:" prefix stripped
+
+    def test_non_dict_returns_empty(self):
+        self.assertEqual(_images_from_jina({"images": None}), [])
+        self.assertEqual(_images_from_jina({}), [])
+
+    def test_cap(self):
+        data = {"images": {f"Image {i}": f"https://x/{i}.jpg" for i in range(25)}}
+        self.assertLessEqual(len(_images_from_jina(data)), 10)
 
 
 class BuildImageManifestTests(TestCase):
@@ -170,6 +272,25 @@ class WebFetchIncludeImagesTests(TestCase):
         self.assertNotIn("[img-1]", result)
         self.assertEqual(ctx.web_image_manifest, {})
 
+    @override_settings(JINA_API_KEY="test-jina-key")
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_path_surfaces_images(self, mock_pinned, mock_requests_get):
+        # Real sites (NRK/NTNU) 400/421 the direct fetch → Jina wins; the image
+        # summary must still reach the manifest.
+        mock_pinned.side_effect = req_lib.exceptions.ConnectionError("refused")
+        mock_requests_get.return_value = _jina_resp_with_images(
+            "Body text.", {"Image 1": "https://cdn/x.jpg", "Image 2: A cat": "https://cdn/cat.png"},
+        )
+        ctx = RunContext.create(user_id="1", conversation_id="00000000-0000-0000-0000-000000000000")
+        self.tool.set_context(ctx)
+        result = self.tool.invoke({"url": "https://example.com/p", "include_images": True})
+
+        self.assertIn("[img-1]", result)
+        self.assertIn("A cat", result)                 # alt parsed from "Image 2: A cat"
+        self.assertNotIn("https://cdn/cat.png", result)  # no URL leak
+        self.assertTrue(ctx.web_image_manifest)
+
     @patch("llm.tools.web_fetch._pinned_get")
     def test_pagination_allocates_no_new_handles(self, mock_get):
         mock_get.return_value = _mock_response(text=self._long_page())
@@ -200,3 +321,14 @@ class RedirectHelperTests(TestCase):
         mock_get.return_value = _mock_response(is_redirect=True, location="ftp://evil/x")
         with self.assertRaises(_RedirectBlocked):
             _pinned_get_following_redirects("https://example.com", headers={}, max_bytes=1000)
+
+    @patch("llm.tools.web_fetch._resolve_and_validate", return_value=("1.2.3.4", None))
+    @patch("requests.Session.get")
+    def test_pinned_get_sends_hostname_host_header(self, mock_get, _mock_resolve):
+        # Connecting to an IP literal makes urllib3 send Host:<ip>, which CDNs
+        # 404. _pinned_get must send the real hostname as Host.
+        mock_get.return_value = _mock_response(text="ok")
+        _pinned_get("https://example.com/p", timeout=5, headers={"User-Agent": "x"}, max_bytes=1000)
+        sent = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(sent["Host"], "example.com")
+        self.assertEqual(sent["User-Agent"], "x")  # caller headers preserved

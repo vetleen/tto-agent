@@ -144,13 +144,19 @@ class WebImageViewTool(ContextAwareTool):
                 "description": description,
             })
             attached += 1
-            results.append(f"{handle}: attached. Embed token {token} to use it. Source: {url}")
+            results.append(
+                f"{handle}: viewed. To DISPLAY this image in your reply, paste this "
+                f"token exactly where you want the image to appear: {token} "
+                f"(image source: {url})"
+            )
 
         if attached == 0:
             return "\n".join(results) or "No images were attached."
         return (
             "\n".join(results)
-            + "\n\nKeep the source attribution when you embed a web image."
+            + "\n\nTo show the user an image you MUST paste its [[image:...]] token into "
+            "your reply — a text link, filename, or URL will NOT display it. You may add "
+            "a caption between the | and ]], and cite the source in your prose."
             + "\n\n(The image(s) are now visible to you below.)"
         )
 

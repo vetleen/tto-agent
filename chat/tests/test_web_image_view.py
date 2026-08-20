@@ -60,8 +60,9 @@ class WebImageViewToolTests(TestCase):
     def test_view_creates_asset_with_provenance(self):
         result = self._invoke({"handles": ["img-1"]}, return_value=_resp(_png()))
 
-        self.assertIn("img-1: attached", result)
+        self.assertIn("img-1: viewed", result)
         self.assertIn("[[image:", result)
+        self.assertIn("paste this token", result)  # directs the model to embed
         self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)
         asset = Asset.objects.get(thread=self.thread)
         self.assertEqual(asset.source_url, _IMG_URL)
@@ -80,7 +81,7 @@ class WebImageViewToolTests(TestCase):
     def test_mixed_known_and_unknown(self):
         result = self._invoke({"handles": ["img-99", "img-1"]}, return_value=_resp(_png()))
         self.assertIn("img-99: unknown handle", result)
-        self.assertIn("img-1: attached", result)
+        self.assertIn("img-1: viewed", result)
         self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)
 
     def test_non_image_content_type_rejected(self):
@@ -126,5 +127,5 @@ class WebImageViewToolTests(TestCase):
         tool.set_context(sub_ctx)
         with patch(_FETCH, return_value=(_resp(_png()), _IMG_URL)):
             result = tool.invoke({"handles": [handle]})
-        self.assertIn("attached", result)
+        self.assertIn("viewed", result)
         self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)

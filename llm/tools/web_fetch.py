@@ -68,15 +68,21 @@ class _RedirectBlocked(Exception):
         self.url = url
         super().__init__(message)
 
-_NOISE_TAGS = [
-    "script", "style", "nav", "footer", "header", "noscript", "iframe",
-    "aside", "svg", "canvas", "object", "embed",
+# Non-content elements removed for BOTH text and image extraction: scripts,
+# styling, embeds, and forms/buttons (which carry spam and injection payloads,
+# never article content — readability dropped them implicitly; trafilatura keeps
+# them, so strip explicitly to stay extractor-independent).
+_NONCONTENT_TAGS = [
+    "script", "style", "noscript", "iframe",
+    "svg", "canvas", "object", "embed",
     "meta", "template", "dialog",
-    # Forms/buttons carry spam and injection payloads, never article content.
-    # Readability dropped them implicitly; trafilatura keeps them, so strip
-    # explicitly to stay extractor-independent.
     "form", "button",
 ]
+# Semantic "chrome" regions. Stripped for TEXT extraction (article cleaning) but
+# KEPT for image discovery: on portal/homepage layouts the real content images
+# live inside nav/header/aside, so stripping them there loses everything.
+_CHROME_TAGS = ["nav", "footer", "header", "aside"]
+_NOISE_TAGS = _NONCONTENT_TAGS + _CHROME_TAGS
 
 # Inline style substrings that indicate a visually hidden element.
 _HIDDEN_STYLE_MARKERS = [
@@ -95,7 +101,8 @@ _HIDDEN_OVERFLOW_RE = re.compile(r"height\s*:\s*0.*overflow\s*:\s*hidden", re.IG
 
 
 def _strip_hidden_elements(soup: BeautifulSoup) -> None:
-    """Remove HTML elements that are invisible to humans.
+    """Remove non-content + chrome tags and elements invisible to humans (text
+    extraction path).
 
     Attackers hide prompt-injection payloads in elements styled with
     display:none, visibility:hidden, zero font-size, aria-hidden, etc.
@@ -103,7 +110,34 @@ def _strip_hidden_elements(soup: BeautifulSoup) -> None:
     """
     for tag in soup.find_all(_NOISE_TAGS):
         tag.decompose()
+    _remove_hidden_elements(soup)
 
+
+def _strip_for_images(soup: BeautifulSoup) -> None:
+    """Remove non-content and hidden elements but KEEP semantic chrome
+    (nav/header/footer/aside) — the image-discovery path.
+
+    Portal/homepage layouts put their real content images inside the chrome
+    regions the text path strips, so image discovery uses this lighter clean.
+    Security-critical hidden-element removal still runs (no invisible images).
+    """
+    for tag in soup.find_all(_NONCONTENT_TAGS):
+        tag.decompose()
+    # aria-hidden is NOT visual hiding — news sites routinely mark decorative-
+    # but-visible teaser <figure>s aria-hidden="true" (their alt duplicates the
+    # headline). Honouring it here would drop exactly the content images we want,
+    # so the image path skips the aria-hidden rule (visual hiding still applies).
+    _remove_hidden_elements(soup, include_aria=False)
+
+
+def _remove_hidden_elements(soup: BeautifulSoup, *, include_aria: bool = True) -> None:
+    """Decompose elements hidden via attributes/style, and strip HTML comments.
+    Shared by the text (:func:`_strip_hidden_elements`) and image
+    (:func:`_strip_for_images`) cleaning paths.
+
+    ``include_aria`` removes ``aria-hidden="true"`` elements — correct for text
+    (screen-reader-hidden content is an injection vector) but wrong for images,
+    where aria-hidden marks visible decorative figures."""
     # Remove elements hidden via style, attributes, or input type
     for tag in list(soup.find_all(True)):
         # Some malformed/parsed tags expose attrs=None, which would crash
@@ -116,8 +150,8 @@ def _strip_hidden_elements(soup: BeautifulSoup) -> None:
             tag.decompose()
             continue
 
-        # aria-hidden="true"
-        if str(attrs.get("aria-hidden") or "").lower() == "true":
+        # aria-hidden="true" (text path only)
+        if include_aria and str(attrs.get("aria-hidden") or "").lower() == "true":
             tag.decompose()
             continue
 
@@ -283,9 +317,16 @@ def _pinned_get(url: str, *, timeout: int, headers: dict, max_bytes: int) -> req
     adapter = _PinnedIPAdapter(validated_ip, hostname)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
+    # Because the connection targets an IP literal, urllib3 would otherwise send
+    # ``Host: <ip>`` — which name-based-vhost CDNs (CloudFront, shared hosts, …)
+    # answer with a 404. Send the real hostname explicitly so vhost routing works.
+    # SSRF is unaffected: we still connect only to the validated IP. Set (not
+    # setdefault) so each redirect hop carries its own host, never a stale one.
+    req_headers = dict(headers or {})
+    req_headers["Host"] = hostname
     try:
         resp = session.get(
-            url, timeout=timeout, headers=headers, allow_redirects=False, stream=True,
+            url, timeout=timeout, headers=req_headers, allow_redirects=False, stream=True,
         )
         _enforce_size_and_buffer(resp, max_bytes)
         return resp
@@ -369,6 +410,10 @@ _JINA_BODY_ERROR_RE = re.compile(r"Target URL returned error\s+\d{3}", re.IGNORE
 # this runs inside an interactive chat turn, so no long waits.
 _JINA_503_BACKOFF = [3, 8]
 
+# Markdown image syntax ``![alt](url)`` — stripped from Jina body text (the
+# images are surfaced separately via the data.images summary).
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
 
 def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
     """Fetch a page as clean markdown via the Jina Reader API.
@@ -395,7 +440,12 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
                     # Server-side equivalent of _strip_hidden_elements: drop
                     # invisible elements before extraction.
                     "X-Detach-Invisibles": "true",
-                    "X-Retain-Images": "none",
+                    # Populate data.images (a {name: url} summary) so image
+                    # discovery works on the Jina path too — the dominant path,
+                    # since many sites 400/421 our IP-pinned direct fetch. NOTE:
+                    # X-Retain-Images:none SUPPRESSES this summary, so it's gone;
+                    # inline image markdown is stripped from the text below.
+                    "X-With-Images-Summary": "true",
                     "X-Timeout": "25",
                 },
                 stream=True,
@@ -436,7 +486,9 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
 
     data = payload.get("data") or {}
     title = normalize_text(data.get("title") or "")
-    content = normalize_text(data.get("content") or "")
+    # Requesting the images summary means Jina keeps inline image markdown in the
+    # body; strip it so the text stays clean (the images live in data.images).
+    content = normalize_text(_MD_IMAGE_RE.sub("", data.get("content") or ""))
 
     if not content.strip():
         logger.info("web_fetch: Jina returned no extractable content for url=%s", url)
@@ -455,6 +507,7 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
         "content": content,
         "char_count": len(content),
         "source": "jina",
+        "images": _images_from_jina(data),
     }
 
 
@@ -525,6 +578,12 @@ _IMG_FILENAME_STEM_MAX = 40
 _IMG_ALT_MAX = 120
 # Class/id/role substrings that mark chrome/icon/tracking images to drop.
 _IMG_JUNK_RE = re.compile(r"logo|icon|avatar|sprite|thumb|badge|pixel", re.IGNORECASE)
+# URL-path patterns for non-editorial assets: CMS plugin/theme/core directories
+# and language-flag icons (e.g. WPML's /wp-content/plugins/.../res/flags/). These
+# are chrome the DOM-position filter can't catch on the Jina path (no DOM there).
+_JUNK_IMG_PATH_RE = re.compile(
+    r"/wp-content/(?:plugins|themes)/|/wp-includes/|/flags/", re.IGNORECASE
+)
 
 
 def _attr_text(value) -> str:
@@ -613,6 +672,10 @@ def _extract_image_candidates(soup: BeautifulSoup, base_url: str) -> list[dict]:
             continue
         if parsed.path.lower().endswith(".svg"):
             continue
+        # Junk by URL (logo/icon/sprite in the filename, or a CMS plugin/theme/
+        # flag asset dir) — kept chrome regions bring in header/footer logos.
+        if _IMG_JUNK_RE.search(parsed.path) or _JUNK_IMG_PATH_RE.search(parsed.path):
+            continue
 
         # Junk by class/id/role (logo, icon, sprite, thumbnail, tracking pixel).
         signal = " ".join(_attr_text(attrs.get(k)) for k in ("class", "id", "role"))
@@ -639,6 +702,49 @@ def _extract_image_candidates(soup: BeautifulSoup, base_url: str) -> list[dict]:
 
     scored.sort(key=lambda t: t[0], reverse=True)
     return [d for _, d in scored[:_WEB_IMAGE_MANIFEST_CAP]]
+
+
+def _images_from_jina(data: dict) -> list[dict]:
+    """Build image candidates from Jina Reader's ``data.images`` summary — a
+    ``{name: url}`` dict in DOM order.
+
+    Jina's names are usually generic (``"Image 1"``) so alt is left empty; URL
+    order is preserved (top-of-page first). Same URL-level filtering as the
+    direct path (skip data:/svg/logo-icon-sprite paths), deduped and capped.
+    """
+    from urllib.parse import unquote
+
+    raw = data.get("images")
+    if not isinstance(raw, dict):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for name, url in raw.items():
+        if not isinstance(url, str):
+            continue
+        u = url.strip()
+        if not u or u.startswith("data:"):
+            continue
+        parsed = urlparse(u)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if parsed.path.lower().endswith(".svg"):
+            continue
+        if _IMG_JUNK_RE.search(parsed.path) or _JUNK_IMG_PATH_RE.search(parsed.path):
+            continue
+        if u in seen:
+            continue
+        seen.add(u)
+        # Jina names look like "Image 1" or "Image 2: <real alt>". Drop the
+        # generic "Image N" prefix; keep any real alt that follows.
+        nm = str(name).strip()
+        m = re.match(r"image\s*\d+\s*[:\-–]?\s*", nm, re.IGNORECASE)
+        alt = normalize_text(nm[m.end():] if m else nm)[:_IMG_ALT_MAX]
+        filename = _truncate_filename(unquote(parsed.path.rsplit("/", 1)[-1]) or "image")
+        out.append({"url": u, "filename": filename, "alt": alt})
+        if len(out) >= _WEB_IMAGE_MANIFEST_CAP:
+            break
+    return out
 
 
 def _cache_result(cache, cache_key: str, result: dict) -> dict:
@@ -751,23 +857,34 @@ def _fetch_core(url: str, cache, context=None) -> dict:
         soup = BeautifulSoup(raw_html, "html.parser")
     except Exception:
         return {"error": "Failed to parse HTML", "url": url}
+
+    # Image candidates come from a SEPARATE, lighter clean that keeps semantic
+    # chrome (nav/header/aside) and aria-hidden figures — on homepage/portal
+    # layouts the content images live there. A distinct parse keeps the text
+    # path below byte-identical to before. base = final URL after redirects.
+    try:
+        image_soup = BeautifulSoup(raw_html, "html.parser")
+        _strip_for_images(image_soup)
+        images = _extract_image_candidates(image_soup, current_url)
+    except Exception:
+        logger.debug("web_fetch: image candidate extraction failed (non-fatal)")
+        images = []
+
     _strip_hidden_elements(soup)
     cleaned_html = str(soup)
 
     # --- Extract content as markdown ---
     title, text = _extract_content(cleaned_html, soup)
 
-    # --- Image candidates (from the chrome-stripped soup; base = final URL) ---
-    images = _extract_image_candidates(soup, current_url)
-
     # --- JS-rendered page detection: fall back to Jina ---
     if len(text) < _JS_RENDER_MAX_CONTENT and len(raw_html) > _JS_RENDER_MIN_HTML:
         logger.info("web_fetch: suspected JS-rendered page url=%s (html=%d, content=%d)", url, len(raw_html), len(text))
         jina = _fetch_via_jina(url, context, reason="js_rendered")
         if jina:
-            # Jina returns text only; carry over the images we extracted from the
-            # direct HTML so include_images still works when Jina wins the race.
-            jina.setdefault("images", images)
+            # Prefer Jina's own image summary (it rendered the page); fall back to
+            # the images we extracted from the direct HTML only if Jina found none.
+            if not jina.get("images"):
+                jina["images"] = images
             return _cache_result(cache, cache_key, jina)
 
     # Alt text is page-supplied, untrusted content — scan it alongside the body.

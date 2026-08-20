@@ -1154,7 +1154,10 @@ class JinaFallbackTests(TestCase):
         self.assertEqual(headers["Accept"], "application/json")
         self.assertEqual(headers["X-Return-Format"], "markdown")
         self.assertEqual(headers["X-Detach-Invisibles"], "true")
-        self.assertEqual(headers["X-Retain-Images"], "none")
+        # Request the images summary (data.images) so image discovery works on the
+        # Jina path; X-Retain-Images:none would suppress it, so it must be absent.
+        self.assertEqual(headers["X-With-Images-Summary"], "true")
+        self.assertNotIn("X-Retain-Images", headers)
         self.assertEqual(headers["Authorization"], "Bearer test-jina-key")
 
     @patch("llm.tools.web_fetch.requests.get")
