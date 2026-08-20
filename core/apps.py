@@ -17,6 +17,12 @@ class CoreConfig(AppConfig):
         from core import memtrace
         memtrace.maybe_start()
 
+        # Periodic malloc_trim: return freed glibc arenas to the OS so RSS recovers
+        # after transient peaks (long LLM streaming turns). Web (Linux) process only;
+        # disable with MALLOC_TRIM_INTERVAL=0. See core.malloc_trim.
+        from core import malloc_trim
+        malloc_trim.maybe_start()
+
         if not settings.DEBUG:
             return
         if "runserver" not in sys.argv:
