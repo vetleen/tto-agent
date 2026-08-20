@@ -14,3 +14,4 @@ class ChatConfig(AppConfig):
         import chat.task_tools  # noqa: F401 — register task tools on startup
         import chat.tool_loops  # noqa: F401 — register loop tools on startup
         import chat.image_tools  # noqa: F401 — register image generation tool on startup
+        import chat.web_image_tools  # noqa: F401 — register web_image_view tool on startup

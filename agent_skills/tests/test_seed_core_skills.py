@@ -53,7 +53,7 @@ class SeedCoreSkillsTest(TestCase):
         skill = self._get("web_research_tools")
         self.assertIsNotNone(skill)
         self.assertEqual(skill.audience, "main")
-        for tool in ("web_search", "web_fetch", "web_search_read"):
+        for tool in ("web_search", "web_fetch", "web_search_read", "web_image_view"):
             self.assertIn(tool, skill.tool_names)
 
 

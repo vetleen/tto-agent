@@ -605,6 +605,14 @@ class Asset(models.Model):
     sha256 = models.CharField(max_length=64, blank=True, default="", db_index=True)
     description = models.TextField(blank=True, default="")
     alt_text = models.CharField(max_length=1024, blank=True, default="")
+    # Provenance for assets whose bytes were copied from the web (e.g. an image
+    # the assistant viewed via web_image_view and then embedded). Blank for
+    # generated or document-extracted assets. Structured fields (rather than
+    # relying on the model to write attribution) so the source survives into any
+    # canvas/DOCX/PDF the image lands in. Not a URLField: these are external,
+    # already-validated URLs and we never want save() to reject a stored asset.
+    source_url = models.CharField(max_length=2048, blank=True, default="")
+    source_page_url = models.CharField(max_length=2048, blank=True, default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

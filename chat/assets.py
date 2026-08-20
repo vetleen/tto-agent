@@ -208,7 +208,8 @@ def store_canvas_image(
 
 
 def store_thread_image(
-    thread, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
+    thread, *, img_bytes, content_type, description="", alt_text="",
+    source_url="", source_page_url="", created_by=None, dedupe=True
 ):
     """Persist *img_bytes* as an Asset scoped to *thread*; return the asset.
 
@@ -217,8 +218,12 @@ def store_thread_image(
     the asset. The returned asset's id is the stable token target the model
     embeds in its reply.
 
+    ``source_url`` / ``source_page_url`` carry web provenance for images copied
+    from the open web (``web_image_view``); left blank for generated images.
+
     When *dedupe* is set, an existing thread asset with the same bytes (sha256)
-    is reused rather than storing a second copy.
+    is reused rather than storing a second copy (its provenance — set on first
+    store — is kept).
     """
     from django.core.files.base import ContentFile
 
@@ -238,6 +243,8 @@ def store_thread_image(
         sha256=sha,
         description=description or "",
         alt_text=(alt_text or "")[:1024],
+        source_url=(source_url or "")[:2048],
+        source_page_url=(source_page_url or "")[:2048],
         created_by=created_by,
     )
     asset.blob.save(f"{asset.id}.{_ext_for(ct)}", ContentFile(img_bytes), save=True)

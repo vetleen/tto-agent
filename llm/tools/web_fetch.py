@@ -59,6 +59,15 @@ class _ResponseTooLarge(Exception):
         self.message = message
         super().__init__(message)
 
+
+class _RedirectBlocked(Exception):
+    """Raised when a redirect Location uses a non-http(s) scheme."""
+
+    def __init__(self, message: str, url: str):
+        self.message = message
+        self.url = url
+        super().__init__(message)
+
 _NOISE_TAGS = [
     "script", "style", "nav", "footer", "header", "noscript", "iframe",
     "aside", "svg", "canvas", "object", "embed",
@@ -284,6 +293,43 @@ def _pinned_get(url: str, *, timeout: int, headers: dict, max_bytes: int) -> req
         session.close()
 
 
+def _pinned_get_following_redirects(
+    url: str, *, headers: dict, max_bytes: int, timeout: int = 15, max_redirects: int = 5
+) -> tuple[requests.Response, str]:
+    """Fetch ``url`` following up to ``max_redirects`` hops, returning
+    ``(response, final_url)``.
+
+    Each hop is independently DNS-resolved, SSRF-validated, and IP-pinned via
+    :func:`_pinned_get` (``allow_redirects=False``), and every body is streamed
+    under ``max_bytes``. Relative/schemeless ``Location`` headers are resolved
+    against the current URL (RFC 7231) and re-validated so
+    ``javascript:``/``ftp:``/``data:`` targets are rejected (``_RedirectBlocked``).
+    Shared by the page fetch (``_fetch_core``) and the image fetch
+    (``web_image_view``) so both get identical SSRF-safe redirect handling —
+    important for CDN image URLs, which redirect constantly.
+    """
+    current_url = url
+    response = _pinned_get(current_url, timeout=timeout, headers=headers, max_bytes=max_bytes)
+    redirect_count = 0
+    while response.is_redirect and redirect_count < max_redirects:
+        redirect_url = response.headers.get("Location", "")
+        if not redirect_url:
+            break
+        redirect_url = urljoin(current_url, redirect_url)
+        redirect_parsed = urlparse(redirect_url)
+        if redirect_parsed.scheme not in ("http", "https"):
+            response.close()
+            raise _RedirectBlocked(
+                f"Invalid redirect scheme: {redirect_parsed.scheme!r}. Only http/https allowed.",
+                redirect_url,
+            )
+        response.close()  # release the streamed socket before the next hop
+        current_url = redirect_url
+        response = _pinned_get(current_url, timeout=timeout, headers=headers, max_bytes=max_bytes)
+        redirect_count += 1
+    return response, current_url
+
+
 class WebFetchInput(ReasonBaseModel):
     url: str = Field(description="The URL of the web page to fetch.")
     max_chars: int = Field(
@@ -299,6 +345,15 @@ class WebFetchInput(ReasonBaseModel):
         description=(
             "Character offset to continue reading a long page (default 0). "
             "Use the start_index suggested in a previous truncated response."
+        ),
+    )
+    include_images: bool = Field(
+        default=False,
+        description=(
+            "Set true to also list the page's content images (with img-N handles) "
+            "so you can then view one with web_image_view. Leave false unless you "
+            "need to see or reuse an image. The list appears only on the first "
+            "page (start_index=0)."
         ),
     )
 
@@ -461,6 +516,131 @@ def _extract_content(cleaned_html: str, soup: BeautifulSoup) -> tuple[str, str]:
     return title, text
 
 
+# --- Image candidate extraction ----------------------------------------------
+
+# Cap on how many image candidates a single fetch surfaces in its manifest.
+_WEB_IMAGE_MANIFEST_CAP = 10
+# Truncation limits for the manifest line (filename stem / alt text).
+_IMG_FILENAME_STEM_MAX = 40
+_IMG_ALT_MAX = 120
+# Class/id/role substrings that mark chrome/icon/tracking images to drop.
+_IMG_JUNK_RE = re.compile(r"logo|icon|avatar|sprite|thumb|badge|pixel", re.IGNORECASE)
+
+
+def _attr_text(value) -> str:
+    """Flatten a bs4 attribute (str or multi-valued list) to a plain string."""
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(v) for v in value)
+    return str(value or "")
+
+
+def _int_attr(value) -> int | None:
+    """Parse a leading integer from an HTML width/height attr, or None.
+
+    Percentage values (``width="50%"``) are treated as unknown, not tiny."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if "%" in s:
+        return None
+    m = re.match(r"\s*(\d+)", s)
+    return int(m.group(1)) if m else None
+
+
+def _largest_srcset_url(srcset: str) -> str:
+    """Return the candidate URL with the largest width/density descriptor, or ""."""
+    best_url, best_weight = "", -1.0
+    for part in srcset.split(","):
+        bits = part.split()
+        if not bits:
+            continue
+        cand = bits[0].strip()
+        weight = 0.0
+        if len(bits) > 1:
+            m = re.match(r"([\d.]+)", bits[1].strip())
+            if m:
+                try:
+                    weight = float(m.group(1))
+                except ValueError:
+                    weight = 0.0
+        if cand and weight > best_weight:
+            best_url, best_weight = cand, weight
+    return best_url
+
+
+def _truncate_filename(name: str) -> str:
+    """Truncate a filename's stem to _IMG_FILENAME_STEM_MAX chars, keeping any
+    short extension (the extension is itself a signal)."""
+    name = (name or "").strip()
+    if len(name) <= _IMG_FILENAME_STEM_MAX:
+        return name
+    dot = name.rfind(".")
+    if 0 < dot and (len(name) - dot) <= 6:  # plausible short extension
+        return name[:dot][:_IMG_FILENAME_STEM_MAX] + "…" + name[dot:]
+    return name[:_IMG_FILENAME_STEM_MAX] + "…"
+
+
+def _extract_image_candidates(soup: BeautifulSoup, base_url: str) -> list[dict]:
+    """Return content-image candidates from a chrome-stripped soup.
+
+    Enumerates ``<img>`` in the cleaned DOM (header/footer/nav/aside already
+    decomposed by :func:`_strip_hidden_elements`), drops obvious
+    chrome/icons/pixels/SVG/data-URIs, scores figure- and alt-bearing images
+    higher, dedups by absolute URL, and caps the list. Biased toward recall — a
+    spurious entry costs one manifest line and the model is the final filter.
+    Each dict: ``{"url", "filename", "alt"}``.
+    """
+    from urllib.parse import unquote
+
+    seen: set[str] = set()
+    scored: list[tuple[int, dict]] = []
+    for img in soup.find_all("img"):
+        attrs = img.attrs if isinstance(img.attrs, dict) else {}
+
+        # Resolve source: prefer the largest srcset candidate, else src.
+        raw_src = ""
+        srcset = attrs.get("srcset")
+        if isinstance(srcset, str) and srcset.strip():
+            raw_src = _largest_srcset_url(srcset)
+        if not raw_src:
+            raw_src = str(attrs.get("src") or "").strip()
+        if not raw_src or raw_src.startswith("data:"):
+            continue
+
+        abs_url = urljoin(base_url, raw_src)
+        parsed = urlparse(abs_url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if parsed.path.lower().endswith(".svg"):
+            continue
+
+        # Junk by class/id/role (logo, icon, sprite, thumbnail, tracking pixel).
+        signal = " ".join(_attr_text(attrs.get(k)) for k in ("class", "id", "role"))
+        if _IMG_JUNK_RE.search(signal):
+            continue
+
+        # Tiny by declared dimensions (icons / 1x1 pixels).
+        w, h = _int_attr(attrs.get("width")), _int_attr(attrs.get("height"))
+        if w is not None and h is not None and w <= 64 and h <= 64:
+            continue
+
+        if abs_url in seen:
+            continue
+        seen.add(abs_url)
+
+        alt = normalize_text(str(attrs.get("alt") or "")).strip()[:_IMG_ALT_MAX]
+        score = 0
+        if img.find_parent("figure") is not None:
+            score += 2
+        if alt:
+            score += 1
+        filename = _truncate_filename(unquote(parsed.path.rsplit("/", 1)[-1]) or "image")
+        scored.append((score, {"url": abs_url, "filename": filename, "alt": alt}))
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [d for _, d in scored[:_WEB_IMAGE_MANIFEST_CAP]]
+
+
 def _cache_result(cache, cache_key: str, result: dict) -> dict:
     """Cache a successful fetch result dict (full content) and return it.
 
@@ -499,7 +679,9 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     # resolved exactly once per fetch and the validated IP is the one we
     # actually connect to (closes the DNS-rebinding gap).
 
-    cache_key = "web_fetch_v2:" + hashlib.sha256(url.encode()).hexdigest()
+    # v3: result dicts now carry an "images" candidate list; bump so pre-upgrade
+    # cached entries (without it) aren't served for include_images requests.
+    cache_key = "web_fetch_v3:" + hashlib.sha256(url.encode()).hexdigest()
     try:
         cached = cache.get(cache_key)
     except Exception:
@@ -517,33 +699,14 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     max_bytes = _max_response_bytes()
     current_url = url
     try:
-        # Each hop is resolved + SSRF-validated + IP-pinned independently
-        # (allow_redirects=False), and the body is streamed under a size cap.
-        response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
-
-        redirect_count = 0
-        while response.is_redirect and redirect_count < 5:
-            redirect_url = response.headers.get("Location", "")
-            if not redirect_url:
-                break
-            # Resolve relative/schemeless Locations against the current URL
-            # (RFC 7231 allows them and they're common), then re-validate the
-            # scheme so javascript:/ftp:/data: targets are still rejected.
-            # SSRF protection is unaffected: _pinned_get re-resolves and
-            # re-validates every hop independently.
-            redirect_url = urljoin(current_url, redirect_url)
-            redirect_parsed = urlparse(redirect_url)
-            if redirect_parsed.scheme not in ("http", "https"):
-                return {
-                    "error": f"Invalid redirect scheme: {redirect_parsed.scheme!r}. Only http/https allowed.",
-                    "url": redirect_url,
-                }
-            response.close()  # release the streamed socket before the next hop
-            current_url = redirect_url
-            response = _pinned_get(current_url, timeout=15, headers=headers, max_bytes=max_bytes)
-            redirect_count += 1
-
+        # Each hop is resolved + SSRF-validated + IP-pinned independently and the
+        # body is streamed under a size cap (see _pinned_get_following_redirects).
+        response, current_url = _pinned_get_following_redirects(
+            url, headers=headers, max_bytes=max_bytes, timeout=15
+        )
         response.raise_for_status()
+    except _RedirectBlocked as exc:
+        return {"error": exc.message, "url": exc.url}
     except _SSRFBlocked as exc:
         return {"error": exc.message, "url": current_url}
     except _ResponseTooLarge as exc:
@@ -594,14 +757,22 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     # --- Extract content as markdown ---
     title, text = _extract_content(cleaned_html, soup)
 
+    # --- Image candidates (from the chrome-stripped soup; base = final URL) ---
+    images = _extract_image_candidates(soup, current_url)
+
     # --- JS-rendered page detection: fall back to Jina ---
     if len(text) < _JS_RENDER_MAX_CONTENT and len(raw_html) > _JS_RENDER_MIN_HTML:
         logger.info("web_fetch: suspected JS-rendered page url=%s (html=%d, content=%d)", url, len(raw_html), len(text))
         jina = _fetch_via_jina(url, context, reason="js_rendered")
         if jina:
+            # Jina returns text only; carry over the images we extracted from the
+            # direct HTML so include_images still works when Jina wins the race.
+            jina.setdefault("images", images)
             return _cache_result(cache, cache_key, jina)
 
-    _run_web_scan(text, context)
+    # Alt text is page-supplied, untrusted content — scan it alongside the body.
+    alt_blob = "\n".join(img["alt"] for img in images if img.get("alt"))
+    _run_web_scan(text + (("\n" + alt_blob) if alt_blob else ""), context)
 
     result = {
         "url": url,
@@ -609,6 +780,7 @@ def _fetch_core(url: str, cache, context=None) -> dict:
         "content": text,
         "char_count": len(text),
         "source": "direct",
+        "images": images,
     }
     return _cache_result(cache, cache_key, result)
 
@@ -622,8 +794,47 @@ def _format_fetch_error(data: dict) -> str:
     return f"Error: {error}"
 
 
-def _format_fetch_result(data: dict, max_chars: int, start_index: int) -> str:
-    """Format a fetch result dict as markdown, sliced to the requested window."""
+def _build_image_manifest(images: list[dict], page_url: str, context) -> list[str]:
+    """Allocate run-monotonic handles for image candidates and return manifest
+    lines (containing NO URLs).
+
+    Returns ``[]`` when there are no candidates or no context to register handles
+    on. Handles are registered on ``context.web_image_manifest`` so
+    ``web_image_view`` can resolve them; they live only for this run.
+    """
+    if not images or context is None or not hasattr(context, "allocate_web_image_handle"):
+        return []
+    lines = [
+        "",
+        "--- Images on this page ---",
+        (
+            'To look at any of these, call web_image_view with the handle(s) '
+            '(e.g. web_image_view(handles=["img-1"])). Handles are valid only '
+            "this turn — don't show them to the user."
+        ),
+    ]
+    for img in images:
+        handle = context.allocate_web_image_handle({
+            "url": img["url"],
+            "page_url": page_url,
+            "filename": img.get("filename", ""),
+            "alt": img.get("alt", ""),
+        })
+        alt = img.get("alt") or ""
+        suffix = f' — "{alt}"' if alt else " — (no alt)"
+        lines.append(f'[{handle}] {img.get("filename", "image")}{suffix}')
+    return lines
+
+
+def _format_fetch_result(
+    data: dict, max_chars: int, start_index: int, image_manifest_lines: list[str] | None = None
+) -> str:
+    """Format a fetch result dict as markdown, sliced to the requested window.
+
+    ``image_manifest_lines`` (already allocated by the caller) are rendered
+    INSIDE the external-content wrapper — the manifest quotes page-supplied alt
+    text, which is untrusted and must stay within the trust boundary.
+    """
     from llm.tools._text_cleaning import (
         EXTERNAL_CONTENT_BEGIN,
         EXTERNAL_CONTENT_END,
@@ -665,6 +876,8 @@ def _format_fetch_result(data: dict, max_chars: int, start_index: int) -> str:
     lines.append(pagination)
     lines.append("")
     lines.append(window)
+    if image_manifest_lines:
+        lines.extend(image_manifest_lines)
     lines.append(EXTERNAL_CONTENT_END)
     return "\n".join(lines)
 
@@ -681,11 +894,16 @@ class WebFetchTool(ContextAwareTool):
         "Fetch a web page and extract its content as clean markdown. "
         "Use this to read the content of a specific URL, such as articles, "
         "documentation, PDFs, or other web pages. Long pages are returned "
-        "in chunks: pass the suggested start_index to keep reading."
+        "in chunks: pass the suggested start_index to keep reading. "
+        "Pass include_images=true to also list the page's content images so you "
+        "can view one with web_image_view."
     )
     args_schema: type[BaseModel] = WebFetchInput
 
-    def _run(self, url: str, max_chars: int = 10_000, start_index: int = 0, **kwargs) -> str:
+    def _run(
+        self, url: str, max_chars: int = 10_000, start_index: int = 0,
+        include_images: bool = False, **kwargs,
+    ) -> str:
         from django.core.cache import cache
 
         max_chars = max(1, min(max_chars, _ABSOLUTE_MAX_CHARS))
@@ -694,7 +912,18 @@ class WebFetchTool(ContextAwareTool):
         data = _fetch_core(url, cache, context=self.context)
         if "error" in data:
             return _format_fetch_error(data)
-        return _format_fetch_result(data, max_chars=max_chars, start_index=start_index)
+
+        # Allocate image handles only on the first page (start_index==0) so
+        # paginated re-reads of the same page don't mint duplicate handles.
+        manifest_lines = None
+        if include_images and start_index == 0:
+            manifest_lines = _build_image_manifest(
+                data.get("images") or [], data.get("url", url), self.context
+            )
+        return _format_fetch_result(
+            data, max_chars=max_chars, start_index=start_index,
+            image_manifest_lines=manifest_lines,
+        )
 
 
 __all__ = ["WebFetchTool"]

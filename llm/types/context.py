@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
+
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class RunContext(BaseModel):
@@ -37,6 +39,26 @@ class RunContext(BaseModel):
     # prefs.allowed_skills so chat_skill_attach can resolve a newly-attached
     # skill's tools without re-deriving org tool-toggle filtering.
     skill_tool_map: dict = Field(default_factory=dict)
+    # Web image candidates surfaced by web_fetch(include_images=True), keyed by a
+    # run-monotonic handle ("img-1", "img-2", …). web_image_view resolves a
+    # handle to its source URL. Each value: {"url", "page_url", "filename", "alt"}.
+    # Per-run only (a fresh RunContext per turn/agent) — handles from one run are
+    # meaningless in another, so a sub-agent must return the durable [[image:…]]
+    # token it mints, never an img-N handle.
+    web_image_manifest: dict = Field(default_factory=dict)
+    # Handles are allocated under a lock because tools run concurrently
+    # (ThreadPoolExecutor): a plain len()+1 would race and collide.
+    _web_image_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _web_image_next: int = PrivateAttr(default=1)
+
+    def allocate_web_image_handle(self, entry: dict) -> str:
+        """Register a web image candidate under a fresh monotonic handle and
+        return it (e.g. ``"img-7"``). Thread-safe."""
+        with self._web_image_lock:
+            handle = f"img-{self._web_image_next}"
+            self._web_image_next += 1
+            self.web_image_manifest[handle] = entry
+            return handle
 
     def remaining_seconds(self) -> Optional[float]:
         """Seconds left before this run's deadline, or None if no deadline is set.
