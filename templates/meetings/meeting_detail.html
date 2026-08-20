@@ -61,8 +61,8 @@
   <div id="meeting-actions" class="flex flex-wrap items-center gap-3 mb-8">
     <button type="button" id="transcribe-btn" data-disable-while-busy
             {% if not transcription_model_selected_supports_live %}disabled title="Live transcription is not available for this model. Upload an audio file instead."{% endif %}
-            class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
-      <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+            class="inline-flex items-center gap-2 wf-record-btn focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+      <svg class="w-4 h-4 wf-rec-dot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
       <span id="transcribe-btn-label">{% if meeting.transcript %}Continue transcription{% else %}Start transcription{% endif %}</span>
     </button>
 
@@ -124,8 +124,8 @@
         <span id="transcribe-error-banner-label" class="text-sm text-fg-danger"></span>
       </div>
       <button type="button" id="transcribe-error-banner-resume"
-              class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
-        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+              class="inline-flex items-center gap-2 wf-record-btn focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
+        <svg class="w-4 h-4 wf-rec-dot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
         Resume transcription
       </button>
     </div>
@@ -182,7 +182,7 @@
     <p class="mt-2 text-xs text-body">Audio is not stored — only the resulting text. You can share this with participants: <em>"This meeting is being transcribed by an AI assistant. Audio is not retained."</em></p>
 
     <div class="mt-4 flex justify-center">
-      <button type="button" id="stop-btn" class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+      <button type="button" id="stop-btn" class="inline-flex items-center gap-2 wf-record-btn focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         <svg id="stop-btn-icon" class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
         <svg id="stop-btn-spinner" class="hidden w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         <span id="stop-btn-label">Stop transcription</span>
@@ -367,7 +367,7 @@
   {% if user_data_rooms %}
   <div id="save-to-dataroom-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
     <div class="relative w-full max-w-md max-h-full">
-      <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+      <div class="relative bg-neutral-primary-medium border border-default rounded-base shadow-lg">
         <div class="px-6 py-4 border-b border-default">
           <h3 class="text-lg font-semibold text-heading">Save raw transcript to data room</h3>
         </div>
@@ -450,14 +450,14 @@
     <button type="button" id="transcribe-btn-bottom" data-disable-while-busy
             style="{% if meeting.status == "live_transcribing" %}display:none{% endif %}"
             {% if not transcription_model_selected_supports_live %}disabled{% endif %}
-            class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
-      <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+            class="inline-flex items-center gap-2 wf-record-btn focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+      <svg class="w-4 h-4 wf-rec-dot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
       <span id="transcribe-btn-bottom-label">{% if meeting.transcript %}Continue transcription{% else %}Start transcription{% endif %}</span>
     </button>
     <div class="flex justify-center">
       <button type="button" id="stop-btn-bottom"
               style="display:none"
-              class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+              class="inline-flex items-center gap-2 wf-record-btn focus:ring-4 focus:ring-neutral-tertiary font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         <svg id="stop-btn-bottom-icon" class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
         <svg id="stop-btn-bottom-spinner" class="hidden w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         <span id="stop-btn-bottom-label">Stop transcription</span>

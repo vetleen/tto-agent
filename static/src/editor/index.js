@@ -632,7 +632,7 @@ function create(parent, opts) {
     toolbarEl = opts.toolbarTarget;
   } else if (opts.toolbar) {
     frameEl = document.createElement("div");
-    frameEl.className = "border-t-[3px] border-t-blue-500"; // recognizable accent
+    frameEl.className = "border-t-[3px] border-t-brand"; // brand accent (copper in dark, forest in light)
     frameEl.style.cssText =
       "display:flex;flex-direction:column;overflow:hidden;" +
       (opts.fillParent ? "height:100%;width:100%;" : "");

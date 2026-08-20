@@ -19,7 +19,7 @@
 
 {# Sidebar — directly below navbar (4rem) #}
 <aside id="chat-sidebar" class="fixed top-16 left-0 z-40 w-64 bottom-0 transition-transform -translate-x-full sm:translate-x-0" aria-label="Chat sidebar">
-  <div class="h-full flex flex-col bg-neutral-primary border-e border-default">
+  <div class="h-full flex flex-col bg-neutral-primary dark:bg-neutral-secondary-soft border-e border-default">
     {# Top: New chat + search (fixed) #}
     <div class="px-3.5 pt-3.5 pb-2 flex flex-col gap-2.5 shrink-0">
       <a href="{% url 'chat_home' %}" class="aside__new">
@@ -235,7 +235,7 @@
             </svg>
             <span class="sr-only">Connecting...</span>
           </div>
-          <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-paper-400 dark:bg-paper-500"></span>
+          <span id="connection-indicator" class="flex w-2.5 h-2.5 rounded-full border-2 border-buffer bg-paper-400 dark:bg-gray"></span>
           <span id="connection-text" class="text-xs text-body">Connecting...</span>
           <button type="button" id="reconnect-btn" class="hidden inline-flex items-center gap-1.5 bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-xs px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-brand">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992V4.356m0 4.992l-3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99h-4.99M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7"/></svg>
@@ -281,7 +281,7 @@
                   <svg class="w-4 h-4 shrink-0 text-body-subtle peer-checked:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5" stroke-width="2"/><circle cx="8" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg>
                   <svg class="w-4 h-4 shrink-0 text-fg-success hidden peer-checked:inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5" stroke-width="2"/><circle cx="16" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg>
                   <span class="flex-1 text-left">Let {{ assistant_name }} attach skills</span>
-                  <span class="relative inline-block w-9 h-5 shrink-0 bg-neutral-quaternary-medium rounded-full peer-checked:bg-fg-success transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:shadow-sm after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></span>
+                  <span class="relative inline-block w-9 h-5 shrink-0 bg-neutral-quaternary-medium rounded-full peer-checked:bg-fg-success transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:peer-checked:after:bg-on-brand after:shadow-sm after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></span>
                 </label>
               </div>
             </div>
@@ -455,9 +455,19 @@
   @keyframes wfm-pop { from { transform: translateY(8px) scale(0.99); } to { transform: none; } }
   @media (prefers-reduced-motion: reduce) { .wfm-modal { animation: none; } }
   .wfm-row:hover { background: var(--color-neutral-secondary-soft); }
-  .wfm-row.is-selected, .wfm-row.is-selected:hover { background: var(--color-brand-softer); border-left-color: var(--color-copper-500); }
-  .wfm-list::-webkit-scrollbar { width: 10px; }
-  .wfm-list::-webkit-scrollbar-thumb { background: var(--color-paper-300); border-radius: 999px; border: 3px solid var(--color-neutral-primary-soft); }
+  /* In dark the panel is a raised surface, so row hover steps UP (lighter), not down. */
+  .dark .wfm-row:hover { background: var(--color-neutral-primary-strong); }
+  /* Suppress the UA focus box (light/white under color-scheme:dark); keyboard nav gets a copper ring. */
+  .wfm-row:focus { outline: none; }
+  .wfm-row:focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
+  /* Selected: copper wash + a solid copper left edge, in both themes. */
+  .wfm-row.is-selected, .wfm-row.is-selected:hover { background: var(--color-accent-soft); border-left-color: var(--color-accent); }
+  /* Modal scrim: forest dim in light, a deep 86% well in dark so the raised panel reads. */
+  .wf-scrim { background: radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55)); }
+  .dark .wf-scrim { background: radial-gradient(120% 120% at 50% 0%, rgba(6,21,14,0.72), rgba(3,10,6,0.86)); }
+  /* Light: this list keeps its custom paper scrollbar. Dark: the global .dark ::-webkit-scrollbar rules in input.css take over. */
+  html:not(.dark) .wfm-list::-webkit-scrollbar { width: 10px; }
+  html:not(.dark) .wfm-list::-webkit-scrollbar-thumb { background: var(--color-paper-300); border-radius: 999px; border: 3px solid var(--color-neutral-primary-soft); }
   .wfm-search:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
   .wfm-btn-primary:not(:disabled):hover { background: var(--color-brand-strong); }
   .wfm-btn-primary:disabled { opacity: .48; cursor: default; }
@@ -466,8 +476,8 @@
 </style>
 
 {# Data room attach modal #}
-<div id="attach-data-room-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto" style="background:radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55));">
-  <div class="wfm-modal" style="position:relative;width:516px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+<div id="attach-data-room-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto wf-scrim">
+  <div class="wfm-modal" style="position:relative;width:516px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
     {# Header #}
     <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
       <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Attach data room</h2>
@@ -501,7 +511,7 @@
       <li id="dr-modal-noresults" style="display:none;font-size:13px;color:var(--color-body-subtle);padding:10px 12px;">No data rooms match your search.</li>
     </ul>
     {# Footer #}
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);margin-top:8px;">
+    <div class="wf-soft-panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);margin-top:8px;">
       <span style="font-size:12px;color:var(--color-body-subtle);">Hold <span style="font-family:var(--font-mono);font-size:11px;background:var(--color-neutral-secondary-soft);border:1px solid var(--color-default);border-radius:4px;padding:1px 5px;">Shift</span> to attach multiple · <span id="dr-modal-count">none selected</span></span>
       <div style="display:flex;gap:10px;">
         <button type="button" class="wfm-btn-ghost dr-modal-cancel" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
@@ -518,8 +528,8 @@
 </div>
 
 {# Skill selection modal #}
-<div id="skill-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto" style="background:radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55));">
-  <div class="wfm-modal" style="position:relative;width:516px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+<div id="skill-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto wf-scrim">
+  <div class="wfm-modal" style="position:relative;width:516px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
     {# Header #}
     <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
       <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Use skills</h2>
@@ -538,7 +548,7 @@
     </ul>
     <p id="skill-modal-empty" class="hidden" style="font-size:13px;color:var(--color-body);padding:10px 22px;">No skills available.</p>
     {# Footer #}
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
+    <div class="wf-soft-panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);">
       <span id="skill-modal-status" style="font-size:12px;color:var(--color-body-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px;">Select up to 5 skills to use in this thread</span>
       <div style="display:flex;gap:10px;">
         <button type="button" class="wfm-btn-ghost skill-modal-cancel" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
@@ -632,7 +642,7 @@
     --wf-green-bg: var(--color-success-medium);
     --wf-green-fg: var(--color-success);
     --wf-radius: var(--radius);
-    --wf-shadow: 0 1px 2px rgba(8, 28, 18, .06);
+    --wf-shadow: var(--shadow-xs);
   }
 
   /* --- Sidebar --- */
@@ -687,6 +697,7 @@
   /* --- Composer --- */
   .composer-box { border: 1px solid var(--wf-border-strong); border-radius: 14px; background: var(--wf-card); box-shadow: var(--wf-shadow); padding: 11px 11px 9px; display: flex; flex-direction: column; gap: 9px; }
   .composer-box:focus-within { box-shadow: var(--wf-shadow), 0 0 0 3px rgba(30, 86, 56, .18); }
+  .dark .composer-box:focus-within { box-shadow: var(--wf-shadow), 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
   .composer-box__foot { display: flex; align-items: center; gap: 8px; }
   .wf-iconbtn { width: 32px; height: 32px; border-radius: var(--wf-radius); border: 1px solid transparent; background: transparent; color: var(--wf-muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
   .wf-iconbtn:hover { background: var(--wf-sunken); color: var(--wf-heading); }
@@ -1772,10 +1783,10 @@
       btn.setAttribute('data-skill-id', s.id);
       btn.setAttribute('data-skill-name', s.name);
       if (s.description) btn.title = s.description;
-      var tileBase = 'width:30px;height:30px;border-radius:5px;background:var(--color-paper-50);border:1px solid var(--color-default-subtle);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
+      var tileBase = 'width:30px;height:30px;border-radius:5px;border:1px solid var(--color-default-subtle);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
       var iconHtml = s.emoji
-        ? '<span style="' + tileBase + 'font-size:16px;line-height:1;">' + escapeHtml(s.emoji) + '</span>'
-        : '<span style="' + tileBase + 'color:var(--color-fg-brand);"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></span>';
+        ? '<span class="wf-soft-panel" style="' + tileBase + 'font-size:16px;line-height:1;">' + escapeHtml(s.emoji) + '</span>'
+        : '<span class="wf-soft-panel" style="' + tileBase + 'color:var(--color-fg-brand);"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></span>';
       btn.innerHTML =
         '<span style="display:flex;align-items:center;gap:11px;min-width:0;">' + iconHtml +
           '<span style="font-size:14px;color:var(--color-heading);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(s.name) + '</span>' +

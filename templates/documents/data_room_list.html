@@ -127,7 +127,7 @@
   .wf-drclose:hover { background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
 </style>
 <div id="create-dr-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
-  <div class="wf-drmodal" style="position:relative;width:452px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+  <div class="wf-drmodal" style="position:relative;width:452px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
     {# Header #}
     <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
       <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">New data room</h2>
@@ -149,7 +149,7 @@
         </div>
       </div>
       {# Footer #}
-      <div style="display:flex;align-items:center;gap:12px;padding:16px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
+      <div class="wf-soft-panel" style="display:flex;align-items:center;gap:12px;padding:16px 22px;border-top:1px solid var(--color-default-subtle);">
         <button type="submit" id="create-dr-submit" disabled style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
           Create data room
@@ -162,7 +162,7 @@
 <button type="button" id="rename-dr-modal-trigger" class="hidden" data-modal-target="rename-dr-modal" data-modal-show="rename-dr-modal" aria-label="Open rename modal"></button>
 <div id="rename-dr-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
   <div class="relative w-full max-w-md max-h-full">
-    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+    <div class="relative bg-neutral-primary-medium border border-default rounded-base shadow-lg">
       <div class="px-6 py-4 border-b border-default">
         <h3 class="text-lg font-semibold text-heading">Rename data room</h3>
       </div>
@@ -191,7 +191,7 @@
 <!-- Delete confirmation modal -->
 <div id="delete-dr-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
   <div class="relative w-full max-w-lg max-h-full">
-    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+    <div class="relative bg-neutral-primary-medium border border-default rounded-base shadow-lg">
       <div class="px-6 py-4 border-b border-default">
         <h3 class="text-lg font-semibold text-heading">Delete data room</h3>
       </div>

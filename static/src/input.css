@@ -257,9 +257,9 @@
    ============================================================ */
 .dark {
   /* ---- Text ------------------------------------------------- */
-  --color-body:             #C4D6CB;
-  --color-body-subtle:      #8AA395;
-  --color-heading:          #EFF5F1;
+  --color-body:             #BCCDC1;
+  --color-body-subtle:      #8FA697;
+  --color-heading:          #EAF2EC;
   --color-fg-brand-subtle:  #D29C63;
   --color-fg-brand:         #E2BC93;
   --color-fg-brand-strong:  #EDD4B7;
@@ -270,40 +270,46 @@
   --color-fg-warning-subtle: #E0AE5A;
   --color-fg-warning:        #E0AE5A;
 
-  /* ---- Surfaces --------------------------------------------- */
-  --color-neutral-primary-soft:       #123020;
-  --color-neutral-primary:            #0E2719;
-  --color-neutral-primary-medium:     #123020;
-  --color-neutral-primary-strong:     #16402A;
-  --color-neutral-secondary-soft:     #123020;
-  --color-neutral-secondary:          #0E2719;
-  --color-neutral-secondary-medium:   #16402A;
-  --color-neutral-secondary-strong:   #1C4C32;
-  --color-neutral-secondary-strongest:#235139;
-  --color-neutral-tertiary-soft:      #16402A;
-  --color-neutral-tertiary:           #16402A;
-  --color-neutral-tertiary-medium:    #1C4C32;
-  --color-neutral-quaternary:         #1C4C32;
-  --color-neutral-quaternary-medium:  #235139;
+  /* ---- Surfaces — 5-step ramp, chroma falling with value ----
+     page #071A10 · rail/well #0A2014 · card #0F2719 ·
+     raised #14311F · hover #1A3A27. Depth reads from LIGHT
+     stepping up, not from stacking black. */
+  --color-neutral-primary-soft:       #0F2719;   /* card    (S2) */
+  --color-neutral-primary:            #071A10;   /* page    (S0) */
+  --color-neutral-primary-medium:     #14311F;   /* raised  (S3) */
+  --color-neutral-primary-strong:     #1A3A27;   /* hover   (S4) */
+  --color-neutral-secondary-soft:     #0A2014;   /* rail/well (S1) */
+  --color-neutral-secondary:          #0A2014;   /* rail/well (S1) */
+  --color-neutral-secondary-medium:   #0F2719;   /* S2 */
+  --color-neutral-secondary-strong:   #14311F;   /* S3 */
+  --color-neutral-secondary-strongest:#1A3A27;   /* S4 */
+  --color-neutral-tertiary-soft:      #0F2719;   /* S2 */
+  --color-neutral-tertiary:           #14311F;   /* raised  (S3) */
+  --color-neutral-tertiary-medium:    #1A3A27;   /* hover   (S4) */
+  --color-neutral-quaternary:         #1A3A27;   /* hover   (S4) */
+  --color-neutral-quaternary-medium:  #1A3A27;   /* S4 (cap) */
   --color-gray:                       #5E7567;
 
-  /* ---- Brand fills → COPPER --------------------------------- */
-  --color-brand-softer:  #2A2014;
-  --color-brand-soft:    #3A2A18;
-  --color-brand:         #BE8242;
+  /* ---- Brand fills → COPPER ---------------------------------
+     Copper is the primary FILL and accent — never a border
+     default. brand-subtle therefore resolves to a green
+     hairline (was copper #A66E34, which stained every input). */
+  --color-brand-softer:  rgba(200, 140, 70, 0.11);
+  --color-brand-soft:    rgba(200, 140, 70, 0.16);
+  --color-brand:         #C88B45;
   --color-brand-medium:  #A66E34;
-  --color-brand-strong:  #D29C63;
-  --color-brand-subtle:  #A66E34;
-  --color-brand-light:   #D29C63;
+  --color-brand-strong:  #D8A468;
+  --color-brand-subtle:  rgba(198, 229, 209, 0.16);
+  --color-brand-light:   #D8A468;
 
   /* ---- Accent role (dark) ----------------------------------- */
-  --color-accent:         #D29C63;
+  --color-accent:         #C88B45;
   --color-accent-hover:   #E2BC93;
   --color-accent-active:  #BE8242;
-  --color-accent-soft:    #2A2014;
-  --color-accent-subtle:  #3A2A18;
-  --color-fg-accent:      #D29C63;
-  --color-on-brand:       #06150E;
+  --color-accent-soft:    rgba(200, 140, 70, 0.11);
+  --color-accent-subtle:  rgba(200, 140, 70, 0.16);
+  --color-fg-accent:      #DCA972;
+  --color-on-brand:       #0A1C12;
 
   /* ---- Status fills ----------------------------------------- */
   --color-success-soft:    #112B1D;
@@ -322,46 +328,93 @@
   --color-warning-strong:  #C98A2E;
   --color-warning-subtle:  #4A3C1C;
 
-  /* ---- Borders ---------------------------------------------- */
-  --color-buffer:          #0E2719;
-  --color-buffer-medium:   #123020;
-  --color-buffer-strong:   #16402A;
-  --color-muted:           rgba(255, 255, 255, 0.04);
-  --color-light-subtle:    rgba(255, 255, 255, 0.06);
-  --color-light:           rgba(255, 255, 255, 0.06);
-  --color-light-medium:    rgba(255, 255, 255, 0.10);
-  --color-default-subtle:  rgba(255, 255, 255, 0.06);
-  --color-default:         rgba(255, 255, 255, 0.12);
-  --color-default-medium:  rgba(255, 255, 255, 0.16);
-  --color-default-strong:  rgba(255, 255, 255, 0.22);
+  /* ---- Borders — hairlines carry a trace of green (#C6E5D1),
+     not pure white, so rules belong to the palette ----------- */
+  --color-buffer:          #071A10;
+  --color-buffer-medium:   #0A2014;
+  --color-buffer-strong:   #0F2719;
+  --color-muted:           rgba(198, 229, 209, 0.05);
+  --color-light-subtle:    rgba(198, 229, 209, 0.08);
+  --color-light:           rgba(198, 229, 209, 0.08);
+  --color-light-medium:    rgba(198, 229, 209, 0.12);
+  --color-default-subtle:  rgba(198, 229, 209, 0.08);
+  --color-default:         rgba(198, 229, 209, 0.13);
+  --color-default-medium:  rgba(198, 229, 209, 0.16);
+  --color-default-strong:  rgba(198, 229, 209, 0.20);
 
   /* ---- Misc ------------------------------------------------- */
-  --color-dark-soft:       #16402A;
-  --color-dark:            #0E2719;
-  --color-dark-strong:     #081C12;
-  --color-dark-subtle:     #123020;
-  --color-dark-backdrop:   rgba(3, 11, 7, 0.6);
-  --color-disabled:        #16402A;
-  --color-fg-disabled:     #5E7567;
+  --color-dark-soft:       #14311F;
+  --color-dark:            #0A2014;
+  --color-dark-strong:     #071A10;
+  --color-dark-subtle:     #0F2719;
+  --color-dark-backdrop:   rgba(3, 10, 6, 0.86);
+  --color-disabled:        #14311F;
+  --color-fg-disabled:     #6C8478;
   --color-orange:          #C98A2E;
   --color-shiki-fg-brand:         #D29C63;
   --color-shiki-fg-brand-subtle:  #E2BC93;
 
-  /* ---- Shadows — deeper/near-black so elevation reads ------- */
-  --shadow-2xs: 0 1px 1px rgba(0, 0, 0, 0.40);
-  --shadow-xs:  0 1px 2px rgba(0, 0, 0, 0.40);
-  --shadow-sm:  0 1px 3px rgba(0, 0, 0, 0.50), 0 1px 2px rgba(0, 0, 0, 0.40);
-  --shadow-md:  0 4px 12px rgba(0, 0, 0, 0.50), 0 2px 4px rgba(0, 0, 0, 0.40);
-  --shadow-lg:  0 14px 34px rgba(0, 0, 0, 0.55), 0 5px 10px rgba(0, 0, 0, 0.40);
-  --shadow-xl:  0 28px 60px rgba(0, 0, 0, 0.60), 0 10px 18px rgba(0, 0, 0, 0.45);
-  --shadow-2xl: 0 28px 60px rgba(0, 0, 0, 0.65);
-  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  /* ---- Shadows — light on top, black underneath. A 1px top
+     highlight + a deep drop; forest-tinted shadows are
+     invisible on a dark ground. --------------------------- */
+  --shadow-2xs: inset 0 1px 0 rgba(214, 240, 222, 0.05), 0 1px 1px rgba(0, 0, 0, 0.40);
+  --shadow-xs:  inset 0 1px 0 rgba(214, 240, 222, 0.05), 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-sm:  inset 0 1px 0 rgba(214, 240, 222, 0.05), 0 2px 6px rgba(0, 0, 0, 0.45);
+  --shadow-md:  inset 0 1px 0 rgba(214, 240, 222, 0.06), 0 8px 22px rgba(0, 0, 0, 0.50);
+  --shadow-lg:  inset 0 1px 0 rgba(214, 240, 222, 0.06), 0 18px 44px rgba(0, 0, 0, 0.55);
+  --shadow-xl:  inset 0 1px 0 rgba(214, 240, 222, 0.06), 0 24px 56px rgba(0, 0, 0, 0.62);
+  --shadow-2xl: inset 0 1px 0 rgba(214, 240, 222, 0.06), 0 28px 64px rgba(0, 0, 0, 0.66);
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.30);
 }
 
 /* ============================================================
    BASE LAYER — element defaults + brand helper classes
    ============================================================ */
 @layer base {
+  /* ============================================================
+     Native chrome — DARK ONLY. Everything below is scoped to
+     .dark so the light theme renders exactly as it did before.
+     color-scheme is the one exception: it is declared explicitly
+     per theme (light stays light even under an OS dark setting),
+     and it drives the UA's own painting of scrollbars, carets,
+     native selects, number spinners and date pickers.
+     ============================================================ */
+  :root { color-scheme: light; }
+  .dark { color-scheme: dark; }
+
+  /* Scrollbars — thin, of-the-palette, transparent track (dark only). */
+  .dark * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-default-strong) transparent;
+  }
+  .dark ::-webkit-scrollbar { width: 10px; height: 10px; }
+  .dark ::-webkit-scrollbar-track { background: transparent; }
+  .dark ::-webkit-scrollbar-thumb {
+    background: var(--color-default-medium);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  .dark ::-webkit-scrollbar-thumb:hover { background: var(--color-default-strong); }
+
+  /* Autofill — Chrome paints its own white layer over dark fields;
+     fill to match the dark well. Light keeps the UA default. */
+  .dark input:-webkit-autofill,
+  .dark input:-webkit-autofill:hover,
+  .dark input:-webkit-autofill:focus,
+  .dark select:-webkit-autofill,
+  .dark textarea:-webkit-autofill {
+    -webkit-text-fill-color: var(--color-heading);
+    -webkit-box-shadow: inset 0 0 0 100px var(--color-neutral-secondary);
+    caret-color: var(--color-fg-accent);
+  }
+
+  /* Links carry the accent in dark (no UA blue/purple fallback).
+     Light link colors are left untouched. */
+  .dark a { color: var(--color-fg-accent); }
+  .dark a:hover { color: var(--color-brand-strong); }
+  .dark a:visited { color: var(--color-fg-accent); }
+
   body {
     font-family: var(--font-body);
     -webkit-font-smoothing: antialiased;
@@ -382,7 +435,7 @@
   }
 
   ::selection { background: #F4E6D5; color: #0B2418; }
-  .dark ::selection { background: #8A5A2B; color: #EFF5F1; }
+  .dark ::selection { background: rgba(200, 140, 70, 0.30); color: #EAF2EC; }
 
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]) {
@@ -409,11 +462,25 @@
      Owns background, hairline, inset shadow and focus; templates keep only
      layout/typography utilities (w-full, px-*, text-*, rounded-*, placeholder:*). */
   .wf-input {
-    background: var(--color-neutral-primary-soft);   /* #FFFFFF light · #123020 dark */
+    background: var(--color-neutral-primary-soft);   /* #FFFFFF light · dark overridden below */
     border: 1px solid var(--color-forest-300);        /* forest-tinted hairline */
     box-shadow: var(--shadow-inset);
   }
-  .dark .wf-input { border-color: var(--color-default-medium); }  /* tame the mint hairline on dark */
+  /* In dark the field reads as a WELL, not a white cutout: drop
+     to the rail surface and keep a green hairline (copper is
+     reserved for focus). Light is unchanged. */
+  .dark .wf-input {
+    background: var(--color-neutral-secondary);
+    border-color: var(--color-default-medium);
+  }
+  .dark .wf-input::placeholder { color: var(--color-fg-disabled); }
+
+  /* A faint neutral surface that must flip: warm paper in light (as
+     before), a faintly raised card in dark. Theme-explicit so the
+     light appearance is unchanged and no paper token leaks in dark.
+     Used for panel/modal footers and small icon tiles. */
+  .wf-soft-panel { background: var(--color-paper-50); }
+  .dark .wf-soft-panel { background: var(--color-neutral-primary-soft); }
   .wf-input:focus,
   .wf-input:focus-visible {
     outline: none;
@@ -495,4 +562,32 @@
     .wf-ai-icon svg,
     .wf-ai-spinner { animation: none; }
   }
+
+  /* Recording / transcription controls read as a live STATE, not a
+     destructive action — a quiet danger-tinted surface with a
+     breathing dot, not a solid red fill (which becomes a pink pill
+     in dark and out-shouts the primary button beside it). */
+  .wf-record-btn {
+    color: var(--color-fg-danger);
+    background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-fg-danger) 30%, transparent);
+    box-shadow: none;
+  }
+  .wf-record-btn:hover { background: color-mix(in srgb, var(--color-danger) 24%, transparent); }
+  .wf-record-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .wf-record-btn .wf-rec-dot { animation: wf-rec 1.6s ease-in-out infinite; }
+  @keyframes wf-rec { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) {
+    .wf-record-btn .wf-rec-dot { animation: none; }
+  }
 }
+
+/* ============================================================
+   Flowbite modal backdrops (unlayered so it beats the utility).
+   The configured backdrop class `bg-dark-backdrop/70` applies a
+   70% opacity ON TOP of the already-translucent --color-dark-backdrop
+   token (~0.86α in dark), landing at ~60% — lighter than the custom
+   modal scrims. Deepen to the token's full value in dark so every
+   dialog dims the page to the same depth. Light is left untouched.
+   ============================================================ */
+.dark [class~="bg-dark-backdrop/70"] { background-color: var(--color-dark-backdrop); }

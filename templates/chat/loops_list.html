@@ -97,7 +97,7 @@
 <div id="loop-modal" class="fixed inset-0 z-50 hidden" style="overflow-y:auto;">
   <div data-loop-scrim style="position:absolute;inset:0;background:radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55));"></div>
   <div data-loop-overlay style="position:relative;min-height:100%;display:flex;align-items:flex-start;justify-content:center;padding:48px 16px;">
-    <section class="wf-loop-modal" style="position:relative;width:484px;max-width:100%;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+    <section class="wf-loop-modal" style="position:relative;width:484px;max-width:100%;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
       <form id="loop-form" data-loop-id="" data-restart="">
 
         {# Header #}
@@ -217,7 +217,7 @@
         </div>
 
         {# Footer #}
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
+        <div class="wf-soft-panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px;border-top:1px solid var(--color-default-subtle);">
           <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;">
             <button type="submit" id="loop-submit" style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;white-space:nowrap;">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>

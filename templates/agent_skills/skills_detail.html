@@ -37,7 +37,7 @@
                  {% if not editable %}readonly{% endif %}
          class="wf-input text-heading text-lg font-semibold rounded-base block w-full px-3 py-2 {% if not editable %}cursor-not-allowed{% endif %}">
           <p class="mt-2 text-xs text-body flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span class="wf-mono inline-block px-2 py-0.5 rounded-base bg-neutral-secondary-soft border border-default text-body">{{ level_label }}</span>
+            <span class="wf-mono inline-block px-2 py-0.5 rounded-full border border-accent-subtle text-fg-accent">{{ level_label }}</span>
             {% if editable and skill.level == "user" %}
             <span class="inline-flex items-center gap-1">slug:
               <input type="text" name="slug" id="skill-slug" value="{{ skill.slug }}" maxlength="64"
@@ -127,7 +127,7 @@
         </button>
         {% endif %}
       </div>
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-5">
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-5 dark:shadow-sm">
         <div id="template-list" class="space-y-3">
           {# Populated by JS from templates-json #}
         </div>
@@ -142,7 +142,7 @@
     {# ----- Action bar ----- #}
     <div class="flex flex-wrap items-center gap-3 pt-2">
       {% if editable %}
-      <button type="button" id="save-btn" class="bg-brand text-on-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
+      <button type="button" id="save-btn" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
         Save
       </button>
       {% endif %}
@@ -201,8 +201,9 @@
     .wf-toolmodal { animation: wf-toolpop 280ms cubic-bezier(0.16,1,0.3,1) both; }
     @keyframes wf-toolpop { from { transform: translateY(8px) scale(0.99); } to { transform: none; } }
     @media (prefers-reduced-motion: reduce) { .wf-toolmodal { animation: none; } }
-    .wf-toollist::-webkit-scrollbar { width: 10px; }
-    .wf-toollist::-webkit-scrollbar-thumb { background: var(--color-paper-300); border-radius: 999px; border: 3px solid var(--color-neutral-primary-soft); }
+    /* Light: this list keeps its custom paper scrollbar. Dark: the global .dark ::-webkit-scrollbar rules in input.css take over. */
+    html:not(.dark) .wf-toollist::-webkit-scrollbar { width: 10px; }
+    html:not(.dark) .wf-toollist::-webkit-scrollbar-thumb { background: var(--color-paper-300); border-radius: 999px; border: 3px solid var(--color-neutral-primary-soft); }
     #tool-picker-search:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
     .wf-tool-card:hover { border-color: var(--color-brand-subtle); }
     .wf-tool-card:has(.tool-picker-checkbox:checked) { border-color: var(--color-brand-subtle); background: var(--color-brand-softer); }
@@ -223,7 +224,7 @@
     .wf-toolclose:hover { background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
   </style>
   <div id="tool-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
-    <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-soft);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+    <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
       {# Header #}
       <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
         <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Available tools</h2>
@@ -252,7 +253,7 @@
         <p id="tool-picker-noresults" style="display:none;font-size:13px;color:var(--color-body-subtle);padding:6px 2px;">No tools match your search.</p>
       </div>
       {# Footer #}
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);background:var(--color-paper-50);">
+      <div class="wf-soft-panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);">
         <span id="tool-picker-count" style="font-size:12px;color:var(--color-body-subtle);">No tools selected</span>
         <div style="display:flex;gap:10px;">
           <button type="button" data-modal-hide="tool-picker-modal" class="wf-toolbtn-ghost" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>

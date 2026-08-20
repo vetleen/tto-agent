@@ -37,7 +37,7 @@
   </head>
   <body class="{% block body_class %}pt-20 bg-neutral-primary min-h-screen{% endblock %}">
     {% block navbar %}
-    <nav class="bg-neutral-primary fixed w-full z-50 top-0 start-0 border-b border-default backdrop-blur-md">
+    <nav class="bg-neutral-primary dark:bg-neutral-secondary-soft fixed w-full z-50 top-0 start-0 border-b border-default backdrop-blur-md">
       <div class="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex flex-wrap items-center h-16">
         <a href="{% if user.is_authenticated %}/chat/{% else %}/{% endif %}" class="flex items-center shrink-0 me-2 md:me-6" aria-label="Home">

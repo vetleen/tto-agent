@@ -14,7 +14,7 @@ opacity propagates to all descendants and cannot be undone on a child.
            {% if row.is_enabled %}checked{% endif %}
            aria-label="Enable {{ row.skill.name }}">
     <span class="w-9 h-5 rounded-full bg-neutral-tertiary border border-default-medium transition-colors peer-checked:bg-brand peer-checked:border-transparent peer-focus:ring-2 peer-focus:ring-brand"></span>
-    <span class="absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-neutral-primary-soft shadow-xs transition-transform peer-checked:translate-x-4"></span>
+    <span class="absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-neutral-primary-soft dark:bg-body-subtle dark:peer-checked:bg-on-brand shadow-xs transition-transform peer-checked:translate-x-4"></span>
   </label>
   <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand rounded-base {% if not row.is_enabled %}opacity-50{% endif %}">
     {% if row.skill.emoji %}

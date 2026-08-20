@@ -18,8 +18,8 @@
       <form method="post" action="{% url 'meeting_create' %}">
         {% csrf_token %}
         <input type="hidden" name="transcribe" value="1">
-        <button type="submit" class="inline-flex items-center gap-2 bg-fg-danger text-white hover:opacity-90 focus:ring-4 focus:ring-neutral-tertiary box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
-          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+        <button type="submit" class="inline-flex items-center gap-2 wf-record-btn focus:ring-4 focus:ring-neutral-tertiary box-border font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+          <svg class="w-4 h-4 wf-rec-dot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
           Start transcription
         </button>
       </form>
@@ -162,7 +162,7 @@
 <button type="button" id="rename-mtg-modal-trigger" class="hidden" data-modal-target="rename-mtg-modal" data-modal-show="rename-mtg-modal" aria-label="Open rename modal"></button>
 <div id="rename-mtg-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
   <div class="relative w-full max-w-md max-h-full">
-    <div class="relative bg-neutral-primary-soft border border-default rounded-base shadow-lg">
+    <div class="relative bg-neutral-primary-medium border border-default rounded-base shadow-lg">
       <div class="px-6 py-4 border-b border-default">
         <h3 class="text-lg font-semibold text-heading">Rename meeting</h3>
       </div>
