@@ -107,7 +107,7 @@
 <div id="content-area" class="flex sm:ml-64" style="height: calc(100vh - 4rem);">
 
 {# Chat pane #}
-<div id="chat-pane" class="flex flex-col flex-1 min-w-0 transition-all duration-200 relative bg-neutral-primary-soft">
+<div id="chat-pane" class="flex flex-col flex-1 min-w-0 transition-all duration-200 relative bg-neutral-primary-soft dark:bg-neutral-primary">
   {# Drop overlay for drag-and-drop file upload #}
   <div id="drop-overlay" class="hidden absolute inset-0 z-50 bg-brand/10 border-2 border-dashed border-brand rounded-lg flex items-center justify-center pointer-events-none">
     <span class="text-brand font-medium text-lg">Drop files to attach</span>
@@ -195,7 +195,7 @@
   </div>
 
   {# Input area — sticky bottom, centered with the heading when chat is empty #}
-  <div id="chat-input-area" class="bg-neutral-primary-soft w-full">
+  <div id="chat-input-area" class="bg-neutral-primary-soft dark:bg-neutral-primary w-full">
     <div class="max-w-4xl mx-auto w-full px-4 py-3">
       {# Hidden file input for attachments #}
       <input type="file" id="image-upload-input" class="hidden"
