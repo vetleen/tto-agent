@@ -133,6 +133,13 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
             # caller during tool loops. Request their encrypted representation
             # so the provider wrapper can preserve it in Message metadata.
             kwargs["include"] = ["reasoning.encrypted_content"]
+            # Extended prompt cache retention: keep cached prefixes warm up to
+            # 24h (vs the in-memory default of ~5-10 min). Same per-token
+            # pricing as in-memory; the longer window amortizes the 1.25x
+            # cache-write over more reads. model_kwargs values are merged into
+            # the top-level Responses payload, where OpenAI expects
+            # prompt_cache_retention.
+            kwargs["model_kwargs"] = {"prompt_cache_retention": "24h"}
     return kwargs
 
 

@@ -281,13 +281,28 @@ class ProviderKwargsTests(SimpleTestCase):
         self.assertTrue(kwargs.get("use_responses_api"))
         self.assertEqual(kwargs["include"], ["reasoning.encrypted_content"])
 
+    def test_openai_extended_cache_retention_for_responses_api(self):
+        # Responses-API models opt into 24h extended prompt cache retention.
+        kwargs = _get_provider_kwargs("openai", "gpt-5.6-terra")
+        self.assertEqual(
+            kwargs["model_kwargs"], {"prompt_cache_retention": "24h"}
+        )
+
+    def test_openai_no_cache_retention_for_chat_completions(self):
+        # Chat-Completions (non-Responses) models don't get the retention flag,
+        # avoiding errors on models that may not support it.
+        kwargs = _get_provider_kwargs("openai", "gpt-5-mini")
+        self.assertNotIn("model_kwargs", kwargs)
+
     def test_anthropic_has_no_store_flag(self):
         kwargs = _get_provider_kwargs("anthropic", "claude-sonnet-4-6")
         self.assertNotIn("store", kwargs)
+        self.assertNotIn("model_kwargs", kwargs)
 
     def test_google_has_no_store_flag(self):
         kwargs = _get_provider_kwargs("google_genai", "gemini-3.1-pro-preview")
         self.assertNotIn("store", kwargs)
+        self.assertNotIn("model_kwargs", kwargs)
 
 
 class GoogleVertexKwargsTests(SimpleTestCase):
