@@ -63,6 +63,19 @@ class TypeHistogramTests(SimpleTestCase):
         self.assertEqual(memtrace._type_label({}), "dict")
         self.assertEqual(memtrace._type_label([]), "list")
 
+    def test_traceback_type_is_skipped(self):
+        # A live traceback object exists and is gc-tracked, but must NOT appear in
+        # the histogram: it's transient churn and the word collides with the ops
+        # alert keyword "Traceback".
+        import sys
+
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            tb = sys.exc_info()[2]
+        self.assertIsNotNone(tb)  # keep a live reference so gc would see it
+        self.assertNotIn("traceback", memtrace._type_histogram())
+
 
 class TopMoversFormattingTests(SimpleTestCase):
     def test_no_baseline_shows_largest_populations(self):

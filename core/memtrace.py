@@ -101,15 +101,25 @@ def _type_label(obj: object) -> str:
     return name if mod in ("builtins", "") else f"{mod}.{name}"
 
 
+# Type labels kept OUT of the histogram output. ``traceback`` is transient
+# exception-handling churn (never a meaningful leak signal — a leak of frames
+# shows as ``frame`` growth instead) AND the bare word collides with the ops
+# log-alert keyword "Traceback", so emitting it triggers false "critical error"
+# alerts. Skipping it is both cleaner signal and quieter alerting.
+_HIST_SKIP = frozenset({"traceback"})
+
+
 def _type_histogram() -> Counter:
     """Count gc-tracked objects by type label. ``bytes``/``str`` are not tracked
     by the collector, so this catches object-*count* growth, not raw buffers."""
     counts: Counter = Counter()
     for obj in gc.get_objects():
         try:
-            counts[_type_label(obj)] += 1
+            label = _type_label(obj)
         except Exception:  # noqa: BLE001 — a broken __class__ must not abort the walk
-            counts["<unknown>"] += 1
+            label = "<unknown>"
+        if label not in _HIST_SKIP:
+            counts[label] += 1
     return counts
 
 
@@ -134,6 +144,7 @@ class _Sampler:
         self.use_tracemalloc = use_tracemalloc
         self.frames = frames
         self._prev_hist: Counter | None = None
+        self._base_hist: Counter | None = None  # first post-boot census (leak ref)
         self._prev_snapshot = None  # tracemalloc.Snapshot
         self._started_at = time.monotonic()
 
@@ -174,8 +185,18 @@ class _Sampler:
         )
 
         hist = _type_histogram()
+        if self._base_hist is None:
+            self._base_hist = hist
+        # Cumulative growth since boot is the leak finder: a type that keeps
+        # climbing sample-after-sample (and hour-after-hour) is the leak; a type
+        # that jumped once during warmup then held flat is not. "Since last" is
+        # kept for spotting a burst tied to a specific recent operation.
         logger.info(
-            "MEMTRACE top type growth since last sample: %s",
+            "MEMTRACE growth since boot: %s",
+            _format_top_movers(self._base_hist, hist, self.top),
+        )
+        logger.info(
+            "MEMTRACE growth since last: %s",
             _format_top_movers(self._prev_hist, hist, self.top),
         )
         self._prev_hist = hist
