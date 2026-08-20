@@ -703,7 +703,7 @@ class ReadDocumentTool(ContextAwareTool):
                 documents.append({
                     "doc_index": idx,
                     "filename": doc.original_filename,
-                    "error": "Output size limit reached; document omitted.",
+                    "error": "Output size limit was reached (safeguard); the document was omitted from this tool call - you may call again with a more narrow scope to read this document.",
                 })
                 continue
 
@@ -743,8 +743,8 @@ class ReadDocumentTool(ContextAwareTool):
 
             if truncated_at is not None:
                 content += (
-                    f"\n\n[... truncated at output cap. This document has {total_chunk_count} chunks; "
-                    f"you've read chunks {first_returned}–{last_returned}. To continue, call "
+                    f"\n\n[... truncated at output cap for a single call of this tool (this is just a safeguard, as documents can be very large). This particular document has {total_chunk_count} chunks; "
+                    f"you've read chunks {first_returned} – {last_returned}. If you need the rest of the document, continue reading it by calling "
                     f"read_document with chunk_start={truncated_at}, chunk_end={total_chunk_count - 1}. ...]"
                 )
             doc_entry = {
