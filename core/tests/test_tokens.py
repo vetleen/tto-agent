@@ -1,10 +1,13 @@
 """Tests for core.tokens.count_tokens."""
 
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from django.test import TestCase
+from pydantic import BaseModel, Field
 
-from core.tokens import count_tokens
+from core.tokens import count_tokens, estimate_chat_request_tokens
+from llm.types import Message
 
 
 class CountTokensTests(TestCase):
@@ -140,3 +143,40 @@ class CountTokensListContentTests(TestCase):
         content = [{"type": "audio", "data": "binary"}]
         result = count_tokens(content)
         self.assertGreater(result, 0)
+
+
+class EstimateChatRequestTokensTests(TestCase):
+    class SearchArgs(BaseModel):
+        query: str = Field(description="Search query")
+
+    def test_more_message_content_increases_estimate(self):
+        short = estimate_chat_request_tokens([
+            Message(role="user", content="Hello"),
+        ])
+        long = estimate_chat_request_tokens([
+            Message(role="user", content="Hello " * 100),
+        ])
+        self.assertGreater(long, short)
+
+    def test_multimodal_image_increases_estimate(self):
+        text_only = estimate_chat_request_tokens([
+            Message(role="user", content=[{"type": "text", "text": "Look"}]),
+        ])
+        with_image = estimate_chat_request_tokens([
+            Message(role="user", content=[
+                {"type": "text", "text": "Look"},
+                {"type": "image", "base64": "abc"},
+            ]),
+        ])
+        self.assertGreaterEqual(with_image - text_only, 170)
+
+    def test_tool_schema_increases_estimate(self):
+        messages = [Message(role="user", content="Find it")]
+        without_tool = estimate_chat_request_tokens(messages)
+        tool = SimpleNamespace(
+            name="search",
+            description="Search for records",
+            args_schema=self.SearchArgs,
+        )
+        with_tool = estimate_chat_request_tokens(messages, [tool])
+        self.assertGreater(with_tool, without_tool)

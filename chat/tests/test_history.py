@@ -66,6 +66,10 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertIn("included_messages", meta)
         self.assertIn("has_summary", meta)
         self.assertIn("needs_summary", meta)
+        self.assertIn("history_budget_tokens", meta)
+        self.assertIn("included_history_tokens", meta)
+        self.assertIn("summary_tokens", meta)
+        self.assertIn("history_truncated", meta)
 
     async def test_all_messages_included_when_under_budget(self):
         for i in range(5):
@@ -74,6 +78,8 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertEqual(result["meta"]["total_messages"], 5)
         self.assertEqual(result["meta"]["included_messages"], 5)
         self.assertFalse(result["meta"]["needs_summary"])
+        self.assertFalse(result["meta"]["history_truncated"])
+        self.assertGreater(result["meta"]["included_history_tokens"], 0)
 
     async def test_respects_token_budget(self):
         # Create messages that will exceed MAX_HISTORY_TOKENS
@@ -86,6 +92,7 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertEqual(meta["total_messages"], 6)
         self.assertLess(meta["included_messages"], 6)
         self.assertTrue(meta["needs_summary"])
+        self.assertTrue(meta["history_truncated"])
 
     async def test_includes_summary_as_system_message(self):
         summary_text = "Previous conversation about cats."
@@ -101,6 +108,13 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("Previous conversation about cats", messages[0]["content"])
         self.assertTrue(result["meta"]["has_summary"])
+        self.assertEqual(
+            result["meta"]["summary_tokens"], count_tokens(summary_text),
+        )
+        self.assertGreater(
+            result["meta"]["included_history_tokens"],
+            result["meta"]["summary_tokens"],
+        )
 
     async def test_no_summary_when_empty(self):
         await self._make_msg("Hello")

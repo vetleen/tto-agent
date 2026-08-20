@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,63 @@ def count_tokens(content, encoding_name: str = "cl100k_base") -> int:
                 total += _count_text_tokens(str(block), encoding_name)
         return total
     return _count_text_tokens(content, encoding_name)
+
+
+def estimate_chat_request_tokens(
+    messages: Iterable[Any],
+    tools: Iterable[Any] | None = None,
+    encoding_name: str = "cl100k_base",
+) -> int:
+    """Estimate the input-token footprint of an assembled chat request.
+
+    The providers tokenize message envelopes and tool schemas differently, so
+    this deliberately returns an estimate rather than a billing-grade count.
+    Message content uses :func:`count_tokens`, including its conservative image
+    estimate; roles, tool calls, and selected tool schemas are serialized into a
+    stable JSON representation and counted as ordinary text.
+    """
+    total = 0
+    for message in messages:
+        content = getattr(message, "content", "")
+        total += count_tokens(content, encoding_name)
+
+        envelope = {
+            "role": getattr(message, "role", ""),
+            "name": getattr(message, "name", None),
+            "tool_call_id": getattr(message, "tool_call_id", None),
+        }
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            envelope["tool_calls"] = [
+                call.model_dump() if hasattr(call, "model_dump") else call
+                for call in tool_calls
+            ]
+        total += count_tokens(
+            json.dumps(envelope, ensure_ascii=False, sort_keys=True, default=str),
+            encoding_name,
+        )
+        # Small per-message allowance for provider-specific separators.
+        total += 4
+
+    for tool in tools or []:
+        args_schema = getattr(tool, "args_schema", None)
+        if hasattr(args_schema, "model_json_schema"):
+            parameters = args_schema.model_json_schema()
+        elif hasattr(args_schema, "schema"):
+            parameters = args_schema.schema()
+        else:
+            parameters = {}
+        schema = {
+            "name": getattr(tool, "name", ""),
+            "description": getattr(tool, "description", "") or "",
+            "parameters": parameters,
+        }
+        total += count_tokens(
+            json.dumps(schema, ensure_ascii=False, sort_keys=True, default=str),
+            encoding_name,
+        )
+
+    return total
 
 
 def _count_text_tokens(text: str, encoding_name: str = "cl100k_base") -> int:

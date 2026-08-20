@@ -565,6 +565,48 @@ class BuildDynamicContextTests(TestCase):
         )
         self.assertIn("# Current time", result)
 
+    def test_runtime_stats_render_as_trusted_dynamic_context(self):
+        result = build_dynamic_context(runtime_stats={
+            "model_id": "openai/gpt-5.6-terra",
+            "model_display": "GPT-5.6 Terra",
+            "context_window_tokens": 1_050_000,
+            "context_window_assumed": False,
+            "configured_context_tokens": 200_000,
+            "history_budget_tokens": 150_000,
+            "included_history_tokens": 82_400,
+            "summary_tokens": 1_200,
+            "history_summarized": True,
+            "history_truncated": True,
+            "estimated_input_tokens": 96_000,
+        })
+        self.assertIn("# Runtime", result)
+        self.assertIn("GPT-5.6 Terra (`openai/gpt-5.6-terra`)", result)
+        self.assertIn("Declared model context window: 1,050,000 tokens", result)
+        self.assertIn("Configured context setting: 200,000 tokens", result)
+        self.assertIn("Conversation-history budget: 150,000 tokens", result)
+        self.assertIn("Conversation history loaded: ~82,400 tokens", result)
+        self.assertIn("including a ~1,200-token summary", result)
+        self.assertIn("Earlier history summarized: yes", result)
+        self.assertIn("Raw history truncated: yes", result)
+        self.assertIn("Initial assembled input footprint: ~96,000 tokens", result)
+
+    def test_runtime_uses_assumed_label_and_omits_unavailable_fields(self):
+        result = build_dynamic_context(runtime_stats={
+            "model_id": "custom/model",
+            "model_display": "Custom Model",
+            "context_window_tokens": 128_000,
+            "context_window_assumed": True,
+        })
+        self.assertIn("Assumed model context window: 128,000 tokens", result)
+        self.assertNotIn("Configured context setting", result)
+        self.assertNotIn("Initial assembled input footprint", result)
+
+    def test_runtime_section_appears_once(self):
+        result = build_dynamic_context(runtime_stats={
+            "model_id": "openai/gpt-5.6-terra",
+        })
+        self.assertEqual(result.count("# Runtime"), 1)
+
     def test_doc_context_included(self):
         doc_context = {
             "total_doc_count": 2,
@@ -888,6 +930,36 @@ class PreambleInjectionMechanicsTests(TestCase):
         ])
         result = self._inject(messages, "<context>\nstuff\n</context>")
         self.assertEqual(result[0].content, "Static prompt")
+
+    def test_final_turn_context_adds_runtime_estimate_without_mutating_base(self):
+        from chat.consumers import _messages_with_turn_context
+
+        messages = self._make_messages([
+            ("system", "Static prompt"),
+            ("user", "hello"),
+        ])
+        result = _messages_with_turn_context(
+            messages,
+            semi_static_system="SEMI",
+            dynamic_context_data={
+                "runtime_stats": {
+                    "model_id": "openai/gpt-5.6-terra",
+                    "model_display": "GPT-5.6 Terra",
+                    "context_window_tokens": 1_050_000,
+                    "history_budget_tokens": 150_000,
+                    "included_history_tokens": 4,
+                    "history_summarized": False,
+                    "history_truncated": False,
+                },
+            },
+            is_loop_turn=False,
+            tool_schemas=[],
+        )
+        self.assertEqual(messages[1].content, "hello")
+        self.assertEqual(result[0].content, "Static prompt")
+        self.assertEqual(result[1].content.count("# Runtime"), 1)
+        self.assertIn("Initial assembled input footprint: ~", result[1].content)
+        self.assertTrue(result[1].content.endswith("# User Message\nhello"))
 
 
 class UserOrgContextInSemiStaticPromptTests(TestCase):

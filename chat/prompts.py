@@ -9,17 +9,33 @@ The prompt is split into three tiers for prefix-based prompt caching:
    at the end of the system message so that when it *does* change, the static
    prefix still caches.
 3. **Dynamic** — per-turn content (RAG results, canvas content, task status,
-   sub-agent status, history meta).  Injected into the last user message so
-   the entire system message + conversation history prefix caches.
+   sub-agent status, history/runtime metadata).  Injected into the last user
+   message so the entire system message + conversation history prefix caches.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, TypedDict
 
 from django.conf import settings as django_settings
 from django.utils import timezone
+
+
+class RuntimeStats(TypedDict, total=False):
+    """Application runtime metadata describing one main-chat turn."""
+
+    model_id: str
+    model_display: str
+    context_window_tokens: int
+    context_window_assumed: bool
+    configured_context_tokens: int
+    history_budget_tokens: int
+    included_history_tokens: int
+    summary_tokens: int
+    history_summarized: bool
+    history_truncated: bool
+    estimated_input_tokens: int
 
 
 def build_static_system_prompt(
@@ -497,11 +513,13 @@ def build_dynamic_context(
     subagent_runs: list[dict] | None = None,
     history_meta: dict[str, Any] | None = None,
     data_rooms: list[dict[str, Any]] | None = None,
+    runtime_stats: RuntimeStats | None = None,
 ) -> str:
     """Build per-turn dynamic context to inject into the last user message.
 
     This contains content that changes every turn — RAG results, active
-    canvas content, task status, sub-agent status, and history metadata.
+    canvas content, task status, sub-agent status, history metadata, and
+    per-turn runtime statistics.
     Separating this from the system prompt enables prefix-based caching.
 
     Returns an empty string when there is no dynamic content.
@@ -509,6 +527,62 @@ def build_dynamic_context(
     parts: list[str] = []
 
     parts.append(f"# Current time\n{timezone.now().strftime('%H:%M')}")
+
+    # -- Runtime metadata --
+    if runtime_stats:
+        lines = ["# Runtime"]
+        model_id = runtime_stats.get("model_id")
+        if model_id:
+            model_display = runtime_stats.get("model_display") or model_id
+            lines.append(f"- Model: {model_display} (`{model_id}`)")
+
+        context_window = runtime_stats.get("context_window_tokens")
+        if context_window is not None:
+            label = (
+                "Assumed model context window"
+                if runtime_stats.get("context_window_assumed")
+                else "Declared model context window"
+            )
+            lines.append(f"- {label}: {context_window:,} tokens")
+
+        configured_context = runtime_stats.get("configured_context_tokens")
+        if configured_context is not None:
+            lines.append(
+                f"- Configured context setting: {configured_context:,} tokens"
+            )
+
+        history_budget = runtime_stats.get("history_budget_tokens")
+        if history_budget is not None:
+            lines.append(
+                f"- Conversation-history budget: {history_budget:,} tokens"
+            )
+
+        included_history = runtime_stats.get("included_history_tokens")
+        if included_history is not None:
+            summary_tokens = runtime_stats.get("summary_tokens") or 0
+            summary_note = (
+                f" (including a ~{summary_tokens:,}-token summary)"
+                if summary_tokens else ""
+            )
+            lines.append(
+                f"- Conversation history loaded: ~{included_history:,} tokens"
+                f"{summary_note}"
+            )
+
+        if "history_summarized" in runtime_stats:
+            value = "yes" if runtime_stats["history_summarized"] else "no"
+            lines.append(f"- Earlier history summarized: {value}")
+        if "history_truncated" in runtime_stats:
+            value = "yes" if runtime_stats["history_truncated"] else "no"
+            lines.append(f"- Raw history truncated: {value}")
+
+        estimated_input = runtime_stats.get("estimated_input_tokens")
+        if estimated_input is not None:
+            lines.append(
+                f"- Initial assembled input footprint: ~{estimated_input:,} tokens "
+                "(estimate; later tool results may increase it)"
+            )
+        parts.append("\n".join(lines))
 
     # -- Document context / RAG results --
     if doc_context and doc_context.get("total_doc_count", 0) > 0:
@@ -656,6 +730,7 @@ def build_system_prompt(
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
     parallel_subagents: bool = True,
+    runtime_stats: RuntimeStats | None = None,
 ) -> str:
     """Build the system prompt for a chat session.
 
@@ -702,6 +777,7 @@ def build_system_prompt(
         subagent_runs=subagent_runs,
         history_meta=history_meta,
         data_rooms=data_rooms,
+        runtime_stats=runtime_stats,
     )
 
     result = static + "\n" + semi_static

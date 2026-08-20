@@ -120,6 +120,55 @@ def _prepend_preamble_to_last_user_message(messages, preamble: str) -> None:
             break
 
 
+def _messages_with_turn_context(
+    messages,
+    *,
+    semi_static_system: str,
+    dynamic_context_data: dict,
+    is_loop_turn: bool,
+    tool_schemas: list,
+):
+    """Return copied messages with final per-turn context injected.
+
+    Runtime input size is estimated twice so the reported footprint includes
+    the runtime block and its own estimate line. The result remains explicitly
+    approximate because provider envelope tokenization differs.
+    """
+    from chat.prompts import build_dynamic_context, build_last_message_preamble
+    from core.tokens import estimate_chat_request_tokens
+
+    runtime_stats = dict(dynamic_context_data.get("runtime_stats") or {})
+
+    def _render(stats):
+        rendered_data = dict(dynamic_context_data)
+        if rendered_data:
+            rendered_data["runtime_stats"] = stats
+            rendered_dynamic = build_dynamic_context(**rendered_data)
+        else:
+            rendered_dynamic = ""
+        rendered_preamble = build_last_message_preamble(
+            semi_static_system=semi_static_system,
+            dynamic_context=rendered_dynamic,
+            is_loop_turn=is_loop_turn,
+        )
+        rendered_messages = [m.model_copy(deep=True) for m in messages]
+        _prepend_preamble_to_last_user_message(
+            rendered_messages, rendered_preamble,
+        )
+        return rendered_messages
+
+    if runtime_stats:
+        provisional_messages = _render(runtime_stats)
+        runtime_stats["estimated_input_tokens"] = estimate_chat_request_tokens(
+            provisional_messages, tool_schemas,
+        )
+        estimated_messages = _render(runtime_stats)
+        runtime_stats["estimated_input_tokens"] = estimate_chat_request_tokens(
+            estimated_messages, tool_schemas,
+        )
+    return _render(runtime_stats)
+
+
 class ChatConsumer(AsyncWebsocketConsumer):
     """WebSocket consumer for chat with LLM streaming and optional RAG via data rooms."""
 
@@ -1222,7 +1271,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 history_mode = "loop_pass"
 
             # Gather history + context and build the layered system prompt.
-            static_system, history, semi_static_system, dynamic_context, meta = (
+            static_system, history, semi_static_system, dynamic_context_data, meta = (
                 await self._assemble_turn_inputs(
                     thread, content,
                     model=model, max_context_tokens=max_context_tokens,
@@ -1236,7 +1285,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 self._stream_and_finalize(
                     thread, static_system, history,
                     semi_static_system=semi_static_system,
-                    dynamic_context=dynamic_context,
+                    dynamic_context_data=dynamic_context_data,
                     requested_model=requested_model,
                     thinking_level=thinking_level,
                     resolved_model=model,
@@ -1257,7 +1306,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _stream_and_finalize(
         self, thread, static_system, history, *,
-        semi_static_system, dynamic_context,
+        semi_static_system, dynamic_context_data,
         requested_model, thinking_level, resolved_model,
         turn, seed_mode, content, meta, max_context_tokens,
     ):
@@ -1272,7 +1321,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._stream_response(
                 thread, static_system, history,
                 semi_static_system=semi_static_system,
-                dynamic_context=dynamic_context,
+                dynamic_context_data=dynamic_context_data,
                 requested_model=requested_model, thinking_level=thinking_level,
                 resolved_model=resolved_model,
                 turn=turn,
@@ -1389,7 +1438,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         Shared by the interactive turn (``_handle_chat_message``) and the
         headless loop turn (``run_turn_to_completion``). Returns
-        ``(static_system, history, semi_static_system, dynamic_context, meta)``.
+        ``(static_system, history, semi_static_system, dynamic_context_data, meta)``.
 
         ``history_mode`` (turn-level; distinct from the persisted
         ``Loop.history_mode`` field which is only ``fresh``/``conversational``):
@@ -1406,10 +1455,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
         prefs = self.resolved_prefs
 
         if history_mode == "fresh":
+            from core.tokens import count_tokens
+            from llm.model_info import get_history_budget
+
             history = [{"role": "user", "content": content, "tool_call_id": None}]
+            history_budget = (
+                get_history_budget(model, max_context_tokens=max_context_tokens)
+                if model else MAX_HISTORY_TOKENS
+            )
             meta = {
                 "total_messages": 1, "included_messages": 1,
                 "has_summary": False, "needs_summary": False,
+                "history_budget_tokens": history_budget,
+                "included_history_tokens": count_tokens(content),
+                "summary_tokens": 0,
+                "history_truncated": False,
             }
         else:
             history_result = await self._load_history(
@@ -1426,7 +1486,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Build system prompt (split into static/semi-static/dynamic for caching)
         from chat.prompts import (
-            build_dynamic_context,
             build_semi_static_prompt,
             build_static_system_prompt,
         )
@@ -1476,15 +1535,38 @@ class ChatConsumer(AsyncWebsocketConsumer):
             available_skills=available_skills_for_prompt,
             specializations=specializations_for_prompt,
         )
-        dynamic_context = build_dynamic_context(
-            doc_context=doc_context,
-            active_canvases=canvases_info["active_canvases"] if canvases_info else None,
-            tasks=tasks,
-            subagent_runs=subagent_runs if subagent_runs else None,
-            history_meta=meta,
-            data_rooms=data_rooms,
-        )
-        return static_system, history, semi_static_system, dynamic_context, meta
+        runtime_stats = {
+            "configured_context_tokens": max_context_tokens,
+            "history_budget_tokens": meta.get("history_budget_tokens"),
+            "included_history_tokens": meta.get("included_history_tokens"),
+            "summary_tokens": meta.get("summary_tokens", 0),
+            "history_summarized": bool(meta.get("has_summary")),
+            "history_truncated": bool(meta.get("history_truncated")),
+        }
+        if model:
+            from llm.display import get_display_name
+            from llm.model_info import get_context_window
+            from llm.model_registry import get_model_info
+
+            runtime_stats.update({
+                "model_id": model,
+                "model_display": get_display_name(model),
+                "context_window_tokens": get_context_window(model),
+                "context_window_assumed": get_model_info(model) is None,
+            })
+
+        dynamic_context_data = {
+            "doc_context": doc_context,
+            "active_canvases": (
+                canvases_info["active_canvases"] if canvases_info else None
+            ),
+            "tasks": tasks,
+            "subagent_runs": subagent_runs if subagent_runs else None,
+            "history_meta": meta,
+            "data_rooms": data_rooms,
+            "runtime_stats": runtime_stats,
+        }
+        return static_system, history, semi_static_system, dynamic_context_data, meta
 
     async def run_turn_to_completion(
         self, thread, content, *,
@@ -1509,7 +1591,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thinking_level = _resolve_reasoning_level(model, thinking_level)
         max_context_tokens = prefs.max_context_tokens if prefs else None
 
-        static_system, history, semi_static_system, dynamic_context, meta = (
+        static_system, history, semi_static_system, dynamic_context_data, meta = (
             await self._assemble_turn_inputs(
                 thread, content,
                 model=model, max_context_tokens=max_context_tokens,
@@ -1526,7 +1608,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self._stream_response(
             thread, static_system, history,
             semi_static_system=semi_static_system,
-            dynamic_context=dynamic_context,
+            dynamic_context_data=dynamic_context_data,
             requested_model=requested_model, thinking_level=thinking_level,
             resolved_model=model, turn=turn, seed_mode=False,
             is_loop_turn=is_loop_turn,
@@ -1540,13 +1622,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _stream_response(
         self, thread, system_prompt, history,
         semi_static_system="",
-        dynamic_context="",
+        dynamic_context_data=None,
         requested_model=None, thinking_level=None, resolved_model=None,
         turn=None, seed_mode=False, is_loop_turn=False,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
         from llm.types import ChatRequest, Message, RunContext
+
+        from chat.prompts import build_dynamic_context
+
+        dynamic_context_data = dict(dynamic_context_data or {})
+        runtime_stats = dict(dynamic_context_data.get("runtime_stats") or {})
+        if dynamic_context_data:
+            dynamic_context_data["runtime_stats"] = runtime_stats
+            dynamic_context = build_dynamic_context(**dynamic_context_data)
+        else:
+            dynamic_context = ""
 
         # System message contains ONLY the static prompt (never changes).
         # Semi-static content (date, skill, data rooms, canvas metadata) is
@@ -1577,20 +1669,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Deduplicate tool results from prior turns to reduce token waste
         from chat.dedup import deduplicate_tool_results
         messages = deduplicate_tool_results(messages, dynamic_context=dynamic_context)
-
-        # Inject the per-turn preamble (semi-static + dynamic context, then the
-        # delimiter before the user's actual message) into the last user message.
-        # Keeping it out of the system message preserves prefix caching. The
-        # preamble text — including the scheduled-Loop framing — is assembled in
-        # chat.prompts; here we only splice it onto the message list, which must
-        # happen after dedup + attachment enrichment above.
-        from chat.prompts import build_last_message_preamble
-        preamble = build_last_message_preamble(
-            semi_static_system=semi_static_system,
-            dynamic_context=dynamic_context,
-            is_loop_turn=is_loop_turn,
-        )
-        _prepend_preamble_to_last_user_message(messages, preamble)
 
         context = RunContext.create(
             user_id=self.user.pk,
@@ -1623,7 +1701,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Web tools always available; document tools only with data rooms; canvas tools always
         from chat.tool_groups import DATA_ROOM_TOOL_NAMES
         from llm.tools.registry import get_tool_registry
-        all_tools = prefs.allowed_tools if prefs else list(get_tool_registry().list_tools().keys())
+        tool_registry = get_tool_registry()
+        all_tools = prefs.allowed_tools if prefs else list(tool_registry.list_tools().keys())
         if self.data_room_ids:
             tools = list(all_tools)
         else:
@@ -1665,6 +1744,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Listing/stopping stay available (read-only / only pause).
         if is_loop_turn:
             tools = [t for t in tools if t not in ("chat_loop_create", "chat_loop_edit")]
+
+        selected_tool_schemas = [
+            tool for name in tools
+            if (tool := tool_registry.get_tool(name)) is not None
+        ]
+        messages = _messages_with_turn_context(
+            messages,
+            semi_static_system=semi_static_system,
+            dynamic_context_data=dynamic_context_data,
+            is_loop_turn=is_loop_turn,
+            tool_schemas=selected_tool_schemas,
+        )
 
         if turn is None:
             # Defensive: direct callers (tests) may not provide a turn.
@@ -3291,6 +3382,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "included_messages": 0,
                     "has_summary": False,
                     "needs_summary": False,
+                    "history_budget_tokens": max_history_tokens,
+                    "included_history_tokens": 0,
+                    "summary_tokens": 0,
+                    "history_truncated": False,
                 },
             }
 
@@ -3337,6 +3432,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 3. Combine into chronological order: additional + overlap (both reversed)
         included = list(reversed(additional)) + list(reversed(overlap))
+        included_history_tokens = summary_token_count + sum(
+            msg.token_count for msg in included
+        )
 
         # 4. Build message list
         messages: list[dict] = []
@@ -3407,6 +3505,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # the loop thread), so both flags are forced False when scoped.
                 "has_summary": bool(thread.summary) and not scoped,
                 "needs_summary": needs_summary and not scoped,
+                "history_budget_tokens": max_history_tokens,
+                "included_history_tokens": included_history_tokens,
+                "summary_tokens": summary_token_count,
+                "history_truncated": total_messages > len(included),
             },
         }
 
