@@ -85,7 +85,7 @@ def _delete_stored_file_on_commit(storage, name):
 @require_POST
 def theme_update(request):
     theme_value = (request.POST.get("theme") or "").strip().lower()
-    if theme_value not in (UserSettings.Theme.LIGHT, UserSettings.Theme.DARK):
+    if theme_value not in UserSettings.Theme.values:
         return JsonResponse({"error": "Invalid theme"}, status=400)
     # Dual-write: keep the legacy CharField and preferences["theme"] in sync.
     # Inline (not update_user_preferences) because it writes both fields; same

@@ -17,7 +17,7 @@ def nav_context(request):
         # user, so a missing row just means defaults (no write per request).
         settings = UserSettings.objects.filter(user=request.user).first()
         prefs = (settings.preferences if settings else None) or {}
-        context["theme"] = prefs.get("theme") or (settings.theme if settings else UserSettings.Theme.LIGHT)
+        context["theme"] = prefs.get("theme") or (settings.theme if settings else UserSettings.Theme.SYSTEM)
         # Org-admin flag (for the org settings link); shares the per-request
         # memoized membership with the suspension middleware and resolvers.
         membership = get_membership(request.user)

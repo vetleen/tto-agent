@@ -58,7 +58,7 @@
       <section id="appearance" class="scroll-mt-24">
         <div class="mb-3">
           <h2 class="text-base font-semibold text-heading">Appearance</h2>
-          <p class="mt-0.5 text-sm text-body">Choose your preferred color theme.</p>
+          <p class="mt-0.5 text-sm text-body">Choose your preferred color theme. <span class="text-body">System</span> follows your device setting.</p>
         </div>
         <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
           <div class="p-5">
@@ -71,6 +71,15 @@
               >
                 <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
                 Light
+              </button>
+              <button
+                type="button"
+                id="theme-btn-system"
+                class="theme-btn px-4 py-2 text-sm font-medium text-body focus:outline-none"
+                data-theme="system"
+              >
+                <svg class="inline-block w-4 h-4 mr-1.5 -mt-0.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>
+                System
               </button>
               <button
                 type="button"
@@ -258,6 +267,8 @@
 <script nonce="{{ request.csp_nonce }}">
 (function() {
   var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  var el = document.documentElement;
+  var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
   var activeClasses = 'bg-brand text-on-brand';
   var inactiveClasses = 'text-body hover:bg-neutral-secondary-soft';
   function updateThemeButtons(theme) {
@@ -266,25 +277,22 @@
       btn.className = 'theme-btn px-4 py-2 text-sm font-medium focus:outline-none ' + (isActive ? activeClasses : inactiveClasses);
     });
   }
-  var currentTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-  updateThemeButtons(currentTheme);
+  // Resolve to a .dark class the same way the head script does; "system"
+  // follows the OS. Setting data-theme keeps the head script's matchMedia
+  // change-listener correct if the OS flips after choosing "system".
+  function applyTheme(theme) {
+    el.setAttribute('data-theme', theme);
+    var dark = theme === 'dark' || (theme === 'system' && mq && mq.matches);
+    el.classList.toggle('dark', dark);
+    if (window.WilfredEditor) WilfredEditor.setTheme(el.classList.contains('dark') ? 'dark' : 'light');
+  }
+  updateThemeButtons(el.getAttribute('data-theme') || 'system');
 
   document.querySelectorAll('.theme-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
       var theme = this.dataset.theme;
-      if (theme === 'dark') {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-      }
-      localStorage.setItem('color-theme', theme);
+      applyTheme(theme);
       updateThemeButtons(theme);
-      var darkIcon = document.getElementById('theme-toggle-dark-icon');
-      var lightIcon = document.getElementById('theme-toggle-light-icon');
-      if (darkIcon && lightIcon) {
-        darkIcon.classList.toggle('hidden', theme === 'dark');
-        lightIcon.classList.toggle('hidden', theme === 'light');
-      }
       fetch('{% url "accounts:theme_update" %}', {
         method: 'POST',
         headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },

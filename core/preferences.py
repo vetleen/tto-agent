@@ -41,7 +41,7 @@ class ResolvedPreferences:
     # ``allowed_skills``. Each dict mirrors an allowed_skills entry
     # (id/slug/name/emoji/description/tool_names).
     allowed_specializations: list[dict] = field(default_factory=list)
-    theme: str = "light"
+    theme: str = "system"
     parallel_subagents: bool = True
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     transcription_model: str = ""
@@ -217,7 +217,7 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # --- User level ---
     user_prefs = _get_user_preferences(user)
-    user_theme = user_prefs.get("theme", "light")
+    user_theme = user_prefs.get("theme", "system")
     allow_agent_attach_skills = bool(user_prefs.get("allow_agent_attach_skills", True))
 
     # Resolve each model tier with cascade

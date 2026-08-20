@@ -21,7 +21,7 @@ class ThemeContextProcessorTests(TestCase):
         request.user = self.user
         context = nav_context(request)
         self.assertIn("theme", context)
-        self.assertEqual(context["theme"], UserSettings.Theme.LIGHT)
+        self.assertEqual(context["theme"], UserSettings.Theme.SYSTEM)
 
     def test_returns_dark_theme_when_set(self) -> None:
         settings = UserSettings.objects.get(user=self.user)
@@ -44,7 +44,7 @@ class ThemeContextProcessorTests(TestCase):
         self.assertNotIn("theme", context)
         self.assertNotIn("user_is_org_admin", context)
 
-    def test_missing_settings_defaults_to_light_without_creating(self) -> None:
+    def test_missing_settings_defaults_to_system_without_creating(self) -> None:
         """The context processor is read-only: a missing UserSettings row
         (only possible for pre-signal legacy users) renders the default theme
         and is NOT auto-created — row creation belongs to the post_save signal."""
@@ -54,5 +54,5 @@ class ThemeContextProcessorTests(TestCase):
         request.user = self.user
         context = nav_context(request)
         self.assertIn("theme", context)
-        self.assertEqual(context["theme"], UserSettings.Theme.LIGHT)
+        self.assertEqual(context["theme"], UserSettings.Theme.SYSTEM)
         self.assertFalse(UserSettings.objects.filter(user=self.user).exists())

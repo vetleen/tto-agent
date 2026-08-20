@@ -56,6 +56,18 @@ class ThemeUpdateViewTests(TestCase):
         settings = UserSettings.objects.get(user=self.user)
         self.assertEqual(settings.theme, "light")
 
+    def test_set_theme_to_system(self) -> None:
+        self.client.login(email=self.user.email, password=self.password)
+        # First set to dark, then switch to system (the browser-follows value).
+        self.client.post(self.url, {"theme": "dark"})
+        response = self.client.post(self.url, {"theme": "system"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["theme"], "system")
+        settings = UserSettings.objects.get(user=self.user)
+        self.assertEqual(settings.theme, "system")
+        self.assertEqual(settings.preferences.get("theme"), "system")
+
     def test_invalid_theme_returns_400(self) -> None:
         self.client.login(email=self.user.email, password=self.password)
         response = self.client.post(self.url, {"theme": "invalid"})

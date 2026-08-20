@@ -114,6 +114,7 @@ class EmailVerificationToken(models.Model):
 class UserSettings(models.Model):
     class Theme(models.TextChoices):
         LIGHT = "light", "Light"
+        SYSTEM = "system", "System"
         DARK = "dark", "Dark"
 
     user = models.OneToOneField(
@@ -128,7 +129,7 @@ class UserSettings(models.Model):
     theme = models.CharField(
         max_length=10,
         choices=Theme.choices,
-        default=Theme.LIGHT,
+        default=Theme.SYSTEM,
     )
     preferences = models.JSONField(default=dict, blank=True)
 

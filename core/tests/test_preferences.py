@@ -199,12 +199,12 @@ class ThemeFromPreferencesTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_theme_defaults_to_light(self, mock_registry, mock_allowed):
+    def test_theme_defaults_to_system(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user()
         prefs = get_preferences(user)
-        self.assertEqual(prefs.theme, "light")
+        self.assertEqual(prefs.theme, "system")
 
 
 class OrgDefaultModelTest(TestCase):

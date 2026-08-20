@@ -18,7 +18,7 @@ class CreateUserSettingsSignalTests(TestCase):
     def test_created_settings_have_default_theme(self) -> None:
         user = User.objects.create_user(email="sig@example.com", password="pass")
         settings = UserSettings.objects.get(user=user)
-        self.assertEqual(settings.theme, UserSettings.Theme.LIGHT)
+        self.assertEqual(settings.theme, UserSettings.Theme.SYSTEM)
 
     def test_superuser_creation_creates_settings(self) -> None:
         user = User.objects.create_superuser(email="admin@example.com", password="pass")

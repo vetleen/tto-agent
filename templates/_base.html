@@ -13,18 +13,26 @@
     <link rel="apple-touch-icon" href="{% static 'favicons/apple-touch-icon.png' %}">
     <script nonce="{{ request.csp_nonce }}">
       (function() {
-        var serverTheme = document.documentElement.getAttribute('data-theme');
-        if (serverTheme === 'dark') {
-          document.documentElement.classList.add('dark');
-        } else if (serverTheme === 'light') {
-          document.documentElement.classList.remove('dark');
-        } else {
-          /* Anonymous: use localStorage or default to dark (no backend) */
-          if (localStorage.getItem('color-theme') === 'light') {
-            document.documentElement.classList.remove('dark');
-          } else {
-            document.documentElement.classList.add('dark');
-          }
+        var el = document.documentElement;
+        var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+        // Resolve the effective theme to a .dark class. Runs before paint, so
+        // there is no flash even in "system" mode where the server can't know
+        // the OS preference. "system" and absent data-theme (anonymous pages)
+        // both follow the browser; explicit light/dark override it.
+        function apply() {
+          var t = el.getAttribute('data-theme');
+          var dark = t === 'dark' || ((t === 'system' || !t) && mq && mq.matches);
+          el.classList.toggle('dark', dark);
+        }
+        apply();
+        // Re-theme live if the OS flips while a tab is open. The listener reads
+        // data-theme each time, so it no-ops for explicit light/dark and stays
+        // correct if the user switches to "system" in settings without reloading.
+        if (mq) {
+          mq.addEventListener('change', function() {
+            apply();
+            if (window.WilfredEditor) WilfredEditor.setTheme(el.classList.contains('dark') ? 'dark' : 'light');
+          });
         }
       })();
     </script>
@@ -71,10 +79,6 @@
             <a href="{% url 'inbox' %}" aria-label="Inbox" title="Inbox" class="inline-flex items-center {% if request.path|slice:':7' == '/inbox/' %}text-fg-brand dark:text-heading{% else %}text-body{% endif %} hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
             </a>
-            <button type="button" id="theme-toggle" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
-              <svg id="theme-toggle-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
-              <svg id="theme-toggle-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
-            </button>
             <button type="button" class="flex items-center rounded-full focus:outline-none focus:ring-4 focus:ring-neutral-tertiary md:me-0" id="user-menu-button" aria-expanded="false" data-dropdown-toggle="user-dropdown" data-dropdown-placement="bottom" aria-label="Open user menu">
               {% user_avatar user "nav" %}
             </button>
@@ -125,12 +129,6 @@
         {% else %}
           <div class="flex-1"></div>
           <div class="flex items-center gap-4">
-            {% if not landing_page %}
-            <button type="button" id="theme-toggle-anon" aria-label="Toggle dark mode" class="text-body hover:bg-neutral-secondary-soft dark:hover:bg-neutral-tertiary focus:outline-none focus:ring-4 focus:ring-neutral-tertiary rounded-lg text-sm p-2.5">
-              <svg id="theme-toggle-anon-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
-              <svg id="theme-toggle-anon-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
-            </button>
-            {% endif %}
             <a href="{% url 'accounts:login' %}" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-3 py-2 focus:outline-none">
               Log in
             </a>
@@ -175,76 +173,6 @@
         if (submitEl && submitEl.form) submitEl.form.submit();
       });
     </script>
-    {% if user.is_authenticated %}
-    <script nonce="{{ request.csp_nonce }}">
-      (function() {
-        var themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
-        var themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
-        var serverTheme = document.documentElement.getAttribute('data-theme');
-        var isDark = serverTheme === 'dark' || (!serverTheme && (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)));
-        if (isDark) {
-          themeToggleLightIcon.classList.remove('hidden');
-        } else {
-          themeToggleDarkIcon.classList.remove('hidden');
-        }
-        document.getElementById('theme-toggle').addEventListener('click', function() {
-          themeToggleDarkIcon.classList.toggle('hidden');
-          themeToggleLightIcon.classList.toggle('hidden');
-          var isDarkNow = document.documentElement.classList.contains('dark');
-          if (isDarkNow) {
-            document.documentElement.classList.remove('dark');
-            localStorage.setItem('color-theme', 'light');
-            var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-            fetch(document.documentElement.getAttribute('data-theme-update-url'), {
-              method: 'POST',
-              headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-              body: 'theme=light&csrfmiddlewaretoken=' + encodeURIComponent(csrf),
-              credentials: 'same-origin'
-            });
-          } else {
-            document.documentElement.classList.add('dark');
-            localStorage.setItem('color-theme', 'dark');
-            var csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-            fetch(document.documentElement.getAttribute('data-theme-update-url'), {
-              method: 'POST',
-              headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-              body: 'theme=dark&csrfmiddlewaretoken=' + encodeURIComponent(csrf),
-              credentials: 'same-origin'
-            });
-          }
-          if (window.WilfredEditor) WilfredEditor.setTheme(document.documentElement.classList.contains('dark') ? 'dark' : 'light');
-        });
-      })();
-    </script>
-    {% endif %}
-    {% if not user.is_authenticated and not landing_page %}
-    <script nonce="{{ request.csp_nonce }}">
-      (function() {
-        var btn = document.getElementById('theme-toggle-anon');
-        if (!btn) return;
-        var darkIcon = document.getElementById('theme-toggle-anon-dark-icon');
-        var lightIcon = document.getElementById('theme-toggle-anon-light-icon');
-        var isDark = document.documentElement.classList.contains('dark');
-        if (isDark) {
-          lightIcon.classList.remove('hidden');
-        } else {
-          darkIcon.classList.remove('hidden');
-        }
-        btn.addEventListener('click', function() {
-          darkIcon.classList.toggle('hidden');
-          lightIcon.classList.toggle('hidden');
-          var isDarkNow = document.documentElement.classList.contains('dark');
-          if (isDarkNow) {
-            document.documentElement.classList.remove('dark');
-            localStorage.setItem('color-theme', 'light');
-          } else {
-            document.documentElement.classList.add('dark');
-            localStorage.setItem('color-theme', 'dark');
-          }
-        });
-      })();
-    </script>
-    {% endif %}
     {% if user.is_authenticated %}
     <script src="{% static 'js/vendor/html2canvas-pro.min.js' %}"></script>
     {% block feedback_widget %}{% include "feedback/_widget.html" %}{% endblock %}
