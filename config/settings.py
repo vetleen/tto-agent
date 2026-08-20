@@ -153,6 +153,11 @@ if _sentry_dsn and not _is_test_run and not _is_shell and not DEBUG:
     # Keep them out of Sentry's event stream — they're cosmetic, not errors.
     ignore_logger("weasyprint")
     ignore_logger("fontTools")
+    # Document processing: pypdf logs a WARNING per malformed xref/object entry
+    # ("Ignoring wrong pointing object N 0 (offset 0)") while recovering from a
+    # broken PDF, so one bad upload can emit hundreds (WILFRED-75). pypdf still
+    # parses the file; these are recoverable, not errors — keep them out of Sentry.
+    ignore_logger("pypdf")
 
 # SECURITY: SECRET_KEY must be set in production (no fallback when DEBUG is False).
 _secret_key = os.environ.get("DJANGO_SECRET_KEY", "").strip()

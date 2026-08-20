@@ -12,6 +12,11 @@ class CoreConfig(AppConfig):
     name = "core"
 
     def ready(self) -> None:
+        # Opt-in memory-attribution sampler (leak hunting). No-ops unless MEM_DEBUG
+        # is set, and only ever runs on the web (daphne) process — see core.memtrace.
+        from core import memtrace
+        memtrace.maybe_start()
+
         if not settings.DEBUG:
             return
         if "runserver" not in sys.argv:
