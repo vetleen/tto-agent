@@ -523,7 +523,11 @@ _aws_bucket = os.environ.get("AWS_STORAGE_BUCKET_NAME", "")
 if _aws_bucket:
     STORAGES = {
         "default": {
-            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+            # SharedSessionS3Storage shares one boto3 Session across threads so the
+            # S3 botocore service model loads once, not once per web worker thread
+            # (the per-thread duplication drove web.1 to R14/R15). See
+            # core/storage_backends.py.
+            "BACKEND": "core.storage_backends.SharedSessionS3Storage",
             "OPTIONS": {
                 "bucket_name": _aws_bucket,
                 "region_name": os.environ.get("AWS_S3_REGION_NAME", "eu-north-1"),

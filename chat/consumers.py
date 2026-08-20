@@ -10,8 +10,19 @@ from dataclasses import dataclass, field
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from redis.exceptions import (
+    ConnectionError as _RedisConnectionError,
+    TimeoutError as _RedisTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
+
+# Transient channels-Redis failures (the shared Redis Mini resets connections
+# under load): the consumer's best-effort group_add/discard should degrade on
+# these, not crash the turn. OSError covers the builtin ConnectionResetError
+# raised from the SSL-handshake path. See WILFRED-6P and core/cache.py's
+# ResilientRedisCache for the same fail-open philosophy on the cache side.
+_REDIS_BLIP = (_RedisConnectionError, _RedisTimeoutError, OSError)
 
 
 @dataclass
@@ -213,13 +224,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         await self.accept()
 
+    async def _safe_group_add(self, group: str) -> None:
+        """``group_add`` that degrades on a transient channels-Redis blip instead
+        of crashing the turn. The thread broadcast group is best-effort — it only
+        routes background sub-agent completion notifications; the user's own turn
+        streams via direct ``self.send``. See WILFRED-6P."""
+        try:
+            await self.channel_layer.group_add(group, self.channel_name)
+        except _REDIS_BLIP:
+            logger.warning("channel group_add degraded (redis blip) group=%s", group)
+
+    async def _safe_group_discard(self, group: str) -> None:
+        """``group_discard`` counterpart to :meth:`_safe_group_add`."""
+        try:
+            await self.channel_layer.group_discard(group, self.channel_name)
+        except _REDIS_BLIP:
+            logger.warning("channel group_discard degraded (redis blip) group=%s", group)
+
     async def disconnect(self, close_code):
         """Clean up background tasks when WebSocket disconnects."""
         # Leave thread channel group
         if self._current_thread_id:
-            await self.channel_layer.group_discard(
-                f"thread_{self._current_thread_id}", self.channel_name,
-            )
+            await self._safe_group_discard(f"thread_{self._current_thread_id}")
 
         # Signal any active LLM stream to stop
         if self._cancel_event:
@@ -496,13 +522,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Leave previous thread group, join the new one
         if self._current_thread_id and self._current_thread_id != thread_id:
-            await self.channel_layer.group_discard(
-                f"thread_{self._current_thread_id}", self.channel_name,
-            )
+            await self._safe_group_discard(f"thread_{self._current_thread_id}")
         self._current_thread_id = thread_id
-        await self.channel_layer.group_add(
-            f"thread_{thread_id}", self.channel_name,
-        )
+        await self._safe_group_add(f"thread_{thread_id}")
 
         # If this thread was created with a pending initial assistant turn
         # (e.g. via the "edit skill in chat" flow), fire it now. The flag is
@@ -1063,13 +1085,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # chat" flow) never auto-trigger the orchestrator — the
                 # channel-layer group has no members until a page reload.
                 if self._current_thread_id and self._current_thread_id != str(thread.id):
-                    await self.channel_layer.group_discard(
-                        f"thread_{self._current_thread_id}", self.channel_name,
-                    )
+                    await self._safe_group_discard(f"thread_{self._current_thread_id}")
                 self._current_thread_id = str(thread.id)
-                await self.channel_layer.group_add(
-                    f"thread_{thread.id}", self.channel_name,
-                )
+                await self._safe_group_add(f"thread_{thread.id}")
 
                 # Persist session data_room_ids as M2M for new threads
                 if self.data_room_ids:
