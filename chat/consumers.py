@@ -3544,6 +3544,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             else:
                 deck.content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
             deck.save(update_fields=["content", "title", "updated_at"])
+            # Ensure the reverted deck is re-rendered at turn-end (clears the
+            # "Updating…" pills this event triggers, with the correct pre-turn
+            # images) even if tool_end never registered it this turn.
+            if turn is not None:
+                turn.modified_slide_set_ids.add(str(deck.pk))
             slide_ids = [s.get("id") for s in (deck.content.get("slides") or [])]
             events.append({
                 "event_type": "slidedeck.updated",
