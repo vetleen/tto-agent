@@ -18,3 +18,8 @@ fontconfig
 # Heroku's 500 MB compressed slug limit. Measure slug size on staging before
 # promoting. No poppler needed (pypdfium2 does the rasterization).
 libreoffice-impress
+# The deck theme's fonts (Caladea = Cambria-metric serif, Carlito = Calibri-metric
+# sans). Ship explicitly so LibreOffice renders them instead of substituting
+# Liberation faces (which would shift the branded look).
+fonts-crosextra-caladea
+fonts-crosextra-carlito
