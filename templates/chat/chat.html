@@ -447,6 +447,36 @@
   </div>
 </div>
 
+{# Resize handle between chat and the slide-deck panel #}
+<div id="slides-resize-handle" class="hidden sm:hidden flex-col items-center justify-center w-1.5 cursor-col-resize bg-transparent hover:bg-brand/20 active:bg-brand/30 transition-colors shrink-0 group" title="Drag to resize">
+  <div class="w-0.5 h-8 rounded-full bg-neutral-quaternary group-hover:bg-brand group-active:bg-brand-strong transition-colors"></div>
+</div>
+
+{# Slide-deck panel (read-only rendered filmstrip) #}
+<div id="slides-panel" class="hidden flex-col border-l-0 border-default bg-neutral-primary-soft min-w-0 transition-all duration-200 w-full sm:w-1/2">
+  {# Header #}
+  <div class="flex items-center gap-2 px-4 py-2 border-b-[3px] border-b-brand bg-neutral-primary-soft shrink-0">
+    <span id="slides-title" class="flex-1 text-sm font-semibold text-heading truncate">Slide deck</span>
+    <div id="slides-tabs" class="hidden items-center gap-1"></div>
+    <button id="slides-download-pptx" title="Download PowerPoint (.pptx)"
+      class="cursor-pointer px-2 py-1 rounded-base text-xs font-medium text-body hover:text-heading hover:bg-neutral-tertiary">.pptx</button>
+    <button id="slides-download-pdf" title="Download PDF"
+      class="cursor-pointer px-2 py-1 rounded-base text-xs font-medium text-body hover:text-heading hover:bg-neutral-tertiary">PDF</button>
+    <button id="slides-close-btn" title="Close" aria-label="Close slide panel"
+      class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+      <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  {# Filmstrip #}
+  <div id="slides-filmstrip" class="flex-1 overflow-y-auto px-5 py-5 space-y-6 bg-neutral-secondary-soft"></div>
+  {# Comments footer #}
+  <div id="slides-comment-bar" class="hidden items-center justify-between px-4 py-2 border-t border-default bg-neutral-primary-soft shrink-0">
+    <span id="slides-comment-count" class="text-xs text-body">0 comments</span>
+    <button id="slides-comments-send"
+      class="cursor-pointer px-3 py-1 rounded-base text-xs font-medium bg-brand text-on-brand hover:bg-brand-strong">Send comments to {{ assistant_name|default:"Wilfred" }}</button>
+  </div>
+</div>
+
 </div>{# end #content-area #}
 
 {# ===================== Chat modals (design-system) ===================== #}
@@ -2414,6 +2444,8 @@
         // Load thread data rooms if resuming a thread
         if (activeThreadId) {
           ws.send(JSON.stringify({ type: "chat.load_thread", thread_id: activeThreadId }));
+          // Open the deck panel if this thread already has a slide deck.
+          if (window.SlideDeck) SlideDeck.requestState();
         }
       };
       ws.onmessage = function(event) { try { handleEvent(JSON.parse(event.data)); } catch(e) { console.error('Failed to parse WebSocket message:', e); } };
@@ -2523,6 +2555,7 @@
     // Reset streaming timeout on any event from the server
     if (currentStreamingElement) startStreamingTimeout();
     if (et === "heartbeat") return;
+    if (et && et.indexOf("slidedeck.") === 0) { if (window.SlideDeck) SlideDeck.handleEvent(data); return; }
     if (et === "loop.user_message") { appendLoopUserMessage(data.content); return; }
     if (et === "command.result") {
       if (data.action === "navigate") { window.location.href = CHAT_HOME; return; }
@@ -4180,6 +4213,175 @@
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     });
+  })();
+
+  // -- Slide deck panel (read-only rendered filmstrip) --
+  window.SlideDeck = (function() {
+    var panel = document.getElementById("slides-panel");
+    var handle = document.getElementById("slides-resize-handle");
+    var filmstrip = document.getElementById("slides-filmstrip");
+    var titleEl = document.getElementById("slides-title");
+    var tabsEl = document.getElementById("slides-tabs");
+    var commentBar = document.getElementById("slides-comment-bar");
+    var commentCountEl = document.getElementById("slides-comment-count");
+    var pdfBtn = document.getElementById("slides-download-pdf");
+    var pptxBtn = document.getElementById("slides-download-pptx");
+    var chatPane = document.getElementById("chat-pane");
+    var contentArea = document.getElementById("content-area");
+    var canvasPanel = document.getElementById("canvas-panel");
+    var canvasHandle = document.getElementById("canvas-resize-handle");
+    if (!panel) return { handleEvent: function(){}, requestState: function(){} };
+
+    var isOpen = false, deckId = null, slides = [], decks = [], openComments = 0;
+
+    function isMobile() { return window.matchMedia("(max-width: 639px)").matches; }
+    function bust(url) { return url ? (url + (url.indexOf("?") < 0 ? "?" : "&") + "v=" + Date.now().toString(36)) : url; }
+
+    function open() {
+      if (isOpen) return;
+      if (canvasPanel) { canvasPanel.classList.add("hidden"); canvasPanel.classList.remove("flex"); }
+      if (canvasHandle) { canvasHandle.classList.add("hidden"); canvasHandle.classList.remove("flex"); }
+      panel.classList.remove("hidden"); panel.classList.add("flex");
+      isOpen = true;
+      if (isMobile()) { chatPane.classList.add("hidden"); chatPane.classList.remove("flex"); }
+      else { handle.classList.remove("hidden", "sm:hidden"); handle.classList.add("flex"); }
+    }
+    function close() {
+      panel.classList.add("hidden"); panel.classList.remove("flex");
+      handle.classList.add("hidden"); handle.classList.remove("flex");
+      isOpen = false;
+      chatPane.style.flex = ""; panel.style.flex = "";
+      panel.classList.add("w-full", "sm:w-1/2");
+      chatPane.classList.remove("hidden"); chatPane.classList.add("flex");
+    }
+
+    function slideCard(s) {
+      var card = document.createElement("div");
+      card.className = "slides-card relative pl-3";
+      card.dataset.slideId = s.slide_id;
+      var badge = '<div class="absolute left-0 -top-2 z-10 text-[11px] font-semibold text-body bg-neutral-primary-soft rounded-full w-6 h-6 flex items-center justify-center shadow-sm border border-default">' + s.page + '</div>';
+      var media;
+      if (s.asset_url) {
+        media = '<img src="' + s.asset_url + '" alt="Slide ' + s.page + '" class="w-full rounded-lg shadow-md border border-default block" style="aspect-ratio:16/9;object-fit:contain;background:#fff" loading="lazy">'
+          + (s.rendering ? '<div class="absolute inset-0 rounded-lg bg-neutral-primary/30 flex items-center justify-center text-xs text-heading">Rendering…</div>' : '');
+      } else {
+        media = '<div class="w-full rounded-lg border border-dashed border-default bg-neutral-tertiary/30 flex items-center justify-center text-xs text-body" style="aspect-ratio:16/9">' + (s.rendering ? 'Rendering…' : 'Awaiting render') + '</div>';
+      }
+      var toggle = '<button class="slides-comment-toggle absolute right-2 top-2 z-10 cursor-pointer px-1.5 py-0.5 rounded-base bg-neutral-primary-soft/90 text-body hover:text-heading border border-default text-xs" title="Comment on this slide">💬</button>';
+      card.innerHTML = badge
+        + '<div class="relative">' + media + toggle + '</div>'
+        + '<div class="slides-comment-box hidden mt-2">'
+        + '<textarea class="w-full text-sm rounded-base border border-default bg-neutral-primary-soft px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand" rows="2" placeholder="Comment on slide ' + s.page + '…"></textarea>'
+        + '<div class="flex justify-end mt-1"><button class="slides-comment-add cursor-pointer px-2 py-0.5 rounded-base text-xs font-medium bg-neutral-tertiary text-heading hover:bg-neutral-quaternary">Add comment</button></div>'
+        + '</div>';
+      card.querySelector(".slides-comment-toggle").addEventListener("click", function() {
+        var box = card.querySelector(".slides-comment-box");
+        box.classList.toggle("hidden");
+        if (!box.classList.contains("hidden")) { var ta = card.querySelector("textarea"); if (ta) ta.focus(); }
+      });
+      card.querySelector(".slides-comment-add").addEventListener("click", function() {
+        var ta = card.querySelector("textarea");
+        var text = (ta.value || "").trim();
+        if (!text || !deckId) return;
+        ws.send(JSON.stringify({ type: "chat.slides_comment_add", thread_id: activeThreadId, deck_id: deckId, slide_id: s.slide_id, text: text }));
+        ta.value = "";
+        card.querySelector(".slides-comment-box").classList.add("hidden");
+      });
+      return card;
+    }
+
+    function renderFilmstrip() {
+      filmstrip.innerHTML = "";
+      if (!slides.length) { filmstrip.innerHTML = '<div class="text-sm text-body text-center py-10">No slides yet.</div>'; return; }
+      slides.forEach(function(s) { filmstrip.appendChild(slideCard(s)); });
+    }
+    function renderTabs() {
+      if (!decks || decks.length <= 1) { tabsEl.classList.add("hidden"); tabsEl.classList.remove("flex"); tabsEl.innerHTML = ""; return; }
+      tabsEl.classList.remove("hidden"); tabsEl.classList.add("flex"); tabsEl.innerHTML = "";
+      decks.forEach(function(d) {
+        var b = document.createElement("button");
+        b.className = "cursor-pointer px-2 py-0.5 rounded-base text-xs " + (d.deck_id === deckId ? "bg-brand text-on-brand" : "text-body hover:bg-neutral-tertiary");
+        b.textContent = d.title || "Deck";
+        b.addEventListener("click", function() { ws.send(JSON.stringify({ type: "chat.slides_switch", thread_id: activeThreadId, deck_id: d.deck_id })); });
+        tabsEl.appendChild(b);
+      });
+    }
+    function updateCommentBar() {
+      if (openComments > 0) { commentBar.classList.remove("hidden"); commentBar.classList.add("flex"); commentCountEl.textContent = openComments + (openComments === 1 ? " comment" : " comments"); }
+      else { commentBar.classList.add("hidden"); commentBar.classList.remove("flex"); }
+    }
+    function setPdfBusy(b) { if (pdfBtn) { pdfBtn.textContent = b ? "PDF…" : "PDF"; pdfBtn.disabled = b; } }
+    function triggerDownload(url) { var a = document.createElement("a"); a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); }
+
+    function setState(data) {
+      deckId = data.deck_id;
+      titleEl.textContent = data.title || "Slide deck";
+      slides = (data.slides || []).slice();
+      decks = data.decks || [];
+      openComments = (data.comments || []).length;
+      renderTabs(); renderFilmstrip(); updateCommentBar();
+    }
+    function applyUpdated(data) {
+      deckId = data.deck_id;
+      if (data.title) titleEl.textContent = data.title;
+      var changed = {}; (data.changed_slide_ids || []).forEach(function(id) { changed[id] = true; });
+      if (data.slide_ids && data.slide_ids.length) {
+        var known = {}; slides.forEach(function(s) { known[s.slide_id] = s; });
+        slides = data.slide_ids.map(function(id, i) {
+          var prev = known[id] || {};
+          return { slide_id: id, name: prev.name || "", page: i + 1, asset_url: prev.asset_url || null, width: prev.width, height: prev.height, rendering: !!changed[id] || !prev.asset_url };
+        });
+      } else {
+        slides.forEach(function(s) { if (changed[s.slide_id]) s.rendering = true; });
+      }
+      renderFilmstrip();
+    }
+    function applyRendered(data) {
+      var byId = {}; (data.slides || []).forEach(function(s) { byId[s.slide_id] = s; });
+      if (!slides.length && data.slides) {
+        slides = data.slides.map(function(s) { return { slide_id: s.slide_id, name: "", page: s.page, asset_url: bust(s.asset_url), width: s.width, height: s.height, rendering: false }; });
+      } else {
+        slides.forEach(function(s) {
+          var r = byId[s.slide_id];
+          if (r) { s.asset_url = bust(r.asset_url); s.width = r.width; s.height = r.height; s.page = r.page; s.rendering = false; }
+        });
+        slides.sort(function(a, b) { return (a.page || 0) - (b.page || 0); });
+      }
+      renderFilmstrip();
+    }
+
+    function requestState() { if (activeThreadId && ws) ws.send(JSON.stringify({ type: "chat.slides_open", thread_id: activeThreadId })); }
+
+    function handleEvent(data) {
+      var et = data.event_type;
+      if (et === "slidedeck.updated") { open(); applyUpdated(data); return; }
+      if (et === "slidedeck.state") { open(); setState(data); return; }
+      if (et === "slidedeck.rendered") { open(); applyRendered(data); return; }
+      if (et === "slidedeck.render_failed") { slides.forEach(function(s) { s.rendering = false; }); renderFilmstrip(); return; }
+      if (et === "slidedeck.active_changed") { requestState(); return; }
+      if (et === "slidedeck.deleted") { if (!deckId || data.deck_id === deckId) close(); return; }
+      if (et === "slidedeck.comment_added") { if (data.ok) { openComments = (data.open_count != null) ? data.open_count : (openComments + 1); updateCommentBar(); } return; }
+      if (et === "slidedeck.pdf_pending") { setPdfBusy(true); return; }
+      if (et === "slidedeck.pdf_ready") { setPdfBusy(false); if (data.download_url) triggerDownload(data.download_url); return; }
+    }
+
+    // Header buttons
+    var closeBtn = document.getElementById("slides-close-btn");
+    if (closeBtn) closeBtn.addEventListener("click", close);
+    if (pptxBtn) pptxBtn.addEventListener("click", function() { if (deckId) triggerDownload("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/"); });
+    if (pdfBtn) pdfBtn.addEventListener("click", function() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); });
+    var sendBtn = document.getElementById("slides-comments-send");
+    if (sendBtn) sendBtn.addEventListener("click", function() { if (deckId) { ws.send(JSON.stringify({ type: "chat.slides_comments_send", thread_id: activeThreadId, deck_id: deckId })); openComments = 0; updateCommentBar(); } });
+
+    // Resize drag (mirrors the canvas handle)
+    (function() {
+      var dragging = false;
+      handle.addEventListener("mousedown", function(e) { e.preventDefault(); dragging = true; chatPane.classList.remove("transition-all", "duration-200"); panel.classList.remove("transition-all", "duration-200"); document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none"; });
+      document.addEventListener("mousemove", function(e) { if (!dragging) return; var rect = contentArea.getBoundingClientRect(); var pct = ((e.clientX - rect.left) / rect.width) * 100; pct = Math.max(25, Math.min(75, pct)); chatPane.style.flex = "0 0 " + pct + "%"; panel.style.flex = "0 0 " + (100 - pct) + "%"; panel.classList.remove("w-full", "sm:w-1/2"); });
+      document.addEventListener("mouseup", function() { if (!dragging) return; dragging = false; chatPane.classList.add("transition-all", "duration-200"); panel.classList.add("transition-all", "duration-200"); document.body.style.cursor = ""; document.body.style.userSelect = ""; });
+    })();
+
+    return { handleEvent: handleEvent, requestState: requestState, isOpen: function() { return isOpen; } };
   })();
 
   // -- Sidebar resize drag (desktop only) --
