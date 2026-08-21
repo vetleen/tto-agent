@@ -406,6 +406,217 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     status=SlideRenderRun.Status.FAILED, error="Could not enqueue render."
                 )
 
+    # -- Slide deck client message handlers --
+    def _slides_state_sync(self, thread_id, deck=None):
+        """Build the deck panel state (slides + cached renders + open comments)."""
+        from chat.models import SlideComment, SlideRender, SlideSet
+        from chat.slides.service import get_active_deck
+
+        if deck is None:
+            deck = get_active_deck(thread_id)
+        if deck is None:
+            return None
+        content = deck.content or {}
+        renders = {r.slide_id: r for r in SlideRender.objects.filter(slide_set=deck)}
+        slide_list = []
+        for i, s in enumerate(content.get("slides") or []):
+            sid = s.get("id")
+            r = renders.get(sid)
+            slide_list.append({
+                "slide_id": sid,
+                "name": s.get("name", ""),
+                "page": i + 1,
+                "asset_url": f"/chat/asset/{r.asset_id}/" if (r and r.asset_id) else None,
+                "width": r.width if r else None,
+                "height": r.height if r else None,
+            })
+        comments = [
+            {"id": c.id, "slide_id": c.slide_id, "text": c.text}
+            for c in SlideComment.objects.filter(
+                slide_set=deck, status=SlideComment.Status.OPEN
+            ).order_by("created_at")
+        ]
+        decks = list(
+            SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+            .order_by("created_at")
+            .values("id", "title", "is_active")
+        )
+        return {
+            "deck_id": str(deck.pk),
+            "title": deck.title,
+            "slides": slide_list,
+            "comments": comments,
+            "decks": [
+                {"deck_id": str(d["id"]), "title": d["title"], "is_active": d["is_active"]}
+                for d in decks
+            ],
+        }
+
+    def _owned_deck(self, thread_id, deck_id, *, include_deleted=False):
+        from chat.models import SlideSet
+
+        qs = SlideSet.objects.filter(pk=deck_id, thread_id=thread_id, thread__created_by=self.user)
+        if not include_deleted:
+            qs = qs.filter(deleted_at__isnull=True)
+        return qs.first()
+
+    async def _handle_slides_open(self, data):
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+
+        def _load():
+            deck = self._owned_deck(thread_id, deck_id) if deck_id else None
+            return self._slides_state_sync(thread_id, deck)
+
+        state = await database_sync_to_async(_load)()
+        if state:
+            await self.send(text_data=json.dumps({"event_type": "slidedeck.state", **state}))
+
+    async def _handle_slides_switch(self, data):
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+
+        def _switch():
+            from chat.slides.service import activate_deck
+
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return None
+            activate_deck(thread_id, deck)
+            return self._slides_state_sync(thread_id, deck)
+
+        state = await database_sync_to_async(_switch)()
+        if state:
+            await self.send(text_data=json.dumps({"event_type": "slidedeck.state", **state}))
+
+    async def _handle_slides_delete(self, data):
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+
+        def _delete():
+            from chat.slides.service import soft_delete_deck
+
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return None
+            title = deck.title
+            soft_delete_deck(thread_id, deck)
+            return {"deck_id": str(deck.pk), "deck_title": title}
+
+        res = await database_sync_to_async(_delete)()
+        if res:
+            await self.send(text_data=json.dumps({"event_type": "slidedeck.deleted", **res}))
+
+    async def _handle_slides_restore(self, data):
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+
+        def _restore():
+            from chat.slides.service import activate_deck, restore_deck
+
+            deck = self._owned_deck(thread_id, deck_id, include_deleted=True)
+            if deck is None:
+                return None
+            restore_deck(thread_id, deck)
+            activate_deck(thread_id, deck)
+            return self._slides_state_sync(thread_id, deck)
+
+        state = await database_sync_to_async(_restore)()
+        if state:
+            await self.send(text_data=json.dumps({"event_type": "slidedeck.state", **state}))
+
+    async def _handle_slides_comment_add(self, data):
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+        slide_id = (data.get("slide_id") or "")[:32]
+        text = (data.get("text") or "").strip()[:4000]
+
+        def _add():
+            from chat.models import SlideComment
+
+            if not text:
+                return {"ok": False, "error": "Empty comment."}
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return {"ok": False}
+            SlideComment.objects.create(
+                slide_set=deck, slide_id=slide_id, author=self.user, text=text
+            )
+            open_count = deck.comments.filter(status=SlideComment.Status.OPEN).count()
+            return {"ok": True, "deck_id": str(deck.pk), "slide_id": slide_id, "open_count": open_count}
+
+        res = await database_sync_to_async(_add)()
+        await self.send(text_data=json.dumps({"event_type": "slidedeck.comment_added", **res}))
+
+    async def _handle_slides_comments_send(self, data):
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+
+        def _compose():
+            from chat.models import SlideComment
+
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return None
+            comments = list(
+                deck.comments.filter(status=SlideComment.Status.OPEN).order_by("created_at")
+            )
+            if not comments:
+                return None
+            content = deck.content or {}
+            pos_name = {
+                s.get("id"): (i + 1, s.get("name", ""))
+                for i, s in enumerate(content.get("slides") or [])
+            }
+            lines = [f'Comments on the deck "{deck.title}":']
+            for c in comments:
+                pos, name = pos_name.get(c.slide_id, (None, ""))
+                label = (
+                    f"Slide {pos}" + (f" ({name})" if name else "")
+                    if pos else f"Slide {c.slide_id}"
+                )
+                lines.append(f"- {label} [{c.slide_id}]: {c.text}")
+            SlideComment.objects.filter(pk__in=[c.pk for c in comments]).update(
+                status=SlideComment.Status.SENT
+            )
+            return "\n".join(lines)
+
+        composed = await database_sync_to_async(_compose)()
+        if composed:
+            await self._handle_chat_message({"thread_id": thread_id, "content": composed})
+
+    async def _handle_slides_export_pdf(self, data):
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+
+        def _dispatch():
+            from chat.models import SlideRenderRun
+            from chat.tasks import render_deck_task
+
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return None
+            run = SlideRenderRun.objects.create(
+                slide_set=deck, purpose=SlideRenderRun.Purpose.PDF_EXPORT, slide_ids=[]
+            )
+            try:
+                task = render_deck_task.delay(str(run.id))
+                run.celery_task_id = task.id
+                run.save(update_fields=["celery_task_id"])
+            except Exception:
+                SlideRenderRun.objects.filter(pk=run.id).update(
+                    status=SlideRenderRun.Status.FAILED, error="Could not enqueue export."
+                )
+                return None
+            return str(run.id)
+
+        run_id = await database_sync_to_async(_dispatch)()
+        await self.send(text_data=json.dumps({
+            "event_type": "slidedeck.pdf_pending",
+            "deck_id": str(deck_id or ""),
+            "run_id": run_id,
+        }))
+
     @database_sync_to_async
     def _resolve_preferences(self):
         from accounts.models import invalidate_membership_cache
@@ -525,6 +736,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_canvas_delete(data)
         elif msg_type == "chat.canvas_restore":
             await self._handle_canvas_restore(data)
+        elif msg_type == "chat.slides_open":
+            await self._handle_slides_open(data)
+        elif msg_type == "chat.slides_switch":
+            await self._handle_slides_switch(data)
+        elif msg_type == "chat.slides_delete":
+            await self._handle_slides_delete(data)
+        elif msg_type == "chat.slides_restore":
+            await self._handle_slides_restore(data)
+        elif msg_type == "chat.slides_comment_add":
+            await self._handle_slides_comment_add(data)
+        elif msg_type == "chat.slides_comments_send":
+            await self._handle_slides_comments_send(data)
+        elif msg_type == "chat.slides_export_pdf":
+            await self._handle_slides_export_pdf(data)
         elif msg_type == "chat.stop":
             await self._handle_stop(data)
         elif msg_type == "pong":
