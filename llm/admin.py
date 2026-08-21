@@ -101,37 +101,50 @@ class LLMCallLogAdmin(admin.ModelAdmin):
         }),
     )
 
+    @staticmethod
+    def _iter_messages(prompt):
+        """Yield message entries from a stored prompt, tolerating legacy shapes.
+
+        Current rows store ``prompt`` as a list of message dicts, but some legacy
+        rows stored a bare string or a list of strings. Normalize both so the
+        changelist preview columns don't 500 on old rows (WILFRED-78).
+        """
+        if not prompt:
+            return []
+        if isinstance(prompt, str):
+            return [prompt]
+        return prompt if isinstance(prompt, (list, tuple)) else []
+
+    @staticmethod
+    def _message_text(msg):
+        """Best-effort display text for one message entry (dict or bare string)."""
+        if isinstance(msg, str):
+            return msg
+        if not isinstance(msg, dict):
+            return ""
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            # Handle structured content blocks (e.g. Anthropic format)
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    return block.get("text", "")
+            return ""
+        return content or ""
+
     @admin.display(description="Prompt")
     def prompt_preview(self, obj):
-        messages = obj.prompt or []
-        for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                # Handle structured content blocks (e.g. Anthropic format)
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        content = block.get("text", "")
-                        break
-                else:
-                    content = ""
+        for msg in self._iter_messages(obj.prompt):
+            content = self._message_text(msg)
             if content:
                 return content[:100] + ("…" if len(content) > 100 else "")
         return ""
 
     @admin.display(description="User Prompt")
     def user_prompt_preview(self, obj):
-        messages = obj.prompt or []
-        for msg in messages:
-            if msg.get("role") != "user":
+        for msg in self._iter_messages(obj.prompt):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
                 continue
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        content = block.get("text", "")
-                        break
-                else:
-                    content = ""
+            content = self._message_text(msg)
             if content:
                 return content[:100] + ("…" if len(content) > 100 else "")
         return ""
