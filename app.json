@@ -89,6 +89,21 @@
       "value": "2",
       "required": false
     },
+    "SLIDES_ENABLED": {
+      "description": "Global kill-switch for the AI slide-deck feature. Per-org rollout is the 'slide_deck_collaborator' seed skill's org enablement. Default true.",
+      "value": "true",
+      "required": false
+    },
+    "SLIDE_RENDER_TIMEOUT": {
+      "description": "Seconds a single LibreOffice pptx->pdf conversion may run before it's killed (process-group). Default 120.",
+      "value": "120",
+      "required": false
+    },
+    "SLIDE_RENDER_CONCURRENCY": {
+      "description": "Max concurrent LibreOffice renders on the worker (semaphore bound; the ~200-300MB spike is per-render). Default 1.",
+      "value": "1",
+      "required": false
+    },
     "SENTRY_DSN": {
       "description": "Optional: error tracking. Disabled if unset.",
       "required": false
