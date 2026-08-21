@@ -139,45 +139,52 @@ def _messages_with_turn_context(
     is_loop_turn: bool,
     tool_schemas: list,
 ):
-    """Return copied messages with final per-turn context injected.
+    """Return a copy of ``messages`` with final per-turn context injected.
 
-    Runtime input size is estimated twice so the reported footprint includes
-    the runtime block and its own estimate line. The result remains explicitly
-    approximate because provider envelope tokenization differs.
+    The per-turn preamble is only ever spliced onto the last user message, and
+    ``_prepend_preamble_to_last_user_message`` reassigns that slot with a fresh
+    ``model_copy`` rather than mutating in place, so a single shallow copy of the
+    list protects the caller — no per-render deep copy of the whole history.
+
+    The runtime footprint is self-referential (the "~N tokens" line counts its
+    own size), so it's converged in two passes; but only the cheap preamble
+    string changes between passes, so the full request is tokenized once and each
+    pass only re-counts the preamble. The number remains explicitly approximate
+    because provider envelope tokenization differs.
     """
     from chat.prompts import build_dynamic_context, build_last_message_preamble
-    from core.tokens import estimate_chat_request_tokens
+    from core.tokens import count_tokens, estimate_chat_request_tokens
 
     runtime_stats = dict(dynamic_context_data.get("runtime_stats") or {})
 
-    def _render(stats):
+    def _preamble(stats):
         rendered_data = dict(dynamic_context_data)
         if rendered_data:
             rendered_data["runtime_stats"] = stats
             rendered_dynamic = build_dynamic_context(**rendered_data)
         else:
             rendered_dynamic = ""
-        rendered_preamble = build_last_message_preamble(
+        return build_last_message_preamble(
             semi_static_system=semi_static_system,
             dynamic_context=rendered_dynamic,
             is_loop_turn=is_loop_turn,
         )
-        rendered_messages = [m.model_copy(deep=True) for m in messages]
-        _prepend_preamble_to_last_user_message(
-            rendered_messages, rendered_preamble,
-        )
-        return rendered_messages
 
     if runtime_stats:
-        provisional_messages = _render(runtime_stats)
-        runtime_stats["estimated_input_tokens"] = estimate_chat_request_tokens(
-            provisional_messages, tool_schemas,
+        # Tokenize the full request (history + tool schemas) once; the preamble
+        # is not yet spliced in, so add its own token count to get the footprint.
+        base_tokens = estimate_chat_request_tokens(messages, tool_schemas)
+        provisional_preamble = _preamble(runtime_stats)
+        runtime_stats["estimated_input_tokens"] = (
+            base_tokens + count_tokens(provisional_preamble)
         )
-        estimated_messages = _render(runtime_stats)
-        runtime_stats["estimated_input_tokens"] = estimate_chat_request_tokens(
-            estimated_messages, tool_schemas,
-        )
-    return _render(runtime_stats)
+        preamble = _preamble(runtime_stats)
+    else:
+        preamble = _preamble(runtime_stats)
+
+    rendered_messages = list(messages)
+    _prepend_preamble_to_last_user_message(rendered_messages, preamble)
+    return rendered_messages
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
