@@ -103,6 +103,30 @@ class WebFetchToolTests(TestCase):
         self.assertNotIn("Footer", result)
         self.assertIn("(complete)", result)
 
+    @override_settings(WEB_FETCH_MAX_PARSE_BYTES=2000)
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_oversized_html_truncated_before_parse(self, mock_get):
+        """HTML over WEB_FETCH_MAX_PARSE_BYTES is truncated before parsing, yet
+        content near the top of the document is still extracted (safety net)."""
+        head = (
+            "<html><head><title>Big Page</title></head>"
+            "<body><main><p>Top content here.</p></main>"
+        )
+        big_html = head + ("<p>filler</p>" * 500) + "</body></html>"
+        self.assertGreater(len(big_html), 2000)
+        mock_get.return_value = _mock_response(content_type="text/html", text=big_html)
+
+        with self.assertLogs("llm.tools.web_fetch", level="WARNING") as cm:
+            result = self.tool.invoke({"url": "https://example.com"})
+
+        # Top-of-page content survives the truncation...
+        self.assertIn("Top content here.", result)
+        # ...and the safety-net warning fired.
+        self.assertTrue(
+            any("truncating before parse" in line for line in cm.output),
+            cm.output,
+        )
+
     @patch("llm.tools.web_fetch._pinned_get")
     def test_delimiters_wrap_content(self, mock_get):
         mock_get.return_value = _mock_response(

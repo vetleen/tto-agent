@@ -44,6 +44,26 @@ def _max_response_bytes() -> int:
     return getattr(django_settings, "WEB_FETCH_MAX_RESPONSE_BYTES", _DEFAULT_MAX_RESPONSE_BYTES)
 
 
+# HTML parser for the two BeautifulSoup passes (text + image discovery). lxml is
+# several times leaner and faster than the stdlib "html.parser" on the parse
+# tree — the transient web-research memory culprit (Aug-2026 R14 tracemalloc
+# run). A constant keeps both call sites (and tests) in sync and makes it
+# trivially revertible. lxml ships transitively via readability-lxml.
+_HTML_PARSER = "lxml"
+
+# High safety cap on the size of decoded HTML handed to the parser. The download
+# is already bounded (_DEFAULT_MAX_RESPONSE_BYTES), but a bs4 tree is several
+# times the HTML size, so an oversized page can still spike RSS transiently.
+# This is an absolute safety net for pathological pages, not a normal-path limit
+# — kept high; HTML over it is truncated before parsing (article content sits
+# near the top of the document). Overridable via settings.WEB_FETCH_MAX_PARSE_BYTES.
+_DEFAULT_MAX_PARSE_BYTES = 8_000_000  # 8 MB
+
+
+def _max_parse_bytes() -> int:
+    return getattr(django_settings, "WEB_FETCH_MAX_PARSE_BYTES", _DEFAULT_MAX_PARSE_BYTES)
+
+
 class _SSRFBlocked(Exception):
     """Raised when a URL resolves to a private/reserved address."""
 
@@ -856,9 +876,20 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     logger.info("web_fetch: fetched url=%s status=%d chars=%d", url, response.status_code, len(response.text))
     raw_html = response.text
 
+    # Absolute safety net: a bs4 tree is several times the HTML size, so cap the
+    # HTML handed to the parser. Rare — only pathologically large pages hit it;
+    # the article content sits near the top, so truncation loses little.
+    max_parse = _max_parse_bytes()
+    if len(raw_html) > max_parse:
+        logger.warning(
+            "web_fetch: HTML for url=%s is %d chars (> %d cap); truncating before parse",
+            url, len(raw_html), max_parse,
+        )
+        raw_html = raw_html[:max_parse]
+
     # --- Security pre-processing: strip hidden elements ---
     try:
-        soup = BeautifulSoup(raw_html, "html.parser")
+        soup = BeautifulSoup(raw_html, _HTML_PARSER)
     except Exception:
         return {"error": "Failed to parse HTML", "url": url}
 
@@ -867,7 +898,7 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     # layouts the content images live there. A distinct parse keeps the text
     # path below byte-identical to before. base = final URL after redirects.
     try:
-        image_soup = BeautifulSoup(raw_html, "html.parser")
+        image_soup = BeautifulSoup(raw_html, _HTML_PARSER)
         _strip_for_images(image_soup)
         images = _extract_image_candidates(image_soup, current_url)
     except Exception:
