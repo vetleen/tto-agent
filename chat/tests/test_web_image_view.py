@@ -106,6 +106,35 @@ class WebImageViewToolTests(TestCase):
         self._invoke({"handles": ["img-1"]}, return_value=_resp(_png()))
         self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)
 
+    def test_duplicate_handles_are_fetched_once(self):
+        tool = WebImageViewTool()
+        tool.set_context(self.ctx)
+        with patch(_FETCH, return_value=(_resp(_png()), _IMG_URL)) as fetch:
+            result = tool.invoke({"handles": ["img-1"] * 50})
+
+        fetch.assert_called_once()
+        self.assertEqual(result.count("img-1: viewed"), 1)
+        self.assertEqual(len(self.ctx.pending_image_assets), 1)
+
+    def test_failed_fetches_are_capped_at_first_four_unique_handles(self):
+        urls = [_IMG_URL]
+        for i in range(5):
+            url = f"https://cdn.example.com/i{i}.png"
+            urls.append(url)
+            self.ctx.allocate_web_image_handle({
+                "url": url, "page_url": _PAGE_URL,
+                "filename": f"i{i}.png", "alt": f"img {i}",
+            })
+        tool = WebImageViewTool()
+        tool.set_context(self.ctx)
+        with patch(_FETCH, side_effect=_SSRFBlocked("private or reserved IP")) as fetch:
+            result = tool.invoke({"handles": [f"img-{n}" for n in range(1, 7)]})
+
+        self.assertEqual(fetch.call_count, 4)
+        self.assertEqual([call.args[0] for call in fetch.call_args_list], urls[:4])
+        self.assertIn("max 4 images per call", result)
+        self.assertEqual(len(self.ctx.pending_image_assets), 0)
+
     def test_per_call_attachment_cap(self):
         for i in range(6):
             self.ctx.allocate_web_image_handle({

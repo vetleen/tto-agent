@@ -26,15 +26,15 @@ logger = logging.getLogger(__name__)
 
 # Per-image download cap (smaller than the page cap — a single content image).
 _WEB_IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
-# Cap images attached per call, mirroring document_view_image.
-_MAX_ATTACH_PER_CALL = 4
+# Cap unique image handles processed per call, mirroring document_view_image.
+_MAX_HANDLES_PER_CALL = 4
 
 
 class WebImageViewInput(ReasonBaseModel):
     handles: list[str] = Field(
         description=(
             "Image handles to view, from a prior web_fetch(include_images=true) "
-            'result — e.g. ["img-1", "img-4"].'
+            'result — e.g. ["img-1", "img-4"]. Pass at most four unique handles.'
         ),
     )
 
@@ -73,6 +73,13 @@ class WebImageViewTool(ContextAwareTool):
         if not handles or not isinstance(handles, list):
             raise ValueError("web_image_view requires a non-empty 'handles' list")
 
+        # Bound all per-handle work, not just successful attachments. Fetch
+        # failures can be slow, and repeated handles should never cause repeated
+        # downloads within one tool call.
+        unique_handles = list(dict.fromkeys(handles))
+        handles_to_process = unique_handles[:_MAX_HANDLES_PER_CALL]
+        omitted_count = len(unique_handles) - len(handles_to_process)
+
         context = self.context
         manifest = getattr(context, "web_image_manifest", None) or {}
         user = _resolve_user(context)
@@ -86,10 +93,7 @@ class WebImageViewTool(ContextAwareTool):
         }
         results: list[str] = []
         attached = 0
-        for handle in handles:
-            if attached >= _MAX_ATTACH_PER_CALL:
-                results.append(f"{handle}: skipped — max {_MAX_ATTACH_PER_CALL} images per call.")
-                continue
+        for handle in handles_to_process:
             entry = manifest.get(handle)
             if not entry:
                 results.append(
@@ -148,6 +152,12 @@ class WebImageViewTool(ContextAwareTool):
                 f"{handle}: viewed. To DISPLAY this image in your reply, paste this "
                 f"token exactly where you want the image to appear: {token} "
                 f"(image source: {url})"
+            )
+
+        if omitted_count:
+            results.append(
+                f"{omitted_count} additional unique image handle(s): skipped — "
+                f"max {_MAX_HANDLES_PER_CALL} images per call."
             )
 
         if attached == 0:
