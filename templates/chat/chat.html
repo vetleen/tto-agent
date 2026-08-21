@@ -143,7 +143,7 @@
       </div>
     </div>
     <div class="flex items-center gap-2">
-      <button id="slides-toggle-btn" type="button" class="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle slide deck">
+      <button id="slides-toggle-btn" type="button" class="hidden items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle slide deck">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 4.5h16.5M4.5 4.5v10.5a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5V4.5M12 16.5V21m0 0l-2.25 1.5M12 21l2.25 1.5"/></svg>
       </button>
       <button id="canvas-toggle-btn" type="button" class="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle canvas">
@@ -4262,8 +4262,11 @@
     function bust(url) { return url ? (url + (url.indexOf("?") < 0 ? "?" : "&") + "v=" + Date.now().toString(36)) : url; }
 
     var slidesToggleBtn = document.getElementById("slides-toggle-btn");
-    function revealToggle() { if (slidesToggleBtn) slidesToggleBtn.classList.remove("hidden"); }
-    function hideToggle() { if (slidesToggleBtn) slidesToggleBtn.classList.add("hidden"); }
+    // The button is display:none by default; showing it means desktop-only
+    // inline-flex (mobile uses the panel's own flow), so toggle sm:inline-flex —
+    // NOT the base `hidden`, which sm:inline-flex would override on desktop.
+    function revealToggle() { if (slidesToggleBtn) slidesToggleBtn.classList.add("sm:inline-flex"); }
+    function hideToggle() { if (slidesToggleBtn) slidesToggleBtn.classList.remove("sm:inline-flex"); }
     function open() {
       revealToggle();  // a deck exists for this thread — let the user reopen the panel later
       if (isOpen) return;
