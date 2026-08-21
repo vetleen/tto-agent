@@ -82,6 +82,16 @@ Seed a slide from one of these, then edit its placeholder text.
   overflow, collisions, and low-contrast text before you hand back. Preview only the slides
   you changed. The rendered preview is the source of truth for how the slide looks.
 
+## Design guidance (make it look like a real deck)
+- **One idea per slide.** Prefer short phrases over full sentences; a headline plus 3–5
+  tight bullets beats a wall of text. If a slide is getting crowded, split it.
+- **Show, don't tell.** A single big metric (the `metric` layout), a callout box, a small
+  table, or an image usually lands better than more bullets.
+- **Use structure.** Break a long deck with `section` slides; open with `title`, close with
+  `closing`. Keep a consistent left margin — align related elements to the same `x`.
+- **Let the theme do the work.** Lean on classes (`headline`/`subhead`/`body`/`data`) and
+  theme colours; reserve accent colours for emphasis, not whole paragraphs.
+
 ## Workflow
 1. For a multi-slide deck, outline the slides in chat first and confirm with the user.
 2. Write or seed the deck.
