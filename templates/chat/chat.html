@@ -4277,9 +4277,11 @@
       var media;
       if (s.asset_url) {
         media = '<img src="' + s.asset_url + '" alt="Slide ' + s.page + '" class="slides-thumb w-full rounded-lg shadow-md border border-default block cursor-zoom-in" style="aspect-ratio:16/9;object-fit:contain;background:#fff" loading="lazy">'
-          + (s.rendering ? '<div class="absolute inset-0 rounded-lg bg-neutral-primary/30 flex items-center justify-center text-xs text-heading">Rendering…</div>' : '');
+          + (s.rendering ? '<div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-forest-900/85 text-paper-50 text-[11px] shadow-lg animate-pulse"><span class="w-1.5 h-1.5 rounded-full bg-paper-50"></span>Updating…</div>' : '');
+      } else if (s.rendering) {
+        media = '<div class="w-full rounded-lg border border-dashed border-brand/40 bg-neutral-tertiary/30 flex items-center justify-center gap-1.5 text-center px-4 text-xs text-body animate-pulse" style="aspect-ratio:16/9"><span class="w-1.5 h-1.5 rounded-full bg-brand"></span>Rendering…</div>';
       } else {
-        var placeholder = s.rendering ? 'Rendering…' : (renderFailed ? 'Preview unavailable — download the .pptx above' : 'Awaiting render');
+        var placeholder = renderFailed ? 'Preview unavailable — download the .pptx above' : 'Awaiting render';
         media = '<div class="w-full rounded-lg border border-dashed border-default bg-neutral-tertiary/30 flex items-center justify-center text-center px-4 text-xs text-body" style="aspect-ratio:16/9">' + placeholder + '</div>';
       }
       var toggle = '<button class="slides-comment-toggle absolute right-2 top-2 z-10 cursor-pointer px-1.5 py-0.5 rounded-base bg-neutral-primary-soft/90 text-body hover:text-heading border border-default text-xs" title="Comment on this slide">💬</button>';
