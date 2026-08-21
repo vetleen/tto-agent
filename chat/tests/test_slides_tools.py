@@ -123,6 +123,48 @@ class SlideToolTests(TestCase):
         self.assertEqual(r["status"], "error")
 
 
+class BuildResolverTests(TestCase):
+    """build_pptx image-token resolution + the owner-scoping leak guard."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"i+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+
+    def _img_deck(self, token, title="D"):
+        return SlideSet.objects.create(
+            thread=self.thread, title=title,
+            content={"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+                {"id": "s1", "elements": [
+                    {"id": "e1", "type": "image", "x": 100, "y": 100, "w": 300, "h": 200, "token": token},
+                ]},
+            ]},
+        )
+
+    def test_owner_image_embeds(self):
+        from chat.assets import store_thread_image
+        from chat.slides.pptx_build import build_pptx
+
+        asset = store_thread_image(self.thread, img_bytes=_PNG, content_type="image/png")
+        data, warnings = build_pptx(self._img_deck(f"[[image:{asset.id}]]"))
+        self.assertEqual(warnings, [])
+        import io
+        import zipfile
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertTrue(any(n.startswith("ppt/media/") for n in z.namelist()))
+
+    def test_cross_owner_token_is_blocked(self):
+        from chat.assets import store_thread_image
+        from chat.slides.pptx_build import build_pptx
+
+        User = get_user_model()
+        other = User.objects.create_user(email=f"o+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        other_thread = ChatThread.objects.create(created_by=other, title="o")
+        foreign = store_thread_image(other_thread, img_bytes=_PNG + b"x", content_type="image/png")
+        _data, warnings = build_pptx(self._img_deck(f"[[image:{foreign.id}]]"))
+        self.assertTrue(any("unavailable" in w for w in warnings))
+
+
 class PreviewToolTests(TestCase):
     def setUp(self):
         User = get_user_model()
