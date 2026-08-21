@@ -1769,6 +1769,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
                 if canvas_data:
                     await self._sink.send_event(canvas_data)
+            for deck_event in await self._redact_slide_decks(thread, turn):
+                await self._sink.send_event(deck_event)
 
     @database_sync_to_async
     def _is_fresh_loop_thread(self, thread_id):
@@ -2487,6 +2489,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 canvas_data = await self._get_canvas_for_redaction_event(thread, cid)
                 if canvas_data:
                     await self.send(text_data=json.dumps(canvas_data))
+            for deck_event in await self._redact_slide_decks(thread, turn):
+                await self.send(text_data=json.dumps(deck_event))
 
             if verdict.action == "block":
                 await self.send(text_data=json.dumps({
@@ -3476,6 +3480,68 @@ class ChatConsumer(AsyncWebsocketConsumer):
             redacted.append(str(canvas.pk))
 
         return redacted
+
+    @database_sync_to_async
+    def _redact_slide_decks(self, thread, turn=None):
+        """Revert decks modified during a guardrail-blocked turn to their pre-turn
+        checkpoint (deck sibling of _redact_canvases). Returns event payloads."""
+        import copy
+
+        from chat.models import ChatMessage, SlideSet, SlideSetCheckpoint
+
+        last_user = None
+        if turn is not None and turn.user_message_id is not None:
+            last_user = ChatMessage.objects.filter(
+                thread=thread, role="user", pk=turn.user_message_id
+            ).first()
+        if last_user is None:
+            last_user = (
+                ChatMessage.objects.filter(thread=thread, role="user")
+                .order_by("-created_at")
+                .first()
+            )
+        if not last_user:
+            return []
+        cutoff = last_user.created_at
+
+        turn_cps = SlideSetCheckpoint.objects.filter(
+            slide_set__thread=thread, source__in=["ai_edit", "original"], created_at__gte=cutoff
+        )
+        affected_ids = set(str(cp.slide_set_id) for cp in turn_cps)
+        if turn is not None:
+            affected_ids |= turn.modified_slide_set_ids
+        if not affected_ids:
+            return []
+
+        events = []
+        for deck_id in affected_ids:
+            deck = SlideSet.objects.filter(pk=deck_id, thread=thread).first()
+            if deck is None:
+                continue
+            SlideSetCheckpoint.objects.filter(
+                slide_set=deck, source__in=["ai_edit", "original"], created_at__gte=cutoff
+            ).update(content={}, source="redacted", description="Redacted by content safety system")
+            pre = (
+                SlideSetCheckpoint.objects.filter(slide_set=deck, created_at__lt=cutoff)
+                .exclude(source="redacted")
+                .order_by("-order")
+                .first()
+            )
+            if pre:
+                deck.content = copy.deepcopy(pre.content)
+                deck.title = pre.title or deck.title
+            else:
+                deck.content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+            deck.save(update_fields=["content", "title", "updated_at"])
+            slide_ids = [s.get("id") for s in (deck.content.get("slides") or [])]
+            events.append({
+                "event_type": "slidedeck.updated",
+                "deck_id": str(deck.pk),
+                "title": deck.title,
+                "slide_ids": slide_ids,
+                "changed_slide_ids": slide_ids,
+            })
+        return events
 
     @database_sync_to_async
     def _get_canvas_for_redaction_event(self, thread, canvas_id):
