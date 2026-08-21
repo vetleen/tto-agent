@@ -543,9 +543,9 @@ class BraveSearchToolTests(TestCase):
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")
-    @patch("guardrails.web_content.scan_web_content")
+    @patch("guardrails.tasks.scan_web_content_task.delay")
     def test_scan_web_content_called_with_results(self, mock_scan, mock_get):
-        """scan_web_content should be called with the combined result text."""
+        """The web scan is enqueued with the combined result text and attribution."""
         mock_get.return_value = _mock_ok({
             "web": {
                 "results": [
@@ -561,22 +561,25 @@ class BraveSearchToolTests(TestCase):
         self.tool.invoke({"query": "test query"})
 
         mock_scan.assert_called_once()
-        call_kwargs = mock_scan.call_args
-        self.assertIn("Title 1", call_kwargs[0][0])
-        self.assertIn("Desc 2", call_kwargs[0][0])
-        self.assertEqual(call_kwargs[1]["user_id"], "42")
-        self.assertEqual(call_kwargs[1]["thread_id"], "thread-abc")
-        self.assertEqual(call_kwargs[1]["source_label"], "brave_search")
+        # .delay(text, user_id, thread_id, source_label)
+        text, user_id, thread_id, source_label = mock_scan.call_args[0]
+        self.assertIn("Title 1", text)
+        self.assertIn("Desc 2", text)
+        self.assertEqual(user_id, "42")
+        self.assertEqual(thread_id, "thread-abc")
+        self.assertEqual(source_label, "brave_search")
 
     @override_settings(BRAVE_SEARCH_API_KEY="test-key")
     @patch("llm.tools.brave_search.requests.get")
-    @patch("guardrails.web_content.scan_web_content", side_effect=RuntimeError("scan boom"))
+    @patch("guardrails.tasks.scan_web_content_task.delay", side_effect=RuntimeError("broker boom"))
     def test_scan_web_content_error_does_not_break_tool(self, mock_scan, mock_get):
-        """If scan_web_content raises, the tool should still return valid results."""
+        """If enqueuing the scan raises (broker hiccup), the tool still returns results."""
         mock_get.return_value = _mock_ok({
             "web": {"results": [{"title": "OK", "url": "https://example.com", "description": "Fine"}]}
         })
 
+        from llm.types.context import RunContext
+        self.tool.set_context(RunContext.create(user_id=42, conversation_id="thread-err"))
         result = self.tool.invoke({"query": "test"})
         self.assertIn("OK", result)
 

@@ -1,8 +1,15 @@
-"""Celery tasks for guardrail document chunk scanning.
+"""Celery tasks for guardrail content scanning.
 
-After document processing completes, scan all chunks through the heuristic
-pre-filter and cheap model classifier. Flagged chunks are quarantined
-(excluded from retrieval).
+Two independent pipelines live here:
+
+- ``scan_document_version`` — after document processing, scan all chunks through the
+  heuristic pre-filter and cheap-model classifier (+ reviewer). Flagged chunks are
+  quarantined (excluded from retrieval). Documents are held in SCANNING until this
+  completes, so it fails closed.
+- ``scan_web_content_task`` — observability-only scan of fetched web pages / search
+  results (classifier → reviewer, logging only, never blocks). Web content is one-shot
+  and not retrieval-held, so a missed scan is an acceptable lost observation, not a
+  safety hole; it must never fail closed.
 """
 
 from __future__ import annotations
@@ -664,4 +671,166 @@ def _log_chunk_event(
         raw_input=chunk_text[:2000],
         related_event=related_event,
         reviewer_output=reviewer_output,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Web content scan (observability-only): classifier → reviewer, logging only.
+# ---------------------------------------------------------------------------
+
+# Cap the text sent to the classifier/reviewer. Matches the document pipeline's
+# per-chunk ceiling; a payload past this point is invisible to the scan (the same
+# tradeoff the doc pipeline accepts) but bounds cheap-model cost and broker payload.
+_MAX_WEB_SCAN_CHARS = 40_000
+
+
+@shared_task(bind=True, max_retries=2, time_limit=120, soft_time_limit=110)
+def scan_web_content_task(self, text, user_id, thread_id, source_label):
+    """Classify fetched web content and, if flagged, review it — logging only.
+
+    Never blocks: web content is not held pending this scan (the tool result has
+    already been returned to the assistant). On transient LLM errors it retries a
+    couple of times, then drops the observation — a missing GuardrailEvent is
+    acceptable; a stuck task is not. A missing model (misconfiguration) is a
+    non-retryable skip, not a retry.
+    """
+    from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
+
+    if not text or not text.strip() or user_id is None:
+        return
+
+    try:
+        _scan_web_content(text[:_MAX_WEB_SCAN_CHARS], int(user_id), thread_id, source_label)
+    except SoftTimeLimitExceeded:
+        logger.warning("scan_web_content_task: soft time limit hit source=%s", source_label)
+    except Exception as exc:
+        logger.warning(
+            "scan_web_content_task: scan failed source=%s (attempt %s/%s): %s",
+            source_label, self.request.retries + 1, self.max_retries + 1, exc,
+        )
+        try:
+            raise self.retry(countdown=10 * (2 ** self.request.retries), exc=exc)
+        except MaxRetriesExceededError:
+            logger.warning(
+                "scan_web_content_task: retries exhausted source=%s; dropping observation",
+                source_label,
+            )
+
+
+def _scan_web_content(text: str, user_id: int, thread_id, source_label: str) -> None:
+    """Run the classifier, and on a flag the reviewer, recording GuardrailEvents."""
+    from guardrails.classifier import GuardrailModelUnavailableError, classify_web_content_sync
+    from guardrails.web_content import _resolve_org_id
+
+    org_id = _resolve_org_id(user_id)
+
+    try:
+        result = classify_web_content_sync(text, user_id=user_id, org_id=org_id)
+    except GuardrailModelUnavailableError:
+        # Misconfiguration, not an attack signal and not transient — log and skip
+        # rather than retry. WARNING so Sentry surfaces the missing model.
+        logger.warning(
+            "scan_web_content_task: no model resolves for guardrail_web_scan "
+            "(org_id=%s); skipping web scan",
+            org_id,
+        )
+        return
+
+    if not result.is_suspicious:
+        # Clean is the common case; the flag-rate denominator comes from LLMCallLog
+        # (every classifier call is logged there), so a clean scan writes no
+        # GuardrailEvent — a row per fetch would bloat the table for no added signal.
+        logger.debug(
+            "scan_web_content_task: clean source=%s user_id=%s", source_label, user_id,
+        )
+        return
+
+    _record_flagged_web_content(text, user_id, thread_id, org_id, source_label, result)
+
+
+def _record_flagged_web_content(
+    text: str, user_id: int, thread_id, org_id: int | None, source_label: str, result,
+) -> None:
+    """Log the classifier escalation, then the reviewer's (log-only) verdict."""
+    from guardrails.reviewer import review_flagged_web_content
+
+    escalation = _log_web_event(
+        user_id=user_id, org_id=org_id, thread_id=thread_id,
+        check_type="classifier", tags=result.concern_tags,
+        confidence=result.confidence, severity="medium",
+        action_taken="escalated", raw_input=text, reviewer_output=result.reasoning,
+    )
+
+    try:
+        decision = review_flagged_web_content(
+            content=text,
+            classifier_result=result,
+            source_label=source_label,
+            org_id=org_id,
+            user_id=user_id,
+        )
+    except Exception:
+        logger.exception(
+            "scan_web_content_task: reviewer errored source=%s; recording classifier flag",
+            source_label,
+        )
+        decision = None
+
+    if decision is None:
+        # No reviewer model, or it errored — record the classifier flag as the
+        # terminal (log-only) event so the escalation isn't left dangling.
+        _log_web_event(
+            user_id=user_id, org_id=org_id, thread_id=thread_id,
+            check_type="classifier", tags=result.concern_tags,
+            confidence=result.confidence, severity="medium",
+            action_taken="logged", raw_input=text,
+            reviewer_output=result.reasoning, related_event=escalation,
+        )
+        return
+
+    if decision.action == "withhold":
+        # Genuine injection per the reviewer. Log-only for now: record what we WOULD
+        # withhold as action_taken="logged" (nothing was actually withheld). Flip to
+        # "blocked" when enforcement is enabled; check_type + severity make the
+        # would-block verdict queryable in the meantime.
+        _log_web_event(
+            user_id=user_id, org_id=org_id, thread_id=thread_id,
+            check_type="llm_review", tags=result.concern_tags,
+            confidence=decision.confidence, severity=decision.severity,
+            action_taken="logged", raw_input=text,
+            reviewer_output=decision.reasoning, related_event=escalation,
+        )
+    else:
+        # Reviewer overruled the classifier — false positive. Record the dismissal so
+        # the classifier can be tuned on it (this is the 0/21-precision pattern's home).
+        _log_web_event(
+            user_id=user_id, org_id=org_id, thread_id=thread_id,
+            check_type="llm_review", tags=result.concern_tags,
+            confidence=decision.confidence, severity="low",
+            action_taken="dismissed", raw_input=text,
+            reviewer_output=decision.reasoning, related_event=escalation,
+        )
+
+
+def _log_web_event(
+    *, user_id: int, org_id: int | None, thread_id, check_type: str, tags: list[str],
+    confidence: float, severity: str, action_taken: str, raw_input: str,
+    reviewer_output: str | None = None, related_event=None,
+):
+    """Create and return a GuardrailEvent for a web-content scan (trigger_source=web_content)."""
+    from guardrails.models import GuardrailEvent
+
+    return GuardrailEvent.objects.create(
+        user_id=user_id,
+        organization_id=org_id,
+        thread_id=thread_id,
+        trigger_source="web_content",
+        check_type=check_type,
+        tags=tags,
+        confidence=confidence,
+        severity=severity,
+        action_taken=action_taken,
+        raw_input=raw_input[:2000],
+        reviewer_output=reviewer_output,
+        related_event=related_event,
     )

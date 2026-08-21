@@ -196,9 +196,9 @@ class WebFetchToolTests(TestCase):
         self.assertIn("PDF", result)
 
     @patch("llm.tools.web_fetch._pinned_get")
-    @patch("guardrails.web_content.scan_web_content")
+    @patch("guardrails.tasks.scan_web_content_task.delay")
     def test_scan_web_content_called_with_text(self, mock_scan, mock_get):
-        """scan_web_content should be called with the extracted page text."""
+        """The web scan is enqueued with the extracted page text and attribution."""
         mock_get.return_value = _mock_response(
             content_type="text/html",
             text="<html><body><p>Some page content</p></body></html>",
@@ -210,21 +210,24 @@ class WebFetchToolTests(TestCase):
         self.tool.invoke({"url": "https://example.com/scan"})
 
         mock_scan.assert_called_once()
-        call_kwargs = mock_scan.call_args
-        self.assertIn("Some page content", call_kwargs[0][0])
-        self.assertEqual(call_kwargs[1]["user_id"], "99")
-        self.assertEqual(call_kwargs[1]["thread_id"], "thread-xyz")
-        self.assertEqual(call_kwargs[1]["source_label"], "web_fetch")
+        # .delay(text, user_id, thread_id, source_label)
+        text, user_id, thread_id, source_label = mock_scan.call_args[0]
+        self.assertIn("Some page content", text)
+        self.assertEqual(user_id, "99")
+        self.assertEqual(thread_id, "thread-xyz")
+        self.assertEqual(source_label, "web_fetch")
 
     @patch("llm.tools.web_fetch._pinned_get")
-    @patch("guardrails.web_content.scan_web_content", side_effect=RuntimeError("scan boom"))
+    @patch("guardrails.tasks.scan_web_content_task.delay", side_effect=RuntimeError("broker boom"))
     def test_scan_web_content_error_does_not_break_tool(self, mock_scan, mock_get):
-        """If scan_web_content raises, the tool should still return valid results."""
+        """If enqueuing the scan raises (broker hiccup), the tool still returns results."""
         mock_get.return_value = _mock_response(
             content_type="text/html",
             text="<html><body><p>Content here</p></body></html>",
         )
 
+        from llm.types.context import RunContext
+        self.tool.set_context(RunContext.create(user_id=99, conversation_id="thread-err"))
         result = self.tool.invoke({"url": "https://example.com/err"})
         self.assertIn("Content here", result)
 
@@ -1244,7 +1247,7 @@ class JinaFallbackTests(TestCase):
         self.assertIn("Error", result)
         self.assertIn("Connection", result)
 
-    @patch("guardrails.web_content.scan_web_content")
+    @patch("guardrails.tasks.scan_web_content_task.delay")
     @patch("llm.tools.web_fetch.requests.get")
     @patch("llm.tools.web_fetch._pinned_get")
     def test_jina_content_scanned(self, mock_pinned, mock_requests_get, mock_scan):
@@ -1257,9 +1260,9 @@ class JinaFallbackTests(TestCase):
         self.tool.invoke({"url": "https://example.com/scan-jina"})
 
         mock_scan.assert_called_once()
-        call_args = mock_scan.call_args
-        self.assertIn("Scanned content from Jina", call_args[0][0])
-        self.assertEqual(call_args[1]["source_label"], "web_fetch")
+        text, _user_id, _thread_id, source_label = mock_scan.call_args[0]
+        self.assertIn("Scanned content from Jina", text)
+        self.assertEqual(source_label, "web_fetch")
 
 
 # ---------------------------------------------------------------------------

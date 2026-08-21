@@ -93,6 +93,32 @@ class ChunkReviewDecision(BaseModel):
     reasoning: str = Field(description="Explanation of the decision")
 
 
+class WebReviewDecision(BaseModel):
+    """Layer 2 top-model judge output for flagged web content (a fetched page or
+    search result the cheap classifier flagged).
+
+    Distinct from ``ReviewerDecision`` (the chat-message reviewer): web content
+    has no adversarial *user* to warn or suspend — the page itself is the
+    untrusted party — so the action collapses to ``allow``/``withhold`` and there
+    is no ``user_message``/``warn``/``suspend``. ``withhold`` means "would replace
+    the tool result if enforcing"; in the current observability-only phase it is
+    recorded, not acted on.
+    """
+
+    action: Literal["allow", "withhold"] = Field(
+        description="Decision: allow (false positive — the content is safe to return) "
+        "or withhold (genuine injection — would replace the tool result if enforcing)"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="How confident you are in your chosen action (0.0 = uncertain, 1.0 = certain)",
+    )
+    severity: Literal["low", "medium", "high", "critical"] = Field(
+        description="Severity level of the concern"
+    )
+    reasoning: str = Field(description="Explanation of the decision")
+
+
 class HeuristicResult(BaseModel):
     """Layer 0 heuristic scan output."""
 

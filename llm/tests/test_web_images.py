@@ -318,7 +318,7 @@ class AltTextScanTests(TestCase):
         )
         self.tool.set_context(self.ctx)
 
-    @patch("guardrails.web_content.scan_web_content")
+    @patch("guardrails.tasks.scan_web_content_task.delay")
     @patch("llm.tools.web_fetch.requests.get")
     @patch("llm.tools.web_fetch._pinned_get")
     def test_jina_path_alts_scanned(self, mock_pinned, mock_requests_get, mock_scan):
@@ -328,11 +328,12 @@ class AltTextScanTests(TestCase):
         )
         self.tool.invoke({"url": "https://example.com/alt-scan-jina"})
 
+        # .delay(text, user_id, thread_id, source_label) — join all enqueued texts.
         scanned = "\n".join(c.args[0] for c in mock_scan.call_args_list)
         self.assertIn("Jina body text.", scanned)
         self.assertIn("Injected alt content", scanned)
 
-    @patch("guardrails.web_content.scan_web_content")
+    @patch("guardrails.tasks.scan_web_content_task.delay")
     @patch("llm.tools.web_fetch.requests.get")
     @patch("llm.tools.web_fetch._pinned_get")
     def test_merged_direct_alts_scanned_on_jina_fallback(
