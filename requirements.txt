@@ -48,9 +48,12 @@ html2docx==1.6.0
 markdown==3.8.2
 markdownify
 weasyprint==69.0
-# Slide-deck export: JSON -> .pptx generation (no native deps; renders to
-# PDF/PNG happen via LibreOffice on the worker, see Aptfile).
+# Slide-deck export: JSON -> .pptx generation (no native deps). Rendering to
+# PDF happens via LibreOffice on the worker (see Aptfile); PDF -> per-slide PNG
+# uses pypdfium2 (PDFium; permissive licence, cross-platform wheels, no system
+# deps — avoids a poppler apt dependency and PyMuPDF's AGPL).
 python-pptx==1.0.2
+pypdfium2==4.30.0
 # fontTools ships transitively with WeasyPrint; declared explicitly because the
 # font-upload path reads OS/2 fsType embedding bits via fontTools.ttLib.
 fonttools>=4.50.0

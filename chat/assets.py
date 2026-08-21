@@ -251,6 +251,53 @@ def store_thread_image(
     return asset
 
 
+def store_slide_set_image(slide_set, *, img_bytes, content_type="image/png", dedupe=True):
+    """Persist a rendered slide PNG as an Asset scoped to a deck (SlideSet).
+
+    Deduped by sha256 so an unchanged slide re-uses its previous render asset.
+    """
+    from django.core.files.base import ContentFile
+
+    from chat.models import Asset
+
+    ct = content_type or "image/png"
+    sha = hashlib.sha256(img_bytes).hexdigest()
+    if dedupe:
+        existing = Asset.objects.filter(
+            slide_set=slide_set, sha256=sha, kind=Asset.KIND_IMAGE
+        ).first()
+        if existing is not None:
+            return existing
+    asset = Asset(
+        slide_set=slide_set,
+        content_type=ct,
+        size_bytes=len(img_bytes),
+        sha256=sha,
+        kind=Asset.KIND_IMAGE,
+    )
+    asset.blob.save(f"{asset.id}.{_ext_for(ct)}", ContentFile(img_bytes), save=True)
+    return asset
+
+
+def store_slide_set_file(slide_set, *, file_bytes, content_type="application/pdf"):
+    """Persist an exported deck file (e.g. the rendered PDF) as a deck-owned Asset."""
+    from django.core.files.base import ContentFile
+
+    from chat.models import Asset
+
+    ct = content_type or "application/pdf"
+    sha = hashlib.sha256(file_bytes).hexdigest()
+    asset = Asset(
+        slide_set=slide_set,
+        content_type=ct,
+        size_bytes=len(file_bytes),
+        sha256=sha,
+        kind=Asset.KIND_FILE,
+    )
+    asset.blob.save(f"{asset.id}.{_ext_for(ct)}", ContentFile(file_bytes), save=True)
+    return asset
+
+
 def store_message_image(
     message, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
 ):

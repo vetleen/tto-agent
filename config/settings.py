@@ -762,6 +762,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "chat.tasks.tick_and_scan_loops",
         "schedule": 60.0,
     },
+    "expire-stale-slide-renders": {
+        "task": "chat.tasks.expire_stale_slide_renders",
+        "schedule": 300.0,
+    },
 }
 
 # Channels / Redis

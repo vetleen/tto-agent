@@ -6,6 +6,7 @@ import logging
 import uuid
 
 from celery import Task, shared_task
+from django.db.utils import OperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,89 @@ def tick_and_scan_loops() -> int:
         logger.info(
             "Skipping loop scan: database temporarily unavailable; "
             "will retry on next beat tick.",
+            exc_info=True,
+        )
+        return 0
+
+
+class _SlideRenderTask(Task):
+    """Marks a SlideRenderRun FAILED after retries are exhausted (mirrors _SubagentTask)."""
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        from django.utils import timezone
+
+        from chat.models import SlideRenderRun
+
+        run_id = args[0] if args else kwargs.get("run_id")
+        if not run_id:
+            return
+        try:
+            updated = (
+                SlideRenderRun.objects.filter(pk=run_id)
+                .exclude(status=SlideRenderRun.Status.COMPLETED)
+                .update(
+                    status=SlideRenderRun.Status.FAILED,
+                    error=str(exc)[:2000],
+                    finished_at=timezone.now(),
+                )
+            )
+            if updated:
+                run = (
+                    SlideRenderRun.objects.filter(pk=run_id).select_related("slide_set").first()
+                )
+                if run and run.purpose in (
+                    SlideRenderRun.Purpose.USER_PREVIEW,
+                    SlideRenderRun.Purpose.PDF_EXPORT,
+                ):
+                    from chat.slides.render_service import notify_render_event
+
+                    notify_render_event(run.slide_set, run, "slidedeck.render_failed")
+        except Exception:
+            logger.exception("Failed to mark slide render run %s FAILED", run_id)
+
+
+@shared_task(
+    base=_SlideRenderTask,
+    bind=True,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+    time_limit=600,
+    soft_time_limit=540,
+)
+def render_deck_task(self, run_id: str) -> None:
+    """Render a slide deck (preview PNGs or export PDF) on the worker."""
+    from chat.slides.render_service import execute_render_run
+
+    execute_render_run(str(run_id))
+
+
+@shared_task(time_limit=60)
+def expire_stale_slide_renders() -> int:
+    """Fail runs stuck RUNNING>15min / PENDING>30min; prune old runs (>7d).
+
+    Tolerates transient DB unavailability like the other sweepers.
+    """
+    from datetime import timedelta
+
+    from django.db.utils import InterfaceError, OperationalError
+    from django.utils import timezone
+
+    from chat.models import SlideRenderRun
+
+    try:
+        now = timezone.now()
+        stale_running = SlideRenderRun.objects.filter(
+            status=SlideRenderRun.Status.RUNNING, started_at__lt=now - timedelta(minutes=15)
+        ).update(status=SlideRenderRun.Status.FAILED, error="Render timed out (stale).", finished_at=now)
+        stale_pending = SlideRenderRun.objects.filter(
+            status=SlideRenderRun.Status.PENDING, created_at__lt=now - timedelta(minutes=30)
+        ).update(status=SlideRenderRun.Status.FAILED, error="Render never started (stale).", finished_at=now)
+        SlideRenderRun.objects.filter(created_at__lt=now - timedelta(days=7)).delete()
+        return stale_running + stale_pending
+    except (OperationalError, InterfaceError):
+        logger.info(
+            "Skipping stale slide-render cleanup: database temporarily unavailable.",
             exc_info=True,
         )
         return 0
