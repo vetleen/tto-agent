@@ -667,6 +667,18 @@ GOOGLE_FONTS_API_KEY = os.environ.get("GOOGLE_FONTS_API_KEY", "")
 IMAGE_DEFAULT_MODEL = os.environ.get("IMAGE_DEFAULT_MODEL", "")
 IMAGE_ALLOWED_MODELS = [m.strip() for m in os.environ.get("IMAGE_ALLOWED_MODELS", "").split(",") if m.strip()]
 
+# Slide decks (AI-authored PowerPoint). SLIDES_ENABLED is the global kill-switch
+# (per-org rollout is the seed skill's org enablement). Rendering (preview + PDF)
+# shells out to LibreOffice + poppler on the worker; SOFFICE_BIN/PDFTOPPM_BIN are
+# resolved from PATH by default. SLIDE_RENDER_CONCURRENCY bounds concurrent
+# soffice spawns (threads pool -> one semaphore covers the dyno).
+SLIDES_ENABLED = _get_env_bool(os.environ.get("SLIDES_ENABLED"), True)
+SLIDE_RENDER_TIMEOUT = _env_int("SLIDE_RENDER_TIMEOUT", "120")
+SLIDE_RENDER_CONCURRENCY = _env_int("SLIDE_RENDER_CONCURRENCY", "1")
+SLIDE_PREVIEW_DPI = _env_int("SLIDE_PREVIEW_DPI", "120")
+SOFFICE_BIN = os.environ.get("SOFFICE_BIN", "soffice")
+PDFTOPPM_BIN = os.environ.get("PDFTOPPM_BIN", "pdftoppm")
+
 # Meetings settings
 MEETING_CHUNK_TEMP_DIR = os.environ.get("MEETING_CHUNK_TEMP_DIR", str(MEDIA_ROOT / "_meeting_chunks"))
 MEETING_AUTO_STOP_DEFAULT_SECONDS = _env_int("MEETING_AUTO_STOP_DEFAULT_SECONDS", "3600")

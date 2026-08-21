@@ -509,6 +509,7 @@ def build_dynamic_context(
     active_canvases: list[Any] | None = None,
     active_canvas: Any = None,
     canvas: Any = None,
+    active_slide_set: Any = None,
     tasks: list[dict] | None = None,
     subagent_runs: list[dict] | None = None,
     history_meta: dict[str, Any] | None = None,
@@ -647,6 +648,18 @@ def build_dynamic_context(
                 f'# Active Canvas Content: "{ac.title}"\n'
                 f"```markdown\n{ac.content}\n```"
             )
+
+    # -- Active slide deck (the deck the user sees rendered in the side panel) --
+    if active_slide_set:
+        from chat.slides.schema import canonical_deck_text
+
+        parts.append(
+            f'# Active Slide Deck: "{active_slide_set.title}"\n'
+            "This is the deck the user sees rendered in the side panel — edit it with "
+            "`slide_canvas_edit` (find/replace on this EXACT JSON) or `slide_canvas_write`. "
+            "Slide/element ids are permanent; the user comments by slide id.\n"
+            f"```json\n{canonical_deck_text(active_slide_set.content or {})}\n```"
+        )
 
     # -- Current task plan status --
     if tasks:

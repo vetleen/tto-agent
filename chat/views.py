@@ -1783,3 +1783,38 @@ def loop_restart(request, loop_id):
     loop = get_object_or_404(Loop, id=loop_id, created_by=request.user)
     restart_loop(loop, timezone.now())
     return JsonResponse({"ok": True})
+
+
+@login_required
+@require_http_methods(["GET"])
+async def slides_export_pptx(request, thread_id, deck_id):
+    """Export a slide deck as a .pptx file.
+
+    Pure python-pptx generation (no LibreOffice), so this runs inline on the web
+    dyno like ``canvas_export``. Only *rendering* to PDF/PNG needs the worker.
+    """
+    from asgiref.sync import sync_to_async
+    from django.conf import settings
+
+    from chat.models import ChatThread, SlideSet
+    from chat.slides.pptx_build import build_pptx
+
+    if not getattr(settings, "SLIDES_ENABLED", True):
+        raise Http404("Slide decks are not enabled.")
+
+    thread = await sync_to_async(get_object_or_404)(ChatThread, id=thread_id, created_by=request.user)
+    deck = await sync_to_async(get_object_or_404)(
+        SlideSet, pk=deck_id, thread=thread, deleted_at__isnull=True
+    )
+    try:
+        pptx_bytes, _warnings = await sync_to_async(build_pptx)(deck)
+    except Exception:
+        logger.exception("PPTX export failed for deck %s", deck_id)
+        return JsonResponse({"error": "Couldn't build the presentation."}, status=500)
+
+    return FileResponse(
+        io.BytesIO(pptx_bytes),
+        as_attachment=True,
+        filename=f"{_safe_doc_title(deck.title)}.pptx",
+        content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
