@@ -143,6 +143,9 @@
       </div>
     </div>
     <div class="flex items-center gap-2">
+      <button id="slides-toggle-btn" type="button" class="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle slide deck">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 4.5h16.5M4.5 4.5v10.5a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5V4.5M12 16.5V21m0 0l-2.25 1.5M12 21l2.25 1.5"/></svg>
+      </button>
       <button id="canvas-toggle-btn" type="button" class="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle canvas">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
         <svg id="canvas-toggle-arrow" class="w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
@@ -4258,7 +4261,10 @@
     function isMobile() { return window.matchMedia("(max-width: 639px)").matches; }
     function bust(url) { return url ? (url + (url.indexOf("?") < 0 ? "?" : "&") + "v=" + Date.now().toString(36)) : url; }
 
+    var slidesToggleBtn = document.getElementById("slides-toggle-btn");
+    function revealToggle() { if (slidesToggleBtn) slidesToggleBtn.classList.remove("hidden"); }
     function open() {
+      revealToggle();  // a deck exists for this thread — let the user reopen the panel later
       if (isOpen) return;
       if (canvasPanel) { canvasPanel.classList.add("hidden"); canvasPanel.classList.remove("flex"); }
       if (canvasHandle) { canvasHandle.classList.add("hidden"); canvasHandle.classList.remove("flex"); }
@@ -4455,6 +4461,7 @@
     // Header buttons
     var closeBtn = document.getElementById("slides-close-btn");
     if (closeBtn) closeBtn.addEventListener("click", close);
+    if (slidesToggleBtn) slidesToggleBtn.addEventListener("click", function() { if (isOpen) close(); else { open(); requestState(); } });
     if (pptxBtn) pptxBtn.addEventListener("click", function() { if (deckId) triggerDownload("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/"); });
     if (pdfBtn) pdfBtn.addEventListener("click", function() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); });
     var sendBtn = document.getElementById("slides-comments-send");
