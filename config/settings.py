@@ -673,6 +673,10 @@ IMAGE_ALLOWED_MODELS = [m.strip() for m in os.environ.get("IMAGE_ALLOWED_MODELS"
 # resolved from PATH by default. SLIDE_RENDER_CONCURRENCY bounds concurrent
 # soffice spawns (threads pool -> one semaphore covers the dyno).
 SLIDES_ENABLED = _get_env_bool(os.environ.get("SLIDES_ENABLED"), True)
+# Render backend: "libreoffice" (prod/Linux) or "powerpoint" (Windows local dev
+# via COM — needs pywin32 + Microsoft PowerPoint; lets Windows devs preview decks
+# without LibreOffice).
+SLIDE_RENDER_BACKEND = os.environ.get("SLIDE_RENDER_BACKEND", "libreoffice")
 SLIDE_RENDER_TIMEOUT = _env_int("SLIDE_RENDER_TIMEOUT", "120")
 SLIDE_RENDER_CONCURRENCY = _env_int("SLIDE_RENDER_CONCURRENCY", "1")
 SLIDE_PREVIEW_DPI = _env_int("SLIDE_PREVIEW_DPI", "120")

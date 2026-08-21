@@ -140,20 +140,83 @@ def pdf_to_pngs(pdf_bytes: bytes, *, dpi: int | None = None) -> list[tuple[bytes
     return out
 
 
+def _pptx_to_pdf_powerpoint(pptx_bytes: bytes, *, timeout: int | None = None) -> bytes:
+    """``.pptx`` -> PDF via Microsoft PowerPoint COM (Windows local dev only).
+
+    A convenience so the Windows dev team can preview decks locally without
+    LibreOffice (the same "can't render locally" gap WeasyPrint has). Selected by
+    ``SLIDE_RENDER_BACKEND=powerpoint``; production always uses LibreOffice.
+    """
+    import os
+    import tempfile
+    import uuid
+
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:  # pragma: no cover - Windows-only
+        raise RenderUnavailable("pywin32 is not installed (PowerPoint backend).") from exc
+
+    with _get_semaphore():
+        with tempfile.TemporaryDirectory(prefix="wf_slides_pp_") as tmp:
+            pptx_path = os.path.join(tmp, f"{uuid.uuid4().hex}.pptx")
+            pdf_path = os.path.join(tmp, "out.pdf")
+            with open(pptx_path, "wb") as fh:
+                fh.write(pptx_bytes)
+            pythoncom.CoInitialize()
+            app = pres = None
+            try:
+                app = win32com.client.DispatchEx("PowerPoint.Application")
+                # Bypass Protected View / Office File Validation so PowerPoint
+                # will open the generated .pptx from a temp dir under automation.
+                for prop, value in (("AutomationSecurity", 1), ("FileValidation", 0), ("DisplayAlerts", 0)):
+                    try:
+                        setattr(app, prop, value)
+                    except Exception:  # noqa: BLE001 - not all versions expose all props
+                        pass
+                pres = app.Presentations.Open(pptx_path, False, False, False)
+                pres.SaveAs(pdf_path, 32)  # ppSaveAsPDF
+            except Exception as exc:  # noqa: BLE001
+                raise RenderUnavailable(f"PowerPoint render failed: {exc}") from exc
+            finally:
+                try:
+                    if pres is not None:
+                        pres.Close()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    if app is not None:
+                        app.Quit()
+                except Exception:  # noqa: BLE001
+                    pass
+                pythoncom.CoUninitialize()
+            with open(pdf_path, "rb") as fh:
+                return fh.read()
+
+
 def render_pptx(pptx_bytes: bytes, *, dpi: int | None = None, timeout: int | None = None):
     """``.pptx`` -> ``(pdf_bytes, [(png_bytes, w, h), ...])`` in one call."""
-    pdf_bytes = pptx_to_pdf(pptx_bytes, timeout=timeout)
+    backend = getattr(settings, "SLIDE_RENDER_BACKEND", "libreoffice")
+    if backend == "powerpoint":
+        pdf_bytes = _pptx_to_pdf_powerpoint(pptx_bytes, timeout=timeout)
+    else:
+        pdf_bytes = pptx_to_pdf(pptx_bytes, timeout=timeout)
     return pdf_bytes, pdf_to_pngs(pdf_bytes, dpi=dpi)
 
 
 def render_available() -> bool:
-    """True when the LibreOffice binary and the rasterizer are usable."""
+    """True when the configured render backend + rasterizer are usable."""
     import shutil
 
-    if shutil.which(_soffice_bin()) is None:
-        return False
     try:
         import pypdfium2  # noqa: F401
     except ImportError:
         return False
-    return True
+    backend = getattr(settings, "SLIDE_RENDER_BACKEND", "libreoffice")
+    if backend == "powerpoint":
+        try:
+            import win32com.client  # noqa: F401
+        except ImportError:
+            return False
+        return True
+    return shutil.which(_soffice_bin()) is not None
