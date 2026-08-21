@@ -93,9 +93,12 @@
   #loop-submit:not(:disabled):hover { background: var(--color-brand-strong); }
   #loop-modal-close:hover, #loop-modal-cancel:hover { background: var(--color-neutral-secondary-soft); }
   #loop-pause:not(:disabled):hover { border-color: var(--color-default-medium); background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
+  /* Modal scrim: forest dim in light, a deep 86% well in dark so the raised panel reads. Mirrors chat.html's .wf-scrim (this page is a separate document). */
+  .wf-scrim { background: radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55)); }
+  .dark .wf-scrim { background: radial-gradient(120% 120% at 50% 0%, rgba(6,21,14,0.72), rgba(3,10,6,0.86)); }
 </style>
 <div id="loop-modal" class="fixed inset-0 z-50 hidden" style="overflow-y:auto;">
-  <div data-loop-scrim style="position:absolute;inset:0;background:radial-gradient(120% 120% at 50% 0%, rgba(16,49,32,0.40), rgba(6,21,14,0.55));"></div>
+  <div data-loop-scrim class="wf-scrim" style="position:absolute;inset:0;"></div>
   <div data-loop-overlay style="position:relative;min-height:100%;display:flex;align-items:flex-start;justify-content:center;padding:48px 16px;">
     <section class="wf-loop-modal" style="position:relative;width:484px;max-width:100%;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
       <form id="loop-form" data-loop-id="" data-restart="">
