@@ -887,25 +887,37 @@ def _fetch_core(url: str, cache, context=None) -> dict:
         )
         raw_html = raw_html[:max_parse]
 
-    # --- Security pre-processing: strip hidden elements ---
+    # --- Security pre-processing on a SINGLE parse tree ---
+    # A bs4 tree is several times the HTML size, so building two (text + image)
+    # doubles the transient RSS peak (Aug-2026 R14 tracemalloc). The image clean
+    # is a strict PREFIX of the text clean, so we parse once: extract image
+    # candidates first (chrome + aria still present, base = final URL after
+    # redirects), then finish the text clean on the same tree. Output is
+    # byte-identical to the old two-parse path.
     try:
         soup = BeautifulSoup(raw_html, _HTML_PARSER)
     except Exception:
         return {"error": "Failed to parse HTML", "url": url}
 
-    # Image candidates come from a SEPARATE, lighter clean that keeps semantic
-    # chrome (nav/header/aside) and aria-hidden figures — on homepage/portal
-    # layouts the content images live there. A distinct parse keeps the text
-    # path below byte-identical to before. base = final URL after redirects.
+    # Image-discovery clean: non-content + visually-hidden removed, chrome and
+    # aria-hidden kept — on homepage/portal layouts the content images live in
+    # the chrome/aria-hidden regions the text path strips.
+    _strip_for_images(soup)
+
+    # Read image candidates from the tree at this state (read-only). Non-fatal:
+    # a failure here must not lose the page text.
     try:
-        image_soup = BeautifulSoup(raw_html, _HTML_PARSER)
-        _strip_for_images(image_soup)
-        images = _extract_image_candidates(image_soup, current_url)
+        images = _extract_image_candidates(soup, current_url)
     except Exception:
         logger.debug("web_fetch: image candidate extraction failed (non-fatal)")
         images = []
 
-    _strip_hidden_elements(soup)
+    # Finish the text clean on the SAME tree: drop semantic chrome and the
+    # aria-hidden elements the image path intentionally kept. Combined with the
+    # non-content + hidden removal above, this reproduces _strip_hidden_elements.
+    for tag in soup.find_all(_CHROME_TAGS):
+        tag.decompose()
+    _remove_hidden_elements(soup, include_aria=True)
     cleaned_html = str(soup)
 
     # --- Extract content as markdown ---
