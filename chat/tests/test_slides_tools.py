@@ -1,0 +1,190 @@
+"""Tests for the slide-deck tools (DB-backed)."""
+
+from __future__ import annotations
+
+import base64
+import json
+import uuid
+from unittest import mock
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+
+from chat.models import ChatThread, SlideSet, SlideRenderRun
+from chat.slides.schema import canonical_deck_text
+from chat.slide_tools import (
+    ActivateDeckTool, AddSlideTool, DeleteDeckTool, EditDeckTool,
+    PreviewSlidesTool, WriteDeckTool,
+)
+from llm.types.context import RunContext
+
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _deck_json():
+    return json.dumps({
+        "version": 1, "size": {"w": 960, "h": 540},
+        "slides": [
+            {"name": "Title", "skip_footer": True, "elements": [
+                {"type": "text", "x": 80, "y": 210, "w": 800, "h": 100, "class": "headline",
+                 "paragraphs": [{"align": "center", "runs": [{"t": "Hello Deck"}]}]},
+            ]},
+        ],
+    })
+
+
+class SlideToolTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"t+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
+
+    def _run(self, tool, **kw):
+        tool.set_context(self.ctx)
+        return json.loads(tool._run(**kw))
+
+    def test_write_creates_activates_checkpoints(self):
+        r = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["slide_ids"], ["s1"])
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertTrue(deck.is_active)
+        self.assertEqual(deck.content["slides"][0]["id"], "s1")
+        self.assertEqual([c.source for c in deck.checkpoints.all()], ["original"])
+
+    def test_write_invalid_json(self):
+        r = self._run(WriteDeckTool(), title="X", content_json="{not json")
+        self.assertEqual(r["status"], "error")
+
+    def test_write_invalid_deck(self):
+        bad = json.dumps({"slides": [{"elements": [{"type": "text", "x": 1, "y": 1, "w": 1}]}]})
+        r = self._run(WriteDeckTool(), title="X", content_json=bad)
+        self.assertEqual(r["status"], "error")
+        self.assertTrue(r["issues"])
+
+    def test_add_slide(self):
+        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        r = self._run(AddSlideTool(), layout="bullets")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["slide_id"], "s2")
+        self.assertIn('"id": "s2"', r["slide_json"])
+
+    def test_add_slide_unknown_layout(self):
+        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        r = self._run(AddSlideTool(), layout="nope")
+        self.assertEqual(r["status"], "error")
+        self.assertIn("bullets", r["available_layouts"])
+
+    def test_edit_valid(self):
+        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        r = self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Welcome"'}])
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["applied"], 1)
+        self.assertEqual(r["changed_slide_ids"], ["s1"])
+        deck = SlideSet.objects.get(pk=w["deck_id"])
+        self.assertIn("Welcome", json.dumps(deck.content))
+
+    def test_edit_json_guard_rejects_and_preserves(self):
+        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        deck = SlideSet.objects.get(pk=w["deck_id"])
+        before = json.dumps(deck.content, sort_keys=True)
+        r = self._run(EditDeckTool(), edits=[{"old_text": '"version": 1', "new_text": '"version": 1 OOPS'}])
+        self.assertEqual(r["status"], "error")
+        self.assertEqual(r["applied"], 0)
+        deck.refresh_from_db()
+        self.assertEqual(json.dumps(deck.content, sort_keys=True), before)
+        # no ai_edit checkpoint created for the rejected edit
+        self.assertEqual(deck.checkpoints.filter(source="ai_edit").count(), 0)
+
+    def test_edit_nonunique_reports_failure(self):
+        json_deck = json.dumps({"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+            {"elements": [{"type": "text", "x": 1, "y": 1, "w": 1, "h": 1,
+                           "paragraphs": [{"runs": [{"t": "dup"}]}, {"runs": [{"t": "dup"}]}]}]},
+        ]})
+        self._run(WriteDeckTool(), title="Deck A", content_json=json_deck)
+        r = self._run(EditDeckTool(), edits=[{"old_text": '"t": "dup"', "new_text": '"t": "x"'}])
+        self.assertEqual(r["status"], "error")
+        self.assertTrue(any("matches" in f["error"] for f in r["failed"]))
+
+    def test_activate_and_delete(self):
+        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        r = self._run(ActivateDeckTool(), deck_names=["Deck A"])
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["activated"][0]["title"], "Deck A")
+        d = self._run(DeleteDeckTool(), deck_name="Deck A")
+        self.assertEqual(d["status"], "ok")
+        self.assertIsNotNone(SlideSet.objects.get(title="Deck A").deleted_at)
+
+    def test_edit_no_deck(self):
+        r = self._run(EditDeckTool(), edits=[{"old_text": "a", "new_text": "b"}])
+        self.assertEqual(r["status"], "error")
+
+
+class PreviewToolTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"p+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
+        WriteDeckTool().set_context(self.ctx)._run(
+            title="Deck A",
+            content_json=json.dumps({"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+                {"name": "A", "elements": []}, {"name": "B", "elements": []},
+            ]}),
+        )
+
+    def _fake_delay(self, run_id_str):
+        """Fabricate a completed render (no LibreOffice) for the polling tool."""
+        from chat.assets import store_slide_set_image
+        from chat.models import SlideRender
+
+        run = SlideRenderRun.objects.get(pk=run_id_str)
+        deck = run.slide_set
+        slides = []
+        for i, sid in enumerate(run.slide_ids):
+            asset = store_slide_set_image(deck, img_bytes=_PNG)
+            SlideRender.objects.update_or_create(
+                slide_set=deck, slide_id=sid,
+                defaults={"content_hash": "h", "asset": asset, "width": 100, "height": 56},
+            )
+            slides.append({"slide_id": sid, "asset_id": str(asset.id), "width": 100, "height": 56, "page": i + 1})
+        run.status = SlideRenderRun.Status.COMPLETED
+        run.result = {"slides": slides, "warnings": []}
+        run.save(update_fields=["status", "result"])
+        return mock.Mock(id="fake-task")
+
+    def test_preview_attaches_images(self):
+        tool = PreviewSlidesTool()
+        tool.set_context(self.ctx)
+        with mock.patch("chat.tasks.render_deck_task.delay", side_effect=self._fake_delay):
+            r = json.loads(tool._run(slide_ids=["s1"]))
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["previewed_count"], 1)
+        self.assertEqual(len(self.ctx.pending_image_assets), 1)
+        item = self.ctx.pending_image_assets[0]
+        self.assertEqual(item["media_type"], "image/png")
+        self.assertIn("Rendered slide s1", item["description"])
+
+    def test_preview_broker_failure_is_graceful(self):
+        tool = PreviewSlidesTool()
+        tool.set_context(self.ctx)
+        with mock.patch("chat.tasks.render_deck_task.delay", side_effect=RuntimeError("broker down")):
+            r = json.loads(tool._run(slide_ids=["s1"]))
+        self.assertEqual(r["status"], "unavailable")
+
+    def test_preview_failed_render_is_graceful(self):
+        def fail_delay(run_id_str):
+            run = SlideRenderRun.objects.get(pk=run_id_str)
+            run.status = SlideRenderRun.Status.FAILED
+            run.error = "no soffice"
+            run.save(update_fields=["status", "error"])
+            return mock.Mock(id="x")
+
+        tool = PreviewSlidesTool()
+        tool.set_context(self.ctx)
+        with mock.patch("chat.tasks.render_deck_task.delay", side_effect=fail_delay):
+            r = json.loads(tool._run(slide_ids=["s1"]))
+        self.assertEqual(r["status"], "unavailable")
