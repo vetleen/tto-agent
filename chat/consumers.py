@@ -334,6 +334,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "event_type": "slidedeck.render_failed",
             "deck_id": str(event.get("deck_id") or ""),
             "run_id": str(event.get("run_id") or ""),
+            "purpose": event.get("purpose") or "",
         }))
 
     async def slidedeck_pdf_ready(self, event):

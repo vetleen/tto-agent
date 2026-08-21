@@ -478,8 +478,17 @@
 </div>
 
 {# Slide lightbox: click a slide thumbnail to inspect it full-size #}
-<div id="slides-lightbox" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/80 p-6 sm:p-10 cursor-zoom-out">
-  <img id="slides-lightbox-img" src="" alt="Slide (enlarged)" class="max-w-full max-h-full rounded-lg shadow-2xl bg-white" />
+<div id="slides-lightbox" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/80 p-6 sm:p-14 cursor-zoom-out">
+  <button id="slides-lightbox-prev" title="Previous slide (←)" aria-label="Previous slide"
+    class="hidden sm:flex absolute left-3 top-1/2 -translate-y-1/2 z-10 items-center justify-center w-11 h-11 rounded-full bg-white/10 hover:bg-white/25 text-white cursor-pointer transition-colors">
+    <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <img id="slides-lightbox-img" src="" alt="Slide (enlarged)" class="max-w-full max-h-full rounded-lg shadow-2xl bg-white cursor-default" />
+  <button id="slides-lightbox-next" title="Next slide (→)" aria-label="Next slide"
+    class="hidden sm:flex absolute right-3 top-1/2 -translate-y-1/2 z-10 items-center justify-center w-11 h-11 rounded-full bg-white/10 hover:bg-white/25 text-white cursor-pointer transition-colors">
+    <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <div id="slides-lightbox-caption" class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/50 text-white text-xs font-medium tracking-wide"></div>
 </div>
 
 </div>{# end #content-area #}
@@ -4294,26 +4303,57 @@
         card.querySelector(".slides-comment-box").classList.add("hidden");
       });
       var thumb = card.querySelector(".slides-thumb");
-      if (thumb) thumb.addEventListener("click", function() { openLightbox(thumb.getAttribute("src"), s.page); });
+      if (thumb) thumb.addEventListener("click", function() { openLightbox(s.slide_id); });
       return card;
     }
 
     var lightbox = document.getElementById("slides-lightbox");
     var lightboxImg = document.getElementById("slides-lightbox-img");
-    function openLightbox(src, page) {
-      if (!lightbox || !src) return;
-      lightboxImg.src = src;
-      lightboxImg.alt = "Slide " + (page || "") + " (enlarged)";
+    var lightboxPrev = document.getElementById("slides-lightbox-prev");
+    var lightboxNext = document.getElementById("slides-lightbox-next");
+    var lightboxCaption = document.getElementById("slides-lightbox-caption");
+    var lightboxIndex = -1;
+    function viewableIndexes() {
+      var out = []; slides.forEach(function(s, i) { if (s.asset_url) out.push(i); }); return out;
+    }
+    function showLightboxAt(idx) {
+      var s = slides[idx]; if (!s || !s.asset_url) return;
+      lightboxIndex = idx;
+      lightboxImg.src = s.asset_url;
+      lightboxImg.alt = "Slide " + (s.page || idx + 1) + " (enlarged)";
+      lightboxCaption.textContent = "Slide " + (s.page || idx + 1) + " of " + slides.length;
+      var view = viewableIndexes(), pos = view.indexOf(idx), multi = view.length > 1;
+      lightboxPrev.style.visibility = (multi && pos > 0) ? "visible" : "hidden";
+      lightboxNext.style.visibility = (multi && pos < view.length - 1) ? "visible" : "hidden";
+    }
+    function openLightbox(slideId) {
+      if (!lightbox) return;
+      var idx = -1; slides.forEach(function(s, i) { if (s.slide_id === slideId) idx = i; });
+      if (idx < 0 || !slides[idx].asset_url) return;
       lightbox.classList.remove("hidden"); lightbox.classList.add("flex");
+      showLightboxAt(idx);
+    }
+    function stepLightbox(delta) {
+      var view = viewableIndexes(), pos = view.indexOf(lightboxIndex);
+      if (pos < 0) return;
+      var next = pos + delta;
+      if (next >= 0 && next < view.length) showLightboxAt(view[next]);
     }
     function closeLightbox() {
       if (!lightbox) return;
       lightbox.classList.add("hidden"); lightbox.classList.remove("flex");
-      lightboxImg.src = "";
+      lightboxImg.src = ""; lightboxIndex = -1;
     }
-    if (lightbox) lightbox.addEventListener("click", closeLightbox);
+    function lightboxOpenNow() { return lightbox && !lightbox.classList.contains("hidden"); }
+    if (lightbox) lightbox.addEventListener("click", function(e) { if (e.target === lightbox) closeLightbox(); });
+    if (lightboxImg) lightboxImg.addEventListener("click", function(e) { e.stopPropagation(); });
+    if (lightboxPrev) lightboxPrev.addEventListener("click", function(e) { e.stopPropagation(); stepLightbox(-1); });
+    if (lightboxNext) lightboxNext.addEventListener("click", function(e) { e.stopPropagation(); stepLightbox(1); });
     document.addEventListener("keydown", function(e) {
-      if (e.key === "Escape" && lightbox && !lightbox.classList.contains("hidden")) closeLightbox();
+      if (!lightboxOpenNow()) return;
+      if (e.key === "Escape") closeLightbox();
+      else if (e.key === "ArrowLeft") { e.preventDefault(); stepLightbox(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); stepLightbox(1); }
     });
 
     function renderFilmstrip() {
@@ -4383,7 +4423,11 @@
       if (et === "slidedeck.updated") { renderFailed = false; open(); applyUpdated(data); return; }
       if (et === "slidedeck.state") { renderFailed = false; open(); setState(data); return; }
       if (et === "slidedeck.rendered") { renderFailed = false; open(); applyRendered(data); return; }
-      if (et === "slidedeck.render_failed") { renderFailed = true; slides.forEach(function(s) { s.rendering = false; }); renderFilmstrip(); return; }
+      if (et === "slidedeck.render_failed") {
+        setPdfBusy(false);
+        if (data.purpose === "pdf_export") { if (typeof showToast === "function") showToast("Couldn't build the PDF. You can still download the .pptx."); return; }
+        renderFailed = true; slides.forEach(function(s) { s.rendering = false; }); renderFilmstrip(); return;
+      }
       if (et === "slidedeck.active_changed") { requestState(); return; }
       if (et === "slidedeck.deleted") { if (!deckId || data.deck_id === deckId) close(); return; }
       if (et === "slidedeck.comment_added") { if (data.ok) { openComments = (data.open_count != null) ? data.open_count : (openComments + 1); updateCommentBar(); } return; }

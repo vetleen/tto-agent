@@ -143,7 +143,12 @@ def notify_render_event(deck, run, event: str) -> None:
             return
         async_to_sync(layer.group_send)(
             f"thread_{deck.thread_id}",
-            {"type": event, "deck_id": str(deck.pk), "run_id": str(run.pk)},
+            {
+                "type": event,
+                "deck_id": str(deck.pk),
+                "run_id": str(run.pk),
+                "purpose": run.purpose,
+            },
         )
     except Exception:  # noqa: BLE001
         logger.debug("Could not notify consumer of render %s", run.pk, exc_info=True)
