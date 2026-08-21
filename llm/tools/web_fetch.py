@@ -499,7 +499,11 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
         return None
 
     logger.info("web_fetch: Jina fallback succeeded for url=%s chars=%d", url, len(content))
-    _run_web_scan(content, context)
+    images = _images_from_jina(data)
+    # Alt text (parsed from Jina's image summary) is page-supplied, untrusted
+    # content — scan it alongside the body, exactly like the direct path.
+    alt_blob = _alt_text_blob(images)
+    _run_web_scan(content + (("\n" + alt_blob) if alt_blob else ""), context)
 
     return {
         "url": url,
@@ -507,25 +511,25 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
         "content": content,
         "char_count": len(content),
         "source": "jina",
-        "images": _images_from_jina(data),
+        "images": images,
     }
 
 
 def _run_web_scan(text: str, context=None) -> None:
     """Fire-and-forget prompt-injection scan (never blocks)."""
-    try:
-        if text.strip():
-            from guardrails.web_content import scan_web_content
+    from guardrails.web_content import scan_web_content_from_tool
 
-            scan_web_content(
-                text,
-                user_id=context.user_id if context else None,
-                thread_id=context.conversation_id if context else None,
-                org_id=None,
-                source_label="web_fetch",
-            )
-    except Exception:
-        logger.debug("web_fetch: web content scan failed (non-fatal)")
+    scan_web_content_from_tool(text, context, source_label="web_fetch")
+
+
+def _alt_text_blob(images: list[dict]) -> str:
+    """Join image candidates' alt texts for scanning.
+
+    Alt text is page-supplied, untrusted content that ends up in the image
+    manifest shown to the model — every path that produces candidates must
+    scan it alongside the page body (direct, Jina, and the js-rendered
+    fallback merge)."""
+    return "\n".join(img["alt"] for img in images if img.get("alt"))
 
 
 def _extract_content(cleaned_html: str, soup: BeautifulSoup) -> tuple[str, str]:
@@ -885,10 +889,15 @@ def _fetch_core(url: str, cache, context=None) -> dict:
             # the images we extracted from the direct HTML only if Jina found none.
             if not jina.get("images"):
                 jina["images"] = images
+                # These direct-extracted alts were not part of the Jina-path
+                # scan; scan them before they can reach a manifest.
+                alt_blob = _alt_text_blob(images)
+                if alt_blob:
+                    _run_web_scan(alt_blob, context)
             return _cache_result(cache, cache_key, jina)
 
     # Alt text is page-supplied, untrusted content — scan it alongside the body.
-    alt_blob = "\n".join(img["alt"] for img in images if img.get("alt"))
+    alt_blob = _alt_text_blob(images)
     _run_web_scan(text + (("\n" + alt_blob) if alt_blob else ""), context)
 
     result = {

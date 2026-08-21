@@ -304,6 +304,58 @@ class WebFetchIncludeImagesTests(TestCase):
         self.assertNotIn("Images on this page", result2)
 
 
+@override_settings(JINA_API_KEY="test-jina-key")
+class AltTextScanTests(TestCase):
+    """Alt text is untrusted, page-supplied content: EVERY path that produces
+    image candidates must run it through the web-content scan alongside the
+    body — direct (covered in test_web_content_adversarial), Jina, and the
+    js-rendered fallback that merges direct-extracted candidates."""
+
+    def setUp(self):
+        self.tool = WebFetchTool()
+        self.ctx = RunContext.create(
+            user_id="1", conversation_id="00000000-0000-0000-0000-000000000000",
+        )
+        self.tool.set_context(self.ctx)
+
+    @patch("guardrails.web_content.scan_web_content")
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_path_alts_scanned(self, mock_pinned, mock_requests_get, mock_scan):
+        mock_pinned.side_effect = req_lib.exceptions.ConnectionError("refused")
+        mock_requests_get.return_value = _jina_resp_with_images(
+            "Jina body text.", {"Image 1: Injected alt content": "https://cdn/inj.jpg"},
+        )
+        self.tool.invoke({"url": "https://example.com/alt-scan-jina"})
+
+        scanned = "\n".join(c.args[0] for c in mock_scan.call_args_list)
+        self.assertIn("Jina body text.", scanned)
+        self.assertIn("Injected alt content", scanned)
+
+    @patch("guardrails.web_content.scan_web_content")
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_merged_direct_alts_scanned_on_jina_fallback(
+        self, mock_pinned, mock_requests_get, mock_scan,
+    ):
+        # Direct fetch succeeds but looks JS-rendered (big HTML, thin text), so
+        # the Jina result wins; Jina has no images, so the direct-extracted
+        # candidates are merged in — their alts must still be scanned.
+        html = (
+            "<html><head><title>T</title></head><body>"
+            "<!--" + "pad " * 2000 + "-->"
+            "<main><p>Tiny.</p>"
+            '<figure><img src="figure-shot.png" alt="Sneaky alt payload"></figure>'
+            "</main></body></html>"
+        )
+        mock_pinned.return_value = _mock_response(text=html)
+        mock_requests_get.return_value = _jina_resp_with_images("Jina body text.", {})
+        self.tool.invoke({"url": "https://example.com/alt-scan-merge"})
+
+        scanned = "\n".join(c.args[0] for c in mock_scan.call_args_list)
+        self.assertIn("Sneaky alt payload", scanned)
+
+
 class RedirectHelperTests(TestCase):
     @patch("llm.tools.web_fetch._pinned_get")
     def test_follows_redirect(self, mock_get):

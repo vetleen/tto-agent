@@ -204,26 +204,16 @@ def _search_core(
                     results.append(_parse_result_item(item, category))
 
             # Scan for prompt injection (log only, never blocks)
-            try:
-                combined = "\n".join(
-                    " ".join(
-                        [r.get("title", ""), r.get("description", "")]
-                        + r.get("extra_snippets", [])
-                    )
-                    for r in results
-                )
-                if combined.strip():
-                    from guardrails.web_content import scan_web_content
+            from guardrails.web_content import scan_web_content_from_tool
 
-                    scan_web_content(
-                        combined,
-                        user_id=context.user_id if context else None,
-                        thread_id=context.conversation_id if context else None,
-                        org_id=None,
-                        source_label="brave_search",
-                    )
-            except Exception:
-                logger.debug("brave_search: web content scan failed (non-fatal)")
+            combined = "\n".join(
+                " ".join(
+                    [r.get("title", ""), r.get("description", "")]
+                    + (r.get("extra_snippets") or [])
+                )
+                for r in results
+            )
+            scan_web_content_from_tool(combined, context, source_label="brave_search")
 
             return {"query": query, "results": results, "count": len(results)}
 

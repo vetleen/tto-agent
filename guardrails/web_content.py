@@ -101,6 +101,26 @@ def scan_web_content(
         )
 
 
+def scan_web_content_from_tool(text: str, context, *, source_label: str) -> None:
+    """Fire-and-forget scan for tool call sites (web_fetch, brave_search, ...).
+
+    Derives user/thread attribution from a RunContext-like object and never
+    raises — one shared guard instead of a hand-rolled try/except at every
+    call site. ``context`` may be None (no attribution → scan is skipped by
+    ``scan_web_content``'s own user_id check).
+    """
+    try:
+        scan_web_content(
+            text,
+            user_id=getattr(context, "user_id", None) if context is not None else None,
+            thread_id=getattr(context, "conversation_id", None) if context is not None else None,
+            org_id=None,
+            source_label=source_label,
+        )
+    except Exception:
+        logger.debug("web content scan failed (non-fatal) source=%s", source_label)
+
+
 def _resolve_org_id(user_id_int: int) -> int | None:
     """Look up the user's first org membership. Returns None if not found."""
     try:
