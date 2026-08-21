@@ -76,3 +76,6 @@ Desktop.ini
 
 # Secrets
 secrets/
+
+# Playwright MCP scratch output
+.playwright-mcp/
