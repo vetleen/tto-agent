@@ -472,6 +472,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         state = await database_sync_to_async(_load)()
         if state:
             await self.send(text_data=json.dumps({"event_type": "slidedeck.state", **state}))
+        else:
+            # No active deck (e.g. the last one was just deleted). Tell the client
+            # so it can close the panel instead of showing stale content.
+            await self.send(text_data=json.dumps({"event_type": "slidedeck.closed"}))
 
     async def _handle_slides_switch(self, data):
         thread_id = data.get("thread_id")

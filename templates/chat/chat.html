@@ -4263,6 +4263,7 @@
 
     var slidesToggleBtn = document.getElementById("slides-toggle-btn");
     function revealToggle() { if (slidesToggleBtn) slidesToggleBtn.classList.remove("hidden"); }
+    function hideToggle() { if (slidesToggleBtn) slidesToggleBtn.classList.add("hidden"); }
     function open() {
       revealToggle();  // a deck exists for this thread — let the user reopen the panel later
       if (isOpen) return;
@@ -4448,7 +4449,8 @@
         renderFailed = true; slides.forEach(function(s) { s.rendering = false; }); renderFilmstrip(); return;
       }
       if (et === "slidedeck.active_changed") { requestState(); return; }
-      if (et === "slidedeck.deleted") { if (!deckId || data.deck_id === deckId) close(); return; }
+      if (et === "slidedeck.deleted") { requestState(); return; }  // switch to the promoted deck, or close if none remain
+      if (et === "slidedeck.closed") { deckId = null; slides = []; comments = []; decks = []; hideToggle(); close(); return; }
       if (et === "slidedeck.comment_added") {
         if (data.ok) { if (data.open_count != null) { openComments = data.open_count; updateCommentBar(); } }
         else { requestState(); }  // add failed — re-hydrate to drop the optimistic comment

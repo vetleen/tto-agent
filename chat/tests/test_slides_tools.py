@@ -118,6 +118,17 @@ class SlideToolTests(TestCase):
         self.assertEqual(d["status"], "ok")
         self.assertIsNotNone(SlideSet.objects.get(title="Deck A").deleted_at)
 
+    def test_delete_active_promotes_survivor(self):
+        """Deleting the active deck when others remain promotes the newest survivor
+        so the thread keeps an active deck (the panel can switch instead of orphaning)."""
+        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self._run(WriteDeckTool(), title="Deck B", content_json=_deck_json())
+        # Deck B is active (written last); delete it and Deck A should take over.
+        self.assertTrue(SlideSet.objects.get(title="Deck B").is_active)
+        self._run(DeleteDeckTool(), deck_name="Deck B")
+        self.assertIsNotNone(SlideSet.objects.get(title="Deck B").deleted_at)
+        self.assertTrue(SlideSet.objects.get(title="Deck A").is_active)
+
     def test_edit_no_deck(self):
         r = self._run(EditDeckTool(), edits=[{"old_text": "a", "new_text": "b"}])
         self.assertEqual(r["status"], "error")

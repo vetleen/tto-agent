@@ -134,9 +134,21 @@ def save_deck_content(deck, content: dict):
 
 
 def soft_delete_deck(thread_id, deck):
+    was_active = deck.is_active
     deck.deleted_at = timezone.now()
     deck.is_active = False
     deck.save(update_fields=["deleted_at", "is_active"])
+    # If we just deleted the active deck, promote the newest surviving deck so
+    # the thread still has an active deck and its other decks aren't orphaned
+    # (the panel can reopen and switch to it instead of going dark).
+    if was_active:
+        nxt = (
+            SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+            .order_by("-created_at")
+            .first()
+        )
+        if nxt is not None:
+            activate_deck(thread_id, nxt)
 
 
 def restore_deck(thread_id, deck):
