@@ -612,6 +612,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return str(run.id)
 
         run_id = await database_sync_to_async(_dispatch)()
+        if not run_id:
+            # Deck not found or the broker was unreachable — never leave the
+            # button stuck "PDF…" waiting on a run that will never report.
+            await self.send(text_data=json.dumps({
+                "event_type": "slidedeck.render_failed",
+                "deck_id": str(deck_id or ""),
+                "run_id": "",
+                "purpose": "pdf_export",
+            }))
+            return
         await self.send(text_data=json.dumps({
             "event_type": "slidedeck.pdf_pending",
             "deck_id": str(deck_id or ""),
