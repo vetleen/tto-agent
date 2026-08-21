@@ -22,8 +22,15 @@ def _text(x, y, w, h, cls, paragraphs, **extra):
     return el
 
 
-def _p(text, **kw):
-    para = {"runs": [{"t": text}]}
+def _p(text, color=None, size=None, bold=None, **kw):
+    run = {"t": text}
+    if color:
+        run["color"] = color
+    if size:
+        run["size"] = size
+    if bold is not None:
+        run["b"] = bold
+    para = {"runs": [run]}
     para.update(kw)
     return para
 
@@ -42,7 +49,7 @@ _LAYOUTS: dict[str, dict] = {
         "name": "Section",
         "bg": "dk2",
         "elements": [
-            _text(_ML, 230, _MW, 80, "headline", [_p("Section heading", align="left")]),
+            _text(_ML, 230, _MW, 80, "headline", [_p("Section heading", color="lt1", align="left")]),
             {"type": "line", "x1": _ML, "y1": 220, "x2": _ML + 120, "y2": 220, "color": "accent1", "w": 3},
         ],
     },
@@ -62,12 +69,12 @@ _LAYOUTS: dict[str, dict] = {
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
             _text(_ML, 130, 408, 340, "body", [
-                _p("Left column heading", bullet=False, space_after=8),
+                _p("Left column heading", bold=True, color="dk2", bullet=False, space_after=10),
                 _p("Left point one", bullet=True, space_after=6),
                 _p("Left point two", bullet=True, space_after=6),
             ]),
             _text(504, 130, 408, 340, "body", [
-                _p("Right column heading", bullet=False, space_after=8),
+                _p("Right column heading", bold=True, color="dk2", bullet=False, space_after=10),
                 _p("Right point one", bullet=True, space_after=6),
                 _p("Right point two", bullet=True, space_after=6),
             ]),
@@ -102,11 +109,11 @@ _LAYOUTS: dict[str, dict] = {
         "name": "Metric",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
-            _text(_ML, 170, 420, 140, "headline", [_p("42%")]),
-            _text(_ML, 300, 420, 60, "subhead", [_p("What this number means")]),
-            _text(504, 170, 408, 260, "body", [
-                _p("Context for the metric", bullet=True, space_after=8),
-                _p("Why it matters", bullet=True, space_after=8),
+            _text(_ML, 170, 430, 120, "headline", [_p("42%", size=68, bold=True, color="accent1")]),
+            _text(_ML, 296, 430, 40, "subhead", [_p("What this number means")]),
+            _text(504, 176, 408, 240, "body", [
+                _p("Context for the metric", bullet=True, space_after=10),
+                _p("Why it matters", bullet=True, space_after=10),
             ]),
         ],
     },
@@ -123,8 +130,8 @@ _LAYOUTS: dict[str, dict] = {
         "skip_footer": True,
         "bg": "dk2",
         "elements": [
-            _text(_ML, 220, _MW, 80, "headline", [_p("Thank you", align="center")]),
-            _text(_ML, 315, _MW, 40, "subhead", [_p("name@example.com", align="center")]),
+            _text(_ML, 220, _MW, 80, "headline", [_p("Thank you", color="lt1", align="center")]),
+            _text(_ML, 315, _MW, 40, "subhead", [_p("name@example.com", color="lt2", align="center")]),
         ],
     },
     "blank": {

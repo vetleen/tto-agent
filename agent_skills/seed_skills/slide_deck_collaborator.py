@@ -91,6 +91,9 @@ Seed a slide from one of these, then edit its placeholder text.
   `closing`. Keep a consistent left margin — align related elements to the same `x`.
 - **Let the theme do the work.** Lean on classes (`headline`/`subhead`/`body`/`data`) and
   theme colours; reserve accent colours for emphasis, not whole paragraphs.
+- **Dark backgrounds need light text.** The default text colours are dark, so on a slide
+  with a dark `bg` (e.g. `dk1`/`dk2`) set each run's `color` to a light one (`lt1`/`lt2`)
+  or the text will be invisible.
 
 ## Workflow
 1. For a multi-slide deck, outline the slides in chat first and confirm with the user.

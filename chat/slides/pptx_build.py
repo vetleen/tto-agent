@@ -257,15 +257,26 @@ def _inject_default_color(paragraphs, default_color):
 
 def _add_image(slide, el, theme, resolver, warnings):
     x, y, w, h = _pt_box(el)
-    data = resolver(el.get("token", "")) if resolver else None
+    token = el.get("token", "")
+    data = resolver(token) if (resolver and token) else None
     if not data:
-        warnings.append(f"image unavailable: {el.get('token', '')[:60]}")
-        ph = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+        # An empty token is an intentional placeholder (a seed layout awaiting an
+        # image); only a token that failed to resolve is an actual problem.
+        is_placeholder = not token
+        if not is_placeholder:
+            warnings.append(f"image unavailable: {token[:60]}")
+        ph = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h)
         ph.fill.solid()
-        ph.fill.fore_color.rgb = RGBColor(0xE4, 0xE4, 0xDE)
-        ph.line.color.rgb = RGBColor(0xB8, 0xB8, 0xAE)
-        ph.text_frame.text = "image unavailable"
-        ph.text_frame.paragraphs[0].runs[0].font.size = Pt(10)
+        ph.fill.fore_color.rgb = RGBColor(0xEC, 0xEF, 0xE9)  # lt2 sage
+        ph.line.color.rgb = RGBColor(0xC7, 0xCF, 0xC4)
+        tf = ph.text_frame
+        tf.text = "Add an image" if is_placeholder else "image unavailable"
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        run = tf.paragraphs[0].runs[0]
+        run.font.size = Pt(13)
+        run.font.name = theme_mod.font_family(theme, "data")
+        run.font.color.rgb = RGBColor(0x8A, 0x94, 0x8B)
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
         return
     img_bytes, _ct = data
     stream = BytesIO(img_bytes)
