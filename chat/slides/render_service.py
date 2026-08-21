@@ -13,7 +13,7 @@ from django.db.utils import OperationalError
 from django.utils import timezone
 
 from chat.assets import store_slide_set_file, store_slide_set_image
-from chat.models import SlideRender, SlideRenderRun
+from chat.models import Asset, SlideRender, SlideRenderRun
 from chat.slides import schema
 from chat.slides.pptx_build import build_pptx
 from chat.slides.render import render_pptx
@@ -86,10 +86,20 @@ def _render(run, deck) -> dict:
             )
         for sid, (png, w, h) in zip(built_order, pngs):
             asset = store_slide_set_image(deck, img_bytes=png)
+            prev = existing.get(sid)
+            prev_asset_id = prev.asset_id if prev else None
             SlideRender.objects.update_or_create(
                 slide_set=deck, slide_id=sid,
                 defaults={"content_hash": hashes.get(sid), "asset": asset, "width": w, "height": h},
             )
+            # Free the superseded render asset (blob cleaned by the Asset
+            # post_delete signal) unless dedup reused it or another slide shares it.
+            if prev_asset_id and prev_asset_id != asset.id:
+                if not SlideRender.objects.filter(asset_id=prev_asset_id).exists():
+                    Asset.objects.filter(pk=prev_asset_id).delete()
+
+    # Prune render rows (and their assets) for slides removed from the deck.
+    _prune_deleted_slide_renders(deck, all_ids)
 
     renders = {r.slide_id: r for r in SlideRender.objects.filter(slide_set=deck)}
     ordered = all_ids if (is_pdf or not run.slide_ids) else requested
@@ -107,6 +117,19 @@ def _render(run, deck) -> dict:
         pdf_asset = store_slide_set_file(deck, file_bytes=pdf_bytes)
         result["pdf_asset_id"] = str(pdf_asset.id)
     return result
+
+
+def _prune_deleted_slide_renders(deck, live_slide_ids) -> None:
+    """Delete SlideRender rows (+ their assets) for slides no longer in the deck."""
+    stale = list(
+        SlideRender.objects.filter(slide_set=deck)
+        .exclude(slide_id__in=live_slide_ids)
+    )
+    for row in stale:
+        asset_id = row.asset_id
+        row.delete()
+        if asset_id and not SlideRender.objects.filter(asset_id=asset_id).exists():
+            Asset.objects.filter(pk=asset_id).delete()
 
 
 def notify_render_event(deck, run, event: str) -> None:

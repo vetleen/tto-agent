@@ -119,6 +119,43 @@ class RenderServiceTests(TestCase):
         m_notify.assert_not_called()
 
     @mock.patch("chat.slides.render_service.notify_render_event")
+    def test_re_render_deletes_superseded_asset(self, m_notify):
+        counter = {"n": 0}
+
+        def uniq_render(pptx_bytes, **kwargs):
+            counter["n"] += 1
+            n = len([
+                x for x in zipfile.ZipFile(io.BytesIO(pptx_bytes)).namelist()
+                if x.startswith("ppt/slides/slide") and x.endswith(".xml") and "rels" not in x
+            ])
+            return b"%PDF", [(_PNG + f"-{counter['n']}-{i}".encode(), 100, 56) for i in range(n)]
+
+        with mock.patch("chat.slides.render_service.render_pptx", side_effect=uniq_render):
+            render_service.execute_render_run(str(self._run(SlideRenderRun.Purpose.USER_PREVIEW).id))
+            s1_asset = SlideRender.objects.get(slide_set=self.deck, slide_id="s1").asset_id
+            s2_asset = SlideRender.objects.get(slide_set=self.deck, slide_id="s2").asset_id
+            # change only s2
+            self.deck.content["slides"][1]["name"] = "B changed"
+            self.deck.save(update_fields=["content"])
+            render_service.execute_render_run(str(self._run(SlideRenderRun.Purpose.USER_PREVIEW).id))
+
+        self.assertFalse(Asset.objects.filter(pk=s2_asset).exists(), "old s2 asset should be deleted")
+        self.assertTrue(Asset.objects.filter(pk=s1_asset).exists(), "s1 asset should be untouched")
+        self.assertNotEqual(SlideRender.objects.get(slide_set=self.deck, slide_id="s2").asset_id, s2_asset)
+
+    @mock.patch("chat.slides.render_service.notify_render_event")
+    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    def test_removed_slide_render_is_pruned(self, m_render, m_notify):
+        render_service.execute_render_run(str(self._run(SlideRenderRun.Purpose.USER_PREVIEW).id))
+        self.assertEqual(SlideRender.objects.filter(slide_set=self.deck).count(), 2)
+        # remove s2 from the deck
+        self.deck.content["slides"] = [self.deck.content["slides"][0]]
+        self.deck.save(update_fields=["content"])
+        render_service.execute_render_run(str(self._run(SlideRenderRun.Purpose.USER_PREVIEW).id))
+        self.assertFalse(SlideRender.objects.filter(slide_set=self.deck, slide_id="s2").exists())
+        self.assertEqual(SlideRender.objects.filter(slide_set=self.deck).count(), 1)
+
+    @mock.patch("chat.slides.render_service.notify_render_event")
     @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
     def test_completed_run_is_idempotent(self, m_render, m_notify):
         run = self._run(SlideRenderRun.Purpose.USER_PREVIEW)

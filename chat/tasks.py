@@ -246,7 +246,7 @@ def expire_stale_slide_renders() -> int:
     from django.db.utils import InterfaceError, OperationalError
     from django.utils import timezone
 
-    from chat.models import SlideRenderRun
+    from chat.models import Asset, SlideRender, SlideRenderRun
 
     try:
         now = timezone.now()
@@ -257,6 +257,21 @@ def expire_stale_slide_renders() -> int:
             status=SlideRenderRun.Status.PENDING, created_at__lt=now - timedelta(minutes=30)
         ).update(status=SlideRenderRun.Status.FAILED, error="Render never started (stale).", finished_at=now)
         SlideRenderRun.objects.filter(created_at__lt=now - timedelta(days=7)).delete()
+
+        # Prune orphaned deck-owned assets (blobs cleaned by the Asset post_delete
+        # signal). Render images (slide_set + KIND_IMAGE) are only ever referenced
+        # by SlideRender; the 1h age guard avoids racing an in-flight render.
+        # Export PDFs (KIND_FILE) are ephemeral downloads — drop after 7 days.
+        Asset.objects.filter(
+            slide_set__isnull=False, kind=Asset.KIND_IMAGE,
+            created_at__lt=now - timedelta(hours=1),
+        ).exclude(
+            pk__in=SlideRender.objects.filter(asset__isnull=False).values("asset_id")
+        ).delete()
+        Asset.objects.filter(
+            slide_set__isnull=False, kind=Asset.KIND_FILE,
+            created_at__lt=now - timedelta(days=7),
+        ).delete()
         return stale_running + stale_pending
     except (OperationalError, InterfaceError):
         logger.info(
