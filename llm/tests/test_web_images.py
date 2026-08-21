@@ -304,7 +304,14 @@ class WebFetchIncludeImagesTests(TestCase):
         self.assertNotIn("Images on this page", result2)
 
 
-@override_settings(JINA_API_KEY="test-jina-key")
+@override_settings(
+    # DummyCache (never persists): the default test cache is a real Redis whose
+    # web_fetch_v3:* entries survive across runs. A cache hit makes _fetch_core
+    # return before it ever fetches or scans, so on a re-run the scan we assert
+    # on would silently never fire. Force a real fetch (and scan) every run.
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}},
+    JINA_API_KEY="test-jina-key",
+)
 class AltTextScanTests(TestCase):
     """Alt text is untrusted, page-supplied content: EVERY path that produces
     image candidates must run it through the web-content scan alongside the
