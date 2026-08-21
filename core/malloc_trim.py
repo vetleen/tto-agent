@@ -99,7 +99,10 @@ def _should_start(env: dict[str, str], argv: list[str]) -> bool:
         if int(env.get("MALLOC_TRIM_INTERVAL", "60")) <= 0:
             return False
     except (TypeError, ValueError):
-        return False
+        # Typo/garbage (e.g. "60s") is not a disable request — the documented
+        # off switch is a valid "0". Fall through and keep the mitigation on;
+        # maybe_start's _pos_int clamps the bad value back to the default.
+        pass
     argv0 = os.path.basename(argv[0]) if argv else ""
     if "celery" in argv0 or "celery" in " ".join(argv[1:2]):
         return False

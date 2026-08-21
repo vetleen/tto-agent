@@ -30,6 +30,14 @@ class ShouldStartGatingTests(SimpleTestCase):
             malloc_trim._should_start({"MALLOC_TRIM_INTERVAL": "0"}, ["daphne"])
         )
 
+    def test_unparseable_interval_still_starts(self):
+        # A typo (e.g. "60s") must not silently disable the R14 mitigation —
+        # only a valid non-positive value is a deliberate off switch. maybe_start
+        # then clamps the bad value back to the default interval.
+        self.assertTrue(
+            malloc_trim._should_start({"MALLOC_TRIM_INTERVAL": "60s"}, ["daphne"])
+        )
+
     def test_declines_on_celery_worker(self):
         self.assertFalse(
             malloc_trim._should_start({}, ["/app/.heroku/python/bin/celery", "-A", "config"])
