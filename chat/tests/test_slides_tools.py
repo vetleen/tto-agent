@@ -55,6 +55,20 @@ class SlideToolTests(TestCase):
         self.assertEqual(deck.content["slides"][0]["id"], "s1")
         self.assertEqual([c.source for c in deck.checkpoints.all()], ["original"])
 
+    def test_write_accepts_native_object(self):
+        """The deck may be passed as a native JSON object (no string escaping) —
+        the primary path for the model, which avoids double-escaping errors."""
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+            {"name": "Title", "skip_footer": True, "elements": [
+                {"type": "text", "x": 80, "y": 210, "w": 800, "h": 100, "class": "headline",
+                 "paragraphs": [{"align": "center", "runs": [{"t": "Object Deck"}]}]},
+            ]},
+        ]}
+        r = self._run(WriteDeckTool(), title="Obj", content=deck)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["slide_ids"], ["s1"])
+        self.assertEqual(SlideSet.objects.get(pk=r["deck_id"]).content["slides"][0]["id"], "s1")
+
     def test_write_invalid_json(self):
         r = self._run(WriteDeckTool(), title="X", content_json="{not json")
         self.assertEqual(r["status"], "error")

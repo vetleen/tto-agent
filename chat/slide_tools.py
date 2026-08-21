@@ -33,11 +33,12 @@ class ActivateDeckInput(ReasonBaseModel):
 
 class WriteDeckInput(ReasonBaseModel):
     title: str = Field(description="Title for the deck.")
-    content_json: str = Field(
+    content: dict | str = Field(
         description=(
-            "The FULL deck as a JSON string (see the schema in your instructions): "
-            '{"version":1,"size":{"w":960,"h":540},"slides":[...]}. Coordinates are '
-            "points; the slide is 960x540. Omit slide/element ids and they are minted."
+            "The FULL deck as a JSON OBJECT — pass it directly as structured JSON, do NOT "
+            "wrap it in a string or escape the quotes: "
+            '{"version":1,"size":{"w":960,"h":540},"slides":[...]}. Coordinates are points; '
+            "the slide is 960x540. Omit slide/element ids and they are minted."
         ),
     )
     deck_name: str = Field(
@@ -153,19 +154,26 @@ class WriteDeckTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = WriteDeckInput
 
-    def _run(self, title: str, content_json: str, deck_name: str = "", **kwargs) -> str:
+    def _run(self, title: str, content=None, deck_name: str = "", **kwargs) -> str:
         from chat.slides import schema, service
 
         thread_id = _thread_id(self)
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
-        try:
-            deck = json.loads(content_json)
-        except (ValueError, TypeError) as exc:
-            return json.dumps({"status": "error", "message": f"content_json is not valid JSON: {exc}"})
-        if not isinstance(deck, dict):
-            return json.dumps({"status": "error", "message": "content_json must be a JSON object."})
+        # Accept the deck as a native object (preferred — no escaping) or, for
+        # backward compatibility, a JSON string under either name.
+        if content is None:
+            content = kwargs.get("content_json")
+        if isinstance(content, str):
+            try:
+                deck = json.loads(content)
+            except (ValueError, TypeError) as exc:
+                return json.dumps({"status": "error", "message": f"content is not valid JSON: {exc}"})
+        elif isinstance(content, dict):
+            deck = content
+        else:
+            return json.dumps({"status": "error", "message": "content must be a JSON object (the full deck)."})
 
         schema.mint_ids(deck)
         issues = schema.validate_deck(deck)
