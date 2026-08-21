@@ -11,8 +11,11 @@ but is wired to the worker render task in a later phase.
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
+import time
+from io import BytesIO
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -365,6 +368,158 @@ class DeleteDeckTool(ContextAwareTool):
         return json.dumps({"status": "ok", "deck_id": str(deck.pk), "deck_title": title})
 
 
+class PreviewSlidesTool(ContextAwareTool):
+    name: str = "slides_preview_slide"
+    audience: str = "main"
+    section: str = "skills"
+    start_label: str = "Rendering slides..."
+    end_label: str = "Rendered slides"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") == "ok":
+            n = result.get("previewed_count", 0)
+            return f"Rendered {n} slide(s)" if n else "Rendered slides"
+        if result.get("status") == "unavailable":
+            return "Preview unavailable"
+        return None
+
+    description: str = (
+        "Render specific slides to images and view them so you can check text overflow, "
+        "element collisions, and contrast before finishing. Preview only the slides you "
+        "changed (max 4). Empty = the whole deck (capped)."
+    )
+    args_schema: type[BaseModel] = PreviewSlidesInput
+
+    def _run(self, slide_ids=None, deck_name: str = "", **kwargs) -> str:
+        from django.conf import settings
+
+        from chat.models import SlideRenderRun
+        from chat.slides import schema, service
+        from chat.tasks import render_deck_task
+
+        thread_id = _thread_id(self)
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        deck, err = service.resolve_deck(thread_id, deck_name or None)
+        if err:
+            return json.dumps({"status": "error", **err})
+        if deck is None:
+            return json.dumps({"status": "error", "message": "No active deck to preview."})
+
+        all_ids = [s.get("id") for s in (deck.content or {}).get("slides") or []]
+        all_set = set(all_ids)
+        ids = [sid for sid in (slide_ids or []) if sid in all_set]
+        ids = (ids or all_ids)[: schema.MAX_PREVIEW_SLIDES_PER_CALL]
+        if not ids:
+            return json.dumps({"status": "error", "message": "The deck has no slides to preview."})
+
+        run = SlideRenderRun.objects.create(
+            slide_set=deck, purpose=SlideRenderRun.Purpose.AGENT_PREVIEW, slide_ids=ids
+        )
+        try:
+            task = render_deck_task.delay(str(run.id))
+            run.celery_task_id = task.id
+            run.save(update_fields=["celery_task_id"])
+        except Exception:
+            SlideRenderRun.objects.filter(pk=run.id).update(
+                status=SlideRenderRun.Status.FAILED, error="Could not enqueue render."
+            )
+            return json.dumps({
+                "status": "unavailable",
+                "message": "Couldn't start a render; proceed without a visual preview.",
+            })
+
+        timeout = int(getattr(settings, "SLIDE_RENDER_TIMEOUT", 120))
+        if self.context and self.context.deadline_seconds:
+            timeout = min(timeout, max(5, self.context.deadline_seconds - 5))
+        deadline = time.monotonic() + timeout
+        run.refresh_from_db()
+        terminal = (SlideRenderRun.Status.COMPLETED, SlideRenderRun.Status.FAILED)
+        while run.status not in terminal:
+            if time.monotonic() >= deadline:
+                return json.dumps({
+                    "status": "unavailable",
+                    "message": f"Preview still rendering after {timeout}s; proceed without it.",
+                })
+            time.sleep(2)
+            run.refresh_from_db()
+
+        if run.status == SlideRenderRun.Status.FAILED:
+            return json.dumps({
+                "status": "unavailable",
+                "message": "Rendering isn't available right now; proceed without a visual preview.",
+            })
+
+        attached = self._attach_images(run, ids)
+        if attached == 0:
+            return json.dumps({
+                "status": "unavailable",
+                "message": "The render produced no images; proceed without a visual preview.",
+            })
+        return json.dumps({
+            "status": "ok",
+            "previewed_count": attached,
+            "previewed_slide_ids": ids,
+            "message": (
+                "Rendered slides attached below. Inspect them for text overflow, element "
+                "collisions, and low-contrast text; fix any issues with slide_canvas_edit "
+                "before you finish."
+            ),
+        })
+
+    def _attach_images(self, run, ids) -> int:
+        from chat.assets import image_asset_source
+        from chat.models import Asset
+
+        ctx = self.context
+        if ctx is None:
+            return 0
+        by_id = {s["slide_id"]: s for s in (run.result or {}).get("slides", [])}
+        attached = 0
+        for sid in ids:
+            info = by_id.get(sid)
+            if not info or not info.get("asset_id"):
+                continue
+            try:
+                asset = Asset.objects.filter(pk=info["asset_id"]).first()
+                if asset is None:
+                    continue
+                source, ct = image_asset_source(asset)
+                if source is None:
+                    continue
+                with source.open("rb") as fh:
+                    data = fh.read()
+                data, ct = _downscale_png(data, ct)
+                ctx.pending_image_assets.append({
+                    "asset_id": sid,  # label only — unused by the pipeline drain
+                    "b64": base64.b64encode(data).decode("ascii"),
+                    "media_type": ct or "image/png",
+                    "description": f"Rendered slide {sid} (page {info.get('page')})",
+                })
+                attached += 1
+            except Exception:
+                continue
+        return attached
+
+
+def _downscale_png(data: bytes, ct: str, max_w: int = 1024):
+    """Shrink a preview PNG for the agent copy (keeps the base64 payload small)."""
+    try:
+        from PIL import Image
+
+        im = Image.open(BytesIO(data))
+        if im.width > max_w:
+            ratio = max_w / im.width
+            im = im.convert("RGB").resize((max_w, max(1, int(im.height * ratio))))
+            buf = BytesIO()
+            im.save(buf, format="PNG")
+            return buf.getvalue(), "image/png"
+    except Exception:
+        pass
+    return data, ct
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(ActivateDeckTool())
@@ -372,3 +527,4 @@ _registry.register_tool(WriteDeckTool())
 _registry.register_tool(EditDeckTool())
 _registry.register_tool(AddSlideTool())
 _registry.register_tool(DeleteDeckTool())
+_registry.register_tool(PreviewSlidesTool())
