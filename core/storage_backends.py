@@ -11,8 +11,14 @@ these per-thread copies accumulate and drive RSS to R14/R15 (prod incident
 Sharing a single ``boto3.Session`` shares its botocore ``Loader`` cache, so the S3
 service model is loaded **once** regardless of thread count. Per-thread *resources*
 are still created from the shared session (boto3 resources aren't thread-safe), but
-they reuse the cached model — the heavy part is paid once. boto3 >= 1.35 handles
-concurrent resource/client creation from a shared session.
+they reuse the cached model — the heavy part is paid once.
+
+``botocore.session.create_client`` (which ``session.resource()`` funnels into) holds
+no lock and lazily instantiates the session's shared caches (service-model loader,
+credential resolver, endpoint resolver, config store) on first use. So the session's
+caches are warmed **once, single-threaded, under a lock** at creation (see
+``_create_session``); concurrent per-thread resource creation then only *reads* those
+populated caches, which is safe.
 """
 
 from __future__ import annotations
@@ -41,5 +47,23 @@ class SharedSessionS3Storage(S3Boto3Storage):
         if cls._shared_session is None:
             with cls._session_lock:
                 if cls._shared_session is None:
-                    cls._shared_session = super()._create_session()
+                    session = super()._create_session()
+                    # Warm the session's lazy, shared caches (S3 service-model
+                    # loader, credential resolver, endpoint resolver, config
+                    # store) single-threaded, under the lock, before any thread
+                    # races to populate them via ``session.resource()``. Mirror
+                    # the exact call upstream's ``connection`` makes so the same
+                    # components warm. The throwaway resource is discarded; the
+                    # heavy caches persist on the session.
+                    session.resource(
+                        "s3",
+                        region_name=self.region_name,
+                        use_ssl=self.use_ssl,
+                        endpoint_url=self.endpoint_url,
+                        config=self.client_config,
+                        verify=self.verify,
+                    )
+                    # Publish only after warm-up succeeds, so a transient
+                    # failure doesn't cache a half-initialized session.
+                    cls._shared_session = session
         return cls._shared_session
