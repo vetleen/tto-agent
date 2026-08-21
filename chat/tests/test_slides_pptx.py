@@ -72,6 +72,13 @@ class BuildDeckTests(SimpleTestCase):
     def test_bullets(self):
         self.assertIn("a:buChar", self.s2)
 
+    def test_bullet_char_attr_is_unqualified(self):
+        # The buChar `char` attribute MUST be unqualified; `<a:buChar a:char=…>`
+        # is tolerated by python-pptx/LibreOffice but makes real PowerPoint refuse
+        # to open the .pptx. Regression guard for that bug.
+        self.assertIn('buChar char="', self.s2)
+        self.assertNotIn("buChar a:char", self.s2)
+
     def test_arrowhead_and_dash(self):
         self.assertIn("tailEnd", self.s2)
         self.assertIn("prstDash", self.s2)

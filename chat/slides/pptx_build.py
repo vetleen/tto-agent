@@ -328,11 +328,21 @@ def _add_table(slide, el, theme, warnings):
             spec = row[ci] if ci < len(row) else {}
             _render_cell(table.cell(ri, ci), spec or {}, theme, tbl_theme, text_class, is_header, is_band)
 
+    # Content-sized rows: never stretch a small table to fill the requested h
+    # (that balloons the header and detaches the data row). PowerPoint treats the
+    # row height as a minimum and grows it for wrapped content.
+    data_size = theme.get("text_styles", {}).get(text_class, {}).get("size", 12)
+    row_h = int(Pt(max(26, data_size * 2.2)))
+    for row_obj in table.rows:
+        row_obj.height = row_h
+    gf.height = row_h * n_rows
+
 
 def _render_cell(cell, spec, theme, tbl_theme, text_class, is_header, is_band):
     tf = cell.text_frame
     tf.clear()
     tf.word_wrap = True
+    cell.vertical_anchor = MSO_ANCHOR.MIDDLE
     p = tf.paragraphs[0]
     p.alignment = ALIGN_MAP.get(spec.get("align", "left"), PP_ALIGN.LEFT)
     r = p.add_run()

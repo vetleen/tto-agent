@@ -57,7 +57,10 @@ def set_bullet_char(paragraph, char: str, *, hang_pt: float = 16) -> None:
     hang = Emu(Pt(hang_pt))
     pPr.set("marL", str(int(hang)))
     pPr.set("indent", str(-int(hang)))
-    bu = pPr.makeelement(qn("a:buChar"), {qn("a:char"): char or "•"})
+    # NOTE: the char attribute is UNQUALIFIED (`char`, not `a:char`). Namespacing
+    # it produces `<a:buChar a:char="…"/>`, which python-pptx/LibreOffice tolerate
+    # but real PowerPoint rejects ("PowerPoint could not open the file").
+    bu = pPr.makeelement(qn("a:buChar"), {"char": char or "•"})
     pPr.append(bu)
 
 
