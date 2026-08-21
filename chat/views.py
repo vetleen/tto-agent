@@ -41,6 +41,8 @@ def _user_can_access_asset(user, asset) -> bool:
         return asset.message.thread.created_by_id == user.id
     if asset.thread_id:
         return asset.thread.created_by_id == user.id
+    if asset.slide_set_id:
+        return asset.slide_set.thread.created_by_id == user.id
     if asset.version_id:
         from documents.views import _user_can_access_data_room
 
@@ -1817,4 +1819,31 @@ async def slides_export_pptx(request, thread_id, deck_id):
         as_attachment=True,
         filename=f"{_safe_doc_title(deck.title)}.pptx",
         content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+
+
+@login_required
+@require_http_methods(["GET"])
+async def slides_pdf_download(request, thread_id, deck_id, run_id):
+    """Stream the rendered PDF for a completed pdf_export render run."""
+    from asgiref.sync import sync_to_async
+
+    from chat.assets import image_asset_source
+    from chat.models import Asset, ChatThread, SlideRenderRun, SlideSet
+
+    thread = await sync_to_async(get_object_or_404)(ChatThread, id=thread_id, created_by=request.user)
+    deck = await sync_to_async(get_object_or_404)(SlideSet, pk=deck_id, thread=thread)
+    run = await sync_to_async(get_object_or_404)(SlideRenderRun, pk=run_id, slide_set=deck)
+    pdf_asset_id = (run.result or {}).get("pdf_asset_id")
+    if not pdf_asset_id:
+        raise Http404("No PDF for this render.")
+    asset = await sync_to_async(get_object_or_404)(Asset, pk=pdf_asset_id, slide_set=deck)
+    source, _ct = await sync_to_async(image_asset_source)(asset)
+    if source is None:
+        raise Http404
+    return FileResponse(
+        source.open("rb"),
+        as_attachment=True,
+        filename=f"{_safe_doc_title(deck.title)}.pdf",
+        content_type="application/pdf",
     )

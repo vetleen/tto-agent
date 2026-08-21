@@ -11,6 +11,7 @@ urlpatterns = [
     path("threads/<uuid:thread_id>/canvas/export/", views.canvas_export, name="canvas_export"),
     path("threads/<uuid:thread_id>/canvas/<int:canvas_id>/export/", views.canvas_export, name="canvas_export_by_id"),
     path("threads/<uuid:thread_id>/slides/<int:deck_id>/export/", views.slides_export_pptx, name="slides_export_pptx"),
+    path("threads/<uuid:thread_id>/slides/<int:deck_id>/pdf/<uuid:run_id>/", views.slides_pdf_download, name="slides_pdf_download"),
     path("threads/<uuid:thread_id>/canvas/import/", views.canvas_import, name="canvas_import"),
     path("threads/<uuid:thread_id>/canvas/<int:canvas_id>/import/", views.canvas_import, name="canvas_import_by_id"),
     path("api/threads/create/", views.thread_create, name="thread_create"),

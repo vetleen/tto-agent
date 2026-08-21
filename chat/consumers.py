@@ -42,6 +42,7 @@ class _TurnState:
     guardrail_redacted: bool = False
     warn_verdict: object | None = None
     modified_canvas_ids: set = field(default_factory=set)
+    modified_slide_set_ids: set = field(default_factory=set)
 
 
 def _valid_uuids(values):
@@ -71,6 +72,12 @@ CANVAS_UPDATED_TOOLS = (
     "canvas_write", "canvas_edit", "document_open_to_canvas",
     "skill_field_load", "skill_template_load",
 )
+
+# Slide-deck tools whose status:ok + deck_id payload should refresh the deck
+# panel (a lightweight slidedeck.updated; the rendered images arrive later via
+# slidedeck.rendered). Any deck-mutating tool MUST be listed here or its deck
+# never refreshes in the UI (asserted by chat/tests/test_slides_consumer.py).
+SLIDES_UPDATED_TOOLS = ("slide_canvas_write", "slide_canvas_edit", "slides_add_slide")
 
 MAX_HISTORY_TOKENS = 20_000  # legacy default; overridden by dynamic budget when model is known
 OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when model is known
@@ -311,6 +318,93 @@ class ChatConsumer(AsyncWebsocketConsumer):
             {"thread_id": thread_id, "content": ""},
             seed_mode=True,
         )
+
+    # -- Slide deck render group handlers (from render_deck_task via group_send) --
+    async def slidedeck_rendered(self, event):
+        if self._stopped:
+            return
+        payload = await database_sync_to_async(self._render_run_payload)(event.get("run_id"))
+        if payload:
+            await self.send(text_data=json.dumps({"event_type": "slidedeck.rendered", **payload}))
+
+    async def slidedeck_render_failed(self, event):
+        if self._stopped:
+            return
+        await self.send(text_data=json.dumps({
+            "event_type": "slidedeck.render_failed",
+            "deck_id": str(event.get("deck_id") or ""),
+            "run_id": str(event.get("run_id") or ""),
+        }))
+
+    async def slidedeck_pdf_ready(self, event):
+        if self._stopped:
+            return
+        payload = await database_sync_to_async(self._pdf_ready_payload)(event.get("run_id"))
+        if payload:
+            await self.send(text_data=json.dumps({"event_type": "slidedeck.pdf_ready", **payload}))
+
+    def _render_run_payload(self, run_id):
+        """Build the browser payload for a completed user-preview render run."""
+        from chat.models import SlideRenderRun
+
+        run = (
+            SlideRenderRun.objects.filter(pk=run_id)
+            .select_related("slide_set")
+            .first()
+        )
+        if run is None or run.status != SlideRenderRun.Status.COMPLETED:
+            return None
+        slides = [
+            {
+                "slide_id": s.get("slide_id"),
+                "asset_url": f"/chat/asset/{s.get('asset_id')}/",
+                "width": s.get("width"),
+                "height": s.get("height"),
+                "page": s.get("page"),
+            }
+            for s in (run.result or {}).get("slides", [])
+            if s.get("asset_id")
+        ]
+        return {"deck_id": str(run.slide_set_id), "slides": slides}
+
+    def _pdf_ready_payload(self, run_id):
+        from chat.models import SlideRenderRun
+
+        run = SlideRenderRun.objects.filter(pk=run_id).select_related("slide_set").first()
+        if run is None or run.status != SlideRenderRun.Status.COMPLETED:
+            return None
+        pdf_asset_id = (run.result or {}).get("pdf_asset_id")
+        if not pdf_asset_id:
+            return None
+        thread_id = run.slide_set.thread_id
+        return {
+            "deck_id": str(run.slide_set_id),
+            "run_id": str(run.pk),
+            "download_url": f"/chat/threads/{thread_id}/slides/{run.slide_set_id}/pdf/{run.pk}/",
+        }
+
+    @database_sync_to_async
+    def _dispatch_deck_previews(self, deck_ids):
+        """Enqueue a user-preview render for each changed deck (best-effort)."""
+        from chat.models import SlideRenderRun, SlideSet
+        from chat.tasks import render_deck_task
+
+        for deck_id in deck_ids:
+            deck = SlideSet.objects.filter(pk=deck_id, deleted_at__isnull=True).first()
+            if deck is None:
+                continue
+            run = SlideRenderRun.objects.create(
+                slide_set=deck, purpose=SlideRenderRun.Purpose.USER_PREVIEW, slide_ids=[]
+            )
+            try:
+                task = render_deck_task.delay(str(run.id))
+                run.celery_task_id = task.id
+                run.save(update_fields=["celery_task_id"])
+            except Exception:
+                logger.exception("Could not enqueue deck render for %s", deck_id)
+                SlideRenderRun.objects.filter(pk=run.id).update(
+                    status=SlideRenderRun.Status.FAILED, error="Could not enqueue render."
+                )
 
     @database_sync_to_async
     def _resolve_preferences(self):
@@ -1401,6 +1495,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # returns early on stop). Idempotent via turn.guardrail_redacted.
             await self._finalize_guardrail(thread, turn)
 
+            # Render the decks this turn changed so the user's filmstrip refreshes
+            # (worker task; the per-slide render cache makes an already-previewed
+            # deck nearly free). Best-effort — must not break the turn.
+            if turn.modified_slide_set_ids:
+                try:
+                    await self._dispatch_deck_previews(list(turn.modified_slide_set_ids))
+                except Exception:
+                    logger.exception("Failed to dispatch deck previews")
+
             # Seed a continuation for any sub-agent result that arrived while the
             # stream ran — but ONLY if this turn is still the current, live turn.
             # A cancelled / superseded / disconnected turn (cancel_event set, or
@@ -1956,6 +2059,44 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     "doc_index": result.get("doc_index"),
                                     "reason": result.get("blocked_reason", ""),
                                     "reasons": result.get("reasons", []),
+                                })
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    # -- Slide deck tools: refresh the deck panel (render follows) --
+                    if tool_name in SLIDES_UPDATED_TOOLS:
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok" and result.get("deck_id"):
+                                deck_id = str(result["deck_id"])
+                                turn.modified_slide_set_ids.add(deck_id)
+                                await self._sink.send_event({
+                                    "event_type": "slidedeck.updated",
+                                    "deck_id": deck_id,
+                                    "title": result.get("title", ""),
+                                    "slide_count": result.get("slide_count"),
+                                    "slide_ids": result.get("slide_ids"),
+                                    "changed_slide_ids": result.get("changed_slide_ids", []),
+                                })
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    if tool_name == "slide_canvas_activate":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok":
+                                await self._sink.send_event({
+                                    "event_type": "slidedeck.active_changed",
+                                    "activated": result.get("activated", []),
+                                })
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    if tool_name == "slide_canvas_delete":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            if result.get("status") == "ok" and result.get("deck_id"):
+                                await self._sink.send_event({
+                                    "event_type": "slidedeck.deleted",
+                                    "deck_id": str(result["deck_id"]),
+                                    "deck_title": result.get("deck_title", ""),
                                 })
                         except (json.JSONDecodeError, AttributeError):
                             pass
