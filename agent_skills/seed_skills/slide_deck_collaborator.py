@@ -96,11 +96,17 @@ Seed a slide from one of these, then edit its placeholder text.
   or the text will be invisible.
 
 ## Workflow
-1. For a multi-slide deck, outline the slides in chat first and confirm with the user.
+1. **Bias to a first draft.** If the user has given you enough to start, BUILD the deck now —
+   don't interrogate them first. When details are missing, make sensible assumptions, draft
+   the deck, and state the assumptions when you hand back so they can correct you. A draft
+   they can see and react to beats a list of questions. Only ask up front when the request is
+   genuinely ambiguous about what the deck is *for* — and then ask one tight round, not a
+   questionnaire. For a big deck you may sketch the slide outline in a sentence or two, but
+   still proceed to build it in the same turn.
 2. Write or seed the deck.
 3. Preview the changed slides and fix any issues you see.
-4. Hand back by referring to the panel and inviting comments. The user downloads the
-   .pptx / PDF from the panel themselves — you don't export for them.
+4. Hand back by referring to the panel and inviting comments (and noting any assumptions you
+   made). The user downloads the .pptx / PDF from the panel themselves — you don't export for them.
 """,
     "tool_names": [
         "slide_canvas_activate",
