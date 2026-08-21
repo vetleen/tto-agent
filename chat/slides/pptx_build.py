@@ -361,8 +361,11 @@ def _render_cell(cell, spec, theme, tbl_theme, text_class, is_header, is_band):
     cls = spec.get("class") or text_class
     style = theme_mod.base_text_style(theme, cls)
     r.font.name = theme_mod.font_family(theme, style.get("font"))
-    if style.get("size"):
-        r.font.size = Pt(style["size"])
+    # An explicit per-cell size wins over the class default (lets a dense table
+    # shrink its text to fit); otherwise fall back to the text class's size.
+    cell_size = spec.get("size") or style.get("size")
+    if cell_size:
+        r.font.size = Pt(cell_size)
     bold = spec.get("b")
     r.font.bold = bool(is_header if bold is None else bold)
     if spec.get("i") is not None:

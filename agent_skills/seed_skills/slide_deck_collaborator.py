@@ -58,7 +58,8 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 3. **image** — `{"type":"image","x":600,"y":120,"w":300,"h":200,"token":"[[image:UUID]]","fit":"cover"}`.
    The token comes from an image tool; `fit` is `contain`/`cover`/`stretch`.
 4. **table** — `{"type":"table","x":48,"y":130,"w":864,"h":260,"header":true,"banding":true,"col_widths":[288,288,288],"rows":[[{"t":"Stage"},{"t":"Count"},{"t":"Value"}],[{"t":"Filed"},{"t":"7"},{"t":"$3.4M"}]]}`.
-   Cell: `{"t":"text","class":"data","b":true,"color":"accent1","fill":"lt2","align":"center"}`.
+   Cell: `{"t":"text","class":"data","b":true,"size":11,"color":"accent1","fill":"lt2","align":"center"}`
+   (`size` is optional — use a smaller point size to fit a dense table).
    The header row and banding are styled automatically by the theme.
 5. **line** — `{"type":"line","x1":48,"y1":440,"x2":912,"y2":440,"color":"accent3","w":2,"dash":"dash","arrow":"end"}`
    (`arrow`: none/end/start/both; `dash`: solid/dash/dot/dashdot).

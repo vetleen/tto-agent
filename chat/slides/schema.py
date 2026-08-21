@@ -131,6 +131,7 @@ class Cell(_Strict):
     cls: str | None = Field(default=None, alias="class")
     b: bool | None = None
     i: bool | None = None
+    size: float | None = None
     color: str | None = None
     fill: str | None = None
     align: Literal["left", "center", "right"] | None = None
