@@ -410,6 +410,189 @@ class CanvasCheckpoint(models.Model):
         return f"Checkpoint #{self.order} ({self.source}) for canvas {self.canvas_id}"
 
 
+class SlideSet(models.Model):
+    """An AI-authored slide deck owned by a chat thread — the canvas's sibling.
+
+    ``content`` holds the WHOLE deck as JSON (see chat.slides.schema): slides
+    live as a JSON array inside it, NOT as rows, so the assistant edits one
+    canonical text document (chat.slides.schema.canonical_deck_text) exactly as
+    it edits a canvas, and stable per-slide ids live inside the JSON. Soft
+    delete + the partial-unique title mirror ChatCanvas.
+    """
+
+    thread = models.ForeignKey(
+        ChatThread, on_delete=models.CASCADE, related_name="slide_sets"
+    )
+    title = models.CharField(max_length=255, blank=True, default="Untitled deck")
+    content = models.JSONField(default=dict, blank=True)
+    # Which registered base template .pptx the builder opens (theme scheme +
+    # font slots). See chat.slides.pptx_build / template_gen.
+    base_template = models.CharField(max_length=100, blank=True, default="wilfred_default")
+    is_active = models.BooleanField(default=False)
+    last_activated_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["thread", "title"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="unique_slideset_title_per_thread",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["thread", "created_at"]),
+            models.Index(fields=["thread", "is_active", "-last_activated_at"]),
+        ]
+
+    def __str__(self):
+        return f"SlideSet for thread {self.thread_id}: {self.title}"
+
+
+class SlideSetCheckpoint(models.Model):
+    """Deck version history — mirrors CanvasCheckpoint (guardrail rollback + Undo)."""
+
+    class Source(models.TextChoices):
+        ORIGINAL = "original", "Original"
+        AI_EDIT = "ai_edit", "AI Edit"
+        USER_SAVE = "user_save", "User Save"
+        RESTORE = "restore", "Restore"
+        REDACTED = "redacted", "Redacted"
+
+    slide_set = models.ForeignKey(
+        SlideSet, on_delete=models.CASCADE, related_name="checkpoints"
+    )
+    title = models.CharField(max_length=255, blank=True, default="")
+    content = models.JSONField(default=dict, blank=True)
+    source = models.CharField(max_length=20, choices=Source.choices)
+    description = models.CharField(max_length=255, blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["order"]
+        indexes = [models.Index(fields=["slide_set", "order"])]
+
+    def __str__(self):
+        return f"SlideSetCheckpoint #{self.order} ({self.source}) for deck {self.slide_set_id}"
+
+
+class SlideComment(models.Model):
+    """A user comment anchored to a slide by its embedded JSON id (not an FK).
+
+    ``status`` = open (unsent), sent (delivered to the assistant as a composed
+    user message), or orphaned (the referenced slide id vanished from the deck).
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        SENT = "sent", "Sent"
+        ORPHANED = "orphaned", "Orphaned"
+
+    slide_set = models.ForeignKey(
+        SlideSet, on_delete=models.CASCADE, related_name="comments"
+    )
+    slide_id = models.CharField(max_length=32)
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    text = models.TextField()
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [models.Index(fields=["slide_set", "slide_id"])]
+
+    def __str__(self):
+        return f"SlideComment on {self.slide_id} ({self.status})"
+
+
+class SlideRenderRun(models.Model):
+    """Dispatch+poll status row for a worker render — mirrors SubAgentRun-lite.
+
+    The main-agent ``slides_preview_slide`` tool creates one, dispatches
+    ``render_deck_task``, and polls ``status`` (exactly like a synchronous
+    sub-agent). ``result`` carries the finished payload the poller/consumer reads.
+    """
+
+    class Purpose(models.TextChoices):
+        AGENT_PREVIEW = "agent_preview", "Agent preview"
+        USER_PREVIEW = "user_preview", "User preview"
+        PDF_EXPORT = "pdf_export", "PDF export"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    slide_set = models.ForeignKey(
+        SlideSet, on_delete=models.CASCADE, related_name="render_runs"
+    )
+    purpose = models.CharField(max_length=16, choices=Purpose.choices)
+    # Requested slide ids; empty list = the whole deck.
+    slide_ids = models.JSONField(default=list, blank=True)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
+    error = models.TextField(blank=True, default="")
+    # Completed payload: {"slides": [{"slide_id","asset_id","width","height","page"}],
+    # "pdf_asset_id": <uuid|null>, "warnings": [...]}.
+    result = models.JSONField(default=dict, blank=True)
+    celery_task_id = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["slide_set", "created_at"]),
+            models.Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"SlideRenderRun {self.id} ({self.purpose}/{self.status})"
+
+
+class SlideRender(models.Model):
+    """Per-slide render cache: one live PNG Asset per slide, keyed by content hash.
+
+    When a slide's ``content_hash`` (chat.slides.schema.slide_content_hash) is
+    unchanged and its asset is alive, the worker skips re-rendering it — which is
+    why an agent-previewed deck costs ~nothing at the turn-end user render.
+    """
+
+    slide_set = models.ForeignKey(
+        SlideSet, on_delete=models.CASCADE, related_name="renders"
+    )
+    slide_id = models.CharField(max_length=32)
+    content_hash = models.CharField(max_length=64)
+    asset = models.ForeignKey(
+        "Asset", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    width = models.PositiveIntegerField(default=0)
+    height = models.PositiveIntegerField(default=0)
+    rendered_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["slide_set", "slide_id"], name="unique_slide_render_per_slide"
+            ),
+        ]
+        indexes = [models.Index(fields=["slide_set", "slide_id"])]
+
+    def __str__(self):
+        return f"SlideRender {self.slide_set_id}/{self.slide_id}"
+
+
 class SubAgentRun(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending"
@@ -581,6 +764,13 @@ class Asset(models.Model):
         blank=True,
         related_name="assets",
     )
+    slide_set = models.ForeignKey(
+        "SlideSet",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="assets",
+    )
 
     # Empty for a *reference* asset (version-owned): the bytes live on the
     # data-room version's native file (native_blob / the document's
@@ -626,15 +816,17 @@ class Asset(models.Model):
             models.Index(fields=["version"]),
             models.Index(fields=["canvas"]),
             models.Index(fields=["thread"]),
+            models.Index(fields=["slide_set"]),
         ]
         constraints = [
             models.CheckConstraint(
                 name="imageasset_exactly_one_owner",
                 condition=(
-                    models.Q(version__isnull=False, canvas__isnull=True, message__isnull=True, thread__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=False, message__isnull=True, thread__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=False, thread__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=False)
+                    models.Q(version__isnull=False, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=False, message__isnull=True, thread__isnull=True, slide_set__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=False, thread__isnull=True, slide_set__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=False, slide_set__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=False)
                 ),
             ),
         ]
