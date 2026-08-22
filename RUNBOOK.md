@@ -122,6 +122,30 @@ For emergency recovery, disable the gate (the config change restarts the web dyn
 heroku config:unset DJANGO_ALLOWED_IP_RANGES -a wilfred-production
 ```
 
+### Slide decks (AI-authored PowerPoint) — first rollout
+
+The slide-deck feature renders `.pptx` → PDF → PNG **on the worker** via LibreOffice,
+so rolling it out has infra steps beyond a normal deploy:
+
+1. **Aptfile / slug gate (do this first).** The worker needs `libreoffice-impress`
+   (already in `Aptfile` — the `-impress` subset, NOT the full `libreoffice` meta, which
+   blows the 500 MB compressed slug limit). After the staging build, **check the slug size**
+   before promoting: `heroku builds:info -a wilfred-staging` (or the build log's "Compressed
+   size"). If it's near 500 MB, trim apt recommends or revisit. This is the Phase-C exit gate.
+2. **Global kill-switch.** `SLIDES_ENABLED=true` (default). Set to `false` to disable the
+   whole feature without a redeploy.
+3. **Per-org enablement.** The `slide_deck_collaborator` seed skill is **off by default per
+   org**. Turn it on for a pilot org via `org.preferences["skills"]["slide_deck_collaborator"]["enabled"] = True`
+   (Django shell), then attach it to a thread to author decks.
+4. **Verify on staging:** ask for a deck in an enabled org → filmstrip renders after the turn,
+   `.pptx` and PDF download, per-slide comments round-trip. Watch worker `sample#memory_rss`
+   on a ~30-slide render (must stay well under the dyno cap) and confirm no orphaned
+   `soffice.bin` processes linger (the render hardening killpg's on timeout).
+
+Preview fidelity note: the worker renders with **LibreOffice**; the ground truth is
+**PowerPoint** opening the downloaded `.pptx`. Minor metric differences are expected — the
+skill leaves breathing room for it.
+
 ### Rollback
 
 ```bash
