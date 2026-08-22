@@ -147,6 +147,17 @@ class PillowRenderTests(SimpleTestCase):
         s_corner = sum(_open(s_png).getpixel((5, 5)))
         self.assertLess(s_corner, p_corner - 100)
 
+    def test_every_seed_layout_validates_and_renders(self):
+        from chat.slides import layouts, schema
+        for lid in layouts.LAYOUT_IDS:
+            seed = layouts.get_layout(lid)
+            seed["name"] = lid
+            deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [seed]}
+            schema.mint_ids(deck)
+            self.assertEqual(schema.validate_deck(deck), [], f"layout {lid} invalid")
+            png, w, h = pillow_render.render_slide_png(deck, 0, dpi=72)
+            self.assertGreater(len(png), 500, f"layout {lid} rendered nothing")
+
     def test_rotated_element_renders(self):
         deck = self._deck([{"elements": [
             {"type": "shape", "x": 300, "y": 200, "w": 200, "h": 100, "shape": "rect",
