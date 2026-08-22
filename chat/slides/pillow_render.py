@@ -596,13 +596,21 @@ def _draw_chart(draw, theme, el, scale):
         tw = f.getlength(el["title"])
         draw.text((x + (w - tw) / 2, top), el["title"], font=f, fill=txt)
         top += 22 * scale
-    show_legend = (kind == "pie" or len(series) > 1) and el.get("legend", True)
+    show_legend = (kind in ("pie", "waterfall") or len(series) > 1) and el.get("legend", True)
     legend_h = 22 * scale if show_legend else 0
     stacked = bool(el.get("stacked"))
+    # Waterfall uses conventional semantic colours (green up / red down / dark total).
+    wf_colors = {
+        "up": _rgb(theme, "success", (60, 140, 90)),
+        "down": _rgb(theme, "danger", (180, 60, 50)),
+        "total": _rgb(theme, "dk2", (50, 50, 50)),
+    }
 
     plot = (x + pad, top, w - 2 * pad, y + h - pad - legend_h - top)  # x,y,w,h
     if kind == "pie":
         _chart_pie(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
+    elif kind == "waterfall":
+        _chart_waterfall(draw, plot, series[0], cats, el.get("totals") or [], wf_colors, fnt, txt, axis, grid, el.get("value_labels"))
     elif kind == "bar":
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked)
     elif kind in ("line", "area"):
@@ -611,8 +619,14 @@ def _draw_chart(draw, theme, el, scale):
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, False, el.get("value_labels"), stacked)
 
     if show_legend:
-        names = cats if kind == "pie" else [s.get("name", "") for s in series]
-        _chart_legend(draw, (x + pad, y + h - pad - legend_h + 4, w - 2 * pad, legend_h), names, ramp, fnt(9), txt, scale)
+        if kind == "waterfall":
+            names = ["Increase", "Decrease", "Total"]
+            leg_ramp = [wf_colors["up"], wf_colors["down"], wf_colors["total"]]
+        elif kind == "pie":
+            names, leg_ramp = cats, ramp
+        else:
+            names, leg_ramp = [s.get("name", "") for s in series], ramp
+        _chart_legend(draw, (x + pad, y + h - pad - legend_h + 4, w - 2 * pad, legend_h), names, leg_ramp, fnt(9), txt, scale)
 
 
 def _val_axis(series):
@@ -715,6 +729,77 @@ def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal
         else:
             cw = f.getlength(cats[ci])
             draw.text((ax + row * slot + slot / 2 - cw / 2, ay + ah + 3), cats[ci], font=f, fill=txt)
+
+
+def _waterfall_bars(values, totals):
+    """Compute per-step ``(low, high, role, delta)`` + the running total after each
+    step for a waterfall/bridge. ``totals`` (indices, or empty=first) are absolute
+    bars from zero; the rest are deltas that float on the running total."""
+    tset = set(totals) if totals else {0}
+    running = 0.0
+    bars, edges = [], []
+    for i, val in enumerate(values):
+        val = float(val) if isinstance(val, (int, float)) else 0.0
+        if i in tset:
+            lo_i, hi_i, role = 0.0, val, "total"
+            running = val
+        else:
+            v0, v1 = running, running + val
+            lo_i, hi_i, role = min(v0, v1), max(v0, v1), ("up" if val >= 0 else "down")
+            running = v1
+        bars.append((lo_i, hi_i, role, val))
+        edges.append(running)
+    return bars, edges
+
+
+def _chart_waterfall(draw, plot, series, cats, totals, colors, fnt, txt, axis, grid, value_labels):
+    px, py, pw, ph = plot
+    values = list(series.get("values") or [])
+    n = len(values)
+    if n == 0:
+        return
+    bars, edges = _waterfall_bars(values, totals)
+    all_v = [0.0] + [b[0] for b in bars] + [b[1] for b in bars]
+    vmin, vmax = min(all_v), max(all_v)
+    top, step = _nice_ticks(vmax if vmax > 0 else 1.0)
+    lo, hi = (vmin if vmin < 0 else 0.0), top
+    span = (hi - lo) or 1.0
+    lbl = fnt(9)
+    val_gutter = 26
+    ax, ay, aw, ah = px + val_gutter, py, pw - val_gutter, ph - 16
+
+    def to_y(v):
+        return ay + ah - (v - lo) / span * ah
+
+    # value gridlines + labels
+    t = lo
+    while t <= hi + 1e-9:
+        gy = to_y(t)
+        draw.line([(ax, gy), (ax + aw, gy)], fill=grid, width=1)
+        draw.text((px, gy - 6), _fmt_num(t), font=lbl, fill=txt)
+        t += step
+
+    slot = aw / n
+    col_w = slot * 0.6
+    col_off = (slot - col_w) / 2
+    prev_right = prev_level_y = None
+    for i, (lo_i, hi_i, role, delta) in enumerate(bars):
+        bx = ax + i * slot + col_off
+        y_hi, y_lo = to_y(hi_i), to_y(lo_i)
+        draw.rectangle([bx, y_hi, bx + col_w, y_lo], fill=colors[role])
+        # connector from the previous bar's running level to this bar's left edge
+        if prev_right is not None:
+            draw.line([(prev_right, prev_level_y), (bx, prev_level_y)], fill=axis, width=1)
+        prev_right, prev_level_y = bx + col_w, to_y(edges[i])
+        # category label
+        clbl = cats[i] if i < len(cats) else ""
+        cw = lbl.getlength(clbl)
+        draw.text((ax + i * slot + slot / 2 - cw / 2, ay + ah + 3), clbl, font=lbl, fill=txt)
+        # value label above the bar
+        if value_labels:
+            vs = _fmt_num(hi_i) if role == "total" else ("+" if delta >= 0 else "−") + _fmt_num(abs(delta))
+            vw = lbl.getlength(vs)
+            draw.text((bx + col_w / 2 - vw / 2, y_hi - 12), vs, font=lbl, fill=txt)
 
 
 def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, scale):

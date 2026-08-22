@@ -81,12 +81,20 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 5. **line** — `{"type":"line","x1":48,"y1":440,"x2":912,"y2":440,"color":"accent3","w":2,"dash":"dash","arrow":"end"}`
    (`arrow`: none/end/start/both; `dash`: solid/dash/dot/dashdot).
 6. **chart** — `{"type":"chart","x":48,"y":130,"w":520,"h":300,"chart":"column","title":"Revenue","categories":["2023","2024","2025"],"series":[{"name":"ARR ($M)","values":[1.2,3.4,6.1]}],"legend":true,"value_labels":false}`.
-   `chart`: `column` (vertical bars), `bar` (horizontal), `line`, `area`, `pie`. Pie uses one
-   series; the `categories` become the slice labels. Series colours come from the theme
-   automatically. Add `"stacked":true` (column/bar/area) to stack the series into one bar per
-   category — use it for a **composition of a total** (e.g. revenue split by segment over time),
-   not for comparing independent metrics. Prefer a chart over a wall of numbers when you have a
-   trend or comparison.
+   `chart`: `column` (vertical bars), `bar` (horizontal), `line`, `area`, `pie`, `waterfall`.
+   Pie uses one series; the `categories` become the slice labels. Series colours come from the
+   theme automatically. Add `"stacked":true` (column/bar/area) to stack the series into one bar
+   per category — use it for a **composition of a total** (e.g. revenue split by segment over
+   time), not for comparing independent metrics.
+   **`waterfall`** (a bridge — how a starting figure grows/shrinks to an ending one): ONE series
+   of values, plus `"totals"` = the category indices drawn as absolute bars from zero (a base or
+   final subtotal); every other category is a delta that floats (green up / red down). Values at
+   delta indices are the *change* (negative for a decrease); values at `totals` indices are the
+   *absolute* level. Example — FY25→FY26 revenue bridge:
+   `{"type":"chart","x":60,"y":140,"w":840,"h":300,"chart":"waterfall","value_labels":true,`
+   `"categories":["FY25","New","Expansion","Churn","FY26"],`
+   `"series":[{"name":"Revenue","values":[103,24,18,-3,142]}],"totals":[0,4]}`.
+   Prefer a chart over a wall of numbers when you have a trend, comparison, or bridge.
 
 ### Layouts (for `slides_add_slide`)
 `title, section, bullets, two_col, image_right, table, metric, chart, photo, agenda,

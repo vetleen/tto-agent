@@ -92,6 +92,23 @@ class BuildDeckTests(SimpleTestCase):
         self.assertTrue(charts, "no native chart part embedded in the .pptx")
         self.assertEqual(warns, [])
 
+    def test_waterfall_builds_stacked_column_chart(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "wf", "type": "chart", "x": 48, "y": 80, "w": 840, "h": 300, "chart": "waterfall",
+             "title": "Bridge", "categories": ["FY25", "New", "Churn", "FY26"],
+             "series": [{"name": "Rev", "values": [100, 30, -10, 120]}], "totals": [0, 3]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        chart_parts = [n for n in z.namelist() if "/charts/chart" in n and n.endswith(".xml")]
+        self.assertTrue(chart_parts, "no chart part for the waterfall")
+        xml = z.read(chart_parts[0]).decode()
+        # rendered as a stacked bar chart (grouping=stacked) with the 4 spacer series
+        self.assertIn("stacked", xml)
+        self.assertIn("Increase", xml)
+        self.assertIn("Decrease", xml)
+        self.assertEqual(warns, [])
+
     def test_three_slides(self):
         names = [n for n in self.zip.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "rels" not in n]
         self.assertEqual(len(names), 3)

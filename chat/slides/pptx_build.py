@@ -439,9 +439,74 @@ def _chart_ramp_rgb(theme, names):
     return out
 
 
+def _add_waterfall(slide, el, theme, warnings):
+    """A native, editable waterfall/bridge via the stacked-column spacer trick:
+    an invisible ``base`` series lifts each floating bar, and separate
+    Decrease/Increase/Total series carry the colour. python-pptx has no native
+    waterfall type, so this is the standard faithful approximation."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    from chat.slides.pillow_render import _waterfall_bars
+
+    series = el.get("series") or []
+    values = list(series[0].get("values") or []) if series else []
+    if not values:
+        warnings.append("empty chart skipped")
+        return
+    n = len(values)
+    cats = list(el.get("categories") or [])
+    cats = cats[:n] + [str(i + 1) for i in range(len(cats), n)]  # pad/truncate to n
+    bars, _edges = _waterfall_bars(values, el.get("totals") or [])
+
+    base, dec, inc, tot = [], [], [], []
+    for lo_i, hi_i, role, _delta in bars:
+        height = hi_i - lo_i
+        base.append(lo_i if role != "total" else 0.0)
+        dec.append(height if role == "down" else 0.0)
+        inc.append(height if role == "up" else 0.0)
+        tot.append(height if role == "total" else 0.0)
+
+    data = CategoryChartData()
+    data.categories = cats
+    data.add_series("", tuple(base))          # spacer — made transparent below
+    data.add_series("Decrease", tuple(dec))
+    data.add_series("Increase", tuple(inc))
+    data.add_series("Total", tuple(tot))
+
+    x, y, w, h = _pt_box(el)
+    chart = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_STACKED, x, y, w, h, data).chart
+
+    if el.get("title"):
+        chart.has_title = True
+        chart.chart_title.text_frame.text = el["title"]
+    else:
+        chart.has_title = False
+    chart.has_legend = False  # the spacer series would clutter a legend
+
+    def _one(name):
+        got = _chart_ramp_rgb(theme, [name])
+        return got[0] if got else None
+
+    palette = {1: _one("danger"), 2: _one("success"), 3: _one("dk2")}
+    try:
+        sers = list(chart.series)
+        sers[0].format.fill.background()  # transparent spacer
+        for idx, color in palette.items():
+            if color is not None and idx < len(sers):
+                sers[idx].format.fill.solid()
+                sers[idx].format.fill.fore_color.rgb = color
+    except Exception:  # noqa: BLE001 — colour styling is best-effort
+        logger.debug("waterfall colour styling failed", exc_info=True)
+
+
 def _add_chart(slide, el, theme, warnings):
     from pptx.chart.data import CategoryChartData
     from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
+
+    if el.get("chart") == "waterfall":
+        _add_waterfall(slide, el, theme, warnings)
+        return
 
     kind_map = {
         "column": XL_CHART_TYPE.COLUMN_CLUSTERED,

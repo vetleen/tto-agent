@@ -116,6 +116,31 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_waterfall_chart_renders(self):
+        deck = self._deck([{"elements": [
+            {"type": "chart", "x": 48, "y": 80, "w": 840, "h": 320, "chart": "waterfall",
+             "title": "Revenue Bridge", "value_labels": True,
+             "categories": ["FY25", "New", "Expansion", "Churn", "FY26"],
+             "series": [{"name": "Revenue", "values": [103, 24, 18, -3, 142]}], "totals": [0, 4]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        # up (green), down (red), total (dark) + gridlines/text -> several colours
+        self.assertGreater(len(_colours(_open(png))), 4)
+
+    def test_waterfall_bars_math(self):
+        bars, edges = pillow_render._waterfall_bars([103, 24, 18, -3, 142], [0, 4])
+        roles = [b[2] for b in bars]
+        self.assertEqual(roles, ["total", "up", "up", "down", "total"])
+        # running totals track the bridge and land on the final total
+        self.assertEqual(edges, [103, 127, 145, 142, 142])
+        # the churn step floats down from 145 to 142
+        self.assertEqual(bars[3][:2], (142.0, 145.0))
+
+    def test_waterfall_defaults_first_to_base(self):
+        bars, edges = pillow_render._waterfall_bars([50, 10, -5], [])
+        self.assertEqual([b[2] for b in bars], ["total", "up", "down"])
+        self.assertEqual(edges, [50, 60, 55])
+
     def test_stacked_bar_charts_render(self):
         # A stacked column/bar (composition of a total) must render; the stacked
         # axis tops out above the largest per-category SUM, so a tall stack of two

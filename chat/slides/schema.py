@@ -168,7 +168,7 @@ class LineElement(_Strict):
     arrow: Literal["none", "end", "start", "both"] = "none"
 
 
-_CHART_KINDS = ("column", "bar", "line", "area", "pie")
+_CHART_KINDS = ("column", "bar", "line", "area", "pie", "waterfall")
 
 
 class ChartSeries(_Strict):
@@ -192,6 +192,11 @@ class ChartElement(_Strict):
     # Stack the series into one bar per category (a composition of a total)
     # instead of grouping them side by side. Only meaningful for column/bar/area.
     stacked: bool = False
+    # For chart="waterfall" (a bridge): category indices drawn as absolute bars
+    # from zero (a base/subtotal that resets the running total); every other
+    # category is a delta that floats on the running total (green up / red down).
+    # Empty -> the first category is treated as the base.
+    totals: list[int] = Field(default_factory=list)
     colors: list[str] | None = None  # override theme.colors.chart_ramp
 
 
