@@ -86,8 +86,11 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 5. **line** — `{"type":"line","x1":48,"y1":440,"x2":912,"y2":440,"color":"accent3","w":2,"dash":"dash","arrow":"end"}`
    (`arrow`: none/end/start/both; `dash`: solid/dash/dot/dashdot).
 6. **chart** — `{"type":"chart","x":48,"y":130,"w":520,"h":300,"chart":"column","title":"Revenue","categories":["2023","2024","2025"],"series":[{"name":"ARR ($M)","values":[1.2,3.4,6.1]}],"legend":true,"value_labels":false}`.
-   `chart`: `column` (vertical bars), `bar` (horizontal), `line`, `area`, `pie`, `waterfall`.
-   Pie uses one series; the `categories` become the slice labels. Series colours come from the
+   `chart`: `column` (vertical bars), `bar` (horizontal), `line`, `area`, `pie`, `doughnut`,
+   `waterfall`. Pie/doughnut use one series; the `categories` become the slice labels.
+   **`doughnut`** is a pie with a hole — set `"center_label"` for a KPI ring dial (e.g. a single
+   series `[34,66]` with `point_colors`/`colors` accenting the first slice and
+   `"center_label":"34%"` in the middle); `"hole"` (0.2–0.85) tunes the ring thickness. Series colours come from the
    theme automatically. Add `"stacked":true` (column/bar/area) to stack the series into one bar
    per category — use it for a **composition of a total** (e.g. revenue split by segment over
    time), not for comparing independent metrics.

@@ -116,6 +116,29 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_doughnut_punches_a_light_hole(self):
+        # Legend off + no title -> the pie centres in the element box; the hole is
+        # the light slide bg, not an accent slice.
+        deck = self._deck([{"bg": "lt1", "elements": [
+            {"type": "chart", "x": 60, "y": 80, "w": 300, "h": 300, "chart": "doughnut",
+             "legend": False, "categories": ["New", "Rest"],
+             "series": [{"name": "Mix", "values": [34, 66]}], "colors": ["accent1", "dk2"]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=120)
+        img = _open(png)
+        cx, cy = round((60 + 150) * 120 / 72), round((80 + 150) * 120 / 72)
+        r, g, b = img.getpixel((cx, cy))
+        self.assertGreater(r + g + b, 600)  # near-white hole at centre
+
+    def test_doughnut_with_center_label_renders(self):
+        deck = self._deck([{"bg": "lt1", "elements": [
+            {"type": "chart", "x": 60, "y": 80, "w": 300, "h": 300, "chart": "doughnut",
+             "categories": ["New", "Rest"], "series": [{"name": "Mix", "values": [34, 66]}],
+             "colors": ["accent1", "lt2"], "center_label": "34%"},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=120)
+        self.assertGreater(len(_colours(_open(png))), 3)
+
     def test_harvey_fraction_quantises(self):
         self.assertEqual(pillow_render._harvey_fraction(None), 0.0)
         self.assertEqual(pillow_render._harvey_fraction(0.6), 0.5)

@@ -596,7 +596,7 @@ def _nice_ticks(vmax, count=4):
     return math.ceil(vmax / step) * step, step
 
 
-def _draw_chart(draw, theme, el, scale):
+def _draw_chart(draw, theme, el, scale, bg=None):
     kind = el.get("chart", "column")
     x, y, w, h = el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale
     series = el.get("series") or []
@@ -620,7 +620,7 @@ def _draw_chart(draw, theme, el, scale):
         tw = f.getlength(el["title"])
         draw.text((x + (w - tw) / 2, top), el["title"], font=f, fill=txt)
         top += 22 * scale
-    show_legend = (kind in ("pie", "waterfall") or len(series) > 1) and el.get("legend", True)
+    show_legend = (kind in ("pie", "doughnut", "waterfall") or len(series) > 1) and el.get("legend", True)
     legend_h = 22 * scale if show_legend else 0
     stacked = bool(el.get("stacked"))
     # Waterfall uses conventional semantic colours (green up / red down / dark total).
@@ -636,6 +636,12 @@ def _draw_chart(draw, theme, el, scale):
     plot = (x + pad, top, w - 2 * pad, y + h - pad - legend_h - top)  # x,y,w,h
     if kind == "pie":
         _chart_pie(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
+    elif kind == "doughnut":
+        hole = el.get("hole")
+        hole = 0.55 if hole is None else max(0.2, min(0.85, float(hole)))
+        hole_bg = bg if bg is not None else _rgb(theme, "lt1", (255, 255, 255))
+        _chart_pie(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"),
+                   hole=hole, center_label=el.get("center_label", ""), hole_bg=hole_bg, scale=scale)
     elif kind == "waterfall":
         _chart_waterfall(draw, plot, series[0], cats, el.get("totals") or [], wf_colors, fnt, txt, axis, grid, el.get("value_labels"))
     elif kind == "bar":
@@ -649,7 +655,7 @@ def _draw_chart(draw, theme, el, scale):
         if kind == "waterfall":
             names = ["Increase", "Decrease", "Total"]
             leg_ramp = [wf_colors["up"], wf_colors["down"], wf_colors["total"]]
-        elif kind == "pie":
+        elif kind in ("pie", "doughnut"):
             names, leg_ramp = cats, ramp
         else:
             names, leg_ramp = [s.get("name", "") for s in series], ramp
@@ -875,7 +881,8 @@ def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, sca
         draw.text((gx - cw / 2, ay + ah + 3), cats[ci], font=f, fill=txt)
 
 
-def _chart_pie(draw, plot, series, cats, ramp, fnt, txt, value_labels):
+def _chart_pie(draw, plot, series, cats, ramp, fnt, txt, value_labels,
+               hole=0.0, center_label="", hole_bg=None, scale=1.0):
     px, py, pw, ph = plot
     vals = [max(0.0, v) for v in (series.get("values") or [])]
     total = sum(vals) or 1.0
@@ -884,17 +891,26 @@ def _chart_pie(draw, plot, series, cats, ramp, fnt, txt, value_labels):
     box = [cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2]
     start = -90.0
     f = fnt(9)
+    # A doughnut labels each slice further out (the hole eats the centre).
+    lab_r = (d / 2) * (0.5 + hole / 2.5) if hole else (d / 2) * 0.62
     for i, v in enumerate(vals):
         sweep = v / total * 360.0
         draw.pieslice(box, start, start + sweep, fill=ramp[i % len(ramp)])
         if value_labels and v > 0:
             mid = math.radians(start + sweep / 2)
-            lx = cx + (d / 2) * 0.62 * math.cos(mid)
-            ly = cy + (d / 2) * 0.62 * math.sin(mid)
+            lx = cx + lab_r * math.cos(mid)
+            ly = cy + lab_r * math.sin(mid)
             pct = f"{v / total * 100:.0f}%"
             tw = f.getlength(pct)
             draw.text((lx - tw / 2, ly - 6), pct, font=f, fill=(255, 255, 255))
         start += sweep
+    if hole and hole > 0:
+        hr = (d / 2) * hole
+        draw.ellipse([cx - hr, cy - hr, cx + hr, cy + hr], fill=hole_bg or (255, 255, 255))
+        if center_label:
+            cf = fnt(max(10.0, (hr * 2) / scale * 0.34))
+            cw = cf.getlength(center_label)
+            draw.text((cx - cw / 2, cy - cf.size / 2), center_label, font=cf, fill=txt)
 
 
 def _chart_legend(draw, box, names, ramp, font, txt, scale):
@@ -939,7 +955,7 @@ def _stamp_footer(draw, theme, scale, page_num, total):
 # ---------------------------------------------------------------------------
 # Element dispatch (+ rotation)
 # ---------------------------------------------------------------------------
-def _draw_element(draw, img, theme, el, scale, resolver):
+def _draw_element(draw, img, theme, el, scale, resolver, bg=None):
     etype = el.get("type")
     if etype == "text":
         frame = {"class": el.get("class"), "paragraphs": el.get("paragraphs"),
@@ -962,7 +978,7 @@ def _draw_element(draw, img, theme, el, scale, resolver):
     elif etype == "line":
         _draw_line(draw, theme, el, scale)
     elif etype == "chart":
-        _draw_chart(draw, theme, el, scale)
+        _draw_chart(draw, theme, el, scale, bg)
 
 
 def _draw_element_rotated(img, theme, el, scale, resolver, angle):
@@ -1026,7 +1042,7 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
             if rot and etype in ("text", "shape", "image"):
                 _draw_element_rotated(img, theme, el, scale, image_resolver, float(rot))
             else:
-                _draw_element(draw, img, theme, el, scale, image_resolver)
+                _draw_element(draw, img, theme, el, scale, image_resolver, bg)
         except Exception:  # noqa: BLE001 — one bad element must not fail the slide
             logger.warning("pillow render: element %s failed", etype, exc_info=True)
 

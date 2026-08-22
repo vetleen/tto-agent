@@ -171,7 +171,7 @@ class LineElement(_Strict):
     arrow: Literal["none", "end", "start", "both"] = "none"
 
 
-_CHART_KINDS = ("column", "bar", "line", "area", "pie", "waterfall")
+_CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall")
 
 
 class ChartSeries(_Strict):
@@ -206,6 +206,10 @@ class ChartElement(_Strict):
     # that matters" device; short lists fall back to the series colour. Ignored
     # for multi-series charts (those colour per series).
     point_colors: list[str] | None = None
+    # For chart="doughnut": the hole diameter as a fraction of the chart (0.2–0.85);
+    # center_label prints a headline figure inside the hole (a KPI ring dial).
+    hole: float | None = Field(default=None, ge=0.2, le=0.85)
+    center_label: str = ""
 
 
 Element = Annotated[

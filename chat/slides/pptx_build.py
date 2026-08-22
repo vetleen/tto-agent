@@ -543,6 +543,7 @@ def _add_chart(slide, el, theme, warnings):
         "line": XL_CHART_TYPE.LINE_MARKERS,
         "area": XL_CHART_TYPE.AREA,
         "pie": XL_CHART_TYPE.PIE,
+        "doughnut": XL_CHART_TYPE.DOUGHNUT,
     }
     # Stacked variants (a composition of a total). Only column/bar/area stack.
     stacked_map = {
@@ -578,7 +579,7 @@ def _add_chart(slide, el, theme, warnings):
     else:
         chart.has_title = False
 
-    show_legend = (kind == "pie" or len(series) > 1) and el.get("legend", True)
+    show_legend = (kind in ("pie", "doughnut") or len(series) > 1) and el.get("legend", True)
     chart.has_legend = show_legend
     if show_legend:
         chart.legend.position = XL_LEGEND_POSITION.BOTTOM
@@ -587,7 +588,7 @@ def _add_chart(slide, el, theme, warnings):
     ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
     if ramp:
         try:
-            if kind == "pie":
+            if kind in ("pie", "doughnut"):
                 pts = chart.plots[0].series[0].points
                 for i, pt in enumerate(pts):
                     pt.format.fill.solid()
@@ -619,6 +620,31 @@ def _add_chart(slide, el, theme, warnings):
             chart.plots[0].has_data_labels = True
         except Exception:  # noqa: BLE001
             pass
+
+    # KPI-ring: a headline figure centred in the doughnut hole.
+    if kind == "doughnut" and el.get("center_label"):
+        try:
+            _add_doughnut_center(slide, el, theme)
+        except Exception:  # noqa: BLE001
+            logger.debug("doughnut center label failed", exc_info=True)
+
+
+def _add_doughnut_center(slide, el, theme):
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+
+    x, y, w, h = _pt_box(el)
+    side = min(w, h) * 0.5
+    tb = slide.shapes.add_textbox(x + (w - side) / 2, y + (h - side) / 2, side, side)
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    run = p.add_run()
+    run.text = el["center_label"]
+    run.font.bold = True
+    run.font.size = Pt(max(12, int(side / Pt(1) * 0.20)))
+    _apply_color(run.font.color, theme, "dk2")
 
 
 def _render_element(slide, el, theme, resolver, warnings):
