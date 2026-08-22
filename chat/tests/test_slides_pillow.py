@@ -106,6 +106,15 @@ class PillowRenderTests(SimpleTestCase):
         png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
         self.assertGreater(len(_colours(_open(png))), 1)
 
+    def test_rotated_element_renders(self):
+        deck = self._deck([{"elements": [
+            {"type": "shape", "x": 300, "y": 200, "w": 200, "h": 100, "shape": "rect",
+             "fill": "accent1", "rotation": 30,
+             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "tilt", "color": "lt1"}]}]}},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 1)
+
     def test_one_bad_element_does_not_fail_the_slide(self):
         deck = self._deck([{"elements": [
             {"type": "table", "x": 40, "y": 40, "w": 800, "h": 100, "rows": "not-a-list"},

@@ -555,6 +555,45 @@ def _stamp_footer(draw, theme, scale, page_num, total):
 
 
 # ---------------------------------------------------------------------------
+# Element dispatch (+ rotation)
+# ---------------------------------------------------------------------------
+def _draw_element(draw, img, theme, el, scale, resolver):
+    etype = el.get("type")
+    if etype == "text":
+        frame = {"class": el.get("class"), "paragraphs": el.get("paragraphs"),
+                 "valign": el.get("valign", "top")}
+        box = (el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale)
+        _draw_text_frame(draw, theme, frame, box, scale)
+    elif etype == "shape":
+        _draw_shape(draw, theme, el, scale)
+    elif etype == "image":
+        _draw_image(img, theme, el, scale, resolver)
+    elif etype == "table":
+        _draw_table(draw, theme, el, scale)
+    elif etype == "line":
+        _draw_line(draw, theme, el, scale)
+
+
+def _draw_element_rotated(img, theme, el, scale, resolver, angle):
+    """Draw a rotatable element (text/shape/image) onto a transparent square
+    layer, rotate it about its centre (MSO rotation is clockwise-positive), and
+    composite it back — so the element rotates in place like in PowerPoint."""
+    ew, eh = el["w"] * scale, el["h"] * scale
+    ex, ey = el["x"] * scale, el["y"] * scale
+    side = int(math.hypot(ew, eh)) + 4
+    layer = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    ldraw = ImageDraw.Draw(layer)
+    offx, offy = (side - ew) / 2, (side - eh) / 2
+    local = dict(el)
+    local["x"], local["y"] = offx / scale, offy / scale
+    local.pop("rotation", None)
+    _draw_element(ldraw, layer, theme, local, scale, resolver)
+    rotated = layer.rotate(-angle, resample=Image.BICUBIC, expand=True)
+    cx, cy = ex + ew / 2, ey + eh / 2
+    img.paste(rotated, (int(round(cx - rotated.width / 2)), int(round(cy - rotated.height / 2))), rotated)
+
+
+# ---------------------------------------------------------------------------
 # Slide / deck
 # ---------------------------------------------------------------------------
 def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=None,
@@ -575,19 +614,11 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
     for el in slide.get("elements") or []:
         etype = el.get("type")
         try:
-            if etype == "text":
-                frame = {"class": el.get("class"), "paragraphs": el.get("paragraphs"),
-                         "valign": el.get("valign", "top")}
-                box = (el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale)
-                _draw_text_frame(draw, theme, frame, box, scale)
-            elif etype == "shape":
-                _draw_shape(draw, theme, el, scale)
-            elif etype == "image":
-                _draw_image(img, theme, el, scale, image_resolver)
-            elif etype == "table":
-                _draw_table(draw, theme, el, scale)
-            elif etype == "line":
-                _draw_line(draw, theme, el, scale)
+            rot = el.get("rotation")
+            if rot and etype in ("text", "shape", "image"):
+                _draw_element_rotated(img, theme, el, scale, image_resolver, float(rot))
+            else:
+                _draw_element(draw, img, theme, el, scale, image_resolver)
         except Exception:  # noqa: BLE001 — one bad element must not fail the slide
             logger.warning("pillow render: element %s failed", etype, exc_info=True)
 
