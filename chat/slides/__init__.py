@@ -14,7 +14,7 @@ Module map:
 * ``oxml_pokes``   — the small OOXML surgery python-pptx lacks.
 * ``pptx_build``   — ``build_pptx(slide_set) -> bytes`` (JSON -> .pptx).
 * ``template_gen`` — generate the branded base template ``wilfred_default.pptx``.
-* ``render``       — worker-side ``.pptx`` -> PDF -> PNG (LibreOffice + poppler).
+* ``render``       — worker-side ``.pptx`` -> PDF (LibreOffice) -> PNG (pypdfium2).
 
 Nothing here imports Django at module import time except where noted, so the
 pure modules (``theme``, ``schema``, ``oxml_pokes``) unit-test on any platform.

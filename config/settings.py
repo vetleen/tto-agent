@@ -669,9 +669,10 @@ IMAGE_ALLOWED_MODELS = [m.strip() for m in os.environ.get("IMAGE_ALLOWED_MODELS"
 
 # Slide decks (AI-authored PowerPoint). SLIDES_ENABLED is the global kill-switch
 # (per-org rollout is the seed skill's org enablement). Rendering (preview + PDF)
-# shells out to LibreOffice + poppler on the worker; SOFFICE_BIN/PDFTOPPM_BIN are
-# resolved from PATH by default. SLIDE_RENDER_CONCURRENCY bounds concurrent
-# soffice spawns (threads pool -> one semaphore covers the dyno).
+# shells out to LibreOffice on the worker to make a PDF, then pypdfium2 (pip, no
+# system binary) rasterizes it to PNGs. SOFFICE_BIN is resolved from PATH by
+# default. SLIDE_RENDER_CONCURRENCY bounds concurrent soffice spawns (threads
+# pool -> one semaphore covers the dyno).
 SLIDES_ENABLED = _get_env_bool(os.environ.get("SLIDES_ENABLED"), True)
 # Render backend: "libreoffice" (prod/Linux) or "powerpoint" (Windows local dev
 # via COM — needs pywin32 + Microsoft PowerPoint; lets Windows devs preview decks
@@ -681,7 +682,6 @@ SLIDE_RENDER_TIMEOUT = _env_int("SLIDE_RENDER_TIMEOUT", "120")
 SLIDE_RENDER_CONCURRENCY = _env_int("SLIDE_RENDER_CONCURRENCY", "1")
 SLIDE_PREVIEW_DPI = _env_int("SLIDE_PREVIEW_DPI", "120")
 SOFFICE_BIN = os.environ.get("SOFFICE_BIN", "soffice")
-PDFTOPPM_BIN = os.environ.get("PDFTOPPM_BIN", "pdftoppm")
 
 # Meetings settings
 MEETING_CHUNK_TEMP_DIR = os.environ.get("MEETING_CHUNK_TEMP_DIR", str(MEDIA_ROOT / "_meeting_chunks"))
