@@ -529,6 +529,29 @@ def _add_waterfall(slide, el, theme, warnings):
         logger.debug("waterfall colour styling failed", exc_info=True)
 
 
+def _add_icon(slide, el, theme, warnings):
+    """Rasterise a procedural icon to a theme-tinted transparent PNG and embed it
+    (icons have no native OOXML form; a crisp PNG travels reliably in any .pptx)."""
+    from chat.slides import icons
+
+    rgbs = _chart_ramp_rgb(theme, [el.get("color") or "dk2"])
+    rgb = rgbs[0] if rgbs else RGBColor(0x1F, 0x3D, 0x30)
+    hexs = str(rgb)
+    color = tuple(int(hexs[i:i + 2], 16) for i in (0, 2, 4))
+    size_px = max(48, int(min(el.get("w", 24), el.get("h", 24)) * 2))
+    png = icons.render_icon_png(el.get("name") or "check", size_px, color)
+    if png is None:
+        warnings.append(f"unknown icon '{el.get('name')}' skipped")
+        return
+    x, y, w, h = _pt_box(el)
+    pic = slide.shapes.add_picture(BytesIO(png), x, y, w, h)
+    opacity = el.get("opacity")
+    if opacity is not None and opacity < 1:
+        pokes.set_picture_alpha(pic, opacity)
+    if el.get("rotation"):
+        pic.rotation = el["rotation"]
+
+
 def _add_marimekko(slide, el, theme, warnings):
     """A Marimekko / mosaic: variable-width 100%-stacked columns, drawn as
     rectangles (python-pptx has no native type). Column width = the size
@@ -766,6 +789,8 @@ def _render_element(slide, el, theme, resolver, warnings):
             _add_line(slide, el, theme)
         elif etype == "chart":
             _add_chart(slide, el, theme, warnings)
+        elif etype == "icon":
+            _add_icon(slide, el, theme, warnings)
         else:
             warnings.append(f"unknown element type '{etype}' skipped")
     except Exception as exc:  # noqa: BLE001 — one bad element must not fail the deck

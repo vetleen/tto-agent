@@ -111,6 +111,12 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    `"categories":["FY25","New","Expansion","Churn","FY26"],`
    `"series":[{"name":"Revenue","values":[103,24,18,-3,142]}],"totals":[0,4]}`.
    Prefer a chart over a wall of numbers when you have a trend, comparison, or bridge.
+7. **icon** — a crisp single-colour line/solid icon: `{"type":"icon","x":80,"y":120,"w":28,"h":28,"name":"trend_up","color":"accent1"}`.
+   Use icons to anchor feature lists, KPI callouts, agenda rows, or section markers (place an
+   icon left of a short label). Keep them small (18–36pt) and consistent. Names:
+   `check, x, plus, minus, arrow_right, arrow_left, arrow_up, arrow_down, trend_up, trend_down,
+   target, check_circle, warning, info, star, clock, calendar, bar_chart, shield, location,
+   lightbulb, gear, person, people, building, globe, flag, search, bolt, cash, rocket, mail, doc`.
 
 ### Layouts (for `slides_add_slide`)
 `title, section, bullets, two_col, image_right, table, metric, chart, photo, agenda,

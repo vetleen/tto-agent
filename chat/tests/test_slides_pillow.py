@@ -116,6 +116,32 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_every_icon_renders(self):
+        from chat.slides import icons
+        for name in icons.ICON_NAMES:
+            deck = self._deck([{"elements": [
+                {"type": "icon", "x": 100, "y": 100, "w": 60, "h": 60,
+                 "name": name, "color": "dk2"},
+            ]}])
+            png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+            # each icon draws at least a few dark pixels beyond the empty bg
+            self.assertGreater(len(_colours(_open(png))), 1, f"icon {name} drew nothing")
+
+    def test_icon_render_png_and_unknown(self):
+        from chat.slides import icons
+        png = icons.render_icon_png("check", 48, (0, 0, 0))
+        self.assertTrue(png and png[:8] == b"\x89PNG\r\n\x1a\n")
+        self.assertIsNone(icons.render_icon_png("nope-not-real", 48, (0, 0, 0)))
+
+    def test_unknown_icon_is_silent(self):
+        deck = self._deck([{"elements": [
+            {"type": "icon", "x": 100, "y": 100, "w": 60, "h": 60, "name": "does-not-exist"},
+            {"type": "text", "x": 40, "y": 300, "w": 400, "h": 40, "class": "headline",
+             "paragraphs": [{"runs": [{"t": "ok"}]}]},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 1)  # the text still rendered
+
     def test_marimekko_columns_math(self):
         series = [{"name": "A", "values": [30, 20]}, {"name": "B", "values": [10, 20]}]
         # explicit widths win

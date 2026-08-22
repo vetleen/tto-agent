@@ -133,6 +133,19 @@ class ImageElement(_Strict):
     opacity: float | None = Field(default=None, ge=0.0, le=1.0)  # fade a placed image
 
 
+class IconElement(_Strict):
+    id: str | None = None
+    type: Literal["icon"]
+    x: float
+    y: float
+    w: float
+    h: float
+    name: str = "check"      # one of icons.ICON_NAMES (unknown -> skipped)
+    color: str = "dk2"       # theme colour name or #RRGGBB
+    rotation: float | None = None
+    opacity: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class Cell(_Strict):
     t: str = ""
     cls: str | None = Field(default=None, alias="class")
@@ -216,7 +229,7 @@ class ChartElement(_Strict):
 
 
 Element = Annotated[
-    Union[TextElement, ShapeElement, ImageElement, TableElement, LineElement, ChartElement],
+    Union[TextElement, ShapeElement, ImageElement, TableElement, LineElement, ChartElement, IconElement],
     Field(discriminator="type"),
 ]
 

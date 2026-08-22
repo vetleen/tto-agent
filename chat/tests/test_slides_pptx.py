@@ -92,6 +92,17 @@ class BuildDeckTests(SimpleTestCase):
         self.assertTrue(charts, "no native chart part embedded in the .pptx")
         self.assertEqual(warns, [])
 
+    def test_icon_embeds_as_picture(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "ic", "type": "icon", "x": 80, "y": 120, "w": 28, "h": 28,
+             "name": "trend_up", "color": "accent1"},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        media = [n for n in z.namelist() if n.startswith("ppt/media/")]
+        self.assertTrue(media, "icon PNG not embedded in the .pptx")
+        self.assertEqual(warns, [])
+
     def test_marimekko_builds_rectangles(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "mk", "type": "chart", "x": 48, "y": 80, "w": 700, "h": 320, "chart": "marimekko",

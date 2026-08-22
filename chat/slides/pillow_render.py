@@ -335,6 +335,16 @@ def _draw_harvey(draw, x0, y0, x1, y1, value, color, scale):
                       start=-90, end=-90 + frac * 360, fill=color)
 
 
+def _draw_icon(draw, theme, el, scale):
+    from chat.slides import icons
+
+    x, y, w, h = el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale
+    color = _rgb(theme, el.get("color") or "dk2", (50, 50, 50))
+    pad = min(w, h) * 0.08
+    sw = max(1, int(round(min(w, h) * 0.09)))
+    icons.draw_icon(draw, el.get("name") or "check", (x + pad, y + pad, x + w - pad, y + h - pad), color, sw)
+
+
 def _inject_default_color(paragraphs, default_color):
     if not default_color or not paragraphs:
         return paragraphs
@@ -1039,6 +1049,15 @@ def _draw_element(draw, img, theme, el, scale, resolver, bg=None):
             img.paste(layer, (0, 0), layer)
         else:
             _draw_shape(draw, theme, el, scale)
+    elif etype == "icon":
+        op = el.get("opacity")
+        if op is not None and op < 1:
+            layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            _draw_icon(ImageDraw.Draw(layer), theme, el, scale)
+            layer = _apply_opacity(layer, op)
+            img.paste(layer, (0, 0), layer)
+        else:
+            _draw_icon(draw, theme, el, scale)
     elif etype == "image":
         _draw_image(img, theme, el, scale, resolver)
     elif etype == "table":
@@ -1107,7 +1126,7 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
         etype = el.get("type")
         try:
             rot = el.get("rotation")
-            if rot and etype in ("text", "shape", "image"):
+            if rot and etype in ("text", "shape", "image", "icon"):
                 _draw_element_rotated(img, theme, el, scale, image_resolver, float(rot))
             else:
                 _draw_element(draw, img, theme, el, scale, image_resolver, bg)
