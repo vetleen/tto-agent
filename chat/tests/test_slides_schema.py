@@ -174,3 +174,43 @@ class ThemeTests(SimpleTestCase):
         self.assertFalse(merged["bold"])
         self.assertEqual(merged["size"], 40)
         self.assertEqual(merged["color"], "accent1")
+
+    def test_preset_swatches_shape_and_hex(self):
+        swatches = theme.preset_swatches()
+        self.assertGreaterEqual(len(swatches), 3)
+        names = {s["name"] for s in swatches}
+        self.assertIn("forest", names)  # base theme is a preset
+        for s in swatches:
+            self.assertEqual(set(s), {"name", "label", "bg", "dark", "accent"})
+            for key in ("bg", "dark", "accent"):
+                self.assertRegex(s[key], r"^#[0-9A-Fa-f]{6}$", f"{s['name']}.{key}")
+
+    def test_preset_swatches_are_distinct(self):
+        # Each preset must present a visually different background so the picker
+        # swatches don't all look identical.
+        bgs = [s["bg"] for s in theme.preset_swatches()]
+        self.assertEqual(len(bgs), len(set(bgs)))
+
+    def test_preset_theme_override_resolves(self):
+        # forest is the base -> empty override; a named preset -> a colours dict
+        # that actually changes the resolved accent.
+        self.assertEqual(theme.preset_theme_override("forest"), {})
+        override = theme.preset_theme_override("slate")
+        self.assertIn("colors", override)
+        merged = theme.resolve_theme({"theme": override})
+        self.assertNotEqual(
+            merged["colors"]["accent1"],
+            theme.WILFRED_BASE_THEME["colors"]["accent1"],
+        )
+
+    def test_preset_theme_override_unknown_is_none(self):
+        self.assertIsNone(theme.preset_theme_override("does-not-exist"))
+        self.assertIsNone(theme.preset_theme_override(""))
+
+    def test_preset_override_is_a_copy(self):
+        # Mutating a returned override must not corrupt PRESET_THEMES.
+        override = theme.preset_theme_override("ocean")
+        override["colors"]["accent1"] = "#000000"
+        self.assertNotEqual(
+            theme.preset_theme_override("ocean")["colors"]["accent1"], "#000000"
+        )

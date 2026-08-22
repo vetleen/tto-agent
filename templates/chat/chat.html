@@ -461,10 +461,19 @@
   <div class="flex items-center gap-2 px-4 py-2 border-b-[3px] border-b-brand bg-neutral-primary-soft shrink-0">
     <span id="slides-title" class="flex-1 text-sm font-semibold text-heading truncate">Slide deck</span>
     <div id="slides-tabs" class="hidden items-center gap-1"></div>
-    <button id="slides-download-pptx" title="Download PowerPoint (.pptx)"
-      class="cursor-pointer px-2 py-1 rounded-base text-xs font-medium text-body hover:text-heading hover:bg-neutral-tertiary">.pptx</button>
-    <button id="slides-download-pdf" title="Download PDF"
-      class="cursor-pointer px-2 py-1 rounded-base text-xs font-medium text-body hover:text-heading hover:bg-neutral-tertiary">PDF</button>
+    <button id="slides-theme-btn" title="Theme" aria-label="Change theme"
+      class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21a9 9 0 110-18c4.97 0 9 3.582 9 8 0 2.21-1.79 4-4 4h-2a2 2 0 00-1.5 3.32c.5.56.16 1.68-1 1.68z"/><circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/></svg>
+    </button>
+    <button id="slides-download-pptx" title="Download PowerPoint (.pptx)" aria-label="Download PowerPoint"
+      class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+    </button>
+    <button id="slides-download-pdf" title="Download PDF" aria-label="Download PDF"
+      class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-70">
+      <svg id="slides-pdf-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4" d="M8.5 14.5h.6a.9.9 0 000-1.8h-.6v3m3-3v3h.6a.9.9 0 00.9-.9v-1.2a.9.9 0 00-.9-.9H11.5m4 0H15v3m0-1.5h.8"/></svg>
+      <svg id="slides-pdf-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+    </button>
     <button id="slides-close-btn" title="Close" aria-label="Close slide panel"
       class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
       <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>
@@ -492,6 +501,33 @@
     <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </button>
   <div id="slides-lightbox-caption" class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/50 text-white text-xs font-medium tracking-wide"></div>
+</div>
+
+{# ---- Slide theme picker modal ---- #}
+<div id="slides-theme-modal" class="hidden fixed inset-0 z-[60] items-center justify-center bg-black/40 p-4">
+  <div class="w-full max-w-md rounded-lg border border-default bg-neutral-primary-soft shadow-xl p-5">
+    <div class="flex items-center justify-between mb-1">
+      <h3 class="text-sm font-semibold text-heading">Deck theme</h3>
+      <button id="slides-theme-close" title="Close" aria-label="Close"
+        class="cursor-pointer p-1 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+        <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <p class="text-xs text-body mb-4">Pick a colour theme for this deck. It applies to every slide.</p>
+    <div class="grid grid-cols-2 gap-3">
+      {% for p in slide_theme_presets %}
+      <button type="button" data-theme="{{ p.name }}"
+        class="slides-theme-swatch cursor-pointer flex items-center gap-3 rounded-base border border-default p-2 text-left hover:border-brand hover:bg-neutral-tertiary transition-colors">
+        <span class="flex shrink-0 overflow-hidden rounded-base border border-default" style="width:46px;height:32px">
+          <span style="flex:0 0 58%;background:{{ p.bg }}"></span>
+          <span style="flex:0 0 24%;background:{{ p.dark }}"></span>
+          <span style="flex:0 0 18%;background:{{ p.accent }}"></span>
+        </span>
+        <span class="text-sm text-heading">{{ p.label }}</span>
+      </button>
+      {% endfor %}
+    </div>
+  </div>
 </div>
 
 </div>{# end #content-area #}
@@ -4418,7 +4454,13 @@
       if (openComments > 0) { commentBar.classList.remove("hidden"); commentBar.classList.add("flex"); commentCountEl.textContent = openComments + (openComments === 1 ? " comment" : " comments"); }
       else { commentBar.classList.add("hidden"); commentBar.classList.remove("flex"); }
     }
-    function setPdfBusy(b) { if (pdfBtn) { pdfBtn.textContent = b ? "PDF…" : "PDF"; pdfBtn.disabled = b; } }
+    var pdfIcon = document.getElementById("slides-pdf-icon");
+    var pdfSpinner = document.getElementById("slides-pdf-spinner");
+    function setPdfBusy(b) {
+      if (pdfBtn) { pdfBtn.disabled = b; pdfBtn.title = b ? "Building PDF…" : "Download PDF"; }
+      if (pdfIcon) pdfIcon.classList.toggle("hidden", b);
+      if (pdfSpinner) pdfSpinner.classList.toggle("hidden", !b);
+    }
     function triggerDownload(url) { var a = document.createElement("a"); a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); }
     function downloadPptx() { if (deckId) triggerDownload("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/"); }
 
@@ -4490,6 +4532,25 @@
     if (slidesToggleBtn) slidesToggleBtn.addEventListener("click", function() { if (isOpen) close(); else { open(); requestState(); } });
     if (pptxBtn) pptxBtn.addEventListener("click", downloadPptx);
     if (pdfBtn) pdfBtn.addEventListener("click", function() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); });
+
+    // Theme picker modal
+    var themeBtn = document.getElementById("slides-theme-btn");
+    var themeModal = document.getElementById("slides-theme-modal");
+    function openThemeModal() { if (themeModal) { themeModal.classList.remove("hidden"); themeModal.classList.add("flex"); } }
+    function closeThemeModal() { if (themeModal) { themeModal.classList.add("hidden"); themeModal.classList.remove("flex"); } }
+    if (themeBtn) themeBtn.addEventListener("click", openThemeModal);
+    if (themeModal) {
+      var themeClose = document.getElementById("slides-theme-close");
+      if (themeClose) themeClose.addEventListener("click", closeThemeModal);
+      themeModal.addEventListener("click", function(e) { if (e.target === themeModal) closeThemeModal(); });
+      themeModal.querySelectorAll(".slides-theme-swatch").forEach(function(sw) {
+        sw.addEventListener("click", function() {
+          var name = sw.dataset.theme;
+          if (deckId && name && ws) ws.send(JSON.stringify({ type: "chat.slides_set_theme", thread_id: activeThreadId, deck_id: deckId, theme: name }));
+          closeThemeModal();
+        });
+      });
+    }
     var sendBtn = document.getElementById("slides-comments-send");
     if (sendBtn) sendBtn.addEventListener("click", function() { if (deckId && comments.length) { ws.send(JSON.stringify({ type: "chat.slides_comments_send", thread_id: activeThreadId, deck_id: deckId })); comments = []; openComments = 0; updateCommentBar(); renderFilmstrip(); } });
 

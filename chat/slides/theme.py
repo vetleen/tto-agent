@@ -119,6 +119,66 @@ WILFRED_BASE_THEME: dict = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Preset themes — colour palettes a user can pick from the slide panel. Each is
+# a sparse override of WILFRED_BASE_THEME (colours only), so the structure/fonts/
+# text styles stay consistent. "forest" is the base (empty override).
+# ---------------------------------------------------------------------------
+PRESET_THEMES: dict[str, dict] = {
+    "forest": {"label": "Forest", "theme": {}},
+    "slate": {"label": "Slate", "theme": {"colors": {
+        "dk1": "#1E293B", "lt1": "#F8FAFC", "dk2": "#334155", "lt2": "#E7ECF2",
+        "accent1": "#2563EB", "accent2": "#0EA5E9", "accent3": "#94A3B8",
+        "accent4": "#1E3A8A", "accent5": "#F59E0B", "accent6": "#64748B",
+        "success": "#16A34A", "warning": "#F59E0B", "danger": "#DC2626",
+        "hlink": "#2563EB", "folHlink": "#0EA5E9",
+        "chart_ramp": ["accent1", "accent2", "accent4", "accent5", "accent3", "accent6"],
+    }}},
+    "warm": {"label": "Warm sand", "theme": {"colors": {
+        "dk1": "#3F2E24", "lt1": "#FBF7F0", "dk2": "#5C4433", "lt2": "#F0E6D8",
+        "accent1": "#C2410C", "accent2": "#B45309", "accent3": "#D6BFA8",
+        "accent4": "#78350F", "accent5": "#EAB308", "accent6": "#9A3412",
+        "success": "#4D7C4E", "warning": "#EAB308", "danger": "#B91C1C",
+        "hlink": "#C2410C", "folHlink": "#B45309",
+        "chart_ramp": ["accent1", "accent2", "accent4", "accent5", "accent3", "accent6"],
+    }}},
+    "mono": {"label": "Monochrome", "theme": {"colors": {
+        "dk1": "#1A1A1A", "lt1": "#FAFAFA", "dk2": "#2E2E2E", "lt2": "#ECECEC",
+        "accent1": "#0D9488", "accent2": "#525252", "accent3": "#A3A3A3",
+        "accent4": "#404040", "accent5": "#0F766E", "accent6": "#171717",
+        "success": "#15803D", "warning": "#CA8A04", "danger": "#B91C1C",
+        "hlink": "#0D9488", "folHlink": "#525252",
+        "chart_ramp": ["accent1", "accent2", "accent4", "accent5", "accent3", "accent6"],
+    }}},
+    "ocean": {"label": "Ocean", "theme": {"colors": {
+        "dk1": "#0F2A38", "lt1": "#F4FAFC", "dk2": "#164E5B", "lt2": "#DDEEF0",
+        "accent1": "#0E7490", "accent2": "#0891B2", "accent3": "#7DD3D8",
+        "accent4": "#155E63", "accent5": "#F0A81E", "accent6": "#2C6E7F",
+        "success": "#0F766E", "warning": "#F0A81E", "danger": "#C2410C",
+        "hlink": "#0E7490", "folHlink": "#0891B2",
+        "chart_ramp": ["accent1", "accent2", "accent4", "accent5", "accent3", "accent6"],
+    }}},
+}
+
+
+def preset_swatches() -> list[dict]:
+    """``[{name, label, bg, text, accent}]`` for the theme-picker UI (resolved hex)."""
+    out = []
+    for name, spec in PRESET_THEMES.items():
+        colors = _deep_merge(WILFRED_BASE_THEME, spec["theme"])["colors"]
+        out.append({
+            "name": name, "label": spec["label"],
+            "bg": colors["lt1"], "dark": colors["dk2"], "accent": colors["accent1"],
+        })
+    return out
+
+
+def preset_theme_override(name: str) -> dict | None:
+    """The sparse ``theme`` override dict for a preset name (None if unknown)."""
+    spec = PRESET_THEMES.get(name)
+    return copy.deepcopy(spec["theme"]) if spec is not None else None
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge ``override`` onto a copy of ``base``.
 

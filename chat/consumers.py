@@ -632,6 +632,50 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "run_id": run_id,
         }))
 
+    async def _handle_slides_set_theme(self, data):
+        """Apply a preset colour theme to the active deck and re-render every slide."""
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+        name = data.get("theme")
+
+        def _apply():
+            from chat.models import SlideRenderRun
+            from chat.slides import service
+            from chat.slides import theme as theme_mod
+            from chat.tasks import render_deck_task
+
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return None
+            override = theme_mod.preset_theme_override(name)
+            if override is None:
+                return None
+            content = deck.content or {}
+            content["theme"] = override
+            service.save_deck_content(deck, content)
+            service.create_deck_checkpoint(deck, source="user_save", description=f"Applied '{name}' theme")
+            slide_ids = [s.get("id") for s in content.get("slides") or []]
+            # The theme is in every slide's content hash, so re-render them all.
+            run = SlideRenderRun.objects.create(
+                slide_set=deck, purpose=SlideRenderRun.Purpose.USER_PREVIEW, slide_ids=[]
+            )
+            try:
+                task = render_deck_task.delay(str(run.id))
+                run.celery_task_id = task.id
+                run.save(update_fields=["celery_task_id"])
+            except Exception:  # noqa: BLE001 — render is best-effort
+                pass
+            return {"deck_id": str(deck.pk), "slide_ids": slide_ids}
+
+        res = await database_sync_to_async(_apply)()
+        if res:
+            await self.send(text_data=json.dumps({
+                "event_type": "slidedeck.updated",
+                "deck_id": res["deck_id"],
+                "slide_ids": res["slide_ids"],
+                "changed_slide_ids": res["slide_ids"],
+            }))
+
     @database_sync_to_async
     def _resolve_preferences(self):
         from accounts.models import invalidate_membership_cache
@@ -765,6 +809,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_slides_comments_send(data)
         elif msg_type == "chat.slides_export_pdf":
             await self._handle_slides_export_pdf(data)
+        elif msg_type == "chat.slides_set_theme":
+            await self._handle_slides_set_theme(data)
         elif msg_type == "chat.stop":
             await self._handle_stop(data)
         elif msg_type == "pong":

@@ -490,6 +490,15 @@ def load_thread_message_page(thread, user, *, before=None, turns=20):
     return chat_messages, cursor, has_more, compressed_above
 
 
+def _slide_theme_presets():
+    """Preset colour themes for the slide-panel theme picker (best-effort)."""
+    try:
+        from chat.slides.theme import preset_swatches
+        return preset_swatches()
+    except Exception:  # noqa: BLE001
+        return []
+
+
 @login_required
 @require_http_methods(["GET"])
 def chat_home(request):
@@ -713,6 +722,7 @@ def chat_home(request):
             # Includes image/* so iOS Safari offers the photo library instead of
             # defaulting to the camera/video flow.
             "attach_accept": accept_attr(CHAT_KINDS),
+            "slide_theme_presets": _slide_theme_presets(),
         },
     )
 
