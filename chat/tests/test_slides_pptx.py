@@ -92,6 +92,19 @@ class BuildDeckTests(SimpleTestCase):
         self.assertTrue(charts, "no native chart part embedded in the .pptx")
         self.assertEqual(warns, [])
 
+    def test_harvey_ball_builds_pie_wedge(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "hb", "type": "shape", "shape": "harvey", "x": 100, "y": 100,
+             "w": 20, "h": 20, "value": 0.75, "fill": "dk2"},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertIn('prst="pie"', xml)   # the fill wedge
+        self.assertIn('prst="ellipse"', xml)  # the ring
+        self.assertIn("adj1", xml)  # angle guides set
+        self.assertEqual(warns, [])
+
     def test_waterfall_builds_stacked_column_chart(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "wf", "type": "chart", "x": 48, "y": 80, "w": 840, "h": 300, "chart": "waterfall",

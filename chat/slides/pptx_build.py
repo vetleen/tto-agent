@@ -203,10 +203,39 @@ def _add_text(slide, el, theme):
         tb.rotation = el["rotation"]
 
 
+def _add_harvey(slide, el, theme):
+    """A Harvey ball: an OVAL ring plus a PIE wedge (or full disk) for the fill."""
+    from chat.slides.pillow_render import _harvey_fraction
+
+    x, y, w, h = _pt_box(el)
+    color_v = el.get("fill") or "dk2"
+    frac = _harvey_fraction(el.get("value"))
+
+    ring = slide.shapes.add_shape(MSO_SHAPE.OVAL, x, y, w, h)
+    ring.fill.background()
+    _apply_color(ring.line.color, theme, color_v)
+    ring.line.width = Pt(1.25)
+
+    if frac >= 1.0:
+        disk = slide.shapes.add_shape(MSO_SHAPE.OVAL, x, y, w, h)
+        disk.fill.solid()
+        _apply_color(disk.fill.fore_color, theme, color_v)
+        disk.line.fill.background()
+    elif frac > 0:
+        pie = slide.shapes.add_shape(MSO_SHAPE.PIE, x, y, w, h)
+        pie.fill.solid()
+        _apply_color(pie.fill.fore_color, theme, color_v)
+        pie.line.fill.background()
+        pokes.set_pie_angles(pie, 270.0, (270.0 + frac * 360.0) % 360.0)
+
+
 def _add_shape(slide, el, theme, warnings):
     box = theme.get("boxes", {}).get(el["box"]) if el.get("box") else None
     box = box or {}
     shape_name = el.get("shape") or box.get("shape") or "rect"
+    if shape_name == "harvey":
+        _add_harvey(slide, el, theme)
+        return
     mso = SHAPE_MAP.get(shape_name)
     if mso is None:
         warnings.append(f"unknown shape '{shape_name}' -> rectangle")

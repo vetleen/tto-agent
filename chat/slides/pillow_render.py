@@ -281,6 +281,11 @@ def _draw_shape(draw, theme, el, scale):
     x2, y2 = x + w, y + h
     border_pts = None  # perimeter for a dashed stroke (None -> no dashed border)
 
+    if name == "harvey":
+        _draw_harvey(draw, x, y, x2, y2, el.get("value"),
+                     fill or _rgb(theme, "dk2", (50, 50, 50)), scale)
+        return
+
     if name in ("oval", "ellipse", "circle"):
         draw.ellipse([x, y, x2, y2], fill=fill, outline=o, width=ow)
     elif name == "rounded_rect":
@@ -309,6 +314,25 @@ def _draw_shape(draw, theme, el, scale):
             "valign": text.get("valign", "middle"),
         }
         _draw_text_frame(draw, theme, frame, (x, y, w, h), scale)
+
+
+def _harvey_fraction(value):
+    """Clamp to 0..1 and quantise to fifths (0/¼/½/¾/1) — the 5 Harvey-ball states."""
+    frac = 0.0 if value is None else max(0.0, min(1.0, float(value)))
+    return round(frac * 4) / 4
+
+
+def _draw_harvey(draw, x0, y0, x1, y1, value, color, scale):
+    """A Harvey ball: a full ring with the value-fraction filled clockwise from 12."""
+    frac = _harvey_fraction(value)
+    ring = max(1, int(round(1.4 * scale)))
+    draw.ellipse([x0, y0, x1, y1], outline=color, width=ring)
+    if frac >= 1.0:
+        draw.ellipse([x0, y0, x1, y1], fill=color)
+    elif frac > 0:
+        inset = ring
+        draw.pieslice([x0 + inset, y0 + inset, x1 - inset, y1 - inset],
+                      start=-90, end=-90 + frac * 360, fill=color)
 
 
 def _inject_default_color(paragraphs, default_color):

@@ -115,6 +115,9 @@ class ShapeElement(_Strict):
     text: TextBody | None = None
     rotation: float | None = None
     opacity: float | None = Field(default=None, ge=0.0, le=1.0)  # fill translucency
+    # Fill fraction for shape="harvey" (a Harvey-ball rating): 0..1, quantised to
+    # fifths (0/¼/½/¾/1). Ignored by other shapes.
+    value: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class ImageElement(_Strict):

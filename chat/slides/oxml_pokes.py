@@ -104,6 +104,28 @@ def set_picture_alpha(picture, opacity: float) -> None:
     blip.append(blip.makeelement(qn("a:alphaModFix"), {"amt": str(amt)}))
 
 
+def set_pie_angles(shape, start_deg: float, end_deg: float) -> None:
+    """Set a PIE autoshape's start/end angles (``adj1``/``adj2`` guides).
+
+    Degrees are OOXML convention: 0 = 3 o'clock, increasing clockwise; the wedge
+    is drawn from ``start`` to ``end`` clockwise (``end`` wraps past 360 if it is
+    the smaller value). python-pptx has no API for the pie's angle adjustments.
+    """
+    spPr = shape._element.spPr
+    geom = spPr.find(qn("a:prstGeom"))
+    if geom is None:
+        return
+    avLst = geom.find(qn("a:avLst"))
+    if avLst is None:
+        avLst = geom.makeelement(qn("a:avLst"), {})
+        geom.append(avLst)
+    for ex in list(avLst):
+        avLst.remove(ex)
+    for name, deg in (("adj1", start_deg), ("adj2", end_deg)):
+        val = int(round(deg * 60000)) % 21600000  # 60000ths of a degree
+        avLst.append(avLst.makeelement(qn("a:gd"), {"name": name, "fmla": f"val {val}"}))
+
+
 def set_connector_arrows(line_format, arrow: str) -> None:
     """Add arrowheads to a connector's line (``a:headEnd`` / ``a:tailEnd``).
 

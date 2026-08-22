@@ -116,6 +116,32 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_harvey_fraction_quantises(self):
+        self.assertEqual(pillow_render._harvey_fraction(None), 0.0)
+        self.assertEqual(pillow_render._harvey_fraction(0.6), 0.5)
+        self.assertEqual(pillow_render._harvey_fraction(0.7), 0.75)
+        self.assertEqual(pillow_render._harvey_fraction(2), 1.0)
+        self.assertEqual(pillow_render._harvey_fraction(-1), 0.0)
+
+    def test_harvey_balls_render_at_each_level(self):
+        # A row of Harvey balls (0/.25/.5/.75/1) must draw, and a half ball must
+        # differ from an empty ring (more ink).
+        empty = self._deck([{"elements": [
+            {"type": "shape", "shape": "harvey", "x": 100, "y": 100, "w": 40, "h": 40,
+             "value": 0.0, "fill": "dk2"},
+        ]}])
+        half = self._deck([{"elements": [
+            {"type": "shape", "shape": "harvey", "x": 100, "y": 100, "w": 40, "h": 40,
+             "value": 0.5, "fill": "dk2"},
+        ]}])
+        e_png, *_ = pillow_render.render_slide_png(empty, 0, dpi=96)
+        h_png, *_ = pillow_render.render_slide_png(half, 0, dpi=96)
+        # the half-filled ball paints strictly more dk2 pixels than an empty ring
+        def _dark(png):
+            img = _open(png)
+            return sum(1 for _n, c in img.getcolors(1 << 20) if sum(c) < 200)
+        self.assertGreater(_dark(h_png), _dark(e_png))
+
     def test_per_bar_point_colours_render(self):
         # Single-series column with one accented bar (the rest muted) must render
         # with more than one bar colour — the consulting highlight device.

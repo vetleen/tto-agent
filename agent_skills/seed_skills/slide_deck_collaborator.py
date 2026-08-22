@@ -63,7 +63,12 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
      `"space_after":8` adds spacing between paragraphs.
 2. **shape** — `{"type":"shape","x":600,"y":120,"w":300,"h":80,"shape":"rounded_rect","fill":"accent1","text":{"paragraphs":[{"align":"center","runs":[{"t":"38% growth"}]}]}}`
    - shapes: `rect, rounded_rect, oval, right_arrow, left_arrow, up_arrow, down_arrow,
-     chevron, pentagon, diamond, hexagon, star, plus, callout`.
+     chevron, pentagon, diamond, hexagon, star, plus, callout, harvey`.
+   - **`harvey`** (a Harvey ball — the consulting qualitative-rating circle): set
+     `"value"` 0–1 (rendered in fifths: 0/¼/½/¾/1) and `"fill"` for the colour, e.g.
+     `{"type":"shape","shape":"harvey","x":..,"y":..,"w":18,"h":18,"value":0.75,"fill":"dk2"}`.
+     Use a small square box (w≈h). Build a capability scorecard as a grid of row-label text +
+     one harvey per criterion — a real single-symbol rating, not a string of dots.
    - Or a themed box: `{"type":"shape","box":"callout","x":..,"y":..,"w":..,"h":..,"text":{...}}` —
      boxes: `callout, panel, pill, arrow_r, arrow_l`.
    - Add a border with `"line":{"color":"dk2","w":1,"dash":"dash"}`.
