@@ -137,6 +137,9 @@ Seed a slide from one of these, then edit its placeholder text.
 - **Layout hygiene.** Keep ~48pt margins; don't overlap unrelated elements. Estimate text
   fit before finishing: characters-per-line ≈ width_pt ÷ (0.5 × font_size); if the lines
   exceed the box height the text overflows. Keep to ≤6 bullets per slide and short lines.
+  A long **action-title headline can wrap to two lines** — give it enough height (~64pt) and
+  start the body/first content row below it (y ≈ 120+) so column headers don't collide with
+  the title's second line.
 - **Look at your work.** After adding or substantially editing slides, call
   `slides_preview_slide` on those slides (max 4) and INSPECT the rendered images — fix
   overflow, collisions, and low-contrast text before you hand back. Preview only the slides
