@@ -4381,6 +4381,9 @@
     });
 
     function renderFilmstrip() {
+      // PDF export uses the same worker render as previews, so when previews are
+      // down PDF can't work either — hide it and let .pptx be the clear path.
+      if (pdfBtn) pdfBtn.style.display = renderFailed ? "none" : "";
       filmstrip.innerHTML = "";
       if (!slides.length) { filmstrip.innerHTML = '<div class="text-sm text-body text-center py-10">No slides yet.</div>'; return; }
       if (renderFailed) filmstrip.appendChild(renderFailedBanner());
