@@ -82,6 +82,28 @@ class ValidateDeckTests(SimpleTestCase):
         ]}]}
         self.assertTrue(schema.validate_deck(deck))
 
+    def test_valid_chart(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "chart", "x": 1, "y": 1, "w": 400, "h": 300, "chart": "column",
+             "categories": ["A", "B"], "series": [{"name": "S", "values": [1.0, 2.0]}]},
+        ]}]}
+        self.assertEqual(schema.validate_deck(deck), [])
+
+    def test_chart_needs_a_series(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "chart", "x": 1, "y": 1, "w": 400, "h": 300, "chart": "pie", "series": []},
+        ]}]}
+        issues = schema.validate_deck(deck)
+        self.assertTrue(any("at least one series" in i["message"] for i in issues))
+
+    def test_chart_too_many_series(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "chart", "x": 1, "y": 1, "w": 400, "h": 300, "chart": "column",
+             "series": [{"name": str(i), "values": [1]} for i in range(schema.MAX_CHART_SERIES + 1)]},
+        ]}]}
+        issues = schema.validate_deck(deck)
+        self.assertTrue(any("Too many chart series" in i["message"] for i in issues))
+
 
 class MintAndHashTests(SimpleTestCase):
     def test_mint_fills_missing_ids(self):

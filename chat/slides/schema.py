@@ -34,6 +34,8 @@ MAX_ACTIVE_SLIDE_SETS = 1
 MAX_SLIDES_PER_DECK = 30
 MAX_ELEMENTS_PER_SLIDE = 25
 MAX_PREVIEW_SLIDES_PER_CALL = 4
+MAX_CHART_SERIES = 8
+MAX_CHART_POINTS = 30
 
 # Slide/element ids: short, url-safe, stable. Comments and previews key on them.
 _ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
@@ -164,8 +166,32 @@ class LineElement(_Strict):
     arrow: Literal["none", "end", "start", "both"] = "none"
 
 
+_CHART_KINDS = ("column", "bar", "line", "area", "pie")
+
+
+class ChartSeries(_Strict):
+    name: str = ""
+    values: list[float] = Field(default_factory=list)
+
+
+class ChartElement(_Strict):
+    id: str | None = None
+    type: Literal["chart"]
+    x: float
+    y: float
+    w: float
+    h: float
+    chart: Literal[_CHART_KINDS] = "column"  # type: ignore[valid-type]
+    categories: list[str] = Field(default_factory=list)
+    series: list[ChartSeries] = Field(default_factory=list)
+    title: str = ""
+    legend: bool = True
+    value_labels: bool = False
+    colors: list[str] | None = None  # override theme.colors.chart_ramp
+
+
 Element = Annotated[
-    Union[TextElement, ShapeElement, ImageElement, TableElement, LineElement],
+    Union[TextElement, ShapeElement, ImageElement, TableElement, LineElement, ChartElement],
     Field(discriminator="type"),
 ]
 
@@ -249,6 +275,17 @@ def _semantic_issues(deck: dict) -> list[dict]:
                 for cell in _iter_cells(el):
                     if "span" in cell:  # reserved for future merge support
                         issues.append({"path": f"slides.{si}.elements.{ei}", "message": "Cell merges ('span') are not supported yet."})
+                        break
+            if el.get("type") == "chart":
+                sers = el.get("series") or []
+                path = f"slides.{si}.elements.{ei}"
+                if len(sers) > MAX_CHART_SERIES:
+                    issues.append({"path": path, "message": f"Too many chart series (max {MAX_CHART_SERIES})."})
+                if not sers:
+                    issues.append({"path": path, "message": "A chart needs at least one series."})
+                for s in sers:
+                    if len(s.get("values") or []) > MAX_CHART_POINTS:
+                        issues.append({"path": path, "message": f"Too many chart data points (max {MAX_CHART_POINTS})."})
                         break
 
     if len(canonical_deck_text(deck)) > DECK_MAX_CHARS:

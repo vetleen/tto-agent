@@ -63,9 +63,13 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    The header row and banding are styled automatically by the theme.
 5. **line** — `{"type":"line","x1":48,"y1":440,"x2":912,"y2":440,"color":"accent3","w":2,"dash":"dash","arrow":"end"}`
    (`arrow`: none/end/start/both; `dash`: solid/dash/dot/dashdot).
+6. **chart** — `{"type":"chart","x":48,"y":130,"w":520,"h":300,"chart":"column","title":"Revenue","categories":["2023","2024","2025"],"series":[{"name":"ARR ($M)","values":[1.2,3.4,6.1]}],"legend":true,"value_labels":false}`.
+   `chart`: `column` (vertical bars), `bar` (horizontal), `line`, `area`, `pie`. Pie uses one
+   series; the `categories` become the slice labels. Series colours come from the theme
+   automatically. Prefer a chart over a wall of numbers when you have a trend or comparison.
 
 ### Layouts (for `slides_add_slide`)
-`title, section, bullets, two_col, image_right, table, metric, quote, closing, blank`.
+`title, section, bullets, two_col, image_right, table, metric, chart, quote, closing, blank`.
 Seed a slide from one of these, then edit its placeholder text.
 
 ## Rules

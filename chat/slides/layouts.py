@@ -117,6 +117,20 @@ _LAYOUTS: dict[str, dict] = {
             ]),
         ],
     },
+    "chart": {
+        "name": "Chart",
+        "elements": [
+            _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
+            {"type": "chart", "x": _ML, "y": 130, "w": 520, "h": 320, "chart": "column",
+             "title": "", "legend": True,
+             "categories": ["Q1", "Q2", "Q3", "Q4"],
+             "series": [{"name": "Series 1", "values": [3, 5, 4, 7]}]},
+            _text(600, 150, 312, 280, "body", [
+                _p("What the chart shows", bullet=True, space_after=10),
+                _p("The takeaway", bullet=True, space_after=10),
+            ]),
+        ],
+    },
     "quote": {
         "name": "Quote",
         "bg": "lt2",

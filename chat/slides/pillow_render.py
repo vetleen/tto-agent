@@ -538,6 +538,218 @@ def _draw_placeholder(img, x, y, w, h, *, empty, scale, theme):
 
 
 # ---------------------------------------------------------------------------
+# Charts (preview — the downloaded .pptx carries a native, editable chart)
+# ---------------------------------------------------------------------------
+def _nice_ticks(vmax, count=4):
+    """A 'nice' axis maximum >= vmax and its tick step."""
+    if vmax <= 0:
+        return 1.0, 0.25
+    raw = vmax / count
+    mag = 10 ** math.floor(math.log10(raw))
+    for m in (1, 2, 2.5, 5, 10):
+        if raw <= m * mag:
+            step = m * mag
+            break
+    else:
+        step = 10 * mag
+    return math.ceil(vmax / step) * step, step
+
+
+def _draw_chart(draw, theme, el, scale):
+    kind = el.get("chart", "column")
+    x, y, w, h = el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale
+    series = el.get("series") or []
+    if not series:
+        return
+    ramp_names = el.get("colors") or theme.get("colors", {}).get("chart_ramp") or ["accent1"]
+    ramp = [_rgb(theme, c, (150, 150, 150)) for c in ramp_names]
+    n_vals = max((len(s.get("values") or []) for s in series), default=0)
+    cats = el.get("categories") or [str(i + 1) for i in range(n_vals)]
+    txt = _rgb(theme, "dk1", (30, 30, 30))
+    axis = _rgb(theme, "accent3", (180, 180, 180))
+    grid = tuple(min(255, c + 40) for c in axis)
+
+    def fnt(px):
+        return _font(theme_mod.font_family(theme, "data"), px * scale, False, False)
+
+    pad = 8 * scale
+    top = y + pad
+    if el.get("title"):
+        f = fnt(12)
+        tw = f.getlength(el["title"])
+        draw.text((x + (w - tw) / 2, top), el["title"], font=f, fill=txt)
+        top += 22 * scale
+    show_legend = (kind == "pie" or len(series) > 1) and el.get("legend", True)
+    legend_h = 22 * scale if show_legend else 0
+
+    plot = (x + pad, top, w - 2 * pad, y + h - pad - legend_h - top)  # x,y,w,h
+    if kind == "pie":
+        _chart_pie(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
+    elif kind == "bar":
+        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"))
+    elif kind in ("line", "area"):
+        _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, kind == "area", scale)
+    else:
+        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, False, el.get("value_labels"))
+
+    if show_legend:
+        names = cats if kind == "pie" else [s.get("name", "") for s in series]
+        _chart_legend(draw, (x + pad, y + h - pad - legend_h + 4, w - 2 * pad, legend_h), names, ramp, fnt(9), txt, scale)
+
+
+def _val_axis(series):
+    vals = [v for s in series for v in (s.get("values") or []) if isinstance(v, (int, float))]
+    vmax = max(vals) if vals else 1.0
+    vmin = min(vals + [0])
+    top, _step = _nice_ticks(vmax if vmax > 0 else 1.0)
+    return vmin if vmin < 0 else 0.0, top
+
+
+def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal, value_labels):
+    px, py, pw, ph = plot
+    lo, hi = _val_axis(series)
+    span = (hi - lo) or 1.0
+    lbl = fnt(9)
+    n_cat, n_ser = len(cats), len(series)
+    if n_cat == 0 or n_ser == 0:
+        return
+    _, step = _nice_ticks(hi if hi > 0 else 1.0)
+    val_gutter = 26   # value-axis labels
+    cat_gutter = 30   # category-axis labels
+
+    if horizontal:
+        ax, ay, aw, ah = px + cat_gutter, py, pw - cat_gutter, ph - 16
+    else:
+        ax, ay, aw, ah = px + val_gutter, py, pw - val_gutter, ph - 16
+
+    # value gridlines + labels
+    t = lo
+    while t <= hi + 1e-9:
+        frac = (t - lo) / span
+        if horizontal:
+            gx = ax + frac * aw
+            draw.line([(gx, ay), (gx, ay + ah)], fill=grid, width=1)
+            lt = _fmt_num(t)
+            draw.text((gx - lbl.getlength(lt) / 2, ay + ah + 3), lt, font=lbl, fill=txt)
+        else:
+            gy = ay + ah - frac * ah
+            draw.line([(ax, gy), (ax + aw, gy)], fill=grid, width=1)
+            draw.text((px, gy - 6), _fmt_num(t), font=lbl, fill=txt)
+        t += step
+
+    for ci in range(n_cat):
+        # PowerPoint bar charts put the first category at the bottom.
+        row = (n_cat - 1 - ci) if horizontal else ci
+        slot = (ah if horizontal else aw) / n_cat
+        for si, s in enumerate(series):
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            frac = (v - lo) / span
+            color = ramp[si % len(ramp)]
+            thick = slot * 0.7 / n_ser
+            if horizontal:
+                by = ay + row * slot + slot * 0.15 + si * thick
+                draw.rectangle([ax, by, ax + frac * aw, by + thick], fill=color)
+            else:
+                bx = ax + row * slot + slot * 0.15 + si * thick
+                draw.rectangle([bx, ay + ah - frac * ah, bx + thick, ay + ah], fill=color)
+        # category label
+        f = fnt(9)
+        if horizontal:
+            cw = f.getlength(cats[ci])
+            draw.text((px + cat_gutter - cw - 4, ay + row * slot + slot / 2 - 6), cats[ci], font=f, fill=txt)
+        else:
+            cw = f.getlength(cats[ci])
+            draw.text((ax + row * slot + slot / 2 - cw / 2, ay + ah + 3), cats[ci], font=f, fill=txt)
+
+
+def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, scale):
+    px, py, pw, ph = plot
+    lo, hi = _val_axis(series)
+    span = (hi - lo) or 1.0
+    lab_gutter = 34
+    ax, ay, aw, ah = px + lab_gutter, py, pw - lab_gutter, ph - 16
+    _, step = _nice_ticks(hi if hi > 0 else 1.0)
+    lbl = fnt(9)
+    t = lo
+    while t <= hi + 1e-9:
+        gy = ay + ah - (t - lo) / span * ah
+        draw.line([(ax, gy), (ax + aw, gy)], fill=grid, width=1)
+        draw.text((px, gy - 6), _fmt_num(t), font=lbl, fill=txt)
+        t += step
+    n = len(cats)
+    if n == 0:
+        return
+    step_x = aw / max(1, n - 1) if n > 1 else aw
+    for si, s in enumerate(series):
+        vals = s.get("values") or []
+        color = ramp[si % len(ramp)]
+        pts = []
+        for ci in range(n):
+            v = vals[ci] if ci < len(vals) else 0
+            gx = ax + (ci * step_x if n > 1 else aw / 2)
+            gy = ay + ah - (v - lo) / span * ah
+            pts.append((gx, gy))
+        if area and len(pts) > 1:
+            poly = pts + [(pts[-1][0], ay + ah), (pts[0][0], ay + ah)]
+            draw.polygon(poly, fill=color + (90,) if len(color) == 4 else (*color, 90))
+        if len(pts) > 1:
+            draw.line(pts, fill=color, width=max(2, int(2 * scale)), joint="curve")
+        r = max(2, int(2.5 * scale))
+        for gx, gy in pts:
+            draw.ellipse([gx - r, gy - r, gx + r, gy + r], fill=color)
+    for ci in range(n):
+        f = fnt(9)
+        cw = f.getlength(cats[ci])
+        gx = ax + (ci * step_x if n > 1 else aw / 2)
+        draw.text((gx - cw / 2, ay + ah + 3), cats[ci], font=f, fill=txt)
+
+
+def _chart_pie(draw, plot, series, cats, ramp, fnt, txt, value_labels):
+    px, py, pw, ph = plot
+    vals = [max(0.0, v) for v in (series.get("values") or [])]
+    total = sum(vals) or 1.0
+    d = min(pw, ph) * 0.9
+    cx, cy = px + pw / 2, py + ph / 2
+    box = [cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2]
+    start = -90.0
+    f = fnt(9)
+    for i, v in enumerate(vals):
+        sweep = v / total * 360.0
+        draw.pieslice(box, start, start + sweep, fill=ramp[i % len(ramp)])
+        if value_labels and v > 0:
+            mid = math.radians(start + sweep / 2)
+            lx = cx + (d / 2) * 0.62 * math.cos(mid)
+            ly = cy + (d / 2) * 0.62 * math.sin(mid)
+            pct = f"{v / total * 100:.0f}%"
+            tw = f.getlength(pct)
+            draw.text((lx - tw / 2, ly - 6), pct, font=f, fill=(255, 255, 255))
+        start += sweep
+
+
+def _chart_legend(draw, box, names, ramp, font, txt, scale):
+    bx, by, bw, bh = box
+    sw = 10 * scale
+    gap = 14 * scale
+    items = [(n, ramp[i % len(ramp)]) for i, n in enumerate(names)]
+    widths = [sw + 4 * scale + font.getlength(n) for n, _ in items]
+    total = sum(widths) + gap * (len(items) - 1)
+    x = bx + max(0, (bw - total) / 2)
+    for (name, color), wdt in zip(items, widths):
+        draw.rectangle([x, by + bh / 2 - sw / 2, x + sw, by + bh / 2 + sw / 2], fill=color)
+        draw.text((x + sw + 4 * scale, by + bh / 2 - font.size / 2), name, font=font, fill=txt)
+        x += wdt + gap
+
+
+def _fmt_num(v):
+    if abs(v) >= 1000:
+        return f"{v/1000:.0f}k" if v % 1000 == 0 else f"{v/1000:.1f}k"
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.1f}"
+
+
+# ---------------------------------------------------------------------------
 # Footer / page number
 # ---------------------------------------------------------------------------
 def _stamp_footer(draw, theme, scale, page_num, total):
@@ -572,6 +784,8 @@ def _draw_element(draw, img, theme, el, scale, resolver):
         _draw_table(draw, theme, el, scale)
     elif etype == "line":
         _draw_line(draw, theme, el, scale)
+    elif etype == "chart":
+        _draw_chart(draw, theme, el, scale)
 
 
 def _draw_element_rotated(img, theme, el, scale, resolver, angle):

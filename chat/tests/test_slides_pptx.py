@@ -65,6 +65,17 @@ class BuildDeckTests(SimpleTestCase):
     def test_no_warnings(self):
         self.assertEqual(self.warnings, [])
 
+    def test_chart_creates_native_chart_part(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "c1", "type": "chart", "x": 48, "y": 80, "w": 500, "h": 300, "chart": "column",
+             "title": "T", "categories": ["A", "B"], "series": [{"name": "S", "values": [1, 2]}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        charts = [n for n in z.namelist() if "/charts/chart" in n and n.endswith(".xml")]
+        self.assertTrue(charts, "no native chart part embedded in the .pptx")
+        self.assertEqual(warns, [])
+
     def test_three_slides(self):
         names = [n for n in self.zip.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "rels" not in n]
         self.assertEqual(len(names), 3)

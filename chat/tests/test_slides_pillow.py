@@ -106,6 +106,16 @@ class PillowRenderTests(SimpleTestCase):
         png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
         self.assertGreater(len(_colours(_open(png))), 1)
 
+    def test_chart_types_render(self):
+        for kind in ("column", "bar", "line", "area", "pie"):
+            deck = self._deck([{"elements": [
+                {"type": "chart", "x": 48, "y": 80, "w": 500, "h": 300, "chart": kind,
+                 "title": kind.title(), "categories": ["A", "B", "C"],
+                 "series": [{"name": "S1", "values": [3, 5, 4]}, {"name": "S2", "values": [2, 1, 4]}]},
+            ]}])
+            png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+            self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
+
     def test_rotated_element_renders(self):
         deck = self._deck([{"elements": [
             {"type": "shape", "x": 300, "y": 200, "w": 200, "h": 100, "shape": "rect",

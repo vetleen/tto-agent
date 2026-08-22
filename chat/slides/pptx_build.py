@@ -422,6 +422,88 @@ def _add_line(slide, el, theme):
     pokes.set_connector_arrows(lf, el.get("arrow", "none"))
 
 
+def _chart_ramp_rgb(theme, names):
+    """Resolve a list of colour refs to RGBColor for chart series/points."""
+    out = []
+    for name in names or []:
+        resolved = theme_mod.resolve_color(theme, name)
+        if resolved is None:
+            continue
+        kind, val = resolved
+        hexv = theme["colors"].get(val) if kind == "theme" else val
+        if isinstance(hexv, str):
+            out.append(RGBColor.from_string(hexv.lstrip("#")))
+    return out
+
+
+def _add_chart(slide, el, theme, warnings):
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
+
+    kind_map = {
+        "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
+        "bar": XL_CHART_TYPE.BAR_CLUSTERED,
+        "line": XL_CHART_TYPE.LINE_MARKERS,
+        "area": XL_CHART_TYPE.AREA,
+        "pie": XL_CHART_TYPE.PIE,
+    }
+    kind = el.get("chart", "column")
+    xl = kind_map.get(kind, XL_CHART_TYPE.COLUMN_CLUSTERED)
+    series = el.get("series") or []
+    if not series:
+        warnings.append("empty chart skipped")
+        return
+    n_vals = max((len(s.get("values") or []) for s in series), default=0)
+    cats = el.get("categories") or [str(i + 1) for i in range(n_vals)]
+
+    data = CategoryChartData()
+    data.categories = cats
+    for s in series:
+        vals = list(s.get("values") or [])
+        vals += [None] * (len(cats) - len(vals))  # pad short series
+        data.add_series(s.get("name", ""), tuple(vals[: len(cats)]))
+
+    x, y, w, h = _pt_box(el)
+    chart = slide.shapes.add_chart(xl, x, y, w, h, data).chart
+
+    if el.get("title"):
+        chart.has_title = True
+        chart.chart_title.text_frame.text = el["title"]
+    else:
+        chart.has_title = False
+
+    show_legend = (kind == "pie" or len(series) > 1) and el.get("legend", True)
+    chart.has_legend = show_legend
+    if show_legend:
+        chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+        chart.legend.include_in_layout = False
+
+    ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
+    if ramp:
+        try:
+            if kind == "pie":
+                pts = chart.plots[0].series[0].points
+                for i, pt in enumerate(pts):
+                    pt.format.fill.solid()
+                    pt.format.fill.fore_color.rgb = ramp[i % len(ramp)]
+            else:
+                for i, ser in enumerate(chart.series):
+                    color = ramp[i % len(ramp)]
+                    if kind in ("line",):
+                        ser.format.line.color.rgb = color
+                    else:
+                        ser.format.fill.solid()
+                        ser.format.fill.fore_color.rgb = color
+        except Exception:  # noqa: BLE001 — colour styling is best-effort
+            logger.debug("chart colour styling failed", exc_info=True)
+
+    if el.get("value_labels"):
+        try:
+            chart.plots[0].has_data_labels = True
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _render_element(slide, el, theme, resolver, warnings):
     etype = el.get("type")
     try:
@@ -435,6 +517,8 @@ def _render_element(slide, el, theme, resolver, warnings):
             _add_table(slide, el, theme, warnings)
         elif etype == "line":
             _add_line(slide, el, theme)
+        elif etype == "chart":
+            _add_chart(slide, el, theme, warnings)
         else:
             warnings.append(f"unknown element type '{etype}' skipped")
     except Exception as exc:  # noqa: BLE001 — one bad element must not fail the deck
