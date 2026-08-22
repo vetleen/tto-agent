@@ -227,6 +227,123 @@ def org_slide_theme_override(org) -> dict:
     return preset_theme_override(get_org_slide_style(org)["name"]) or {}
 
 
+# ---------------------------------------------------------------------------
+# User custom slide themes — a user can save their own palettes (from the slide
+# panel's theme picker) and reuse them across decks. Stored on
+# ``UserSettings.preferences["slide_themes"]`` as a list of entries:
+#   {"id": "c<hex>", "label": str, "base": <preset>, "colors": {accent1,dk2,lt1}}
+# A custom theme = a base preset with three brand colours overridden (accent,
+# heading/dark, background); everything else inherits the base so decks stay
+# coherent. Ids are namespaced ("c…") so they can't collide with preset names.
+# ---------------------------------------------------------------------------
+import re as _re  # noqa: E402 — local alias, keep the module header clean
+import uuid as _uuid  # noqa: E402
+
+MAX_USER_SLIDE_THEMES = 12
+# The brand levers a custom theme exposes -> the native slot each maps to.
+CUSTOM_THEME_COLOR_KEYS = ("accent1", "dk2", "lt1")
+_CUSTOM_HEX_RE = _re.compile(r"^#[0-9A-Fa-f]{6}$")
+_CUSTOM_LABEL_MAX = 40
+
+
+def validate_custom_slide_theme(data) -> tuple[dict | None, str | None]:
+    """Validate a user's custom-theme payload (label + base preset + 3 colours).
+
+    Returns ``(clean, None)`` — clean has ``label``/``base``/``colors`` but no
+    ``id`` (the caller assigns one) — or ``(None, error_message)``.
+    """
+    if not isinstance(data, dict):
+        return None, "Invalid theme payload."
+    label = data.get("label")
+    if not isinstance(label, str) or not label.strip():
+        return None, "Give the theme a name."
+    label = label.strip()[:_CUSTOM_LABEL_MAX]
+
+    base = data.get("base", DEFAULT_SLIDE_THEME)
+    if not isinstance(base, str) or base not in PRESET_THEMES:
+        return None, "Pick a base theme."
+
+    colors_in = data.get("colors")
+    if not isinstance(colors_in, dict):
+        return None, "Choose the theme colours."
+    colors = {}
+    for key in CUSTOM_THEME_COLOR_KEYS:
+        val = colors_in.get(key)
+        if not isinstance(val, str) or not _CUSTOM_HEX_RE.match(val.strip()):
+            return None, "Colours must be hex like #2563EB."
+        colors[key] = val.strip().upper()
+
+    return {"label": label, "base": base, "colors": colors}, None
+
+
+def user_slide_themes(user) -> list[dict]:
+    """The user's saved custom themes (sanitised list, never raises)."""
+    prefs = _user_prefs(user)
+    raw = prefs.get("slide_themes") if isinstance(prefs, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        clean, err = validate_custom_slide_theme(entry)
+        if err or not isinstance(entry.get("id"), str):
+            continue
+        clean["id"] = entry["id"]
+        out.append(clean)
+    return out
+
+
+def _user_prefs(user) -> dict:
+    """Read a user's stored preferences dict (best-effort, no raise)."""
+    try:
+        from accounts.models import UserSettings
+
+        us = UserSettings.objects.filter(user=user).first()
+        return (us.preferences or {}) if us else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def new_custom_theme_id() -> str:
+    """A fresh id for a custom theme, namespaced so it can't be a preset name."""
+    return "c" + _uuid.uuid4().hex[:10]
+
+
+def custom_theme_override(entry: dict) -> dict:
+    """The sparse deck ``theme`` override for a stored custom-theme entry."""
+    base = preset_theme_override(entry.get("base")) or {}
+    return _deep_merge(base, {"colors": dict(entry.get("colors") or {})})
+
+
+def _swatch_from_override(override: dict) -> dict:
+    """Resolve an override's bg/dark/accent hexes for a picker swatch."""
+    colors = _deep_merge(WILFRED_BASE_THEME, override)["colors"]
+    return {"bg": colors["lt1"], "dark": colors["dk2"], "accent": colors["accent1"]}
+
+
+def user_slide_theme_swatches(user) -> list[dict]:
+    """``[{id,label,bg,dark,accent}]`` for the user's custom themes (picker UI)."""
+    out = []
+    for entry in user_slide_themes(user):
+        sw = _swatch_from_override(custom_theme_override(entry))
+        out.append({"id": entry["id"], "label": entry["label"], **sw})
+    return out
+
+
+def resolve_named_slide_theme(name: str, user=None) -> dict | None:
+    """Resolve a theme *name* to its sparse override — a preset, or (with a
+    ``user``) one of that user's saved custom themes. ``None`` if unknown."""
+    preset = preset_theme_override(name)
+    if preset is not None:
+        return preset
+    if user is not None:
+        for entry in user_slide_themes(user):
+            if entry["id"] == name:
+                return custom_theme_override(entry)
+    return None
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge ``override`` onto a copy of ``base``.
 

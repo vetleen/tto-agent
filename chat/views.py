@@ -499,6 +499,15 @@ def _slide_theme_presets():
         return []
 
 
+def _slide_user_themes(user):
+    """The user's saved custom slide themes for the picker (best-effort)."""
+    try:
+        from chat.slides.theme import user_slide_theme_swatches
+        return user_slide_theme_swatches(user)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 @login_required
 @require_http_methods(["GET"])
 def chat_home(request):
@@ -723,6 +732,7 @@ def chat_home(request):
             # defaulting to the camera/video flow.
             "attach_accept": accept_attr(CHAT_KINDS),
             "slide_theme_presets": _slide_theme_presets(),
+            "slide_user_themes": _slide_user_themes(request.user),
         },
     )
 

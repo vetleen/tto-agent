@@ -253,3 +253,57 @@ class OrgSlideStyleTests(SimpleTestCase):
         override = theme.org_slide_theme_override(_Org({"slide_theme": {"name": "slate"}}))
         self.assertIn("colors", override)
         self.assertEqual(theme.org_slide_theme_override(None), {})
+
+
+class CustomSlideThemeUnitTests(SimpleTestCase):
+    def _valid(self, **over):
+        data = {"label": "Acme", "base": "slate",
+                "colors": {"accent1": "#123456", "dk2": "#223344", "lt1": "#FFFFFF"}}
+        data.update(over)
+        return data
+
+    def test_validate_ok_and_strips_id(self):
+        clean, err = theme.validate_custom_slide_theme(self._valid())
+        self.assertIsNone(err)
+        self.assertEqual(clean["label"], "Acme")
+        self.assertEqual(clean["base"], "slate")
+        self.assertEqual(clean["colors"]["accent1"], "#123456")
+        self.assertNotIn("id", clean)  # the caller assigns the id
+
+    def test_validate_uppercases_hex(self):
+        clean, _ = theme.validate_custom_slide_theme(
+            self._valid(colors={"accent1": "#abcdef", "dk2": "#111111", "lt1": "#ffffff"})
+        )
+        self.assertEqual(clean["colors"]["accent1"], "#ABCDEF")
+
+    def test_validate_rejects_bad_inputs(self):
+        for bad in (
+            self._valid(label="  "),               # blank name
+            self._valid(base="rainbow"),           # unknown base
+            self._valid(colors={"accent1": "#123456", "dk2": "#223344"}),  # missing lt1
+            self._valid(colors={"accent1": "red", "dk2": "#223344", "lt1": "#FFFFFF"}),  # not hex
+            "nope", [],
+        ):
+            clean, err = theme.validate_custom_slide_theme(bad)
+            self.assertIsNone(clean)
+            self.assertTrue(err)
+
+    def test_custom_override_merges_over_base(self):
+        entry = {"base": "slate", "colors": {"accent1": "#010203", "dk2": "#040506", "lt1": "#070809"}}
+        override = theme.custom_theme_override(entry)
+        # base slate colours are present, but the three overrides win
+        self.assertEqual(override["colors"]["accent1"], "#010203")
+        self.assertEqual(override["colors"]["dk2"], "#040506")
+        self.assertEqual(override["colors"]["lt1"], "#070809")
+        self.assertEqual(override["colors"]["accent2"],
+                         theme.PRESET_THEMES["slate"]["theme"]["colors"]["accent2"])
+
+    def test_resolve_named_theme_preset_paths(self):
+        self.assertIsNotNone(theme.resolve_named_slide_theme("slate"))
+        self.assertEqual(theme.resolve_named_slide_theme("forest"), {})
+        self.assertIsNone(theme.resolve_named_slide_theme("cdeadbeef00", user=None))
+
+    def test_new_id_is_namespaced(self):
+        tid = theme.new_custom_theme_id()
+        self.assertTrue(tid.startswith("c"))
+        self.assertNotIn(tid, theme.PRESET_THEMES)

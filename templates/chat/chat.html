@@ -504,8 +504,9 @@
 </div>
 
 {# ---- Slide theme picker modal ---- #}
+{{ slide_user_themes|json_script:"slides-user-themes-data" }}
 <div id="slides-theme-modal" class="hidden fixed inset-0 z-[60] items-center justify-center bg-black/40 p-4">
-  <div class="w-full max-w-md rounded-lg border border-default bg-neutral-primary-soft shadow-xl p-5">
+  <div class="w-full max-w-md max-h-[85vh] overflow-y-auto rounded-lg border border-default bg-neutral-primary-soft shadow-xl p-5">
     <div class="flex items-center justify-between mb-1">
       <h3 class="text-sm font-semibold text-heading">Deck theme</h3>
       <button id="slides-theme-close" title="Close" aria-label="Close"
@@ -526,6 +527,48 @@
         <span class="text-sm text-heading">{{ p.label }}</span>
       </button>
       {% endfor %}
+    </div>
+
+    {# ---- Your saved themes ---- #}
+    <div class="mt-5">
+      <div class="flex items-center justify-between mb-2">
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-body">Your themes</h4>
+        <button type="button" id="slides-theme-new"
+          class="cursor-pointer text-xs font-medium text-brand hover:underline">+ New theme</button>
+      </div>
+      <div id="slides-theme-custom-list" class="grid grid-cols-2 gap-3"></div>
+      <p id="slides-theme-custom-empty" class="text-xs text-body opacity-70">No saved themes yet — build one from a base below.</p>
+    </div>
+
+    {# ---- Custom theme editor (hidden) ---- #}
+    <div id="slides-theme-editor" class="hidden mt-4 rounded-base border border-default bg-neutral-primary p-3">
+      <div class="grid gap-3">
+        <div>
+          <label for="slides-theme-label" class="block text-xs font-medium text-heading mb-1">Theme name</label>
+          <input type="text" id="slides-theme-label" maxlength="40" placeholder="e.g. Acme brand"
+            class="w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand">
+        </div>
+        <div>
+          <label for="slides-theme-base" class="block text-xs font-medium text-heading mb-1">Start from</label>
+          <select id="slides-theme-base"
+            class="w-full rounded-base border border-default bg-neutral-primary-soft text-body text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand">
+            {% for p in slide_theme_presets %}<option value="{{ p.name }}" data-accent="{{ p.accent }}" data-dark="{{ p.dark }}" data-bg="{{ p.bg }}">{{ p.label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <label class="text-xs text-heading">Accent
+            <input type="color" id="slides-theme-c-accent" value="#B87333" class="mt-1 h-8 w-full rounded-base border border-default bg-neutral-primary-soft p-0.5 cursor-pointer"></label>
+          <label class="text-xs text-heading">Headings
+            <input type="color" id="slides-theme-c-dark" value="#1F3D30" class="mt-1 h-8 w-full rounded-base border border-default bg-neutral-primary-soft p-0.5 cursor-pointer"></label>
+          <label class="text-xs text-heading">Background
+            <input type="color" id="slides-theme-c-bg" value="#FBFAF6" class="mt-1 h-8 w-full rounded-base border border-default bg-neutral-primary-soft p-0.5 cursor-pointer"></label>
+        </div>
+        <p id="slides-theme-editor-err" class="hidden text-xs text-danger"></p>
+        <div class="flex items-center justify-end gap-2">
+          <button type="button" id="slides-theme-cancel" class="cursor-pointer rounded-base px-3 py-1.5 text-xs font-medium text-body hover:bg-neutral-tertiary">Cancel</button>
+          <button type="button" id="slides-theme-save" class="cursor-pointer rounded-base bg-brand text-on-brand px-3 py-1.5 text-xs font-medium hover:bg-brand-medium">Save theme</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -4524,6 +4567,11 @@
       }
       if (et === "slidedeck.pdf_pending") { setPdfBusy(true); return; }
       if (et === "slidedeck.pdf_ready") { setPdfBusy(false); if (data.download_url) triggerDownload(data.download_url); return; }
+      if (et === "slidedeck.user_themes") {
+        renderCustomThemes(data.themes || []);
+        if (data.error && typeof showToast === "function") showToast(data.error);
+        return;
+      }
     }
 
     // Header buttons
@@ -4536,20 +4584,100 @@
     // Theme picker modal
     var themeBtn = document.getElementById("slides-theme-btn");
     var themeModal = document.getElementById("slides-theme-modal");
+    var customList = document.getElementById("slides-theme-custom-list");
+    var customEmpty = document.getElementById("slides-theme-custom-empty");
     function openThemeModal() { if (themeModal) { themeModal.classList.remove("hidden"); themeModal.classList.add("flex"); } }
     function closeThemeModal() { if (themeModal) { themeModal.classList.add("hidden"); themeModal.classList.remove("flex"); } }
-    if (themeBtn) themeBtn.addEventListener("click", openThemeModal);
+    function applyTheme(name) {
+      if (deckId && name && ws) ws.send(JSON.stringify({ type: "chat.slides_set_theme", thread_id: activeThreadId, deck_id: deckId, theme: name }));
+      closeThemeModal();
+    }
+    function customSwatchHtml(t) {
+      return '<div class="relative">'
+        + '<button type="button" data-theme="' + t.id + '" class="slides-custom-swatch w-full cursor-pointer flex items-center gap-3 rounded-base border border-default p-2 pr-7 text-left hover:border-brand hover:bg-neutral-tertiary transition-colors">'
+        +   '<span class="flex shrink-0 overflow-hidden rounded-base border border-default" style="width:46px;height:32px">'
+        +     '<span style="flex:0 0 58%;background:' + t.bg + '"></span>'
+        +     '<span style="flex:0 0 24%;background:' + t.dark + '"></span>'
+        +     '<span style="flex:0 0 18%;background:' + t.accent + '"></span>'
+        +   '</span>'
+        +   '<span class="text-sm text-heading truncate">' + escapeHtml(t.label) + '</span>'
+        + '</button>'
+        + '<button type="button" data-del="' + t.id + '" title="Delete theme" aria-label="Delete theme" class="slides-theme-del absolute right-1 top-1 cursor-pointer p-1 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">'
+        +   '<svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>'
+        + '</button>'
+        + '</div>';
+    }
+    function renderCustomThemes(themes) {
+      themes = themes || [];
+      if (!customList) return;
+      customList.innerHTML = themes.map(customSwatchHtml).join("");
+      if (customEmpty) customEmpty.classList.toggle("hidden", themes.length > 0);
+      customList.querySelectorAll(".slides-custom-swatch").forEach(function(b) {
+        b.addEventListener("click", function() { applyTheme(b.dataset.theme); });
+      });
+      customList.querySelectorAll(".slides-theme-del").forEach(function(b) {
+        b.addEventListener("click", function(e) {
+          e.stopPropagation();
+          if (ws) ws.send(JSON.stringify({ type: "chat.slides_delete_theme", thread_id: activeThreadId, theme_id: b.dataset.del }));
+        });
+      });
+    }
     if (themeModal) {
       var themeClose = document.getElementById("slides-theme-close");
+      var editor = document.getElementById("slides-theme-editor");
+      var newBtn = document.getElementById("slides-theme-new");
+      var cancelBtn = document.getElementById("slides-theme-cancel");
+      var saveThemeBtn = document.getElementById("slides-theme-save");
+      var labelInput = document.getElementById("slides-theme-label");
+      var baseSel = document.getElementById("slides-theme-base");
+      var cAccent = document.getElementById("slides-theme-c-accent");
+      var cDark = document.getElementById("slides-theme-c-dark");
+      var cBg = document.getElementById("slides-theme-c-bg");
+      var editorErr = document.getElementById("slides-theme-editor-err");
+
+      if (themeBtn) themeBtn.addEventListener("click", openThemeModal);
       if (themeClose) themeClose.addEventListener("click", closeThemeModal);
       themeModal.addEventListener("click", function(e) { if (e.target === themeModal) closeThemeModal(); });
       themeModal.querySelectorAll(".slides-theme-swatch").forEach(function(sw) {
-        sw.addEventListener("click", function() {
-          var name = sw.dataset.theme;
-          if (deckId && name && ws) ws.send(JSON.stringify({ type: "chat.slides_set_theme", thread_id: activeThreadId, deck_id: deckId, theme: name }));
-          closeThemeModal();
-        });
+        sw.addEventListener("click", function() { applyTheme(sw.dataset.theme); });
       });
+
+      function prefillFromBase() {
+        var opt = baseSel && baseSel.options[baseSel.selectedIndex];
+        if (!opt) return;
+        if (opt.dataset.accent) cAccent.value = opt.dataset.accent;
+        if (opt.dataset.dark) cDark.value = opt.dataset.dark;
+        if (opt.dataset.bg) cBg.value = opt.dataset.bg;
+      }
+      function showEditorErr(m) { if (editorErr) { editorErr.textContent = m; editorErr.classList.remove("hidden"); } }
+      function openEditor() {
+        if (!editor) return;
+        editor.classList.remove("hidden");
+        if (labelInput) labelInput.value = "";
+        if (editorErr) editorErr.classList.add("hidden");
+        prefillFromBase();
+        if (labelInput) labelInput.focus();
+      }
+      function closeEditor() { if (editor) editor.classList.add("hidden"); }
+      if (newBtn) newBtn.addEventListener("click", function() {
+        if (editor && editor.classList.contains("hidden")) openEditor(); else closeEditor();
+      });
+      if (cancelBtn) cancelBtn.addEventListener("click", closeEditor);
+      if (baseSel) baseSel.addEventListener("change", prefillFromBase);
+      if (saveThemeBtn) saveThemeBtn.addEventListener("click", function() {
+        var label = (labelInput.value || "").trim();
+        if (!label) { showEditorErr("Give the theme a name."); return; }
+        if (ws) ws.send(JSON.stringify({ type: "chat.slides_save_theme", thread_id: activeThreadId, theme: {
+          label: label, base: baseSel.value,
+          colors: { accent1: cAccent.value, dk2: cDark.value, lt1: cBg.value },
+        }}));
+        closeEditor();
+      });
+
+      // Initial custom themes (server-rendered JSON island).
+      var initialThemes = [];
+      try { initialThemes = JSON.parse(document.getElementById("slides-user-themes-data").textContent || "[]"); } catch (e) {}
+      renderCustomThemes(initialThemes);
     }
     var sendBtn = document.getElementById("slides-comments-send");
     if (sendBtn) sendBtn.addEventListener("click", function() { if (deckId && comments.length) { ws.send(JSON.stringify({ type: "chat.slides_comments_send", thread_id: activeThreadId, deck_id: deckId })); comments = []; openComments = 0; updateCommentBar(); renderFilmstrip(); } });

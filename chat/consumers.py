@@ -647,7 +647,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             deck = self._owned_deck(thread_id, deck_id)
             if deck is None:
                 return None
-            override = theme_mod.preset_theme_override(name)
+            override = theme_mod.resolve_named_slide_theme(name, self.user)
             if override is None:
                 return None
             content = deck.content or {}
@@ -675,6 +675,62 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "slide_ids": res["slide_ids"],
                 "changed_slide_ids": res["slide_ids"],
             }))
+
+    async def _send_user_themes(self, *, error: str = ""):
+        """Push the user's current custom-theme swatch list to the client."""
+        def _load():
+            from chat.slides import theme as theme_mod
+            return theme_mod.user_slide_theme_swatches(self.user)
+
+        themes = await database_sync_to_async(_load)()
+        payload = {"event_type": "slidedeck.user_themes", "themes": themes}
+        if error:
+            payload["error"] = error
+        await self.send(text_data=json.dumps(payload))
+
+    async def _handle_slides_save_theme(self, data):
+        """Save a user's custom slide theme (label + base preset + 3 colours)."""
+        def _save():
+            from accounts.services import update_user_preferences
+            from chat.slides import theme as theme_mod
+
+            clean, err = theme_mod.validate_custom_slide_theme(data.get("theme") or {})
+            if err:
+                return err
+            clean["id"] = theme_mod.new_custom_theme_id()
+
+            def mutate(prefs):
+                themes = prefs.get("slide_themes")
+                if not isinstance(themes, list):
+                    themes = []
+                themes = [t for t in themes if isinstance(t, dict)][: theme_mod.MAX_USER_SLIDE_THEMES - 1]
+                themes.append(clean)
+                prefs["slide_themes"] = themes
+
+            update_user_preferences(self.user, mutate)
+            return None
+
+        error = await database_sync_to_async(_save)()
+        await self._send_user_themes(error=error or "")
+
+    async def _handle_slides_delete_theme(self, data):
+        """Delete one of the user's custom slide themes by id."""
+        theme_id = data.get("theme_id")
+
+        def _delete():
+            from accounts.services import update_user_preferences
+
+            def mutate(prefs):
+                themes = prefs.get("slide_themes")
+                if isinstance(themes, list):
+                    prefs["slide_themes"] = [
+                        t for t in themes if not (isinstance(t, dict) and t.get("id") == theme_id)
+                    ]
+
+            update_user_preferences(self.user, mutate)
+
+        await database_sync_to_async(_delete)()
+        await self._send_user_themes()
 
     @database_sync_to_async
     def _resolve_preferences(self):
@@ -811,6 +867,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_slides_export_pdf(data)
         elif msg_type == "chat.slides_set_theme":
             await self._handle_slides_set_theme(data)
+        elif msg_type == "chat.slides_save_theme":
+            await self._handle_slides_save_theme(data)
+        elif msg_type == "chat.slides_delete_theme":
+            await self._handle_slides_delete_theme(data)
         elif msg_type == "chat.stop":
             await self._handle_stop(data)
         elif msg_type == "pong":
