@@ -116,6 +116,22 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_stacked_bar_charts_render(self):
+        # A stacked column/bar (composition of a total) must render; the stacked
+        # axis tops out above the largest per-category SUM, so a tall stack of two
+        # large series still fits (differs from grouped, where the axis tops the
+        # single max). Just assert both orientations draw multi-colour bars.
+        for kind in ("column", "bar"):
+            deck = self._deck([{"elements": [
+                {"type": "chart", "x": 48, "y": 80, "w": 520, "h": 300, "chart": kind,
+                 "stacked": True, "title": "Segments", "categories": ["Q1", "Q2", "Q3", "Q4"],
+                 "series": [{"name": "HW", "values": [40, 45, 50, 55]},
+                            {"name": "SW", "values": [20, 25, 28, 32]},
+                            {"name": "Svc", "values": [10, 12, 14, 16]}]},
+            ]}])
+            png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+            self.assertGreater(len(_colours(_open(png))), 4, f"stacked {kind} drew nothing")
+
     def _png_bytes(self, color=(40, 90, 140), size=(200, 120)):
         buf = BytesIO()
         Image.new("RGB", size, color).save(buf, "PNG")

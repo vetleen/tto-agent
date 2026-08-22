@@ -189,6 +189,9 @@ class ChartElement(_Strict):
     title: str = ""
     legend: bool = True
     value_labels: bool = False
+    # Stack the series into one bar per category (a composition of a total)
+    # instead of grouping them side by side. Only meaningful for column/bar/area.
+    stacked: bool = False
     colors: list[str] | None = None  # override theme.colors.chart_ramp
 
 

@@ -450,8 +450,17 @@ def _add_chart(slide, el, theme, warnings):
         "area": XL_CHART_TYPE.AREA,
         "pie": XL_CHART_TYPE.PIE,
     }
+    # Stacked variants (a composition of a total). Only column/bar/area stack.
+    stacked_map = {
+        "column": XL_CHART_TYPE.COLUMN_STACKED,
+        "bar": XL_CHART_TYPE.BAR_STACKED,
+        "area": XL_CHART_TYPE.AREA_STACKED,
+    }
     kind = el.get("chart", "column")
-    xl = kind_map.get(kind, XL_CHART_TYPE.COLUMN_CLUSTERED)
+    if el.get("stacked") and kind in stacked_map:
+        xl = stacked_map[kind]
+    else:
+        xl = kind_map.get(kind, XL_CHART_TYPE.COLUMN_CLUSTERED)
     series = el.get("series") or []
     if not series:
         warnings.append("empty chart skipped")

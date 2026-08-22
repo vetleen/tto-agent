@@ -598,16 +598,17 @@ def _draw_chart(draw, theme, el, scale):
         top += 22 * scale
     show_legend = (kind == "pie" or len(series) > 1) and el.get("legend", True)
     legend_h = 22 * scale if show_legend else 0
+    stacked = bool(el.get("stacked"))
 
     plot = (x + pad, top, w - 2 * pad, y + h - pad - legend_h - top)  # x,y,w,h
     if kind == "pie":
         _chart_pie(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
     elif kind == "bar":
-        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"))
+        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked)
     elif kind in ("line", "area"):
         _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, kind == "area", scale)
     else:
-        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, False, el.get("value_labels"))
+        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, False, el.get("value_labels"), stacked)
 
     if show_legend:
         names = cats if kind == "pie" else [s.get("name", "") for s in series]
@@ -622,14 +623,30 @@ def _val_axis(series):
     return vmin if vmin < 0 else 0.0, top
 
 
-def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal, value_labels):
+def _stacked_axis(series, n_cat):
+    """(lo, hi) for a stacked bar chart — hi is a nice tick above the largest
+    per-category positive sum (stacking treats negatives as 0)."""
+    tot_max = 0.0
+    for ci in range(n_cat):
+        tot = 0.0
+        for s in series:
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            if isinstance(v, (int, float)) and v > 0:
+                tot += v
+        tot_max = max(tot_max, tot)
+    top, _step = _nice_ticks(tot_max if tot_max > 0 else 1.0)
+    return 0.0, top
+
+
+def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal, value_labels, stacked=False):
     px, py, pw, ph = plot
-    lo, hi = _val_axis(series)
-    span = (hi - lo) or 1.0
-    lbl = fnt(9)
     n_cat, n_ser = len(cats), len(series)
     if n_cat == 0 or n_ser == 0:
         return
+    lo, hi = _stacked_axis(series, n_cat) if stacked else _val_axis(series)
+    span = (hi - lo) or 1.0
+    lbl = fnt(9)
     _, step = _nice_ticks(hi if hi > 0 else 1.0)
     val_gutter = 26   # value-axis labels
     cat_gutter = 30   # category-axis labels
@@ -658,18 +675,38 @@ def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal
         # PowerPoint bar charts put the first category at the bottom.
         row = (n_cat - 1 - ci) if horizontal else ci
         slot = (ah if horizontal else aw) / n_cat
-        for si, s in enumerate(series):
-            vals = s.get("values") or []
-            v = vals[ci] if ci < len(vals) else 0
-            frac = (v - lo) / span
-            color = ramp[si % len(ramp)]
-            thick = slot * 0.7 / n_ser
-            if horizontal:
-                by = ay + row * slot + slot * 0.15 + si * thick
-                draw.rectangle([ax, by, ax + frac * aw, by + thick], fill=color)
-            else:
-                bx = ax + row * slot + slot * 0.15 + si * thick
-                draw.rectangle([bx, ay + ah - frac * ah, bx + thick, ay + ah], fill=color)
+        if stacked:
+            # One full bar per category; series segments stack end to end.
+            thick = slot * 0.7
+            base = slot * 0.15
+            cum = 0.0
+            for si, s in enumerate(series):
+                vals = s.get("values") or []
+                v = vals[ci] if ci < len(vals) else 0
+                if not isinstance(v, (int, float)) or v <= 0:
+                    continue
+                f0, f1 = (cum - lo) / span, (cum + v - lo) / span
+                color = ramp[si % len(ramp)]
+                if horizontal:
+                    by = ay + row * slot + base
+                    draw.rectangle([ax + f0 * aw, by, ax + f1 * aw, by + thick], fill=color)
+                else:
+                    bx = ax + row * slot + base
+                    draw.rectangle([bx, ay + ah - f1 * ah, bx + thick, ay + ah - f0 * ah], fill=color)
+                cum += v
+        else:
+            for si, s in enumerate(series):
+                vals = s.get("values") or []
+                v = vals[ci] if ci < len(vals) else 0
+                frac = (v - lo) / span
+                color = ramp[si % len(ramp)]
+                thick = slot * 0.7 / n_ser
+                if horizontal:
+                    by = ay + row * slot + slot * 0.15 + si * thick
+                    draw.rectangle([ax, by, ax + frac * aw, by + thick], fill=color)
+                else:
+                    bx = ax + row * slot + slot * 0.15 + si * thick
+                    draw.rectangle([bx, ay + ah - frac * ah, bx + thick, ay + ah], fill=color)
         # category label
         f = fnt(9)
         if horizontal:
