@@ -1116,7 +1116,9 @@ def _chart_pie(draw, plot, series, cats, ramp, fnt, txt, value_labels,
             ly = cy + lab_r * math.sin(mid)
             pct = f"{v / total * 100:.0f}%"
             tw = f.getlength(pct)
-            draw.text((lx - tw / 2, ly - 6), pct, font=f, fill=(255, 255, 255))
+            # keep the label within the chart box (avoid clipping at the edges)
+            tx = max(px, min(px + pw - tw, lx - tw / 2))
+            draw.text((tx, ly - 6), pct, font=f, fill=(255, 255, 255))
         start += sweep
     if hole and hole > 0:
         hr = (d / 2) * hole
