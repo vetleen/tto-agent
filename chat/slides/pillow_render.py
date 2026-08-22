@@ -606,17 +606,20 @@ def _draw_chart(draw, theme, el, scale):
         "total": _rgb(theme, "dk2", (50, 50, 50)),
     }
 
+    pt_names = el.get("point_colors")
+    pt_colors = [_rgb(theme, c, ramp[0]) for c in pt_names] if pt_names else None
+
     plot = (x + pad, top, w - 2 * pad, y + h - pad - legend_h - top)  # x,y,w,h
     if kind == "pie":
         _chart_pie(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
     elif kind == "waterfall":
         _chart_waterfall(draw, plot, series[0], cats, el.get("totals") or [], wf_colors, fnt, txt, axis, grid, el.get("value_labels"))
     elif kind == "bar":
-        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked)
+        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked, pt_colors)
     elif kind in ("line", "area"):
         _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, kind == "area", scale)
     else:
-        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, False, el.get("value_labels"), stacked)
+        _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, False, el.get("value_labels"), stacked, pt_colors)
 
     if show_legend:
         if kind == "waterfall":
@@ -653,7 +656,7 @@ def _stacked_axis(series, n_cat):
     return 0.0, top
 
 
-def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal, value_labels, stacked=False):
+def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal, value_labels, stacked=False, point_colors=None):
     px, py, pw, ph = plot
     n_cat, n_ser = len(cats), len(series)
     if n_cat == 0 or n_ser == 0:
@@ -713,7 +716,11 @@ def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal
                 vals = s.get("values") or []
                 v = vals[ci] if ci < len(vals) else 0
                 frac = (v - lo) / span
-                color = ramp[si % len(ramp)]
+                # Single-series bar highlighting: colour each bar by category.
+                if point_colors and n_ser == 1 and ci < len(point_colors):
+                    color = point_colors[ci]
+                else:
+                    color = ramp[si % len(ramp)]
                 thick = slot * 0.7 / n_ser
                 if horizontal:
                     by = ay + row * slot + slot * 0.15 + si * thick

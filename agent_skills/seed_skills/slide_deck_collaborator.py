@@ -86,6 +86,10 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    theme automatically. Add `"stacked":true` (column/bar/area) to stack the series into one bar
    per category — use it for a **composition of a total** (e.g. revenue split by segment over
    time), not for comparing independent metrics.
+   **Highlight one bar** (the consulting "grey everything, accent the bar that matters" move): a
+   SINGLE-series column/bar with `"point_colors"` = one colour per category, e.g.
+   `"point_colors":["accent3","accent3","accent1","accent3"]` accents the 3rd bar. Do NOT fake
+   this by splitting the data into a second series — use `point_colors`.
    **`waterfall`** (a bridge — how a starting figure grows/shrinks to an ending one): ONE series
    of values, plus `"totals"` = the category indices drawn as absolute bars from zero (a base or
    final subtotal); every other category is a delta that floats (green up / red down). Values at

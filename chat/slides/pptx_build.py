@@ -574,6 +574,17 @@ def _add_chart(slide, el, theme, warnings):
         except Exception:  # noqa: BLE001 — colour styling is best-effort
             logger.debug("chart colour styling failed", exc_info=True)
 
+    # Per-bar highlighting: colour each point of a single-series column/bar.
+    pt_colors = _chart_ramp_rgb(theme, el.get("point_colors") or [])
+    if pt_colors and kind in ("column", "bar") and len(series) == 1:
+        try:
+            pts = chart.plots[0].series[0].points
+            for i, pt in enumerate(pts):
+                pt.format.fill.solid()
+                pt.format.fill.fore_color.rgb = pt_colors[i % len(pt_colors)]
+        except Exception:  # noqa: BLE001 — colour styling is best-effort
+            logger.debug("per-point chart colour failed", exc_info=True)
+
     if el.get("value_labels"):
         try:
             chart.plots[0].has_data_labels = True

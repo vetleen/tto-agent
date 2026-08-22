@@ -198,6 +198,11 @@ class ChartElement(_Strict):
     # Empty -> the first category is treated as the base.
     totals: list[int] = Field(default_factory=list)
     colors: list[str] | None = None  # override theme.colors.chart_ramp
+    # Per-CATEGORY colours for a SINGLE-series column/bar chart — colour bar i
+    # with point_colors[i]. The consulting "grey everything, accent the one bar
+    # that matters" device; short lists fall back to the series colour. Ignored
+    # for multi-series charts (those colour per series).
+    point_colors: list[str] | None = None
 
 
 Element = Annotated[

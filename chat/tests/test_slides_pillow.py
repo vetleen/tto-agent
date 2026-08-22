@@ -116,6 +116,20 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_per_bar_point_colours_render(self):
+        # Single-series column with one accented bar (the rest muted) must render
+        # with more than one bar colour — the consulting highlight device.
+        deck = self._deck([{"elements": [
+            {"type": "chart", "x": 48, "y": 80, "w": 520, "h": 300, "chart": "column",
+             "title": "Segments", "categories": ["Long", "Reg", "Last", "Spec"],
+             "series": [{"name": "Growth", "values": [4, 6, 9, 3]}],
+             "point_colors": ["accent3", "accent3", "accent1", "accent3"]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        # both the muted (accent3) and the accent (accent1) colours are present
+        cols = _colours(_open(png))
+        self.assertGreater(len(cols), 3)
+
     def test_waterfall_chart_renders(self):
         deck = self._deck([{"elements": [
             {"type": "chart", "x": 48, "y": 80, "w": 840, "h": 320, "chart": "waterfall",
