@@ -4641,6 +4641,12 @@
       themeModal.querySelectorAll(".slides-theme-swatch").forEach(function(sw) {
         sw.addEventListener("click", function() { applyTheme(sw.dataset.theme); });
       });
+      // Escape closes the editor first (if open), else the modal — matching the lightbox.
+      document.addEventListener("keydown", function(e) {
+        if (e.key !== "Escape" || themeModal.classList.contains("hidden")) return;
+        if (editor && !editor.classList.contains("hidden")) editor.classList.add("hidden");
+        else closeThemeModal();
+      });
 
       function prefillFromBase() {
         var opt = baseSel && baseSel.options[baseSel.selectedIndex];

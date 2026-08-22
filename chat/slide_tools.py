@@ -84,7 +84,11 @@ class DeleteDeckInput(ReasonBaseModel):
 
 class AddSlideInput(ReasonBaseModel):
     layout: str = Field(
-        description="Layout id to seed (title/section/bullets/two_col/image_right/table/metric/chart/photo/quote/closing/blank).",
+        description=(
+            "Layout id to seed: title, section, bullets, two_col, image_right, table, "
+            "metric, chart, photo, agenda, exec_summary, kpi_row, process, timeline, "
+            "matrix_2x2, comparison, team, quote, closing, blank."
+        ),
     )
     position: int = Field(
         default=-1,

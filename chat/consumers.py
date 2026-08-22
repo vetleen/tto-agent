@@ -703,7 +703,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 themes = prefs.get("slide_themes")
                 if not isinstance(themes, list):
                     themes = []
-                themes = [t for t in themes if isinstance(t, dict)][: theme_mod.MAX_USER_SLIDE_THEMES - 1]
+                themes = [t for t in themes if isinstance(t, dict)]
+                # At the cap, drop the oldest so the newest is always kept.
+                themes = themes[-(theme_mod.MAX_USER_SLIDE_THEMES - 1):]
                 themes.append(clean)
                 prefs["slide_themes"] = themes
 
