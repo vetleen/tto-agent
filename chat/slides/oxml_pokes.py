@@ -71,6 +71,39 @@ def set_no_bullet(paragraph) -> None:
     pPr.append(pPr.makeelement(qn("a:buNone"), {}))
 
 
+def set_shape_fill_alpha(shape, opacity: float) -> None:
+    """Make a solid-filled shape translucent (``<a:alpha>`` on its fill colour).
+
+    ``opacity`` 0..1. python-pptx has no fill-transparency API. Alpha is in
+    thousandths of a percent (100% opaque = 100000).
+    """
+    val = max(0, min(100000, int(round((opacity or 0) * 100000))))
+    spPr = shape._element.spPr
+    fill = spPr.find(qn("a:solidFill"))
+    if fill is None:
+        return
+    clr = fill.find(qn("a:srgbClr"))
+    if clr is None:
+        clr = fill.find(qn("a:schemeClr"))
+    if clr is None:
+        return
+    for ex in clr.findall(qn("a:alpha")):
+        clr.remove(ex)
+    clr.append(clr.makeelement(qn("a:alpha"), {"val": str(val)}))
+
+
+def set_picture_alpha(picture, opacity: float) -> None:
+    """Fade a picture (``<a:alphaModFix>`` on its blip). ``opacity`` 0..1."""
+    amt = max(0, min(100000, int(round((opacity or 0) * 100000))))
+    blip = picture._element.find(qn("p:blipFill"))
+    blip = blip.find(qn("a:blip")) if blip is not None else None
+    if blip is None:
+        return
+    for ex in blip.findall(qn("a:alphaModFix")):
+        blip.remove(ex)
+    blip.append(blip.makeelement(qn("a:alphaModFix"), {"amt": str(amt)}))
+
+
 def set_connector_arrows(line_format, arrow: str) -> None:
     """Add arrowheads to a connector's line (``a:headEnd`` / ``a:tailEnd``).
 

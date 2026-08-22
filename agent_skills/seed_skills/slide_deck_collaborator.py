@@ -67,8 +67,13 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    - Or a themed box: `{"type":"shape","box":"callout","x":..,"y":..,"w":..,"h":..,"text":{...}}` —
      boxes: `callout, panel, pill, arrow_r, arrow_l`.
    - Add a border with `"line":{"color":"dk2","w":1,"dash":"dash"}`.
-3. **image** — `{"type":"image","x":600,"y":120,"w":300,"h":200,"token":"[[image:UUID]]","fit":"cover"}`.
-   The token comes from an image tool; `fit` is `contain`/`cover`/`stretch`.
+3. **image** — `{"type":"image","x":600,"y":120,"w":300,"h":200,"token":"[[image:UUID]]","fit":"cover","opacity":1}`.
+   The token comes from an image tool; `fit` is `contain`/`cover`/`stretch`; `opacity` 0–1 fades it.
+   **Full-bleed background photo:** set it on the SLIDE, not as an element:
+   `{"id":"s1","bg_image":"[[image:UUID]]","bg_scrim":{"color":"dk1","opacity":0.5}, ...}` — the
+   image fills the slide behind everything and the `bg_scrim` (a translucent colour wash) keeps
+   text legible. Use light text (`lt1`/`lt2`) over a dark scrim. Shapes also take `opacity` for a
+   translucent panel behind text.
 4. **table** — `{"type":"table","x":48,"y":130,"w":864,"h":260,"header":true,"banding":true,"col_widths":[288,288,288],"rows":[[{"t":"Stage"},{"t":"Count"},{"t":"Value"}],[{"t":"Filed"},{"t":"7"},{"t":"$3.4M"}]]}`.
    Cell: `{"t":"text","class":"data","b":true,"size":11,"color":"accent1","fill":"lt2","align":"center"}`
    (`size` is optional — use a smaller point size to fit a dense table).
@@ -81,7 +86,7 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    automatically. Prefer a chart over a wall of numbers when you have a trend or comparison.
 
 ### Layouts (for `slides_add_slide`)
-`title, section, bullets, two_col, image_right, table, metric, chart, quote, closing, blank`.
+`title, section, bullets, two_col, image_right, table, metric, chart, photo, quote, closing, blank`.
 Seed a slide from one of these, then edit its placeholder text.
 
 ## Rules

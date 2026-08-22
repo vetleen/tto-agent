@@ -116,6 +116,37 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def _png_bytes(self, color=(40, 90, 140), size=(200, 120)):
+        buf = BytesIO()
+        Image.new("RGB", size, color).save(buf, "PNG")
+        return buf.getvalue()
+
+    def test_real_image_and_opacity_render(self):
+        img_bytes = self._png_bytes()
+        resolver = lambda t: (img_bytes, "image/png") if "image:" in t else None
+        tok = "[[image:11111111-1111-1111-1111-111111111111]]"
+        deck = self._deck([{"elements": [
+            {"type": "image", "x": 40, "y": 40, "w": 300, "h": 200, "token": tok, "fit": "cover"},
+            {"type": "image", "x": 380, "y": 40, "w": 300, "h": 200, "token": tok, "fit": "cover", "opacity": 0.3},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96, image_resolver=resolver)
+        img = _open(png)
+        # the opaque image contributes its blue; something beyond the background drew
+        self.assertGreater(len(_colours(img)), 2)
+
+    def test_background_image_and_scrim(self):
+        img_bytes = self._png_bytes(color=(200, 200, 200))
+        resolver = lambda t: (img_bytes, "image/png") if "image:" in t else None
+        tok = "[[image:11111111-1111-1111-1111-111111111111]]"
+        plain = self._deck([{"bg_image": tok, "elements": []}])
+        scrimmed = self._deck([{"bg_image": tok, "bg_scrim": {"color": "dk1", "opacity": 0.6}, "elements": []}])
+        p_png, *_ = pillow_render.render_slide_png(plain, 0, dpi=72, image_resolver=resolver)
+        s_png, *_ = pillow_render.render_slide_png(scrimmed, 0, dpi=72, image_resolver=resolver)
+        # the scrim darkens the (light-grey) background image noticeably
+        p_corner = sum(_open(p_png).getpixel((5, 5)))
+        s_corner = sum(_open(s_png).getpixel((5, 5)))
+        self.assertLess(s_corner, p_corner - 100)
+
     def test_rotated_element_renders(self):
         deck = self._deck([{"elements": [
             {"type": "shape", "x": 300, "y": 200, "w": 200, "h": 100, "shape": "rect",

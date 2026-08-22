@@ -65,6 +65,22 @@ class BuildDeckTests(SimpleTestCase):
     def test_no_warnings(self):
         self.assertEqual(self.warnings, [])
 
+    def test_background_image_scrim_and_opacity(self):
+        tok = "[[image:11111111-1111-1111-1111-111111111111]]"
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1",
+            "bg_image": tok, "bg_scrim": {"color": "dk1", "opacity": 0.5}, "elements": [
+                {"id": "i1", "type": "image", "x": 40, "y": 40, "w": 200, "h": 120,
+                 "token": tok, "opacity": 0.3},
+                {"id": "sh1", "type": "shape", "x": 300, "y": 40, "w": 200, "h": 120,
+                 "shape": "rect", "fill": "accent1", "opacity": 0.4},
+            ]}]}
+        data, warns = build_deck_pptx(deck, image_resolver=_resolver)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = "".join(z.read(n).decode("utf8", "ignore") for n in z.namelist() if n.endswith(".xml"))
+        self.assertIn("alphaModFix", xml)   # picture opacity (image + bg)
+        self.assertIn("a:alpha", xml)       # shape fill opacity (shape + scrim)
+        self.assertEqual(warns, [])
+
     def test_chart_creates_native_chart_part(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "c1", "type": "chart", "x": 48, "y": 80, "w": 500, "h": 300, "chart": "column",

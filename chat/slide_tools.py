@@ -84,7 +84,7 @@ class DeleteDeckInput(ReasonBaseModel):
 
 class AddSlideInput(ReasonBaseModel):
     layout: str = Field(
-        description="Layout id to seed (title/section/bullets/two_col/image_right/table/metric/chart/quote/closing/blank).",
+        description="Layout id to seed (title/section/bullets/two_col/image_right/table/metric/chart/photo/quote/closing/blank).",
     )
     position: int = Field(
         default=-1,

@@ -494,6 +494,28 @@ def _draw_table(draw, theme, el, scale):
 # ---------------------------------------------------------------------------
 # Images
 # ---------------------------------------------------------------------------
+def _cover_resize(src, W, H):
+    """Resize + centre-crop ``src`` to exactly cover ``W×H`` (preserves mode)."""
+    sw, sh = src.size
+    if not sw or not sh:
+        return src.resize((max(1, W), max(1, H)))
+    s = max(W / sw, H / sh)
+    nw, nh = max(1, int(sw * s)), max(1, int(sh * s))
+    resized = src.resize((nw, nh))
+    left, top = (nw - W) // 2, (nh - H) // 2
+    return resized.crop((left, top, left + W, top + H))
+
+
+def _apply_opacity(im, opacity):
+    """Fade an RGBA image by scaling its alpha channel (None/1.0 = unchanged)."""
+    if opacity is None or opacity >= 1:
+        return im
+    op = max(0.0, min(1.0, float(opacity)))
+    im = im.convert("RGBA")
+    im.putalpha(im.split()[3].point(lambda a: int(a * op)))
+    return im
+
+
 def _draw_image(img, theme, el, scale, resolver):
     x, y, w, h = int(el["x"] * scale), int(el["y"] * scale), int(el["w"] * scale), int(el["h"] * scale)
     token = el.get("token", "")
@@ -506,25 +528,20 @@ def _draw_image(img, theme, el, scale, resolver):
     except Exception:  # noqa: BLE001
         _draw_placeholder(img, x, y, w, h, empty=False, scale=scale, theme=theme)
         return
-    fit = el.get("fit", "contain")
-    if fit == "stretch":
-        img.paste(src.resize((w, h)), (x, y), src.resize((w, h)))
-        return
     sw, sh = src.size
     if not sw or not sh:
         return
-    if fit == "cover":
-        s = max(w / sw, h / sh)
-        nw, nh = int(sw * s), int(sh * s)
-        resized = src.resize((nw, nh))
-        left, top = (nw - w) // 2, (nh - h) // 2
-        cropped = resized.crop((left, top, left + w, top + h))
-        img.paste(cropped, (x, y), cropped)
+    fit = el.get("fit", "contain")
+    if fit == "stretch":
+        placed, px, py = src.resize((w, h)), x, y
+    elif fit == "cover":
+        placed, px, py = _cover_resize(src, w, h), x, y
     else:  # contain
         s = min(w / sw, h / sh)
         nw, nh = max(1, int(sw * s)), max(1, int(sh * s))
-        resized = src.resize((nw, nh))
-        img.paste(resized, (x + (w - nw) // 2, y + (h - nh) // 2), resized)
+        placed, px, py = src.resize((nw, nh)), x + (w - nw) // 2, y + (h - nh) // 2
+    placed = _apply_opacity(placed, el.get("opacity"))
+    img.paste(placed, (px, py), placed)
 
 
 def _draw_placeholder(img, x, y, w, h, *, empty, scale, theme):
@@ -777,7 +794,14 @@ def _draw_element(draw, img, theme, el, scale, resolver):
         box = (el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale)
         _draw_text_frame(draw, theme, frame, box, scale)
     elif etype == "shape":
-        _draw_shape(draw, theme, el, scale)
+        op = el.get("opacity")
+        if op is not None and op < 1:  # translucent panel: draw on a layer, fade, composite
+            layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            _draw_shape(ImageDraw.Draw(layer), theme, el, scale)
+            layer = _apply_opacity(layer, op)
+            img.paste(layer, (0, 0), layer)
+        else:
+            _draw_shape(draw, theme, el, scale)
     elif etype == "image":
         _draw_image(img, theme, el, scale, resolver)
     elif etype == "table":
@@ -823,6 +847,23 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
 
     bg = _rgb(theme, slide.get("bg") or "lt1", (255, 255, 255))
     img = Image.new("RGB", (W, H), bg)
+
+    # Full-bleed background image (drawn behind everything), then an optional
+    # scrim — a translucent colour wash so text stays legible over the photo.
+    bgtok = slide.get("bg_image")
+    if bgtok and image_resolver:
+        data = image_resolver(bgtok)
+        if data:
+            try:
+                img.paste(_cover_resize(Image.open(BytesIO(data[0])).convert("RGB"), W, H), (0, 0))
+            except Exception:  # noqa: BLE001
+                logger.warning("pillow render: bg image failed", exc_info=True)
+    scrim = slide.get("bg_scrim")
+    if scrim:
+        col = _rgb(theme, scrim.get("color", "dk1"), (0, 0, 0))
+        op = max(0.0, min(1.0, float(scrim.get("opacity", 0.4))))
+        img = Image.blend(img, Image.new("RGB", (W, H), col), op)
+
     draw = ImageDraw.Draw(img)
 
     for el in slide.get("elements") or []:

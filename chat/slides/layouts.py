@@ -131,6 +131,17 @@ _LAYOUTS: dict[str, dict] = {
             ]),
         ],
     },
+    "photo": {
+        "name": "Photo cover",
+        "skip_footer": True,
+        "bg": "dk2",
+        "bg_image": "",  # set a "[[image:UUID]]" token to fill the slide with a photo
+        "bg_scrim": {"color": "dk1", "opacity": 0.45},
+        "elements": [
+            _text(_ML, 220, _MW, 90, "headline", [_p("Headline over a photo", color="lt1", align="center")], valign="bottom"),
+            _text(_ML, 320, _MW, 40, "subhead", [_p("Subtitle", color="lt2", align="center")]),
+        ],
+    },
     "quote": {
         "name": "Quote",
         "bg": "lt2",

@@ -218,6 +218,9 @@ def _add_shape(slide, el, theme, warnings):
     if fill_v is not None:
         shp.fill.solid()
         _apply_color(shp.fill.fore_color, theme, fill_v)
+        opacity = el.get("opacity")
+        if opacity is not None and opacity < 1:
+            pokes.set_shape_fill_alpha(shp, opacity)
     else:
         shp.fill.background()
 
@@ -305,29 +308,29 @@ def _add_image(slide, el, theme, resolver, warnings):
     stream = BytesIO(img_bytes)
     fit = el.get("fit", "contain")
     if fit == "stretch":
-        slide.shapes.add_picture(stream, x, y, width=w, height=h)
-        return
-    pic = slide.shapes.add_picture(stream, x, y)  # native size first
-    nat_w, nat_h = pic.width, pic.height
-    if not nat_w or not nat_h:
-        return
-    box_w, box_h = int(w), int(h)
-    if fit == "cover":
-        scale = max(box_w / nat_w, box_h / nat_h)
-        disp_w, disp_h = nat_w * scale, nat_h * scale
-        crop_x = (disp_w - box_w) / disp_w / 2 if disp_w > box_w else 0
-        crop_y = (disp_h - box_h) / disp_h / 2 if disp_h > box_h else 0
-        pic.crop_left = crop_x
-        pic.crop_right = crop_x
-        pic.crop_top = crop_y
-        pic.crop_bottom = crop_y
-        pic.left, pic.top, pic.width, pic.height = int(x), int(y), box_w, box_h
-    else:  # contain
-        scale = min(box_w / nat_w, box_h / nat_h)
-        new_w, new_h = int(nat_w * scale), int(nat_h * scale)
-        pic.width, pic.height = new_w, new_h
-        pic.left = int(x) + (box_w - new_w) // 2
-        pic.top = int(y) + (box_h - new_h) // 2
+        pic = slide.shapes.add_picture(stream, x, y, width=w, height=h)
+    else:
+        pic = slide.shapes.add_picture(stream, x, y)  # native size first
+        nat_w, nat_h = pic.width, pic.height
+        if nat_w and nat_h:
+            box_w, box_h = int(w), int(h)
+            if fit == "cover":
+                scale = max(box_w / nat_w, box_h / nat_h)
+                disp_w, disp_h = nat_w * scale, nat_h * scale
+                crop_x = (disp_w - box_w) / disp_w / 2 if disp_w > box_w else 0
+                crop_y = (disp_h - box_h) / disp_h / 2 if disp_h > box_h else 0
+                pic.crop_left = pic.crop_right = crop_x
+                pic.crop_top = pic.crop_bottom = crop_y
+                pic.left, pic.top, pic.width, pic.height = int(x), int(y), box_w, box_h
+            else:  # contain
+                scale = min(box_w / nat_w, box_h / nat_h)
+                new_w, new_h = int(nat_w * scale), int(nat_h * scale)
+                pic.width, pic.height = new_w, new_h
+                pic.left = int(x) + (box_w - new_w) // 2
+                pic.top = int(y) + (box_h - new_h) // 2
+    opacity = el.get("opacity")
+    if opacity is not None and opacity < 1:
+        pokes.set_picture_alpha(pic, opacity)
 
 
 def _add_table(slide, el, theme, warnings):
@@ -535,6 +538,36 @@ def _apply_slide_bg(slide, theme, value):
     _apply_color(fill.fore_color, theme, value)
 
 
+def _apply_bg_image(slide, sdict, theme, resolver, prs, warnings):
+    """Full-bleed background image (cover-cropped) + optional legibility scrim,
+    drawn before the slide's elements so they sit on top."""
+    W, H = prs.slide_width, prs.slide_height
+    tok = sdict.get("bg_image")
+    if tok and resolver:
+        data = resolver(tok)
+        if data:
+            try:
+                pic = slide.shapes.add_picture(BytesIO(data[0]), 0, 0)
+                nw, nh = pic.width, pic.height
+                if nw and nh:
+                    scale = max(W / nw, H / nh)
+                    dw, dh = nw * scale, nh * scale
+                    cx = (dw - W) / dw / 2 if dw > W else 0
+                    cy = (dh - H) / dh / 2 if dh > H else 0
+                    pic.crop_left = pic.crop_right = cx
+                    pic.crop_top = pic.crop_bottom = cy
+                    pic.left, pic.top, pic.width, pic.height = 0, 0, int(W), int(H)
+            except Exception:  # noqa: BLE001
+                warnings.append("background image failed to render")
+    scrim = sdict.get("bg_scrim")
+    if scrim:
+        shp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, W, H)
+        shp.fill.solid()
+        _apply_color(shp.fill.fore_color, theme, scrim.get("color", "dk1"))
+        shp.line.fill.background()
+        pokes.set_shape_fill_alpha(shp, float(scrim.get("opacity", 0.4)))
+
+
 def _stamp_footer(slide, theme, page_num, total):
     footer = theme.get("footer", {})
     # Optional footer logo.
@@ -625,6 +658,8 @@ def build_deck_pptx(
         slide = prs.slides.add_slide(blank)
         if sdict.get("bg"):
             _apply_slide_bg(slide, theme, sdict["bg"])
+        if sdict.get("bg_image") or sdict.get("bg_scrim"):
+            _apply_bg_image(slide, sdict, theme, image_resolver, prs, warnings)
         for el in sdict.get("elements") or []:
             _render_element(slide, el, theme, image_resolver, warnings)
         if not sdict.get("skip_footer"):

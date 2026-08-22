@@ -114,6 +114,7 @@ class ShapeElement(_Strict):
     box: str | None = None
     text: TextBody | None = None
     rotation: float | None = None
+    opacity: float | None = Field(default=None, ge=0.0, le=1.0)  # fill translucency
 
 
 class ImageElement(_Strict):
@@ -126,6 +127,7 @@ class ImageElement(_Strict):
     token: str = ""
     fit: Literal["contain", "cover", "stretch"] = "contain"
     rotation: float | None = None
+    opacity: float | None = Field(default=None, ge=0.0, le=1.0)  # fade a placed image
 
 
 class Cell(_Strict):
@@ -196,10 +198,18 @@ Element = Annotated[
 ]
 
 
+class Scrim(_Strict):
+    """A translucent colour wash over a background image, for legible text."""
+    color: str = "dk1"
+    opacity: float = Field(default=0.4, ge=0.0, le=1.0)
+
+
 class Slide(_Strict):
     id: str | None = None
     name: str = ""
     bg: str | None = None
+    bg_image: str = ""          # image token drawn full-bleed behind everything
+    bg_scrim: Scrim | None = None
     skip_footer: bool = False
     notes: str = ""
     elements: list[Element] = Field(default_factory=list)
