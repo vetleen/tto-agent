@@ -656,6 +656,8 @@ def _draw_chart(draw, theme, el, scale, bg=None):
         _chart_waterfall(draw, plot, series[0], cats, el.get("totals") or [], wf_colors, fnt, txt, axis, grid, el.get("value_labels"))
     elif kind == "marimekko":
         _chart_marimekko(draw, plot, series, cats, el.get("widths"), ramp, fnt, txt, axis, grid, el.get("value_labels"))
+    elif kind == "funnel":
+        _chart_funnel(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
     elif kind == "bar":
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked, pt_colors)
     elif kind in ("line", "area"):
@@ -915,6 +917,35 @@ def _chart_marimekko(draw, plot, series, cats, widths, ramp, fnt, txt, axis, gri
         cw = lbl.getlength(clbl)
         draw.text((cx + col_w / 2 - cw / 2, ay + ah + 4), clbl, font=lbl, fill=txt)
         cx += col_w + gap
+
+
+def _chart_funnel(draw, plot, series, cats, ramp, fnt, txt, value_labels):
+    px, py, pw, ph = plot
+    vals = [max(0.0, float(v)) for v in (series.get("values") or []) if isinstance(v, (int, float))]
+    n = len(vals)
+    if n == 0:
+        return
+    vmax = max(vals) or 1.0
+    cx = px + pw / 2
+    gap = 4
+    band = (ph - gap * (n - 1)) / n
+    lbl, small = fnt(10), fnt(9)
+    for i, v in enumerate(vals):
+        y0 = py + i * (band + gap)
+        y1 = y0 + band
+        wd = max(10.0, (v / vmax) * pw * 0.9)
+        draw.rectangle([cx - wd / 2, y0, cx + wd / 2, y1], fill=ramp[i % len(ramp)])
+        name = cats[i] if i < len(cats) else ""
+        label = (f"{name}  {_fmt_num(v)}").strip() if name else _fmt_num(v)
+        tw = lbl.getlength(label)
+        if tw < wd - 8:
+            draw.text((cx - tw / 2, (y0 + y1) / 2 - 7), label, font=lbl, fill=(255, 255, 255))
+        else:  # doesn't fit inside the band -> name to the left
+            draw.text((px, (y0 + y1) / 2 - 6), name or _fmt_num(v), font=small, fill=txt)
+        # stage-to-stage conversion %, to the right
+        if value_labels and i > 0 and vals[i - 1] > 0:
+            pct = f"{v / vals[i - 1] * 100:.0f}%"
+            draw.text((cx + wd / 2 + 8, (y0 + y1) / 2 - 6), pct, font=small, fill=txt)
 
 
 def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, scale):

@@ -103,6 +103,19 @@ class BuildDeckTests(SimpleTestCase):
         self.assertTrue(media, "icon PNG not embedded in the .pptx")
         self.assertEqual(warns, [])
 
+    def test_funnel_builds_rectangles(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "fn", "type": "chart", "x": 60, "y": 80, "w": 500, "h": 340, "chart": "funnel",
+             "categories": ["Visitors", "Signups", "Paid"],
+             "series": [{"name": "Users", "values": [10000, 3000, 500]}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertGreaterEqual(xml.count('prst="rect"'), 3)  # one rect per stage
+        self.assertIn("Signups", xml)  # stage label
+        self.assertEqual(warns, [])
+
     def test_marimekko_builds_rectangles(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "mk", "type": "chart", "x": 48, "y": 80, "w": 700, "h": 320, "chart": "marimekko",

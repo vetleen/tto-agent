@@ -552,6 +552,49 @@ def _add_icon(slide, el, theme, warnings):
         pic.rotation = el["rotation"]
 
 
+def _add_funnel(slide, el, theme, warnings):
+    """A conversion funnel: centered rectangles of decreasing width, one per stage,
+    each labelled with its stage + value. python-pptx has no funnel type."""
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+
+    from chat.slides.pillow_render import _fmt_num
+
+    series = el.get("series") or []
+    vals = [max(0.0, float(v)) for v in (series[0].get("values") or [])
+            if isinstance(v, (int, float))] if series else []
+    if not vals:
+        warnings.append("empty chart skipped")
+        return
+    cats = el.get("categories") or []
+    n = len(vals)
+    vmax = max(vals) or 1.0
+    ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
+    if not ramp:
+        ramp = [RGBColor(0x2E, 0x6B, 0x52)]
+    white = RGBColor(0xFF, 0xFF, 0xFF)
+
+    x, y, w, h = el["x"], el["y"], el["w"], el["h"]  # points
+    cx = x + w / 2
+    gap = 4.0
+    band = (h - gap * (n - 1)) / n
+    for i, v in enumerate(vals):
+        wd = max(10.0, (v / vmax) * w * 0.9)
+        y0 = y + i * (band + gap)
+        rect = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Pt(cx - wd / 2), Pt(y0), Pt(wd), Pt(band))
+        rect.fill.solid()
+        rect.fill.fore_color.rgb = ramp[i % len(ramp)]
+        rect.line.fill.background()
+        name = cats[i] if i < len(cats) else ""
+        tf = rect.text_frame
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        r = p.add_run()
+        r.text = (f"{name}  {_fmt_num(v)}").strip() if name else _fmt_num(v)
+        r.font.size = Pt(9)
+        r.font.color.rgb = white
+
+
 def _add_marimekko(slide, el, theme, warnings):
     """A Marimekko / mosaic: variable-width 100%-stacked columns, drawn as
     rectangles (python-pptx has no native type). Column width = the size
@@ -662,6 +705,9 @@ def _add_chart(slide, el, theme, warnings):
         return
     if el.get("chart") == "marimekko":
         _add_marimekko(slide, el, theme, warnings)
+        return
+    if el.get("chart") == "funnel":
+        _add_funnel(slide, el, theme, warnings)
         return
 
     kind_map = {

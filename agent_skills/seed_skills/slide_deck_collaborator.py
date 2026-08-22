@@ -91,6 +91,10 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    **`doughnut`** is a pie with a hole — set `"center_label"` for a KPI ring dial (e.g. a single
    series `[34,66]` with `point_colors`/`colors` accenting the first slice and
    `"center_label":"34%"` in the middle); `"hole"` (0.2–0.85) tunes the ring thickness.
+   **`funnel`** (a conversion/pipeline funnel): ONE series of stage values (largest first),
+   `categories` = the stage labels; drawn as centred bars narrowing top-to-bottom. Set
+   `value_labels` to show the stage-to-stage conversion %. Use it for signups→activation→paid,
+   leads→pipeline→won, etc.
    **`marimekko`** (a mosaic — two dimensions at once): each column is a 100%-stacked bar whose
    WIDTH is a size dimension. `series` are the stack rows, `categories` the columns, and
    `"widths"` the per-column sizes (omit to size each column by its own total). Use it for e.g.

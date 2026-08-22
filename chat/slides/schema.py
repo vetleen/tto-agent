@@ -184,7 +184,7 @@ class LineElement(_Strict):
     arrow: Literal["none", "end", "start", "both"] = "none"
 
 
-_CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall", "marimekko")
+_CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall", "marimekko", "funnel")
 
 
 class ChartSeries(_Strict):

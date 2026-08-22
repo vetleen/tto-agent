@@ -142,6 +142,15 @@ class PillowRenderTests(SimpleTestCase):
         png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
         self.assertGreater(len(_colours(_open(png))), 1)  # the text still rendered
 
+    def test_funnel_renders(self):
+        deck = self._deck([{"elements": [
+            {"type": "chart", "x": 60, "y": 80, "w": 500, "h": 340, "chart": "funnel",
+             "value_labels": True, "categories": ["Visitors", "Signups", "Activated", "Paid"],
+             "series": [{"name": "Users", "values": [10000, 3200, 1400, 520]}]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 3)
+
     def test_marimekko_columns_math(self):
         series = [{"name": "A", "values": [30, 20]}, {"name": "B", "values": [10, 20]}]
         # explicit widths win
