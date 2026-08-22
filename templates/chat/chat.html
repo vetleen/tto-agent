@@ -4298,7 +4298,9 @@
       } else if (s.rendering) {
         media = '<div class="w-full rounded-lg border border-dashed border-brand/40 bg-neutral-tertiary/30 flex items-center justify-center gap-1.5 text-center px-4 text-xs text-body animate-pulse" style="aspect-ratio:16/9"><span class="w-1.5 h-1.5 rounded-full bg-brand"></span>Rendering…</div>';
       } else {
-        var placeholder = renderFailed ? 'Preview unavailable — download the .pptx above' : 'Awaiting render';
+        var placeholder = renderFailed
+          ? ('Slide ' + s.page + (s.name ? ' · ' + escapeHtml(s.name) : ''))
+          : 'Awaiting render';
         media = '<div class="w-full rounded-lg border border-dashed border-default bg-neutral-tertiary/30 flex items-center justify-center text-center px-4 text-xs text-body" style="aspect-ratio:16/9">' + placeholder + '</div>';
       }
       var toggle = '<button class="slides-comment-toggle absolute right-2 top-2 z-10 cursor-pointer px-1.5 py-0.5 rounded-base bg-neutral-primary-soft/90 text-body hover:text-heading border border-default text-xs" title="Comment on this slide">💬</button>';
@@ -4381,7 +4383,22 @@
     function renderFilmstrip() {
       filmstrip.innerHTML = "";
       if (!slides.length) { filmstrip.innerHTML = '<div class="text-sm text-body text-center py-10">No slides yet.</div>'; return; }
+      if (renderFailed) filmstrip.appendChild(renderFailedBanner());
       slides.forEach(function(s) { filmstrip.appendChild(slideCard(s)); });
+    }
+    function renderFailedBanner() {
+      // The .pptx export is pure python-pptx (no LibreOffice), so it still works
+      // even when slide previews can't be rendered — make that the clear action.
+      var b = document.createElement("div");
+      b.className = "rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 mb-1";
+      b.innerHTML = '<div class="text-sm text-heading font-medium">Slide previews are unavailable right now</div>'
+        + '<div class="text-xs text-body mt-0.5">Your deck is still ready — download it as a PowerPoint file and open it to see the slides.</div>';
+      var btn = document.createElement("button");
+      btn.className = "mt-2 cursor-pointer inline-flex items-center gap-1 px-3 py-1.5 rounded-base text-xs font-medium bg-brand text-on-brand hover:bg-brand-strong";
+      btn.textContent = "Download .pptx";
+      btn.addEventListener("click", downloadPptx);
+      b.appendChild(btn);
+      return b;
     }
     function renderTabs() {
       if (!decks || decks.length <= 1) { tabsEl.classList.add("hidden"); tabsEl.classList.remove("flex"); tabsEl.innerHTML = ""; return; }
@@ -4400,6 +4417,7 @@
     }
     function setPdfBusy(b) { if (pdfBtn) { pdfBtn.textContent = b ? "PDF…" : "PDF"; pdfBtn.disabled = b; } }
     function triggerDownload(url) { var a = document.createElement("a"); a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); }
+    function downloadPptx() { if (deckId) triggerDownload("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/"); }
 
     function setState(data) {
       deckId = data.deck_id;
@@ -4467,7 +4485,7 @@
     var closeBtn = document.getElementById("slides-close-btn");
     if (closeBtn) closeBtn.addEventListener("click", close);
     if (slidesToggleBtn) slidesToggleBtn.addEventListener("click", function() { if (isOpen) close(); else { open(); requestState(); } });
-    if (pptxBtn) pptxBtn.addEventListener("click", function() { if (deckId) triggerDownload("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/"); });
+    if (pptxBtn) pptxBtn.addEventListener("click", downloadPptx);
     if (pdfBtn) pdfBtn.addEventListener("click", function() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); });
     var sendBtn = document.getElementById("slides-comments-send");
     if (sendBtn) sendBtn.addEventListener("click", function() { if (deckId && comments.length) { ws.send(JSON.stringify({ type: "chat.slides_comments_send", thread_id: activeThreadId, deck_id: deckId })); comments = []; openComments = 0; updateCommentBar(); renderFilmstrip(); } });
