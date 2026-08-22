@@ -122,44 +122,36 @@ For emergency recovery, disable the gate (the config change restarts the web dyn
 heroku config:unset DJANGO_ALLOWED_IP_RANGES -a wilfred-production
 ```
 
-### Slide decks (AI-authored PowerPoint) — deploy status & rollout
+### Slide decks (AI-authored PowerPoint) — deploy & rollout
 
-The feature has two independent halves:
+Two halves, both LibreOffice-free and Heroku-ready:
 
-- **Authoring + `.pptx` export** — pure `python-pptx` on the **web** dyno, **no LibreOffice**.
-  This works on Heroku today. Users author a deck with the assistant and download a real,
-  correct `.pptx`. This is the core value and it ships cleanly.
-- **Slide-preview rendering (`.pptx` → PDF → PNG) + PDF export** — runs **on the worker** via
-  LibreOffice. **⚠️ This does NOT work on Heroku via the apt buildpack** (verified on a
-  throwaway app, 2026-08-22 — see `memory/project_slide_decks_feature.md`). The apt-*extracted*
-  LibreOffice fails to bootstrap the UNO runtime (`DeploymentException`, exit 134) even after
-  the `LD_LIBRARY_PATH` fix (commit 89a7fc7) resolves its libraries. The full `libreoffice`
-  meta is over the hard slug limit and is rejected at push. **The render path needs an infra
-  decision** before previews work on Heroku (candidates: a Docker/`heroku.yml` worker where
-  `apt-get install` runs postinst properly; a self-contained LibreOffice buildpack / TDF
-  tarball; or an external render service).
-
-**Graceful degradation (already built):** if the worker can't render, the panel shows a
-"Slide previews are unavailable" banner with a prominent **Download .pptx** button, labels the
-slides, hides the (also-unavailable) PDF button, and never strands the user on a spinner. So
-the feature is safe to enable even before the render infra is solved — users just don't get
-in-app previews until then.
+- **Authoring + `.pptx` export** — pure `python-pptx` on the **web** dyno. Users author a deck
+  with the assistant and download a real, correct `.pptx`.
+- **Slide-preview rendering + PDF export** — on the **worker**, our JSON deck is drawn straight
+  to PNGs by **Pillow** (`chat/slides/pillow_render.py`), and the PDF export is those PNGs
+  combined with Pillow. **No LibreOffice, no browser, no native render engine** — so it runs
+  anywhere (this replaced the LibreOffice pipeline, which never bootstrapped under Heroku's apt
+  buildpack). `SLIDE_RENDER_BACKEND` defaults to `pillow`; `libreoffice`/`powerpoint` remain
+  opt-in for anyone who wants to render the actual `.pptx` (the `powerpoint` COM backend is the
+  local-dev fidelity ground truth used to tune the Pillow output).
 
 Rollout steps:
-1. **Slug gate.** `Aptfile` currently pulls `libreoffice-impress` (~250 MB → ~674 MB slug,
-   over the 500 MB *soft* limit but under Heroku's hard reject). Since that LibreOffice doesn't
-   render on Heroku anyway, consider dropping it from `Aptfile` until the render infra is chosen
-   — that returns the slug to ~420 MB and loses nothing currently working. Check size with
-   `heroku builds:info -a wilfred-staging`.
-2. **Global kill-switch.** `SLIDES_ENABLED=true` (default); `false` disables the feature.
-3. **Per-org enablement.** The `slide_deck_collaborator` seed skill is **off by default per
+1. **Global kill-switch.** `SLIDES_ENABLED=true` (default); `false` disables the feature.
+2. **Per-org enablement.** The `slide_deck_collaborator` seed skill is **off by default per
    org**. Enable for a pilot via `org.preferences["skills"]["slide_deck_collaborator"]["enabled"] = True`.
-4. **Verify on staging:** author a deck → the `.pptx` downloads and opens correctly. (Previews
-   will show the degraded banner until the render infra is in place.) When rendering is solved,
-   also confirm the filmstrip fills, PDF downloads, and no orphaned `soffice.bin` lingers.
+3. **Verify on staging:** author a deck → the filmstrip fills with rendered previews, the
+   `.pptx` and PDF download and open correctly, per-slide comments round-trip, and the agent's
+   `slides_preview_slide` returns images it reacts to. Watch worker `sample#memory_rss` on a
+   ~30-slide render (Pillow is far lighter than LibreOffice, but confirm headroom).
 
-Preview fidelity note (once rendering works): the worker renders with **LibreOffice**; ground
-truth is **PowerPoint** opening the downloaded `.pptx` — minor metric differences are expected.
+If a render ever fails, the panel degrades gracefully — a "Slide previews are unavailable"
+banner with a prominent **Download .pptx** button, labelled slide placeholders, no stuck
+spinners, PDF button hidden — and recovers automatically when rendering works again.
+
+Fidelity note: the preview is Pillow rendering our JSON with the metric-compatible fonts
+(Carlito≈Calibri, Caladea≈Cambria), tuned to match PowerPoint's layout. Ground truth for the
+downloaded file is still PowerPoint opening the `.pptx`; the fonts keep them close.
 
 ### Rollback
 
