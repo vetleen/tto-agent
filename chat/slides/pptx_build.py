@@ -68,6 +68,29 @@ SHAPE_MAP = {
     "smiley": MSO_SHAPE.SMILEY_FACE,
 }
 
+# The deck theme names our shipped OFL font clones (Caladea/Carlito/…). Those
+# aren't installed on most machines, so a downloaded .pptx that referenced them
+# would be substituted by the viewer's PowerPoint — often with the *wrong* style
+# (a serif headline turning sans). Reference the widely-installed Office fonts
+# our clones are metric-compatible with instead, so the .pptx renders correctly
+# for viewers while the Pillow preview keeps using the (identical-metric) clone
+# faces it ships. Names not listed pass through unchanged.
+_PPTX_FONT_ALIAS = {
+    "Caladea": "Cambria",
+    "Carlito": "Calibri",
+    "Tinos": "Times New Roman",
+    "Arimo": "Arial",
+    "Cousine": "Courier New",
+    "Gelasio": "Georgia",
+    "EBGaramond": "Garamond",
+}
+
+
+def _pptx_font(theme, font_ref):
+    fam = theme_mod.font_family(theme, font_ref)
+    return _PPTX_FONT_ALIAS.get(fam, fam)
+
+
 THEME_COLOR_MAP = {
     "dk1": MSO_THEME_COLOR.DARK_1,
     "lt1": MSO_THEME_COLOR.LIGHT_1,
@@ -144,7 +167,7 @@ def _render_text_body(text_frame, body: dict, theme: dict, *, default_class: str
             r = p.add_run()
             r.text = run.get("t", "")
             style = theme_mod.merge_run(base, run)
-            r.font.name = theme_mod.font_family(theme, style.get("font"))
+            r.font.name = _pptx_font(theme, style.get("font"))
             if style.get("size"):
                 r.font.size = Pt(style["size"])
             r.font.bold = bool(style.get("bold"))
@@ -274,7 +297,7 @@ def _add_image(slide, el, theme, resolver, warnings):
         tf.vertical_anchor = MSO_ANCHOR.MIDDLE
         run = tf.paragraphs[0].runs[0]
         run.font.size = Pt(13)
-        run.font.name = theme_mod.font_family(theme, "data")
+        run.font.name = _pptx_font(theme, "data")
         run.font.color.rgb = RGBColor(0x8A, 0x94, 0x8B)
         tf.paragraphs[0].alignment = PP_ALIGN.CENTER
         return
@@ -360,7 +383,7 @@ def _render_cell(cell, spec, theme, tbl_theme, text_class, is_header, is_band):
     r.text = spec.get("t", "")
     cls = spec.get("class") or text_class
     style = theme_mod.base_text_style(theme, cls)
-    r.font.name = theme_mod.font_family(theme, style.get("font"))
+    r.font.name = _pptx_font(theme, style.get("font"))
     # An explicit per-cell size wins over the class default (lets a dense table
     # shrink its text to fit); otherwise fall back to the text class's size.
     cell_size = spec.get("size") or style.get("size")
@@ -453,7 +476,7 @@ def _stamp_footer(slide, theme, page_num, total):
         r = p.add_run()
         r.text = footer["text"]
         r.font.size = Pt(footer.get("size", 9))
-        r.font.name = theme_mod.font_family(theme, "data")
+        r.font.name = _pptx_font(theme, "data")
         _apply_color(r.font.color, theme, footer.get("color", "dk2"))
     # Page number.
     pn = theme.get("page_number", {})
@@ -463,7 +486,7 @@ def _stamp_footer(slide, theme, page_num, total):
     r = p.add_run()
     r.text = str(page_num)
     r.font.size = Pt(pn.get("size", 9))
-    r.font.name = theme_mod.font_family(theme, pn.get("font", "data"))
+    r.font.name = _pptx_font(theme, pn.get("font", "data"))
     _apply_color(r.font.color, theme, pn.get("color", "dk2"))
 
 
