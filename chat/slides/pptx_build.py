@@ -555,6 +555,20 @@ def _add_icon(slide, el, theme, warnings):
         pic.rotation = el["rotation"]
 
 
+def _add_combo(slide, el, theme, warnings):
+    """A bar+line combo (dual-axis). python-pptx can't build a native combo, so
+    render it via the Pillow chart engine and embed it as a crisp picture — it
+    pixel-matches the on-screen preview."""
+    from chat.slides.pillow_render import render_chart_png
+
+    if not (el.get("series") or []):
+        warnings.append("empty chart skipped")
+        return
+    png = render_chart_png(theme, el)
+    x, y, w, h = _pt_box(el)
+    slide.shapes.add_picture(BytesIO(png), x, y, w, h)
+
+
 def _add_funnel(slide, el, theme, warnings):
     """A conversion funnel: centered rectangles of decreasing width, one per stage,
     each labelled with its stage + value. python-pptx has no funnel type."""
@@ -711,6 +725,9 @@ def _add_chart(slide, el, theme, warnings):
         return
     if el.get("chart") == "funnel":
         _add_funnel(slide, el, theme, warnings)
+        return
+    if el.get("chart") == "combo":
+        _add_combo(slide, el, theme, warnings)
         return
 
     kind_map = {

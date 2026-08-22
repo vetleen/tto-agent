@@ -142,6 +142,29 @@ class PillowRenderTests(SimpleTestCase):
         png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
         self.assertGreater(len(_colours(_open(png))), 1)  # the text still rendered
 
+    def test_combo_chart_renders(self):
+        # Revenue bars (primary) + margin % line (secondary axis) must both draw.
+        deck = self._deck([{"elements": [
+            {"type": "chart", "x": 60, "y": 80, "w": 620, "h": 320, "chart": "combo",
+             "categories": ["Q1", "Q2", "Q3", "Q4"],
+             "series": [
+                 {"name": "Revenue ($B)", "values": [3.9, 4.0, 4.1, 4.2], "kind": "bar"},
+                 {"name": "Op margin %", "values": [10.8, 11.0, 11.2, 11.4],
+                  "kind": "line", "axis": "secondary"},
+             ]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 4)
+
+    def test_render_chart_png_standalone(self):
+        from chat.slides import theme as theme_mod
+        el = {"type": "chart", "x": 0, "y": 0, "w": 400, "h": 240, "chart": "combo",
+              "categories": ["A", "B"],
+              "series": [{"name": "R", "values": [3, 4], "kind": "bar"},
+                         {"name": "M", "values": [10, 12], "kind": "line", "axis": "secondary"}]}
+        png = pillow_render.render_chart_png(theme_mod.resolve_theme({}), el, k=2)
+        self.assertTrue(png[:8] == b"\x89PNG\r\n\x1a\n")
+
     def test_funnel_renders(self):
         deck = self._deck([{"elements": [
             {"type": "chart", "x": 60, "y": 80, "w": 500, "h": 340, "chart": "funnel",

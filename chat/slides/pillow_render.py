@@ -673,6 +673,8 @@ def _draw_chart(draw, theme, el, scale, bg=None):
         _chart_marimekko(draw, plot, series, cats, el.get("widths"), ramp, fnt, txt, axis, grid, el.get("value_labels"))
     elif kind == "funnel":
         _chart_funnel(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
+    elif kind == "combo":
+        _chart_combo(draw, plot, series, cats, ramp, fnt, txt, grid, scale)
     elif kind == "bar":
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked, pt_colors)
     elif kind in ("line", "area"):
@@ -932,6 +934,94 @@ def _chart_marimekko(draw, plot, series, cats, widths, ramp, fnt, txt, axis, gri
         cw = lbl.getlength(clbl)
         draw.text((cx + col_w / 2 - cw / 2, ay + ah + 4), clbl, font=lbl, fill=txt)
         cx += col_w + gap
+
+
+def _combo_axis(group):
+    vals = [v for s in group for v in (s.get("values") or []) if isinstance(v, (int, float))]
+    vmax = max(vals) if vals else 1.0
+    vmin = min(vals + [0])
+    top, step = _nice_ticks(vmax if vmax > 0 else 1.0)
+    return (vmin if vmin < 0 else 0.0), top, step
+
+
+def _chart_combo(draw, plot, series, cats, ramp, fnt, txt, grid, scale):
+    """A bar+line combo with an optional secondary (right) value axis — e.g.
+    revenue bars on the left axis + margin % line on the right axis."""
+    px, py, pw, ph = plot
+    n_cat = len(cats)
+    if n_cat == 0 or not series:
+        return
+    lbl = fnt(9)
+    has_sec = any(s.get("axis") == "secondary" for s in series)
+    prim = [s for s in series if s.get("axis") != "secondary"]
+    sec = [s for s in series if s.get("axis") == "secondary"]
+    plo, phi, pstep = _combo_axis(prim) if prim else (0.0, 1.0, 1.0)
+    slo, shi, sstep = _combo_axis(sec) if sec else (0.0, 1.0, 1.0)
+    pspan, sspan = (phi - plo) or 1.0, (shi - slo) or 1.0
+    lgut, rgut = 30, (36 if has_sec else 4)
+    ax, ay, aw, ah = px + lgut, py, pw - lgut - rgut, ph - 16
+
+    def yfor(v, secondary):
+        lo, hi, span = (slo, shi, sspan) if secondary else (plo, phi, pspan)
+        return ay + ah - ((v - lo) / span) * ah
+
+    # left axis gridlines + labels
+    t = plo
+    while t <= phi + 1e-9:
+        gy = ay + ah - (t - plo) / pspan * ah
+        draw.line([(ax, gy), (ax + aw, gy)], fill=grid, width=1)
+        draw.text((px, gy - 6), _fmt_num(t), font=lbl, fill=txt)
+        t += pstep
+    # right axis labels
+    if has_sec:
+        t = slo
+        while t <= shi + 1e-9:
+            gy = ay + ah - (t - slo) / sspan * ah
+            draw.text((ax + aw + 5, gy - 6), _fmt_num(t), font=lbl, fill=txt)
+            t += sstep
+
+    bar_series = [s for s in series if s.get("kind", "bar") == "bar"]
+    line_series = [s for s in series if s.get("kind") == "line"]
+    slot = aw / n_cat
+    nb = max(1, len(bar_series))
+    for ci in range(n_cat):
+        for bi, s in enumerate(bar_series):
+            secondary = s.get("axis") == "secondary"
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            thick = slot * 0.7 / nb
+            bx = ax + ci * slot + slot * 0.15 + bi * thick
+            draw.rectangle([bx, yfor(v, secondary), bx + thick, ay + ah],
+                           fill=ramp[series.index(s) % len(ramp)])
+        clbl = cats[ci] if ci < len(cats) else ""
+        cw = lbl.getlength(clbl)
+        draw.text((ax + ci * slot + slot / 2 - cw / 2, ay + ah + 3), clbl, font=lbl, fill=txt)
+
+    for s in line_series:
+        secondary = s.get("axis") == "secondary"
+        vals = s.get("values") or []
+        pts = [(ax + ci * slot + slot / 2, yfor(vals[ci] if ci < len(vals) else 0, secondary))
+               for ci in range(n_cat)]
+        color = ramp[series.index(s) % len(ramp)]
+        if len(pts) > 1:
+            draw.line(pts, fill=color, width=max(2, int(2 * scale)), joint="curve")
+        r = max(2, int(2.5 * scale))
+        for x0, y0 in pts:
+            draw.ellipse([x0 - r, y0 - r, x0 + r, y0 + r], fill=color)
+
+
+def render_chart_png(theme, el, k: float = 3.0) -> bytes:
+    """Render a single chart element to transparent PNG bytes (for embedding a
+    chart type the .pptx can't build natively — e.g. combo — as a picture)."""
+    w_px = max(1, int(el.get("w", 480) * k))
+    h_px = max(1, int(el.get("h", 300) * k))
+    img = Image.new("RGBA", (w_px, h_px), (0, 0, 0, 0))
+    local = dict(el)
+    local["x"], local["y"] = 0.0, 0.0
+    _draw_chart(ImageDraw.Draw(img), theme, local, k, bg=None)
+    buf = BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
 
 
 def _chart_funnel(draw, plot, series, cats, ramp, fnt, txt, value_labels):

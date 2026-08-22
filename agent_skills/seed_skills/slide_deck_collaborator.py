@@ -94,6 +94,11 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    **`doughnut`** is a pie with a hole — set `"center_label"` for a KPI ring dial (e.g. a single
    series `[34,66]` with `point_colors`/`colors` accenting the first slice and
    `"center_label":"34%"` in the middle); `"hole"` (0.2–0.85) tunes the ring thickness.
+   **`combo`** (bars + line, dual axis — the classic earnings "revenue bars + margin % line"):
+   each series carries `"kind":"bar"` or `"kind":"line"` and `"axis":"primary"` (left) or
+   `"secondary"` (right). Example: `"series":[{"name":"Revenue ($B)","values":[3.9,4.0,4.2],`
+   `"kind":"bar"},{"name":"Op margin %","values":[10.8,11.1,11.4],"kind":"line","axis":"secondary"}]`.
+   Use it whenever you'd otherwise put a $ metric and a % metric on the same chart.
    **`funnel`** (a conversion/pipeline funnel): ONE series of stage values (largest first),
    `categories` = the stage labels; drawn as centred bars narrowing top-to-bottom. Set
    `value_labels` to show the stage-to-stage conversion %. Use it for signups→activation→paid,

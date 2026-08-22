@@ -103,6 +103,19 @@ class BuildDeckTests(SimpleTestCase):
         self.assertTrue(media, "icon PNG not embedded in the .pptx")
         self.assertEqual(warns, [])
 
+    def test_combo_embeds_as_picture(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "cb", "type": "chart", "x": 60, "y": 80, "w": 620, "h": 320, "chart": "combo",
+             "categories": ["Q1", "Q2", "Q3"],
+             "series": [{"name": "Rev", "values": [3.9, 4.0, 4.2], "kind": "bar"},
+                        {"name": "Margin", "values": [10.8, 11.1, 11.4], "kind": "line",
+                         "axis": "secondary"}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertTrue([n for n in z.namelist() if n.startswith("ppt/media/")])
+        self.assertEqual(warns, [])
+
     def test_funnel_builds_rectangles(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "fn", "type": "chart", "x": 60, "y": 80, "w": 500, "h": 340, "chart": "funnel",

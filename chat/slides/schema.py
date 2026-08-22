@@ -209,12 +209,17 @@ class LineElement(_Strict):
     arrow: Literal["none", "end", "start", "both"] = "none"
 
 
-_CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall", "marimekko", "funnel")
+_CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall",
+                "marimekko", "funnel", "combo")
 
 
 class ChartSeries(_Strict):
     name: str = ""
     values: list[float] = Field(default_factory=list)
+    # chart="combo" only: draw this series as bars or a line, on the primary
+    # (left) or secondary (right) value axis. Ignored by other chart kinds.
+    kind: Literal["bar", "line"] = "bar"
+    axis: Literal["primary", "secondary"] = "primary"
 
 
 class ChartElement(_Strict):
