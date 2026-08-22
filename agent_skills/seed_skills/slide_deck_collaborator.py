@@ -90,7 +90,11 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    `waterfall`. Pie/doughnut use one series; the `categories` become the slice labels.
    **`doughnut`** is a pie with a hole — set `"center_label"` for a KPI ring dial (e.g. a single
    series `[34,66]` with `point_colors`/`colors` accenting the first slice and
-   `"center_label":"34%"` in the middle); `"hole"` (0.2–0.85) tunes the ring thickness. Series colours come from the
+   `"center_label":"34%"` in the middle); `"hole"` (0.2–0.85) tunes the ring thickness.
+   **`marimekko`** (a mosaic — two dimensions at once): each column is a 100%-stacked bar whose
+   WIDTH is a size dimension. `series` are the stack rows, `categories` the columns, and
+   `"widths"` the per-column sizes (omit to size each column by its own total). Use it for e.g.
+   revenue share (height) across markets sized by market value (width). Series colours come from the
    theme automatically. Add `"stacked":true` (column/bar/area) to stack the series into one bar
    per category — use it for a **composition of a total** (e.g. revenue split by segment over
    time), not for comparing independent metrics.

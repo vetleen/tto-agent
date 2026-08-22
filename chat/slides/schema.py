@@ -171,7 +171,7 @@ class LineElement(_Strict):
     arrow: Literal["none", "end", "start", "both"] = "none"
 
 
-_CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall")
+_CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall", "marimekko")
 
 
 class ChartSeries(_Strict):
@@ -210,6 +210,9 @@ class ChartElement(_Strict):
     # center_label prints a headline figure inside the hole (a KPI ring dial).
     hole: float | None = Field(default=None, ge=0.2, le=0.85)
     center_label: str = ""
+    # For chart="marimekko": per-category column widths (the "size" dimension,
+    # e.g. market size). Omit to size each column by its own stacked total.
+    widths: list[float] | None = None
 
 
 Element = Annotated[

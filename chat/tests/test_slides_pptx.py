@@ -92,6 +92,19 @@ class BuildDeckTests(SimpleTestCase):
         self.assertTrue(charts, "no native chart part embedded in the .pptx")
         self.assertEqual(warns, [])
 
+    def test_marimekko_builds_rectangles(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "mk", "type": "chart", "x": 48, "y": 80, "w": 700, "h": 320, "chart": "marimekko",
+             "categories": ["NA", "EU"], "widths": [60, 40],
+             "series": [{"name": "HW", "values": [30, 20]}, {"name": "SW", "values": [10, 15]}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertGreaterEqual(xml.count('prst="rect"'), 4)  # >=4 mosaic segments
+        self.assertIn("HW", xml)  # legend series name
+        self.assertEqual(warns, [])
+
     def test_harvey_ball_builds_pie_wedge(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "hb", "type": "shape", "shape": "harvey", "x": 100, "y": 100,

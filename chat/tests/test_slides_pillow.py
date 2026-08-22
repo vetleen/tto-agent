@@ -116,6 +116,27 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_marimekko_columns_math(self):
+        series = [{"name": "A", "values": [30, 20]}, {"name": "B", "values": [10, 20]}]
+        # explicit widths win
+        ws, totals = pillow_render._marimekko_columns(series, ["X", "Y"], [70, 30])
+        self.assertEqual(ws, [70.0, 30.0])
+        self.assertEqual(totals, [40.0, 40.0])
+        # no widths -> width = column total
+        ws2, _ = pillow_render._marimekko_columns(series, ["X", "Y"], None)
+        self.assertEqual(ws2, [40.0, 40.0])
+
+    def test_marimekko_renders(self):
+        deck = self._deck([{"elements": [
+            {"type": "chart", "x": 48, "y": 80, "w": 700, "h": 320, "chart": "marimekko",
+             "value_labels": True, "categories": ["NA", "EU", "APAC"], "widths": [50, 30, 20],
+             "series": [{"name": "HW", "values": [30, 15, 10]},
+                        {"name": "SW", "values": [15, 10, 8]},
+                        {"name": "Svc", "values": [5, 5, 2]}]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 4)
+
     def test_doughnut_punches_a_light_hole(self):
         # Legend off + no title -> the pie centres in the element box; the hole is
         # the light slide bg, not an accent slice.

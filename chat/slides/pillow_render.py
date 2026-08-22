@@ -644,6 +644,8 @@ def _draw_chart(draw, theme, el, scale, bg=None):
                    hole=hole, center_label=el.get("center_label", ""), hole_bg=hole_bg, scale=scale)
     elif kind == "waterfall":
         _chart_waterfall(draw, plot, series[0], cats, el.get("totals") or [], wf_colors, fnt, txt, axis, grid, el.get("value_labels"))
+    elif kind == "marimekko":
+        _chart_marimekko(draw, plot, series, cats, el.get("widths"), ramp, fnt, txt, axis, grid, el.get("value_labels"))
     elif kind == "bar":
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked, pt_colors)
     elif kind in ("line", "area"):
@@ -837,6 +839,72 @@ def _chart_waterfall(draw, plot, series, cats, totals, colors, fnt, txt, axis, g
             vs = _fmt_num(hi_i) if role == "total" else ("+" if delta >= 0 else "−") + _fmt_num(abs(delta))
             vw = lbl.getlength(vs)
             draw.text((bx + col_w / 2 - vw / 2, y_hi - 12), vs, font=lbl, fill=txt)
+
+
+def _marimekko_columns(series, cats, widths):
+    """Per-column ``(width, total)`` for a Marimekko: width = the size dimension
+    (explicit ``widths`` or the column's own total), total = sum of the stack."""
+    n_cat = len(cats)
+    totals = []
+    for ci in range(n_cat):
+        t = 0.0
+        for s in series:
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            if isinstance(v, (int, float)) and v > 0:
+                t += v
+        totals.append(t)
+    if widths and len(widths) >= n_cat:
+        ws = [max(0.0, float(widths[ci])) for ci in range(n_cat)]
+    else:
+        ws = list(totals)
+    return ws, totals
+
+
+def _chart_marimekko(draw, plot, series, cats, widths, ramp, fnt, txt, axis, grid, value_labels):
+    px, py, pw, ph = plot
+    n_cat = len(cats)
+    if n_cat == 0 or not series:
+        return
+    ws, totals = _marimekko_columns(series, cats, widths)
+    w_sum = sum(ws) or 1.0
+    lbl = fnt(9)
+    val_gutter, cat_gutter = 34, 26
+    gap = 2  # px between columns
+    ax, ay, aw, ah = px + val_gutter, py, pw - val_gutter, ph - cat_gutter
+
+    # 0/25/50/75/100% gridlines + labels (share axis, right-aligned in the gutter)
+    for pct in (0, 25, 50, 75, 100):
+        gy = ay + ah - (pct / 100.0) * ah
+        draw.line([(ax, gy), (ax + aw, gy)], fill=grid, width=1)
+        pl = f"{pct}%"
+        draw.text((ax - 4 - lbl.getlength(pl), gy - 6), pl, font=lbl, fill=txt)
+
+    usable = aw - gap * (n_cat - 1)
+    cx = ax
+    for ci in range(n_cat):
+        col_w = usable * (ws[ci] / w_sum)
+        total = totals[ci] or 1.0
+        y_bot = ay + ah
+        for si, s in enumerate(series):
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            if not isinstance(v, (int, float)) or v <= 0:
+                continue
+            seg_h = (v / total) * ah
+            y_top = y_bot - seg_h
+            draw.rectangle([cx, y_top, cx + col_w, y_bot], fill=ramp[si % len(ramp)])
+            if value_labels and seg_h > 14 and col_w > 22:
+                ptxt = f"{v / total * 100:.0f}%"
+                tw = lbl.getlength(ptxt)
+                draw.text((cx + col_w / 2 - tw / 2, (y_top + y_bot) / 2 - 6), ptxt,
+                          font=lbl, fill=(255, 255, 255))
+            y_bot = y_top
+        # category label (centred under the column)
+        clbl = cats[ci] if ci < len(cats) else ""
+        cw = lbl.getlength(clbl)
+        draw.text((cx + col_w / 2 - cw / 2, ay + ah + 4), clbl, font=lbl, fill=txt)
+        cx += col_w + gap
 
 
 def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, scale):

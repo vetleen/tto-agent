@@ -529,12 +529,116 @@ def _add_waterfall(slide, el, theme, warnings):
         logger.debug("waterfall colour styling failed", exc_info=True)
 
 
+def _add_marimekko(slide, el, theme, warnings):
+    """A Marimekko / mosaic: variable-width 100%-stacked columns, drawn as
+    rectangles (python-pptx has no native type). Column width = the size
+    dimension (`widths`, else the column total); height = share of the stack."""
+    from pptx.enum.text import PP_ALIGN
+
+    from chat.slides.pillow_render import _marimekko_columns
+
+    series = el.get("series") or []
+    n_vals = max((len(s.get("values") or []) for s in series), default=0)
+    cats = list(el.get("categories") or [str(i + 1) for i in range(n_vals)])
+    if not series or not cats:
+        warnings.append("empty chart skipped")
+        return
+    n_cat = len(cats)
+    ws, totals = _marimekko_columns(series, cats, el.get("widths"))
+    w_sum = sum(ws) or 1.0
+
+    ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
+    if not ramp:
+        ramp = [RGBColor(0x2E, 0x6B, 0x52)]
+
+    def _one(name, default):
+        got = _chart_ramp_rgb(theme, [name])
+        return got[0] if got else default
+
+    txt_rgb = _one("dk1", RGBColor(0x20, 0x20, 0x20))
+    grid_rgb = _one("accent3", RGBColor(0xC0, 0xC0, 0xC0))
+    white = RGBColor(0xFF, 0xFF, 0xFF)
+
+    x, y, w, h = _pt_box(el)
+    multi = len(series) > 1
+    title_h = Pt(20) if el.get("title") else 0
+    gutter_l, gutter_b = Pt(26), Pt(16)
+    legend_h = Pt(16) if multi else 0
+    ax, ay = x + gutter_l, y + title_h
+    aw, ah = w - gutter_l, h - title_h - gutter_b - legend_h
+
+    def _label(bx, by, bw, bh, text, size, color, align=PP_ALIGN.CENTER):
+        tb = slide.shapes.add_textbox(bx, by, bw, bh)
+        tb.text_frame.word_wrap = False
+        p = tb.text_frame.paragraphs[0]
+        p.alignment = align
+        r = p.add_run()
+        r.text = text
+        r.font.size = Pt(size)
+        r.font.color.rgb = color
+        return tb
+
+    if el.get("title"):
+        t = _label(x, y, w, title_h, el["title"], 12, txt_rgb)
+        t.text_frame.paragraphs[0].runs[0].font.bold = True
+
+    for pct in (0, 50, 100):
+        gy = ay + ah - int(ah * pct / 100)
+        conn = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, ax, gy, ax + aw, gy)
+        conn.line.color.rgb = grid_rgb
+        conn.line.width = Pt(0.5)
+        _label(x, gy - Pt(6), gutter_l - Pt(3), Pt(12), f"{pct}%", 7, txt_rgb, PP_ALIGN.RIGHT)
+
+    gap = Pt(2)
+    usable = aw - gap * (n_cat - 1)
+    cx = ax
+    for ci in range(n_cat):
+        col_w = int(usable * (ws[ci] / w_sum))
+        total = totals[ci] or 1.0
+        y_bot = ay + ah
+        for si, s in enumerate(series):
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            if not isinstance(v, (int, float)) or v <= 0:
+                continue
+            seg_h = int((v / total) * ah)
+            y_top = y_bot - seg_h
+            rect = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, cx, y_top, max(col_w, 1), max(seg_h, 1))
+            rect.fill.solid()
+            rect.fill.fore_color.rgb = ramp[si % len(ramp)]
+            rect.line.fill.background()
+            if el.get("value_labels") and seg_h > Pt(12) and col_w > Pt(24):
+                p = rect.text_frame.paragraphs[0]
+                p.alignment = PP_ALIGN.CENTER
+                r = p.add_run()
+                r.text = f"{v / total * 100:.0f}%"
+                r.font.size = Pt(8)
+                r.font.color.rgb = white
+            y_bot = y_top
+        _label(cx, ay + ah, max(col_w, Pt(10)), gutter_b, cats[ci], 8, txt_rgb)
+        cx += col_w + gap
+
+    if multi:
+        ly = y + h - legend_h
+        lx = ax
+        for si, s in enumerate(series):
+            sw = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, lx, ly + Pt(3), Pt(8), Pt(8))
+            sw.fill.solid()
+            sw.fill.fore_color.rgb = ramp[si % len(ramp)]
+            sw.line.fill.background()
+            _label(lx + Pt(11), ly, Pt(90), legend_h, s.get("name", ""), 8, txt_rgb, PP_ALIGN.LEFT)
+            lx += Pt(104)
+
+
 def _add_chart(slide, el, theme, warnings):
     from pptx.chart.data import CategoryChartData
     from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 
     if el.get("chart") == "waterfall":
         _add_waterfall(slide, el, theme, warnings)
+        return
+    if el.get("chart") == "marimekko":
+        _add_marimekko(slide, el, theme, warnings)
         return
 
     kind_map = {
