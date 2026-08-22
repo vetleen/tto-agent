@@ -270,6 +270,14 @@ def _mail(d, b, c, sw):
     _line(d, b, [(0.12, 0.24), (0.5, 0.54), (0.88, 0.24)], c, sw)
 
 
+def _image(d, b, c, sw):
+    x0, y0 = _pt(b, 0.14, 0.22)
+    x1, y1 = _pt(b, 0.86, 0.78)
+    d.rounded_rectangle([x0, y0, x1, y1], radius=(x1 - x0) * 0.08, outline=c, width=sw)
+    _dot(d, b, 0.36, 0.40, 0.05, c)
+    _line(d, b, [(0.18, 0.72), (0.40, 0.50), (0.55, 0.62), (0.82, 0.42)], c, sw)
+
+
 def _doc(d, b, c, sw):
     _poly(d, b, [(0.26, 0.12), (0.62, 0.12), (0.74, 0.26),
                  (0.74, 0.88), (0.26, 0.88)], c, sw)
@@ -288,6 +296,7 @@ ICONS = {
     "lightbulb": _lightbulb, "gear": _gear, "person": _person, "people": _people,
     "building": _building, "globe": _globe, "flag": _flag, "search": _search,
     "bolt": _bolt, "cash": _cash, "rocket": _rocket, "mail": _mail, "doc": _doc,
+    "image": _image,
 }
 
 # Public names (deduped, stable order) for the skill catalogue and validation.

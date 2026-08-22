@@ -27,6 +27,31 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from chat.slides.theme import resolve_theme
 
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def image_placeholder_caption(token: str) -> str:
+    """Caption for an unresolved image slot. An empty or *placeholder* token (a
+    made-up slug like ``[[image:demo-mockup]]`` the model uses to reserve space)
+    reads as an intentional slot, humanised from the slug ("Demo mockup"); only a
+    real-but-missing UUID asset reads as "Image unavailable"."""
+    if not token:
+        return "Add an image"
+    m = re.search(r"image:([^\]]+)", token)
+    inner = (m.group(1) if m else token).strip()
+    if not inner:
+        return "Add an image"
+    if _UUID_RE.match(inner):
+        return "Image unavailable"
+    words = [w for w in re.split(r"[-_\s]+", inner) if w]
+    if not words:
+        return "Add an image"
+    cap = " ".join(words)
+    return cap[:1].upper() + cap[1:]
+
+
 # --- Limits -----------------------------------------------------------------
 DECK_MAX_CHARS = 120_000
 MAX_SLIDE_SETS_PER_THREAD = 5

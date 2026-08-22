@@ -74,6 +74,9 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    - Add a border with `"line":{"color":"dk2","w":1,"dash":"dash"}`.
 3. **image** — `{"type":"image","x":600,"y":120,"w":300,"h":200,"token":"[[image:UUID]]","fit":"cover","opacity":1}`.
    The token comes from an image tool; `fit` is `contain`/`cover`/`stretch`; `opacity` 0–1 fades it.
+   **Reserve a slot** for a logo / screenshot / headshot / mockup the user will drop in: use a
+   descriptive placeholder token like `"[[image:product-mockup]]"` (any slug, not a real id) — it
+   renders as a tidy labelled placeholder ("Product mockup") so the layout reads as intentional.
    **Full-bleed background photo:** set it on the SLIDE, not as an element:
    `{"id":"s1","bg_image":"[[image:UUID]]","bg_scrim":{"color":"dk1","opacity":0.5}, ...}` — the
    image fills the slide behind everything and the `bg_scrim` (a translucent colour wash) keeps

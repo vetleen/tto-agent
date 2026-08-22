@@ -555,12 +555,12 @@ def _draw_image(img, theme, el, scale, resolver):
     token = el.get("token", "")
     data = resolver(token) if (resolver and token) else None
     if not data:
-        _draw_placeholder(img, x, y, w, h, empty=(not token), scale=scale, theme=theme)
+        _draw_placeholder(img, x, y, w, h, token=token, scale=scale, theme=theme)
         return
     try:
         src = Image.open(BytesIO(data[0])).convert("RGBA")
     except Exception:  # noqa: BLE001
-        _draw_placeholder(img, x, y, w, h, empty=False, scale=scale, theme=theme)
+        _draw_placeholder(img, x, y, w, h, token=token, scale=scale, theme=theme)
         return
     sw, sh = src.size
     if not sw or not sh:
@@ -578,14 +578,29 @@ def _draw_image(img, theme, el, scale, resolver):
     img.paste(placed, (px, py), placed)
 
 
-def _draw_placeholder(img, x, y, w, h, *, empty, scale, theme):
+def _draw_placeholder(img, x, y, w, h, *, token, scale, theme):
+    """A tidy 'image goes here' slot — soft box + image glyph + a caption derived
+    from the reservation token, so a reserved mockup/logo reads as intentional
+    rather than broken."""
+    from chat.slides import icons
+    from chat.slides.schema import image_placeholder_caption
+
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([x, y, x + w, y + h], radius=8 * scale,
                         fill=(236, 239, 233), outline=(199, 207, 196), width=max(1, int(scale)))
-    label = "Add an image" if empty else "image unavailable"
-    font = _font("Carlito", 13 * scale, False, False)
+    label = image_placeholder_caption(token)
+    ink = (138, 148, 139)
+    font = _font("Carlito", 12 * scale, False, False)
+    # A small image glyph centred above the caption (skip if the box is tiny).
+    gs = min(w, h) * 0.34
+    has_glyph = gs >= 14 * scale and h >= 40 * scale
     tw = font.getlength(label)
-    d.text((x + (w - tw) / 2, y + h / 2 - 8 * scale), label, font=font, fill=(138, 148, 139))
+    cap_y = y + h / 2 + (gs * 0.25 if has_glyph else -7 * scale)
+    if has_glyph:
+        gx, gy = x + (w - gs) / 2, y + h / 2 - gs * 0.72
+        icons.draw_icon(d, "image", (gx, gy, gx + gs, gy + gs), ink, max(1, int(1.4 * scale)))
+    if tw < w - 8 * scale:
+        d.text((x + (w - tw) / 2, cap_y), label, font=font, fill=ink)
 
 
 # ---------------------------------------------------------------------------

@@ -315,17 +315,20 @@ def _add_image(slide, el, theme, resolver, warnings):
     token = el.get("token", "")
     data = resolver(token) if (resolver and token) else None
     if not data:
-        # An empty token is an intentional placeholder (a seed layout awaiting an
-        # image); only a token that failed to resolve is an actual problem.
-        is_placeholder = not token
-        if not is_placeholder:
+        # A reserved slot (empty token, or a made-up slug like "demo-mockup" the
+        # model uses to reserve space) reads as an intentional placeholder; only a
+        # real-but-missing UUID asset is an actual problem worth a warning.
+        from chat.slides.schema import _UUID_RE, image_placeholder_caption
+
+        inner = token.split("image:", 1)[-1].rstrip("]").strip() if token else ""
+        if inner and _UUID_RE.match(inner):
             warnings.append(f"image unavailable: {token[:60]}")
         ph = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h)
         ph.fill.solid()
         ph.fill.fore_color.rgb = RGBColor(0xEC, 0xEF, 0xE9)  # lt2 sage
         ph.line.color.rgb = RGBColor(0xC7, 0xCF, 0xC4)
         tf = ph.text_frame
-        tf.text = "Add an image" if is_placeholder else "image unavailable"
+        tf.text = image_placeholder_caption(token)
         tf.vertical_anchor = MSO_ANCHOR.MIDDLE
         run = tf.paragraphs[0].runs[0]
         run.font.size = Pt(13)

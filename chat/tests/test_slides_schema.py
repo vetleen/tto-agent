@@ -255,6 +255,19 @@ class OrgSlideStyleTests(SimpleTestCase):
         self.assertEqual(theme.org_slide_theme_override(None), {})
 
 
+class ImagePlaceholderCaptionTests(SimpleTestCase):
+    def test_captions(self):
+        from chat.slides.schema import image_placeholder_caption as cap
+        self.assertEqual(cap(""), "Add an image")
+        self.assertEqual(cap("[[image:demo-mockup]]"), "Demo mockup")
+        self.assertEqual(cap("[[image:product_screenshot]]"), "Product screenshot")
+        self.assertEqual(cap("[[image:team photo]]"), "Team photo")
+        # a real-but-missing UUID asset stays an error message
+        self.assertEqual(
+            cap("[[image:11111111-1111-1111-1111-111111111111]]"), "Image unavailable"
+        )
+
+
 class CustomSlideThemeUnitTests(SimpleTestCase):
     def _valid(self, **over):
         data = {"label": "Acme", "base": "slate",
