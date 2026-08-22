@@ -255,3 +255,74 @@ class PreviewToolTests(TestCase):
         with mock.patch("chat.tasks.render_deck_task.delay", side_effect=fail_delay):
             r = json.loads(tool._run(slide_ids=["s1"]))
         self.assertEqual(r["status"], "unavailable")
+
+
+class DeckThemeSeedingTests(TestCase):
+    """A new deck inherits the org's default slide theme when the model omits
+    one; an explicit theme is kept, and a user's picker choice survives a
+    full rewrite."""
+
+    def setUp(self):
+        from accounts.models import Membership, Organization
+
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"s+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.org = Organization.objects.create(
+            name="Acme", slug=f"acme-{uuid.uuid4().hex[:6]}",
+            preferences={"slide_theme": {"name": "slate"}},
+        )
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.ADMIN)
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
+
+    def _write(self, deck, title="Deck", deck_name=""):
+        tool = WriteDeckTool()
+        tool.set_context(self.ctx)
+        return json.loads(tool._run(title=title, content=deck, deck_name=deck_name))
+
+    def _bare_deck(self, theme=None):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+            {"name": "T", "elements": [
+                {"type": "text", "x": 80, "y": 210, "w": 800, "h": 100, "class": "headline",
+                 "paragraphs": [{"runs": [{"t": "Hi"}]}]},
+            ]},
+        ]}
+        if theme is not None:
+            deck["theme"] = theme
+        return deck
+
+    def test_new_deck_inherits_org_default_theme(self):
+        from chat.slides.theme import preset_theme_override
+
+        r = self._write(self._bare_deck())
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertEqual(deck.content.get("theme"), preset_theme_override("slate"))
+
+    def test_explicit_theme_is_untouched(self):
+        custom = {"colors": {"accent1": "#123456"}}
+        r = self._write(self._bare_deck(theme=custom))
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertEqual(deck.content["theme"], custom)
+
+    def test_rewrite_preserves_existing_theme(self):
+        from chat.slides.theme import preset_theme_override
+
+        # Create the deck (gets the org default), then simulate the user picking
+        # "ocean" from the slide panel, then a full rewrite that omits the theme.
+        r = self._write(self._bare_deck(), title="Deck")
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        deck.content["theme"] = preset_theme_override("ocean")
+        deck.save(update_fields=["content"])
+
+        self._write(self._bare_deck(), title="Deck")
+        deck.refresh_from_db()
+        self.assertEqual(deck.content["theme"], preset_theme_override("ocean"))
+
+    def test_no_membership_leaves_deck_theme_unset(self):
+        # A user with no org gets no seeded theme (deck resolves to base forest).
+        from accounts.models import Membership
+
+        Membership.objects.filter(user=self.user).delete()
+        r = self._write(self._bare_deck())
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertNotIn("theme", deck.content)

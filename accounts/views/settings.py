@@ -445,10 +445,16 @@ def org_settings_page(request):
     org_styles = get_org_styles(org)
     org_fonts = org_font_families(org)
 
+    from chat.slides.theme import get_org_slide_style, preset_swatches
+
+    org_slide_style = get_org_slide_style(org)
+
     return render(request, "accounts/org_settings.html", {
         "org": org,
         "styles": org_styles,
         "styles_json": json.dumps(org_styles),
+        "slide_theme_presets": preset_swatches(),
+        "org_slide_theme": org_slide_style["name"],
         "font_choices": FONT_CHOICES,
         "org_fonts": org_fonts,
         "org_fonts_json": json.dumps(org_fonts),
@@ -563,6 +569,31 @@ def org_styles_update(request):
         if res.fidelity in ("visual", "fallback") and res.note
     ]
     return JsonResponse({"ok": True, "styles": clean, "font_notes": font_notes})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_slide_style_update(request):
+    """Set the org's default slide theme (seeds new decks authored in the org)."""
+    from chat.slides.theme import validate_org_slide_style
+
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    clean, error = validate_org_slide_style(data)
+    if error:
+        return JsonResponse({"error": error}, status=400)
+
+    def mutate(prefs):
+        prefs["slide_theme"] = clean
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, "slide_theme": clean})
 
 
 @login_required

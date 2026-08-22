@@ -45,6 +45,15 @@ def resolve_deck(thread_id, name: str | None = None):
     return get_active_deck(thread_id), None
 
 
+def get_deck_by_title(thread_id, title: str):
+    """The non-deleted deck with this exact title in the thread, or ``None``."""
+    if not title:
+        return None
+    return SlideSet.objects.filter(
+        thread_id=thread_id, title=title[:255], deleted_at__isnull=True
+    ).first()
+
+
 def _next_order(deck) -> int:
     last = deck.checkpoints.order_by("-order").first()
     return (last.order + 1) if last else 0

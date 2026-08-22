@@ -449,6 +449,48 @@ class OrgStylesUpdateTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgSlideStyleUpdateTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="slideadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="slidemember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="SlideOrg", slug="slideorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_slide_style_update")
+
+    def _post(self, payload):
+        return self.client.post(self.url, json.dumps(payload), content_type="application/json")
+
+    def test_admin_can_set_slide_theme(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self._post({"name": "ocean"})
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["slide_theme"], {"name": "ocean"})
+
+    def test_unknown_theme_rejected(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self._post({"name": "rainbow"})
+        self.assertEqual(response.status_code, 400)
+        self.org.refresh_from_db()
+        self.assertNotIn("slide_theme", self.org.preferences)
+
+    def test_member_forbidden(self):
+        self.client.login(email=self.member_user.email, password=self.password)
+        response = self._post({"name": "ocean"})
+        self.assertEqual(response.status_code, 403)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class OrgToolsUpdateTests(TestCase):
     def setUp(self):
         self.password = "test-pass-123"

@@ -214,3 +214,42 @@ class ThemeTests(SimpleTestCase):
         self.assertNotEqual(
             theme.preset_theme_override("ocean")["colors"]["accent1"], "#000000"
         )
+
+
+class _Org:
+    """Minimal stand-in for an Organization (only .preferences is read)."""
+    def __init__(self, preferences=None):
+        self.preferences = preferences
+
+
+class OrgSlideStyleTests(SimpleTestCase):
+    def test_default_when_unset_or_none_org(self):
+        self.assertEqual(theme.get_org_slide_style(None), {"name": "forest"})
+        self.assertEqual(theme.get_org_slide_style(_Org()), {"name": "forest"})
+        self.assertEqual(theme.get_org_slide_style(_Org({})), {"name": "forest"})
+
+    def test_reads_stored_preset(self):
+        org = _Org({"slide_theme": {"name": "ocean"}})
+        self.assertEqual(theme.get_org_slide_style(org)["name"], "ocean")
+
+    def test_malformed_stored_value_falls_back(self):
+        for bad in ({"slide_theme": {"name": "bogus"}}, {"slide_theme": "slate"},
+                    {"slide_theme": {"nope": 1}}):
+            self.assertEqual(theme.get_org_slide_style(_Org(bad))["name"], "forest")
+
+    def test_validate_accepts_known_preset(self):
+        clean, err = theme.validate_org_slide_style({"name": "warm"})
+        self.assertIsNone(err)
+        self.assertEqual(clean, {"name": "warm"})
+
+    def test_validate_rejects_unknown_or_malformed(self):
+        for bad in ({"name": "nope"}, {"name": 5}, [], "slate"):
+            clean, err = theme.validate_org_slide_style(bad)
+            self.assertIsNone(clean)
+            self.assertTrue(err)
+
+    def test_override_empty_for_forest_and_sparse_for_others(self):
+        self.assertEqual(theme.org_slide_theme_override(_Org({"slide_theme": {"name": "forest"}})), {})
+        override = theme.org_slide_theme_override(_Org({"slide_theme": {"name": "slate"}}))
+        self.assertIn("colors", override)
+        self.assertEqual(theme.org_slide_theme_override(None), {})

@@ -105,6 +105,28 @@ def _thread_id(tool) -> str | None:
     return tool.context.conversation_id if tool.context else None
 
 
+def _tool_org(tool):
+    """The acting user's organization (for org-default seeding), or ``None``.
+
+    RunContext carries ``user_id`` but not the org, so resolve it here. Best-effort:
+    any lookup failure (no context, no membership) yields ``None`` -> no org default.
+    """
+    user_id = tool.context.user_id if tool.context else None
+    if not user_id:
+        return None
+    try:
+        from accounts.models import Membership
+
+        m = (
+            Membership.objects.filter(user_id=user_id)
+            .select_related("org")
+            .first()
+        )
+        return m.org if m else None
+    except Exception:  # noqa: BLE001 — seeding is best-effort
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -176,6 +198,23 @@ class WriteDeckTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "content must be a JSON object (the full deck)."})
 
         schema.mint_ids(deck)
+
+        # Seed the deck's theme when the model didn't set one: keep an existing
+        # deck's theme (so a user's picker choice survives a full rewrite),
+        # otherwise inherit the org's default slide theme. A deck that carries an
+        # explicit theme is left untouched.
+        if not deck.get("theme"):
+            from chat.slides import theme as theme_mod
+
+            existing = service.get_deck_by_title(thread_id, deck_name or title)
+            prev_theme = (existing.content or {}).get("theme") if existing else None
+            if prev_theme:
+                deck["theme"] = prev_theme
+            else:
+                override = theme_mod.org_slide_theme_override(_tool_org(self))
+                if override:
+                    deck["theme"] = override
+
         issues = schema.validate_deck(deck)
         if issues:
             return json.dumps({"status": "error", "message": "Deck JSON is invalid.", "issues": issues[:20]})

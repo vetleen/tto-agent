@@ -179,6 +179,54 @@ def preset_theme_override(name: str) -> dict | None:
     return copy.deepcopy(spec["theme"]) if spec is not None else None
 
 
+# ---------------------------------------------------------------------------
+# Organization default slide theme — the slide sibling of the doc "styles"
+# setting (core.styles). An org admin picks one preset (Org settings → Slide
+# styles); it seeds the ``theme`` of every new deck authored in that org, so
+# decks match the org's brand without the model having to choose. Stored on
+# ``Organization.preferences["slide_theme"] = {"name": <preset>}`` (JSON prefs,
+# no model field). "forest" (the base) is the default.
+# ---------------------------------------------------------------------------
+DEFAULT_SLIDE_THEME = "forest"
+
+
+def get_org_slide_style(org) -> dict:
+    """Resolve an org's slide style: ``{"name": <valid preset>}`` (default forest).
+
+    ``org`` may be ``None`` (no membership). Tolerant of malformed stored values —
+    an unknown/absent preset name resolves back to :data:`DEFAULT_SLIDE_THEME`.
+    """
+    stored = (getattr(org, "preferences", None) or {}).get("slide_theme") if org is not None else None
+    name = stored.get("name") if isinstance(stored, dict) else None
+    if name not in PRESET_THEMES:
+        name = DEFAULT_SLIDE_THEME
+    return {"name": name}
+
+
+def validate_org_slide_style(data) -> tuple[dict | None, str | None]:
+    """Validate a slide-style payload from the org settings endpoint.
+
+    Returns ``(clean_dict, None)`` on success or ``(None, error_message)``. The
+    only lever today is the preset ``name``; kept as a dict so custom colours/
+    fonts can be added later without changing the stored shape.
+    """
+    if not isinstance(data, dict):
+        return None, "Invalid slide style payload."
+    name = data.get("name", DEFAULT_SLIDE_THEME)
+    if not isinstance(name, str) or name not in PRESET_THEMES:
+        return None, "Choose one of the available slide themes."
+    return {"name": name}, None
+
+
+def org_slide_theme_override(org) -> dict:
+    """The sparse deck ``theme`` override for an org's default slide theme.
+
+    Empty dict for the base ("forest") theme or when there's no org — callers seed
+    a new deck's ``theme`` with this only when it's non-empty.
+    """
+    return preset_theme_override(get_org_slide_style(org)["name"]) or {}
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge ``override`` onto a copy of ``base``.
 
