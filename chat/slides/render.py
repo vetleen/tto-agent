@@ -75,7 +75,7 @@ def pptx_to_pdf(pptx_bytes: bytes, *, timeout: int | None = None) -> bytes:
                 f"-env:UserInstallation={profile.as_uri()}",
                 "--convert-to", "pdf", "--outdir", str(out_dir), str(in_path),
             ]
-            proc = _spawn(cmd)
+            proc = _spawn(cmd, env=_soffice_env(soffice))
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -88,8 +88,34 @@ def pptx_to_pdf(pptx_bytes: bytes, *, timeout: int | None = None) -> bytes:
             return pdfs[0].read_bytes()
 
 
-def _spawn(cmd: list[str]) -> subprocess.Popen:
+def _soffice_env(soffice: str) -> dict | None:
+    """Environment for the soffice subprocess, or None to inherit unchanged.
+
+    On Linux (Heroku's apt buildpack), LibreOffice's own libraries — libreglo.so,
+    libunoidllo.so, etc. — live beside soffice.bin in ``.../libreoffice/program``.
+    The apt buildpack doesn't put that dir on LD_LIBRARY_PATH and the binaries'
+    $ORIGIN rpath doesn't survive extraction to /app/.apt, so soffice.bin dies
+    with "error while loading shared libraries: libreglo.so" (exit 127) unless we
+    add its program dir ourselves. Resolve it from the (symlinked) soffice path.
+    """
+    import shutil
+
+    if os.name != "posix":
+        return None
+    resolved = shutil.which(soffice) or soffice
+    program_dir = os.path.dirname(os.path.realpath(resolved))
+    if not program_dir:
+        return None
+    env = dict(os.environ)
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = program_dir + (os.pathsep + existing if existing else "")
+    return env
+
+
+def _spawn(cmd: list[str], *, env: dict | None = None) -> subprocess.Popen:
     kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if env is not None:
+        kwargs["env"] = env
     if os.name == "posix":
         # Own session/process group so a timeout can killpg the whole tree —
         # otherwise soffice's forked soffice.bin child is orphaned and leaks.
