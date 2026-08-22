@@ -1,0 +1,96 @@
+"""Tests for the Pillow slide renderer (pure — no LibreOffice, no DB)."""
+
+from __future__ import annotations
+
+from io import BytesIO
+
+from django.test import SimpleTestCase
+from PIL import Image
+
+from chat.slides import pillow_render
+from chat.slides.schema import mint_ids
+
+
+def _open(png_bytes):
+    return Image.open(BytesIO(png_bytes)).convert("RGB")
+
+
+def _colours(img):
+    return {c for _n, c in img.getcolors(maxcolors=1 << 20)}
+
+
+class PillowRenderTests(SimpleTestCase):
+    def _deck(self, slides):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": slides}
+        mint_ids(deck)
+        return deck
+
+    def test_renders_png_at_expected_size(self):
+        deck = self._deck([{"elements": [
+            {"type": "text", "x": 48, "y": 48, "w": 800, "h": 80, "class": "headline",
+             "paragraphs": [{"runs": [{"t": "Hello deck"}]}]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=120)
+        self.assertEqual((w, h), (1600, 900))
+        img = _open(png)
+        self.assertEqual(img.size, (1600, 900))
+        # More than just the background colour was drawn (the headline text).
+        self.assertGreater(len(_colours(img)), 1)
+
+    def test_dark_background_and_light_text(self):
+        deck = self._deck([{"bg": "dk2", "elements": [
+            {"type": "text", "x": 48, "y": 220, "w": 800, "h": 80, "class": "headline",
+             "paragraphs": [{"runs": [{"t": "Section", "color": "lt1"}]}]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        img = _open(png)
+        # top-left corner is the dark background
+        self.assertLess(sum(img.getpixel((5, 5))), 200)
+
+    def test_all_element_types_render_without_error(self):
+        deck = self._deck([{"elements": [
+            {"type": "text", "x": 40, "y": 30, "w": 880, "h": 60, "class": "headline",
+             "paragraphs": [{"runs": [{"t": "Everything"}]}]},
+            {"type": "shape", "x": 40, "y": 110, "w": 200, "h": 80, "shape": "rounded_rect",
+             "fill": "accent1", "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Box"}]}]}},
+            {"type": "line", "x1": 40, "y1": 210, "x2": 300, "y2": 210, "color": "accent1",
+             "w": 3, "arrow": "end"},
+            {"type": "table", "x": 40, "y": 240, "w": 880, "h": 160, "header": True, "banding": True,
+             "rows": [[{"t": "A"}, {"t": "B"}], [{"t": "1"}, {"t": "2"}], [{"t": "3"}, {"t": "4"}]]},
+            {"type": "image", "x": 700, "y": 110, "w": 200, "h": 120, "token": ""},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(png), 1000)
+        self.assertGreater(len(_colours(_open(png))), 3)
+
+    def test_bulleted_paragraph_draws_bullet_char(self):
+        # The en-dash bullet + text should render (more ink than an empty slide).
+        empty = self._deck([{"elements": []}])
+        bulleted = self._deck([{"elements": [
+            {"type": "text", "x": 48, "y": 120, "w": 800, "h": 300, "class": "body",
+             "paragraphs": [
+                 {"bullet": True, "runs": [{"t": "First"}]},
+                 {"bullet": True, "runs": [{"t": "Second"}]},
+             ]},
+        ]}])
+        e_png, *_ = pillow_render.render_slide_png(empty, 0, dpi=96)
+        b_png, *_ = pillow_render.render_slide_png(bulleted, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(b_png))), len(_colours(_open(e_png))))
+
+    def test_render_deck_pngs_respects_only_filter(self):
+        deck = self._deck([
+            {"id": "s1", "elements": []},
+            {"id": "s2", "elements": []},
+            {"id": "s3", "elements": []},
+        ])
+        out = pillow_render.render_deck_pngs(deck, dpi=72, only_slide_ids=["s2"])
+        self.assertEqual([sid for sid, *_ in out], ["s2"])
+
+    def test_one_bad_element_does_not_fail_the_slide(self):
+        deck = self._deck([{"elements": [
+            {"type": "table", "x": 40, "y": 40, "w": 800, "h": 100, "rows": "not-a-list"},
+            {"type": "text", "x": 40, "y": 200, "w": 800, "h": 60, "class": "headline",
+             "paragraphs": [{"runs": [{"t": "Survivor"}]}]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 1)  # the text still rendered

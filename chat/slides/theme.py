@@ -45,10 +45,12 @@ FONT_ROLES = ("headline", "subhead", "body", "data")
 # The base theme: Wilfred's "forest nocturne" brand as a LIGHT presentation
 # palette (light background, deep-forest text, copper + emerald accents).
 #
-# Fonts intentionally use LibreOffice-bundled, metric-compatible families
-# (Caladea ~ Cambria serif, Carlito ~ Calibri sans) so the worker renders
-# faithfully with NO font shipping. Swapping to the real brand faces (shipping
-# the .ttf to the worker + updating these four names) is a Phase-E polish step.
+# Fonts use metric-compatible families (Caladea ~ Cambria serif, Carlito ~
+# Calibri sans) — the committed .ttf faces under core/assets/fonts, which the
+# Pillow preview renderer loads directly. Being Cambria/Calibri-metric keeps the
+# preview close to how PowerPoint lays out the downloaded .pptx even if the
+# viewer substitutes those faces. Swapping to the real brand faces = drop their
+# .ttf in core/assets/fonts + update these four names.
 # ---------------------------------------------------------------------------
 WILFRED_BASE_THEME: dict = {
     "fonts": {

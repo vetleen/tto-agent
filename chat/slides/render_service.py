@@ -15,10 +15,55 @@ from django.utils import timezone
 from chat.assets import store_slide_set_file, store_slide_set_image
 from chat.models import Asset, SlideRender, SlideRenderRun
 from chat.slides import schema
-from chat.slides.pptx_build import build_pptx
-from chat.slides.render import render_pptx
 
 logger = logging.getLogger(__name__)
+
+
+def _render_slides(deck, content, only_slide_ids, *, need_pdf):
+    """Render slides to ``(pdf_bytes|None, [(png, w, h), ...], warnings)`` via the
+    configured backend, in ``all_ids``-filtered order.
+
+    ``pillow`` (default) draws our JSON straight to PNGs with Pillow — no
+    LibreOffice, works on any platform. ``libreoffice``/``powerpoint`` render the
+    real ``.pptx`` (higher fidelity to the download, but need the native engine).
+    """
+    from django.conf import settings
+
+    from chat.slides.pptx_build import make_image_resolver
+
+    backend = getattr(settings, "SLIDE_RENDER_BACKEND", "pillow")
+    dpi = int(getattr(settings, "SLIDE_PREVIEW_DPI", 120))
+
+    if backend == "pillow":
+        from chat.slides import pillow_render
+
+        rendered = pillow_render.render_deck_pngs(
+            content, dpi=dpi, only_slide_ids=only_slide_ids,
+            image_resolver=make_image_resolver(deck),
+        )
+        pngs = [(png, w, h) for (_sid, png, w, h) in rendered]
+        return (_pngs_to_pdf(pngs) if need_pdf else None), pngs, []
+
+    from chat.slides.pptx_build import build_pptx
+    from chat.slides.render import render_pptx
+
+    pptx_bytes, warnings = build_pptx(deck, only_slide_ids=only_slide_ids)
+    pdf_bytes, pngs = render_pptx(pptx_bytes)
+    return pdf_bytes, pngs, warnings
+
+
+def _pngs_to_pdf(pngs) -> bytes | None:
+    """Combine per-slide PNGs into a single multi-page PDF (Pillow, no LibreOffice)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    imgs = [Image.open(BytesIO(p)).convert("RGB") for (p, _w, _h) in pngs]
+    if not imgs:
+        return None
+    buf = BytesIO()
+    imgs[0].save(buf, format="PDF", save_all=True, append_images=imgs[1:], resolution=96.0)
+    return buf.getvalue()
 
 
 def execute_render_run(run_id: str) -> None:
@@ -76,8 +121,7 @@ def _render(run, deck) -> dict:
     pdf_bytes = None
     if dirty:
         only = None if is_pdf else dirty
-        pptx_bytes, warnings = build_pptx(deck, only_slide_ids=only)
-        pdf_bytes, pngs = render_pptx(pptx_bytes)
+        pdf_bytes, pngs, warnings = _render_slides(deck, content, only, need_pdf=is_pdf)
         built_order = [sid for sid in all_ids if (only is None or sid in set(only))]
         if len(pngs) != len(built_order):
             logger.warning(

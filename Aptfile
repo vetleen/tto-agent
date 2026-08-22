@@ -12,14 +12,12 @@ libharfbuzz0b
 libharfbuzz-subset0
 libffi-dev
 fontconfig
-# Slide-deck rendering (worker only): LibreOffice converts .pptx -> PDF, then
-# pypdfium2 (pip) rasterizes to per-slide PNGs. Use the -impress subset (pulls
-# libreoffice-core) NOT the full `libreoffice` meta-package, which blows
-# Heroku's 500 MB compressed slug limit. Measure slug size on staging before
-# promoting. No poppler needed (pypdfium2 does the rasterization).
-libreoffice-impress
-# The deck theme's fonts (Caladea = Cambria-metric serif, Carlito = Calibri-metric
-# sans). Ship explicitly so LibreOffice renders them instead of substituting
-# Liberation faces (which would shift the branded look).
-fonts-crosextra-caladea
-fonts-crosextra-carlito
+# Slide-deck previews render our JSON straight to PNGs with Pillow (pure Python —
+# see chat/slides/pillow_render.py), so NO system render engine is needed. The
+# theme fonts (Caladea, Carlito) are the committed .ttf files under
+# core/assets/fonts and are loaded by Pillow directly.
+#
+# LibreOffice was removed: it doesn't bootstrap under Heroku's apt buildpack (UNO
+# DeploymentException — see RUNBOOK) and dropping it returns ~250 MB of slug. The
+# optional SLIDE_RENDER_BACKEND=libreoffice path still exists in code for anyone
+# who re-adds a working LibreOffice (e.g. via a container/heroku.yml worker).

@@ -668,16 +668,18 @@ IMAGE_DEFAULT_MODEL = os.environ.get("IMAGE_DEFAULT_MODEL", "")
 IMAGE_ALLOWED_MODELS = [m.strip() for m in os.environ.get("IMAGE_ALLOWED_MODELS", "").split(",") if m.strip()]
 
 # Slide decks (AI-authored PowerPoint). SLIDES_ENABLED is the global kill-switch
-# (per-org rollout is the seed skill's org enablement). Rendering (preview + PDF)
-# shells out to LibreOffice on the worker to make a PDF, then pypdfium2 (pip, no
-# system binary) rasterizes it to PNGs. SOFFICE_BIN is resolved from PATH by
-# default. SLIDE_RENDER_CONCURRENCY bounds concurrent soffice spawns (threads
-# pool -> one semaphore covers the dyno).
+# (per-org rollout is the seed skill's org enablement). Slide previews render our
+# own JSON straight to PNGs with Pillow (no LibreOffice, no browser — works on any
+# platform incl. Heroku), so the feature needs no native render engine.
 SLIDES_ENABLED = _get_env_bool(os.environ.get("SLIDES_ENABLED"), True)
-# Render backend: "libreoffice" (prod/Linux) or "powerpoint" (Windows local dev
-# via COM — needs pywin32 + Microsoft PowerPoint; lets Windows devs preview decks
-# without LibreOffice).
-SLIDE_RENDER_BACKEND = os.environ.get("SLIDE_RENDER_BACKEND", "libreoffice")
+# Render backend:
+#   "pillow"      (default) — Pillow draws the deck JSON directly; portable, tiny.
+#   "libreoffice" — render the real .pptx via LibreOffice (needs the apt binary;
+#                   higher fidelity to the downloaded file but heavy — and it does
+#                   not bootstrap under Heroku's apt buildpack; see RUNBOOK).
+#   "powerpoint"  — Windows local-dev COM backend (pywin32 + PowerPoint), used as
+#                   the fidelity ground truth when tuning the Pillow renderer.
+SLIDE_RENDER_BACKEND = os.environ.get("SLIDE_RENDER_BACKEND", "pillow")
 SLIDE_RENDER_TIMEOUT = _env_int("SLIDE_RENDER_TIMEOUT", "120")
 SLIDE_RENDER_CONCURRENCY = _env_int("SLIDE_RENDER_CONCURRENCY", "1")
 SLIDE_PREVIEW_DPI = _env_int("SLIDE_PREVIEW_DPI", "120")

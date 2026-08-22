@@ -234,11 +234,17 @@ def render_available() -> bool:
     """True when the configured render backend + rasterizer are usable."""
     import shutil
 
+    backend = getattr(settings, "SLIDE_RENDER_BACKEND", "pillow")
+    if backend == "pillow":
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            return False
+        return True
     try:
         import pypdfium2  # noqa: F401
     except ImportError:
         return False
-    backend = getattr(settings, "SLIDE_RENDER_BACKEND", "libreoffice")
     if backend == "powerpoint":
         try:
             import win32com.client  # noqa: F401

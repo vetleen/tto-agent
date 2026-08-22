@@ -20,14 +20,16 @@ _PNG = base64.b64decode(
 )
 
 
-def _fake_render(pptx_bytes, **kwargs):
-    """Return one fake PNG per slide actually built into the pptx."""
-    z = zipfile.ZipFile(io.BytesIO(pptx_bytes))
-    n = len([
-        x for x in z.namelist()
-        if x.startswith("ppt/slides/slide") and x.endswith(".xml") and "rels" not in x
-    ])
-    return b"%PDF-1.4 fake", [(_PNG, 100, 56) for _ in range(n)]
+def _built_ids(content, only_slide_ids):
+    ids = [s.get("id") for s in (content.get("slides") or [])]
+    return ids if only_slide_ids is None else [i for i in ids if i in set(only_slide_ids)]
+
+
+def _fake_render(deck, content, only_slide_ids, *, need_pdf):
+    """Return one fake PNG per slide actually built (the _render_slides boundary)."""
+    built = _built_ids(content, only_slide_ids)
+    pdf = b"%PDF-1.4 fake" if need_pdf else None
+    return pdf, [(_PNG, 100, 56) for _ in built], []
 
 
 class RenderServiceTests(TestCase):
@@ -49,7 +51,7 @@ class RenderServiceTests(TestCase):
         )
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)
     def test_user_preview_renders_all_and_notifies(self, m_render, m_notify):
         run = self._run(SlideRenderRun.Purpose.USER_PREVIEW)
         render_service.execute_render_run(str(run.id))
@@ -65,7 +67,7 @@ class RenderServiceTests(TestCase):
         self.assertEqual(m_notify.call_args.args[2], "slidedeck.rendered")
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)
     def test_cache_skips_unchanged_slides(self, m_render, m_notify):
         r1 = self._run(SlideRenderRun.Purpose.USER_PREVIEW)
         render_service.execute_render_run(str(r1.id))
@@ -78,7 +80,7 @@ class RenderServiceTests(TestCase):
         self.assertEqual(len(r2.result["slides"]), 2)
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)
     def test_changed_slide_re_renders(self, m_render, m_notify):
         render_service.execute_render_run(str(self._run(SlideRenderRun.Purpose.USER_PREVIEW).id))
         self.assertEqual(m_render.call_count, 1)
@@ -89,7 +91,7 @@ class RenderServiceTests(TestCase):
         self.assertEqual(m_render.call_count, 2)
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)
     def test_pdf_export_stores_pdf_asset(self, m_render, m_notify):
         run = self._run(SlideRenderRun.Purpose.PDF_EXPORT)
         render_service.execute_render_run(str(run.id))
@@ -99,7 +101,7 @@ class RenderServiceTests(TestCase):
         self.assertEqual(m_notify.call_args.args[2], "slidedeck.pdf_ready")
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=RenderUnavailable("no soffice"))
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=RenderUnavailable("no soffice"))
     def test_failed_render_marks_failed_and_notifies(self, m_render, m_notify):
         run = self._run(SlideRenderRun.Purpose.USER_PREVIEW)
         render_service.execute_render_run(str(run.id))
@@ -109,7 +111,7 @@ class RenderServiceTests(TestCase):
         self.assertEqual(m_notify.call_args.args[2], "slidedeck.render_failed")
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)
     def test_agent_preview_does_not_notify(self, m_render, m_notify):
         run = self._run(SlideRenderRun.Purpose.AGENT_PREVIEW, slide_ids=["s1"])
         render_service.execute_render_run(str(run.id))
@@ -122,15 +124,13 @@ class RenderServiceTests(TestCase):
     def test_re_render_deletes_superseded_asset(self, m_notify):
         counter = {"n": 0}
 
-        def uniq_render(pptx_bytes, **kwargs):
+        def uniq_render(deck, content, only_slide_ids, *, need_pdf):
             counter["n"] += 1
-            n = len([
-                x for x in zipfile.ZipFile(io.BytesIO(pptx_bytes)).namelist()
-                if x.startswith("ppt/slides/slide") and x.endswith(".xml") and "rels" not in x
-            ])
-            return b"%PDF", [(_PNG + f"-{counter['n']}-{i}".encode(), 100, 56) for i in range(n)]
+            built = _built_ids(content, only_slide_ids)
+            pdf = b"%PDF" if need_pdf else None
+            return pdf, [(_PNG + f"-{counter['n']}-{i}".encode(), 100, 56) for i in range(len(built))], []
 
-        with mock.patch("chat.slides.render_service.render_pptx", side_effect=uniq_render):
+        with mock.patch("chat.slides.render_service._render_slides", side_effect=uniq_render):
             render_service.execute_render_run(str(self._run(SlideRenderRun.Purpose.USER_PREVIEW).id))
             s1_asset = SlideRender.objects.get(slide_set=self.deck, slide_id="s1").asset_id
             s2_asset = SlideRender.objects.get(slide_set=self.deck, slide_id="s2").asset_id
@@ -144,7 +144,7 @@ class RenderServiceTests(TestCase):
         self.assertNotEqual(SlideRender.objects.get(slide_set=self.deck, slide_id="s2").asset_id, s2_asset)
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)
     def test_removed_slide_render_is_pruned(self, m_render, m_notify):
         render_service.execute_render_run(str(self._run(SlideRenderRun.Purpose.USER_PREVIEW).id))
         self.assertEqual(SlideRender.objects.filter(slide_set=self.deck).count(), 2)
@@ -156,7 +156,7 @@ class RenderServiceTests(TestCase):
         self.assertEqual(SlideRender.objects.filter(slide_set=self.deck).count(), 1)
 
     @mock.patch("chat.slides.render_service.notify_render_event")
-    @mock.patch("chat.slides.render_service.render_pptx", side_effect=_fake_render)
+    @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)
     def test_completed_run_is_idempotent(self, m_render, m_notify):
         run = self._run(SlideRenderRun.Purpose.USER_PREVIEW)
         render_service.execute_render_run(str(run.id))
