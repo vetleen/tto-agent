@@ -5,6 +5,18 @@ A main-agent skill that unlocks the slide-deck tools (``slide_canvas_write``,
 ``slides_add_slide`` and ``slides_preview_slide``; all ``section="skills"``,
 ``audience="main"``). Off by default per org — enable via
 ``org.preferences["skills"]["slide_deck_collaborator"]["enabled"] = True``.
+
+Design decisions (2026-08):
+* **Main-agent-only authoring** — unlike the canvas (which has ``subagent_canvas_*``
+  tools), a deck is one spatial, structured document; concurrent sub-agent edits
+  would conflict. All slide tools are ``audience="main"`` so sub-agents can't call
+  them. Sub-agents contribute by returning research/content that the main agent
+  composes into slides. (Rendering still uses the sub-agent dispatch+poll worker
+  pattern via ``slides_preview_slide`` — that's worker offload, not authoring.)
+* **No ``slides_save_to_document``** (canvas has ``canvas_save_to_document``) — a
+  deck is a visual final deliverable the user downloads (.pptx/PDF), not a text
+  document for RAG retrieval, so saving it into a data room adds little. Revisit
+  if pilots ask for decks-as-project-artifacts.
 """
 
 SLIDE_DECK_COLLABORATOR = {

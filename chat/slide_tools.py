@@ -293,6 +293,10 @@ class AddSlideTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Adding slide..."
     end_label: str = "Added a slide"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        layout = result.get("layout")
+        return f"Added a {layout} slide" if layout else None
     description: str = (
         "Insert a pre-designed layout slide into the active deck, then edit its "
         "placeholder text with slide_canvas_edit. Returns the new slide's JSON and id."
@@ -345,6 +349,7 @@ class AddSlideTool(ContextAwareTool):
             "deck_id": str(deck.pk),
             "slide_id": inserted.get("id"),
             "position": idx,
+            "layout": layout,
             "slide_json": schema.canonical_deck_text(inserted),
         })
 
