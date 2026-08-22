@@ -157,9 +157,23 @@ def _line_width(line):
     return w
 
 
+# PowerPoint text-frame default insets (python-pptx add_textbox / add_shape use
+# these when no explicit margins are set): lIns/rIns 0.1", tIns/bIns 0.05". We
+# apply them so line wrapping and vertical position match the .pptx.
+_INSET_LR = 7.2   # pt
+_INSET_TB = 3.6   # pt
+
+
 def _draw_text_frame(draw, theme, frame, box, scale):
-    """Render a text frame (paragraphs) inside ``box`` (x, y, w, h in px)."""
+    """Render a text frame (paragraphs) inside ``box`` (x, y, w, h in px).
+
+    The box is the full element/shape/cell rect; the standard PowerPoint text
+    insets are applied here so callers pass unpadded rects.
+    """
     bx, by, bw, bh = box
+    ins_lr, ins_tb = _INSET_LR * scale, _INSET_TB * scale
+    bx, by = bx + ins_lr, by + ins_tb
+    bw, bh = max(1.0, bw - 2 * ins_lr), max(1.0, bh - 2 * ins_tb)
     default_cls = frame.get("class")
     paragraphs = frame.get("paragraphs") or []
     valign = frame.get("valign", "top")
@@ -220,11 +234,14 @@ def _draw_text_frame(draw, theme, frame, box, scale):
             lh = p["line_h"][li]
             line_w = _line_width(line)
             x0 = bx + p["indent"]
+            justify_extra = 0.0
             if p["align"] == "center":
                 x0 = bx + p["indent"] + max(0.0, (bw - p["indent"] - line_w) / 2)
             elif p["align"] == "right":
                 x0 = bx + bw - line_w
-            baseline = cursor_y + (lh / _DEFAULT_LINE_SPACING) - (max((w.descent for w in line), default=0))
+            elif p["align"] == "justify" and li < len(p["lines"]) - 1 and len(line) > 1:
+                # Spread the slack across the gaps (the last line stays left).
+                justify_extra = max(0.0, (bw - p["indent"] - line_w) / (len(line) - 1))
             # Bullet glyph on the first line of the paragraph, at its level edge.
             if li == 0 and p["bullet"]:
                 bchar, bfont, bcolor, blevel_x = p["bullet"]
@@ -232,7 +249,7 @@ def _draw_text_frame(draw, theme, frame, box, scale):
             x = x0
             for wi, word in enumerate(line):
                 if wi > 0:
-                    x += word.space_w
+                    x += word.space_w + justify_extra
                 draw.text((x, cursor_y), word.text, font=word.font, fill=word.color)
                 if word.underline:
                     uy = cursor_y + word.ascent + max(1, int(scale))
@@ -255,22 +272,33 @@ def _draw_shape(draw, theme, el, scale):
     line = el.get("line") or {}
     outline = _rgb(theme, line.get("color"), None) if line.get("color") else None
     width = max(1, int((line.get("w") or 1) * scale)) if outline else 0
+    dash = line.get("dash")
+    dashed = bool(outline and dash and dash != "solid")
+    # For a dashed border, fill the shape without a solid outline and stroke the
+    # perimeter dashed afterwards.
+    o = None if dashed else outline
+    ow = 0 if dashed else width
     x2, y2 = x + w, y + h
+    border_pts = None  # perimeter for a dashed stroke (None -> no dashed border)
 
     if name in ("oval", "ellipse", "circle"):
-        draw.ellipse([x, y, x2, y2], fill=fill, outline=outline, width=width)
-    elif name in ("rounded_rect",):
+        draw.ellipse([x, y, x2, y2], fill=fill, outline=o, width=ow)
+    elif name == "rounded_rect":
         r = min(w, h) * 0.14
-        draw.rounded_rectangle([x, y, x2, y2], radius=r, fill=fill, outline=outline, width=width)
-    elif name in ("right_arrow", "left_arrow"):
-        _draw_block_arrow(draw, x, y, w, h, name, fill, outline, width)
-    elif name in ("chevron",):
-        _draw_chevron(draw, x, y, w, h, fill, outline, width)
-    elif name in ("diamond",):
-        draw.polygon([(x + w / 2, y), (x2, y + h / 2), (x + w / 2, y2), (x, y + h / 2)],
-                     fill=fill, outline=outline, width=width)
+        draw.rounded_rectangle([x, y, x2, y2], radius=r, fill=fill, outline=o, width=ow)
+        border_pts = [(x, y), (x2, y), (x2, y2), (x, y2)]  # approx (ignores rounding)
+    elif name in _POLY_SHAPES:
+        pts = _POLY_SHAPES[name](x, y, w, h)
+        draw.polygon(pts, fill=fill, outline=o, width=ow)
+        border_pts = pts
     else:  # rect + any unmapped shape
-        draw.rectangle([x, y, x2, y2], fill=fill, outline=outline, width=width)
+        draw.rectangle([x, y, x2, y2], fill=fill, outline=o, width=ow)
+        border_pts = [(x, y), (x2, y), (x2, y2), (x, y2)]
+
+    if dashed and border_pts:
+        loop = border_pts + [border_pts[0]]
+        for a, b in zip(loop, loop[1:]):
+            _styled_line(draw, a, b, outline, width, dash)
 
     text = el.get("text")
     if text:
@@ -280,8 +308,7 @@ def _draw_shape(draw, theme, el, scale):
             "paragraphs": _inject_default_color(text.get("paragraphs"), default_color),
             "valign": text.get("valign", "middle"),
         }
-        pad = 6 * scale
-        _draw_text_frame(draw, theme, frame, (x + pad, y + pad, w - 2 * pad, h - 2 * pad), scale)
+        _draw_text_frame(draw, theme, frame, (x, y, w, h), scale)
 
 
 def _inject_default_color(paragraphs, default_color):
@@ -295,35 +322,93 @@ def _inject_default_color(paragraphs, default_color):
     return out
 
 
-def _draw_block_arrow(draw, x, y, w, h, name, fill, outline, width):
+def _block_arrow_pts(x, y, w, h, name):
     head = min(w * 0.4, h)  # arrowhead length
     shaft = h * 0.5
     sy0, sy1 = y + (h - shaft) / 2, y + (h + shaft) / 2
     if name == "right_arrow":
-        pts = [(x, sy0), (x + w - head, sy0), (x + w - head, y), (x + w, y + h / 2),
-               (x + w - head, y + h), (x + w - head, sy1), (x, sy1)]
-    else:  # left_arrow
-        pts = [(x + w, sy0), (x + head, sy0), (x + head, y), (x, y + h / 2),
-               (x + head, y + h), (x + head, sy1), (x + w, sy1)]
-    draw.polygon(pts, fill=fill, outline=outline, width=width)
+        return [(x, sy0), (x + w - head, sy0), (x + w - head, y), (x + w, y + h / 2),
+                (x + w - head, y + h), (x + w - head, sy1), (x, sy1)]
+    return [(x + w, sy0), (x + head, sy0), (x + head, y), (x, y + h / 2),
+            (x + head, y + h), (x + head, sy1), (x + w, sy1)]
 
 
-def _draw_chevron(draw, x, y, w, h, fill, outline, width):
+def _chevron_pts(x, y, w, h):
     notch = w * 0.28
-    pts = [(x, y), (x + w - notch, y), (x + w, y + h / 2), (x + w - notch, y + h),
-           (x, y + h), (x + notch, y + h / 2)]
-    draw.polygon(pts, fill=fill, outline=outline, width=width)
+    return [(x, y), (x + w - notch, y), (x + w, y + h / 2), (x + w - notch, y + h),
+            (x, y + h), (x + notch, y + h / 2)]
+
+
+def _star_pts(x, y, w, h):
+    cx, cy = x + w / 2, y + h / 2
+    pts = []
+    for i in range(10):
+        ang = -math.pi / 2 + i * math.pi / 5
+        f = 1.0 if i % 2 == 0 else 0.40
+        pts.append((cx + (w / 2) * f * math.cos(ang), cy + (h / 2) * f * math.sin(ang)))
+    return pts
+
+
+def _hexagon_pts(x, y, w, h):
+    return [(x, y + h / 2), (x + w * 0.25, y), (x + w * 0.75, y),
+            (x + w, y + h / 2), (x + w * 0.75, y + h), (x + w * 0.25, y + h)]
+
+
+def _pentagon_pts(x, y, w, h):  # MSO "home plate" pentagon, pointing right
+    return [(x, y), (x + w * 0.55, y), (x + w, y + h / 2), (x + w * 0.55, y + h), (x, y + h)]
+
+
+def _diamond_pts(x, y, w, h):
+    return [(x + w / 2, y), (x + w, y + h / 2), (x + w / 2, y + h), (x, y + h / 2)]
+
+
+_POLY_SHAPES = {
+    "diamond": _diamond_pts, "star": _star_pts, "hexagon": _hexagon_pts, "pentagon": _pentagon_pts,
+    "right_arrow": lambda x, y, w, h: _block_arrow_pts(x, y, w, h, "right_arrow"),
+    "left_arrow": lambda x, y, w, h: _block_arrow_pts(x, y, w, h, "left_arrow"),
+    "chevron": _chevron_pts,
+}
 
 
 # ---------------------------------------------------------------------------
 # Lines
 # ---------------------------------------------------------------------------
+# MSO dash styles as [on, off, ...] segment lengths in multiples of the line
+# width (matches PowerPoint's DASH / ROUND_DOT / DASH_DOT).
+_DASH_PATTERNS = {
+    "dash": [4, 3],
+    "dot": [1, 3],
+    "dashdot": [4, 3, 1, 3],
+}
+
+
+def _styled_line(draw, p1, p2, color, width, dash):
+    """Draw a straight line, solid or dashed per ``dash``."""
+    if not dash or dash == "solid" or dash not in _DASH_PATTERNS:
+        draw.line([p1, p2], fill=color, width=width)
+        return
+    pattern = [max(1.0, seg * width) for seg in _DASH_PATTERNS[dash]]
+    (x1, y1), (x2, y2) = p1, p2
+    total = math.hypot(x2 - x1, y2 - y1)
+    if total <= 0:
+        return
+    ux, uy = (x2 - x1) / total, (y2 - y1) / total
+    pos, idx, on = 0.0, 0, True
+    while pos < total:
+        seg = pattern[idx % len(pattern)]
+        end = min(pos + seg, total)
+        if on:
+            draw.line([(x1 + ux * pos, y1 + uy * pos), (x1 + ux * end, y1 + uy * end)],
+                      fill=color, width=width)
+        pos, idx, on = end, idx + 1, not on
+
+
 def _draw_line(draw, theme, el, scale):
     x1, y1 = el["x1"] * scale, el["y1"] * scale
     x2, y2 = el["x2"] * scale, el["y2"] * scale
     color = _rgb(theme, el.get("color"), (60, 60, 60))
     width = max(1, int((el.get("w") or 1) * scale))
-    draw.line([(x1, y1), (x2, y2)], fill=color, width=width)
+    _styled_line(draw, (x1, y1), (x2, y2), color, width, el.get("dash"))
     arrow = el.get("arrow", "none")
     if arrow in ("end", "both"):
         _arrowhead(draw, x1, y1, x2, y2, color, width)
@@ -398,9 +483,8 @@ def _draw_table(draw, theme, el, scale):
             run["color"] = color
             frame = {"paragraphs": [{"runs": [run], "align": spec.get("align", "left")}],
                      "valign": "middle"}
-            pad = 8 * scale
             _draw_text_frame(draw, theme, {**frame, "class": spec.get("class") or text_class},
-                             (cx + pad, cy, cell_w - 2 * pad, row_h), scale)
+                             (cx, cy, cell_w, row_h), scale)
             cx += cell_w
         cy += row_h
     # No grid lines: the .pptx builder neutralises the table style and relies on

@@ -86,6 +86,26 @@ class PillowRenderTests(SimpleTestCase):
         out = pillow_render.render_deck_pngs(deck, dpi=72, only_slide_ids=["s2"])
         self.assertEqual([sid for sid, *_ in out], ["s2"])
 
+    def test_polygon_shapes_and_dashes_render(self):
+        deck = self._deck([{"elements": [
+            {"type": "shape", "x": 40, "y": 40, "w": 100, "h": 100, "shape": "star", "fill": "accent5"},
+            {"type": "shape", "x": 160, "y": 40, "w": 100, "h": 100, "shape": "hexagon", "fill": "accent2"},
+            {"type": "shape", "x": 280, "y": 40, "w": 100, "h": 100, "shape": "pentagon", "fill": "accent4"},
+            {"type": "shape", "x": 400, "y": 40, "w": 160, "h": 90, "shape": "rect", "fill": "lt2",
+             "line": {"color": "accent1", "w": 2, "dash": "dash"}},
+            {"type": "line", "x1": 40, "y1": 200, "x2": 900, "y2": 200, "color": "dk2", "w": 2, "dash": "dashdot"},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 3)
+
+    def test_justified_paragraph_renders(self):
+        deck = self._deck([{"elements": [
+            {"type": "text", "x": 48, "y": 48, "w": 400, "h": 300, "class": "body",
+             "paragraphs": [{"align": "justify", "runs": [{"t": " ".join(["word"] * 40)}]}]},
+        ]}])
+        png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 1)
+
     def test_one_bad_element_does_not_fail_the_slide(self):
         deck = self._deck([{"elements": [
             {"type": "table", "x": 40, "y": 40, "w": 800, "h": 100, "rows": "not-a-list"},
