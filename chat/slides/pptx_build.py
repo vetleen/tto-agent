@@ -603,15 +603,19 @@ def _slide_is_dark(sdict, theme) -> bool:
     """Is the slide backdrop dark? (bg colour, a gradient's end colour, and/or a
     scrim wash over a photo.) Used so auto-drawn text/gridlines flip to light."""
     grad = sdict.get("bg_gradient")
-    ref = grad.get("to", "dk1") if grad else sdict.get("bg")
-    base = _resolve_rgb(theme, ref, RGBColor(0xFF, 0xFF, 0xFF)) if ref else RGBColor(0xFF, 0xFF, 0xFF)
+    if grad:  # use the gradient's mean, not one end, for the contrast decision
+        c1 = _resolve_rgb(theme, grad.get("from", "dk2"), RGBColor(0x80, 0x80, 0x80))
+        c2 = _resolve_rgb(theme, grad.get("to", "dk1"), RGBColor(0x40, 0x40, 0x40))
+        base = RGBColor(*(round((a + b) / 2) for a, b in zip(c1, c2)))
+    else:
+        ref = sdict.get("bg")
+        base = _resolve_rgb(theme, ref, RGBColor(0xFF, 0xFF, 0xFF)) if ref else RGBColor(0xFF, 0xFF, 0xFF)
     scrim = sdict.get("bg_scrim")
     if scrim:  # a translucent wash — blend it over the base as the elements see it
         col = _resolve_rgb(theme, scrim.get("color", "dk1"), RGBColor(0, 0, 0))
         op = max(0.0, min(1.0, float(scrim.get("opacity", 0.4))))
         base = RGBColor(*(round(b * (1 - op) + c * op) for b, c in zip(base, col)))
-    elif not ref:
-        return False  # default light background, no scrim
+    # No backdrop at all leaves `base` white -> not dark, so no guard needed.
     return (0.299 * base[0] + 0.587 * base[1] + 0.114 * base[2]) < 130
 
 
@@ -968,6 +972,13 @@ def _add_chart(slide, el, theme, warnings, bg_dark=False):
             chart.plots[0].has_data_labels = True
         except Exception:  # noqa: BLE001
             pass
+
+    # Match the preview's ring thickness (python-pptx keeps a stock ~50% hole).
+    if kind == "doughnut" and el.get("hole"):
+        try:
+            pokes.set_doughnut_hole(chart, round(float(el["hole"]) * 100))
+        except Exception:  # noqa: BLE001
+            logger.debug("doughnut hole poke failed", exc_info=True)
 
     # KPI-ring: a headline figure centred in the doughnut hole.
     if kind == "doughnut" and el.get("center_label"):

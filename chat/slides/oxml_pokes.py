@@ -1,13 +1,14 @@
 """Small OOXML surgery that python-pptx has no public API for.
 
-Kept tiny and well-commented because raw ``a:``/``p:`` element juggling is the
-opposite of self-documenting. Everything else in the builder uses python-pptx's
-own API; only these three need the escape hatch:
+Kept tiny and well-commented because raw ``a:``/``p:``/``c:`` element juggling is
+the opposite of self-documenting. Everything else in the builder uses python-pptx's
+own API; only these need the escape hatch:
 
 * table built-in style id (and we default to a *no-style* id so our explicit
   cell fills win),
 * paragraph bullet glyph (``a:buChar`` / ``a:buNone``),
-* connector arrowheads (``a:headEnd`` / ``a:tailEnd``).
+* connector arrowheads (``a:headEnd`` / ``a:tailEnd``),
+* doughnut hole size (``c:holeSize``).
 
 python-pptx *does* expose ``LineFormat.dash_style``, so dashes are handled in the
 builder, not here.
@@ -117,3 +118,18 @@ def set_connector_arrows(line_format, arrow: str) -> None:
         ln.append(ln.makeelement(qn("a:headEnd"), {"type": "triangle"}))
     if arrow in ("end", "both"):
         ln.append(ln.makeelement(qn("a:tailEnd"), {"type": "triangle"}))
+
+
+def set_doughnut_hole(chart, percent: int) -> None:
+    """Set a doughnut chart's hole diameter (``c:holeSize``, 10–90 % of the
+    overall size). python-pptx has no API for it, so the .pptx would otherwise
+    keep the stock ~50 % hole and not match the preview's ``hole`` fraction."""
+    percent = max(10, min(90, int(percent)))
+    dough = chart._chartSpace.find(qn("c:chart") + "/" + qn("c:plotArea") + "/" + qn("c:doughnutChart"))
+    if dough is None:
+        return
+    hole = dough.find(qn("c:holeSize"))
+    if hole is None:
+        hole = dough.makeelement(qn("c:holeSize"), {})
+        dough.append(hole)
+    hole.set("val", str(percent))

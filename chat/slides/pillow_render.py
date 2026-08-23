@@ -1539,7 +1539,9 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
     if bgrad:
         c1, c2 = _gradient_colors(theme, bgrad)
         img.paste(_gradient_rgb(W, H, c1, c2, bgrad.get("angle", 90.0)), (0, 0))
-        bg = c2  # chart-legend backdrop matches the gradient end
+        # Text-contrast decisions use the gradient's mean, not one end, so a
+        # gradient that reverses lightness doesn't mis-pick contrast.
+        bg = tuple(round((a + b) / 2) for a, b in zip(c1, c2))
 
     # Full-bleed background image (drawn behind everything), then an optional
     # scrim — a translucent colour wash so text stays legible over the photo.
