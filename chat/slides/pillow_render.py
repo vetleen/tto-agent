@@ -630,7 +630,7 @@ def render_line_png(theme, el, ss: int = 3):
 # ---------------------------------------------------------------------------
 # Network / node-link diagrams (ecosystem maps, value webs, relationship graphs)
 # ---------------------------------------------------------------------------
-def _draw_network(draw, theme, el, scale):
+def _draw_network(draw, theme, el, scale, bg=None):
     """Draw a node-link diagram: edges under nodes, labels on top. Node coords
     are points relative to the element's ``x``/``y`` origin."""
     ox, oy = el["x"] * scale, el["y"] * scale
@@ -652,7 +652,9 @@ def _draw_network(draw, theme, el, scale):
 
     n_color = el.get("node_color", "accent2")
     n_r = el.get("node_r", 5.0)
-    lbl_color = el.get("label_color", "dk1")
+    # Default labels to light on a dark slide so they don't vanish; an explicit
+    # label_color always wins.
+    lbl_color = el.get("label_color") or ("lt1" if (bg is not None and _is_dark(bg)) else "dk1")
     lbl_size = el.get("label_size", 12.0)
     for nd in nodes:
         cx, cy = ox + nd["x"] * scale, oy + nd["y"] * scale
@@ -688,10 +690,11 @@ def _draw_network(draw, theme, el, scale):
 # ---------------------------------------------------------------------------
 # Tables
 # ---------------------------------------------------------------------------
-def _draw_table(draw, theme, el, scale):
+def _draw_table(draw, theme, el, scale, bg=None):
     rows = el.get("rows") or []
     if not rows:
         return
+    dark_bg = bg is not None and _is_dark(bg)
     n_cols = max(len(r) for r in rows)
     x, y, w = el["x"] * scale, el["y"] * scale, el["w"] * scale
     col_widths = el.get("col_widths")
@@ -728,9 +731,18 @@ def _draw_table(draw, theme, el, scale):
                     fill_v = tbl.get("band_fill")
             if fill_v:
                 draw.rectangle([cx, cy, cx + cell_w, cy + row_h], fill=_rgb(theme, fill_v, None))
-            # text
+            # text — a transparent (unfilled) cell sits on the slide bg, so on a
+            # dark slide its default text must go light or it vanishes; a filled
+            # (header/banded/explicit) cell keeps normal contrast.
             base = theme_mod.base_text_style(theme, spec.get("class") or text_class)
-            color = spec.get("color") or (tbl.get("header_color") if is_header else base.get("color"))
+            if spec.get("color"):
+                color = spec["color"]
+            elif is_header:
+                color = tbl.get("header_color")
+            elif not fill_v and dark_bg:
+                color = "lt1"
+            else:
+                color = base.get("color")
             run = {"t": spec.get("t", "")}
             if spec.get("b") is not None:
                 run["b"] = spec["b"]
@@ -1438,13 +1450,13 @@ def _draw_element(draw, img, theme, el, scale, resolver, bg=None):
     elif etype == "image":
         _draw_image(img, theme, el, scale, resolver)
     elif etype == "table":
-        _draw_table(draw, theme, el, scale)
+        _draw_table(draw, theme, el, scale, bg)
     elif etype == "line":
         _draw_line(draw, theme, el, scale)
     elif etype == "chart":
         _draw_chart(draw, theme, el, scale, bg)
     elif etype == "network":
-        _draw_network(draw, theme, el, scale)
+        _draw_network(draw, theme, el, scale, bg)
 
 
 def _draw_element_rotated(img, theme, el, scale, resolver, angle):

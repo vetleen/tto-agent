@@ -400,7 +400,7 @@ def _add_image(slide, el, theme, resolver, warnings):
         pokes.set_picture_alpha(pic, opacity)
 
 
-def _add_table(slide, el, theme, warnings):
+def _add_table(slide, el, theme, warnings, bg_dark=False):
     rows = el.get("rows") or []
     n_rows = len(rows)
     n_cols = max((len(r) for r in rows), default=0)
@@ -430,7 +430,7 @@ def _add_table(slide, el, theme, warnings):
         is_band = banding and not is_header and (ri % 2 == 0)
         for ci in range(n_cols):
             spec = row[ci] if ci < len(row) else {}
-            _render_cell(table.cell(ri, ci), spec or {}, theme, tbl_theme, text_class, is_header, is_band)
+            _render_cell(table.cell(ri, ci), spec or {}, theme, tbl_theme, text_class, is_header, is_band, bg_dark)
 
     # Content-sized rows: never stretch a small table to fill the requested h
     # (that balloons the header and detaches the data row). PowerPoint treats the
@@ -442,7 +442,7 @@ def _add_table(slide, el, theme, warnings):
     gf.height = row_h * n_rows
 
 
-def _render_cell(cell, spec, theme, tbl_theme, text_class, is_header, is_band):
+def _render_cell(cell, spec, theme, tbl_theme, text_class, is_header, is_band, bg_dark=False):
     tf = cell.text_frame
     tf.clear()
     tf.word_wrap = True
@@ -463,15 +463,24 @@ def _render_cell(cell, spec, theme, tbl_theme, text_class, is_header, is_band):
     r.font.bold = bool(is_header if bold is None else bold)
     if spec.get("i") is not None:
         r.font.italic = bool(spec["i"])
-    color = spec.get("color") or (tbl_theme.get("header_color") if is_header else style.get("color"))
-    _apply_color(r.font.color, theme, color)
-
+    # Resolve the effective fill first: a transparent (unfilled) cell shows the
+    # slide bg, so on a dark slide its default text must go light or it vanishes.
     fill_v = spec.get("fill")
     if fill_v is None:
         if is_header:
             fill_v = tbl_theme.get("header_fill")
         elif is_band:
             fill_v = tbl_theme.get("band_fill")
+    if spec.get("color"):
+        color = spec["color"]
+    elif is_header:
+        color = tbl_theme.get("header_color")
+    elif not fill_v and bg_dark:
+        color = "lt1"
+    else:
+        color = style.get("color")
+    _apply_color(r.font.color, theme, color)
+
     if fill_v:
         cell.fill.solid()
         _apply_color(cell.fill.fore_color, theme, fill_v)
@@ -500,7 +509,7 @@ def _add_line(slide, el, theme):
     pokes.set_connector_arrows(lf, el.get("arrow", "none"))
 
 
-def _add_network(slide, el, theme, warnings):
+def _add_network(slide, el, theme, warnings, bg_dark=False):
     """A node-link diagram: edges as connectors, nodes as ovals, labels as
     textboxes. One JSON element expands to many native shapes (there's no
     per-slide shape cap on the .pptx side — the cap is on the authoring JSON)."""
@@ -523,7 +532,7 @@ def _add_network(slide, el, theme, warnings):
 
     n_color = el.get("node_color", "accent2")
     n_r = el.get("node_r", 5.0)
-    lbl_color = el.get("label_color", "dk1")
+    lbl_color = el.get("label_color") or ("lt1" if bg_dark else "dk1")
     lbl_size = el.get("label_size", 12.0)
     for nd in nodes:
         cx, cy = ox + nd["x"], oy + nd["y"]
@@ -983,7 +992,7 @@ def _render_element(slide, el, theme, resolver, warnings, bg_dark=False):
         elif etype == "image":
             _add_image(slide, el, theme, resolver, warnings)
         elif etype == "table":
-            _add_table(slide, el, theme, warnings)
+            _add_table(slide, el, theme, warnings, bg_dark)
         elif etype == "line":
             _add_line(slide, el, theme)
         elif etype == "chart":
@@ -991,7 +1000,7 @@ def _render_element(slide, el, theme, resolver, warnings, bg_dark=False):
         elif etype == "icon":
             _add_icon(slide, el, theme, warnings)
         elif etype == "network":
-            _add_network(slide, el, theme, warnings)
+            _add_network(slide, el, theme, warnings, bg_dark)
         else:
             warnings.append(f"unknown element type '{etype}' skipped")
     except Exception as exc:  # noqa: BLE001 — one bad element must not fail the deck

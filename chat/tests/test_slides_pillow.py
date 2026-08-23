@@ -189,6 +189,25 @@ class PillowRenderTests(SimpleTestCase):
         # Nodes (teal), edges (teal), and dk1 label text = more than the bg colour.
         self.assertGreater(len(_colours(_open(png))), 3)
 
+    def test_network_labels_adapt_to_dark_background(self):
+        deck = self._deck([{"id": "s1", "bg": "dk1", "skip_footer": True, "elements": [
+            {"type": "network", "x": 80, "y": 80, "w": 400, "h": 300, "nodes": [
+                {"x": 40, "y": 40, "label": "Alpha"}, {"x": 220, "y": 160, "label": "Beta"}],
+             "edges": [{"a": 0, "b": 1}]},
+        ]}])
+        img = _open(pillow_render.render_slide_png(deck, 0, dpi=96)[0])
+        self.assertTrue([c for c in _colours(img) if min(c) > 200], "dark-bg labels should be light")
+
+    def test_table_unbanded_row_adapts_to_dark_background(self):
+        # Banding off => every data row is transparent => its text must go light
+        # on a dark slide or it's invisible on the slide bg.
+        deck = self._deck([{"id": "s1", "bg": "dk1", "skip_footer": True, "elements": [
+            {"type": "table", "x": 60, "y": 80, "w": 700, "h": 160, "header": False, "banding": False,
+             "rows": [[{"t": "Filed"}, {"t": "3.4M"}], [{"t": "Granted"}, {"t": "6.1M"}]]},
+        ]}])
+        img = _open(pillow_render.render_slide_png(deck, 0, dpi=96)[0])
+        self.assertTrue([c for c in _colours(img) if min(c) > 200], "unfilled cells should be light")
+
     def test_network_bad_edge_index_is_skipped(self):
         # An out-of-range edge must be ignored, not crash the render.
         deck = self._deck([{"id": "s1", "elements": [
