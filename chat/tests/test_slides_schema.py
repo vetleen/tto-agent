@@ -104,6 +104,30 @@ class ValidateDeckTests(SimpleTestCase):
         issues = schema.validate_deck(deck)
         self.assertTrue(any("Too many chart series" in i["message"] for i in issues))
 
+    def test_valid_network(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "network", "x": 100, "y": 100, "w": 400, "h": 300,
+             "nodes": [{"x": 0, "y": 0, "label": "A"}, {"x": 100, "y": 100, "label": "B"}],
+             "edges": [{"a": 0, "b": 1}]},
+        ]}]}
+        self.assertEqual(schema.validate_deck(deck), [])
+
+    def test_network_edge_index_out_of_range(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "network", "x": 1, "y": 1, "w": 400, "h": 300,
+             "nodes": [{"x": 0, "y": 0}], "edges": [{"a": 0, "b": 5}]},
+        ]}]}
+        issues = schema.validate_deck(deck)
+        self.assertTrue(any("node index outside" in i["message"] for i in issues))
+
+    def test_network_too_many_nodes(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "network", "x": 1, "y": 1, "w": 400, "h": 300,
+             "nodes": [{"x": i, "y": i} for i in range(schema.MAX_NETWORK_NODES + 1)], "edges": []},
+        ]}]}
+        issues = schema.validate_deck(deck)
+        self.assertTrue(any("Too many network nodes" in i["message"] for i in issues))
+
 
 class MintAndHashTests(SimpleTestCase):
     def test_mint_fills_missing_ids(self):

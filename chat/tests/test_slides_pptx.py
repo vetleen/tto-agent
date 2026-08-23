@@ -167,6 +167,24 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn("<a:gradFill", xml)
         self.assertEqual(warns, [])
 
+    def test_network_builds_connectors_ovals_and_labels(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "nw", "type": "network", "x": 100, "y": 100, "w": 500, "h": 300,
+             "nodes": [
+                 {"x": 0, "y": 0, "label": "Core", "label_pos": "c", "r": 0},
+                 {"x": 200, "y": 40, "label": "Partner", "label_pos": "r"},
+                 {"x": 40, "y": 200, "label": "Vendor", "label_pos": "b"},
+             ],
+             "edges": [{"a": 0, "b": 1}, {"a": 0, "b": 2}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertEqual(xml.count("<p:cxnSp>"), 2)          # two edge connectors
+        self.assertGreaterEqual(xml.count('prst="ellipse"'), 2)  # node dots (hub r=0 has none)
+        self.assertIn("Partner", xml)                        # a node label
+        self.assertEqual(warns, [])
+
     def test_harvey_ball_embeds_as_picture(self):
         # Rasterised (PNG) so it pixel-matches the preview — OOXML pie fills the
         # opposite side, so a native pie would mis-render in PowerPoint.

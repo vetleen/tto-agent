@@ -578,6 +578,64 @@ def _arrowhead(draw, fx, fy, tx, ty, color, width):
 
 
 # ---------------------------------------------------------------------------
+# Network / node-link diagrams (ecosystem maps, value webs, relationship graphs)
+# ---------------------------------------------------------------------------
+def _draw_network(draw, theme, el, scale):
+    """Draw a node-link diagram: edges under nodes, labels on top. Node coords
+    are points relative to the element's ``x``/``y`` origin."""
+    ox, oy = el["x"] * scale, el["y"] * scale
+    nodes = el.get("nodes") or []
+    n = len(nodes)
+
+    def pos(i):
+        nd = nodes[i]
+        return (ox + nd["x"] * scale, oy + nd["y"] * scale)
+
+    e_color, e_w = el.get("edge_color", "accent2"), el.get("edge_w", 1.0)
+    for edge in el.get("edges") or []:
+        a, b = edge.get("a"), edge.get("b")
+        if not (isinstance(a, int) and isinstance(b, int) and 0 <= a < n and 0 <= b < n):
+            continue
+        col = _rgb(theme, edge.get("color") or e_color, (120, 120, 120))
+        w = max(1, int((edge.get("w") or e_w) * scale))
+        _styled_line(draw, pos(a), pos(b), col, w, edge.get("dash"))
+
+    n_color = el.get("node_color", "accent2")
+    n_r = el.get("node_r", 5.0)
+    lbl_color = el.get("label_color", "dk1")
+    lbl_size = el.get("label_size", 12.0)
+    for nd in nodes:
+        cx, cy = ox + nd["x"] * scale, oy + nd["y"] * scale
+        emph = bool(nd.get("emphasis"))
+        base_r = nd["r"] if nd.get("r") is not None else n_r
+        r = base_r * (1.6 if emph else 1.0) * scale
+        col = _rgb(theme, nd.get("color") or n_color, (80, 120, 100))
+        if r > 0:
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
+        label = nd.get("label") or ""
+        lpos = nd.get("label_pos", "r")
+        if not label or lpos == "none":
+            continue
+        fs = nd["size"] if nd.get("size") is not None else lbl_size * (1.25 if emph else 1.0)
+        lh = fs * 1.4 * scale
+        lw = 180 * scale
+        gap = (r if r > 0 else 0) + 4 * scale
+        if lpos == "l":
+            lx, ly, al = cx - gap - lw, cy - lh / 2, "right"
+        elif lpos == "t":
+            lx, ly, al = cx - lw / 2, cy - gap - lh, "center"
+        elif lpos == "b":
+            lx, ly, al = cx - lw / 2, cy + gap, "center"
+        elif lpos == "c":
+            lx, ly, al = cx - lw / 2, cy - lh / 2, "center"
+        else:  # "r"
+            lx, ly, al = cx + gap, cy - lh / 2, "left"
+        frame = {"class": None, "valign": "middle", "paragraphs": [
+            {"align": al, "runs": [{"t": label, "size": fs, "b": emph, "color": lbl_color}]}]}
+        _draw_text_frame(draw, theme, frame, (lx, ly, lw, lh), scale)
+
+
+# ---------------------------------------------------------------------------
 # Tables
 # ---------------------------------------------------------------------------
 def _draw_table(draw, theme, el, scale):
@@ -1324,6 +1382,8 @@ def _draw_element(draw, img, theme, el, scale, resolver, bg=None):
         _draw_line(draw, theme, el, scale)
     elif etype == "chart":
         _draw_chart(draw, theme, el, scale, bg)
+    elif etype == "network":
+        _draw_network(draw, theme, el, scale)
 
 
 def _draw_element_rotated(img, theme, el, scale, resolver, angle):

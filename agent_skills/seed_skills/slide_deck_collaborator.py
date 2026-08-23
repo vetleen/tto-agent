@@ -136,6 +136,22 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    `check, x, plus, minus, arrow_right, arrow_left, arrow_up, arrow_down, trend_up, trend_down,
    target, check_circle, warning, info, star, clock, calendar, bar_chart, shield, location,
    lightbulb, gear, person, people, building, globe, flag, search, bolt, cash, rocket, mail, doc`.
+8. **network** — a node-link diagram (an **ecosystem map / value web / partner network /
+   relationship graph** — e.g. "us at the centre, competitors/partners around us, connected"):
+   `{"type":"network","x":260,"y":150,"w":520,"h":340,"node_color":"accent2","edge_color":"accent2",`
+   `"node_r":6,"label_size":13,"nodes":[...],"edges":[...]}`.
+   - Each **node** is `{"x":..,"y":..,"label":"Acme","label_pos":"r"}` — `x`/`y` are points
+     **relative to the element's x/y** (so the whole diagram moves as one). `label_pos` is
+     `r`/`l`/`t`/`b` (side of the dot) or `c` (centred ON the node — for a hub wordmark) or
+     `none`. A **hub** node: `"emphasis":true` (bigger dot + bolder label) or set `"r":0` with a
+     large `"size"` to show only a centred wordmark (no dot). Per-node `"color"`/`"r"`/`"size"`
+     override the element defaults.
+   - Each **edge** is `{"a":0,"b":3}` — indices into `nodes[]` (0-based); optional
+     `"color"`/`"w"`/`"dash"`.
+   - Pack the WHOLE mesh into this ONE element (up to 40 nodes / 80 edges) — don't build it from
+     dozens of separate `line`+`shape` elements (that blows the per-slide element budget). Sketch
+     an organic layout: hub near the centre, labelled nodes around the rim, a few interior
+     junction nodes (label `""`) so the edges form irregular cells rather than a plain star.
 
 ### Layouts (for `slides_add_slide`)
 `title, section, bullets, two_col, image_right, table, metric, chart, photo, agenda,

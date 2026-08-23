@@ -64,6 +64,8 @@ MAX_ELEMENTS_PER_SLIDE = 60
 MAX_PREVIEW_SLIDES_PER_CALL = 4
 MAX_CHART_SERIES = 8
 MAX_CHART_POINTS = 30
+MAX_NETWORK_NODES = 40
+MAX_NETWORK_EDGES = 80
 
 # Slide/element ids: short, url-safe, stable. Comments and previews key on them.
 _ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
@@ -270,8 +272,53 @@ class ChartElement(_Strict):
     widths: list[float] | None = None
 
 
+_LABEL_POS = ("t", "b", "l", "r", "c", "none")
+
+
+class NetworkNode(_Strict):
+    """A node in a ``network`` diagram. ``x``/``y`` are points RELATIVE to the
+    element's ``x``/``y`` origin (so the whole diagram moves as a unit)."""
+    x: float
+    y: float
+    label: str = ""
+    label_pos: Literal[_LABEL_POS] = "r"  # type: ignore[valid-type]
+    r: float | None = None    # dot radius (pt) override; else element node_r
+    color: str | None = None  # dot colour override; else element node_color
+    size: float | None = None  # label font size (pt) override; else label_size
+    emphasis: bool = False    # a hub: larger dot + bolder, larger label
+
+
+class NetworkEdge(_Strict):
+    a: int  # index into nodes[]
+    b: int  # index into nodes[]
+    color: str | None = None
+    w: float | None = None
+    dash: Literal[_DASH] | None = None  # type: ignore[valid-type]
+
+
+class NetworkElement(_Strict):
+    """A node-link diagram (ecosystem map / value web / relationship network):
+    nodes + edges packed into ONE element so a dense mesh doesn't blow the
+    per-slide element budget."""
+    id: str | None = None
+    type: Literal["network"]
+    x: float
+    y: float
+    w: float
+    h: float
+    nodes: list[NetworkNode] = Field(default_factory=list)
+    edges: list[NetworkEdge] = Field(default_factory=list)
+    node_color: str = "accent2"
+    edge_color: str = "accent2"
+    node_r: float = 5.0       # default dot radius (pt)
+    edge_w: float = 1.0       # default edge stroke width (pt)
+    label_color: str = "dk1"
+    label_size: float = 12.0  # default label font size (pt)
+
+
 Element = Annotated[
-    Union[TextElement, ShapeElement, ImageElement, TableElement, LineElement, ChartElement, IconElement],
+    Union[TextElement, ShapeElement, ImageElement, TableElement, LineElement,
+          ChartElement, IconElement, NetworkElement],
     Field(discriminator="type"),
 ]
 
@@ -375,6 +422,21 @@ def _semantic_issues(deck: dict) -> list[dict]:
                 for s in sers:
                     if len(s.get("values") or []) > MAX_CHART_POINTS:
                         issues.append({"path": path, "message": f"Too many chart data points (max {MAX_CHART_POINTS})."})
+                        break
+            if el.get("type") == "network":
+                path = f"slides.{si}.elements.{ei}"
+                nodes = el.get("nodes") or []
+                edges = el.get("edges") or []
+                if len(nodes) > MAX_NETWORK_NODES:
+                    issues.append({"path": path, "message": f"Too many network nodes (max {MAX_NETWORK_NODES})."})
+                if len(edges) > MAX_NETWORK_EDGES:
+                    issues.append({"path": path, "message": f"Too many network edges (max {MAX_NETWORK_EDGES})."})
+                n = len(nodes)
+                for edi, edge in enumerate(edges):
+                    a, b = edge.get("a"), edge.get("b")
+                    if not (isinstance(a, int) and isinstance(b, int) and 0 <= a < n and 0 <= b < n):
+                        issues.append({"path": f"{path}.edges.{edi}",
+                                       "message": f"Edge references a node index outside 0..{n - 1}."})
                         break
 
     if len(canonical_deck_text(deck)) > DECK_MAX_CHARS:

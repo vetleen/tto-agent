@@ -137,6 +137,31 @@ class PillowRenderTests(SimpleTestCase):
             self._deck([{"id": "s1", "bg": "lt1", "elements": []}]), 0, dpi=96)[0]).getpixel((5, 5))
         self.assertEqual(img.getpixel((5, 5)), bg)  # corner outside the chevron
 
+    def test_network_renders_nodes_edges_labels(self):
+        deck = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [
+            {"type": "network", "x": 100, "y": 100, "w": 500, "h": 300,
+             "node_color": "accent2", "edge_color": "accent2",
+             "nodes": [
+                 {"x": 0, "y": 0, "label": "Hub", "label_pos": "c", "emphasis": True, "r": 0},
+                 {"x": 200, "y": 40, "label": "Right", "label_pos": "r"},
+                 {"x": 40, "y": 200, "label": "Below", "label_pos": "b"},
+             ],
+             "edges": [{"a": 0, "b": 1}, {"a": 0, "b": 2}]},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+        # Nodes (teal), edges (teal), and dk1 label text = more than the bg colour.
+        self.assertGreater(len(_colours(_open(png))), 3)
+
+    def test_network_bad_edge_index_is_skipped(self):
+        # An out-of-range edge must be ignored, not crash the render.
+        deck = self._deck([{"id": "s1", "elements": [
+            {"type": "network", "x": 50, "y": 50, "w": 400, "h": 300,
+             "nodes": [{"x": 0, "y": 0}, {"x": 100, "y": 100}],
+             "edges": [{"a": 0, "b": 9}, {"a": 0, "b": 1}]},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=72)
+        self.assertGreater(len(_colours(_open(png))), 1)
+
     def test_justified_paragraph_renders(self):
         deck = self._deck([{"elements": [
             {"type": "text", "x": 48, "y": 48, "w": 400, "h": 300, "class": "body",

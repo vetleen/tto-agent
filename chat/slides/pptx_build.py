@@ -488,6 +488,65 @@ def _add_line(slide, el, theme):
     pokes.set_connector_arrows(lf, el.get("arrow", "none"))
 
 
+def _add_network(slide, el, theme, warnings):
+    """A node-link diagram: edges as connectors, nodes as ovals, labels as
+    textboxes. One JSON element expands to many native shapes (there's no
+    per-slide shape cap on the .pptx side — the cap is on the authoring JSON)."""
+    ox, oy = el.get("x", 0), el.get("y", 0)
+    nodes = el.get("nodes") or []
+    n = len(nodes)
+
+    e_color, e_w = el.get("edge_color", "accent2"), el.get("edge_w", 1.0)
+    for edge in el.get("edges") or []:
+        a, b = edge.get("a"), edge.get("b")
+        if not (isinstance(a, int) and isinstance(b, int) and 0 <= a < n and 0 <= b < n):
+            continue
+        x1, y1 = ox + nodes[a]["x"], oy + nodes[a]["y"]
+        x2, y2 = ox + nodes[b]["x"], oy + nodes[b]["y"]
+        conn = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Pt(x1), Pt(y1), Pt(x2), Pt(y2))
+        _apply_color(conn.line.color, theme, edge.get("color") or e_color)
+        conn.line.width = Pt(edge.get("w") or e_w)
+        if edge.get("dash"):
+            conn.line.dash_style = DASH_MAP.get(edge["dash"], MSO_LINE_DASH_STYLE.SOLID)
+
+    n_color = el.get("node_color", "accent2")
+    n_r = el.get("node_r", 5.0)
+    lbl_color = el.get("label_color", "dk1")
+    lbl_size = el.get("label_size", 12.0)
+    for nd in nodes:
+        cx, cy = ox + nd["x"], oy + nd["y"]
+        emph = bool(nd.get("emphasis"))
+        base_r = nd["r"] if nd.get("r") is not None else n_r
+        r = base_r * (1.6 if emph else 1.0)
+        if r > 0:
+            dot = slide.shapes.add_shape(MSO_SHAPE.OVAL, Pt(cx - r), Pt(cy - r), Pt(2 * r), Pt(2 * r))
+            dot.fill.solid()
+            _apply_color(dot.fill.fore_color, theme, nd.get("color") or n_color)
+            dot.line.fill.background()
+            dot.shadow.inherit = False
+        label = nd.get("label") or ""
+        lpos = nd.get("label_pos", "r")
+        if not label or lpos == "none":
+            continue
+        fs = nd["size"] if nd.get("size") is not None else lbl_size * (1.25 if emph else 1.0)
+        lh, lw = fs * 1.5, 180.0
+        gap = (r if r > 0 else 0) + 4.0
+        if lpos == "l":
+            lx, ly, al = cx - gap - lw, cy - lh / 2, "right"
+        elif lpos == "t":
+            lx, ly, al = cx - lw / 2, cy - gap - lh, "center"
+        elif lpos == "b":
+            lx, ly, al = cx - lw / 2, cy + gap, "center"
+        elif lpos == "c":
+            lx, ly, al = cx - lw / 2, cy - lh / 2, "center"
+        else:  # "r"
+            lx, ly, al = cx + gap, cy - lh / 2, "left"
+        tb = slide.shapes.add_textbox(Pt(lx), Pt(ly), Pt(lw), Pt(lh))
+        body = {"valign": "middle", "wrap": False, "paragraphs": [
+            {"align": al, "runs": [{"t": label, "size": fs, "b": emph, "color": lbl_color}]}]}
+        _render_text_body(tb.text_frame, body, theme)
+
+
 def _chart_ramp_rgb(theme, names):
     """Resolve a list of colour refs to RGBColor for chart series/points."""
     out = []
@@ -894,6 +953,8 @@ def _render_element(slide, el, theme, resolver, warnings):
             _add_chart(slide, el, theme, warnings)
         elif etype == "icon":
             _add_icon(slide, el, theme, warnings)
+        elif etype == "network":
+            _add_network(slide, el, theme, warnings)
         else:
             warnings.append(f"unknown element type '{etype}' skipped")
     except Exception as exc:  # noqa: BLE001 — one bad element must not fail the deck
