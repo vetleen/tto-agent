@@ -209,7 +209,8 @@ Seed a slide from one of these, then edit its placeholder text.
   theme colours; reserve accent colours for emphasis, not whole paragraphs.
 - **Dark backgrounds need light text.** The default text colours are dark, so on a slide
   with a dark `bg` (e.g. `dk1`/`dk2`) set each run's `color` to a light one (`lt1`/`lt2`)
-  or the text will be invisible.
+  or the text will be invisible. (Charts are the exception — their axis/legend/label text
+  adapts automatically, so a chart on a dark or `bg_gradient` slide stays legible.)
 - **Reach for the right diagram primitive** when a request implies one — these are what make a
   deck look designed, not generic:
   - *cycle / loop / flywheel / feedback / virtuous circle* → the `cycle` layout, or nodes in a

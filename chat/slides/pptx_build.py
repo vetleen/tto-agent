@@ -573,7 +573,28 @@ def _chart_ramp_rgb(theme, names):
     return out
 
 
-def _add_waterfall(slide, el, theme, warnings):
+def _resolve_rgb(theme, ref, default):
+    got = _chart_ramp_rgb(theme, [ref])
+    return got[0] if got else default
+
+
+def _slide_is_dark(sdict, theme) -> bool:
+    """Is the slide background dark? (bg colour, or a gradient's end colour.) Used
+    so auto-drawn chart text/gridlines flip to light and stay legible."""
+    grad = sdict.get("bg_gradient")
+    ref = grad.get("to", "dk1") if grad else sdict.get("bg")
+    if not ref:
+        return False  # default light background
+    r = _resolve_rgb(theme, ref, RGBColor(0xFF, 0xFF, 0xFF))
+    return (0.299 * r[0] + 0.587 * r[1] + 0.114 * r[2]) < 130
+
+
+def _chart_text_rgb(theme, bg_dark):
+    return _resolve_rgb(theme, "lt1" if bg_dark else "dk1",
+                        RGBColor(0xEC, 0xEF, 0xE9) if bg_dark else RGBColor(0x20, 0x20, 0x20))
+
+
+def _add_waterfall(slide, el, theme, warnings, bg_dark=False):
     """A native, editable waterfall/bridge via the stacked-column spacer trick:
     an invisible ``base`` series lifts each floating bar, and separate
     Decrease/Increase/Total series carry the colour. python-pptx has no native
@@ -610,6 +631,8 @@ def _add_waterfall(slide, el, theme, warnings):
 
     x, y, w, h = _pt_box(el)
     chart = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_STACKED, x, y, w, h, data).chart
+    if bg_dark:
+        chart.font.color.rgb = _chart_text_rgb(theme, True)
 
     if el.get("title"):
         chart.has_title = True
@@ -657,7 +680,7 @@ def _add_icon(slide, el, theme, warnings):
         pic.rotation = el["rotation"]
 
 
-def _add_combo(slide, el, theme, warnings):
+def _add_combo(slide, el, theme, warnings, bg_dark=False):
     """A bar+line combo (dual-axis). python-pptx can't build a native combo, so
     render it via the Pillow chart engine and embed it as a crisp picture — it
     pixel-matches the on-screen preview."""
@@ -666,7 +689,7 @@ def _add_combo(slide, el, theme, warnings):
     if not (el.get("series") or []):
         warnings.append("empty chart skipped")
         return
-    png = render_chart_png(theme, el)
+    png = render_chart_png(theme, el, dark_bg=bg_dark)
     x, y, w, h = _pt_box(el)
     slide.shapes.add_picture(BytesIO(png), x, y, w, h)
 
@@ -714,7 +737,7 @@ def _add_funnel(slide, el, theme, warnings):
         r.font.color.rgb = white
 
 
-def _add_marimekko(slide, el, theme, warnings):
+def _add_marimekko(slide, el, theme, warnings, bg_dark=False):
     """A Marimekko / mosaic: variable-width 100%-stacked columns, drawn as
     rectangles (python-pptx has no native type). Column width = the size
     dimension (`widths`, else the column total); height = share of the stack."""
@@ -740,7 +763,7 @@ def _add_marimekko(slide, el, theme, warnings):
         got = _chart_ramp_rgb(theme, [name])
         return got[0] if got else default
 
-    txt_rgb = _one("dk1", RGBColor(0x20, 0x20, 0x20))
+    txt_rgb = _chart_text_rgb(theme, bg_dark)
     grid_rgb = _one("accent3", RGBColor(0xC0, 0xC0, 0xC0))
     white = RGBColor(0xFF, 0xFF, 0xFF)
 
@@ -815,21 +838,21 @@ def _add_marimekko(slide, el, theme, warnings):
             lx += Pt(104)
 
 
-def _add_chart(slide, el, theme, warnings):
+def _add_chart(slide, el, theme, warnings, bg_dark=False):
     from pptx.chart.data import CategoryChartData
     from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 
     if el.get("chart") == "waterfall":
-        _add_waterfall(slide, el, theme, warnings)
+        _add_waterfall(slide, el, theme, warnings, bg_dark)
         return
     if el.get("chart") == "marimekko":
-        _add_marimekko(slide, el, theme, warnings)
+        _add_marimekko(slide, el, theme, warnings, bg_dark)
         return
     if el.get("chart") == "funnel":
-        _add_funnel(slide, el, theme, warnings)
+        _add_funnel(slide, el, theme, warnings)  # labels sit on the bars (always legible)
         return
     if el.get("chart") == "combo":
-        _add_combo(slide, el, theme, warnings)
+        _add_combo(slide, el, theme, warnings, bg_dark)
         return
 
     kind_map = {
@@ -867,6 +890,8 @@ def _add_chart(slide, el, theme, warnings):
 
     x, y, w, h = _pt_box(el)
     chart = slide.shapes.add_chart(xl, x, y, w, h, data).chart
+    if bg_dark:  # one lever: recolours axes, legend, data labels, title
+        chart.font.color.rgb = _chart_text_rgb(theme, True)
 
     if el.get("title"):
         chart.has_title = True
@@ -919,12 +944,12 @@ def _add_chart(slide, el, theme, warnings):
     # KPI-ring: a headline figure centred in the doughnut hole.
     if kind == "doughnut" and el.get("center_label"):
         try:
-            _add_doughnut_center(slide, el, theme)
+            _add_doughnut_center(slide, el, theme, bg_dark)
         except Exception:  # noqa: BLE001
             logger.debug("doughnut center label failed", exc_info=True)
 
 
-def _add_doughnut_center(slide, el, theme):
+def _add_doughnut_center(slide, el, theme, bg_dark=False):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 
     x, y, w, h = _pt_box(el)
@@ -945,10 +970,10 @@ def _add_doughnut_center(slide, el, theme):
     hole_w = mn * 0.9 * hole
     size_pt = min(mn * hole * 0.30, hole_w * 1.5 / max(1, len(label)))
     run.font.size = Pt(max(12, int(size_pt)))
-    _apply_color(run.font.color, theme, "dk2")
+    _apply_color(run.font.color, theme, "lt1" if bg_dark else "dk2")
 
 
-def _render_element(slide, el, theme, resolver, warnings):
+def _render_element(slide, el, theme, resolver, warnings, bg_dark=False):
     etype = el.get("type")
     try:
         if etype == "text":
@@ -962,7 +987,7 @@ def _render_element(slide, el, theme, resolver, warnings):
         elif etype == "line":
             _add_line(slide, el, theme)
         elif etype == "chart":
-            _add_chart(slide, el, theme, warnings)
+            _add_chart(slide, el, theme, warnings, bg_dark)
         elif etype == "icon":
             _add_icon(slide, el, theme, warnings)
         elif etype == "network":
@@ -1116,8 +1141,9 @@ def build_deck_pptx(
             _apply_bg_gradient(slide, theme, sdict["bg_gradient"], prs)
         if sdict.get("bg_image") or sdict.get("bg_scrim"):
             _apply_bg_image(slide, sdict, theme, image_resolver, prs, warnings)
+        bg_dark = _slide_is_dark(sdict, theme)
         for el in sdict.get("elements") or []:
-            _render_element(slide, el, theme, image_resolver, warnings)
+            _render_element(slide, el, theme, image_resolver, warnings, bg_dark)
         if not sdict.get("skip_footer"):
             _stamp_footer(slide, theme, idx + 1, total)
         if sdict.get("notes"):

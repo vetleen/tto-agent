@@ -847,6 +847,12 @@ def _nice_ticks(vmax, count=4):
     return math.ceil(vmax / step) * step, step
 
 
+def _is_dark(rgb) -> bool:
+    """Perceptual-luminance test so chart text/gridlines can flip for a dark slide."""
+    r, g, b = rgb[0], rgb[1], rgb[2]
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 130
+
+
 def _draw_chart(draw, theme, el, scale, bg=None):
     kind = el.get("chart", "column")
     x, y, w, h = el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale
@@ -857,9 +863,13 @@ def _draw_chart(draw, theme, el, scale, bg=None):
     ramp = [_rgb(theme, c, (150, 150, 150)) for c in ramp_names]
     n_vals = max((len(s.get("values") or []) for s in series), default=0)
     cats = el.get("categories") or [str(i + 1) for i in range(n_vals)]
-    txt = _rgb(theme, "dk1", (30, 30, 30))
+    # Axis/label/legend text is auto-drawn, so it must adapt to the slide bg —
+    # on a dark or gradient slide, dark text would be invisible.
+    dark_bg = bg is not None and _is_dark(bg)
+    txt = _rgb(theme, "lt1" if dark_bg else "dk1", (235, 235, 235) if dark_bg else (30, 30, 30))
     axis = _rgb(theme, "accent3", (180, 180, 180))
-    grid = tuple(min(255, c + 40) for c in axis)
+    grid = tuple(round(a + (t - a) * 0.3) for a, t in zip(axis, txt)) if dark_bg \
+        else tuple(min(255, c + 40) for c in axis)
 
     def fnt(px):
         return _font(theme_mod.font_family(theme, "data"), px * scale, False, False)
@@ -1236,15 +1246,16 @@ def _chart_combo(draw, plot, series, cats, ramp, fnt, txt, grid, scale):
             draw.ellipse([x0 - r, y0 - r, x0 + r, y0 + r], fill=color)
 
 
-def render_chart_png(theme, el, k: float = 3.0) -> bytes:
+def render_chart_png(theme, el, k: float = 3.0, dark_bg: bool = False) -> bytes:
     """Render a single chart element to transparent PNG bytes (for embedding a
-    chart type the .pptx can't build natively — e.g. combo — as a picture)."""
+    chart type the .pptx can't build natively — e.g. combo — as a picture).
+    ``dark_bg`` flips axis/label text to light for a dark slide."""
     w_px = max(1, int(el.get("w", 480) * k))
     h_px = max(1, int(el.get("h", 300) * k))
     img = Image.new("RGBA", (w_px, h_px), (0, 0, 0, 0))
     local = dict(el)
     local["x"], local["y"] = 0.0, 0.0
-    _draw_chart(ImageDraw.Draw(img), theme, local, k, bg=None)
+    _draw_chart(ImageDraw.Draw(img), theme, local, k, bg=((20, 36, 27) if dark_bg else None))
     buf = BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()

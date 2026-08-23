@@ -178,6 +178,25 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn("<a:gradFill", xml)
         self.assertEqual(warns, [])
 
+    def test_chart_on_dark_bg_gets_light_font(self):
+        # A chart on a dark slide must flip its auto-drawn text to light so it's
+        # legible in the download (the native chart has no other colour control).
+        from chat.slides import theme as tmod
+        lt1_hex = tmod.resolve_theme({})["colors"]["lt1"].lstrip("#").upper()
+
+        def chart_xml(bg):
+            deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{
+                "id": "s1", "bg": bg, "elements": [
+                    {"type": "chart", "x": 60, "y": 80, "w": 600, "h": 340, "chart": "column",
+                     "categories": ["A", "B"], "series": [{"name": "S", "values": [1, 2]}]}]}]}
+            data, _ = build_deck_pptx(deck)
+            z = zipfile.ZipFile(io.BytesIO(data))
+            part = next(n for n in z.namelist() if n.startswith("ppt/charts/chart") and n.endswith(".xml"))
+            return z.read(part).decode().upper()
+
+        self.assertIn(lt1_hex, chart_xml("dk1"))       # dark slide -> light chart text
+        self.assertNotIn(lt1_hex, chart_xml("lt1"))    # light slide -> no light-text override
+
     def test_curved_line_embeds_picture_straight_stays_connector(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "c1", "type": "line", "x1": 60, "y1": 120, "x2": 400, "y2": 120,

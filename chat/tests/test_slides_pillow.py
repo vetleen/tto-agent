@@ -137,6 +137,21 @@ class PillowRenderTests(SimpleTestCase):
             self._deck([{"id": "s1", "bg": "lt1", "elements": []}]), 0, dpi=96)[0]).getpixel((5, 5))
         self.assertEqual(img.getpixel((5, 5)), bg)  # corner outside the chevron
 
+    def test_is_dark_luminance(self):
+        self.assertTrue(pillow_render._is_dark((20, 36, 27)))     # dk1-ish
+        self.assertFalse(pillow_render._is_dark((251, 250, 246)))  # lt1-ish
+
+    def test_chart_labels_adapt_to_dark_background(self):
+        # On a dark slide the auto-drawn axis/labels must switch to light text so
+        # they're not invisible — the chart region should contain near-white pixels.
+        dark = self._deck([{"id": "s1", "bg": "dk1", "skip_footer": True, "elements": [
+            {"type": "chart", "x": 60, "y": 80, "w": 700, "h": 360, "chart": "column",
+             "categories": ["Q1", "Q2", "Q3"], "series": [{"name": "ARR", "values": [3, 5, 7]}]},
+        ]}])
+        img = _open(pillow_render.render_slide_png(dark, 0, dpi=96)[0])
+        near_white = [c for c in _colours(img) if min(c) > 200]
+        self.assertTrue(near_white, "dark-bg chart should draw light (near-white) label text")
+
     def test_curved_line_differs_from_straight(self):
         # A bowed line must paint different pixels than a straight one between the
         # same endpoints (it arcs away from the chord).
