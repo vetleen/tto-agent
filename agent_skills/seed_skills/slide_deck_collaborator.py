@@ -155,7 +155,8 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 
 ### Layouts (for `slides_add_slide`)
 `title, section, bullets, two_col, image_right, table, metric, chart, photo, agenda,
-exec_summary, kpi_row, process, timeline, matrix_2x2, comparison, team, quote, closing, blank`.
+exec_summary, kpi_row, process, timeline, matrix_2x2, ecosystem, comparison, team, quote,
+closing, blank`.
 Seed a slide from one of these, then edit its placeholder text.
 
 ## Rules

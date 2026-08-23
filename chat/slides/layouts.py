@@ -222,6 +222,32 @@ _LAYOUTS: dict[str, dict] = {
             _text(500, 410, 320, 30, "subhead", [_p("Quadrant D", align="center")]),
         ],
     },
+    "ecosystem": {
+        "name": "Ecosystem / network",
+        "elements": [
+            _text(_ML, 44, _MW, 60, "headline", [_p("Our ecosystem")]),
+            {
+                "type": "network", "x": 210, "y": 150, "w": 560, "h": 330,
+                "node_color": "accent2", "edge_color": "accent2", "node_r": 6, "label_size": 13,
+                "nodes": [
+                    {"x": 270, "y": 150, "label": "Us", "label_pos": "c", "emphasis": True,
+                     "r": 0, "size": 26, "color": "dk1"},
+                    {"x": 270, "y": 18, "label": "Partner A", "label_pos": "t"},
+                    {"x": 500, "y": 70, "label": "Partner B", "label_pos": "r"},
+                    {"x": 520, "y": 240, "label": "Partner C", "label_pos": "r"},
+                    {"x": 270, "y": 300, "label": "Partner D", "label_pos": "b"},
+                    {"x": 40, "y": 240, "label": "Partner E", "label_pos": "l"},
+                    {"x": 20, "y": 70, "label": "Partner F", "label_pos": "l"},
+                ],
+                "edges": [
+                    {"a": 0, "b": 1}, {"a": 0, "b": 2}, {"a": 0, "b": 3},
+                    {"a": 0, "b": 4}, {"a": 0, "b": 5}, {"a": 0, "b": 6},
+                    {"a": 1, "b": 2}, {"a": 2, "b": 3}, {"a": 3, "b": 4},
+                    {"a": 4, "b": 5}, {"a": 5, "b": 6}, {"a": 6, "b": 1},
+                ],
+            },
+        ],
+    },
     "comparison": {
         "name": "Comparison",
         "elements": [
