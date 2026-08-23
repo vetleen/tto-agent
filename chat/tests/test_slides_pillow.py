@@ -137,6 +137,28 @@ class PillowRenderTests(SimpleTestCase):
             self._deck([{"id": "s1", "bg": "lt1", "elements": []}]), 0, dpi=96)[0]).getpixel((5, 5))
         self.assertEqual(img.getpixel((5, 5)), bg)  # corner outside the chevron
 
+    def test_curved_line_differs_from_straight(self):
+        # A bowed line must paint different pixels than a straight one between the
+        # same endpoints (it arcs away from the chord).
+        straight = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [
+            {"type": "line", "x1": 100, "y1": 200, "x2": 700, "y2": 200, "color": "accent1", "w": 3},
+        ]}])
+        curved = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [
+            {"type": "line", "x1": 100, "y1": 200, "x2": 700, "y2": 200, "color": "accent1",
+             "w": 3, "curve": 0.35, "arrow": "end"},
+        ]}])
+        s = _open(pillow_render.render_slide_png(straight, 0, dpi=96)[0])
+        c = _open(pillow_render.render_slide_png(curved, 0, dpi=96)[0])
+        self.assertNotEqual(list(s.getdata()), list(c.getdata()))
+        # The arc dips below the chord (y=200 of 540): inked pixels in the mid
+        # column reach well below the chord line. (Image is dpi/72-scaled.)
+        W, H = c.size
+        bg = c.getpixel((3, 3))
+        xcol = int(W * 400 / 960)
+        inked_ys = [y for y in range(H) if c.getpixel((xcol, y)) != bg]
+        self.assertTrue(inked_ys)
+        self.assertGreater(max(inked_ys), int(H * 250 / 540))  # below the chord
+
     def test_network_renders_nodes_edges_labels(self):
         deck = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [
             {"type": "network", "x": 100, "y": 100, "w": 500, "h": 300,

@@ -95,6 +95,11 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    The header row and banding are styled automatically by the theme.
 5. **line** — `{"type":"line","x1":48,"y1":440,"x2":912,"y2":440,"color":"accent3","w":2,"dash":"dash","arrow":"end"}`
    (`arrow`: none/end/start/both; `dash`: solid/dash/dot/dashdot).
+   - **Curved arrow:** add `"curve":0.25` to bow a line into an arc (signed fraction of its
+     length; `0` = straight, `+`/`−` flip the bow side, ~0.2–0.4 reads well). With `"arrow":"end"`
+     it's a curved arrow — use it for **cycle / virtuous-loop / feedback / journey** diagrams
+     (place nodes in a ring and connect them with curved arrows bowed outward), or to route a
+     connector around another element. (Dashes are ignored on a curved line.)
 6. **chart** — `{"type":"chart","x":48,"y":130,"w":520,"h":300,"chart":"column","title":"Revenue","categories":["2023","2024","2025"],"series":[{"name":"ARR ($M)","values":[1.2,3.4,6.1]}],"legend":true,"value_labels":false}`.
    `chart`: `column` (vertical bars), `bar` (horizontal), `line`, `area`, `pie`, `doughnut`,
    `waterfall`. Pie/doughnut use one series; the `categories` become the slice labels.
@@ -167,8 +172,8 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 
 ### Layouts (for `slides_add_slide`)
 `title, section, bullets, two_col, image_right, table, metric, chart, photo, agenda,
-exec_summary, kpi_row, process, timeline, matrix_2x2, ecosystem, comparison, team, quote,
-closing, blank`.
+exec_summary, kpi_row, process, cycle, timeline, matrix_2x2, ecosystem, comparison, team,
+quote, closing, blank`.
 Seed a slide from one of these, then edit its placeholder text.
 
 ## Rules

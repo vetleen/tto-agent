@@ -221,6 +221,10 @@ class LineElement(_Strict):
     w: float | None = None
     dash: Literal[_DASH] | None = None  # type: ignore[valid-type]
     arrow: Literal["none", "end", "start", "both"] = "none"
+    # Bow a straight connector into an arc: the control-point offset as a signed
+    # fraction of the chord length (0 = straight, +0.2 = a gentle arc, sign flips
+    # the bow side). A curved arrow for cycle/feedback/journey diagrams.
+    curve: float | None = Field(default=None, ge=-2.0, le=2.0)
 
 
 _CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall",

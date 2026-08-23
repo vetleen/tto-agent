@@ -178,6 +178,19 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn("<a:gradFill", xml)
         self.assertEqual(warns, [])
 
+    def test_curved_line_embeds_picture_straight_stays_connector(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "c1", "type": "line", "x1": 60, "y1": 120, "x2": 400, "y2": 120,
+             "curve": 0.3, "arrow": "end", "color": "accent1", "w": 3},
+            {"id": "s2", "type": "line", "x1": 60, "y1": 300, "x2": 400, "y2": 300,
+             "color": "dk2", "w": 2},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        xml = zipfile.ZipFile(io.BytesIO(data)).read("ppt/slides/slide1.xml").decode()
+        self.assertEqual(xml.count("<p:pic>"), 1)     # curved line rasterised
+        self.assertEqual(xml.count("<p:cxnSp>"), 1)   # straight line stays native
+        self.assertEqual(warns, [])
+
     def test_network_builds_connectors_ovals_and_labels(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "nw", "type": "network", "x": 100, "y": 100, "w": 500, "h": 300,

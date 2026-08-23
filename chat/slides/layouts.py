@@ -195,6 +195,26 @@ _LAYOUTS: dict[str, dict] = {
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 3", "color": "lt1", "b": True}]}]}},
         ],
     },
+    "cycle": {
+        "name": "Cycle / flywheel",
+        "elements": [
+            _text(_ML, 44, _MW, 60, "headline", [_p("The growth cycle")]),
+            # Four stages in a diamond, joined by curved arrows (clockwise).
+            {"type": "shape", "shape": "oval", "x": 434, "y": 124, "w": 92, "h": 92, "fill": "accent2",
+             "text": {"valign": "middle", "paragraphs": [{"align": "center", "runs": [{"t": "Stage 1", "color": "lt1", "b": True}]}]}},
+            {"type": "shape", "shape": "oval", "x": 574, "y": 264, "w": 92, "h": 92, "fill": "accent2",
+             "text": {"valign": "middle", "paragraphs": [{"align": "center", "runs": [{"t": "Stage 2", "color": "lt1", "b": True}]}]}},
+            {"type": "shape", "shape": "oval", "x": 434, "y": 404, "w": 92, "h": 92, "fill": "accent2",
+             "text": {"valign": "middle", "paragraphs": [{"align": "center", "runs": [{"t": "Stage 3", "color": "lt1", "b": True}]}]}},
+            {"type": "shape", "shape": "oval", "x": 294, "y": 264, "w": 92, "h": 92, "fill": "accent2",
+             "text": {"valign": "middle", "paragraphs": [{"align": "center", "runs": [{"t": "Stage 4", "color": "lt1", "b": True}]}]}},
+            {"type": "line", "x1": 517, "y1": 207, "x2": 583, "y2": 273, "color": "accent1", "w": 3, "arrow": "end", "curve": 0.25},
+            {"type": "line", "x1": 583, "y1": 347, "x2": 517, "y2": 413, "color": "accent1", "w": 3, "arrow": "end", "curve": 0.25},
+            {"type": "line", "x1": 443, "y1": 413, "x2": 377, "y2": 347, "color": "accent1", "w": 3, "arrow": "end", "curve": 0.25},
+            {"type": "line", "x1": 377, "y1": 273, "x2": 443, "y2": 207, "color": "accent1", "w": 3, "arrow": "end", "curve": 0.25},
+            _text(400, 296, 160, 30, "subhead", [_p("GROWTH", align="center")]),
+        ],
+    },
     "timeline": {
         "name": "Timeline",
         "elements": [

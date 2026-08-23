@@ -480,6 +480,14 @@ def _render_cell(cell, spec, theme, tbl_theme, text_class, is_header, is_band):
 
 
 def _add_line(slide, el, theme):
+    if el.get("curve"):
+        # No native controllable-bow connector — embed a Pillow-rendered picture
+        # that pixel-matches the preview (same escape hatch as harvey/combo/icons).
+        from chat.slides.pillow_render import render_line_png
+
+        png, (ox, oy, w, h) = render_line_png(theme, el)
+        slide.shapes.add_picture(BytesIO(png), Pt(ox), Pt(oy), Pt(w), Pt(h))
+        return
     conn = slide.shapes.add_connector(
         MSO_CONNECTOR.STRAIGHT, Pt(el["x1"]), Pt(el["y1"]), Pt(el["x2"]), Pt(el["y2"])
     )

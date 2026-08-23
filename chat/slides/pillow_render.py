@@ -555,13 +555,38 @@ def _styled_line(draw, p1, p2, color, width, dash):
         pos, idx, on = end, idx + 1, not on
 
 
+def _curve_points(x1, y1, x2, y2, curve, n=32):
+    """Sample a quadratic Bézier whose control point is offset perpendicular to
+    the chord midpoint by ``curve`` × chord length (the bow height / direction)."""
+    mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+    dx, dy = x2 - x1, y2 - y1
+    length = math.hypot(dx, dy) or 1.0
+    px, py = -dy / length, dx / length  # perpendicular unit vector
+    cx, cy = mx + px * curve * length, my + py * curve * length
+    pts = []
+    for i in range(n + 1):
+        t = i / n
+        a, b, c = (1 - t) ** 2, 2 * (1 - t) * t, t * t
+        pts.append((a * x1 + b * cx + c * x2, a * y1 + b * cy + c * y2))
+    return pts
+
+
 def _draw_line(draw, theme, el, scale):
     x1, y1 = el["x1"] * scale, el["y1"] * scale
     x2, y2 = el["x2"] * scale, el["y2"] * scale
     color = _rgb(theme, el.get("color"), (60, 60, 60))
     width = max(1, int((el.get("w") or 1) * scale))
-    _styled_line(draw, (x1, y1), (x2, y2), color, width, el.get("dash"))
     arrow = el.get("arrow", "none")
+    curve = el.get("curve")
+    if curve:
+        pts = _curve_points(x1, y1, x2, y2, float(curve))
+        draw.line(pts, fill=color, width=width, joint="curve")
+        if arrow in ("end", "both"):
+            _arrowhead(draw, pts[-2][0], pts[-2][1], pts[-1][0], pts[-1][1], color, width)
+        if arrow in ("start", "both"):
+            _arrowhead(draw, pts[1][0], pts[1][1], pts[0][0], pts[0][1], color, width)
+        return
+    _styled_line(draw, (x1, y1), (x2, y2), color, width, el.get("dash"))
     if arrow in ("end", "both"):
         _arrowhead(draw, x1, y1, x2, y2, color, width)
     if arrow in ("start", "both"):
@@ -575,6 +600,31 @@ def _arrowhead(draw, fx, fy, tx, ty, color, width):
         ex = tx + size * math.cos(ang + da)
         ey = ty + size * math.sin(ang + da)
         draw.line([(tx, ty), (ex, ey)], fill=color, width=width)
+
+
+def _curve_bbox_pt(el):
+    """Bounding box (ox, oy, w, h) in POINTS of a curved line, padded for the
+    line width and arrowhead so the rasterised PNG isn't clipped."""
+    pts = _curve_points(el["x1"], el["y1"], el["x2"], el["y2"], float(el.get("curve") or 0))
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    pad = 10 + (el.get("w") or 1) * 2
+    minx, miny = min(xs) - pad, min(ys) - pad
+    return minx, miny, (max(xs) + pad) - minx, (max(ys) + pad) - miny
+
+
+def render_line_png(theme, el, ss: int = 3):
+    """Rasterise a curved line (+arrowheads) to a transparent PNG for the .pptx —
+    python-pptx has no controllable-bow connector, so (like harvey/combo/icons)
+    we embed a picture that pixel-matches the preview. Returns (png, bbox_pt)."""
+    ox, oy, w, h = _curve_bbox_pt(el)
+    img = Image.new("RGBA", (max(1, int(w * ss)), max(1, int(h * ss))), (0, 0, 0, 0))
+    local = dict(el)
+    local["x1"], local["y1"] = el["x1"] - ox, el["y1"] - oy
+    local["x2"], local["y2"] = el["x2"] - ox, el["y2"] - oy
+    _draw_line(ImageDraw.Draw(img), theme, local, ss)
+    buf = BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue(), (ox, oy, w, h)
 
 
 # ---------------------------------------------------------------------------
