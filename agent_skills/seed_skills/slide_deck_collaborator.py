@@ -210,6 +210,16 @@ Seed a slide from one of these, then edit its placeholder text.
 - **Dark backgrounds need light text.** The default text colours are dark, so on a slide
   with a dark `bg` (e.g. `dk1`/`dk2`) set each run's `color` to a light one (`lt1`/`lt2`)
   or the text will be invisible.
+- **Reach for the right diagram primitive** when a request implies one — these are what make a
+  deck look designed, not generic:
+  - *cycle / loop / flywheel / feedback / virtuous circle* → the `cycle` layout, or nodes in a
+    ring joined by `line`s with `"curve"` + `"arrow":"end"` (curved arrows read far better than
+    block arrow shapes for a loop).
+  - *ecosystem / landscape / partner web / "everything connects" / competitive map* → the
+    `network` element (or `ecosystem` layout) — an interconnected mesh, not a plain list.
+  - *modern / branded title or divider, KPI cards, hero stats* → gradient fills (`gradient` on a
+    shape, `bg_gradient` on the slide).
+  - *timeline / roadmap* → the `timeline` layout; *process / steps* → `process` (chevrons).
 
 ## Workflow
 1. **Bias to a first draft.** If the user has given you enough to start, BUILD the deck now —
