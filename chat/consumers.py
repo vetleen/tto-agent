@@ -409,14 +409,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     # -- Slide deck client message handlers --
     def _slides_state_sync(self, thread_id, deck=None):
-        """Build the deck panel state (slides + cached renders + open comments)."""
+        """Build the deck panel state (slides + cached renders + open comments).
+
+        ``deck`` MUST already be an ownership-checked SlideSet (callers resolve it
+        via ``_owned_deck``/``_active_owned_deck``) — this never does an unscoped
+        lookup, so it can't leak another user's deck for a guessed thread_id."""
         from chat.models import SlideComment, SlideRender, SlideSet
-        from chat.slides.service import get_active_deck
 
         if deck is None:
-            deck = get_active_deck(thread_id)
-        if deck is None:
             return None
+        thread_id = deck.thread_id  # trust the owned deck, not the client's param
         content = deck.content or {}
         renders = {r.slide_id: r for r in SlideRender.objects.filter(slide_set=deck)}
         slide_list = []
@@ -461,12 +463,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
             qs = qs.filter(deleted_at__isnull=True)
         return qs.first()
 
+    def _active_owned_deck(self, thread_id):
+        """The thread's active deck, but only if the thread belongs to this user —
+        the ownership check `get_active_deck` (thread_id-only) doesn't make."""
+        from chat.models import SlideSet
+
+        return (
+            SlideSet.objects.filter(
+                thread_id=thread_id, thread__created_by=self.user,
+                is_active=True, deleted_at__isnull=True,
+            )
+            .order_by("-last_activated_at")
+            .first()
+        )
+
     async def _handle_slides_open(self, data):
         thread_id = data.get("thread_id")
         deck_id = data.get("deck_id")
 
         def _load():
-            deck = self._owned_deck(thread_id, deck_id) if deck_id else None
+            deck = self._owned_deck(thread_id, deck_id) if deck_id else self._active_owned_deck(thread_id)
             return self._slides_state_sync(thread_id, deck)
 
         state = await database_sync_to_async(_load)()

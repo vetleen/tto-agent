@@ -140,6 +140,52 @@ class SetThemeHandlerTests(TransactionTestCase):
         self.assertEqual(sent, [])
 
 
+class SlidesOpenOwnershipTests(TransactionTestCase):
+    """`chat.slides_open` must not leak another user's active deck for a guessed
+    thread_id (the deck_id-omitted path used to skip the ownership check)."""
+
+    def setUp(self):
+        from chat.models import ChatThread, SlideSet
+
+        User = get_user_model()
+        self.owner = User.objects.create_user(email=f"own+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.owner, title="t")
+        self.deck = SlideSet.objects.create(
+            thread=self.thread, title="Secret Deck", is_active=True,
+            content={"version": 1, "size": {"w": 960, "h": 540},
+                     "slides": [{"id": "s1", "name": "Confidential", "elements": []}]},
+        )
+
+    def _open(self, user):
+        from chat.consumers import ChatConsumer
+
+        consumer = ChatConsumer()
+        consumer.user = user
+        sent = []
+
+        async def _capture(text_data=None, **_kw):
+            sent.append(json.loads(text_data))
+
+        consumer.send = _capture
+        # deck_id omitted => the active-deck path that used to be unscoped.
+        async_to_sync(consumer._handle_slides_open)({"thread_id": str(self.thread.pk)})
+        return sent
+
+    def test_owner_sees_active_deck(self):
+        sent = self._open(self.owner)
+        self.assertEqual(sent[0]["event_type"], "slidedeck.state")
+        self.assertEqual(sent[0]["title"], "Secret Deck")
+
+    def test_foreign_user_gets_closed_not_deck(self):
+        other = get_user_model().objects.create_user(email=f"att+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        sent = self._open(other)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["event_type"], "slidedeck.closed")
+        # No deck data may leak to a non-owner.
+        self.assertNotIn("title", sent[0])
+        self.assertNotIn("slides", sent[0])
+
+
 class UserCustomThemeHandlerTests(TransactionTestCase):
     """Save / delete / apply a user's custom slide theme via the consumer."""
 
