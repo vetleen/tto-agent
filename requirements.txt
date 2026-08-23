@@ -54,6 +54,10 @@ weasyprint==69.0
 # deps — avoids a poppler apt dependency and PyMuPDF's AGPL).
 python-pptx==1.0.2
 pypdfium2==4.30.0
+# The Pillow slide renderer builds arbitrary-angle gradient fills with numpy;
+# it's already in the slug transitively (pgvector/langchain), declared here
+# because pillow_render imports it directly. Floor pin avoids resolver fights.
+numpy>=1.26
 # fontTools ships transitively with WeasyPrint; declared explicitly because the
 # font-upload path reads OS/2 fsType embedding bits via fontTools.ttLib.
 fonttools>=4.50.0
