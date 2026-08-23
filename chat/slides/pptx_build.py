@@ -204,29 +204,20 @@ def _add_text(slide, el, theme):
 
 
 def _add_harvey(slide, el, theme):
-    """A Harvey ball: an OVAL ring plus a PIE wedge (or full disk) for the fill."""
-    from chat.slides.pillow_render import _harvey_fraction
+    """A Harvey ball, rasterised via the Pillow engine and embedded as a picture
+    so it pixel-matches the preview. (The OOXML PIE autoshape fills its wedge on
+    the opposite side from PIL's pieslice, so a native pie mis-renders in
+    PowerPoint — a PNG sidesteps the whole angle-convention mismatch.)"""
+    from chat.slides.pillow_render import render_harvey_png
 
+    rgbs = _chart_ramp_rgb(theme, [el.get("fill") or "dk2"])
+    rgb = rgbs[0] if rgbs else RGBColor(0x1F, 0x3D, 0x30)
+    hexs = str(rgb)
+    color = tuple(int(hexs[i:i + 2], 16) for i in (0, 2, 4))
+    size_px = max(24, int(min(el.get("w", 18), el.get("h", 18)) * 3))
+    png = render_harvey_png(color, el.get("value"), size_px)
     x, y, w, h = _pt_box(el)
-    color_v = el.get("fill") or "dk2"
-    frac = _harvey_fraction(el.get("value"))
-
-    ring = slide.shapes.add_shape(MSO_SHAPE.OVAL, x, y, w, h)
-    ring.fill.background()
-    _apply_color(ring.line.color, theme, color_v)
-    ring.line.width = Pt(1.25)
-
-    if frac >= 1.0:
-        disk = slide.shapes.add_shape(MSO_SHAPE.OVAL, x, y, w, h)
-        disk.fill.solid()
-        _apply_color(disk.fill.fore_color, theme, color_v)
-        disk.line.fill.background()
-    elif frac > 0:
-        pie = slide.shapes.add_shape(MSO_SHAPE.PIE, x, y, w, h)
-        pie.fill.solid()
-        _apply_color(pie.fill.fore_color, theme, color_v)
-        pie.line.fill.background()
-        pokes.set_pie_angles(pie, 270.0, (270.0 + frac * 360.0) % 360.0)
+    slide.shapes.add_picture(BytesIO(png), x, y, w, h)
 
 
 def _add_shape(slide, el, theme, warnings):

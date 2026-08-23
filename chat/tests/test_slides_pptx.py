@@ -142,17 +142,16 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn("HW", xml)  # legend series name
         self.assertEqual(warns, [])
 
-    def test_harvey_ball_builds_pie_wedge(self):
+    def test_harvey_ball_embeds_as_picture(self):
+        # Rasterised (PNG) so it pixel-matches the preview — OOXML pie fills the
+        # opposite side, so a native pie would mis-render in PowerPoint.
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "hb", "type": "shape", "shape": "harvey", "x": 100, "y": 100,
              "w": 20, "h": 20, "value": 0.75, "fill": "dk2"},
         ]}]}
         data, warns = build_deck_pptx(deck)
         z = zipfile.ZipFile(io.BytesIO(data))
-        xml = z.read("ppt/slides/slide1.xml").decode()
-        self.assertIn('prst="pie"', xml)   # the fill wedge
-        self.assertIn('prst="ellipse"', xml)  # the ring
-        self.assertIn("adj1", xml)  # angle guides set
+        self.assertTrue([n for n in z.namelist() if n.startswith("ppt/media/")])
         self.assertEqual(warns, [])
 
     def test_waterfall_builds_stacked_column_chart(self):

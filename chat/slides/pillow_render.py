@@ -335,6 +335,20 @@ def _draw_harvey(draw, x0, y0, x1, y1, value, color, scale):
                       start=-90, end=-90 + frac * 360, fill=color)
 
 
+def render_harvey_png(color, value, size_px: int = 48) -> bytes:
+    """Render a Harvey ball to transparent PNG bytes so the .pptx embeds it as a
+    picture that pixel-matches the preview (OOXML pie-angle fills don't match)."""
+    ss = 3
+    n = max(16, int(size_px)) * ss
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    pad = n * 0.06
+    _draw_harvey(ImageDraw.Draw(img), pad, pad, n - pad, n - pad, value, color, ss)
+    img = img.resize((n // ss, n // ss), Image.LANCZOS)
+    buf = BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def _draw_icon(draw, theme, el, scale):
     from chat.slides import icons
 
