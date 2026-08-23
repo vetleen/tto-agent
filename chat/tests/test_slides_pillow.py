@@ -116,6 +116,20 @@ class PillowRenderTests(SimpleTestCase):
             png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
             self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
 
+    def test_glyph_fallback_splits_symbols(self):
+        # A symbol the brand font lacks (▲) routes to the Arimo fallback, while
+        # ASCII stays on the primary font — so it never renders as a tofu box.
+        segs = pillow_render._coverage_segments("A▲B", "Carlito")
+        self.assertEqual([s for s, _ in segs], ["A", "▲", "B"])
+        self.assertEqual([need for _, need in segs], [False, True, False])
+        # a slide using inline momentum triangles renders (more than 1 colour).
+        deck = self._deck([{"elements": [
+            {"type": "text", "x": 60, "y": 100, "w": 400, "h": 40, "class": "data",
+             "paragraphs": [{"runs": [{"t": "▲ ", "color": "#2E75B6"}, {"t": "High"}]}]},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 1)
+
     def test_every_icon_renders(self):
         from chat.slides import icons
         for name in icons.ICON_NAMES:

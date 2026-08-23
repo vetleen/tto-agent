@@ -57,7 +57,10 @@ DECK_MAX_CHARS = 120_000
 MAX_SLIDE_SETS_PER_THREAD = 5
 MAX_ACTIVE_SLIDE_SETS = 1
 MAX_SLIDES_PER_DECK = 30
-MAX_ELEMENTS_PER_SLIDE = 25
+# Dense consulting exhibits — a maturity×applicability matrix, a process map, a
+# scorecard grid — legitimately place many small text/shape/icon elements, so
+# the cap is generous. It only guards against a runaway slide.
+MAX_ELEMENTS_PER_SLIDE = 60
 MAX_PREVIEW_SLIDES_PER_CALL = 4
 MAX_CHART_SERIES = 8
 MAX_CHART_POINTS = 30

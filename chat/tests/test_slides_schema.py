@@ -255,6 +255,23 @@ class OrgSlideStyleTests(SimpleTestCase):
         self.assertEqual(theme.org_slide_theme_override(None), {})
 
 
+class ElementLimitTests(SimpleTestCase):
+    def test_dense_exhibit_under_cap_validates(self):
+        # A dense matrix/exhibit needs many small elements; the cap is generous.
+        n = schema.MAX_ELEMENTS_PER_SLIDE
+        self.assertGreaterEqual(n, 40)
+        els = [{"type": "text", "x": 10, "y": 5 * i, "w": 80, "h": 12, "class": "data",
+                "paragraphs": [{"runs": [{"t": str(i)}]}]} for i in range(n)]
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"elements": els}]}
+        schema.mint_ids(deck)
+        self.assertEqual(schema.validate_deck(deck), [])
+        # one over the cap is rejected
+        deck["slides"][0]["elements"].append(
+            {"type": "text", "x": 1, "y": 1, "w": 10, "h": 10, "class": "data",
+             "paragraphs": [{"runs": [{"t": "x"}]}]})
+        self.assertTrue(any("Too many elements" in i["message"] for i in schema.validate_deck(deck)))
+
+
 class ImagePlaceholderCaptionTests(SimpleTestCase):
     def test_captions(self):
         from chat.slides.schema import image_placeholder_caption as cap

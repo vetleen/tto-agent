@@ -85,6 +85,47 @@ def _run_font(theme: dict, style: dict, scale: float) -> ImageFont.FreeTypeFont:
     return _font(family, size_pt * scale, bool(style.get("bold")), bool(style.get("italic")))
 
 
+# The brand serif/sans (Caladea/Carlito) lack many symbol glyphs the model likes
+# to use inline — arrows ↑↓→, triangles ▲▼►, checks ✓ — which would otherwise
+# render as .notdef "tofu" boxes. Arimo (Arial-metric, bundled) covers them, so
+# we fall back to it per-glyph. PowerPoint substitutes similarly for the .pptx.
+_SYMBOL_FALLBACK = "Arimo"
+
+
+@lru_cache(maxsize=32)
+def _font_codepoints(family: str) -> frozenset:
+    try:
+        from fontTools.ttLib import TTFont
+
+        path = _FONTS_DIR / family / f"{family}-Regular.ttf"
+        if not path.exists():
+            return frozenset()
+        return frozenset(TTFont(str(path)).getBestCmap().keys())
+    except Exception:  # noqa: BLE001
+        return frozenset()
+
+
+def _coverage_segments(text: str, family: str):
+    """Split ``text`` into (segment, needs_fallback) runs — a char needs the
+    fallback when it's non-ASCII, the primary font lacks it, and Arimo has it."""
+    prim = _font_codepoints(family)
+    fb = _font_codepoints(_SYMBOL_FALLBACK)
+    out, cur, cur_fb = [], "", False
+    for ch in text:
+        cp = ord(ch)
+        need = cp >= 0x80 and cp not in prim and cp in fb
+        if not cur:
+            cur, cur_fb = ch, need
+        elif need == cur_fb:
+            cur += ch
+        else:
+            out.append((cur, cur_fb))
+            cur, cur_fb = ch, need
+    if cur:
+        out.append((cur, cur_fb))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Text layout
 #   A paragraph's runs are tokenised into styled words, greedily packed into
@@ -92,14 +133,24 @@ def _run_font(theme: dict, style: dict, scale: float) -> ImageFont.FreeTypeFont:
 #   the text-frame's vertical anchor. Line height tracks the tallest run.
 # ---------------------------------------------------------------------------
 class _Word:
-    __slots__ = ("text", "font", "color", "underline", "w", "ascent", "descent", "space_w")
+    __slots__ = ("text", "font", "color", "underline", "w", "ascent", "descent", "space_w", "segs")
 
-    def __init__(self, text, font, color, underline):
+    def __init__(self, text, font, color, underline, family=None, fb_font=None):
         self.text = text
         self.font = font
         self.color = color
         self.underline = underline
-        self.w = font.getlength(text)
+        # (segment, font) pairs so glyphs the primary font lacks draw with the
+        # fallback face; plain text stays a single segment on the primary font.
+        if fb_font is not None and family:
+            self.segs, self.w = [], 0.0
+            for seg, need in _coverage_segments(text, family):
+                f = fb_font if need else font
+                self.segs.append((seg, f))
+                self.w += f.getlength(seg)
+        else:
+            self.segs = [(text, font)]
+            self.w = font.getlength(text)
         self.ascent, self.descent = font.getmetrics()
         self.space_w = font.getlength(" ")
 
@@ -118,12 +169,17 @@ def _para_words(theme, para, base_style, scale):
         color = _rgb(theme, style.get("color"), (0, 0, 0))
         underline = bool(style.get("underline"))
         text = run.get("t", "")
+        family = theme_mod.font_family(theme, style.get("font"))
+        fb_font = None
+        if any(ord(c) >= 0x80 for c in text):  # only build a fallback for non-ASCII runs
+            fb_font = _font(_SYMBOL_FALLBACK, (style.get("size") or 14) * scale,
+                            bool(style.get("bold")), bool(style.get("italic")))
         segments = text.split("\n")
         for si, seg in enumerate(segments):
             for tok in seg.split(" "):
                 if tok == "":
                     continue
-                words.append(_Word(tok, font, color, underline))
+                words.append(_Word(tok, font, color, underline, family, fb_font))
             if si < len(segments) - 1 and words:
                 breaks.add(len(words) - 1)  # hard break after the last word so far
     return words, breaks
@@ -250,7 +306,10 @@ def _draw_text_frame(draw, theme, frame, box, scale):
             for wi, word in enumerate(line):
                 if wi > 0:
                     x += word.space_w + justify_extra
-                draw.text((x, cursor_y), word.text, font=word.font, fill=word.color)
+                sx = x
+                for seg, f in word.segs:
+                    draw.text((sx, cursor_y), seg, font=f, fill=word.color)
+                    sx += f.getlength(seg)
                 if word.underline:
                     uy = cursor_y + word.ascent + max(1, int(scale))
                     draw.line([(x, uy), (x + word.w, uy)], fill=word.color, width=max(1, int(scale)))
