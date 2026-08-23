@@ -149,9 +149,21 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    - Each **edge** is `{"a":0,"b":3}` — indices into `nodes[]` (0-based); optional
      `"color"`/`"w"`/`"dash"`.
    - Pack the WHOLE mesh into this ONE element (up to 40 nodes / 80 edges) — don't build it from
-     dozens of separate `line`+`shape` elements (that blows the per-slide element budget). Sketch
-     an organic layout: hub near the centre, labelled nodes around the rim, a few interior
-     junction nodes (label `""`) so the edges form irregular cells rather than a plain star.
+     dozens of separate `line`+`shape` elements (that blows the per-slide element budget).
+   - **Two topologies — pick deliberately:** (a) *hub-and-spoke* — every rim node connects only
+     to the centre; clean, good for "us + our partners". (b) *organic web/mesh* — the richer,
+     more designed look (think the classic fintech "brain" landscape): a hub PLUS a few unlabeled
+     interior junction nodes (`"label":""`), where rim nodes connect to nearby junctions and
+     junctions connect to EACH OTHER, so the edges form irregular cells instead of a plain star.
+     Prefer the mesh whenever the user wants an "ecosystem"/"web"/"interconnected"/"landscape"
+     feel. Worked mesh sketch (hub `0`, rim `1–4`, junctions `5–6`):
+     `"nodes":[{"x":250,"y":150,"label":"Us","label_pos":"c","emphasis":true,"r":0,"size":24},`
+     `{"x":250,"y":10,"label":"A","label_pos":"t"},{"x":470,"y":150,"label":"B","label_pos":"r"},`
+     `{"x":250,"y":290,"label":"C","label_pos":"b"},{"x":30,"y":150,"label":"D","label_pos":"l"},`
+     `{"x":180,"y":90,"label":""},{"x":320,"y":210,"label":""}],`
+     `"edges":[{"a":0,"b":5},{"a":0,"b":6},{"a":1,"b":5},{"a":2,"b":6},{"a":3,"b":6},{"a":4,"b":5},`
+     `{"a":5,"b":6},{"a":1,"b":2},{"a":3,"b":4}]` — note the junction↔junction and rim↔rim edges
+     that turn a star into a web.
 
 ### Layouts (for `slides_add_slide`)
 `title, section, bullets, two_col, image_right, table, metric, chart, photo, agenda,
