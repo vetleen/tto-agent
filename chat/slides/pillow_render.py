@@ -1138,7 +1138,9 @@ def _chart_pie(draw, plot, series, cats, ramp, fnt, txt, value_labels,
         hr = (d / 2) * hole
         draw.ellipse([cx - hr, cy - hr, cx + hr, cy + hr], fill=hole_bg or (255, 255, 255))
         if center_label:
-            cf = fnt(max(10.0, (hr * 2) / scale * 0.34))
+            # Size to fill the hole, but shrink so a long label still fits inside.
+            size_pt = min((hr * 2) / scale * 0.34, (hr * 2) / scale * 1.5 / max(1, len(center_label)))
+            cf = fnt(max(10.0, size_pt))
             cw = cf.getlength(center_label)
             draw.text((cx - cw / 2, cy - cf.size / 2), center_label, font=cf, fill=txt)
 

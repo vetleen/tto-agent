@@ -817,7 +817,7 @@ def _add_doughnut_center(slide, el, theme):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 
     x, y, w, h = _pt_box(el)
-    side = min(w, h) * 0.5
+    side = min(w, h) * 0.62
     tb = slide.shapes.add_textbox(x + (w - side) / 2, y + (h - side) / 2, side, side)
     tf = tb.text_frame
     tf.word_wrap = True
@@ -825,9 +825,15 @@ def _add_doughnut_center(slide, el, theme):
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.CENTER
     run = p.add_run()
-    run.text = el["center_label"]
+    label = el["center_label"]
+    run.text = label
     run.font.bold = True
-    run.font.size = Pt(max(12, int(side / Pt(1) * 0.20)))
+    # Match the preview's prominence, but shrink so a long label still fits the hole.
+    mn = min(el.get("w", 100), el.get("h", 100))
+    hole = el.get("hole") or 0.55
+    hole_w = mn * 0.9 * hole
+    size_pt = min(mn * hole * 0.30, hole_w * 1.5 / max(1, len(label)))
+    run.font.size = Pt(max(12, int(size_pt)))
     _apply_color(run.font.color, theme, "dk2")
 
 
