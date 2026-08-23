@@ -938,7 +938,7 @@ def _draw_chart(draw, theme, el, scale, bg=None):
     elif kind == "bar":
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked, pt_colors)
     elif kind in ("line", "area"):
-        _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, kind == "area", scale)
+        _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, kind == "area", scale, bg)
     else:
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, False, el.get("value_labels"), stacked, pt_colors)
 
@@ -1033,9 +1033,16 @@ def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal
                     draw.rectangle([bx, ay + ah - f1 * ah, bx + thick, ay + ah - f0 * ah], fill=color)
                 cum += v
         else:
+            # Bars grow from the ZERO line (clamped into the plot), not from the
+            # axis minimum — so negative values point the right way and every bar
+            # is scaled correctly when the data spans zero.
+            zfrac = min(1.0, max(0.0, (0.0 - lo) / span))
+            vlbl = fnt(8)
             for si, s in enumerate(series):
                 vals = s.get("values") or []
                 v = vals[ci] if ci < len(vals) else 0
+                if not isinstance(v, (int, float)):
+                    continue
                 frac = (v - lo) / span
                 # Single-series bar highlighting: colour each bar by category.
                 if point_colors and n_ser == 1 and ci < len(point_colors):
@@ -1045,10 +1052,17 @@ def _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, horizontal
                 thick = slot * 0.7 / n_ser
                 if horizontal:
                     by = ay + row * slot + slot * 0.15 + si * thick
-                    draw.rectangle([ax, by, ax + frac * aw, by + thick], fill=color)
+                    x0, x1 = ax + min(frac, zfrac) * aw, ax + max(frac, zfrac) * aw
+                    draw.rectangle([x0, by, x1, by + thick], fill=color)
+                    if value_labels:
+                        draw.text((x1 + 3, by + thick / 2 - 6), _fmt_num(v), font=vlbl, fill=txt)
                 else:
                     bx = ax + row * slot + slot * 0.15 + si * thick
-                    draw.rectangle([bx, ay + ah - frac * ah, bx + thick, ay + ah], fill=color)
+                    y0, y1 = ay + ah - max(frac, zfrac) * ah, ay + ah - min(frac, zfrac) * ah
+                    draw.rectangle([bx, y0, bx + thick, y1], fill=color)
+                    if value_labels:
+                        lt = _fmt_num(v)
+                        draw.text((bx + thick / 2 - vlbl.getlength(lt) / 2, y0 - 12), lt, font=vlbl, fill=txt)
         # category label
         f = fnt(9)
         if horizontal:
@@ -1316,8 +1330,16 @@ def _chart_funnel(draw, plot, series, cats, ramp, fnt, txt, value_labels):
             draw.text((cx + wd / 2 + 8, (y0 + y1) / 2 - 6), pct, font=small, fill=txt)
 
 
-def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, scale):
+def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, scale, bg=None):
     px, py, pw, ph = plot
+    # The preview surface is RGB, so a fill's alpha is ignored — pre-blend the
+    # area fill toward the slide bg so it reads as a translucent wash (matching
+    # PowerPoint) instead of a harsh, fully-saturated band.
+    base = bg if (bg and len(bg) >= 3) else (255, 255, 255)
+
+    def _wash(color):
+        a = 0.28
+        return tuple(round(b * (1 - a) + c * a) for b, c in zip(base, color[:3]))
     lo, hi = _val_axis(series)
     span = (hi - lo) or 1.0
     lab_gutter = 34
@@ -1345,7 +1367,7 @@ def _chart_lines(draw, plot, series, cats, ramp, fnt, txt, axis, grid, area, sca
             pts.append((gx, gy))
         if area and len(pts) > 1:
             poly = pts + [(pts[-1][0], ay + ah), (pts[0][0], ay + ah)]
-            draw.polygon(poly, fill=color + (90,) if len(color) == 4 else (*color, 90))
+            draw.polygon(poly, fill=_wash(color))
         if len(pts) > 1:
             draw.line(pts, fill=color, width=max(2, int(2 * scale)), joint="curve")
         r = max(2, int(2.5 * scale))
@@ -1419,18 +1441,21 @@ def _fmt_num(v):
 # ---------------------------------------------------------------------------
 # Footer / page number
 # ---------------------------------------------------------------------------
-def _stamp_footer(draw, theme, scale, page_num, total):
+def _stamp_footer(draw, theme, scale, page_num, total, bg=None):
+    dark = bg is not None and _is_dark(bg)
     footer = theme.get("footer", {})
     if footer.get("text"):
         font = _font(theme_mod.font_family(theme, "data"), (footer.get("size", 9)) * scale, False, False)
+        fcol = "lt2" if dark else footer.get("color", "dk2")
         draw.text((footer["x"] * scale, footer["y"] * scale), footer["text"],
-                  font=font, fill=_rgb(theme, footer.get("color", "dk2")))
+                  font=font, fill=_rgb(theme, fcol))
     pn = theme.get("page_number", {})
     font = _font(theme_mod.font_family(theme, pn.get("font", "data")), (pn.get("size", 9)) * scale, False, False)
     txt = str(page_num)
     tw = font.getlength(txt)
     px = pn.get("x", 900) * scale + (pn.get("w", 36) * scale - tw)  # right-align in the box
-    draw.text((px, pn.get("y", 512) * scale), txt, font=font, fill=_rgb(theme, pn.get("color", "dk2")))
+    pcol = "lt2" if dark else pn.get("color", "dk2")
+    draw.text((px, pn.get("y", 512) * scale), txt, font=font, fill=_rgb(theme, pcol))
 
 
 # ---------------------------------------------------------------------------
@@ -1549,7 +1574,7 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
             logger.warning("pillow render: element %s failed", etype, exc_info=True)
 
     if not slide.get("skip_footer"):
-        _stamp_footer(draw, theme, scale, index + 1, len(slides))
+        _stamp_footer(draw, theme, scale, index + 1, len(slides), bg)
 
     if supersample > 1:
         img = img.resize((int(round(w_pt * dpi / 72.0)), int(round(h_pt * dpi / 72.0))), Image.LANCZOS)

@@ -137,6 +137,30 @@ class PillowRenderTests(SimpleTestCase):
             self._deck([{"id": "s1", "bg": "lt1", "elements": []}]), 0, dpi=96)[0]).getpixel((5, 5))
         self.assertEqual(img.getpixel((5, 5)), bg)  # corner outside the chevron
 
+    def test_negative_bar_chart_renders_with_zero_baseline(self):
+        # A column chart spanning zero must render (bars grow from the zero line,
+        # negatives point down) without an inverted-rectangle crash.
+        deck = self._deck([{"id": "s1", "skip_footer": True, "elements": [
+            {"type": "chart", "x": 40, "y": 60, "w": 600, "h": 360, "chart": "column",
+             "value_labels": True, "categories": ["A", "B", "C"],
+             "series": [{"name": "S", "values": [10, -5, 3]}]},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 2)
+
+    def test_chart_tolerates_nonnumeric_bar_value(self):
+        deck = self._deck([{"id": "s1", "skip_footer": True, "elements": [
+            {"type": "chart", "x": 40, "y": 60, "w": 600, "h": 300, "chart": "column",
+             "categories": ["A", "B"], "series": [{"name": "S", "values": [5, "oops"]}]},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=72)  # must not raise
+        self.assertGreater(len(_colours(_open(png))), 1)
+
+    def test_footer_is_light_on_a_dark_slide(self):
+        dark = self._deck([{"id": "s1", "bg": "dk1", "elements": []}])  # footer NOT skipped
+        img = _open(pillow_render.render_slide_png(dark, 0, dpi=96)[0])
+        self.assertTrue([c for c in _colours(img) if min(c) > 175], "page number should be light")
+
     def test_is_dark_luminance(self):
         self.assertTrue(pillow_render._is_dark((20, 36, 27)))     # dk1-ish
         self.assertFalse(pillow_render._is_dark((251, 250, 246)))  # lt1-ish

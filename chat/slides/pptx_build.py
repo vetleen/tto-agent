@@ -1075,7 +1075,7 @@ def _apply_bg_image(slide, sdict, theme, resolver, prs, warnings):
         pokes.set_shape_fill_alpha(shp, float(scrim.get("opacity", 0.4)))
 
 
-def _stamp_footer(slide, theme, page_num, total):
+def _stamp_footer(slide, theme, page_num, total, bg_dark=False):
     footer = theme.get("footer", {})
     # Optional footer logo.
     logo_name = footer.get("logo_asset")
@@ -1101,7 +1101,7 @@ def _stamp_footer(slide, theme, page_num, total):
         r.text = footer["text"]
         r.font.size = Pt(footer.get("size", 9))
         r.font.name = _pptx_font(theme, "data")
-        _apply_color(r.font.color, theme, footer.get("color", "dk2"))
+        _apply_color(r.font.color, theme, "lt2" if bg_dark else footer.get("color", "dk2"))
     # Page number.
     pn = theme.get("page_number", {})
     tb = slide.shapes.add_textbox(Pt(pn.get("x", 900)), Pt(pn.get("y", 512)), Pt(pn.get("w", 36)), Pt(pn.get("h", 18)))
@@ -1111,7 +1111,7 @@ def _stamp_footer(slide, theme, page_num, total):
     r.text = str(page_num)
     r.font.size = Pt(pn.get("size", 9))
     r.font.name = _pptx_font(theme, pn.get("font", "data"))
-    _apply_color(r.font.color, theme, pn.get("color", "dk2"))
+    _apply_color(r.font.color, theme, "lt2" if bg_dark else pn.get("color", "dk2"))
 
 
 # ---------------------------------------------------------------------------
@@ -1173,7 +1173,7 @@ def build_deck_pptx(
         for el in sdict.get("elements") or []:
             _render_element(slide, el, theme, image_resolver, warnings, bg_dark)
         if not sdict.get("skip_footer"):
-            _stamp_footer(slide, theme, idx + 1, total)
+            _stamp_footer(slide, theme, idx + 1, total, bg_dark)
         if sdict.get("notes"):
             slide.notes_slide.notes_text_frame.text = sdict["notes"]
 
