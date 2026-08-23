@@ -156,6 +156,17 @@ class BuildDeckTests(SimpleTestCase):
         self.assertNotIn("<a:satMod", xml)            # preset colour mods stripped
         self.assertEqual(warns, [])
 
+    def test_gradient_with_opacity_fades_both_stops(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "g1", "type": "shape", "shape": "rect", "x": 60, "y": 80, "w": 240, "h": 150,
+             "opacity": 0.4, "gradient": {"from": "accent1", "to": "accent2", "angle": 90}},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        xml = zipfile.ZipFile(io.BytesIO(data)).read("ppt/slides/slide1.xml").decode()
+        self.assertIn("<a:gradFill", xml)
+        self.assertEqual(xml.count("<a:alpha"), 2)   # both stops faded
+        self.assertEqual(warns, [])
+
     def test_bg_gradient_writes_fullbleed_gradfill(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{
             "id": "s1", "bg_gradient": {"from": "accent1", "to": "dk1", "angle": 90},

@@ -153,12 +153,13 @@ _GRAD_MOD_TAGS = frozenset(
 )
 
 
-def _apply_gradient(fill, theme: dict, grad: dict) -> None:
+def _apply_gradient(fill, theme: dict, grad: dict, opacity: float | None = None) -> None:
     """Apply a two-stop linear gradient onto a python-pptx FillFormat.
 
     ``angle`` is degrees, 0 = left→right / 90 = top→bottom (matching the Pillow
     preview). python-pptx measures ``gradient_angle`` counter-clockwise, so we
-    negate to land on the clockwise OOXML ``ang`` the preview uses."""
+    negate to land on the clockwise OOXML ``ang`` the preview uses. ``opacity``
+    (<1) fades both stops so a translucent gradient panel matches the preview."""
     fill.gradient()
     stops = fill.gradient_stops
     _apply_color(stops[0].color, theme, grad.get("from", "dk2"))
@@ -175,6 +176,9 @@ def _apply_gradient(fill, theme: dict, grad: dict) -> None:
             for child in list(clr):
                 if child.tag in _GRAD_MOD_TAGS:
                     clr.remove(child)
+            if opacity is not None and opacity < 1:
+                alpha = clr.makeelement(qn("a:alpha"), {"val": str(int(max(0.0, opacity) * 100000))})
+                clr.append(alpha)
     try:
         fill.gradient_angle = -float(grad.get("angle", 90.0))
     except (ValueError, TypeError, NotImplementedError):
@@ -274,7 +278,7 @@ def _add_shape(slide, el, theme, warnings):
     fill_v = el.get("fill") if el.get("fill") is not None else box.get("fill")
     grad = el.get("gradient") or box.get("gradient")
     if grad:
-        _apply_gradient(shp.fill, theme, grad)
+        _apply_gradient(shp.fill, theme, grad, opacity=el.get("opacity"))
     elif fill_v is not None:
         shp.fill.solid()
         _apply_color(shp.fill.fore_color, theme, fill_v)
