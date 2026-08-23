@@ -41,6 +41,18 @@ _PARA_GAP_DEFAULT = 0.0        # extra gap between paragraphs (pt) unless space_
 # ---------------------------------------------------------------------------
 # Colour
 # ---------------------------------------------------------------------------
+def _opacity(v):
+    """Coerce an opacity to a float in [0,1], or None. Tolerates a stringified
+    number (lax schema validation can let ``"0.5"`` through) instead of letting
+    a later ``"0.5" < 1`` raise TypeError and silently drop the element."""
+    if v is None:
+        return None
+    try:
+        return max(0.0, min(1.0, float(v)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _rgb(theme: dict, value, default=(0, 0, 0)) -> tuple[int, int, int]:
     """Resolve any colour reference (native slot / semantic name / #hex) to RGB."""
     if not value:
@@ -692,10 +704,10 @@ def _draw_network(draw, theme, el, scale, bg=None):
 # ---------------------------------------------------------------------------
 def _draw_table(draw, theme, el, scale, bg=None):
     rows = el.get("rows") or []
-    if not rows:
+    n_cols = max((len(r) for r in rows), default=0)
+    if not rows or n_cols == 0:  # no rows, or every row empty -> nothing to draw
         return
     dark_bg = bg is not None and _is_dark(bg)
-    n_cols = max(len(r) for r in rows)
     x, y, w = el["x"] * scale, el["y"] * scale, el["w"] * scale
     col_widths = el.get("col_widths")
     if col_widths and len(col_widths) == n_cols:
@@ -780,9 +792,9 @@ def _cover_resize(src, W, H):
 
 def _apply_opacity(im, opacity):
     """Fade an RGBA image by scaling its alpha channel (None/1.0 = unchanged)."""
-    if opacity is None or opacity >= 1:
+    op = _opacity(opacity)
+    if op is None or op >= 1:
         return im
-    op = max(0.0, min(1.0, float(opacity)))
     im = im.convert("RGBA")
     im.putalpha(im.split()[3].point(lambda a: int(a * op)))
     return im
@@ -1283,6 +1295,8 @@ def _chart_funnel(draw, plot, series, cats, ramp, fnt, txt, value_labels):
     cx = px + pw / 2
     gap = 4
     band = (ph - gap * (n - 1)) / n
+    if band < 2:  # too many stages for the height -> drop gaps, split evenly
+        gap, band = 0.0, max(1.0, ph / n)
     lbl, small = fnt(10), fnt(9)
     for i, v in enumerate(vals):
         y0 = py + i * (band + gap)
@@ -1430,7 +1444,7 @@ def _draw_element(draw, img, theme, el, scale, resolver, bg=None):
         box = (el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale)
         _draw_text_frame(draw, theme, frame, box, scale)
     elif etype == "shape":
-        op = el.get("opacity")
+        op = _opacity(el.get("opacity"))
         if op is not None and op < 1:  # translucent panel: draw on a layer, fade, composite
             layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
             _draw_shape(ImageDraw.Draw(layer), theme, el, scale, img=layer)
@@ -1439,7 +1453,7 @@ def _draw_element(draw, img, theme, el, scale, resolver, bg=None):
         else:
             _draw_shape(draw, theme, el, scale, img=img)
     elif etype == "icon":
-        op = el.get("opacity")
+        op = _opacity(el.get("opacity"))
         if op is not None and op < 1:
             layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
             _draw_icon(ImageDraw.Draw(layer), theme, el, scale)

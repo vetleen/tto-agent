@@ -186,6 +186,33 @@ class SlidesOpenOwnershipTests(TransactionTestCase):
         self.assertNotIn("slides", sent[0])
 
 
+class ServiceRobustnessTests(TransactionTestCase):
+    """Edge cases in chat.slides.service that would otherwise raise IntegrityError."""
+
+    def setUp(self):
+        from chat.models import ChatThread
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"sv+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+
+    def test_restore_disambiguates_a_taken_title(self):
+        # Soft-delete 'Foo', create a new live 'Foo', then restore the old one:
+        # the restore must not violate the (thread,title) unique constraint.
+        from chat.models import SlideSet
+        from chat.slides import service
+
+        c = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+        old = SlideSet.objects.create(thread=self.thread, title="Foo", content=c)
+        service.soft_delete_deck(str(self.thread.pk), old)
+        SlideSet.objects.create(thread=self.thread, title="Foo", content=c)  # new live 'Foo'
+
+        service.restore_deck(str(self.thread.pk), old)  # must not raise
+        old.refresh_from_db()
+        self.assertIsNone(old.deleted_at)
+        self.assertNotEqual(old.title, "Foo")           # disambiguated
+        self.assertTrue(old.title.startswith("Foo ("))
+
+
 class UserCustomThemeHandlerTests(TransactionTestCase):
     """Save / delete / apply a user's custom slide theme via the consumer."""
 

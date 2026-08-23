@@ -133,6 +133,18 @@ _TOKEN_RE = re.compile(r"\[\[image:([0-9a-fA-F-]{36})")
 # ---------------------------------------------------------------------------
 # Colour helpers
 # ---------------------------------------------------------------------------
+def _opacity(v):
+    """Coerce an opacity to a float in [0,1], or None — tolerant of a stringified
+    number so a lax-validated ``"0.5"`` doesn't crash ``"0.5" < 1`` and drop the
+    element from the .pptx."""
+    if v is None:
+        return None
+    try:
+        return max(0.0, min(1.0, float(v)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _apply_color(color_format, theme: dict, value) -> None:
     """Apply a resolved colour onto a python-pptx ColorFormat (font/fill/line)."""
     resolved = theme_mod.resolve_color(theme, value)
@@ -278,11 +290,11 @@ def _add_shape(slide, el, theme, warnings):
     fill_v = el.get("fill") if el.get("fill") is not None else box.get("fill")
     grad = el.get("gradient") or box.get("gradient")
     if grad:
-        _apply_gradient(shp.fill, theme, grad, opacity=el.get("opacity"))
+        _apply_gradient(shp.fill, theme, grad, opacity=_opacity(el.get("opacity")))
     elif fill_v is not None:
         shp.fill.solid()
         _apply_color(shp.fill.fore_color, theme, fill_v)
-        opacity = el.get("opacity")
+        opacity = _opacity(el.get("opacity"))
         if opacity is not None and opacity < 1:
             pokes.set_shape_fill_alpha(shp, opacity)
     else:
@@ -395,7 +407,7 @@ def _add_image(slide, el, theme, resolver, warnings):
                 pic.width, pic.height = new_w, new_h
                 pic.left = int(x) + (box_w - new_w) // 2
                 pic.top = int(y) + (box_h - new_h) // 2
-    opacity = el.get("opacity")
+    opacity = _opacity(el.get("opacity"))
     if opacity is not None and opacity < 1:
         pokes.set_picture_alpha(pic, opacity)
 
@@ -687,7 +699,7 @@ def _add_icon(slide, el, theme, warnings):
         return
     x, y, w, h = _pt_box(el)
     pic = slide.shapes.add_picture(BytesIO(png), x, y, w, h)
-    opacity = el.get("opacity")
+    opacity = _opacity(el.get("opacity"))
     if opacity is not None and opacity < 1:
         pokes.set_picture_alpha(pic, opacity)
     if el.get("rotation"):
@@ -733,6 +745,8 @@ def _add_funnel(slide, el, theme, warnings):
     cx = x + w / 2
     gap = 4.0
     band = (h - gap * (n - 1)) / n
+    if band < 2:  # too many stages for the height -> drop gaps, split evenly
+        gap, band = 0.0, max(1.0, h / n)
     for i, v in enumerate(vals):
         wd = max(10.0, (v / vmax) * w * 0.9)
         y0 = y + i * (band + gap)

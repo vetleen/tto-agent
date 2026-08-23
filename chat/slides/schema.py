@@ -388,6 +388,12 @@ def _semantic_issues(deck: dict) -> list[dict]:
     if len(slides) > MAX_SLIDES_PER_DECK:
         issues.append({"path": "slides", "message": f"Too many slides (max {MAX_SLIDES_PER_DECK})."})
 
+    size = deck.get("size") or {}
+    for dim in ("w", "h"):
+        v = size.get(dim)
+        if isinstance(v, (int, float)) and v <= 0:
+            issues.append({"path": f"size.{dim}", "message": "Deck size must be positive."})
+
     seen_slide_ids: set[str] = set()
     for si, slide in enumerate(slides):
         sid = slide.get("id")
@@ -411,6 +417,13 @@ def _semantic_issues(deck: dict) -> list[dict]:
                 elif eid in seen_el_ids:
                     issues.append({"path": f"slides.{si}.elements.{ei}.id", "message": f"Duplicate element id '{eid}'."})
                 seen_el_ids.add(eid)
+            # Positive box dimensions — a zero/negative w/h crashes the renderer
+            # (Image.new with 0 dims, inverted rectangles). x/y may be negative.
+            for dim in ("w", "h"):
+                dv = el.get(dim)
+                if isinstance(dv, (int, float)) and dv <= 0:
+                    issues.append({"path": f"slides.{si}.elements.{ei}.{dim}",
+                                   "message": f"Element {dim} must be positive."})
             if el.get("type") == "table":
                 for cell in _iter_cells(el):
                     if "span" in cell:  # reserved for future merge support

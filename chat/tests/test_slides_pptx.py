@@ -188,6 +188,29 @@ class BuildDeckTests(SimpleTestCase):
         # A faint scrim leaves it light:
         self.assertFalse(pptx_build._slide_is_dark({"bg_scrim": {"color": "dk1", "opacity": 0.1}}, theme))
 
+    def test_shorthand_and_malformed_hex_dont_crash_build(self):
+        from chat.slides import theme as tmod
+        theme = tmod.resolve_theme({})
+        self.assertEqual(tmod.resolve_color(theme, "#FFF"), ("rgb", "FFFFFF"))  # shorthand expands
+        self.assertIsNone(tmod.resolve_color(theme, "#zzz"))                    # malformed -> no colour
+        # bg + fill using shorthand hex must build a valid .pptx, not 500.
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "bg": "#FFF",
+            "elements": [{"type": "shape", "x": 10, "y": 10, "w": 100, "h": 50, "shape": "rect", "fill": "#0A0"}]}]}
+        data, warns = build_deck_pptx(deck)
+        self.assertGreater(len(data), 0)
+        self.assertEqual(warns, [])
+
+    def test_string_opacity_does_not_drop_element(self):
+        # Lax validation can let "0.5" through; the shape must still build (not
+        # be silently dropped by a "0.5" < 1 TypeError).
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "sh", "type": "shape", "x": 10, "y": 10, "w": 100, "h": 50, "shape": "rect",
+             "fill": "accent1", "opacity": "0.5"}]}]}
+        data, warns = build_deck_pptx(deck)
+        xml = zipfile.ZipFile(io.BytesIO(data)).read("ppt/slides/slide1.xml").decode()
+        self.assertIn("prstGeom", xml)   # the shape is present in the .pptx
+        self.assertEqual(warns, [])
+
     def test_chart_on_dark_bg_gets_light_font(self):
         # A chart on a dark slide must flip its auto-drawn text to light so it's
         # legible in the download (the native chart has no other colour control).

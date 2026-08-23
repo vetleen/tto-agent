@@ -399,23 +399,41 @@ def merge_run(base_style: dict, run: dict) -> dict:
     return out
 
 
+def _norm_hex(raw: str) -> str | None:
+    """Normalise a hex colour to 6 upper-case digits, expanding 3-digit shorthand.
+    Returns None for anything that isn't valid hex — so a bad literal degrades to
+    'no colour' instead of crashing python-pptx's strict ``RGBColor.from_string``."""
+    h = raw.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    if len(h) == 6:
+        try:
+            int(h, 16)
+        except ValueError:
+            return None
+        return h.upper()
+    return None
+
+
 def resolve_color(theme: dict, value: str | None) -> tuple[str, str] | None:
     """Resolve a colour value to ``("theme", slot)`` or ``("rgb", "RRGGBB")``.
 
     * ``None``/empty -> ``None`` (no colour set).
-    * ``#RRGGBB`` -> ``("rgb", "RRGGBB")``.
+    * ``#RGB``/``#RRGGBB`` -> ``("rgb", "RRGGBB")`` (shorthand expanded, validated).
     * a native slot name -> ``("theme", slot)`` (the builder maps to
       MSO_THEME_COLOR so it tracks the template scheme + shows in the picker).
     * a semantic/other name present in ``theme["colors"]`` -> ``("rgb", hex)``.
-    * anything unresolvable -> ``None``.
+    * anything unresolvable (incl. malformed hex) -> ``None``.
     """
     if not value:
         return None
     if value.startswith("#"):
-        return ("rgb", value.lstrip("#").upper())
+        nh = _norm_hex(value)
+        return ("rgb", nh) if nh else None
     if value in NATIVE_SLOTS:
         return ("theme", value)
     hexv = theme["colors"].get(value)
     if isinstance(hexv, str) and hexv.startswith("#"):
-        return ("rgb", hexv.lstrip("#").upper())
+        nh = _norm_hex(hexv)
+        return ("rgb", nh) if nh else None
     return None

@@ -131,7 +131,11 @@ def write_deck(thread_id, *, title: str, content: dict, deck_name: str = ""):
         deck = SlideSet.objects.filter(
             thread_id=thread_id, title=title, deleted_at__isnull=True
         ).first()
-        old = deck.content if deck else None
+        if deck is None:
+            # The colliding row vanished in the race; surface the real error
+            # rather than an AttributeError on None.
+            raise
+        old = deck.content
         deck.content = content
         deck.save(update_fields=["content", "updated_at"])
         return deck, False, old
@@ -162,7 +166,23 @@ def soft_delete_deck(thread_id, deck):
 
 def restore_deck(thread_id, deck):
     deck.deleted_at = None
-    deck.save(update_fields=["deleted_at"])
+    # A live deck may have taken this title while this one was deleted; the
+    # partial-unique (thread,title) constraint would then reject the restore.
+    # Disambiguate up front so Undo/restore degrades gracefully.
+    clash = (
+        SlideSet.objects.filter(thread_id=thread_id, title=deck.title, deleted_at__isnull=True)
+        .exclude(pk=deck.pk).exists()
+    )
+    if clash:
+        base, n = deck.title, 2
+        while SlideSet.objects.filter(
+            thread_id=thread_id, title=f"{base} ({n})", deleted_at__isnull=True
+        ).exists():
+            n += 1
+        deck.title = f"{base} ({n})"
+        deck.save(update_fields=["deleted_at", "title"])
+    else:
+        deck.save(update_fields=["deleted_at"])
 
 
 def revert_deck_to_checkpoint_before(deck, before) -> bool:

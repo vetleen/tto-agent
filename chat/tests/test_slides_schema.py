@@ -104,6 +104,16 @@ class ValidateDeckTests(SimpleTestCase):
         issues = schema.validate_deck(deck)
         self.assertTrue(any("Too many chart series" in i["message"] for i in issues))
 
+    def test_zero_or_negative_dimension_rejected(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "shape", "x": 1, "y": 1, "w": 0, "h": 50, "shape": "rect"},
+        ]}]}
+        self.assertTrue(any("must be positive" in i["message"] for i in schema.validate_deck(deck)))
+
+    def test_zero_deck_size_rejected(self):
+        deck = {"version": 1, "size": {"w": 0, "h": 540}, "slides": []}
+        self.assertTrue(any("size must be positive" in i["message"] for i in schema.validate_deck(deck)))
+
     def test_valid_curved_line(self):
         deck = {"version": 1, "slides": [{"elements": [
             {"type": "line", "x1": 40, "y1": 40, "x2": 300, "y2": 40, "curve": 0.25, "arrow": "end"},
