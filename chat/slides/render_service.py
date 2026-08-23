@@ -42,7 +42,7 @@ def _render_slides(deck, content, only_slide_ids, *, need_pdf):
             image_resolver=make_image_resolver(deck),
         )
         pngs = [(png, w, h) for (_sid, png, w, h) in rendered]
-        return (_pngs_to_pdf(pngs) if need_pdf else None), pngs, []
+        return (_pngs_to_pdf(pngs, dpi=dpi) if need_pdf else None), pngs, []
 
     from chat.slides.pptx_build import build_pptx
     from chat.slides.render import render_pptx
@@ -52,8 +52,12 @@ def _render_slides(deck, content, only_slide_ids, *, need_pdf):
     return pdf_bytes, pngs, warnings
 
 
-def _pngs_to_pdf(pngs) -> bytes | None:
-    """Combine per-slide PNGs into a single multi-page PDF (Pillow, no LibreOffice)."""
+def _pngs_to_pdf(pngs, dpi: float = 120.0) -> bytes | None:
+    """Combine per-slide PNGs into a single multi-page PDF (Pillow, no LibreOffice).
+
+    ``dpi`` must be the density the PNGs were rendered at, so each PDF page comes
+    out at the true slide size (a 960×540pt / 16:9 slide -> 13.33×7.5 inches).
+    """
     from io import BytesIO
 
     from PIL import Image
@@ -62,7 +66,8 @@ def _pngs_to_pdf(pngs) -> bytes | None:
     if not imgs:
         return None
     buf = BytesIO()
-    imgs[0].save(buf, format="PDF", save_all=True, append_images=imgs[1:], resolution=96.0)
+    imgs[0].save(buf, format="PDF", save_all=True, append_images=imgs[1:],
+                 resolution=float(dpi))
     return buf.getvalue()
 
 
