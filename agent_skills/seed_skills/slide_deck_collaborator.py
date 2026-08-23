@@ -72,6 +72,11 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    - Or a themed box: `{"type":"shape","box":"callout","x":..,"y":..,"w":..,"h":..,"text":{...}}` —
      boxes: `callout, panel, pill, arrow_r, arrow_l`.
    - Add a border with `"line":{"color":"dk2","w":1,"dash":"dash"}`.
+   - **Gradient fill** — instead of a flat `fill`, give a shape a two-colour linear gradient:
+     `"gradient":{"from":"accent1","to":"accent2","angle":90}` (`angle` degrees: 0 = left→right,
+     90 = top→bottom, 45 = diagonal). Works on `rect`/`rounded_rect`/`oval` and the poly shapes
+     (chevron/hexagon/…). Great for KPI cards, section-divider panels, and modern title bands.
+     Keep the two colours close in hue for a subtle sheen, or contrast them for a bold band.
 3. **image** — `{"type":"image","x":600,"y":120,"w":300,"h":200,"token":"[[image:UUID]]","fit":"cover","opacity":1}`.
    The token comes from an image tool; `fit` is `contain`/`cover`/`stretch`; `opacity` 0–1 fades it.
    **Reserve a slot** for a logo / screenshot / headshot / mockup the user will drop in: use a
@@ -82,6 +87,8 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    image fills the slide behind everything and the `bg_scrim` (a translucent colour wash) keeps
    text legible. Use light text (`lt1`/`lt2`) over a dark scrim. Shapes also take `opacity` for a
    translucent panel behind text.
+   **Full-bleed gradient background:** set `"bg_gradient":{"from":"accent1","to":"dk1","angle":120}`
+   on the SLIDE for a modern colour-wash title or section-divider slide (use light text over it).
 4. **table** — `{"type":"table","x":48,"y":130,"w":864,"h":260,"header":true,"banding":true,"col_widths":[288,288,288],"rows":[[{"t":"Stage"},{"t":"Count"},{"t":"Value"}],[{"t":"Filed"},{"t":"7"},{"t":"$3.4M"}]]}`.
    Cell: `{"t":"text","class":"data","b":true,"size":11,"color":"accent1","fill":"lt2","align":"center"}`
    (`size` is optional — use a smaller point size to fit a dense table).

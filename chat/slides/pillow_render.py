@@ -321,7 +321,32 @@ def _draw_text_frame(draw, theme, frame, box, scale):
 # ---------------------------------------------------------------------------
 # Shapes
 # ---------------------------------------------------------------------------
-def _draw_shape(draw, theme, el, scale):
+def _gradient_rgb(w, h, c1, c2, angle=90.0):
+    """A ``w×h`` RGB image with a two-colour linear gradient. ``angle`` is degrees:
+    0 = left→right, 90 = top→bottom (matches OOXML ``gradient_angle``)."""
+    import numpy as np
+
+    w, h = max(1, int(round(w))), max(1, int(round(h)))
+    a = math.radians(angle)
+    dx, dy = math.cos(a), math.sin(a)
+    gx, gy = np.meshgrid(np.arange(w, dtype=float), np.arange(h, dtype=float))
+    proj = gx * dx + gy * dy
+    lo, hi = float(proj.min()), float(proj.max())
+    t = (proj - lo) / (hi - lo) if hi > lo else np.zeros_like(proj)
+    c1 = np.array(c1, dtype=float)
+    c2 = np.array(c2, dtype=float)
+    arr = c1[None, None, :] * (1.0 - t[:, :, None]) + c2[None, None, :] * t[:, :, None]
+    return Image.fromarray(arr.astype("uint8"), "RGB")
+
+
+def _gradient_colors(theme, grad):
+    """Resolve a gradient dict's ``from``/``to`` to RGB tuples."""
+    c1 = _rgb(theme, grad.get("from", "dk2"), (120, 120, 120))
+    c2 = _rgb(theme, grad.get("to", "dk1"), (40, 40, 40))
+    return c1, c2
+
+
+def _draw_shape(draw, theme, el, scale, img=None):
     x, y, w, h = (el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale)
     box = theme.get("boxes", {}).get(el["box"]) if el.get("box") else None
     box = box or {}
@@ -344,6 +369,26 @@ def _draw_shape(draw, theme, el, scale):
         _draw_harvey(draw, x, y, x2, y2, el.get("value"),
                      fill or _rgb(theme, "dk2", (50, 50, 50)), scale)
         return
+
+    # Linear-gradient fill: paint a masked gradient bitmap, then let the shape
+    # dispatch below stroke only its outline (fill=None). Needs the target image.
+    grad = el.get("gradient") or box.get("gradient")
+    if grad and img is not None:
+        c1, c2 = _gradient_colors(theme, grad)
+        gw, gh = max(1, int(round(w))), max(1, int(round(h)))
+        gimg = _gradient_rgb(gw, gh, c1, c2, grad.get("angle", 90.0))
+        mask = Image.new("L", (gw, gh), 0)
+        md = ImageDraw.Draw(mask)
+        if name in ("oval", "ellipse", "circle"):
+            md.ellipse([0, 0, gw - 1, gh - 1], fill=255)
+        elif name == "rounded_rect":
+            md.rounded_rectangle([0, 0, gw - 1, gh - 1], radius=min(w, h) * 0.14, fill=255)
+        elif name in _POLY_SHAPES:
+            md.polygon([(px - x, py - y) for (px, py) in _POLY_SHAPES[name](x, y, w, h)], fill=255)
+        else:
+            md.rectangle([0, 0, gw - 1, gh - 1], fill=255)
+        img.paste(gimg, (int(round(x)), int(round(y))), mask)
+        fill = None  # gradient already painted; shape dispatch strokes outline only
 
     if name in ("oval", "ellipse", "circle"):
         draw.ellipse([x, y, x2, y2], fill=fill, outline=o, width=ow)
@@ -1257,11 +1302,11 @@ def _draw_element(draw, img, theme, el, scale, resolver, bg=None):
         op = el.get("opacity")
         if op is not None and op < 1:  # translucent panel: draw on a layer, fade, composite
             layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            _draw_shape(ImageDraw.Draw(layer), theme, el, scale)
+            _draw_shape(ImageDraw.Draw(layer), theme, el, scale, img=layer)
             layer = _apply_opacity(layer, op)
             img.paste(layer, (0, 0), layer)
         else:
-            _draw_shape(draw, theme, el, scale)
+            _draw_shape(draw, theme, el, scale, img=img)
     elif etype == "icon":
         op = el.get("opacity")
         if op is not None and op < 1:
@@ -1316,6 +1361,13 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
 
     bg = _rgb(theme, slide.get("bg") or "lt1", (255, 255, 255))
     img = Image.new("RGB", (W, H), bg)
+
+    # Full-bleed gradient background (behind everything, over the flat bg fill).
+    bgrad = slide.get("bg_gradient")
+    if bgrad:
+        c1, c2 = _gradient_colors(theme, bgrad)
+        img.paste(_gradient_rgb(W, H, c1, c2, bgrad.get("angle", 90.0)), (0, 0))
+        bg = c2  # chart-legend backdrop matches the gradient end
 
     # Full-bleed background image (drawn behind everything), then an optional
     # scrim — a translucent colour wash so text stays legible over the photo.

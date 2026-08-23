@@ -23,6 +23,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.dml import MSO_LINE_DASH_STYLE, MSO_THEME_COLOR
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.ns import qn
 from pptx.util import Pt
 
 from chat.slides import oxml_pokes as pokes
@@ -144,6 +145,42 @@ def _apply_color(color_format, theme: dict, value) -> None:
         color_format.rgb = RGBColor.from_string(val)
 
 
+# DrawingML colour-modifier tags that python-pptx's preset ``gradient()`` bakes
+# into each stop — stripped so a stop is its pure theme/hex colour and the .pptx
+# gradient interpolates the same two endpoints the Pillow preview does.
+_GRAD_MOD_TAGS = frozenset(
+    qn(t) for t in ("a:tint", "a:shade", "a:satMod", "a:lumMod", "a:lumOff", "a:hueMod")
+)
+
+
+def _apply_gradient(fill, theme: dict, grad: dict) -> None:
+    """Apply a two-stop linear gradient onto a python-pptx FillFormat.
+
+    ``angle`` is degrees, 0 = left→right / 90 = top→bottom (matching the Pillow
+    preview). python-pptx measures ``gradient_angle`` counter-clockwise, so we
+    negate to land on the clockwise OOXML ``ang`` the preview uses."""
+    fill.gradient()
+    stops = fill.gradient_stops
+    _apply_color(stops[0].color, theme, grad.get("from", "dk2"))
+    stops[0].position = 0.0
+    _apply_color(stops[1].color, theme, grad.get("to", "dk1"))
+    stops[1].position = 1.0
+    grad_el = fill._xPr.find(qn("a:gradFill"))
+    if grad_el is not None:
+        # Collect colour elements before mutating — removing children mid-iter()
+        # corrupts the live lxml iterator and skips the second stop.
+        colours = [c for c in grad_el.iter()
+                   if c.tag in (qn("a:schemeClr"), qn("a:srgbClr"))]
+        for clr in colours:
+            for child in list(clr):
+                if child.tag in _GRAD_MOD_TAGS:
+                    clr.remove(child)
+    try:
+        fill.gradient_angle = -float(grad.get("angle", 90.0))
+    except (ValueError, TypeError, NotImplementedError):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Text
 # ---------------------------------------------------------------------------
@@ -235,7 +272,10 @@ def _add_shape(slide, el, theme, warnings):
     shp = slide.shapes.add_shape(mso, x, y, w, h)
 
     fill_v = el.get("fill") if el.get("fill") is not None else box.get("fill")
-    if fill_v is not None:
+    grad = el.get("gradient") or box.get("gradient")
+    if grad:
+        _apply_gradient(shp.fill, theme, grad)
+    elif fill_v is not None:
         shp.fill.solid()
         _apply_color(shp.fill.fore_color, theme, fill_v)
         opacity = el.get("opacity")
@@ -870,6 +910,15 @@ def _apply_slide_bg(slide, theme, value):
     _apply_color(fill.fore_color, theme, value)
 
 
+def _apply_bg_gradient(slide, theme, grad, prs):
+    """Full-bleed gradient rectangle, drawn before the slide's elements."""
+    W, H = prs.slide_width, prs.slide_height
+    shp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, W, H)
+    _apply_gradient(shp.fill, theme, grad)
+    shp.line.fill.background()
+    shp.shadow.inherit = False
+
+
 def _apply_bg_image(slide, sdict, theme, resolver, prs, warnings):
     """Full-bleed background image (cover-cropped) + optional legibility scrim,
     drawn before the slide's elements so they sit on top."""
@@ -990,6 +1039,8 @@ def build_deck_pptx(
         slide = prs.slides.add_slide(blank)
         if sdict.get("bg"):
             _apply_slide_bg(slide, theme, sdict["bg"])
+        if sdict.get("bg_gradient"):
+            _apply_bg_gradient(slide, theme, sdict["bg_gradient"], prs)
         if sdict.get("bg_image") or sdict.get("bg_scrim"):
             _apply_bg_image(slide, sdict, theme, image_resolver, prs, warnings)
         for el in sdict.get("elements") or []:

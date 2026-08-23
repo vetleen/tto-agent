@@ -98,6 +98,45 @@ class PillowRenderTests(SimpleTestCase):
         png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
         self.assertGreater(len(_colours(_open(png))), 3)
 
+    def test_shape_gradient_produces_many_colours(self):
+        # A gradient-filled shape must yield a smooth ramp (many distinct colours),
+        # unlike a flat fill which adds just one.
+        flat = self._deck([{"elements": [
+            {"type": "shape", "x": 100, "y": 100, "w": 400, "h": 200, "shape": "rect", "fill": "accent1"},
+        ]}])
+        grad = self._deck([{"elements": [
+            {"type": "shape", "x": 100, "y": 100, "w": 400, "h": 200, "shape": "rect",
+             "gradient": {"from": "accent1", "to": "accent2", "angle": 90}},
+        ]}])
+        flat_png, *_ = pillow_render.render_slide_png(flat, 0, dpi=96)
+        grad_png, *_ = pillow_render.render_slide_png(grad, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(grad_png))), len(_colours(_open(flat_png))) + 20)
+
+    def test_bg_gradient_fills_background(self):
+        # A full-bleed bg_gradient must repaint the flat background with a ramp.
+        # skip_footer so the page-number stamp doesn't add ink to the flat case.
+        plain = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": []}])
+        grad = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True,
+                            "bg_gradient": {"from": "accent1", "to": "dk1", "angle": 120},
+                            "elements": []}])
+        p_png, *_ = pillow_render.render_slide_png(plain, 0, dpi=72)
+        g_png, *_ = pillow_render.render_slide_png(grad, 0, dpi=72)
+        self.assertEqual(len(_colours(_open(p_png))), 1)  # flat bg = 1 colour
+        self.assertGreater(len(_colours(_open(g_png))), 50)
+
+    def test_gradient_masks_to_poly_shape(self):
+        # A gradient on a polygon (chevron) must be clipped to the shape, leaving
+        # the surrounding background untouched (top-left corner stays bg colour).
+        deck = self._deck([{"id": "s1", "bg": "lt1", "elements": [
+            {"type": "shape", "x": 100, "y": 100, "w": 300, "h": 120, "shape": "chevron",
+             "gradient": {"from": "accent1", "to": "accent4", "angle": 0}},
+        ]}])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+        img = _open(png)
+        bg = _open(pillow_render.render_slide_png(
+            self._deck([{"id": "s1", "bg": "lt1", "elements": []}]), 0, dpi=96)[0]).getpixel((5, 5))
+        self.assertEqual(img.getpixel((5, 5)), bg)  # corner outside the chevron
+
     def test_justified_paragraph_renders(self):
         deck = self._deck([{"elements": [
             {"type": "text", "x": 48, "y": 48, "w": 400, "h": 300, "class": "body",

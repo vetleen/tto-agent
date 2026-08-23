@@ -129,6 +129,14 @@ class TextElement(_Strict):
     rotation: float | None = None
 
 
+class Gradient(_Strict):
+    """A two-colour linear gradient. ``from``/``to`` are theme colour names or hex;
+    ``angle`` is degrees (0 = left→right, 90 = top→bottom)."""
+    frm: str = Field(default="dk2", alias="from")
+    to: str = "dk1"
+    angle: float = 90.0
+
+
 class ShapeElement(_Strict):
     id: str | None = None
     type: Literal["shape"]
@@ -138,6 +146,7 @@ class ShapeElement(_Strict):
     h: float
     shape: str = "rect"
     fill: str | None = None
+    gradient: Gradient | None = None  # a linear gradient fill (rect/rounded_rect/oval)
     line: LineStyle | None = None
     box: str | None = None
     text: TextBody | None = None
@@ -277,6 +286,7 @@ class Slide(_Strict):
     id: str | None = None
     name: str = ""
     bg: str | None = None
+    bg_gradient: Gradient | None = None  # full-bleed linear gradient background
     bg_image: str = ""          # image token drawn full-bleed behind everything
     bg_scrim: Scrim | None = None
     skip_footer: bool = False

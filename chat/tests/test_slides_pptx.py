@@ -142,6 +142,31 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn("HW", xml)  # legend series name
         self.assertEqual(warns, [])
 
+    def test_shape_gradient_writes_gradfill(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "g1", "type": "shape", "shape": "rounded_rect", "x": 60, "y": 80, "w": 240, "h": 150,
+             "gradient": {"from": "accent1", "to": "accent2", "angle": 45}},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertIn("<a:gradFill", xml)
+        self.assertIn("<a:lin ", xml)                 # linear gradient direction
+        self.assertIn('ang="2700000"', xml)           # 45° clockwise, in 60000ths
+        self.assertNotIn("<a:satMod", xml)            # preset colour mods stripped
+        self.assertEqual(warns, [])
+
+    def test_bg_gradient_writes_fullbleed_gradfill(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{
+            "id": "s1", "bg_gradient": {"from": "accent1", "to": "dk1", "angle": 90},
+            "elements": [],
+        }]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertIn("<a:gradFill", xml)
+        self.assertEqual(warns, [])
+
     def test_harvey_ball_embeds_as_picture(self):
         # Rasterised (PNG) so it pixel-matches the preview — OOXML pie fills the
         # opposite side, so a native pie would mis-render in PowerPoint.
