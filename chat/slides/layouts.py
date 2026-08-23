@@ -258,8 +258,9 @@ _LAYOUTS: dict[str, dict] = {
         "name": "Quote",
         "bg": "lt2",
         "elements": [
-            _text(120, 180, 720, 200, "quote", [_p("“A short, memorable quotation that anchors the slide.”", align="center")], valign="middle"),
-            _text(120, 380, 720, 30, "caption", [_p("— Attribution", align="center")]),
+            _text(96, 70, 200, 160, "headline", [_p("“", size=150, bold=True, color="accent3", align="left")]),
+            _text(120, 200, 720, 170, "quote", [_p("A short, memorable quotation that anchors the slide.", align="center")], valign="middle"),
+            _text(120, 384, 720, 30, "caption", [_p("— Attribution", align="center")]),
         ],
     },
     "closing": {
