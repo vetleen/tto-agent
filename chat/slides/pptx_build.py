@@ -588,14 +588,19 @@ def _resolve_rgb(theme, ref, default):
 
 
 def _slide_is_dark(sdict, theme) -> bool:
-    """Is the slide background dark? (bg colour, or a gradient's end colour.) Used
-    so auto-drawn chart text/gridlines flip to light and stay legible."""
+    """Is the slide backdrop dark? (bg colour, a gradient's end colour, and/or a
+    scrim wash over a photo.) Used so auto-drawn text/gridlines flip to light."""
     grad = sdict.get("bg_gradient")
     ref = grad.get("to", "dk1") if grad else sdict.get("bg")
-    if not ref:
-        return False  # default light background
-    r = _resolve_rgb(theme, ref, RGBColor(0xFF, 0xFF, 0xFF))
-    return (0.299 * r[0] + 0.587 * r[1] + 0.114 * r[2]) < 130
+    base = _resolve_rgb(theme, ref, RGBColor(0xFF, 0xFF, 0xFF)) if ref else RGBColor(0xFF, 0xFF, 0xFF)
+    scrim = sdict.get("bg_scrim")
+    if scrim:  # a translucent wash — blend it over the base as the elements see it
+        col = _resolve_rgb(theme, scrim.get("color", "dk1"), RGBColor(0, 0, 0))
+        op = max(0.0, min(1.0, float(scrim.get("opacity", 0.4))))
+        base = RGBColor(*(round(b * (1 - op) + c * op) for b, c in zip(base, col)))
+    elif not ref:
+        return False  # default light background, no scrim
+    return (0.299 * base[0] + 0.587 * base[1] + 0.114 * base[2]) < 130
 
 
 def _chart_text_rgb(theme, bg_dark):

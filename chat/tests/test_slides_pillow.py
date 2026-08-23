@@ -152,6 +152,17 @@ class PillowRenderTests(SimpleTestCase):
         near_white = [c for c in _colours(img) if min(c) > 200]
         self.assertTrue(near_white, "dark-bg chart should draw light (near-white) label text")
 
+    def test_chart_labels_adapt_under_dark_scrim(self):
+        # A dark scrim (over a photo hero) makes the backdrop dark even with no
+        # dark `bg`; the chart's auto-drawn labels must still flip to light.
+        deck = self._deck([{"id": "s1", "skip_footer": True,
+                            "bg_scrim": {"color": "dk1", "opacity": 0.72}, "elements": [
+            {"type": "chart", "x": 60, "y": 90, "w": 700, "h": 360, "chart": "column",
+             "categories": ["Q1", "Q2"], "series": [{"name": "S", "values": [3, 6]}]},
+        ]}])
+        img = _open(pillow_render.render_slide_png(deck, 0, dpi=96)[0])
+        self.assertTrue([c for c in _colours(img) if min(c) > 200], "labels should go light under a dark scrim")
+
     def test_curved_line_differs_from_straight(self):
         # A bowed line must paint different pixels than a straight one between the
         # same endpoints (it arcs away from the chord).

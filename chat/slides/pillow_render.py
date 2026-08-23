@@ -1517,6 +1517,9 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
         col = _rgb(theme, scrim.get("color", "dk1"), (0, 0, 0))
         op = max(0.0, min(1.0, float(scrim.get("opacity", 0.4))))
         img = Image.blend(img, Image.new("RGB", (W, H), col), op)
+        # The scrim is the backdrop elements sit on, so fold it into `bg` — this
+        # is what lets a chart/table/network over a dark photo pick light text.
+        bg = tuple(round(b * (1 - op) + c * op) for b, c in zip(bg, col))
 
     draw = ImageDraw.Draw(img)
 

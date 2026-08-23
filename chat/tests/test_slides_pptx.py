@@ -178,6 +178,16 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn("<a:gradFill", xml)
         self.assertEqual(warns, [])
 
+    def test_slide_is_dark_accounts_for_scrim(self):
+        from chat.slides import pptx_build, theme as tmod
+        theme = tmod.resolve_theme({})
+        self.assertFalse(pptx_build._slide_is_dark({}, theme))                      # light default
+        self.assertTrue(pptx_build._slide_is_dark({"bg": "dk1"}, theme))            # dark bg
+        # A dark scrim over the (light) default backdrop reads as dark:
+        self.assertTrue(pptx_build._slide_is_dark({"bg_scrim": {"color": "dk1", "opacity": 0.7}}, theme))
+        # A faint scrim leaves it light:
+        self.assertFalse(pptx_build._slide_is_dark({"bg_scrim": {"color": "dk1", "opacity": 0.1}}, theme))
+
     def test_chart_on_dark_bg_gets_light_font(self):
         # A chart on a dark slide must flip its auto-drawn text to light so it's
         # legible in the download (the native chart has no other colour control).
