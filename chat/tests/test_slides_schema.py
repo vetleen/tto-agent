@@ -329,6 +329,13 @@ class ImagePlaceholderCaptionTests(SimpleTestCase):
         self.assertEqual(
             cap("[[image:11111111-1111-1111-1111-111111111111]]"), "Image unavailable"
         )
+        # a UUID token that carries a |label must NOT leak the humanised id
+        self.assertEqual(
+            cap("[[image:11111111-1111-1111-1111-111111111111|NTNU logo]]"),
+            "Image unavailable",
+        )
+        # a reserved-slug token with a label humanises just the slug
+        self.assertEqual(cap("[[image:demo-mockup|A caption]]"), "Demo mockup")
 
 
 class CustomSlideThemeUnitTests(SimpleTestCase):

@@ -41,6 +41,10 @@ def image_placeholder_caption(token: str) -> str:
         return "Add an image"
     m = re.search(r"image:([^\]]+)", token)
     inner = (m.group(1) if m else token).strip()
+    # A [[image:uuid|label]] token carries a caption after the pipe; drop it so a
+    # real-but-missing UUID reads as "Image unavailable" rather than the raw id
+    # humanised into gibberish ("82985431 80d7 4d03 ...").
+    inner = inner.split("|", 1)[0].strip()
     if not inner:
         return "Add an image"
     if _UUID_RE.match(inner):

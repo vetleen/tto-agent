@@ -368,6 +368,9 @@ def _add_image(slide, el, theme, resolver, warnings):
         from chat.slides.schema import _UUID_RE, image_placeholder_caption
 
         inner = token.split("image:", 1)[-1].rstrip("]").strip() if token else ""
+        # Drop a |label suffix (data-room tokens are minted as `[[image:uuid|]]`)
+        # so a real-but-missing UUID is still recognised and warned about.
+        inner = inner.split("|", 1)[0].strip()
         if inner and _UUID_RE.match(inner):
             warnings.append(f"image unavailable: {token[:60]}")
         ph = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h)
@@ -1235,10 +1238,18 @@ def make_image_resolver(slide_set):
             return cache[aid]
         result = None
         try:
-            asset = Asset.objects.filter(
-                Q(pk=aid)
-                & (Q(slide_set=slide_set) | Q(thread_id=slide_set.thread_id))
-            ).first()
+            # An asset resolves only if it belongs to this deck: the deck's own
+            # render assets, a thread-owned image (generated / web-viewed), or a
+            # data-room image whose data room is ATTACHED to this deck's thread.
+            # The attached-room gate is the ACL — a model-supplied token can't
+            # pull an image from a data room the thread hasn't attached.
+            owner = Q(slide_set=slide_set)
+            if slide_set.thread_id:
+                owner |= Q(thread_id=slide_set.thread_id)
+                owner |= Q(
+                    version__document__data_room__thread_links__thread_id=slide_set.thread_id
+                )
+            asset = Asset.objects.filter(Q(pk=aid) & owner).first()
             if asset is not None:
                 source, ct = image_asset_source(asset)
                 if source is not None:

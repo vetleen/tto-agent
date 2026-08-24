@@ -78,7 +78,11 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
      (chevron/hexagon/…). Great for KPI cards, section-divider panels, and modern title bands.
      Keep the two colours close in hue for a subtle sheen, or contrast them for a bold band.
 3. **image** — `{"type":"image","x":600,"y":120,"w":300,"h":200,"token":"[[image:UUID]]","fit":"cover","opacity":1}`.
-   The token comes from an image tool; `fit` is `contain`/`cover`/`stretch`; `opacity` 0–1 fades it.
+   The token comes from an image tool, OR is the `[[image:UUID]]` token of a **data-room
+   image** (a logo / figure the user uploaded) surfaced by the document tools. A data-room
+   image renders in the deck only if that data room is **attached to this thread** — so if
+   the user uploaded a logo, make sure its room is attached before promising it will show.
+   `fit` is `contain`/`cover`/`stretch`; `opacity` 0–1 fades it.
    **Reserve a slot** for a logo / screenshot / headshot / mockup the user will drop in: use a
    descriptive placeholder token like `"[[image:product-mockup]]"` (any slug, not a real id) — it
    renders as a tidy labelled placeholder ("Product mockup") so the layout reads as intentional.

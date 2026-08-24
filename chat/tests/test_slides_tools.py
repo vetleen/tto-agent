@@ -189,6 +189,59 @@ class BuildResolverTests(TestCase):
         _data, warnings = build_pptx(self._img_deck(f"[[image:{foreign.id}]]"))
         self.assertTrue(any("unavailable" in w for w in warnings))
 
+    def _dataroom_image_token(self):
+        """A data-room image asset (blob-less, version-owned) + its token.
+
+        Returns ``(data_room, token)``; the data room is NOT yet attached to the
+        deck's thread, so the caller controls whether the image is resolvable.
+        """
+        from django.core.files.base import ContentFile
+
+        from chat.assets import get_or_create_version_image_token
+        from documents.models import (
+            DataRoom, DataRoomDocument, DataRoomDocumentVersion,
+        )
+
+        room = DataRoom.objects.create(
+            name="Aldera DOFI", slug=f"r{uuid.uuid4().hex[:6]}", created_by=self.user,
+        )
+        doc = DataRoomDocument.objects.create(
+            data_room=room, uploaded_by=self.user, original_filename="ntnu.png",
+            mime_type="image/png", doc_index=1,
+            status=DataRoomDocument.Status.READY,
+        )
+        doc.original_file.save("ntnu.png", ContentFile(_PNG), save=True)
+        version = DataRoomDocumentVersion.objects.create(
+            document=doc, version_index=0,
+            origin=DataRoomDocumentVersion.Origin.UPLOADED, mime_type="image/png",
+        )
+        token = get_or_create_version_image_token(version_id=version.id, mime="image/png")
+        return room, token
+
+    def test_attached_data_room_image_embeds(self):
+        """A data-room image renders in the deck when its room is attached."""
+        import io
+        import zipfile
+
+        from chat.models import ChatThreadDataRoom
+        from chat.slides.pptx_build import build_pptx
+
+        room, token = self._dataroom_image_token()
+        ChatThreadDataRoom.objects.create(thread=self.thread, data_room=room)
+        data, warnings = build_pptx(self._img_deck(token))
+        self.assertEqual(warnings, [])
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertTrue(any(n.startswith("ppt/media/") for n in z.namelist()))
+
+    def test_unattached_data_room_image_is_blocked(self):
+        """The same token does NOT resolve when the room isn't attached — the
+        attached-room gate is the ACL against referencing arbitrary UUIDs."""
+        from chat.slides.pptx_build import build_pptx
+
+        _room, token = self._dataroom_image_token()
+        _data, warnings = build_pptx(self._img_deck(token))
+        self.assertTrue(any("unavailable" in w for w in warnings))
+
 
 class PreviewToolTests(TestCase):
     def setUp(self):
