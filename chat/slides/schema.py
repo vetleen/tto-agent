@@ -515,12 +515,19 @@ def _counter(prefix: str, used: set[str]):
 
 
 # --- Content hashing (render cache + change detection) ----------------------
+# Bump when the RENDERERS change what pixels an unchanged slide produces (bullet
+# glyphs, text insets, corner radii, edge trimming, …) so cached previews of
+# existing decks go stale and re-render instead of diverging from the export.
+RENDERER_REV = 2
+
+
 def slide_content_hash(deck: dict, index: int) -> str:
     """Stable hash of everything that affects slide ``index``'s rendered pixels.
 
-    Includes the resolved theme, the deck size, and the slide's position/total
-    (the footer page-number stamp bakes position into the image), so a slide
-    that merely shifts position re-renders.
+    Includes the resolved theme, the deck size, the slide's position/total
+    (the footer page-number stamp bakes position into the image), and the
+    renderer revision, so a slide that merely shifts position — or an unchanged
+    slide after a renderer upgrade — re-renders.
     """
     slides = deck.get("slides") or []
     payload = {
@@ -529,6 +536,7 @@ def slide_content_hash(deck: dict, index: int) -> str:
         "size": deck.get("size"),
         "index": index,
         "total": len(slides),
+        "rev": RENDERER_REV,
     }
     return hashlib.sha256(canonical_deck_text(payload).encode("utf-8")).hexdigest()
 
