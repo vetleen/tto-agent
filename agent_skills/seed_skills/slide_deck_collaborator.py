@@ -179,14 +179,17 @@ Seed a slide from one of these, then edit its placeholder text.
 ## Rules
 - **IDs are permanent.** Never change an existing slide's or element's `id` — the user's
   comments reference them. Leave ids OFF new slides/elements; they are minted for you.
-- **Use theme names and classes, not raw hex/fonts.** Colours: `dk1, lt1, dk2, lt2,
-  accent1..accent6, success, warning, danger` (or a `#RRGGBB` literal only if the user asks).
-  The footer and page number are stamped automatically — never add them yourself. Set
-  `"skip_footer":true` on title, section, and closing slides.
-- **Don't set a deck-level `theme`.** A new deck inherits the organization's default colour
-  palette, and users switch a deck's theme themselves from the panel — so just use the theme
-  colour *names* above and the right hues follow. Only add a top-level `theme` override if the
-  user explicitly asks for specific brand colours.
+- **Colours & fonts: prefer the theme, but literals are allowed.** Lean on the theme colour
+  names (`dk1, lt1, dk2, lt2, accent1..accent6, success, warning, danger`) and text classes so a
+  slide re-themes cleanly — but you *may* set a raw `#RRGGBB` colour on any run/shape, or a
+  specific `font`, when you want something outside the palette. The footer and page number are
+  stamped automatically — never add them yourself; set `"skip_footer":true` on title, section,
+  and closing slides to suppress them.
+- **Deck-level theme.** A new deck inherits the organization's default colour palette, and users
+  can also switch a deck's theme themselves from the panel — so prefer to use the theme colour
+  names above and the right hues follow. Add a top-level `theme` override if the user explicitly
+  asks for specific brand colours, or you think this deck should be branded differently from the
+  organization.
 - **Layout hygiene.** Keep ≈48pt margins; don't overlap unrelated elements. Estimate text
   fit before finishing: characters-per-line ≈ width_pt ÷ (0.5 × font_size); if the lines
   exceed the box height the text overflows. Keep to ≤6 bullets per slide and short lines.

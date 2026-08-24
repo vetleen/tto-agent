@@ -139,7 +139,7 @@ class ActivateDeckTool(ContextAwareTool):
     audience: str = "main"
     section: str = "skills"
     start_label: str = "Opening deck..."
-    end_label: str = "Updated the active deck"
+    end_label: str = "Deck opened"
     description: str = (
         "Set which slide deck is active. The active deck's full JSON is included in "
         "your context so you can edit it. Activating a deck deactivates the others."
