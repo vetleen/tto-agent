@@ -1128,11 +1128,17 @@ def _stamp_footer(slide, theme, page_num, total, bg_dark=False):
 # ---------------------------------------------------------------------------
 # Presentation assembly
 # ---------------------------------------------------------------------------
-def _open_template(base_template: str) -> Presentation:
+def _open_template(base_template: str, theme: dict | None = None) -> Presentation:
     path = TEMPLATE_DIR / f"{base_template}.pptx"
     if path.exists():
         try:
-            return Presentation(str(path))
+            raw = path.read_bytes()
+            if theme is not None:
+                # Bake the deck's active theme into the theme part so schemeClr
+                # references resolve to it in PowerPoint (matches the preview).
+                from chat.slides.template_gen import patch_pptx_theme
+                raw = patch_pptx_theme(raw, theme)
+            return Presentation(BytesIO(raw))
         except Exception:  # noqa: BLE001
             logger.warning("template %s unreadable; using python-pptx default", base_template)
     return Presentation()
@@ -1160,7 +1166,7 @@ def build_deck_pptx(
     """
     warnings: list[str] = []
     theme = theme_mod.resolve_theme(deck)
-    prs = _open_template(base_template)
+    prs = _open_template(base_template, theme)
     size = deck.get("size") or {}
     prs.slide_width = Pt(size.get("w", 960))
     prs.slide_height = Pt(size.get("h", 540))

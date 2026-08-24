@@ -188,6 +188,35 @@ class BuildDeckTests(SimpleTestCase):
         # A faint scrim leaves it light:
         self.assertFalse(pptx_build._slide_is_dark({"bg_scrim": {"color": "dk1", "opacity": 0.1}}, theme))
 
+    def test_export_bakes_active_theme_into_theme_part(self):
+        # A non-base theme must reach the downloaded file: its colours are baked
+        # into ppt/theme/theme1.xml while the slide keeps the editable schemeClr
+        # reference (so PowerPoint's colour picker still tracks the palette).
+        import re
+        from chat.slides import theme as tmod
+
+        base_a1 = tmod.WILFRED_BASE_THEME["colors"]["accent1"].lstrip("#").upper()
+        ocean = tmod.preset_theme_override("ocean")
+        ocean_a1 = ocean["colors"]["accent1"].lstrip("#").upper()
+
+        def theme_accent1(deck):
+            data, _ = build_deck_pptx(deck)
+            z = zipfile.ZipFile(io.BytesIO(data))
+            th = z.read("ppt/theme/theme1.xml").decode()
+            slide = z.read("ppt/slides/slide1.xml").decode()
+            m = re.search(r"<a:accent1>\s*<a:srgbClr val=\"([0-9A-Fa-f]{6})\"", th)
+            return (m.group(1).upper() if m else None), ('schemeClr val="accent1"' in slide)
+
+        el = [{"type": "shape", "x": 40, "y": 40, "w": 200, "h": 100, "shape": "rect", "fill": "accent1"}]
+        o_hex, o_ref = theme_accent1({"version": 1, "size": {"w": 960, "h": 540},
+                                      "theme": ocean, "slides": [{"id": "s1", "elements": el}]})
+        b_hex, b_ref = theme_accent1({"version": 1, "size": {"w": 960, "h": 540},
+                                      "slides": [{"id": "s1", "elements": el}]})
+        self.assertEqual(o_hex, ocean_a1)   # ocean colour reached the theme part
+        self.assertTrue(o_ref)              # slide still references the slot (not inlined)
+        self.assertEqual(b_hex, base_a1)    # base deck unchanged (regression guard)
+        self.assertTrue(b_ref)
+
     def test_shorthand_and_malformed_hex_dont_crash_build(self):
         from chat.slides import theme as tmod
         theme = tmod.resolve_theme({})

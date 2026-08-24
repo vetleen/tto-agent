@@ -86,3 +86,35 @@ def build_template(theme: dict | None = None) -> bytes:
         for entry in entries:
             zout.writestr(entry, payloads[entry.filename])
     return out.getvalue()
+
+
+def patch_pptx_theme(pptx_bytes: bytes, theme: dict) -> bytes:
+    """Rewrite every ``ppt/theme/themeN.xml`` in a ``.pptx`` with ``theme``'s
+    colours + fonts, so a deck exported on a non-base theme resolves its
+    ``schemeClr`` references to the *active* theme in PowerPoint (not the
+    template's baked base scheme).
+
+    Best-effort: any failure returns the input unchanged — a theme patch must
+    never break an export.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as zin:
+            entries = zin.infolist()
+            payloads = {e.filename: zin.read(e.filename) for e in entries}
+
+        theme_parts = [
+            n for n in payloads
+            if n.startswith("ppt/theme/theme") and n.endswith(".xml")
+        ]
+        if not theme_parts:
+            return pptx_bytes
+        for name in theme_parts:
+            payloads[name] = _patch_theme_xml(payloads[name], theme)
+
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+            for entry in entries:
+                zout.writestr(entry, payloads[entry.filename])
+        return out.getvalue()
+    except Exception:  # noqa: BLE001 — never let a theme patch break the export
+        return pptx_bytes
