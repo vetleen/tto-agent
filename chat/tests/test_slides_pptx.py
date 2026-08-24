@@ -259,6 +259,45 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn(lt1_hex, chart_xml("dk1"))       # dark slide -> light chart text
         self.assertNotIn(lt1_hex, chart_xml("lt1"))    # light slide -> no light-text override
 
+    def test_bullet_glyphs_and_indents_step_by_level(self):
+        import re
+
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "b1", "type": "text", "x": 48, "y": 100, "w": 864, "h": 300, "class": "body",
+             "paragraphs": [
+                 {"bullet": True, "runs": [{"t": "Top"}]},
+                 {"bullet": True, "level": 1, "runs": [{"t": "Sub"}]},
+                 {"bullet": True, "level": 2, "runs": [{"t": "Fine"}]},
+                 {"bullet": True, "level": 3, "runs": [{"t": "Deeper"}]},
+             ]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        xml = zipfile.ZipFile(io.BytesIO(data)).read("ppt/slides/slide1.xml").decode()
+        # ‣ / – / ◦, then the last glyph repeats for deeper levels.
+        self.assertEqual(re.findall(r'buChar char="(.)"', xml), ["‣", "–", "◦", "◦"])
+        # The glyphs reference Arial (the run face may lack them, e.g. Cambria ‣).
+        self.assertIn('buFont typeface="Arial"', xml)
+        # marL steps 20pt per level off the 18pt hang (EMU = pt * 12700).
+        self.assertEqual(re.findall(r'marL="(\d+)"', xml),
+                         ["228600", "482600", "736600", "990600"])
+        self.assertEqual(warns, [])
+
+    def test_rounded_rect_panel_corner_capped_and_insets_roomier(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "p1", "type": "shape", "shape": "rounded_rect", "x": 48, "y": 120,
+             "w": 864, "h": 350, "fill": "lt2",
+             "text": {"paragraphs": [{"bullet": True, "runs": [{"t": "Key point"}]}]}},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        xml = zipfile.ZipFile(io.BytesIO(data)).read("ppt/slides/slide1.xml").decode()
+        # 12pt radius cap on a 350pt-tall panel -> adj = 12/350 = 3428/100000
+        # (not the stock 16667 pill curve).
+        self.assertIn('fmla="val 3428"', xml)
+        # Panel text insets widen to 16/12pt (EMU): text stops hugging the edge.
+        self.assertIn('lIns="203200"', xml)
+        self.assertIn('tIns="152400"', xml)
+        self.assertEqual(warns, [])
+
     def test_curved_line_embeds_picture_straight_stays_connector(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "c1", "type": "line", "x1": 60, "y1": 120, "x2": 400, "y2": 120,

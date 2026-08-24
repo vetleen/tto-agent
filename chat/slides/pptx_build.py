@@ -228,9 +228,10 @@ def _render_text_body(text_frame, body: dict, theme: dict, *, default_class: str
             if style.get("underline"):
                 r.font.underline = True
             _apply_color(r.font.color, theme, style.get("color"))
-        # Bullet handling is a poke (last, so it stays schema-valid).
+        # Bullet handling is a poke (last, so it stays schema-valid). The glyph
+        # steps through the theme's per-level chars (‣ / – / ◦ by default).
         if para.get("bullet"):
-            pokes.set_bullet_char(p, theme.get("bullet", {}).get("char", "•"))
+            pokes.set_bullet_char(p, theme_mod.bullet_char_for_level(theme, level), level=level)
         else:
             pokes.set_no_bullet(p)
 
@@ -286,6 +287,16 @@ def _add_shape(slide, el, theme, warnings):
         mso = MSO_SHAPE.RECTANGLE
     x, y, w, h = _pt_box(el)
     shp = slide.shapes.add_shape(mso, x, y, w, h)
+    if mso is MSO_SHAPE.ROUNDED_RECTANGLE:
+        # Match the preview's card corner (capped radius) instead of the stock
+        # 16.7% pill curve on big panels.
+        from chat.slides.pillow_render import round_rect_radius_pt
+
+        try:
+            mn = min(el.get("w") or 1, el.get("h") or 1)
+            shp.adjustments[0] = round_rect_radius_pt(el["w"], el["h"]) / mn if mn else 0.14
+        except Exception:  # noqa: BLE001 — corner tuning is best-effort
+            logger.debug("rounded_rect adjustment failed", exc_info=True)
 
     fill_v = el.get("fill") if el.get("fill") is not None else box.get("fill")
     grad = el.get("gradient") or box.get("gradient")
@@ -319,6 +330,14 @@ def _add_shape(slide, el, theme, warnings):
             text = dict(text)
             text.setdefault("_default_color", box["text_color"])
         _render_shape_text(shp.text_frame, text, theme, default_class, box.get("text_color"))
+        # Content-panel rectangles get roomier text insets than the PowerPoint
+        # default, mirroring the preview (see panel_text_insets).
+        from chat.slides.pillow_render import panel_text_insets
+
+        ins_lr, ins_tb = panel_text_insets(shape_name, el["w"], el["h"])
+        tf = shp.text_frame
+        tf.margin_left = tf.margin_right = Pt(ins_lr)
+        tf.margin_top = tf.margin_bottom = Pt(ins_tb)
     if el.get("rotation"):
         shp.rotation = el["rotation"]
 
@@ -528,17 +547,15 @@ def _add_network(slide, el, theme, warnings, bg_dark=False):
     """A node-link diagram: edges as connectors, nodes as ovals, labels as
     textboxes. One JSON element expands to many native shapes (there's no
     per-slide shape cap on the .pptx side — the cap is on the authoring JSON)."""
+    from chat.slides.pillow_render import network_edge_segments
+
     ox, oy = el.get("x", 0), el.get("y", 0)
     nodes = el.get("nodes") or []
-    n = len(nodes)
 
     e_color, e_w = el.get("edge_color", "accent2"), el.get("edge_w", 1.0)
-    for edge in el.get("edges") or []:
-        a, b = edge.get("a"), edge.get("b")
-        if not (isinstance(a, int) and isinstance(b, int) and 0 <= a < n and 0 <= b < n):
-            continue
-        x1, y1 = ox + nodes[a]["x"], oy + nodes[a]["y"]
-        x2, y2 = ox + nodes[b]["x"], oy + nodes[b]["y"]
+    # Endpoint-trimmed segments (shared with the preview) so edges stop at a
+    # centre-labelled hub's text instead of striking through it.
+    for edge, (x1, y1), (x2, y2) in network_edge_segments(theme, el):
         conn = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Pt(x1), Pt(y1), Pt(x2), Pt(y2))
         _apply_color(conn.line.color, theme, edge.get("color") or e_color)
         conn.line.width = Pt(edge.get("w") or e_w)

@@ -64,7 +64,7 @@ class SlideToolTests(TestCase):
         self.assertTrue(deck.is_active)
         self.assertEqual(deck.content["slides"], [])
         # ...and it's a valid deck we can immediately seed a layout into.
-        seed = self._run(AddSlideTool(), layout="title")
+        seed = self._run(AddSlideTool(), layout="title_01")
         self.assertEqual(seed["status"], "ok")
 
     def test_write_accepts_native_object(self):
@@ -103,6 +103,22 @@ class SlideToolTests(TestCase):
         r = self._run(AddSlideTool(), layout="nope")
         self.assertEqual(r["status"], "error")
         self.assertIn("bullets", r["available_layouts"])
+
+    def test_layout_catalog_ids(self):
+        from chat.slides.layouts import layout_catalog
+
+        ids = [c["id"] for c in layout_catalog()]
+        for lid in ("title_01", "title_02", "title_03", "section", "section_02", "image_bleed"):
+            self.assertIn(lid, ids)
+        self.assertNotIn("team", ids)  # removed pending a redesign
+
+    def test_add_slide_carries_layout_comment(self):
+        """A seed's authoring ``comment`` travels into the inserted slide JSON."""
+        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        r = self._run(AddSlideTool(), layout="image_right")
+        self.assertEqual(r["status"], "ok")
+        self.assertIn('"comment"', r["slide_json"])
+        self.assertIn("either side", r["slide_json"])
 
     def test_edit_valid(self):
         w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())

@@ -56,6 +56,13 @@ class ValidateDeckTests(SimpleTestCase):
         deck = {"slides": [{"elements": [{"type": "widget", "x": 1, "y": 1, "w": 1, "h": 1}]}]}
         self.assertTrue(schema.validate_deck(deck))
 
+    def test_slide_comment_is_valid(self):
+        # ``comment`` is the layout seeds' authoring-note channel — it must
+        # survive validation (unlike arbitrary unknown keys).
+        deck = _valid_deck()
+        deck["slides"][0]["comment"] = "Swap the bg for a photo."
+        self.assertEqual(schema.validate_deck(deck), [])
+
     def test_unknown_top_level_key_forbidden(self):
         deck = _valid_deck()
         deck["bogus"] = 1

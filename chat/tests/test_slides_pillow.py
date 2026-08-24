@@ -64,18 +64,43 @@ class PillowRenderTests(SimpleTestCase):
         self.assertGreater(len(_colours(_open(png))), 3)
 
     def test_bulleted_paragraph_draws_bullet_char(self):
-        # The en-dash bullet + text should render (more ink than an empty slide).
+        # The bullet glyph + text should render (more ink than an empty slide).
         empty = self._deck([{"elements": []}])
         bulleted = self._deck([{"elements": [
             {"type": "text", "x": 48, "y": 120, "w": 800, "h": 300, "class": "body",
              "paragraphs": [
                  {"bullet": True, "runs": [{"t": "First"}]},
-                 {"bullet": True, "runs": [{"t": "Second"}]},
+                 {"bullet": True, "level": 1, "runs": [{"t": "Nested"}]},
              ]},
         ]}])
         e_png, *_ = pillow_render.render_slide_png(empty, 0, dpi=96)
         b_png, *_ = pillow_render.render_slide_png(bulleted, 0, dpi=96)
         self.assertGreater(len(_colours(_open(b_png))), len(_colours(_open(e_png))))
+
+    def test_bullet_glyphs_step_by_level(self):
+        from chat.slides import theme as theme_mod
+
+        th = theme_mod.resolve_theme({})
+        self.assertEqual(theme_mod.bullet_char_for_level(th, 0), "‣")  # ‣
+        self.assertEqual(theme_mod.bullet_char_for_level(th, 1), "–")  # –
+        self.assertEqual(theme_mod.bullet_char_for_level(th, 2), "◦")  # ◦
+        # Deeper levels repeat the last glyph rather than inventing new ones.
+        self.assertEqual(theme_mod.bullet_char_for_level(th, 4), "◦")
+        # An org's custom bullet only swaps the TOP-level glyph.
+        custom = theme_mod.resolve_theme({"theme": {"bullet": {"char": "•"}}})
+        self.assertEqual(theme_mod.bullet_char_for_level(custom, 0), "•")
+        self.assertEqual(theme_mod.bullet_char_for_level(custom, 1), "–")
+
+    def test_bullet_glyph_missing_from_face_uses_symbol_fallback(self):
+        from chat.slides import theme as theme_mod
+
+        th = theme_mod.resolve_theme({})
+        # Carlito (the body face) has no ‣ — the glyph draws with Arimo instead.
+        font = pillow_render._bullet_font(th, {"font": "body", "size": 14}, 1.0, "‣")
+        self.assertIn("Arimo", str(getattr(font, "path", "")))
+        # – is covered by Carlito, so no fallback there.
+        font = pillow_render._bullet_font(th, {"font": "body", "size": 14}, 1.0, "–")
+        self.assertIn("Carlito", str(getattr(font, "path", "")))
 
     def test_render_deck_pngs_respects_only_filter(self):
         deck = self._deck([
@@ -242,6 +267,26 @@ class PillowRenderTests(SimpleTestCase):
         ]}])
         img = _open(pillow_render.render_slide_png(deck, 0, dpi=96)[0])
         self.assertTrue([c for c in _colours(img) if min(c) > 200], "unfilled cells should be light")
+
+    def test_network_edges_trimmed_at_hub_label_and_dots(self):
+        # Edges must stop short of a centre-labelled text hub (r=0) and of dot
+        # nodes, instead of striking through the hub's words.
+        el = {"type": "network", "x": 100, "y": 50, "w": 500, "h": 300,
+              "nodes": [
+                  {"x": 100, "y": 100, "label": "Hub Label", "label_pos": "c", "r": 0},
+                  {"x": 400, "y": 100, "label": "P", "label_pos": "r"},
+              ],
+              "edges": [{"a": 0, "b": 1}]}
+        from chat.slides import theme as theme_mod
+
+        segs = pillow_render.network_edge_segments(theme_mod.resolve_theme({}), el)
+        self.assertEqual(len(segs), 1)
+        _edge, (x1, y1), (x2, y2) = segs[0]
+        self.assertEqual((y1, y2), (150, 150))       # horizontal edge stays level
+        self.assertGreater(x1, 220)                  # cleared the hub label's half-width
+        self.assertLess(x1, 300)                     # ...but not absurdly far
+        self.assertLess(x2, 500)                     # stops at the dot's edge
+        self.assertGreater(x2, 490)
 
     def test_network_bad_edge_index_is_skipped(self):
         # An out-of-range edge must be ignored, not crash the render.

@@ -46,22 +46,33 @@ def _clear_bullet_defs(pPr) -> None:
             pPr.remove(existing)
 
 
-def set_bullet_char(paragraph, char: str, *, hang_pt: float = 16) -> None:
+def set_bullet_char(paragraph, char: str, *, level: int = 0,
+                    hang_pt: float = 18, level_indent_pt: float = 20) -> None:
     """Force a literal bullet glyph on a paragraph with a hanging indent.
 
     python-pptx has no bullet API. We drop any inherited bullet defs and add an
     ``a:buChar`` (kept last in ``pPr``, which is schema-valid after ``spcAft``).
-    ``marL``/``indent`` give the bullet a proper hang so wrapped lines align.
+    ``marL``/``indent`` give the bullet a proper hang so wrapped lines align;
+    ``marL`` steps in by ``level_indent_pt`` per nesting level (an explicit marL
+    overrides the master's per-level defaults, so without the step every level
+    would sit flush left). Both match the Pillow preview's indents.
     """
     pPr = paragraph._p.get_or_add_pPr()
     _clear_bullet_defs(pPr)
     hang = Emu(Pt(hang_pt))
-    pPr.set("marL", str(int(hang)))
+    marl = Emu(Pt(hang_pt + max(0, int(level)) * level_indent_pt))
+    pPr.set("marL", str(int(marl)))
     pPr.set("indent", str(-int(hang)))
+    # A non-ASCII glyph (‣, ◦, –) references Arial explicitly: the run font may
+    # be a face that lacks it (Cambria has no ‣), and buFont must precede buChar
+    # in pPr to be schema-valid.
+    char = char or "•"
+    if any(ord(c) >= 0x80 for c in char):
+        pPr.append(pPr.makeelement(qn("a:buFont"), {"typeface": "Arial"}))
     # NOTE: the char attribute is UNQUALIFIED (`char`, not `a:char`). Namespacing
     # it produces `<a:buChar a:char="…"/>`, which python-pptx/LibreOffice tolerate
     # but real PowerPoint rejects ("PowerPoint could not open the file").
-    bu = pPr.makeelement(qn("a:buChar"), {"char": char or "•"})
+    bu = pPr.makeelement(qn("a:buChar"), {"char": char})
     pPr.append(bu)
 
 

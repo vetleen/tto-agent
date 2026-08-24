@@ -232,20 +232,31 @@ _INSET_LR = 7.2   # pt
 _INSET_TB = 3.6   # pt
 
 
-def _draw_text_frame(draw, theme, frame, box, scale):
+def _bullet_font(theme, style, scale, char):
+    """The font to draw a bullet glyph with — the paragraph's own face, or the
+    Arimo symbol fallback when that face lacks the glyph (Carlito has no ‣)."""
+    family = theme_mod.font_family(theme, style.get("font"))
+    if any(ord(c) >= 0x80 and ord(c) not in _font_codepoints(family) for c in char):
+        return _font(_SYMBOL_FALLBACK, (style.get("size") or 14) * scale,
+                     bool(style.get("bold")), bool(style.get("italic")))
+    return _run_font(theme, style, scale)
+
+
+def _draw_text_frame(draw, theme, frame, box, scale, insets=None):
     """Render a text frame (paragraphs) inside ``box`` (x, y, w, h in px).
 
     The box is the full element/shape/cell rect; the standard PowerPoint text
-    insets are applied here so callers pass unpadded rects.
+    insets are applied here so callers pass unpadded rects. ``insets`` overrides
+    them as ``(lr_pt, tb_pt)`` (panel shapes pass roomier ones).
     """
     bx, by, bw, bh = box
-    ins_lr, ins_tb = _INSET_LR * scale, _INSET_TB * scale
+    ins_lr = (insets[0] if insets else _INSET_LR) * scale
+    ins_tb = (insets[1] if insets else _INSET_TB) * scale
     bx, by = bx + ins_lr, by + ins_tb
     bw, bh = max(1.0, bw - 2 * ins_lr), max(1.0, bh - 2 * ins_tb)
     default_cls = frame.get("class")
     paragraphs = frame.get("paragraphs") or []
     valign = frame.get("valign", "top")
-    bullet_char = (theme.get("bullet", {}) or {}).get("char", "•")
 
     # First pass: lay out every paragraph into positioned lines to get total height.
     laid = []  # list of dicts: {lines, align, indent, bullet, para_gap, line_h}
@@ -255,16 +266,18 @@ def _draw_text_frame(draw, theme, frame, box, scale):
         words, breaks = _para_words(theme, para, base_style, scale)
         level = int(para.get("level", 0) or 0)
         is_bullet = bool(para.get("bullet"))
-        # Bullet: PowerPoint hangs the text at a fixed indent (~0.3") from the
+        # Bullet: PowerPoint hangs the text at a fixed indent (0.25") from the
         # bullet glyph, which sits at the (level-nested) left edge. Match that so
-        # wrapped lines align under the text, not the bullet.
+        # wrapped lines align under the text, not the bullet. The glyph itself
+        # steps through the theme's per-level chars (‣ / – / ◦ by default).
         level_indent = level * 20 * scale
-        hang = 22 * scale
+        hang = 18 * scale
         indent = level_indent
         bullet_glyph = None
         if is_bullet:
-            bfont = _run_font(theme, base_style, scale)
-            bullet_glyph = (bullet_char, bfont, _rgb(theme, base_style.get("color"), (0, 0, 0)), level_indent)
+            bchar = theme_mod.bullet_char_for_level(theme, level)
+            bfont = _bullet_font(theme, base_style, scale, bchar)
+            bullet_glyph = (bchar, bfont, _rgb(theme, base_style.get("color"), (0, 0, 0)), level_indent)
             indent = level_indent + hang
         avail = max(1.0, bw - indent)
         lines = _wrap(words, breaks, avail) if words else [[]]
@@ -358,6 +371,26 @@ def _gradient_colors(theme, grad):
     return c1, c2
 
 
+def round_rect_radius_pt(w_pt, h_pt) -> float:
+    """Corner radius (pt) for a rounded_rect: 14% of the short side, capped at
+    12pt so a big content panel gets a subtle card corner rather than a pill
+    curve. The .pptx builder applies the same fraction via the shape adjustment
+    so the download matches the preview."""
+    return min(0.14 * min(w_pt, h_pt), 12.0)
+
+
+def panel_text_insets(shape_name: str, w_pt: float, h_pt: float) -> tuple[float, float]:
+    """Text insets ``(lr_pt, tb_pt)`` for a shape's text frame. Plain and rounded
+    rectangles are the "content panel" shapes — their text gets more breathing
+    room than PowerPoint's cramped 7.2/3.6pt defaults (scaled down for small
+    panels); every other shape keeps the defaults so small ovals/chevrons don't
+    lose wrap width. Shared with the .pptx builder for preview/download parity."""
+    if shape_name in ("rect", "rectangle", "rounded_rect"):
+        return (max(_INSET_LR, min(16.0, 0.08 * w_pt)),
+                max(_INSET_TB, min(12.0, 0.08 * h_pt)))
+    return (_INSET_LR, _INSET_TB)
+
+
 def _draw_shape(draw, theme, el, scale, img=None):
     x, y, w, h = (el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale)
     box = theme.get("boxes", {}).get(el["box"]) if el.get("box") else None
@@ -394,7 +427,8 @@ def _draw_shape(draw, theme, el, scale, img=None):
         if name in ("oval", "ellipse", "circle"):
             md.ellipse([0, 0, gw - 1, gh - 1], fill=255)
         elif name == "rounded_rect":
-            md.rounded_rectangle([0, 0, gw - 1, gh - 1], radius=min(w, h) * 0.14, fill=255)
+            md.rounded_rectangle([0, 0, gw - 1, gh - 1],
+                                 radius=round_rect_radius_pt(el["w"], el["h"]) * scale, fill=255)
         elif name in _POLY_SHAPES:
             md.polygon([(px - x, py - y) for (px, py) in _POLY_SHAPES[name](x, y, w, h)], fill=255)
         else:
@@ -405,7 +439,7 @@ def _draw_shape(draw, theme, el, scale, img=None):
     if name in ("oval", "ellipse", "circle"):
         draw.ellipse([x, y, x2, y2], fill=fill, outline=o, width=ow)
     elif name == "rounded_rect":
-        r = min(w, h) * 0.14
+        r = round_rect_radius_pt(el["w"], el["h"]) * scale
         draw.rounded_rectangle([x, y, x2, y2], radius=r, fill=fill, outline=o, width=ow)
         border_pts = [(x, y), (x2, y), (x2, y2), (x, y2)]  # approx (ignores rounding)
     elif name in _POLY_SHAPES:
@@ -429,7 +463,8 @@ def _draw_shape(draw, theme, el, scale, img=None):
             "paragraphs": _inject_default_color(text.get("paragraphs"), default_color),
             "valign": text.get("valign", "middle"),
         }
-        _draw_text_frame(draw, theme, frame, (x, y, w, h), scale)
+        _draw_text_frame(draw, theme, frame, (x, y, w, h), scale,
+                         insets=panel_text_insets(name, el["w"], el["h"]))
 
 
 def _harvey_fraction(value):
@@ -642,25 +677,69 @@ def render_line_png(theme, el, ss: int = 3):
 # ---------------------------------------------------------------------------
 # Network / node-link diagrams (ecosystem maps, value webs, relationship graphs)
 # ---------------------------------------------------------------------------
+def _node_clearance(theme, el, nd) -> tuple[float, float]:
+    """``(rx, ry)`` in points: how far an edge must stop from this node's centre.
+
+    A dot node clears its radius; a centre-labelled node (``label_pos: "c"`` —
+    the text-hub device, usually with ``r: 0``) clears the label's measured
+    extents so edges stop at the words instead of striking through them."""
+    emph = bool(nd.get("emphasis"))
+    base_r = nd["r"] if nd.get("r") is not None else el.get("node_r", 5.0)
+    r = base_r * (1.6 if emph else 1.0)
+    label = nd.get("label") or ""
+    if label and nd.get("label_pos", "r") == "c":
+        fs = nd["size"] if nd.get("size") is not None else el.get("label_size", 12.0) * (1.25 if emph else 1.0)
+        font = _font(theme_mod.font_family(theme, "body"), fs, emph, False)
+        half_w = font.getlength(label) / 2 + 6
+        half_h = fs * 0.75 + 4
+        return (max(r + 2, half_w), max(r + 2, half_h))
+    return (max(1.0, r + 2), max(1.0, r + 2))
+
+
+def _clearance_t(theme, el, nd, dx, dy) -> float:
+    """Fraction of the edge chord to trim at a node: where the chord leaves the
+    node's clearance ellipse."""
+    rx, ry = _node_clearance(theme, el, nd)
+    q = (dx / rx) ** 2 + (dy / ry) ** 2
+    return 0.0 if q <= 0 else min(0.5, 1.0 / math.sqrt(q))
+
+
+def network_edge_segments(theme, el):
+    """Valid, endpoint-trimmed edge segments for a network element, in POINTS
+    (absolute slide coords): ``[(edge_dict, (x1, y1), (x2, y2))]``. Shared by the
+    preview and the .pptx builder so both stop edges short of hub labels."""
+    ox, oy = el.get("x", 0), el.get("y", 0)
+    nodes = el.get("nodes") or []
+    n = len(nodes)
+    out = []
+    for edge in el.get("edges") or []:
+        a, b = edge.get("a"), edge.get("b")
+        if not (isinstance(a, int) and isinstance(b, int) and 0 <= a < n and 0 <= b < n):
+            continue
+        ax, ay = ox + nodes[a]["x"], oy + nodes[a]["y"]
+        bx, by = ox + nodes[b]["x"], oy + nodes[b]["y"]
+        dx, dy = bx - ax, by - ay
+        if not math.hypot(dx, dy):
+            continue
+        ta = _clearance_t(theme, el, nodes[a], dx, dy)
+        tb = _clearance_t(theme, el, nodes[b], dx, dy)
+        if ta + tb >= 1.0:  # clearances overlap (nodes too close) — keep the chord
+            ta = tb = 0.0
+        out.append((edge, (ax + dx * ta, ay + dy * ta), (bx - dx * tb, by - dy * tb)))
+    return out
+
+
 def _draw_network(draw, theme, el, scale, bg=None):
     """Draw a node-link diagram: edges under nodes, labels on top. Node coords
     are points relative to the element's ``x``/``y`` origin."""
     ox, oy = el["x"] * scale, el["y"] * scale
     nodes = el.get("nodes") or []
-    n = len(nodes)
-
-    def pos(i):
-        nd = nodes[i]
-        return (ox + nd["x"] * scale, oy + nd["y"] * scale)
 
     e_color, e_w = el.get("edge_color", "accent2"), el.get("edge_w", 1.0)
-    for edge in el.get("edges") or []:
-        a, b = edge.get("a"), edge.get("b")
-        if not (isinstance(a, int) and isinstance(b, int) and 0 <= a < n and 0 <= b < n):
-            continue
+    for edge, (x1, y1), (x2, y2) in network_edge_segments(theme, el):
         col = _rgb(theme, edge.get("color") or e_color, (120, 120, 120))
         w = max(1, int((edge.get("w") or e_w) * scale))
-        _styled_line(draw, pos(a), pos(b), col, w, edge.get("dash"))
+        _styled_line(draw, (x1 * scale, y1 * scale), (x2 * scale, y2 * scale), col, w, edge.get("dash"))
 
     n_color = el.get("node_color", "accent2")
     n_r = el.get("node_r", 5.0)

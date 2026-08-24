@@ -44,6 +44,9 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
   top-left. Keep roughly a 48pt margin around content.
 - `slides` is an ordered array. A slide:
   `{"id":"s1","name":"Title","bg":"lt1","skip_footer":false,"notes":"speaker notes","elements":[ ... ]}`.
+  A slide may also carry a `"comment"` — an authoring note (never rendered; `notes` becomes the
+  .pptx speaker notes). Layout seeds use it for per-layout tips; read it, act on it, and drop or
+  rewrite it as the slide takes shape.
 - `elements` is an ordered array — later elements draw on top. Each element has an id and a geometry.
 
 ### Element types (one example each)
@@ -51,7 +54,8 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
    - `class` selects a text style: `headline`, `subhead`, `body`, `data`, `quote`, `caption`.
    - `paragraphs` → `runs`. A run: `{"t":"text","b":true,"i":false,"size":18,"color":"accent1","font":"body"}`.
      Set `b`/`i`/`size`/`color`/`font` only to OVERRIDE the class default.
-   - Bulleted line: set `"bullet":true` on the paragraph (and `"level":1` for a sub-bullet).
+   - Bulleted line: set `"bullet":true` on the paragraph (and `"level":1` / `"level":2` for
+     sub-bullets — the marker steps ‣ / – / ◦ per level; deeper levels repeat ◦, so stop at 2).
      `"space_after":8` adds spacing between paragraphs.
 2. **shape** — `{"type":"shape","x":600,"y":120,"w":300,"h":80,"shape":"rounded_rect","fill":"accent1","text":{"paragraphs":[{"align":"center","runs":[{"t":"38% growth"}]}]}}`
    - shapes: `rect, rounded_rect, oval, right_arrow, left_arrow, up_arrow, down_arrow,

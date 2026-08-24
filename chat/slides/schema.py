@@ -346,6 +346,10 @@ class Slide(_Strict):
     bg_scrim: Scrim | None = None
     skip_footer: bool = False
     notes: str = ""
+    # An authoring note for the model, carried in the deck JSON but never
+    # rendered (unlike ``notes``, which becomes the .pptx speaker notes). Layout
+    # seeds use it for per-layout guidance ("swap the bg for a photo…").
+    comment: str = ""
     elements: list[Element] = Field(default_factory=list)
 
 

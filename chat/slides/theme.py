@@ -88,7 +88,10 @@ WILFRED_BASE_THEME: dict = {
         "quote": {"font": "headline", "size": 20, "bold": False, "italic": True, "color": "dk2"},
         "caption": {"font": "data", "size": 10, "bold": False, "italic": False, "color": "accent3"},
     },
-    "bullet": {"char": "–"},  # en dash
+    # Bullet glyphs: ``char`` marks top-level bullets (the org style can override
+    # it); ``sub_chars`` marks nested levels 1, 2, … — the last entry repeats for
+    # anything deeper. ‣ needs the Arimo/Arial symbol fallback (Carlito lacks it).
+    "bullet": {"char": "‣", "sub_chars": ["–", "◦"]},
     "boxes": {
         "callout": {"shape": "rounded_rect", "fill": "accent1", "text_color": "lt1", "class": "body"},
         "panel": {"shape": "rect", "fill": "lt2", "text_color": "dk1", "class": "body"},
@@ -593,6 +596,22 @@ def font_family(theme: dict, font_ref: str | None) -> str:
     if not font_ref:
         return theme["fonts"]["body"]
     return theme["fonts"].get(font_ref, font_ref)
+
+
+def bullet_char_for_level(theme: dict, level: int) -> str:
+    """The bullet glyph for a paragraph nesting ``level`` (0 = top level).
+
+    Level 0 uses ``bullet.char`` (the org-configurable glyph); deeper levels walk
+    ``bullet.sub_chars``, repeating its last entry — so level 3+ reuses the
+    level-2 glyph rather than inventing ever-deeper markers.
+    """
+    spec = (theme.get("bullet") or {})
+    if level <= 0:
+        return spec.get("char") or "•"
+    subs = spec.get("sub_chars") or []
+    if not subs:
+        return spec.get("char") or "•"
+    return subs[min(level - 1, len(subs) - 1)] or "•"
 
 
 def base_text_style(theme: dict, cls: str | None) -> dict:
