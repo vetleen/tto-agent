@@ -508,6 +508,18 @@ def _slide_user_themes(user):
         return []
 
 
+def _slide_org_theme(user):
+    """The user's org slide-theme swatch for the in-deck picker (best-effort)."""
+    try:
+        from accounts.models import Membership
+        from chat.slides.theme import org_slide_theme_swatch
+
+        m = Membership.objects.filter(user=user).select_related("org").first()
+        return org_slide_theme_swatch(m.org if m else None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @login_required
 @require_http_methods(["GET"])
 def chat_home(request):
@@ -733,6 +745,7 @@ def chat_home(request):
             "attach_accept": accept_attr(CHAT_KINDS),
             "slide_theme_presets": _slide_theme_presets(),
             "slide_user_themes": _slide_user_themes(request.user),
+            "slide_org_theme": _slide_org_theme(request.user),
         },
     )
 

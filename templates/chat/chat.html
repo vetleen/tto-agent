@@ -142,9 +142,13 @@
         </div>
       </div>
     </div>
-    <div class="flex items-center gap-2">
+    {# Slide / canvas openers. Each is icon + a "›" that signals it opens a side
+       panel; the two are spaced apart (gap-4) so each arrow reads as belonging to
+       its own icon. Opening one closes the other (they never show together). #}
+    <div class="flex items-center gap-4">
       <button id="slides-toggle-btn" type="button" class="hidden items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle slide deck">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 4.5h16.5M4.5 4.5v10.5a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5V4.5M12 16.5V21m0 0l-2.25 1.5M12 21l2.25 1.5"/></svg>
+        <svg id="slides-toggle-arrow" class="w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
       </button>
       <button id="canvas-toggle-btn" type="button" class="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle canvas">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
@@ -515,6 +519,20 @@
       </button>
     </div>
     <p class="text-xs text-body mb-4">Pick a colour theme for this deck. It applies to every slide.</p>
+    {% if slide_org_theme %}
+    <button type="button" data-theme="org"
+      class="slides-theme-swatch cursor-pointer flex w-full items-center gap-3 rounded-base border border-default p-2 text-left hover:border-brand hover:bg-neutral-tertiary transition-colors mb-3">
+      <span class="flex shrink-0 overflow-hidden rounded-base border border-default" style="width:46px;height:32px">
+        <span style="flex:0 0 58%;background:{{ slide_org_theme.bg }}"></span>
+        <span style="flex:0 0 24%;background:{{ slide_org_theme.dark }}"></span>
+        <span style="flex:0 0 18%;background:{{ slide_org_theme.accent }}"></span>
+      </span>
+      <span class="flex flex-col">
+        <span class="text-sm text-heading">Organization theme</span>
+        <span class="text-[11px] text-body">Your organization&rsquo;s brand palette</span>
+      </span>
+    </button>
+    {% endif %}
     <div class="grid grid-cols-2 gap-3">
       {% for p in slide_theme_presets %}
       <button type="button" data-theme="{{ p.name }}"
@@ -3960,6 +3978,8 @@
   }
 
   function openCanvas(title, content) {
+    // Canvas and slide panel are mutually exclusive — never both open.
+    if (window.SlideDeck && SlideDeck.isOpen && SlideDeck.isOpen()) SlideDeck.close();
     canvasTitleInput.value = title || "Untitled document";
     canvasTextarea.value = content || "";
     updateWordCount();
@@ -4329,11 +4349,24 @@
     if (!panel) return { handleEvent: function(){}, requestState: function(){} };
 
     var isOpen = false, deckId = null, slides = [], decks = [], comments = [], openComments = 0, renderFailed = false;
+    function newClientId() { return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+    function findComment(cid) {
+      return comments.filter(function(c) { return String(c.id) === cid; })[0];
+    }
+    // Pencil (edit) + × (remove) controls let a user tidy an open comment before
+    // sending it. They only appear once the comment is persisted (has a real id
+    // from the server ack) — a just-added optimistic comment gains them on ack.
+    var COMMENT_EDIT_SVG = '<svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.2 3.4l3.4 3.4L7 16.4l-3.9.5.5-3.9 9.6-9.6z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    var COMMENT_REMOVE_SVG = '<svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>';
     function commentsForSlide(slideId) {
       var mine = comments.filter(function(c) { return c.slide_id === slideId; });
       if (!mine.length) return "";
       return '<div class="slides-comment-list mt-2 space-y-1">' + mine.map(function(c) {
-        return '<div class="flex items-start gap-1.5 text-xs text-body bg-brand-subtle/40 border border-default rounded-base px-2 py-1"><span class="shrink-0">💬</span><span class="flex-1 whitespace-pre-wrap break-words">' + escapeHtml(c.text) + '</span></div>';
+        var controls = (c.id != null)
+          ? ('<button class="slides-comment-edit shrink-0 cursor-pointer p-0.5 rounded text-body/70 hover:text-heading hover:bg-neutral-tertiary" data-cid="' + c.id + '" title="Edit comment" aria-label="Edit comment">' + COMMENT_EDIT_SVG + '</button>'
+             + '<button class="slides-comment-remove shrink-0 cursor-pointer p-0.5 rounded text-body/70 hover:text-fg-danger hover:bg-neutral-tertiary" data-cid="' + c.id + '" title="Remove comment" aria-label="Remove comment">' + COMMENT_REMOVE_SVG + '</button>')
+          : '';
+        return '<div class="flex items-start gap-1.5 text-xs text-body bg-brand-subtle/40 border border-default rounded-base px-2 py-1"><span class="shrink-0">💬</span><span class="flex-1 whitespace-pre-wrap break-words">' + escapeHtml(c.text) + '</span>' + controls + '</div>';
       }).join("") + '</div>';
     }
 
@@ -4341,6 +4374,7 @@
     function bust(url) { return url ? (url + (url.indexOf("?") < 0 ? "?" : "&") + "v=" + Date.now().toString(36)) : url; }
 
     var slidesToggleBtn = document.getElementById("slides-toggle-btn");
+    var slidesToggleArrow = document.getElementById("slides-toggle-arrow");
     // The button is display:none by default; showing it means desktop-only
     // inline-flex (mobile uses the panel's own flow), so toggle sm:inline-flex —
     // NOT the base `hidden`, which sm:inline-flex would override on desktop.
@@ -4349,10 +4383,15 @@
     function open() {
       revealToggle();  // a deck exists for this thread — let the user reopen the panel later
       if (isOpen) return;
-      if (canvasPanel) { canvasPanel.classList.add("hidden"); canvasPanel.classList.remove("flex"); }
-      if (canvasHandle) { canvasHandle.classList.add("hidden"); canvasHandle.classList.remove("flex"); }
+      // Canvas and slide panel are mutually exclusive — close the canvas cleanly
+      // (persist first) so its toggle/state stay consistent, never leaving both open.
+      if (typeof canvasIsOpen !== "undefined" && canvasIsOpen) {
+        try { saveCanvasNow(); } catch (e) {}
+        closeCanvas();
+      }
       panel.classList.remove("hidden"); panel.classList.add("flex");
       isOpen = true;
+      if (slidesToggleArrow) slidesToggleArrow.classList.add("rotate-180");
       if (isMobile()) { chatPane.classList.add("hidden"); chatPane.classList.remove("flex"); }
       else { handle.classList.remove("hidden", "sm:hidden"); handle.classList.add("flex"); }
     }
@@ -4360,6 +4399,7 @@
       panel.classList.add("hidden"); panel.classList.remove("flex");
       handle.classList.add("hidden"); handle.classList.remove("flex");
       isOpen = false;
+      if (slidesToggleArrow) slidesToggleArrow.classList.remove("rotate-180");
       chatPane.style.flex = ""; panel.style.flex = "";
       panel.classList.add("w-full", "sm:w-1/2");
       chatPane.classList.remove("hidden"); chatPane.classList.add("flex");
@@ -4370,12 +4410,20 @@
       card.className = "slides-card relative pl-3";
       card.dataset.slideId = s.slide_id;
       var badge = '<div class="absolute left-0 -top-2 z-10 text-[11px] font-semibold text-body bg-neutral-primary-soft rounded-full w-6 h-6 flex items-center justify-center shadow-sm border border-default">' + s.page + '</div>';
+      // status: undefined (settled) | "queued" (deck changed, render not yet
+      // running) | "rendering" (worker actively rendering). A slide that still
+      // has its old image keeps showing it with an "Updating…" pill; a fresh
+      // slide shows a "will render shortly" note that becomes "Rendering…" only
+      // once the worker actually starts.
+      var busy = (s.status === "queued" || s.status === "rendering");
       var media;
       if (s.asset_url) {
         media = '<img src="' + s.asset_url + '" alt="Slide ' + s.page + '" class="slides-thumb w-full rounded-lg shadow-md border border-default block cursor-zoom-in" style="aspect-ratio:16/9;object-fit:contain;background:#ecefe9" loading="lazy">'
-          + (s.rendering ? '<div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-forest-900/85 text-paper-50 text-[11px] shadow-lg animate-pulse"><span class="w-1.5 h-1.5 rounded-full bg-paper-50"></span>Updating…</div>' : '');
-      } else if (s.rendering) {
+          + (busy ? '<div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-forest-900/85 text-paper-50 text-[11px] shadow-lg animate-pulse"><span class="w-1.5 h-1.5 rounded-full bg-paper-50"></span>Updating…</div>' : '');
+      } else if (s.status === "rendering") {
         media = '<div class="w-full rounded-lg border border-dashed border-brand/40 bg-neutral-tertiary/30 flex items-center justify-center gap-1.5 text-center px-4 text-xs text-body animate-pulse" style="aspect-ratio:16/9"><span class="w-1.5 h-1.5 rounded-full bg-brand"></span>Rendering…</div>';
+      } else if (s.status === "queued") {
+        media = '<div class="w-full rounded-lg border border-dashed border-default bg-neutral-tertiary/30 flex flex-col items-center justify-center text-center gap-1 px-5 py-4 text-xs text-body" style="aspect-ratio:16/9"><span class="font-medium text-heading">Preparing slide…</span><span class="text-body/80">Slides render a few moments after ' + escapeHtml(ASSISTANT_NAME) + ' finishes.</span></div>';
       } else {
         var placeholder = renderFailed
           ? ('Slide ' + s.page + (s.name ? ' · ' + escapeHtml(s.name) : ''))
@@ -4388,22 +4436,64 @@
         + commentsForSlide(s.slide_id)
         + '<div class="slides-comment-box hidden mt-2">'
         + '<textarea class="w-full text-sm rounded-base border border-default bg-neutral-primary-soft px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand" rows="2" placeholder="Comment on slide ' + s.page + '…"></textarea>'
-        + '<div class="flex justify-end mt-1"><button class="slides-comment-add cursor-pointer px-2 py-0.5 rounded-base text-xs font-medium bg-neutral-tertiary text-heading hover:bg-neutral-quaternary">Add comment</button></div>'
+        + '<div class="flex justify-end gap-2 mt-1"><button class="slides-comment-cancel hidden cursor-pointer px-2 py-0.5 rounded-base text-xs font-medium text-body hover:bg-neutral-tertiary">Cancel</button><button class="slides-comment-add cursor-pointer px-2 py-0.5 rounded-base text-xs font-medium bg-neutral-tertiary text-heading hover:bg-neutral-quaternary">Add comment</button></div>'
         + '</div>';
+      var box = card.querySelector(".slides-comment-box");
+      var ta = card.querySelector("textarea");
+      var addBtn = card.querySelector(".slides-comment-add");
+      var cancelBtn = card.querySelector(".slides-comment-cancel");
+      var editingId = null;  // when set, the box edits that comment instead of adding
+      function openBox() { box.classList.remove("hidden"); if (ta) ta.focus(); }
+      function resetBox() {
+        editingId = null; ta.value = "";
+        addBtn.textContent = "Add comment";
+        cancelBtn.classList.add("hidden");
+        box.classList.add("hidden");
+      }
       card.querySelector(".slides-comment-toggle").addEventListener("click", function() {
-        var box = card.querySelector(".slides-comment-box");
-        box.classList.toggle("hidden");
-        if (!box.classList.contains("hidden")) { var ta = card.querySelector("textarea"); if (ta) ta.focus(); }
+        if (box.classList.contains("hidden")) { editingId = null; addBtn.textContent = "Add comment"; cancelBtn.classList.add("hidden"); openBox(); }
+        else resetBox();
       });
-      card.querySelector(".slides-comment-add").addEventListener("click", function() {
-        var ta = card.querySelector("textarea");
+      cancelBtn.addEventListener("click", resetBox);
+      addBtn.addEventListener("click", function() {
         var text = (ta.value || "").trim();
         if (!text || !deckId) return;
-        ws.send(JSON.stringify({ type: "chat.slides_comment_add", thread_id: activeThreadId, deck_id: deckId, slide_id: s.slide_id, text: text }));
-        ta.value = "";
-        comments.push({ slide_id: s.slide_id, text: text });  // optimistic — server persists + acks a count
+        if (editingId != null) {
+          var c = findComment(String(editingId));
+          ws.send(JSON.stringify({ type: "chat.slides_comment_update", thread_id: activeThreadId, deck_id: deckId, comment_id: editingId, text: text }));
+          if (c) c.text = text;  // optimistic
+          resetBox();
+          renderFilmstrip();
+          return;
+        }
+        var clientId = newClientId();
+        ws.send(JSON.stringify({ type: "chat.slides_comment_add", thread_id: activeThreadId, deck_id: deckId, slide_id: s.slide_id, text: text, client_id: clientId }));
+        comments.push({ slide_id: s.slide_id, text: text, client_id: clientId });  // optimistic — server persists + acks the id
         openComments = comments.length; updateCommentBar();
+        resetBox();
         renderFilmstrip();
+      });
+      // Edit / remove on each persisted open comment.
+      card.querySelectorAll(".slides-comment-edit").forEach(function(b) {
+        b.addEventListener("click", function() {
+          var c = findComment(b.dataset.cid);
+          if (!c) return;
+          editingId = c.id;
+          ta.value = c.text;
+          addBtn.textContent = "Update comment";
+          cancelBtn.classList.remove("hidden");
+          openBox();
+        });
+      });
+      card.querySelectorAll(".slides-comment-remove").forEach(function(b) {
+        b.addEventListener("click", function() {
+          var c = findComment(b.dataset.cid);
+          if (!c || !deckId) return;
+          ws.send(JSON.stringify({ type: "chat.slides_comment_delete", thread_id: activeThreadId, deck_id: deckId, comment_id: c.id }));
+          comments = comments.filter(function(x) { return x !== c; });  // optimistic
+          openComments = comments.length; updateCommentBar();
+          renderFilmstrip();
+        });
       });
       var thumb = card.querySelector(".slides-thumb");
       if (thumb) thumb.addEventListener("click", function() { openLightbox(s.slide_id); });
@@ -4519,26 +4609,35 @@
     function applyUpdated(data) {
       deckId = data.deck_id;
       if (data.title) titleEl.textContent = data.title;
+      // Deck changed but the worker hasn't picked up the render yet — mark
+      // changed/new slides "queued" (they flip to "rendering" on render_started).
       var changed = {}; (data.changed_slide_ids || []).forEach(function(id) { changed[id] = true; });
       if (data.slide_ids && data.slide_ids.length) {
         var known = {}; slides.forEach(function(s) { known[s.slide_id] = s; });
         slides = data.slide_ids.map(function(id, i) {
           var prev = known[id] || {};
-          return { slide_id: id, name: prev.name || "", page: i + 1, asset_url: prev.asset_url || null, width: prev.width, height: prev.height, rendering: !!changed[id] || !prev.asset_url };
+          var q = !!changed[id] || !prev.asset_url;
+          return { slide_id: id, name: prev.name || "", page: i + 1, asset_url: prev.asset_url || null, width: prev.width, height: prev.height, status: q ? "queued" : prev.status };
         });
       } else {
-        slides.forEach(function(s) { if (changed[s.slide_id]) s.rendering = true; });
+        slides.forEach(function(s) { if (changed[s.slide_id]) s.status = "queued"; });
       }
       renderFilmstrip();
+    }
+    function applyRenderStarted() {
+      // The worker started — anything waiting is now genuinely rendering.
+      var any = false;
+      slides.forEach(function(s) { if (s.status === "queued") { s.status = "rendering"; any = true; } });
+      if (any) renderFilmstrip();
     }
     function applyRendered(data) {
       var byId = {}; (data.slides || []).forEach(function(s) { byId[s.slide_id] = s; });
       if (!slides.length && data.slides) {
-        slides = data.slides.map(function(s) { return { slide_id: s.slide_id, name: "", page: s.page, asset_url: bust(s.asset_url), width: s.width, height: s.height, rendering: false }; });
+        slides = data.slides.map(function(s) { return { slide_id: s.slide_id, name: "", page: s.page, asset_url: bust(s.asset_url), width: s.width, height: s.height, status: undefined }; });
       } else {
         slides.forEach(function(s) {
           var r = byId[s.slide_id];
-          if (r) { s.asset_url = bust(r.asset_url); s.width = r.width; s.height = r.height; s.page = r.page; s.rendering = false; }
+          if (r) { s.asset_url = bust(r.asset_url); s.width = r.width; s.height = r.height; s.page = r.page; s.status = undefined; }
         });
         slides.sort(function(a, b) { return (a.page || 0) - (b.page || 0); });
       }
@@ -4551,18 +4650,26 @@
       var et = data.event_type;
       if (et === "slidedeck.updated") { renderFailed = false; open(); applyUpdated(data); return; }
       if (et === "slidedeck.state") { renderFailed = false; open(); setState(data); return; }
+      if (et === "slidedeck.render_started") { applyRenderStarted(); return; }
       if (et === "slidedeck.rendered") { renderFailed = false; open(); applyRendered(data); return; }
       if (et === "slidedeck.render_failed") {
         setPdfBusy(false);
         if (data.purpose === "pdf_export") { if (typeof showToast === "function") showToast("Couldn't build the PDF. You can still download the .pptx."); return; }
-        renderFailed = true; slides.forEach(function(s) { s.rendering = false; }); renderFilmstrip(); return;
+        renderFailed = true; slides.forEach(function(s) { s.status = undefined; }); renderFilmstrip(); return;
       }
       if (et === "slidedeck.active_changed") { requestState(); return; }
       if (et === "slidedeck.deleted") { requestState(); return; }  // switch to the promoted deck, or close if none remain
       if (et === "slidedeck.closed") { deckId = null; slides = []; comments = []; decks = []; hideToggle(); close(); return; }
       if (et === "slidedeck.comment_added") {
-        if (data.ok) { if (data.open_count != null) { openComments = data.open_count; updateCommentBar(); } }
-        else { requestState(); }  // add failed — re-hydrate to drop the optimistic comment
+        if (data.ok) {
+          // Reconcile the optimistic comment with its server id so its edit/
+          // remove controls can appear (shared ack for add/delete/update).
+          if (data.client_id && data.comment_id != null) {
+            var c = comments.filter(function(x) { return x.client_id === data.client_id; })[0];
+            if (c && c.id == null) { c.id = data.comment_id; renderFilmstrip(); }
+          }
+          if (data.open_count != null) { openComments = data.open_count; updateCommentBar(); }
+        } else { requestState(); }  // op failed — re-hydrate to drop the optimistic change
         return;
       }
       if (et === "slidedeck.pdf_pending") { setPdfBusy(true); return; }
@@ -4696,7 +4803,7 @@
       document.addEventListener("mouseup", function() { if (!dragging) return; dragging = false; chatPane.classList.add("transition-all", "duration-200"); panel.classList.add("transition-all", "duration-200"); document.body.style.cursor = ""; document.body.style.userSelect = ""; });
     })();
 
-    return { handleEvent: handleEvent, requestState: requestState, isOpen: function() { return isOpen; } };
+    return { handleEvent: handleEvent, requestState: requestState, close: close, isOpen: function() { return isOpen; } };
   })();
 
   // -- Sidebar resize drag (desktop only) --

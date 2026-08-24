@@ -180,51 +180,275 @@ def preset_theme_override(name: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Organization default slide theme — the slide sibling of the doc "styles"
-# setting (core.styles). An org admin picks one preset (Org settings → Slide
-# styles); it seeds the ``theme`` of every new deck authored in that org, so
-# decks match the org's brand without the model having to choose. Stored on
-# ``Organization.preferences["slide_theme"] = {"name": <preset>}`` (JSON prefs,
-# no model field). "forest" (the base) is the default.
+# Organization slide style — the slide sibling of the doc "styles" setting
+# (core.styles). An org admin builds a full custom theme (Org settings → Slide
+# styles): colours, fonts, typography sizes and table colours, seeded from one
+# of the presets as a "Quick pick". It seeds the ``theme`` of every new deck
+# authored in that org, so decks match the org's brand without the model having
+# to choose. Stored on ``Organization.preferences["slide_theme"]``.
+#
+# Two stored shapes are supported:
+#   * NEW (full custom): ``{"colors": {...}, "fonts": {...}, "typography": {...},
+#     "tables": {...}}`` — what the settings form saves.
+#   * OLD (preset only): ``{"name": <preset>}`` — kept for back-compat; expands
+#     to that preset's fields.
+# An org that never configured a style seeds nothing (decks inherit the base).
 # ---------------------------------------------------------------------------
 DEFAULT_SLIDE_THEME = "forest"
 
+# Colour levers the org style exposes (each is a base-theme colour slot).
+SLIDE_STYLE_COLOR_KEYS = (
+    "lt1", "dk1", "dk2", "lt2",
+    "accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
+    "success", "warning", "danger",
+)
+
+# Font roles the org can pick. Values MUST be a bundled family (a directory
+# under ``core/assets/fonts``): the Pillow preview resolves a face by that
+# directory name, so — unlike doc styles, which substitutes at export — a name
+# outside the bundle would silently fall back to Carlito. SLIDE_FONT_FAMILIES is
+# the allow-list; each is metric-compatible with a common proprietary face.
+SLIDE_STYLE_FONT_KEYS = ("headline", "subhead", "body", "data")
+SLIDE_FONT_FAMILIES = (
+    ("Caladea", "Caladea — Cambria-style serif"),
+    ("Tinos", "Tinos — Times-style serif"),
+    ("Gelasio", "Gelasio — Georgia-style serif"),
+    ("EBGaramond", "EB Garamond — serif"),
+    ("Carlito", "Carlito — Calibri-style sans"),
+    ("Arimo", "Arimo — Arial-style sans"),
+    ("Cousine", "Cousine — Courier-style mono"),
+)
+_SLIDE_FONT_KEYS = frozenset(k for k, _ in SLIDE_FONT_FAMILIES)
+
+# Typography sizes exposed: form key -> (text-style key, min pt, max pt).
+SLIDE_STYLE_SIZE_KEYS = {
+    "headline_size": ("headline", 18, 60),
+    "subhead_size": ("subhead", 10, 40),
+    "body_size": ("body", 8, 28),
+}
+SLIDE_BULLET_MAX = 4
+
+# Table colour levers (each maps straight onto a ``theme["table"]`` key).
+SLIDE_STYLE_TABLE_KEYS = ("header_fill", "header_color", "band_fill", "grid_color")
+
+# Presentation metadata for the settings form (key, label, group). Colocated
+# with the keys so the two never drift; consumed by the org-settings template.
+SLIDE_COLOR_FIELD_META = (
+    ("lt1", "Background", "Core"),
+    ("dk1", "Body text", "Core"),
+    ("dk2", "Headings", "Core"),
+    ("lt2", "Band / soft fill", "Core"),
+    ("accent1", "Accent 1 (primary)", "Accents"),
+    ("accent2", "Accent 2", "Accents"),
+    ("accent3", "Accent 3", "Accents"),
+    ("accent4", "Accent 4", "Accents"),
+    ("accent5", "Accent 5", "Accents"),
+    ("accent6", "Accent 6", "Accents"),
+    ("success", "Success", "Semantic"),
+    ("warning", "Warning", "Semantic"),
+    ("danger", "Danger", "Semantic"),
+)
+SLIDE_FONT_FIELD_META = (
+    ("headline", "Headline / titles"),
+    ("subhead", "Subheads"),
+    ("body", "Body text"),
+    ("data", "Data / tables"),
+)
+SLIDE_SIZE_FIELD_META = (
+    ("headline_size", "Headline size", 18, 60),
+    ("subhead_size", "Subhead size", 10, 40),
+    ("body_size", "Body size", 8, 28),
+)
+SLIDE_TABLE_FIELD_META = (
+    ("header_fill", "Header fill"),
+    ("header_color", "Header text"),
+    ("band_fill", "Banded row fill"),
+    ("grid_color", "Gridlines"),
+)
+
+
+def _hex_hash(value) -> str:
+    """A stored/derived colour as ``#RRGGBB`` (fallback ``#000000``)."""
+    nh = _norm_hex(value) if isinstance(value, str) else None
+    return "#" + nh if nh else "#000000"
+
+
+def _slot_hex(colors: dict, ref: str) -> str:
+    """Resolve a table colour ref (slot name or #hex) to a concrete ``#RRGGBB``."""
+    if isinstance(ref, str) and ref.startswith("#"):
+        return _hex_hash(ref)
+    return _hex_hash(colors.get(ref))
+
+
+def slide_style_defaults() -> dict:
+    """The full slide-style field set at base-theme values (form defaults)."""
+    return _full_style_from_override({})
+
+
+def _full_style_from_override(override: dict) -> dict:
+    """Resolve a sparse theme ``override`` to the full org-style field set.
+
+    Colours and table colours come out as concrete ``#RRGGBB`` (table slots are
+    dereferenced), fonts as bundled family keys, sizes as ints. Used to expand a
+    preset (or the base) into form fields.
+    """
+    theme = _deep_merge(WILFRED_BASE_THEME, override or {})
+    colors = theme["colors"]
+    base_fonts = WILFRED_BASE_THEME["fonts"]
+    return {
+        "colors": {k: _hex_hash(colors.get(k)) for k in SLIDE_STYLE_COLOR_KEYS},
+        "fonts": {
+            k: (theme["fonts"].get(k) if theme["fonts"].get(k) in _SLIDE_FONT_KEYS else base_fonts[k])
+            for k in SLIDE_STYLE_FONT_KEYS
+        },
+        "typography": {
+            "headline_size": int(theme["text_styles"]["headline"]["size"]),
+            "subhead_size": int(theme["text_styles"]["subhead"]["size"]),
+            "body_size": int(theme["text_styles"]["body"]["size"]),
+            "bullet_char": theme["bullet"]["char"],
+        },
+        "tables": {k: _slot_hex(colors, theme["table"][k]) for k in SLIDE_STYLE_TABLE_KEYS},
+    }
+
+
+def _is_full_style(stored) -> bool:
+    """True when a stored value is the NEW full-custom shape (not ``{"name":…}``)."""
+    return isinstance(stored, dict) and any(
+        k in stored for k in ("colors", "fonts", "typography", "tables")
+    )
+
 
 def get_org_slide_style(org) -> dict:
-    """Resolve an org's slide style: ``{"name": <valid preset>}`` (default forest).
+    """Resolve an org's full slide-style field set (colours/fonts/typography/tables).
 
-    ``org`` may be ``None`` (no membership). Tolerant of malformed stored values —
-    an unknown/absent preset name resolves back to :data:`DEFAULT_SLIDE_THEME`.
+    ``org`` may be ``None`` (no membership) → base defaults. Tolerant of malformed
+    stored values (falls back to defaults / the base preset). This is what the
+    settings form binds to; :func:`org_slide_theme_override` turns it into a deck
+    theme override.
     """
     stored = (getattr(org, "preferences", None) or {}).get("slide_theme") if org is not None else None
+    if _is_full_style(stored):
+        clean, err = validate_org_slide_style(stored)
+        return clean if (clean and not err) else slide_style_defaults()
+    # Old shape {"name": preset} or nothing — expand the preset into fields.
     name = stored.get("name") if isinstance(stored, dict) else None
     if name not in PRESET_THEMES:
         name = DEFAULT_SLIDE_THEME
-    return {"name": name}
+    return _full_style_from_override(preset_theme_override(name))
 
 
 def validate_org_slide_style(data) -> tuple[dict | None, str | None]:
     """Validate a slide-style payload from the org settings endpoint.
 
-    Returns ``(clean_dict, None)`` on success or ``(None, error_message)``. The
-    only lever today is the preset ``name``; kept as a dict so custom colours/
-    fonts can be added later without changing the stored shape.
+    Returns ``(clean, None)`` — ``clean`` is the full field set
+    (``colors``/``fonts``/``typography``/``tables``) — or ``(None, error)``. A
+    bare ``{"name": <preset>}`` is accepted and expanded (back-compat / a raw
+    quick-pick save).
     """
     if not isinstance(data, dict):
         return None, "Invalid slide style payload."
-    name = data.get("name", DEFAULT_SLIDE_THEME)
-    if not isinstance(name, str) or name not in PRESET_THEMES:
-        return None, "Choose one of the available slide themes."
-    return {"name": name}, None
+
+    # Quick path: a bare preset name expands to that preset's fields.
+    if not _is_full_style(data):
+        name = data.get("name", DEFAULT_SLIDE_THEME)
+        if not isinstance(name, str) or name not in PRESET_THEMES:
+            return None, "Choose one of the available slide themes."
+        return _full_style_from_override(preset_theme_override(name)), None
+
+    defaults = slide_style_defaults()
+    clean: dict = {"colors": {}, "fonts": {}, "typography": {}, "tables": {}}
+
+    colors_in = data.get("colors") or {}
+    if not isinstance(colors_in, dict):
+        return None, "Invalid colours."
+    for key in SLIDE_STYLE_COLOR_KEYS:
+        val = colors_in.get(key, defaults["colors"][key])
+        nh = _norm_hex(val) if isinstance(val, str) else None
+        if not nh:
+            return None, "Colours must be hex like #2563EB."
+        clean["colors"][key] = "#" + nh
+
+    fonts_in = data.get("fonts") or {}
+    if not isinstance(fonts_in, dict):
+        return None, "Invalid fonts."
+    for key in SLIDE_STYLE_FONT_KEYS:
+        val = fonts_in.get(key, defaults["fonts"][key])
+        if val not in _SLIDE_FONT_KEYS:
+            return None, "Pick a slide font from the list."
+        clean["fonts"][key] = val
+
+    typo_in = data.get("typography") or {}
+    if not isinstance(typo_in, dict):
+        return None, "Invalid typography."
+    for size_key, (_style, lo, hi) in SLIDE_STYLE_SIZE_KEYS.items():
+        val = typo_in.get(size_key, defaults["typography"][size_key])
+        try:
+            iv = int(val)
+        except (TypeError, ValueError):
+            return None, f"{size_key.replace('_', ' ').title()} must be a number."
+        if not (lo <= iv <= hi):
+            return None, f"{size_key.replace('_', ' ').title()} must be between {lo} and {hi}."
+        clean["typography"][size_key] = iv
+    bullet = typo_in.get("bullet_char", defaults["typography"]["bullet_char"])
+    if not isinstance(bullet, str) or not bullet.strip():
+        bullet = defaults["typography"]["bullet_char"]
+    clean["typography"]["bullet_char"] = bullet.strip()[:SLIDE_BULLET_MAX]
+
+    tables_in = data.get("tables") or {}
+    if not isinstance(tables_in, dict):
+        return None, "Invalid table colours."
+    for key in SLIDE_STYLE_TABLE_KEYS:
+        val = tables_in.get(key, defaults["tables"][key])
+        nh = _norm_hex(val) if isinstance(val, str) else None
+        if not nh:
+            return None, "Table colours must be hex like #1F3D30."
+        clean["tables"][key] = "#" + nh
+
+    return clean, None
+
+
+def _style_to_override(style: dict) -> dict:
+    """Turn a full org-style field set into a sparse deck ``theme`` override."""
+    return {
+        "colors": dict(style["colors"]),
+        "fonts": dict(style["fonts"]),
+        "text_styles": {
+            "headline": {"size": style["typography"]["headline_size"]},
+            "subhead": {"size": style["typography"]["subhead_size"]},
+            "body": {"size": style["typography"]["body_size"]},
+        },
+        "bullet": {"char": style["typography"]["bullet_char"]},
+        "table": dict(style["tables"]),
+    }
 
 
 def org_slide_theme_override(org) -> dict:
-    """The sparse deck ``theme`` override for an org's default slide theme.
+    """The sparse deck ``theme`` override for an org's configured slide style.
 
-    Empty dict for the base ("forest") theme or when there's no org — callers seed
-    a new deck's ``theme`` with this only when it's non-empty.
+    Empty dict when the org never configured a style (or there's no org) — callers
+    seed a new deck's ``theme`` with this only when it's non-empty, so unconfigured
+    orgs leave decks on the base theme.
     """
-    return preset_theme_override(get_org_slide_style(org)["name"]) or {}
+    stored = (getattr(org, "preferences", None) or {}).get("slide_theme") if org is not None else None
+    if _is_full_style(stored):
+        clean, err = validate_org_slide_style(stored)
+        return _style_to_override(clean) if (clean and not err) else {}
+    # Old shape {"name": preset} — resolve via the preset (forest → empty).
+    name = stored.get("name") if isinstance(stored, dict) else None
+    if name not in PRESET_THEMES:
+        name = DEFAULT_SLIDE_THEME
+    return preset_theme_override(name) or {}
+
+
+def preset_style_fields() -> dict:
+    """``{preset_name: full-field-set}`` — the quick-pick populators for the form."""
+    return {name: _full_style_from_override(spec["theme"]) for name, spec in PRESET_THEMES.items()}
+
+
+def org_slide_theme_swatch(org) -> dict:
+    """``{bg, dark, accent}`` for the org theme's swatch in the in-deck picker."""
+    colors = get_org_slide_style(org)["colors"]
+    return {"bg": colors["lt1"], "dark": colors["dk2"], "accent": colors["accent1"]}
 
 
 # ---------------------------------------------------------------------------

@@ -82,6 +82,11 @@ def execute_render_run(run_id: str) -> None:
         status=SlideRenderRun.Status.RUNNING, started_at=timezone.now()
     )
     deck = run.slide_set
+    # Let the panel flip its "will render shortly" placeholders to "Rendering…"
+    # exactly when the worker actually starts (preview runs only — PDF export
+    # has its own button state, not per-slide placeholders).
+    if run.purpose == SlideRenderRun.Purpose.USER_PREVIEW:
+        notify_render_event(deck, run, "slidedeck.render_started")
     try:
         result = _render(run, deck)
     except OperationalError:

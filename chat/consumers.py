@@ -320,6 +320,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     # -- Slide deck render group handlers (from render_deck_task via group_send) --
+    async def slidedeck_render_started(self, event):
+        """The worker picked up a preview render — flip queued slides to "Rendering…"."""
+        if self._stopped:
+            return
+        await self.send(text_data=json.dumps({
+            "event_type": "slidedeck.render_started",
+            "deck_id": str(event.get("deck_id") or ""),
+            "run_id": str(event.get("run_id") or ""),
+        }))
+
     async def slidedeck_rendered(self, event):
         if self._stopped:
             return
@@ -455,6 +465,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             ],
         }
 
+    def _user_org(self):
+        """The acting user's organization (for the org slide theme), or ``None``."""
+        try:
+            from accounts.models import Membership
+
+            m = Membership.objects.filter(user=self.user).select_related("org").first()
+            return m.org if m else None
+        except Exception:  # noqa: BLE001 — best-effort
+            return None
+
     def _owned_deck(self, thread_id, deck_id, *, include_deleted=False):
         from chat.models import SlideSet
 
@@ -560,13 +580,62 @@ class ChatConsumer(AsyncWebsocketConsumer):
             deck = self._owned_deck(thread_id, deck_id)
             if deck is None:
                 return {"ok": False}
-            SlideComment.objects.create(
+            comment = SlideComment.objects.create(
                 slide_set=deck, slide_id=slide_id, author=self.user, text=text
             )
             open_count = deck.comments.filter(status=SlideComment.Status.OPEN).count()
-            return {"ok": True, "deck_id": str(deck.pk), "slide_id": slide_id, "open_count": open_count}
+            return {
+                "ok": True, "deck_id": str(deck.pk), "slide_id": slide_id,
+                "comment_id": comment.id, "client_id": data.get("client_id"),
+                "open_count": open_count,
+            }
 
         res = await database_sync_to_async(_add)()
+        await self.send(text_data=json.dumps({"event_type": "slidedeck.comment_added", **res}))
+
+    async def _handle_slides_comment_delete(self, data):
+        """Delete one of the current user's OPEN comments before it's sent."""
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+        comment_id = data.get("comment_id")
+
+        def _delete():
+            from chat.models import SlideComment
+
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return {"ok": False}
+            SlideComment.objects.filter(
+                pk=comment_id, slide_set=deck, status=SlideComment.Status.OPEN
+            ).delete()
+            open_count = deck.comments.filter(status=SlideComment.Status.OPEN).count()
+            return {"ok": True, "deck_id": str(deck.pk), "open_count": open_count}
+
+        res = await database_sync_to_async(_delete)()
+        await self.send(text_data=json.dumps({"event_type": "slidedeck.comment_added", **res}))
+
+    async def _handle_slides_comment_update(self, data):
+        """Edit the text of one of the current user's OPEN comments before sending."""
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+        comment_id = data.get("comment_id")
+        text = (data.get("text") or "").strip()[:4000]
+
+        def _update():
+            from chat.models import SlideComment
+
+            if not text:
+                return {"ok": False}
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return {"ok": False}
+            SlideComment.objects.filter(
+                pk=comment_id, slide_set=deck, status=SlideComment.Status.OPEN
+            ).update(text=text)
+            open_count = deck.comments.filter(status=SlideComment.Status.OPEN).count()
+            return {"ok": True, "deck_id": str(deck.pk), "open_count": open_count}
+
+        res = await database_sync_to_async(_update)()
         await self.send(text_data=json.dumps({"event_type": "slidedeck.comment_added", **res}))
 
     async def _handle_slides_comments_send(self, data):
@@ -663,7 +732,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             deck = self._owned_deck(thread_id, deck_id)
             if deck is None:
                 return None
-            override = theme_mod.resolve_named_slide_theme(name, self.user)
+            if name == "org":
+                override = theme_mod.org_slide_theme_override(self._user_org())
+            else:
+                override = theme_mod.resolve_named_slide_theme(name, self.user)
             if override is None:
                 return None
             content = deck.content or {}
@@ -879,6 +951,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_slides_restore(data)
         elif msg_type == "chat.slides_comment_add":
             await self._handle_slides_comment_add(data)
+        elif msg_type == "chat.slides_comment_delete":
+            await self._handle_slides_comment_delete(data)
+        elif msg_type == "chat.slides_comment_update":
+            await self._handle_slides_comment_update(data)
         elif msg_type == "chat.slides_comments_send":
             await self._handle_slides_comments_send(data)
         elif msg_type == "chat.slides_export_pdf":

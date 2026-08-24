@@ -445,7 +445,16 @@ def org_settings_page(request):
     org_styles = get_org_styles(org)
     org_fonts = org_font_families(org)
 
-    from chat.slides.theme import get_org_slide_style, preset_swatches
+    from chat.slides.theme import (
+        SLIDE_COLOR_FIELD_META,
+        SLIDE_FONT_FAMILIES,
+        SLIDE_FONT_FIELD_META,
+        SLIDE_SIZE_FIELD_META,
+        SLIDE_TABLE_FIELD_META,
+        get_org_slide_style,
+        preset_style_fields,
+        preset_swatches,
+    )
 
     org_slide_style = get_org_slide_style(org)
 
@@ -454,7 +463,14 @@ def org_settings_page(request):
         "styles": org_styles,
         "styles_json": json.dumps(org_styles),
         "slide_theme_presets": preset_swatches(),
-        "org_slide_theme": org_slide_style["name"],
+        "slide_style": org_slide_style,
+        "slide_style_json": json.dumps(org_slide_style),
+        "slide_preset_fields_json": json.dumps(preset_style_fields()),
+        "slide_font_families": SLIDE_FONT_FAMILIES,
+        "slide_color_fields": SLIDE_COLOR_FIELD_META,
+        "slide_font_fields": SLIDE_FONT_FIELD_META,
+        "slide_size_fields": SLIDE_SIZE_FIELD_META,
+        "slide_table_fields": SLIDE_TABLE_FIELD_META,
         "font_choices": FONT_CHOICES,
         "org_fonts": org_fonts,
         "org_fonts_json": json.dumps(org_fonts),

@@ -269,36 +269,91 @@ class _Org:
 
 
 class OrgSlideStyleTests(SimpleTestCase):
-    def test_default_when_unset_or_none_org(self):
-        self.assertEqual(theme.get_org_slide_style(None), {"name": "forest"})
-        self.assertEqual(theme.get_org_slide_style(_Org()), {"name": "forest"})
-        self.assertEqual(theme.get_org_slide_style(_Org({})), {"name": "forest"})
+    def _base_colors(self):
+        return {k: theme.WILFRED_BASE_THEME["colors"][k] for k in theme.SLIDE_STYLE_COLOR_KEYS}
 
-    def test_reads_stored_preset(self):
+    def test_default_when_unset_or_none_org(self):
+        # Unset / None org resolves to the full base field set.
+        for org in (None, _Org(), _Org({})):
+            style = theme.get_org_slide_style(org)
+            self.assertEqual(set(style), {"colors", "fonts", "typography", "tables"})
+            self.assertEqual(style["colors"]["accent1"], theme.WILFRED_BASE_THEME["colors"]["accent1"])
+            self.assertEqual(style["fonts"]["headline"], "Caladea")
+
+    def test_reads_stored_preset_backcompat(self):
+        # Old {"name": preset} shape still expands to that preset's fields.
         org = _Org({"slide_theme": {"name": "ocean"}})
-        self.assertEqual(theme.get_org_slide_style(org)["name"], "ocean")
+        style = theme.get_org_slide_style(org)
+        self.assertEqual(style["colors"]["accent1"], "#0E7490")
+
+    def test_reads_stored_full_style(self):
+        colors = self._base_colors()
+        colors["accent1"] = "#123456"
+        stored = {
+            "colors": colors,
+            "fonts": {"headline": "Tinos", "subhead": "Caladea", "body": "Arimo", "data": "Carlito"},
+            "typography": {"headline_size": 40, "subhead_size": 20, "body_size": 14, "bullet_char": "•"},
+            "tables": {"header_fill": "#111111", "header_color": "#FFFFFF",
+                       "band_fill": "#EEEEEE", "grid_color": "#999999"},
+        }
+        style = theme.get_org_slide_style(_Org({"slide_theme": stored}))
+        self.assertEqual(style["colors"]["accent1"], "#123456")
+        self.assertEqual(style["fonts"]["headline"], "Tinos")
+        self.assertEqual(style["typography"]["headline_size"], 40)
+        self.assertEqual(style["tables"]["header_fill"], "#111111")
 
     def test_malformed_stored_value_falls_back(self):
+        # Old-shape junk falls back to forest; new-shape junk to base defaults.
         for bad in ({"slide_theme": {"name": "bogus"}}, {"slide_theme": "slate"},
                     {"slide_theme": {"nope": 1}}):
-            self.assertEqual(theme.get_org_slide_style(_Org(bad))["name"], "forest")
+            style = theme.get_org_slide_style(_Org(bad))
+            self.assertEqual(style["colors"]["accent1"], theme.WILFRED_BASE_THEME["colors"]["accent1"])
 
-    def test_validate_accepts_known_preset(self):
+    def test_validate_accepts_bare_preset(self):
         clean, err = theme.validate_org_slide_style({"name": "warm"})
         self.assertIsNone(err)
-        self.assertEqual(clean, {"name": "warm"})
+        self.assertEqual(set(clean), {"colors", "fonts", "typography", "tables"})
+        self.assertEqual(clean["colors"]["accent1"], "#C2410C")
 
-    def test_validate_rejects_unknown_or_malformed(self):
-        for bad in ({"name": "nope"}, {"name": 5}, [], "slate"):
+    def test_validate_accepts_full_style(self):
+        style = theme.slide_style_defaults()
+        clean, err = theme.validate_org_slide_style(style)
+        self.assertIsNone(err)
+        self.assertEqual(clean["fonts"]["body"], "Carlito")
+
+    def test_validate_rejects_bad_values(self):
+        base = theme.slide_style_defaults()
+        bad_font = {**base, "fonts": {**base["fonts"], "body": "Comic Sans"}}
+        bad_hex = {**base, "colors": {**base["colors"], "accent1": "not-a-hex"}}
+        bad_size = {**base, "typography": {**base["typography"], "headline_size": 500}}
+        for bad in (bad_font, bad_hex, bad_size, [], "slate", {"name": "nope"}):
             clean, err = theme.validate_org_slide_style(bad)
             self.assertIsNone(clean)
             self.assertTrue(err)
 
-    def test_override_empty_for_forest_and_sparse_for_others(self):
+    def test_override_empty_for_unset_and_populated_for_configured(self):
+        # No stored style (or forest preset) => empty override => decks stay on base.
         self.assertEqual(theme.org_slide_theme_override(_Org({"slide_theme": {"name": "forest"}})), {})
-        override = theme.org_slide_theme_override(_Org({"slide_theme": {"name": "slate"}}))
-        self.assertIn("colors", override)
         self.assertEqual(theme.org_slide_theme_override(None), {})
+        # Old-shape preset => sparse colour override.
+        old = theme.org_slide_theme_override(_Org({"slide_theme": {"name": "slate"}}))
+        self.assertIn("colors", old)
+        # New full-shape style => full override with fonts + typography + table.
+        style = theme.slide_style_defaults()
+        style["fonts"]["headline"] = "Tinos"
+        override = theme.org_slide_theme_override(_Org({"slide_theme": style}))
+        self.assertEqual(override["fonts"]["headline"], "Tinos")
+        self.assertIn("text_styles", override)
+        self.assertIn("bullet", override)
+
+    def test_preset_style_fields_cover_all_presets(self):
+        fields = theme.preset_style_fields()
+        self.assertEqual(set(fields), set(theme.PRESET_THEMES))
+        self.assertEqual(fields["ocean"]["colors"]["accent1"], "#0E7490")
+
+    def test_org_swatch(self):
+        sw = theme.org_slide_theme_swatch(_Org({"slide_theme": {"name": "ocean"}}))
+        self.assertEqual(sw["accent"], "#0E7490")
 
 
 class ElementLimitTests(SimpleTestCase):

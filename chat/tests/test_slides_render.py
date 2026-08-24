@@ -63,8 +63,10 @@ class RenderServiceTests(TestCase):
         # one asset (real renders differ per slide). Every SlideRender has an asset.
         self.assertEqual(SlideRender.objects.filter(slide_set=self.deck, asset__isnull=False).count(), 2)
         self.assertGreaterEqual(Asset.objects.filter(slide_set=self.deck, kind=Asset.KIND_IMAGE).count(), 1)
-        m_notify.assert_called_once()
-        self.assertEqual(m_notify.call_args.args[2], "slidedeck.rendered")
+        # A preview run notifies twice: render_started (worker picked it up) then
+        # rendered (done) — the panel uses the first to flip "queued" placeholders.
+        events = [c.args[2] for c in m_notify.call_args_list]
+        self.assertEqual(events, ["slidedeck.render_started", "slidedeck.rendered"])
 
     @mock.patch("chat.slides.render_service.notify_render_event")
     @mock.patch("chat.slides.render_service._render_slides", side_effect=_fake_render)

@@ -470,16 +470,44 @@ class OrgSlideStyleUpdateTests(TestCase):
     def _post(self, payload):
         return self.client.post(self.url, json.dumps(payload), content_type="application/json")
 
-    def test_admin_can_set_slide_theme(self):
+    def test_admin_can_set_slide_theme_from_preset(self):
+        # A bare preset name expands and stores the full field set.
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self._post({"name": "ocean"})
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
-        self.assertEqual(self.org.preferences["slide_theme"], {"name": "ocean"})
+        stored = self.org.preferences["slide_theme"]
+        self.assertEqual(set(stored), {"colors", "fonts", "typography", "tables"})
+        self.assertEqual(stored["colors"]["accent1"], "#0E7490")
+
+    def test_admin_can_set_full_custom_style(self):
+        from chat.slides.theme import slide_style_defaults
+
+        self.client.login(email=self.admin_user.email, password=self.password)
+        style = slide_style_defaults()
+        style["colors"]["accent1"] = "#123456"
+        style["fonts"]["headline"] = "Tinos"
+        response = self._post(style)
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        stored = self.org.preferences["slide_theme"]
+        self.assertEqual(stored["colors"]["accent1"], "#123456")
+        self.assertEqual(stored["fonts"]["headline"], "Tinos")
 
     def test_unknown_theme_rejected(self):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self._post({"name": "rainbow"})
+        self.assertEqual(response.status_code, 400)
+        self.org.refresh_from_db()
+        self.assertNotIn("slide_theme", self.org.preferences)
+
+    def test_bad_font_rejected(self):
+        from chat.slides.theme import slide_style_defaults
+
+        self.client.login(email=self.admin_user.email, password=self.password)
+        style = slide_style_defaults()
+        style["fonts"]["body"] = "Comic Sans"
+        response = self._post(style)
         self.assertEqual(response.status_code, 400)
         self.org.refresh_from_db()
         self.assertNotIn("slide_theme", self.org.preferences)
