@@ -2,9 +2,24 @@ from django.contrib import admin
 from django.db.models import CharField, OuterRef, Subquery, Sum
 from django.db.models.functions import Cast
 
+from llm.admin import _pretty_json_html
 from llm.models import LLMCallLog
 
-from .models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, SubAgentRun, ThreadChunkUsage, ThreadTask
+from .models import (
+    CanvasCheckpoint,
+    ChatCanvas,
+    ChatMessage,
+    ChatThread,
+    ChatThreadDataRoom,
+    SlideComment,
+    SlideRender,
+    SlideRenderRun,
+    SlideSet,
+    SlideSetCheckpoint,
+    SubAgentRun,
+    ThreadChunkUsage,
+    ThreadTask,
+)
 
 
 class SubAgentRunInline(admin.TabularInline):
@@ -77,6 +92,63 @@ class CanvasCheckpointInline(admin.TabularInline):
 class ChatCanvasAdmin(admin.ModelAdmin):
     list_display = ("id", "thread", "title", "updated_at")
     inlines = [CanvasCheckpointInline]
+
+
+class SlideSetCheckpointInline(admin.TabularInline):
+    model = SlideSetCheckpoint
+    extra = 0
+    readonly_fields = ("source", "description", "order", "created_at")
+
+
+class SlideCommentInline(admin.TabularInline):
+    model = SlideComment
+    extra = 0
+    readonly_fields = ("slide_id", "author", "text", "status", "created_at")
+    fields = ("slide_id", "author", "text", "status", "created_at")
+
+
+@admin.register(SlideSet)
+class SlideSetAdmin(admin.ModelAdmin):
+    list_display = ("id", "thread", "title", "base_template", "is_active", "deleted_at", "updated_at")
+    list_filter = ("is_active", "base_template", "created_at")
+    search_fields = ("title", "id")
+    readonly_fields = ("content_pretty", "created_at", "updated_at", "last_activated_at")
+    # Raw ``content`` is excluded from the form; ``content_pretty`` shows the deck
+    # JSON indented (the field is huge and hand-editing it in admin is unsafe).
+    fields = (
+        "thread", "title", "base_template", "is_active", "deleted_at",
+        "content_pretty", "last_activated_at", "created_at", "updated_at",
+    )
+    raw_id_fields = ("thread",)
+    list_select_related = ("thread",)
+    inlines = [SlideSetCheckpointInline, SlideCommentInline]
+
+    @admin.display(description="Content")
+    def content_pretty(self, obj):
+        return _pretty_json_html(obj.content)
+
+
+@admin.register(SlideRenderRun)
+class SlideRenderRunAdmin(admin.ModelAdmin):
+    list_display = ("short_id", "slide_set", "purpose", "status", "created_at", "finished_at")
+    list_filter = ("purpose", "status", "created_at")
+    search_fields = ("id", "slide_set__title")
+    readonly_fields = ("id", "created_at", "started_at", "finished_at")
+    list_select_related = ("slide_set",)
+    ordering = ["-created_at"]
+
+    @admin.display(description="ID")
+    def short_id(self, obj):
+        return str(obj.id)[:8]
+
+
+@admin.register(SlideRender)
+class SlideRenderAdmin(admin.ModelAdmin):
+    list_display = ("id", "slide_set", "slide_id", "content_hash", "width", "height", "rendered_at")
+    search_fields = ("slide_id", "content_hash", "slide_set__title")
+    readonly_fields = ("rendered_at",)
+    list_select_related = ("slide_set",)
+    raw_id_fields = ("asset",)
 
 
 @admin.register(SubAgentRun)
