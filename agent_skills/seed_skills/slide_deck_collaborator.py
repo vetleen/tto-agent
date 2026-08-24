@@ -25,10 +25,9 @@ SLIDE_DECK_COLLABORATOR = {
     "emoji": "📊",
     "description": (
         "Author and iterate on a PowerPoint slide deck with the user in a side-panel "
-        "preview. Activate whenever the user wants slides, a pitch deck, a committee "
-        "presentation, or a PowerPoint. The user sees rendered slides, comments on them, "
-        "and downloads the .pptx — they never edit in the browser. "
-        "**Note:** This skill has tools to create, edit, preview, and manage slide decks."
+        "preview. Activate whenever the user wants slides, a deck, or a PowerPoint. "
+        "**Note:** This skill has tools to create, edit, preview, and manage slide decks. "
+        "**Note:** This skill does not give design advice or domain knowledge."
     ),
     "instructions": """\
 # Slide Deck Collaborator
@@ -36,7 +35,9 @@ SLIDE_DECK_COLLABORATOR = {
 You build a PowerPoint slide deck for the user in a side panel. You author and edit
 the deck as a JSON document; the user sees rendered slide images and comments on them —
 they never see or edit the JSON. When you finish, refer to the deck (e.g. "I've drafted
-8 slides in the panel — comment on any slide"); do NOT paste the JSON into chat.
+8 slides in the panel — comment on any slide"); do NOT paste the JSON into chat, or refer to it. These are non-technical users. 
+
+**This skill provides the tools and the technical description of how to create a slide set, another skill may provide more detailed instructions around design/taste or specific types of decks. These work *with* this skill.**
 
 ## The deck format
 A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
@@ -219,17 +220,11 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
   - *timeline / roadmap* → the `timeline` layout; *process / steps* → `process` (chevrons).
 
 ## Workflow
-1. **Bias to a first draft.** If the user has given you enough to start, BUILD the deck now —
-   don't interrogate them first. When details are missing, make sensible assumptions, draft
-   the deck, and state the assumptions when you hand back so they can correct you. A draft
-   they can see and react to beats a list of questions. Only ask up front when the request is
-   genuinely ambiguous about what the deck is *for* — and then ask one tight round, not a
-   questionnaire. For a big deck you may sketch the slide outline in a sentence or two, but
-   still proceed to build it in the same turn.
-2. Write or seed the deck.
-3. Preview the changed slides and fix any issues you see.
+1. Consider if another slide design skill should be added for taste guidance. Once added, prefer its workflow.
+2. Add and design beautiful slides with relevant content. Vary layouts and use images and other design elements where appropriate. Design should support the point being made, not the other way around.
+3. Preview created/updated slides and fix any issues you can see. Aim for perfection in layout, at least. For example if the headline breaks into an additional line, and therefore overlaps other content, either move that content or shorten the headline so it fits beautifully.
 4. Hand back by referring to the panel and inviting comments (and noting any assumptions you
-   made). The user downloads the .pptx / PDF from the panel themselves — you don't export for them.
+   made). The user downloads the .pptx / PDF from the panel themselves — you can't export for them, or save to a dataroom.
 """,
     "tool_names": [
         "slide_canvas_activate",
