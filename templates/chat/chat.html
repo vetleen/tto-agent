@@ -142,9 +142,9 @@
         </div>
       </div>
     </div>
-    {# Slide / canvas openers. Each is icon + a "›" that signals it opens a side
+    {% comment %} Slide / canvas openers. Each is icon + a "›" that signals it opens a side
        panel; the two are spaced apart (gap-4) so each arrow reads as belonging to
-       its own icon. Opening one closes the other (they never show together). #}
+       its own icon. Opening one closes the other (they never show together). {% endcomment %}
     <div class="flex items-center gap-4">
       <button id="slides-toggle-btn" type="button" class="hidden items-center gap-1 px-2 py-1 text-sm text-body hover:text-heading hover:bg-neutral-tertiary rounded-base transition-colors" title="Toggle slide deck">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 4.5h16.5M4.5 4.5v10.5a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5V4.5M12 16.5V21m0 0l-2.25 1.5M12 21l2.25 1.5"/></svg>
