@@ -96,7 +96,7 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 5. **line** — `{"type":"line","x1":48,"y1":440,"x2":912,"y2":440,"color":"accent3","w":2,"dash":"dash","arrow":"end"}`
    (`arrow`: none/end/start/both; `dash`: solid/dash/dot/dashdot).
    - **Curved arrow:** add `"curve":0.25` to bow a line into an arc (signed fraction of its
-     length; `0` = straight, `+`/`−` flip the bow side, ~0.2–0.4 reads well). With `"arrow":"end"`
+     length; `0` = straight, `+`/`−` flip the bow side, ≈0.2–0.4 reads well). With `"arrow":"end"`
      it's a curved arrow — use it for **cycle / virtuous-loop / feedback / journey** diagrams
      (place nodes in a ring and connect them with curved arrows bowed outward), or to route a
      connector around another element. (Dashes are ignored on a curved line.)
@@ -187,10 +187,10 @@ Seed a slide from one of these, then edit its placeholder text.
   palette, and users switch a deck's theme themselves from the panel — so just use the theme
   colour *names* above and the right hues follow. Only add a top-level `theme` override if the
   user explicitly asks for specific brand colours.
-- **Layout hygiene.** Keep ~48pt margins; don't overlap unrelated elements. Estimate text
+- **Layout hygiene.** Keep ≈48pt margins; don't overlap unrelated elements. Estimate text
   fit before finishing: characters-per-line ≈ width_pt ÷ (0.5 × font_size); if the lines
   exceed the box height the text overflows. Keep to ≤6 bullets per slide and short lines.
-  A long **action-title headline can wrap to two lines** — give it enough height (~64pt) and
+  A long **action-title headline can wrap to two lines** — give it enough height (≈64pt) and
   start the body/first content row below it (y ≈ 120+) so column headers don't collide with
   the title's second line.
 - **Look at your work.** After adding or substantially editing slides, call
