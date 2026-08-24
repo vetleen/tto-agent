@@ -36,8 +36,9 @@ def _p(text, color=None, size=None, bold=None, **kw):
 
 
 _LAYOUTS: dict[str, dict] = {
-    "title": {
-        "name": "Title",
+    "title:01": {
+        "name": "Title 1",
+        "description": "Big centred deck title + a subtitle/author line.",
         "skip_footer": True,
         "bg": "lt1",
         "elements": [
@@ -47,6 +48,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "section": {
         "name": "Section",
+        "description": "Section divider — a large heading on a dark background to break the deck into parts.",
         "bg": "dk2",
         "elements": [
             _text(_ML, 230, _MW, 80, "headline", [_p("Section heading", color="lt1", align="left")]),
@@ -55,6 +57,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "bullets": {
         "name": "Bullets",
+        "description": "The workhorse content slide — a title over a simple bulleted list.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
             _text(_ML, 130, _MW, 340, "body", [
@@ -66,6 +69,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "two_col": {
         "name": "Two columns",
+        "description": "A title over two side-by-side bulleted columns.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
             _text(_ML, 130, 408, 340, "body", [
@@ -82,6 +86,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "image_right": {
         "name": "Image right",
+        "description": "Bullets on the left, an image on the right.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
             _text(_ML, 130, 408, 340, "body", [
@@ -93,6 +98,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "table": {
         "name": "Table",
+        "description": "A title over a data table (header row + banded rows).",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
             {"type": "table", "x": _ML, "y": 130, "w": _MW, "h": 300, "header": True, "banding": True,
@@ -107,6 +113,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "metric": {
         "name": "Metric",
+        "description": "One big hero number with a label, plus supporting bullets beside it.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
             _text(_ML, 170, 430, 120, "headline", [_p("42%", size=68, bold=True, color="accent1")]),
@@ -119,6 +126,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "chart": {
         "name": "Chart",
+        "description": "A chart on the left with takeaway bullets on the right.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Slide title")]),
             {"type": "chart", "x": _ML, "y": 130, "w": 520, "h": 320, "chart": "column",
@@ -133,6 +141,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "photo": {
         "name": "Photo cover",
+        "description": "Full-bleed photo cover — a headline over a background image with a dark scrim.",
         "skip_footer": True,
         "bg": "dk2",
         "bg_image": "",  # set a "[[image:UUID]]" token to fill the slide with a photo
@@ -144,6 +153,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "agenda": {
         "name": "Agenda",
+        "description": "A numbered agenda / contents list (1–4 topics).",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Agenda")]),
             {"type": "shape", "x": _ML, "y": 150, "w": 42, "h": 42, "shape": "oval", "fill": "accent1",
@@ -162,6 +172,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "exec_summary": {
         "name": "Executive summary",
+        "description": "An action-title recommendation over 3 key-message bullets (the consulting summary).",
         "elements": [
             _text(_ML, 44, _MW, 90, "headline", [_p("The bottom line — write the recommendation as the title")]),
             _text(_ML, 160, _MW, 300, "body", [
@@ -173,6 +184,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "kpi_row": {
         "name": "KPI row",
+        "description": "Three KPIs side by side — a big number + label each.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Key results")]),
             _text(_ML, 190, 264, 90, "headline", [_p("42%", size=54, bold=True, color="accent1", align="center")]),
@@ -185,6 +197,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "process": {
         "name": "Process",
+        "description": "A left-to-right process flow of 3 chevron steps.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("How it works")]),
             {"type": "shape", "x": _ML, "y": 210, "w": 258, "h": 120, "shape": "chevron", "fill": "accent4",
@@ -197,6 +210,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "cycle": {
         "name": "Cycle / flywheel",
+        "description": "A cyclical / flywheel diagram — 4 stages in a loop joined by curved arrows.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("The growth cycle")]),
             # Four stages in a diamond, joined by curved arrows (clockwise).
@@ -217,6 +231,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "timeline": {
         "name": "Timeline",
+        "description": "A horizontal timeline / roadmap with milestone markers.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Roadmap")]),
             {"type": "line", "x1": 90, "y1": 272, "x2": 872, "y2": 272, "color": "accent3", "w": 3},
@@ -232,6 +247,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "matrix_2x2": {
         "name": "2x2 matrix",
+        "description": "A 2×2 matrix with labelled quadrants and crosshair axes.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Prioritisation")]),
             {"type": "line", "x1": 480, "y1": 132, "x2": 480, "y2": 458, "color": "accent3", "w": 2},
@@ -244,6 +260,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "ecosystem": {
         "name": "Ecosystem / network",
+        "description": "An ecosystem / network map — a central hub connected to surrounding partners.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Our ecosystem")]),
             {
@@ -270,6 +287,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "comparison": {
         "name": "Comparison",
+        "description": "A side-by-side comparison of two options (A vs B).",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Comparison")]),
             {"type": "line", "x1": 480, "y1": 140, "x2": 480, "y2": 450, "color": "accent3", "w": 2},
@@ -287,6 +305,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "team": {
         "name": "Team",
+        "description": "A team slide — a row of headshots with name + role.",
         "elements": [
             _text(_ML, 44, _MW, 60, "headline", [_p("Team")]),
             {"type": "image", "x": 90, "y": 150, "w": 180, "h": 180, "token": "", "fit": "cover"},
@@ -302,6 +321,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "quote": {
         "name": "Quote",
+        "description": "A large pull-quote with attribution.",
         "bg": "lt2",
         "elements": [
             _text(96, 70, 200, 160, "headline", [_p("“", size=150, bold=True, color="accent3", align="left")]),
@@ -311,6 +331,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "closing": {
         "name": "Closing",
+        "description": "A closing / thank-you slide with contact details on a dark background.",
         "skip_footer": True,
         "bg": "dk2",
         "elements": [
@@ -320,6 +341,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "blank": {
         "name": "Blank",
+        "description": "An empty slide to build from scratch.",
         "elements": [],
     },
 }
@@ -328,11 +350,23 @@ LAYOUT_IDS = tuple(_LAYOUTS.keys())
 
 
 def get_layout(layout_id: str) -> dict | None:
-    """Return a deep copy of a layout seed slide (no ids), or None if unknown."""
+    """Return a deep copy of a layout seed slide (no ids), or None if unknown.
+
+    ``description`` is a catalogue-only field (see ``layout_catalog``) — it is
+    stripped here so the returned dict is a valid Slide (the schema forbids
+    unknown keys)."""
     seed = _LAYOUTS.get(layout_id)
-    return copy.deepcopy(seed) if seed is not None else None
+    if seed is None:
+        return None
+    seed = copy.deepcopy(seed)
+    seed.pop("description", None)
+    return seed
 
 
 def layout_catalog() -> list[dict]:
-    """``[{"id","name"}]`` for the skill/prompt to advertise the choices."""
-    return [{"id": lid, "name": _LAYOUTS[lid]["name"]} for lid in LAYOUT_IDS]
+    """``[{"id","name","description"}]`` for the slides_add_slide tool to advertise
+    the choices so the model can pick the right layout confidently."""
+    return [
+        {"id": lid, "name": _LAYOUTS[lid]["name"], "description": _LAYOUTS[lid].get("description", "")}
+        for lid in LAYOUT_IDS
+    ]

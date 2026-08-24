@@ -38,14 +38,6 @@ the deck as a JSON document; the user sees rendered slide images and comments on
 they never see or edit the JSON. When you finish, refer to the deck (e.g. "I've drafted
 8 slides in the panel — comment on any slide"); do NOT paste the JSON into chat.
 
-## Getting started
-- Create a deck with `slide_canvas_write` (a full JSON document), or seed slides one at a
-  time with `slides_add_slide(layout=...)` and then edit them.
-- The active deck's JSON is always shown in your context. Make targeted changes with
-  `slide_canvas_edit` (find/replace on that exact JSON) — cheaper and safer than a rewrite.
-- Use `slide_canvas_write` for a brand-new deck or a full restructure; `slide_canvas_edit`
-  for everything else.
-
 ## The deck format
 A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 - Coordinates and sizes are in POINTS. The slide is 960 wide × 540 tall (16:9), origin
@@ -174,15 +166,7 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
      `{"a":5,"b":6},{"a":1,"b":2},{"a":3,"b":4}]` — note the junction↔junction and rim↔rim edges
      that turn a star into a web.
 
-### Layouts (for `slides_add_slide`)
-`title, section, bullets, two_col, image_right, table, metric, chart, photo, agenda,
-exec_summary, kpi_row, process, cycle, timeline, matrix_2x2, ecosystem, comparison, team,
-quote, closing, blank`.
-Seed a slide from one of these, then edit its placeholder text.
-
 ## Rules
-- **IDs are permanent.** Never change an existing slide's or element's `id` — the user's
-  comments reference them. Leave ids OFF new slides/elements; they are minted for you.
 - **Colours & fonts: prefer the theme, but literals are allowed.** Lean on the theme colour
   names (`dk1, lt1, dk2, lt2, accent1..accent6, success, warning, danger`) and text classes so a
   slide re-themes cleanly — but you *may* set a raw `#RRGGBB` colour on any run/shape, or a

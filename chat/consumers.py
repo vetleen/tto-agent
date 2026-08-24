@@ -1993,10 +1993,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             logger.exception("Failed to load canvases for thread %s", thread.id)
             canvases_info = None
         try:
-            active_deck = await self._get_active_deck_for_prompt(str(thread.id))
+            active_deck, slide_decks = await self._get_active_deck_for_prompt(str(thread.id))
         except Exception:
             logger.exception("Failed to load active deck for thread %s", thread.id)
-            active_deck = None
+            active_deck, slide_decks = None, None
         skill_objs = []
         for sid in self.active_skill_ids:
             skill_obj = await self._load_skill(sid)
@@ -2060,6 +2060,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 canvases_info["active_canvases"] if canvases_info else None
             ),
             "active_slide_set": active_deck,
+            "slide_decks": slide_decks,
             "tasks": tasks,
             "subagent_runs": subagent_runs if subagent_runs else None,
             "history_meta": meta,
@@ -3081,10 +3082,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_active_deck_for_prompt(self, thread_id):
-        """Load the active slide deck (if any) for prompt injection."""
+        """``(active deck | None, [{"title","active"}...] for every live deck)`` —
+        the active deck is injected in full; the list lets the model know what
+        decks it can switch between with slide_canvas_activate."""
+        from chat.models import SlideSet
         from chat.slides.service import get_active_deck
 
-        return get_active_deck(thread_id)
+        active = get_active_deck(thread_id)
+        decks = [
+            {"title": d["title"], "active": d["is_active"]}
+            for d in SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+            .order_by("created_at").values("title", "is_active")
+        ]
+        return active, decks
 
     def _resolve_canvas_id(self, thread_id, canvas_id=None):
         """Resolve a canvas by ID or fall back to active canvas. Sync helper."""

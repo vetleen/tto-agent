@@ -55,6 +55,18 @@ class SlideToolTests(TestCase):
         self.assertEqual(deck.content["slides"][0]["id"], "s1")
         self.assertEqual([c.source for c in deck.checkpoints.all()], ["original"])
 
+    def test_write_empty_deck_when_content_omitted(self):
+        """Omitting content creates an empty, active deck to build up from layouts."""
+        r = self._run(WriteDeckTool(), title="Scratch")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["slide_ids"], [])
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertTrue(deck.is_active)
+        self.assertEqual(deck.content["slides"], [])
+        # ...and it's a valid deck we can immediately seed a layout into.
+        seed = self._run(AddSlideTool(), layout="title")
+        self.assertEqual(seed["status"], "ok")
+
     def test_write_accepts_native_object(self):
         """The deck may be passed as a native JSON object (no string escaping) —
         the primary path for the model, which avoids double-escaping errors."""

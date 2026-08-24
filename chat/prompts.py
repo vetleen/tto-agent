@@ -510,6 +510,7 @@ def build_dynamic_context(
     active_canvas: Any = None,
     canvas: Any = None,
     active_slide_set: Any = None,
+    slide_decks: list[dict[str, Any]] | None = None,
     tasks: list[dict] | None = None,
     subagent_runs: list[dict] | None = None,
     history_meta: dict[str, Any] | None = None,
@@ -652,14 +653,40 @@ def build_dynamic_context(
     # -- Active slide deck (the deck the user sees rendered in the side panel) --
     if active_slide_set:
         from chat.slides.schema import canonical_deck_text
+        from chat.slides.theme import resolve_theme
 
-        parts.append(
+        section = (
             f'# Active Slide Deck: "{active_slide_set.title}"\n'
             "This is the deck the user sees rendered in the side panel — edit it with "
             "`slide_canvas_edit` (find/replace on this EXACT JSON) or `slide_canvas_write`. "
             "Slide/element ids are permanent; the user comments by slide id.\n"
-            f"```json\n{canonical_deck_text(active_slide_set.content or {})}\n```"
         )
+        # Inventory of this thread's decks, so you know what you can switch between.
+        if slide_decks and len(slide_decks) > 1:
+            names = ", ".join(
+                f'"{d["title"]}"' + (" (active)" if d.get("active") else "")
+                for d in slide_decks
+            )
+            section += (
+                f"Decks in this thread: {names}. Switch which one you work on with "
+                "`slide_canvas_activate`.\n"
+            )
+        # The resolved theme — reference the NAMES in the JSON (so the deck re-themes
+        # cleanly); the hexes/fonts are for your judgement (matching a colour in an
+        # image prompt, or choosing a harmonious literal).
+        theme = resolve_theme(active_slide_set.content or {})
+        colours = theme.get("colors", {})
+        fonts = theme.get("fonts", {})
+        pal = ", ".join(
+            f"{k}={colours[k]}" for k in (
+                "dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3",
+                "accent4", "accent5", "accent6", "success", "warning", "danger",
+            ) if k in colours
+        )
+        fnt = ", ".join(f"{k}={fonts[k]}" for k in ("headline", "subhead", "body", "data") if k in fonts)
+        section += f"Theme colours (name=hex): {pal}.\nTheme fonts: {fnt}.\n"
+        section += f"```json\n{canonical_deck_text(active_slide_set.content or {})}\n```"
+        parts.append(section)
 
     # -- Current task plan status --
     if tasks:

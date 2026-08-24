@@ -21,6 +21,14 @@ from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
+# The slides_add_slide layout ids, sourced from the seed catalogue so this
+# always matches what actually exists (no hand-maintained list to go stale).
+from chat.slides.layouts import layout_catalog
+
+_LAYOUT_IDS = ", ".join(c["id"] for c in layout_catalog())
+# A one-line-per-layout menu (id: what it's for) so the model picks confidently.
+_LAYOUT_MENU = "\n".join(f'- {c["id"]}: {c["description"]}' for c in layout_catalog())
+
 
 # ---------------------------------------------------------------------------
 # Input schemas
@@ -33,12 +41,15 @@ class ActivateDeckInput(ReasonBaseModel):
 
 class WriteDeckInput(ReasonBaseModel):
     title: str = Field(description="Title for the deck.")
-    content: dict | str = Field(
+    content: dict | str | None = Field(
+        default=None,
         description=(
-            "The FULL deck as a JSON OBJECT — pass it directly as structured JSON, do NOT "
+            "The full deck as a JSON OBJECT — pass it directly as structured JSON, do NOT "
             "wrap it in a string or escape the quotes: "
             '{"version":1,"size":{"w":960,"h":540},"slides":[...]}. Coordinates are points; '
-            "the slide is 960x540. Omit slide/element ids and they are minted."
+            "the slide is 960x540; omit slide/element ids and they are minted. OMIT this "
+            "entirely to create an EMPTY deck, then build it up from the pre-designed layouts "
+            "with slides_add_slide and fill them in with slide_canvas_edit."
         ),
     )
     deck_name: str = Field(
@@ -84,11 +95,7 @@ class DeleteDeckInput(ReasonBaseModel):
 
 class AddSlideInput(ReasonBaseModel):
     layout: str = Field(
-        description=(
-            "Layout id to seed: title, section, bullets, two_col, image_right, table, "
-            "metric, chart, photo, agenda, exec_summary, kpi_row, process, timeline, "
-            "matrix_2x2, comparison, team, quote, closing, blank."
-        ),
+        description="Layout id to seed. One of: " + _LAYOUT_IDS + ".",
     )
     position: int = Field(
         default=-1,
@@ -141,8 +148,9 @@ class ActivateDeckTool(ContextAwareTool):
     start_label: str = "Opening deck..."
     end_label: str = "Deck opened"
     description: str = (
-        "Set which slide deck is active. The active deck's full JSON is included in "
-        "your context so you can edit it. Activating a deck deactivates the others."
+        "Switch which of the thread's decks is the active one you work on. Only one deck is active "
+        "at a time; the active deck's full JSON + theme is included in your context. "
+        "Activating a deck deactivates the others, but they stay saved."
     )
     args_schema: type[BaseModel] = ActivateDeckInput
 
@@ -174,9 +182,13 @@ class WriteDeckTool(ContextAwareTool):
     start_label: str = "Writing slides..."
     end_label: str = "Wrote the slide deck"
     description: str = (
-        "Create or completely rewrite a slide deck from a full JSON document. Use for "
-        "a new deck or a full restructure; for targeted changes use slide_canvas_edit. "
-        "The user sees a rendered preview, never the JSON."
+        "Create or completely rewrite a slide deck — this is how a deck comes into existence, and "
+        "it becomes the active deck (the user sees a rendered preview, never the JSON). RECOMMENDED: "
+        "call it with just a `title` (omit `content`) to create an EMPTY deck, then build it up from "
+        "the pre-designed layouts with `slides_add_slide` and fill them in with `slide_canvas_edit`. "
+        "Alternatively, pass a full deck JSON in `content` for a bespoke deck or a full restructure. "
+        "For targeted changes to an existing deck use `slide_canvas_edit`. The deck/element JSON "
+        "format is documented in the Slide Deck Collaborator skill."
     )
     args_schema: type[BaseModel] = WriteDeckInput
 
@@ -187,11 +199,14 @@ class WriteDeckTool(ContextAwareTool):
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
-        # Accept the deck as a native object (preferred — no escaping) or, for
-        # backward compatibility, a JSON string under either name.
+        # Accept the deck as a native object (preferred — no escaping) or a JSON
+        # string (back-compat, under either name). An OMITTED deck creates an
+        # empty deck to build up from layouts with slides_add_slide.
         if content is None:
             content = kwargs.get("content_json")
-        if isinstance(content, str):
+        if content is None:
+            deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+        elif isinstance(content, str):
             try:
                 deck = json.loads(content)
             except (ValueError, TypeError) as exc:
@@ -261,10 +276,13 @@ class EditDeckTool(ContextAwareTool):
         return None
 
     description: str = (
-        "Make targeted find-replace edits to the active deck's JSON. Each edit's "
-        "old_text must match exactly once in the canonical deck JSON shown in your "
-        "context — include surrounding text to make it unique. Edits that would "
-        "produce invalid deck JSON are rejected and the deck is left unchanged."
+        "Make targeted find-replace edits to the active deck's JSON. Each edit's old_text must "
+        "match exactly once in the canonical deck JSON shown in your context — include surrounding "
+        "text to make it unique. Edits that would produce invalid deck JSON are rejected and the "
+        "deck is left unchanged. IDs are permanent: never change an existing slide's or element's "
+        "`id` (the user comments by id); leave ids off anything new and they are minted. Colours "
+        "accept a theme name (`accent1`, `dk1`, …) or a literal `#RRGGBB`; fonts follow the text "
+        "`class` unless a run sets `font`."
     )
     args_schema: type[BaseModel] = EditDeckInput
 
@@ -341,8 +359,9 @@ class AddSlideTool(ContextAwareTool):
         layout = result.get("layout")
         return f"Added a {layout} slide" if layout else None
     description: str = (
-        "Insert a pre-designed layout slide into the active deck, then edit its "
-        "placeholder text with slide_canvas_edit. Returns the new slide's JSON and id."
+        "Insert a pre-designed layout slide into the active deck (create the deck first with "
+        "slide_canvas_write), then edit its placeholder text with slide_canvas_edit. Returns the "
+        "new slide's JSON and id. Available layouts:\n" + _LAYOUT_MENU
     )
     args_schema: type[BaseModel] = AddSlideInput
 
