@@ -1046,6 +1046,9 @@ class ModalityFeatureResolutionTest(TestCase):
         # default_slot="mid" and the mid model is vision-capable.
         self.assertEqual(prefs.feature_models["document_image_description"], "openai/gpt-5.4-mini")
         self.assertTrue(feature_is_available(user, "document_image_description"))
+        # spreadsheet_description shares the same modality gate.
+        self.assertEqual(prefs.feature_models["spreadsheet_description"], "openai/gpt-5.4-mini")
+        self.assertTrue(feature_is_available(user, "spreadsheet_description"))
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/whisper-1",
@@ -1063,10 +1066,13 @@ class ModalityFeatureResolutionTest(TestCase):
         # No vision-capable model in the allow-list → feature disabled (empty).
         self.assertEqual(prefs.feature_models["document_image_description"], "")
         self.assertFalse(feature_is_available(user, "document_image_description"))
+        self.assertEqual(prefs.feature_models["spreadsheet_description"], "")
+        self.assertFalse(feature_is_available(user, "spreadsheet_description"))
         # Features without a required modality are always available.
         self.assertTrue(feature_is_available(user, "document_description"))
         # The org resolver also yields "" when no capable model exists.
         self.assertEqual(resolve_org_feature_model(None, "document_image_description"), "")
+        self.assertEqual(resolve_org_feature_model(None, "spreadsheet_description"), "")
 
 
 class ResolveOrgFeatureModelTest(TestCase):

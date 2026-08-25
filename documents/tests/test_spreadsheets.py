@@ -370,7 +370,8 @@ class MeshPlanTests(SimpleTestCase):
         self.assertEqual(plan.orientation, "portrait")
         band = plan.bands[0]
         self.assertEqual(band.header_px, mesh_mod.LINE_PX)
-        per_tile = (plan.tile_h - band.header_px) // mesh_mod.LINE_PX  # 70
+        capacity = plan.tile_h - band.header_px - mesh_mod.TILE_SAFETY_PX
+        per_tile = capacity // mesh_mod.LINE_PX  # 69
         self.assertEqual(band.row_band_starts[0], 2)  # header excluded
         self.assertEqual(band.row_band_starts[1], 2 + per_tile)
         self.assertEqual(len(band.row_band_starts), -(-99 // per_tile))

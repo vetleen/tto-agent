@@ -31,6 +31,7 @@ KIND_IMAGE = "image"
 KIND_PDF = "pdf"
 KIND_DOCX = "docx"
 KIND_PPTX = "pptx"
+KIND_SPREADSHEET = "spreadsheet"
 KIND_TEXT = "text"
 KIND_EMAIL = "email"
 KIND_AUDIO = "audio"
@@ -90,6 +91,30 @@ FILE_TYPES: tuple[FileType, ...] = (
     _ft("yaml", KIND_TEXT, {"application/x-yaml", "text/yaml"}, {"application/x-yaml", "text/yaml", "text/plain"}),
     _ft("yml", KIND_TEXT, {"application/x-yaml", "text/yaml"}, {"application/x-yaml", "text/yaml", "text/plain"}),
     _ft("log", KIND_TEXT, {"text/plain"}),
+    # --- Spreadsheets (data-room only) ---
+    # Placed AFTER the text rows: kind_for_mime/extension_for_mime are
+    # first-match, and application/vnd.ms-excel must keep resolving to csv
+    # (browsers report it for .csv, and chat attachment routing relies on it);
+    # here it only serves the per-extension cross-check for mislabelled uploads.
+    _ft(
+        "xlsx",
+        KIND_SPREADSHEET,
+        {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        },
+    ),
+    _ft(
+        "xlsm",
+        KIND_SPREADSHEET,
+        {"application/vnd.ms-excel.sheet.macroEnabled.12"},
+        {
+            "application/vnd.ms-excel.sheet.macroEnabled.12",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        },
+    ),
     # --- Email (data-room only) ---
     _ft("msg", KIND_EMAIL, {"application/vnd.ms-outlook"}),
     _ft("eml", KIND_EMAIL, {"message/rfc822"}),
@@ -106,9 +131,10 @@ FILE_TYPES: tuple[FileType, ...] = (
 )
 
 # --- Per-surface kind selections ----------------------------------------
-DATA_ROOM_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_TEXT, KIND_EMAIL, KIND_AUDIO})
+DATA_ROOM_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_SPREADSHEET, KIND_TEXT, KIND_EMAIL, KIND_AUDIO})
 # Chat can only render image/pdf/docx natively or decode text; it has no path
-# for presentations (.pptx), email (.msg/.eml), or audio, so those kinds are excluded.
+# for presentations (.pptx), spreadsheets (.xlsx/.xlsm), email (.msg/.eml), or
+# audio, so those kinds are excluded.
 CHAT_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_TEXT})
 # Meeting attachments are copied into the "minutes with Wilfred" chat thread,
 # so they accept exactly what chat can consume.

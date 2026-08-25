@@ -570,8 +570,12 @@ def _apply_col_ranges(xml: _SheetXml, max_col: int) -> tuple[dict, set]:
     return widths, hidden
 
 
-def load_workbook_model(path) -> WorkbookModel:
+def load_workbook_model(path, only_sheets=None) -> WorkbookModel:
     """Build the compact model for a workbook file.
+
+    ``only_sheets`` (a set of sheet names) streams just those visible sheets —
+    used by chat-time lazy tile renders — while keeping each sheet's ``index``
+    equal to its position among ALL visible sheets, matching the manifest.
 
     Raises ``ValueError`` (user-visible processing error) on corrupt files,
     zip bombs, and cell budgets — the pipeline's existing handler surfaces it.
@@ -608,6 +612,8 @@ def load_workbook_model(path) -> WorkbookModel:
             dxf_fills = _parse_dxf_fills(zf)
 
             for idx, ws in enumerate(visible):
+                if only_sheets is not None and ws.title not in only_sheets:
+                    continue
                 sheet = SheetModel(name=ws.title, index=idx)
                 part = parts.get(ws.title)
                 xml = _SheetXml()

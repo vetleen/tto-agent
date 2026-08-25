@@ -439,6 +439,19 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
         docs = _load_pptx_as_markdown(path)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
+    if ext in ("xlsx", "xlsm"):
+        # Markdown rendition (heuristic headers, row-capped) — used for email
+        # attachments. Direct spreadsheet uploads take the dedicated pre-chunked
+        # path in process_document instead and never come through here.
+        from langchain_core.documents import Document
+
+        from documents.services.spreadsheets.chunks import workbook_to_markdown
+        from documents.services.spreadsheets.model import load_workbook_model
+
+        content = workbook_to_markdown(load_workbook_model(path))
+        docs = [Document(page_content=content)]
+        logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
+        return docs
     if ext == "msg":
         docs = _load_msg_as_markdown(path)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
@@ -472,8 +485,8 @@ def extract_file_metadata_date(file_path: str | Path, file_extension: str) -> "d
             if meta and meta.creation_date:
                 return meta.creation_date.date()
 
-        elif ext in ("docx", "pptx"):
-            # Both are OOXML zips carrying dates in docProps/core.xml.
+        elif ext in ("docx", "pptx", "xlsx", "xlsm"):
+            # All are OOXML zips carrying dates in docProps/core.xml.
             import xml.etree.ElementTree as ET
             import zipfile
 

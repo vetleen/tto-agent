@@ -111,7 +111,10 @@ def _extract_native(version, doc):
 
     Source is ``version.native_blob`` when present, else the document's
     ``original_file`` (legacy/fresh v0 keep the bytes on the document). Returns
-    ``(cleaned_text, file_metadata_date|None)``.
+    ``(cleaned_text, file_metadata_date|None, prechunked|None)`` —
+    ``prechunked`` is ``{"chunks": [...], "manifest": {...}}`` for formats that
+    chunk themselves (spreadsheets) and ``None`` for every text-shaped format,
+    whose ``cleaned_text`` goes through the generic chunkers.
     """
     source_file = version.native_blob if version.native_blob else doc.original_file
     if not source_file:
@@ -120,6 +123,7 @@ def _extract_native(version, doc):
     filename = version.native_filename or doc.original_filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
 
+    prechunked = None
     with local_copy(source_file) as file_path:
         from core.file_types import is_image_extension
         from llm.transcription_registry import AUDIO_EXTENSIONS
@@ -174,6 +178,21 @@ def _extract_native(version, doc):
             if not description:
                 raise ValueError("Could not generate a description for this image.")
             cleaned = clean_extracted_text(description)
+        elif ext in ("xlsx", "xlsm"):
+            # --- Spreadsheet branch ---
+            # Chunks itself (row-batched, one workbook-overview chunk 0) and
+            # produces the mesh/header manifest; the chunk text deliberately
+            # never passes through clean_extracted_text, whose regexes delete
+            # bare-number and ALL-CAPS lines that are DATA here. The vision
+            # pass inside degrades to heuristics — a spreadsheet upload never
+            # blocks on a missing vision model (unlike images, which have no
+            # text path at all).
+            version.parser_type = "openpyxl"
+            from documents.services.spreadsheets.ingest import extract_spreadsheet
+
+            logger.info("process_document_version: version_id=%s stage=spreadsheet", version.id)
+            prechunked = extract_spreadsheet(file_path, version, doc)
+            cleaned = ""
         else:
             # --- Text extraction branch ---
             if ext == "pdf":
@@ -196,7 +215,7 @@ def _extract_native(version, doc):
             del docs, combined
 
         file_meta_date = extract_file_metadata_date(file_path, ext)
-    return cleaned, file_meta_date
+    return cleaned, file_meta_date, prechunked
 
 
 def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> None:
@@ -237,33 +256,43 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
             cleaned = clean_extracted_text(version.content)
             version.parser_type = "markdown"
             file_meta_date = None
+            prechunked = None
         else:
-            cleaned, file_meta_date = _extract_native(version, doc)
+            cleaned, file_meta_date, prechunked = _extract_native(version, doc)
 
-        if not cleaned or not cleaned.strip():
-            raise ValueError(
-                "No text could be extracted from this document. "
-                "It may be a scanned PDF or image-only file that requires OCR."
-            )
+        # Pre-chunked formats (spreadsheets) skip the text guards: their
+        # overview chunk guarantees non-empty output and XLSX_MAX_CELLS is
+        # their size budget.
+        if prechunked is None:
+            if not cleaned or not cleaned.strip():
+                raise ValueError(
+                    "No text could be extracted from this document. "
+                    "It may be a scanned PDF or image-only file that requires OCR."
+                )
 
-        max_chars = getattr(settings, "DOCUMENT_MAX_EXTRACTED_CHARS", 20_000_000)
-        if len(cleaned) > max_chars:
-            raise ValueError(
-                "This document's extracted text is too large to process "
-                f"(over {max_chars // 1_000_000} million characters)."
-            )
+            max_chars = getattr(settings, "DOCUMENT_MAX_EXTRACTED_CHARS", 20_000_000)
+            if len(cleaned) > max_chars:
+                raise ValueError(
+                    "This document's extracted text is too large to process "
+                    f"(over {max_chars // 1_000_000} million characters)."
+                )
 
-        # 2. Chunk (strategy from settings)
+        # 2. Chunk (pre-chunked formats bring their own; else strategy from settings)
         logger.info("process_document_version: version_id=%s stage=chunking", version_id)
-        strategy = getattr(settings, "CHUNKING_STRATEGY", "structure_aware")
-        if strategy == "structure_aware":
-            chunks_data = structure_aware_chunk(cleaned)
-            version.chunking_strategy = "structure_aware"
+        if prechunked is not None:
+            chunks_data = prechunked["chunks"]
+            version.chunking_strategy = "spreadsheet_rows"
+            version.processing_metadata = prechunked["manifest"]
         else:
-            chunks_data = semantic_chunk(cleaned)
-            version.chunking_strategy = "semantic"
+            strategy = getattr(settings, "CHUNKING_STRATEGY", "structure_aware")
+            if strategy == "structure_aware":
+                chunks_data = structure_aware_chunk(cleaned)
+                version.chunking_strategy = "structure_aware"
+            else:
+                chunks_data = semantic_chunk(cleaned)
+                version.chunking_strategy = "semantic"
         chunk_count = len(chunks_data)
-        del cleaned
+        del cleaned, prechunked
         logger.info("process_document_version: version_id=%s stage=chunked count=%s", version_id, chunk_count)
 
         if not chunks_data:
@@ -306,7 +335,9 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
 
         version.token_count = sum(c.get("token_count", 0) for c in chunks_data)
         del chunks_data
-        version.save(update_fields=["parser_type", "chunking_strategy", "token_count", "updated_at"])
+        version.save(update_fields=[
+            "parser_type", "chunking_strategy", "token_count", "processing_metadata", "updated_at",
+        ])
 
         # Record file metadata date on the document (first non-null wins).
         if file_meta_date and not doc.file_metadata_date:

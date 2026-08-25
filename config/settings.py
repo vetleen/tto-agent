@@ -595,6 +595,20 @@ DOCUMENT_MAX_IN_FLIGHT_PER_USER = _env_int("DOCUMENT_MAX_IN_FLIGHT_PER_USER", "1
 DOCX_MAX_UNCOMPRESSED_BYTES = _env_int("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000")  # 20M chars
 DOCUMENT_ATTACHMENT_MAX_BYTES = _env_int("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000")  # 20 MB
+# Spreadsheet (.xlsx/.xlsm) processing. The cell budget is the memory AND cost
+# cap: every stored cell becomes chunk text that is embedded and guardrail-
+# scanned — do not raise it without pricing the scan.
+XLSX_MAX_UNCOMPRESSED_BYTES = _env_int("XLSX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
+XLSX_MAX_CELLS = _env_int("XLSX_MAX_CELLS", "1000000")
+XLSX_MAX_SHEETS = _env_int("XLSX_MAX_SHEETS", "50")
+XLSX_MAX_CELL_CHARS = _env_int("XLSX_MAX_CELL_CHARS", "500")
+XLSX_ROWS_PER_CHUNK_MAX = _env_int("XLSX_ROWS_PER_CHUNK_MAX", "25")
+# Sheets that get a vision description + header adjudication per workbook.
+XLSX_MAX_DESCRIBED_SHEETS = _env_int("XLSX_MAX_DESCRIBED_SHEETS", "10")
+# Chat-tool result caps (document_view_sheet / document_read_sheet).
+XLSX_MAX_TILES_PER_VIEW = _env_int("XLSX_MAX_TILES_PER_VIEW", "6")
+XLSX_FIND_MAX_RESULTS = _env_int("XLSX_FIND_MAX_RESULTS", "50")
+XLSX_READ_MAX_ROWS = _env_int("XLSX_READ_MAX_ROWS", "200")
 # Embedded-image extraction from PDFs (see core.pdf): skip images whose smaller
 # side is below this many pixels, and cap how many distinct images are stored per
 # PDF so a pathological deck can't fan out into thousands of assets.

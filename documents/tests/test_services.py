@@ -2566,3 +2566,116 @@ class ResourceGuardTests(TestCase):
                 doc.refresh_from_db()
                 self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
                 self.assertIn("too large to process", doc.processing_error)
+
+
+class ProcessSpreadsheetTests(TestCase):
+    """End-to-end spreadsheet processing through process_document_version, with
+    rendering unavailable (Windows CI) so the vision pass degrades to
+    heuristic headers and empty descriptions."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="xlsx@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="XlsxProject", slug="xlsx-project", created_by=self.user)
+
+    def _make_doc(self, wb, filename="book.xlsx"):
+        import io
+
+        from django.core.files.base import ContentFile
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        doc = DataRoomDocument(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename=filename,
+            status=DataRoomDocument.Status.UPLOADED,
+        )
+        doc.original_file.save(filename, ContentFile(buf.getvalue()), save=True)
+        return doc
+
+    def _process(self, doc):
+        from documents.services.process_document import process_document
+
+        with patch("chat.pdf_export.weasyprint_available", return_value=False), \
+             patch("guardrails.tasks.scan_document_version.delay"):
+            process_document(doc.id)
+        doc.refresh_from_db()
+        return doc
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_spreadsheet_upload_chunks_and_manifest(self):
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Projects"
+        ws.append(["Number", "Project name", "Status"])
+        ws.append([202501007, "Ultra-Performance AM", "ACTIVE"])
+        ws.append([202501008, "Beta project", "TERMINATED"])
+        ws.auto_filter.ref = "A1:C3"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = self._process(self._make_doc(wb))
+
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+                self.assertEqual(doc.parser_type, "openpyxl")
+                self.assertEqual(doc.chunking_strategy, "spreadsheet_rows")
+
+                version = doc.current_version
+                chunks = list(version.chunks.order_by("chunk_index"))
+                self.assertEqual(chunks[0].heading, "Workbook overview")
+                self.assertIn("book.xlsx", chunks[0].text)
+                self.assertIn("Columns: Number, Project name, Status", chunks[0].text)
+
+                body = chunks[1]
+                self.assertEqual(body.heading, "Sheet: Projects")
+                self.assertIn("Number: 202501007 | Project name: Ultra-Performance AM", body.text)
+                # Data that clean_extracted_text would delete (a bare ALL-CAPS
+                # status, a bare project number) survives the spreadsheet path.
+                self.assertIn("TERMINATED", body.text)
+                self.assertEqual(body.source_page_start, 0)
+                self.assertEqual(body.source_offset_start, 2)
+                self.assertEqual(body.source_offset_end, 3)
+
+                manifest = version.processing_metadata
+                self.assertEqual(manifest["type"], "spreadsheet")
+                entry = manifest["sheets"][0]
+                self.assertEqual(entry["name"], "Projects")
+                self.assertEqual(entry["header"]["row"], 1)
+                self.assertEqual(entry["header"]["signal"], "autofilter")
+                self.assertFalse(entry["header"]["vision_adjusted"])
+                self.assertIsNotNone(entry["mesh"])
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_chart_only_workbook_survives_via_overview_chunk(self):
+        """A workbook with no cell data must not trip the 0-chunks failure."""
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        wb.active.title = "ChartsOnly"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = self._process(self._make_doc(wb, "charts.xlsx"))
+
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+                version = doc.current_version
+                self.assertEqual(version.chunks.count(), 1)
+                self.assertIn("no cell data", version.chunks.get().text)
+
+    @override_settings(PGVECTOR_CONNECTION="", XLSX_MAX_CELLS=2)
+    def test_cell_budget_marks_failed(self):
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["a", "b", "c"])
+        ws.append(["d", "e", "f"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = self._process(self._make_doc(wb))
+
+                self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+                self.assertIn("too large to process", doc.processing_error)

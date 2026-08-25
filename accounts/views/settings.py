@@ -413,6 +413,7 @@ def org_settings_page(request):
         "guardrails_reviewer": ("Guardrails reviewer", "Reviews content flagged by the classifier and decides whether action is needed (warn, block message, ban user, etc.). A stronger model is recommended since it actually makes the final decision."),
         "document_description": ("Document description", f"Generates a short description of uploaded documents to help {django_settings.ASSISTANT_NAME} judge relevance."),
         "document_image_description": ("Image description", "Describes images uploaded to data rooms so they become searchable. Requires a vision-capable model; if none is allowed, image uploads are disabled."),
+        "spreadsheet_description": ("Spreadsheet description", "Describes each sheet of an uploaded spreadsheet and verifies its header row from a rendered preview. Requires a vision-capable model; without one, spreadsheets still upload with heuristic headers and no descriptions."),
         "skill_emoji": ("Skill emoji", "Picks an emoji for newly created skills."),
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
         "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),

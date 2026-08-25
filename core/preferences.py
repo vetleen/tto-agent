@@ -100,6 +100,10 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     "document_description": FeatureDefault("mid", "mid", "org"),
     # Describes images uploaded to data rooms; needs a vision-capable model.
     "document_image_description": FeatureDefault("mid", "mid", "org", required_modality="image"),
+    # Describes spreadsheet sheets + adjudicates header rows from a rendered
+    # tile; needs vision. Unlike images, spreadsheets degrade (heuristic
+    # headers, no descriptions) instead of blocking upload when unavailable.
+    "spreadsheet_description": FeatureDefault("mid", "mid", "org", required_modality="image"),
     "skill_emoji": FeatureDefault("cheap", "cheap", "org"),
     "guardrail_chunk_scan": FeatureDefault("cheap", "cheap", "org"),
     "guardrail_web_scan": FeatureDefault("cheap", "cheap", "org"),

@@ -20,7 +20,11 @@ from documents.services.spreadsheets.model import SheetModel
 TILE_LANDSCAPE = (1568, 768)
 TILE_PORTRAIT = (768, 1568)
 
-LINE_PX = 22  # rendered line height
+LINE_PX = 22  # planned per-line rhythm (21px text line + 1px collapsed gridline)
+# Bottom-of-tile reserve: collapsed table borders cost ~1px beyond the row
+# sum, and the page must never spill (a spilled table would split one tile
+# into two pages and shift every y index after it).
+TILE_SAFETY_PX = 8
 MAX_WRAP_LINES = 3
 MIN_COL_PX = 40
 MAX_COL_PX = 420
@@ -141,7 +145,7 @@ def plan_sheet_mesh(sheet: SheetModel, header_row: int | None) -> MeshPlan | Non
         header_px = (
             _row_height_px(sheet, header_row, header_cells, band_map) if header_row else 0
         )
-        capacity = max(tile_h - header_px, LINE_PX)
+        capacity = max(tile_h - header_px - TILE_SAFETY_PX, LINE_PX)
 
         row_px: dict = {}
         starts: list = []

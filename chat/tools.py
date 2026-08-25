@@ -1335,7 +1335,11 @@ def _collect_doc_images(doc, max_images: int = 4):
             with source.open("rb") as f:
                 out.append((f.read(), ct, doc.description or doc.original_filename))
     if len(out) < max_images:
-        for asset in Asset.objects.filter(version=version):
+        from documents.services.spreadsheets.tiles import TILE_ALT_MARKER
+
+        # Spreadsheet tiles are version-owned Assets too, but they belong to
+        # document_view_sheet — attaching arbitrary tiles here would be noise.
+        for asset in Asset.objects.filter(version=version).exclude(alt_text=TILE_ALT_MARKER):
             if asset.content_type in SUPPORTED_IMAGE_TYPES and asset.blob:
                 with asset.blob.open("rb") as f:
                     out.append((f.read(), asset.content_type, asset.description))

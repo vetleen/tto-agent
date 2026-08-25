@@ -249,6 +249,11 @@ class DataRoomDocumentVersion(models.Model):
     parser_type = models.CharField(max_length=64, blank=True)
     chunking_strategy = models.CharField(max_length=64, blank=True)
     embedding_model = models.CharField(max_length=128, blank=True)
+    # Parser-specific processing artefacts. Spreadsheets store their manifest
+    # here (sheet/header/mesh geometry plus the PAID vision adjudication and
+    # descriptions, which must never be recomputed); other parsers leave it
+    # null. See documents/services/spreadsheets/manifest.py.
+    processing_metadata = models.JSONField(null=True, blank=True)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
