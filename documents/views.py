@@ -572,9 +572,15 @@ def document_rescan(request, data_room_id, document_id):
         DataRoomDocument.Status.SCANNING, DataRoomDocument.Status.SCAN_FAILED,
     ):
         return JsonResponse({"error": "This document is not waiting on a scan."}, status=409)
+    # A manual retry is an explicit human override, so it restores the full
+    # automatic-recovery budget. requeue_count bounds *automatic* re-dispatch of a
+    # poison document; it is not a quota on deliberate user action. Without the
+    # reset, a document that had already exhausted its retries would get a single
+    # sweeper tick after the click before being marked terminal again.
     version.status = DataRoomDocument.Status.SCANNING
     version.processing_error = None
-    version.save(update_fields=["status", "processing_error", "updated_at"])
+    version.requeue_count = 0
+    version.save(update_fields=["status", "processing_error", "requeue_count", "updated_at"])
     # Mirror onto the document only when this version is the live/fresh one.
     if doc.active_searchable_version_id in (None, version.id):
         doc.status = DataRoomDocument.Status.SCANNING

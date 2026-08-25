@@ -1351,17 +1351,44 @@ class DocumentRescanTests(TestCase):
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
 
-    def test_dispatch_failure_does_not_spend_the_retry_budget(self):
-        # A busy broker is not the document's fault, so a failed manual dispatch
-        # must not consume a requeue (mirrors the sweeper's own re-dispatch).
+    def _exhaust_retry_budget(self, doc):
+        """Spend the version's automatic-recovery budget, as a repeatedly-failing
+        document's would be by the time a user reaches for the button."""
+        from documents.tasks import MAX_REQUEUES
+
+        version = doc.current_version
+        version.requeue_count = MAX_REQUEUES
+        version.save(update_fields=["requeue_count"])
+        return version
+
+    def test_rescan_resets_the_retry_budget(self):
+        # A manual retry is an explicit human override, so it restores the full
+        # automatic-recovery budget rather than inheriting a spent one.
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
-        before = doc.current_version.requeue_count
+        version = self._exhaust_retry_budget(doc)
+        self.client.force_login(self.user)
+        with patch("guardrails.tasks.scan_document_version.delay"):
+            self.assertEqual(self.client.post(self._url(doc)).status_code, 200)
+        version.refresh_from_db()
+        self.assertEqual(version.requeue_count, 0)
+
+    def test_dispatch_failure_resets_the_retry_budget(self):
+        # The budget is reset even when the dispatch itself fails, so a document
+        # that had already exhausted its retries becomes recoverable again rather
+        # than being marked terminal on the sweeper's next tick.
+        from documents.tasks import requeue_stale_documents
+
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        version = self._exhaust_retry_budget(doc)
         self.client.force_login(self.user)
         with patch("guardrails.tasks.scan_document_version.delay", side_effect=RuntimeError("broker down")):
-            self.client.post(self._url(doc))
-        version = doc.current_version
+            self.assertEqual(self.client.post(self._url(doc)).status_code, 503)
         version.refresh_from_db()
-        self.assertEqual(version.requeue_count, before)
+        self.assertEqual(version.requeue_count, 0)
+
+        with patch("guardrails.tasks.scan_document_version.delay") as mock_delay:
+            requeue_stale_documents()
+        mock_delay.assert_called_once_with(version.pk)
 
     def test_get_method_not_allowed(self):
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)

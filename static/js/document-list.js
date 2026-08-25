@@ -129,13 +129,36 @@
       headers: { 'Accept': 'application/json', 'X-CSRFToken': csrf }
     })
       .then(function (r) {
-        if (!r.ok) throw new Error('rescan failed');
-        row.dataset.status = 'scanning';
-        delete row.dataset.error;
-        renderStatusIcons();
-        ensurePolling();
+        // The body isn't always JSON (a 403 from the permission check or the
+        // rate limiter renders HTML), so a parse failure must not be mistaken
+        // for a request failure — fall back to an empty body and judge on r.ok.
+        return r.json().catch(function () { return {}; }).then(function (body) {
+          if (r.ok) {
+            row.dataset.status = 'scanning';
+            delete row.dataset.error;
+            renderStatusIcons();
+            ensurePolling();
+            return;
+          }
+          // 503 + scan_retrying: the broker was unreachable, but the server kept
+          // the auto-retry marker, so the scan IS queued and the sweeper will
+          // re-dispatch it. Reflect that state instead of alerting — telling the
+          // user it failed would be false, and re-enabling the button would just
+          // invite another click that cannot succeed while the broker is down.
+          // Polling stays on, so the row resolves on its own once it recovers.
+          if (body.status === 'scan_retrying') {
+            row.dataset.status = 'scan_retrying';
+            delete row.dataset.error;
+            renderStatusIcons();
+            ensurePolling();
+            return;
+          }
+          btn.disabled = false;
+          alert(body.error || "The scan couldn't be restarted. Please try again.");
+        });
       })
       .catch(function () {
+        // Network-level failure — the request never got a response.
         btn.disabled = false;
         alert("The scan couldn't be restarted. Please try again.");
       });
