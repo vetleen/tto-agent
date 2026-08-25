@@ -1310,17 +1310,58 @@ class DocumentRescanTests(TestCase):
         self.assertEqual(response.status_code, 409)
         mock_delay.assert_not_called()
 
-    def test_dispatch_failure_marks_scan_failed(self):
-        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+    def test_dispatch_failure_keeps_the_auto_retry_marker(self):
+        # A broker blip must leave the transient marker, NOT the terminal message:
+        # the sweeper only re-dispatches versions carrying the retry marker.
+        from documents.services.pii_scan import (
+            SCAN_DISPATCH_RETRY_MESSAGE,
+            SCAN_RETRYING_STATUS,
+        )
 
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
         self.client.force_login(self.user)
         with patch("guardrails.tasks.scan_document_version.delay", side_effect=RuntimeError("broker down")):
             response = self.client.post(self._url(doc))
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["status"], SCAN_RETRYING_STATUS)
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.SCAN_FAILED)
-        self.assertEqual(doc.processing_error, SCAN_FAILED_MESSAGE)
+        self.assertEqual(doc.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
+        # Presentation layer reads it as "queued", not "failed".
+        self.assertEqual(doc.display_status, SCAN_RETRYING_STATUS)
+        version = doc.current_version
+        version.refresh_from_db()
+        self.assertEqual(version.processing_error, SCAN_DISPATCH_RETRY_MESSAGE)
+
+    def test_dispatch_failure_stays_recoverable_by_the_sweeper(self):
+        # The regression that matters: a failed manual retry must not disable the
+        # automatic recovery. Clicking "Retry now" during an outage previously
+        # wrote the terminal message and stranded the document permanently.
+        from documents.tasks import requeue_stale_documents
+
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        self.client.force_login(self.user)
+        with patch("guardrails.tasks.scan_document_version.delay", side_effect=RuntimeError("broker down")):
+            self.assertEqual(self.client.post(self._url(doc)).status_code, 503)
+
+        with patch("guardrails.tasks.scan_document_version.delay") as mock_delay:
+            requeue_stale_documents()
+        mock_delay.assert_called_once_with(doc.current_version_id)
+
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+
+    def test_dispatch_failure_does_not_spend_the_retry_budget(self):
+        # A busy broker is not the document's fault, so a failed manual dispatch
+        # must not consume a requeue (mirrors the sweeper's own re-dispatch).
+        doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)
+        before = doc.current_version.requeue_count
+        self.client.force_login(self.user)
+        with patch("guardrails.tasks.scan_document_version.delay", side_effect=RuntimeError("broker down")):
+            self.client.post(self._url(doc))
+        version = doc.current_version
+        version.refresh_from_db()
+        self.assertEqual(version.requeue_count, before)
 
     def test_get_method_not_allowed(self):
         doc = self._make_doc(DataRoomDocument.Status.SCAN_FAILED)

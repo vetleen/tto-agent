@@ -588,17 +588,36 @@ def document_rescan(request, data_room_id, document_id):
 
         scan_document_version.delay(version.id)
     except Exception:
-        from documents.services.pii_scan import SCAN_FAILED_MESSAGE
+        # A broker blip at dispatch is transient — mirror process_document_version
+        # and leave the auto-retry marker so requeue_stale_documents re-dispatches
+        # once the broker is reachable again. Writing the terminal
+        # SCAN_FAILED_MESSAGE here would strand the document: the sweeper only
+        # picks up versions carrying SCAN_DISPATCH_RETRY_MESSAGE, so a manual
+        # retry during an outage would *disable* the very recovery it's meant to
+        # trigger. requeue_count is deliberately not spent (same reasoning as the
+        # sweeper's own re-dispatch): a busy broker is not the document's fault.
+        from documents.services.pii_scan import (
+            SCAN_DISPATCH_RETRY_MESSAGE,
+            SCAN_RETRYING_STATUS,
+        )
 
         logger.exception("document_rescan: failed to enqueue scan for version_id=%s", version.id)
         version.status = DataRoomDocument.Status.SCAN_FAILED
-        version.processing_error = SCAN_FAILED_MESSAGE
+        version.processing_error = SCAN_DISPATCH_RETRY_MESSAGE
         version.save(update_fields=["status", "processing_error", "updated_at"])
         if doc.active_searchable_version_id in (None, version.id):
             doc.status = DataRoomDocument.Status.SCAN_FAILED
-            doc.processing_error = SCAN_FAILED_MESSAGE
+            doc.processing_error = SCAN_DISPATCH_RETRY_MESSAGE
             doc.save(update_fields=["status", "processing_error", "updated_at"])
-        return JsonResponse({"error": "The scan couldn't be started. Please try again."}, status=500)
+        # 503, not 500: the scan is queued and will be retried, and it separates a
+        # transient upstream outage from a genuine server error in metrics.
+        return JsonResponse(
+            {
+                "error": SCAN_DISPATCH_RETRY_MESSAGE,
+                "status": SCAN_RETRYING_STATUS,
+            },
+            status=503,
+        )
     return JsonResponse({"status": "ok", "document": {"id": doc.id, "status": DataRoomDocument.Status.SCANNING}})
 
 
