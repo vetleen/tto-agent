@@ -238,8 +238,14 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
     def test_tile_cap_reports_excess(self):
         tool = self._view_tool()
         with patch("documents.services.spreadsheets.tiles.render_band", side_effect=_fake_render_band):
-            result = tool._run(1, tiles=["x0y0", "x0y0"])
+            result = tool._run(1, tiles=["x0y0", "x0y1"])
         self.assertIn("showing the first 1", result)
+        self.assertEqual(len(tool.context.pending_image_assets), 1)
+
+    def test_duplicate_tile_refs_attach_once(self):
+        tool = self._view_tool()
+        with patch("documents.services.spreadsheets.tiles.render_band", side_effect=_fake_render_band):
+            tool._run(1, tiles=["x0y0", "x0y0"])
         self.assertEqual(len(tool.context.pending_image_assets), 1)
 
     def test_invalid_tile_and_missing_tile_reported(self):

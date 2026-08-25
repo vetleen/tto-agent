@@ -492,6 +492,7 @@ class DocumentViewSheetTool(ContextAwareTool):
         else:
             coords = [(x, 0) for x in range(len(bands)) if bands[x].get("row_band_starts")]
 
+        coords = list(dict.fromkeys(coords))  # dedupe, order preserved
         cap = getattr(settings, "XLSX_MAX_TILES_PER_VIEW", 6)
         if len(coords) > cap:
             notes.append(
