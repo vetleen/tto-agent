@@ -8,6 +8,7 @@ class ChatConfig(AppConfig):
     def ready(self):
         import chat.signals  # noqa: F401 — retention + file cleanup signals
         import chat.tools  # noqa: F401 — register tools on startup
+        import chat.spreadsheet_tools  # noqa: F401 — register spreadsheet tools on startup
         import chat.canvas_tools  # noqa: F401 — register canvas tools on startup
         import chat.subagent_tool  # noqa: F401 — register sub-agent tools on startup
         import chat.subagent_canvas_tools  # noqa: F401 — register sub-agent canvas tools on startup

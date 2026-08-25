@@ -463,6 +463,108 @@ class BuildChunksTests(SimpleTestCase):
         self.assertIn("more rows not shown", md)
 
 
+class RenderHtmlTests(SimpleTestCase):
+    """build_band_html is pure — geometry must come verbatim from the plan."""
+
+    def _sheet_and_plan(self, n_rows=100):
+        rows = {1: {1: "Number", 2: "Name"}}
+        rows.update({r: {1: str(r), 2: f"name-{r}"} for r in range(2, n_rows + 1)})
+        sheet = _sheet(rows, auto_filter=(1, 1, n_rows, 2))
+        info = detect_headers(sheet)
+        plan = mesh_mod.plan_sheet_mesh(sheet, info.header_row)
+        return sheet, plan
+
+    def test_geometry_comes_from_the_plan(self):
+        from documents.services.spreadsheets.render import build_band_html
+
+        sheet, plan = self._sheet_and_plan()
+        html = build_band_html(sheet, plan, 0)
+        band = plan.bands[0]
+        self.assertIn(f"size: {plan.tile_w}px {plan.tile_h}px", html)
+        for px in band.col_px:
+            self.assertIn(f'<col style="width:{px}px"/>', html)
+        # Every y-band is one table; the header row is re-emitted on each
+        # (WeasyPrint does not repeat <thead> across pages) and every table
+        # after the first starts a new page.
+        n_tables = html.count("<table")
+        self.assertEqual(n_tables, len(band.row_band_starts))
+        self.assertEqual(html.count(">Number<"), n_tables)
+        self.assertEqual(html.count('<table class="pb">'), n_tables - 1)
+        self.assertIn("page-break-before: always", html)
+
+    def test_y_limit_renders_only_top_tiles(self):
+        from documents.services.spreadsheets.render import build_band_html
+
+        sheet, plan = self._sheet_and_plan()
+        self.assertGreater(len(plan.bands[0].row_band_starts), 1)
+        html = build_band_html(sheet, plan, 0, y_limit=1)
+        self.assertEqual(html.count("<table"), 1)
+
+    def test_merged_cells_render_as_colspan(self):
+        from documents.services.spreadsheets.render import build_band_html
+
+        sheet = _sheet({1: {1: "Title"}, 2: {1: "a", 2: "b", 3: "c"}},
+                       merged=[(1, 1, 1, 3)])
+        plan = mesh_mod.plan_sheet_mesh(sheet, None)
+        html = build_band_html(sheet, plan, 0)
+        self.assertIn('colspan="3"', html)
+
+    def test_cf_fill_and_escaping(self):
+        from documents.services.spreadsheets.render import build_band_html
+
+        sheet = _sheet({1: {1: "<b>&x", 2: "BAD"}})
+        sheet.cf_fills[(1, 2)] = "#FFC000"
+        plan = mesh_mod.plan_sheet_mesh(sheet, None)
+        html = build_band_html(sheet, plan, 0)
+        self.assertIn("&lt;b&gt;&amp;x", html)
+        self.assertIn("background:#FFC000", html)
+
+
+class ReadsTests(SimpleTestCase):
+    def test_parse_col_spec(self):
+        from documents.services.spreadsheets.reads import parse_col_spec
+
+        self.assertEqual(parse_col_spec("A,C-F"), [1, 3, 4, 5, 6])
+        self.assertEqual(parse_col_spec("b"), [2])
+        with self.assertRaises(ValueError):
+            parse_col_spec(",")
+
+    def test_find_and_read_rows_stream_formatted_values(self):
+        from openpyxl import Workbook
+
+        from documents.services.spreadsheets.reads import find_in_workbook, read_cell, read_rows
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "S"
+        ws.append(["Name", "Amount"])
+        ws.append(["Alpha", 1234.5])
+        ws["B2"].number_format = "#,##0.00"
+        hidden = wb.create_sheet("Hidden")
+        hidden["A1"] = "Alpha"
+        hidden.sheet_state = "hidden"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _save(wb, tmpdir)
+            hits, truncated = find_in_workbook(path, "alpha")
+            self.assertFalse(truncated)
+            # Hidden sheets are never scanned.
+            self.assertEqual([(h["sheet"], h["row"], h["col"]) for h in hits], [("S", 2, 1)])
+
+            hits, truncated = find_in_workbook(path, "1,234.50")
+            self.assertEqual(len(hits), 1)  # formatted text is what is searched
+
+            rows, truncated = read_rows(path, "S", 2, 2)
+            self.assertEqual(rows, [(2, [(1, "Alpha"), (2, "1,234.50")])])
+
+            value, cells = read_cell(path, "S", 2, 2)
+            self.assertEqual(value, "1,234.50")
+            self.assertEqual(dict(cells)[1], "Alpha")
+
+            with self.assertRaises(ValueError):
+                read_rows(path, "Missing", 1, 2)
+
+
 class ManifestTests(SimpleTestCase):
     def _manifest(self):
         sheet = _sheet(
