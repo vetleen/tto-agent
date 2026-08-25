@@ -161,6 +161,11 @@
     return n === 1 ? 'Preparing your document…' : 'Preparing ' + n + ' documents…';
   }
 
+  function uploadHasErrors() {
+    var list = document.getElementById('upload-error-list');
+    return !!(list && list.children.length);
+  }
+
   function updateProcessingBanner(statuses) {
     var banner = document.getElementById('processing-banner');
     var bannerText = document.getElementById('processing-banner-text');
@@ -229,6 +234,14 @@
         if (!hasNonTerminal() && pollInterval) {
           clearInterval(pollInterval);
           pollInterval = null;
+          // Processing just finished. Freshly-added rows (and any rows that were
+          // mid-processing at page load) still lack the server-rendered PII pills
+          // and the options/kebab menu — those exist only once a scan verdict is
+          // in. Reload to pull the complete rows (what a manual F5 shows). Skip
+          // while upload-level errors are on screen so the user can read them.
+          if (!uploadHasErrors()) {
+            window.location.reload();
+          }
         }
       })
       .catch(function () { /* silently retry on next interval */ });
