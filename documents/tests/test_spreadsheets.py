@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime
 import tempfile
+import unittest
 from pathlib import Path
 
 from django.test import SimpleTestCase, override_settings
@@ -518,6 +519,35 @@ class RenderHtmlTests(SimpleTestCase):
         html = build_band_html(sheet, plan, 0)
         self.assertIn("&lt;b&gt;&amp;x", html)
         self.assertIn("background:#FFC000", html)
+
+
+def _weasyprint_available() -> bool:
+    from chat.pdf_export import weasyprint_available
+
+    return weasyprint_available()
+
+
+class RenderRasterTests(SimpleTestCase):
+    """Real WeasyPrint + pypdfium2 rasterisation — runs wherever the native
+    deps exist (verified working on the Windows dev box and on staging)."""
+
+    @unittest.skipUnless(_weasyprint_available(), "WeasyPrint native deps unavailable")
+    def test_band_renders_exact_tiles(self):
+        from documents.services.spreadsheets.render import band_row_groups, render_band
+
+        rows = {1: {1: "Number", 2: "Name"}}
+        rows.update({r: {1: str(r), 2: f"name-{r}"} for r in range(2, 160)})
+        sheet = _sheet(rows, auto_filter=(1, 1, 159, 2))
+        plan = mesh_mod.plan_sheet_mesh(sheet, 1)
+        expected = len(band_row_groups(sheet, plan, 0))
+        self.assertGreater(expected, 1)
+
+        tiles = render_band(sheet, plan, 0)
+        self.assertEqual(len(tiles), expected)
+        for _png, width, height in tiles:
+            self.assertEqual((width, height), (plan.tile_w, plan.tile_h))
+        # y_limit renders only the top tile.
+        self.assertEqual(len(render_band(sheet, plan, 0, y_limit=1)), 1)
 
 
 class ReadsTests(SimpleTestCase):
