@@ -23,6 +23,21 @@ _MR = 912         # right edge of content
 _COL = 408        # column width
 _C2X = 504        # x of the second column
 
+# Golden-ratio split, for the layouts that divide the slide into two unequal
+# halves (a colour panel + content, a numeral + a heading, text + a bleeding
+# image). One shared proportion keeps them reading as a set; WHICH side is the
+# small one varies per layout.
+#
+#   960 / φ² == 366.7 -> the minor side is 366pt, the major 594pt.
+#
+# Both sides carry the usual 48pt inner padding, so:
+#   minor on the left  -> minor text 48..318 (_SPLIT_W), major text 414..912
+#   minor on the right -> major text 48..546,            minor text 642..912
+_SPLIT = 366      # x of the split line when the LEFT side is the small one
+_SPLIT_W = 270    # text width inside the minor side (366 - 2*48)
+_SPLIT_X = 414    # x of the text on the major side (366 + 48)
+_SPLIT_MW = 498   # text width on the major side (912 - 414)
+
 
 def _text(x, y, w, h, cls, paragraphs, **extra):
     el = {"type": "text", "x": x, "y": y, "w": w, "h": h, "class": cls, "paragraphs": paragraphs}
@@ -73,16 +88,16 @@ _LAYOUTS: dict[str, dict] = {
     "title_03": {
         "name": "Title 3",
         "description": "Split cover — title, subtitle and author on a full-height colour panel, with a cover image bleeding off the other half.",
-        "comment": "Replace the image token with a real cover photo (fit=cover crops it to the panel). To mirror the layout, move the panel and its text to the right half and the image to x=0.",
+        "comment": "Replace the image token with a real cover photo (fit=cover crops it to the panel). To mirror the layout, move the panel and its text to the right (x=594) and the image to x=0.",
         "skip_footer": True,
         "bg": "lt1",
         "elements": [
-            {"type": "shape", "x": 0, "y": 0, "w": 400, "h": 540, "shape": "rect", "fill": "dk2"},
-            {"type": "image", "x": 400, "y": 0, "w": 560, "h": 540, "token": "[[image:cover-image]]", "fit": "cover"},
-            {"type": "image", "x": 40, "y": 40, "w": 100, "h": 40, "token": "[[image:company-logo]]", "fit": "contain"},
-            _text(40, 250, 320, 160, "headline", [_p("Presentation title", size=40, color="lt1")], valign="bottom"),
-            _text(40, 420, 320, 34, "subhead", [_p("Subtitle or tagline", size=18)]),
-            _text(40, 464, 320, 26, "data", [_p("Author · date", color="lt2")]),
+            {"type": "shape", "x": 0, "y": 0, "w": _SPLIT, "h": 540, "shape": "rect", "fill": "dk2"},
+            {"type": "image", "x": _SPLIT, "y": 0, "w": 960 - _SPLIT, "h": 540, "token": "[[image:cover-image]]", "fit": "cover"},
+            {"type": "image", "x": _ML, "y": 40, "w": 100, "h": 40, "token": "[[image:company-logo]]", "fit": "contain"},
+            _text(_ML, 250, _SPLIT_W, 160, "headline", [_p("Presentation title", size=36, color="lt1")], valign="bottom"),
+            _text(_ML, 420, _SPLIT_W, 34, "subhead", [_p("Subtitle or tagline", size=18)]),
+            _text(_ML, 464, _SPLIT_W, 26, "data", [_p("Author · date", color="lt2")]),
         ],
     },
     "section": {
@@ -99,10 +114,10 @@ _LAYOUTS: dict[str, dict] = {
         "description": "Section divider — a giant section number beside the heading and a one-line sub-heading, split by a vertical hairline.",
         "bg": "dk2",
         "elements": [
-            _text(_ML, 145, 334, 250, "headline", [_p("01", size=180, color="accent1", align="center")], valign="middle"),
-            {"type": "line", "x1": 430, "y1": 135, "x2": 430, "y2": 405, "color": "lt2", "w": 1},
-            _text(478, 200, 434, 130, "headline", [_p("Section heading", size=44, color="lt1")], valign="bottom"),
-            _text(478, 344, 434, 56, "body", [_p("One line on what this section covers", size=16, color="lt2")]),
+            _text(_ML, 145, _SPLIT_W, 250, "headline", [_p("01", size=180, color="accent1", align="center")], valign="middle"),
+            {"type": "line", "x1": _SPLIT, "y1": 135, "x2": _SPLIT, "y2": 405, "color": "lt2", "w": 1},
+            _text(_SPLIT_X, 200, _SPLIT_MW, 130, "headline", [_p("Section heading", size=44, color="lt1")], valign="bottom"),
+            _text(_SPLIT_X, 344, _SPLIT_MW, 56, "body", [_p("One line on what this section covers", size=16, color="lt2")]),
         ],
     },
     "bullets": {
@@ -184,12 +199,12 @@ _LAYOUTS: dict[str, dict] = {
     "image_bleed": {
         "name": "Image half-bleed",
         "description": "Title + bullets on the left, an image bleeding off the right half of the slide (full height, edge to edge).",
-        "comment": "The image covers the right half edge-to-edge (fit=cover crops it). To mirror the layout, put the image at x=0 and move the text column to x=528.",
+        "comment": "The image takes the larger side edge-to-edge (fit=cover crops it). To mirror the layout, put the image at x=0 and move the text column to x=642.",
         "skip_footer": True,
         "elements": [
-            {"type": "image", "x": 480, "y": 0, "w": 480, "h": 540, "token": "", "fit": "cover"},
-            _text(_ML, 44, 384, 60, "headline", [_p("Slide title")]),
-            _text(_ML, 130, 384, 340, "body", [
+            {"type": "image", "x": _SPLIT, "y": 0, "w": 960 - _SPLIT, "h": 540, "token": "", "fit": "cover"},
+            _text(_ML, 44, _SPLIT_W, 90, "headline", [_p("Slide title")]),
+            _text(_ML, 150, _SPLIT_W, 320, "body", [
                 _p("Describe the visual", bullet=True, space_after=8),
                 _p("Second supporting point", bullet=True, space_after=8),
             ]),
@@ -214,11 +229,11 @@ _LAYOUTS: dict[str, dict] = {
         "name": "Metric",
         "description": "One big hero number on a full-height colour panel, with the supporting bullets beside it.",
         "elements": [
-            {"type": "shape", "x": 0, "y": 0, "w": 480, "h": 540, "shape": "rect", "fill": "dk2"},
-            _text(_ML, 44, 384, 60, "headline", [_p("Key results", color="lt1")]),
-            _text(_ML, 180, 390, 160, "headline", [_p("42%", size=120, bold=True, color="accent1")], valign="bottom"),
-            _text(_ML, 356, 384, 40, "subhead", [_p("What this number means", size=18, color="lt1")]),
-            _text(528, 186, 384, 260, "body", [
+            {"type": "shape", "x": 0, "y": 0, "w": _SPLIT, "h": 540, "shape": "rect", "fill": "dk2"},
+            _text(_ML, 44, _SPLIT_W, 60, "headline", [_p("Key results", color="lt1")]),
+            _text(_ML, 180, _SPLIT_W, 160, "headline", [_p("42%", size=120, bold=True, color="accent1")], valign="bottom"),
+            _text(_ML, 356, _SPLIT_W, 40, "subhead", [_p("What this number means", size=18, color="lt1")]),
+            _text(_SPLIT_X, 186, _SPLIT_MW, 260, "body", [
                 _p("Context for the metric", bullet=True, space_after=10),
                 _p("Why it matters", bullet=True, space_after=10),
                 _p("What we do next", bullet=True, space_after=10),
@@ -283,15 +298,15 @@ _LAYOUTS: dict[str, dict] = {
         "name": "Executive summary",
         "description": "The bottom line — an action-title recommendation on the left, three numbered supporting messages stacked on the right.",
         "elements": [
-            _text(_ML, 88, 400, 260, "headline", [_p("The bottom line — write the recommendation as the title", size=38)]),
-            _text(_C2X, 88, _COL, 30, "subhead", [_p("1")]),
-            _text(_C2X, 120, _COL, 70, "body", [_p("Key message one — lead with the answer, then the support.")]),
-            {"type": "line", "x1": _C2X, "y1": 200, "x2": _MR, "y2": 200, "color": "accent3", "w": 1},
-            _text(_C2X, 216, _COL, 30, "subhead", [_p("2")]),
-            _text(_C2X, 248, _COL, 70, "body", [_p("Key message two — quantify the impact where you can.")]),
-            {"type": "line", "x1": _C2X, "y1": 328, "x2": _MR, "y2": 328, "color": "accent3", "w": 1},
-            _text(_C2X, 344, _COL, 30, "subhead", [_p("3")]),
-            _text(_C2X, 376, _COL, 70, "body", [_p("Key message three — end with the recommended next step.")]),
+            _text(_ML, 88, _SPLIT_W, 260, "headline", [_p("The bottom line — write the recommendation as the title", size=34)]),
+            _text(_SPLIT_X, 88, _SPLIT_MW, 30, "subhead", [_p("1")]),
+            _text(_SPLIT_X, 120, _SPLIT_MW, 70, "body", [_p("Key message one — lead with the answer, then the support.")]),
+            {"type": "line", "x1": _SPLIT_X, "y1": 200, "x2": _MR, "y2": 200, "color": "accent3", "w": 1},
+            _text(_SPLIT_X, 216, _SPLIT_MW, 30, "subhead", [_p("2")]),
+            _text(_SPLIT_X, 248, _SPLIT_MW, 70, "body", [_p("Key message two — quantify the impact where you can.")]),
+            {"type": "line", "x1": _SPLIT_X, "y1": 328, "x2": _MR, "y2": 328, "color": "accent3", "w": 1},
+            _text(_SPLIT_X, 344, _SPLIT_MW, 30, "subhead", [_p("3")]),
+            _text(_SPLIT_X, 376, _SPLIT_MW, 70, "body", [_p("Key message three — end with the recommended next step.")]),
         ],
     },
     "kpi_row": {
