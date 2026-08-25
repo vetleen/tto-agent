@@ -165,6 +165,87 @@ def _load_docx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
     return [Document(page_content=content.strip())]
 
 
+def _load_pptx_as_markdown(path: Path) -> list[Any]:
+    """Extract PPTX (PowerPoint) slide content as Markdown.
+
+    Each slide becomes a ``## Slide N`` section (title folded into the heading
+    when present) so the structure-aware chunker splits on slide boundaries.
+    Body text frames become bullet lines, tables become Markdown tables, and
+    speaker notes are appended as a blockquote. Grouped shapes are walked
+    recursively so text nested in groups is not lost.
+
+    Image-only slides contribute no text; a deck that is entirely images will
+    yield empty output and fail extraction upstream (same as a scanned PDF).
+    Embedded-image assets are NOT extracted for v1.
+    """
+    from langchain_core.documents import Document
+    from pptx import Presentation
+
+    prs = Presentation(str(path))
+    parts: list[str] = []
+
+    def _iter_shapes(shapes):
+        for shape in shapes:
+            # Recurse into groups (shape_type 6 == MSO_SHAPE_TYPE.GROUP).
+            if getattr(shape, "shape_type", None) == 6 and hasattr(shape, "shapes"):
+                yield from _iter_shapes(shape.shapes)
+            else:
+                yield shape
+
+    for idx, slide in enumerate(prs.slides, start=1):
+        title_shape = slide.shapes.title
+        title_text = (title_shape.text.strip() if title_shape is not None else "") or ""
+        # slide.shapes.title returns a fresh proxy, so match the placeholder by
+        # its stable shape_id rather than object identity.
+        title_id = title_shape.shape_id if title_shape is not None else None
+        parts.append(f"## Slide {idx}" + (f": {title_text}" if title_text else ""))
+
+        body_lines: list[str] = []
+        for shape in _iter_shapes(slide.shapes):
+            if title_id is not None and getattr(shape, "shape_id", None) == title_id:
+                continue
+            if getattr(shape, "has_table", False):
+                table_md = _pptx_table_to_markdown(shape.table)
+                if table_md:
+                    body_lines.append(table_md)
+                continue
+            if getattr(shape, "has_text_frame", False):
+                for para in shape.text_frame.paragraphs:
+                    line = "".join(run.text for run in para.runs).strip()
+                    if line:
+                        body_lines.append(f"- {line}")
+
+        if body_lines:
+            parts.append("\n".join(body_lines))
+
+        # Speaker notes (blockquote so they read as slide-scoped commentary).
+        if slide.has_notes_slide:
+            notes = (slide.notes_slide.notes_text_frame.text or "").strip()
+            if notes:
+                parts.append("\n".join(f"> {ln}" for ln in notes.splitlines() if ln.strip()))
+
+        parts.append("")  # blank line between slides
+
+    content = "\n\n".join(p for p in parts if p is not None).strip()
+    return [Document(page_content=content)]
+
+
+def _pptx_table_to_markdown(table) -> str:
+    """Render a python-pptx table as a Markdown table (header = first row)."""
+    rows = list(table.rows)
+    if not rows:
+        return ""
+
+    def _cells(row):
+        return [(cell.text or "").replace("\n", " ").replace("|", "\\|").strip() for cell in row.cells]
+
+    header = _cells(rows[0])
+    lines = ["| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
+    for row in rows[1:]:
+        lines.append("| " + " | ".join(_cells(row)) + " |")
+    return "\n".join(lines)
+
+
 def _load_pdf_as_documents(path: Path, *, image_sink=None) -> list[Any]:
     """Extract PDF content as text using the shared core.pdf converter.
 
@@ -354,6 +435,10 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
         docs = _load_docx_as_markdown(path, image_sink=image_sink)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
+    if ext == "pptx":
+        docs = _load_pptx_as_markdown(path)
+        logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
+        return docs
     if ext == "msg":
         docs = _load_msg_as_markdown(path)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
@@ -387,7 +472,8 @@ def extract_file_metadata_date(file_path: str | Path, file_extension: str) -> "d
             if meta and meta.creation_date:
                 return meta.creation_date.date()
 
-        elif ext == "docx":
+        elif ext in ("docx", "pptx"):
+            # Both are OOXML zips carrying dates in docProps/core.xml.
             import xml.etree.ElementTree as ET
             import zipfile
 

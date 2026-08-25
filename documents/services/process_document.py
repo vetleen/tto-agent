@@ -178,7 +178,7 @@ def _extract_native(version, doc):
             # --- Text extraction branch ---
             if ext == "pdf":
                 version.parser_type = "pypdf"
-            elif ext in ("msg", "eml"):
+            elif ext in ("msg", "eml", "pptx"):
                 version.parser_type = ext
             else:
                 version.parser_type = "text"

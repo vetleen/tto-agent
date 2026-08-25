@@ -97,6 +97,45 @@ class ChunkingTests(TestCase):
             path.unlink(missing_ok=True)
 
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_load_documents_pptx(self):
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        prs = Presentation()
+        s1 = prs.slides.add_slide(prs.slide_layouts[1])
+        s1.shapes.title.text = "Quarterly Review"
+        body = s1.placeholders[1].text_frame
+        body.text = "Revenue up 20%"
+        body.add_paragraph().text = "Two new hires"
+        s1.notes_slide.notes_text_frame.text = "Emphasize the revenue beat."
+        s2 = prs.slides.add_slide(prs.slide_layouts[5])
+        s2.shapes.title.text = "Metrics"
+        table = s2.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(1)).table
+        table.cell(0, 0).text = "Metric"
+        table.cell(0, 1).text = "Value"
+        table.cell(1, 0).text = "MRR"
+        table.cell(1, 1).text = "$120k"
+
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as f:
+            path = Path(f.name)
+        prs.save(str(path))
+        try:
+            docs = load_documents(path, "pptx")
+            self.assertEqual(len(docs), 1)
+            content = docs[0].page_content
+            # Slide title folds into the section heading (not duplicated as a bullet).
+            self.assertIn("## Slide 1: Quarterly Review", content)
+            self.assertEqual(content.count("Quarterly Review"), 1)
+            # Body bullets, speaker notes, and the table all survive as Markdown.
+            self.assertIn("- Revenue up 20%", content)
+            self.assertIn("> Emphasize the revenue beat.", content)
+            self.assertIn("## Slide 2: Metrics", content)
+            self.assertIn("| Metric | Value |", content)
+            self.assertIn("| MRR | $120k |", content)
+        finally:
+            path.unlink(missing_ok=True)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
     def test_strip_nul_bytes_removes_null_characters(self):
         from langchain_core.documents import Document
         docs = [

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 KIND_IMAGE = "image"
 KIND_PDF = "pdf"
 KIND_DOCX = "docx"
+KIND_PPTX = "pptx"
 KIND_TEXT = "text"
 KIND_EMAIL = "email"
 KIND_AUDIO = "audio"
@@ -66,6 +67,12 @@ FILE_TYPES: tuple[FileType, ...] = (
         KIND_DOCX,
         {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
     ),
+    # --- PPTX ---
+    _ft(
+        "pptx",
+        KIND_PPTX,
+        {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    ),
     # --- Plain-text-decodable ---
     _ft("txt", KIND_TEXT, {"text/plain"}),
     _ft("md", KIND_TEXT, {"text/markdown"}, {"text/markdown", "text/plain"}),
@@ -99,9 +106,9 @@ FILE_TYPES: tuple[FileType, ...] = (
 )
 
 # --- Per-surface kind selections ----------------------------------------
-DATA_ROOM_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_TEXT, KIND_EMAIL, KIND_AUDIO})
+DATA_ROOM_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_TEXT, KIND_EMAIL, KIND_AUDIO})
 # Chat can only render image/pdf/docx natively or decode text; it has no path
-# for email (.msg/.eml) or audio, so those kinds are excluded.
+# for presentations (.pptx), email (.msg/.eml), or audio, so those kinds are excluded.
 CHAT_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_TEXT})
 # Meeting attachments are copied into the "minutes with Wilfred" chat thread,
 # so they accept exactly what chat can consume.
