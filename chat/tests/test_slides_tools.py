@@ -176,6 +176,87 @@ class SlideToolTests(TestCase):
         self.assertEqual(r["status"], "error")
 
 
+class DeckConcurrentWriteTests(TestCase):
+    """A tool must mutate the deck it re-reads under the lock, never the snapshot
+    it resolved beforehand.
+
+    Tool batches run concurrently in a ThreadPoolExecutor (llm/pipelines/simple_chat.py),
+    so two ``slides_add_slide`` calls used to deep-copy the same pre-call content and the
+    later save silently dropped the earlier slide — while both returned ``status: ok``.
+    A stale deck instance reproduces exactly that lost update deterministically; real row
+    locks can't be exercised here because ``select_for_update`` is a no-op on SQLite.
+    """
+
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"c+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
+
+    def _run(self, tool, **kw):
+        tool.set_context(self.ctx)
+        return json.loads(tool._run(**kw))
+
+    def _stale(self, deck_id):
+        """A deck instance holding the content as it was *before* the next call."""
+        return SlideSet.objects.get(pk=deck_id)
+
+    def test_add_slide_reads_fresh_content_under_lock(self):
+        w = self._run(WriteDeckTool(), title="Deck A")
+        stale = self._stale(w["deck_id"])  # zero slides
+        self.assertEqual(stale.content["slides"], [])
+
+        first = self._run(AddSlideTool(), layout="bullets")
+        self.assertEqual(first["status"], "ok")
+
+        with mock.patch("chat.slides.service.resolve_deck", return_value=(stale, None)):
+            second = self._run(AddSlideTool(), layout="title_01")
+        self.assertEqual(second["status"], "ok")
+
+        deck = SlideSet.objects.get(pk=w["deck_id"])
+        slides = deck.content["slides"]
+        self.assertEqual(len(slides), 2, "the concurrent add clobbered the first slide")
+        ids = [s["id"] for s in slides]
+        self.assertEqual(len(set(ids)), 2, f"slide ids collided: {ids}")
+        self.assertNotEqual(first["slide_id"], second["slide_id"])
+
+    def test_edit_deck_reads_fresh_content_under_lock(self):
+        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        stale = self._stale(w["deck_id"])  # one slide
+
+        added = self._run(AddSlideTool(), layout="bullets")
+        self.assertEqual(added["status"], "ok")
+
+        with mock.patch("chat.slides.service.resolve_deck", return_value=(stale, None)):
+            r = self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Welcome"'}])
+
+        deck = SlideSet.objects.get(pk=w["deck_id"])
+        # Whether the edit applied or cleanly failed, the concurrently added slide
+        # must survive — the stale snapshot must never be written back.
+        self.assertEqual(len(deck.content["slides"]), 2, "the edit reverted the added slide")
+        if r["status"] == "ok":
+            self.assertIn("Welcome", json.dumps(deck.content))
+        else:
+            self.assertEqual(r["applied"], 0)
+
+    def test_checkpoint_order_strictly_increases(self):
+        """Regression guard on checkpoint ordering (Undo + guardrail rollback read it).
+
+        Passes on the unlocked code: ``_next_order`` re-queries the DB, so it is immune
+        to the stale-instance trick above. The real race needs true concurrency, which
+        only the row lock closes.
+        """
+        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self._run(AddSlideTool(), layout="bullets")
+        self._run(AddSlideTool(), layout="title_01")
+        self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Welcome"'}])
+
+        deck = SlideSet.objects.get(pk=w["deck_id"])
+        orders = list(deck.checkpoints.order_by("id").values_list("order", flat=True))
+        self.assertEqual(len(orders), 4)
+        self.assertEqual(orders, sorted(set(orders)), f"checkpoint order not monotonic: {orders}")
+
+
 class BuildResolverTests(TestCase):
     """build_pptx image-token resolution + the owner-scoping leak guard."""
 

@@ -239,16 +239,14 @@ class WriteDeckTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "Deck JSON is invalid.", "issues": issues[:20]})
 
         try:
+            # write_deck checkpoints the result itself, inside the row lock it takes
+            # for the overwrite path, so the checkpoint order stays monotonic.
             obj, created, old = service.write_deck(
                 thread_id, title=title, content=deck, deck_name=deck_name
             )
         except service.DeckLimitError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
-        service.create_deck_checkpoint(
-            obj, source="original" if created else "ai_edit",
-            description="Created deck" if created else "Full rewrite",
-        )
         service.activate_deck(thread_id, obj)
 
         changed = schema.changed_slide_ids(None if created else old, deck)
@@ -303,7 +301,6 @@ class EditDeckTool(ContextAwareTool):
                 "message": "No deck exists for this thread. Use slide_canvas_write to create one first.",
             })
 
-        original = schema.canonical_deck_text(deck.content)
         pairs = [
             (
                 e.get("old_text", "") if isinstance(e, dict) else e.old_text,
@@ -311,36 +308,47 @@ class EditDeckTool(ContextAwareTool):
             )
             for e in edits
         ]
-        new_text, applied, failed = apply_unique_text_edits(original, pairs)
-        if applied == 0:
-            return json.dumps({
-                "status": "error", "applied": 0, "failed": failed,
-                "message": "No edits applied.", "deck_id": str(deck.pk), "title": deck.title,
-            })
 
-        # JSON guard: the edited text must still be a valid deck, or we reject
-        # the whole edit set and leave the deck untouched.
-        try:
-            new_deck = json.loads(new_text)
-        except (ValueError, TypeError) as exc:
-            return json.dumps({
-                "status": "error", "applied": 0, "failed": failed,
-                "message": f"Edits would produce invalid JSON ({exc}); deck left unchanged. "
-                           "Widen your old_text so replacements keep the JSON well-formed.",
-                "deck_id": str(deck.pk),
-            })
-        issues = schema.validate_deck(new_deck)
-        if issues:
-            return json.dumps({
-                "status": "error", "applied": 0, "failed": failed,
-                "message": "Edits would produce an invalid deck; deck left unchanged.",
-                "issues": issues[:20], "deck_id": str(deck.pk),
-            })
+        # Match and rewrite under the row lock, against content re-read inside it, so a
+        # parallel deck tool in the same batch can't have its write reverted here. An
+        # edit whose old_text no longer matches the fresh content now fails cleanly with
+        # "No edits applied." (actionable for the model) instead of silently clobbering.
+        with service.locked_deck(deck.pk) as deck:
+            if deck is None:
+                return json.dumps({"status": "error", "message": "The deck was deleted."})
 
-        schema.mint_ids(new_deck)
-        changed = schema.changed_slide_ids(deck.content, new_deck)
-        service.save_deck_content(deck, new_deck)
-        service.create_deck_checkpoint(deck, source="ai_edit", description=f"Edited {applied} section(s)")
+            original = schema.canonical_deck_text(deck.content)
+            new_text, applied, failed = apply_unique_text_edits(original, pairs)
+            if applied == 0:
+                return json.dumps({
+                    "status": "error", "applied": 0, "failed": failed,
+                    "message": "No edits applied.", "deck_id": str(deck.pk), "title": deck.title,
+                })
+
+            # JSON guard: the edited text must still be a valid deck, or we reject
+            # the whole edit set and leave the deck untouched.
+            try:
+                new_deck = json.loads(new_text)
+            except (ValueError, TypeError) as exc:
+                return json.dumps({
+                    "status": "error", "applied": 0, "failed": failed,
+                    "message": f"Edits would produce invalid JSON ({exc}); deck left unchanged. "
+                               "Widen your old_text so replacements keep the JSON well-formed.",
+                    "deck_id": str(deck.pk),
+                })
+            issues = schema.validate_deck(new_deck)
+            if issues:
+                return json.dumps({
+                    "status": "error", "applied": 0, "failed": failed,
+                    "message": "Edits would produce an invalid deck; deck left unchanged.",
+                    "issues": issues[:20], "deck_id": str(deck.pk),
+                })
+
+            schema.mint_ids(new_deck)
+            changed = schema.changed_slide_ids(deck.content, new_deck)
+            service.save_deck_content(deck, new_deck)
+            service.create_deck_checkpoint(deck, source="ai_edit", description=f"Edited {applied} section(s)")
+
         service.activate_deck(thread_id, deck)
         return json.dumps({
             "status": "ok", "applied": applied, "failed": failed,
@@ -389,20 +397,28 @@ class AddSlideTool(ContextAwareTool):
                 "available_layouts": [c["id"] for c in layouts.layout_catalog()],
             })
 
-        content = copy.deepcopy(deck.content or {})
-        content.setdefault("version", 1)
-        content.setdefault("size", {"w": 960, "h": 540})
-        slides = content.setdefault("slides", [])
-        idx = len(slides) if position < 0 or position > len(slides) else position
-        slides.insert(idx, seed)
-        schema.mint_ids(content)
+        # Everything that reads and rewrites deck.content happens under the row lock,
+        # against content re-read inside it — a parallel slides_add_slide in the same
+        # tool batch would otherwise overwrite this call's slide (and vice versa).
+        with service.locked_deck(deck.pk) as deck:
+            if deck is None:
+                return json.dumps({"status": "error", "message": "The deck was deleted."})
 
-        issues = schema.validate_deck(content)
-        if issues:
-            return json.dumps({"status": "error", "message": "Adding the slide made the deck invalid.", "issues": issues[:10]})
+            content = copy.deepcopy(deck.content or {})
+            content.setdefault("version", 1)
+            content.setdefault("size", {"w": 960, "h": 540})
+            slides = content.setdefault("slides", [])
+            idx = len(slides) if position < 0 or position > len(slides) else position
+            slides.insert(idx, seed)
+            schema.mint_ids(content)
 
-        service.save_deck_content(deck, content)
-        service.create_deck_checkpoint(deck, source="ai_edit", description=f"Added a '{layout}' slide")
+            issues = schema.validate_deck(content)
+            if issues:
+                return json.dumps({"status": "error", "message": "Adding the slide made the deck invalid.", "issues": issues[:10]})
+
+            service.save_deck_content(deck, content)
+            service.create_deck_checkpoint(deck, source="ai_edit", description=f"Added a '{layout}' slide")
+
         service.activate_deck(thread_id, deck)
 
         inserted = content["slides"][idx]

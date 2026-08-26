@@ -738,10 +738,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 override = theme_mod.resolve_named_slide_theme(name, self.user)
             if override is None:
                 return None
-            content = deck.content or {}
-            content["theme"] = override
-            service.save_deck_content(deck, content)
-            service.create_deck_checkpoint(deck, source="user_save", description=f"Applied '{name}' theme")
+            # Re-read under the row lock: the assistant may be adding slides to this
+            # same deck right now, and a theme apply against a pre-click snapshot
+            # would write those slides back out of existence.
+            with service.locked_deck(deck.pk) as locked:
+                if locked is None:
+                    return None
+                deck = locked
+                content = deck.content or {}
+                content["theme"] = override
+                service.save_deck_content(deck, content)
+                service.create_deck_checkpoint(
+                    deck, source="user_save", description=f"Applied '{name}' theme"
+                )
             slide_ids = [s.get("id") for s in content.get("slides") or []]
             # The theme is in every slide's content hash, so re-render them all.
             run = SlideRenderRun.objects.create(

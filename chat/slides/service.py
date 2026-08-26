@@ -8,8 +8,9 @@ guardrail rollback + Undo.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from chat.models import SlideSet, SlideSetCheckpoint
@@ -54,7 +55,37 @@ def get_deck_by_title(thread_id, title: str):
     ).first()
 
 
+@contextmanager
+def locked_deck(deck_pk):
+    """Lock a deck row for the whole of a read-modify-write of its ``content``.
+
+    Yields a FRESHLY READ deck inside a transaction. Callers must mutate the yielded
+    instance and never the snapshot they resolved before entering: a tool batch runs
+    concurrently in a ThreadPoolExecutor (llm/pipelines/simple_chat.py), so two calls
+    that each deep-copy their own pre-call snapshot lose one of the two writes — and
+    both still report success. Yields ``None`` when the deck was deleted in the race.
+
+    Do NOT call :func:`activate_deck` inside the lock: it bulk-updates the thread's
+    *sibling* deck rows, so holding this deck's lock while taking theirs is an inverted
+    lock order between two threads working on different decks. Activation is UI focus,
+    not part of the content write, so it belongs after the block.
+
+    ``select_for_update`` is a silent no-op on SQLite (the test backend), so real
+    locking exists only on Postgres — same caveat as accounts/services.py. Under
+    PgBouncer's transaction pooling the lock is taken and released inside one
+    transaction, so it behaves normally there.
+    """
+    with transaction.atomic():
+        yield (
+            SlideSet.objects.select_for_update()
+            .filter(pk=deck_pk, deleted_at__isnull=True)
+            .first()
+        )
+
+
 def _next_order(deck) -> int:
+    # Callers mutating deck content run this inside locked_deck(), which serializes
+    # the read so concurrent checkpoints can't land on the same order.
     last = deck.checkpoints.order_by("-order").first()
     return (last.order + 1) if last else 0
 
@@ -102,21 +133,35 @@ def set_active_decks(thread_id, names: list[str]):
 
 
 def write_deck(thread_id, *, title: str, content: dict, deck_name: str = ""):
-    """Create or overwrite a deck by title. Returns ``(deck, created, old_content)``.
+    """Create or overwrite a deck by title, checkpointing the result.
+
+    Returns ``(deck, created, old_content)``. The checkpoint is written here rather
+    than by the caller so it lands inside the same row lock as the overwrite and its
+    ``order`` stays monotonic under concurrent writes.
 
     Raises :class:`DeckLimitError` when creating past the per-thread cap.
     """
     title = (title or "Untitled deck")[:255]
     lookup = (deck_name or title)[:255]
+
+    def _overwrite(existing):
+        # Re-read under the row lock so ``old`` is the content we actually replace
+        # (it feeds changed_slide_ids) and the checkpoint order is serialized. The
+        # content itself is last-writer-wins by design — this is a full rewrite.
+        with locked_deck(existing.pk) as locked:
+            deck = locked if locked is not None else existing
+            old = deck.content
+            deck.title = title
+            deck.content = content
+            deck.save(update_fields=["title", "content", "updated_at"])
+            create_deck_checkpoint(deck, source="ai_edit", description="Full rewrite")
+        return deck, False, old
+
     deck = SlideSet.objects.filter(
         thread_id=thread_id, title=lookup, deleted_at__isnull=True
     ).first()
     if deck is not None:
-        old = deck.content
-        deck.title = title
-        deck.content = content
-        deck.save(update_fields=["title", "content", "updated_at"])
-        return deck, False, old
+        return _overwrite(deck)
 
     count = SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True).count()
     if count >= schema.MAX_SLIDE_SETS_PER_THREAD:
@@ -125,9 +170,10 @@ def write_deck(thread_id, *, title: str, content: dict, deck_name: str = ""):
         )
     try:
         deck = SlideSet.objects.create(thread_id=thread_id, title=title, content=content)
-        return deck, True, None
     except IntegrityError:
-        # Concurrent create of the same title — fall back to overwrite.
+        # Concurrent create of the same title — fall back to overwrite. Only the
+        # create is guarded, so an unrelated IntegrityError can't be mistaken for
+        # a title collision.
         deck = SlideSet.objects.filter(
             thread_id=thread_id, title=title, deleted_at__isnull=True
         ).first()
@@ -135,10 +181,9 @@ def write_deck(thread_id, *, title: str, content: dict, deck_name: str = ""):
             # The colliding row vanished in the race; surface the real error
             # rather than an AttributeError on None.
             raise
-        old = deck.content
-        deck.content = content
-        deck.save(update_fields=["content", "updated_at"])
-        return deck, False, old
+        return _overwrite(deck)
+    create_deck_checkpoint(deck, source="original", description="Created deck")
+    return deck, True, None
 
 
 def save_deck_content(deck, content: dict):
