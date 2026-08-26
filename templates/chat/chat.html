@@ -2534,7 +2534,15 @@
   let ws = null;
   let reconnectTimeout = null;
   let reconnectAttempts = 0;
+  let stableTimer = null;
   const maxReconnectAttempts = 5;
+  // A socket that opens and then dies a moment later (the server accepts, then the
+  // channel layer fails) must NOT reset the backoff just for having opened —
+  // otherwise every cycle retries at the first 1s step forever and the reconnect
+  // storm keeps hammering whatever is already overloaded. Only a connection that
+  // survives this long counts as healthy enough to clear the counter. See WILFRED-6P.
+  const stableConnectionMs = 10000;
+  const maxReconnectDelayMs = 30000;
   let streamingTimeout = null;
   let activeThreadId = THREAD_ID || null;
   let currentStreamingElement = null;
@@ -2553,7 +2561,8 @@
       updateConnectionStatus(false, true);
       ws = new WebSocket(getWsUrl());
       ws.onopen = function() {
-        reconnectAttempts = 0;
+        clearTimeout(stableTimer);
+        stableTimer = setTimeout(function() { reconnectAttempts = 0; }, stableConnectionMs);
         updateConnectionStatus(true, false);
         // Load thread data rooms if resuming a thread
         if (activeThreadId) {
@@ -2565,6 +2574,7 @@
       ws.onmessage = function(event) { try { handleEvent(JSON.parse(event.data)); } catch(e) { console.error('Failed to parse WebSocket message:', e); } };
       ws.onerror = function() { updateConnectionStatus(false, false); };
       ws.onclose = function(event) {
+        clearTimeout(stableTimer);
         updateConnectionStatus(false, false);
         if (currentStreamingElement) { finishStreaming("Lost the connection — please try again."); }
         clearTimeout(streamingTimeout);
@@ -2579,14 +2589,17 @@
           return;
         }
         if (event.code !== 1000 && event.code !== 4403 && reconnectAttempts < maxReconnectAttempts) {
-          const delay = 1000 * Math.pow(2, reconnectAttempts); reconnectAttempts++;
+          // Exponential backoff, capped, with jitter: without the random spread every
+          // open tab retries on the same beat and re-saturates the server together.
+          const base = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelayMs);
+          const delay = base * (0.5 + Math.random() * 0.5); reconnectAttempts++;
           reconnectTimeout = setTimeout(connect, delay);
         }
       };
     } catch (e) { updateConnectionStatus(false, false); }
   }
 
-  function disconnect() { clearTimeout(reconnectTimeout); if (ws) { ws.close(1000); ws = null; } reconnectAttempts = 0; updateConnectionStatus(false, false); }
+  function disconnect() { clearTimeout(reconnectTimeout); clearTimeout(stableTimer); if (ws) { ws.close(1000); ws = null; } reconnectAttempts = 0; updateConnectionStatus(false, false); }
 
   function updateConnectionStatus(connected, isConnecting) {
     const indicator = document.getElementById("connection-indicator");

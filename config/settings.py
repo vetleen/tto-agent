@@ -791,13 +791,45 @@ CELERY_BEAT_SCHEDULE = {
 # Channels / Redis
 _redis_url = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")
 _redis_is_tls = _redis_url.startswith("rediss://")  # CERT_NONE rationale: see Redis TLS note above
+
+# Bound every Redis pool a process opens. redis-py's ConnectionPool defaults to
+# max_connections=2**31 — effectively unlimited — so a fan-out can grow a pool
+# straight past the shared 20-connection Mini cap, at which point Heroku drops the
+# over-limit TLS handshakes for *every* consumer on the instance. Exhausting a
+# bounded pool is the strictly better failure: it raises MaxConnectionsError, a
+# ConnectionError subclass, so it stays local to the caller and is already absorbed
+# by ResilientRedisCache and the consumer's _REDIS_BLIP guards. Tunable via env.
+_CHANNEL_POOL_MAX = int(os.environ.get("CHANNELS_REDIS_MAX_CONNECTIONS", "6"))
+_CACHE_POOL_MAX = int(os.environ.get("CACHE_REDIS_MAX_CONNECTIONS", "6"))
+
+_channel_host: dict = {"address": _redis_url, "max_connections": _CHANNEL_POOL_MAX}
 if _redis_is_tls:
-    _channel_hosts = [{"address": _redis_url, "ssl_cert_reqs": ssl.CERT_NONE}]
-else:
-    _channel_hosts = [_redis_url]
+    _channel_host["ssl_cert_reqs"] = ssl.CERT_NONE
+_channel_hosts = [_channel_host]
+
+# Pub/sub layer, deliberately NOT channels_redis.core.RedisChannelLayer. Both of the
+# differences below caused the WebSocket reconnect storm this replaces (WILFRED-6P):
+#
+#  1. Connections. RedisPubSubChannelLayer holds exactly one publisher and one
+#     subscriber connection per process and multiplexes every channel and group over
+#     them, so its footprint is constant however many sockets are open or worker
+#     threads are calling group_send. The core layer instead takes a pool connection
+#     per concurrent operation, so a 16-thread worker fan-out could exhaust the
+#     20-connection cap by itself.
+#  2. Resilience. Its receive() awaits an in-process asyncio.Queue and so cannot
+#     raise a Redis ConnectionError; the shard's background reader logs and retries.
+#     Under the core layer a blip propagated out of channels' await_many_dispatch and
+#     killed every open WebSocket, and browsers reconnected into the same saturation.
+#
+# What this relies on: nothing may send to another process's *specific* channel —
+# pub/sub has no cross-process channel delivery. Every call site uses group_send only
+# (chat/tasks.py, chat/sinks.py, chat/slides/render_service.py, meetings/tasks.py);
+# keep it that way. Pub/sub is also fire-and-forget, so a message published while a
+# consumer is momentarily unsubscribed is dropped rather than queued — the right
+# trade for live streaming, where a stale queued frame is worthless anyway.
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
         "CONFIG": {"hosts": _channel_hosts},
     },
 }
@@ -810,9 +842,11 @@ _cache_config: dict = {
     # to a miss instead of 500-ing the request. See core/cache.py.
     "BACKEND": "core.cache.ResilientRedisCache",
     "LOCATION": f"{_cache_redis_base}/1",
+    # Django passes unrecognised OPTIONS straight to ConnectionPool.from_url.
+    "OPTIONS": {"max_connections": _CACHE_POOL_MAX},
 }
 if _redis_is_tls:
-    _cache_config["OPTIONS"] = {"ssl_cert_reqs": ssl.CERT_NONE}
+    _cache_config["OPTIONS"]["ssl_cert_reqs"] = ssl.CERT_NONE
 CACHES = {"default": _cache_config}
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()

@@ -325,11 +325,38 @@ heroku redis:cli                            # interactive shell
 Redis is shared across three uses (Celery broker on db 0, Channels on db 0, Django cache on db 1). If Redis hits memory limits, Celery tasks and WebSocket connections will fail.
 
 **Connection limits.** The `mini` plan caps Redis at **20 connections**, shared across
-the broker, Channels (WebSockets), and the cache. The Celery broker pool is bounded by
-`broker_pool_limit` (default 10); Channels and the cache draw from their own pools, so
-raising worker concurrency increases simultaneous Redis usage but not 1:1 per task. With ~20 users holding live WebSocket connections this cap is a
-likely early ceiling — watch `heroku redis:info` and move off `mini` if connections
-saturate.
+the broker, Channels (WebSockets), and the cache. Every pool is now explicitly bounded,
+because redis-py defaults `max_connections` to 2**31 — effectively unlimited — and an
+unbounded pool will grow straight past the cap, at which point Heroku drops the
+over-limit TLS handshakes for *every* consumer on the instance:
+
+| Consumer | Bound | Setting |
+|----------|-------|---------|
+| Celery broker | 4 | `CELERY_BROKER_POOL_LIMIT` |
+| Channels layer | 6 | `CHANNELS_REDIS_MAX_CONNECTIONS` (env, default 6) |
+| Django cache | 6 | `CACHE_REDIS_MAX_CONNECTIONS` (env, default 6) |
+
+Open WebSockets no longer drive the connection count. The channel layer is
+`RedisPubSubChannelLayer`, which holds one publisher + one subscriber per process and
+multiplexes every channel and group over them, so its footprint is flat regardless of
+how many sockets are live or how many worker threads call `group_send`. The previous
+`RedisChannelLayer` took a pool connection per concurrent operation, which is what let
+a 16-thread worker fan-out exhaust the cap on its own (WILFRED-6P).
+
+**Diagnosing saturation.** `connected_clients` in `heroku redis:info` is an instantaneous
+sample and will look healthy between bursts. The cumulative counter is the reliable
+signal:
+
+```bash
+heroku redis:cli -a wilfred-production --confirm wilfred-production <<< 'info stats'
+# rejected_connections > 0 means the cap has been hit since the instance last restarted
+heroku redis:cli -a wilfred-production --confirm wilfred-production <<< 'client list'
+# per-connection `cmd=` shows which consumer owns what (brpop/psubscribe = Celery,
+# publish/subscribe = channels, get/set = cache)
+```
+
+Moving off `mini` (premium-0: 40 connections + HA, $15/mo) remains the capacity fix if
+these bounds ever stop fitting.
 
 **TLS cert verification (`rediss://`).** Heroku Data for Redis serves a self-signed cert chain that fails default verification, so all three Redis consumers — Celery broker, Channels layer, and Django cache — set `ssl_cert_reqs=CERT_NONE` (`config/settings.py`, gated on `_redis_is_tls`). This disables certificate *verification* only; the connection is still TLS-encrypted and stays within Heroku's private network. Accepted risk, consistent with Heroku's documented guidance for redis-py / Celery / channels_redis. Revisit (move to `CERT_REQUIRED` with a CA bundle) only if we migrate off Heroku Redis or a verifiable CA becomes available.
 
