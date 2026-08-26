@@ -4635,9 +4635,17 @@
       if (!slides.length && data.slides) {
         slides = data.slides.map(function(s) { return { slide_id: s.slide_id, name: "", page: s.page, asset_url: bust(s.asset_url), width: s.width, height: s.height, status: undefined }; });
       } else {
+        var known = {}; slides.forEach(function(s) { known[s.slide_id] = true; });
         slides.forEach(function(s) {
           var r = byId[s.slide_id];
           if (r) { s.asset_url = bust(r.asset_url); s.width = r.width; s.height = r.height; s.page = r.page; s.status = undefined; }
+        });
+        // A slide added this turn (slides_add_slide, or an edit that grew the deck)
+        // may be absent locally if its slidedeck.updated carried no slide_ids — add
+        // any freshly-rendered slide we don't yet know about so it appears without
+        // a manual refresh, rather than waiting for a full slidedeck.state re-hydrate.
+        (data.slides || []).forEach(function(s) {
+          if (!known[s.slide_id]) { slides.push({ slide_id: s.slide_id, name: "", page: s.page, asset_url: bust(s.asset_url), width: s.width, height: s.height, status: undefined }); }
         });
         slides.sort(function(a, b) { return (a.page || 0) - (b.page || 0); });
       }

@@ -350,9 +350,13 @@ class EditDeckTool(ContextAwareTool):
             service.create_deck_checkpoint(deck, source="ai_edit", description=f"Edited {applied} section(s)")
 
         service.activate_deck(thread_id, deck)
+        slide_ids = [s.get("id") for s in new_deck.get("slides", [])]
         return json.dumps({
             "status": "ok", "applied": applied, "failed": failed,
             "changed_slide_ids": changed, "deck_id": str(deck.pk), "title": deck.title,
+            # Full ordered id list so an edit that adds a slide rebuilds the client
+            # filmstrip with the new slide, matching slide_canvas_write.
+            "slide_ids": slide_ids, "slide_count": len(slide_ids),
         })
 
 
@@ -422,13 +426,21 @@ class AddSlideTool(ContextAwareTool):
         service.activate_deck(thread_id, deck)
 
         inserted = content["slides"][idx]
+        slide_ids = [s.get("id") for s in content["slides"]]
         return json.dumps({
             "status": "ok",
             "deck_id": str(deck.pk),
+            "title": deck.title,
             "slide_id": inserted.get("id"),
             "position": idx,
             "layout": layout,
             "slide_json": schema.canonical_deck_text(inserted),
+            # The client rebuilds its filmstrip from slide_ids, so a new slide only
+            # shows a queued/rendering placeholder (instead of appearing out of
+            # nowhere when the render lands) if we return the full ordered id list.
+            "slide_ids": slide_ids,
+            "changed_slide_ids": [inserted.get("id")],
+            "slide_count": len(slide_ids),
         })
 
 

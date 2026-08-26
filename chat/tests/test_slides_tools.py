@@ -98,6 +98,18 @@ class SlideToolTests(TestCase):
         self.assertEqual(r["slide_id"], "s2")
         self.assertIn('"id": "s2"', r["slide_json"])
 
+    def test_add_and_edit_return_full_slide_ids(self):
+        """add_slide / edit must return the full ordered slide_ids (and add names the
+        new one in changed_slide_ids). The client rebuilds its filmstrip from this list,
+        so without it a newly added slide never appears live — it needed a manual F5."""
+        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        added = self._run(AddSlideTool(), layout="bullets")
+        self.assertEqual(added["slide_ids"], ["s1", "s2"])
+        self.assertEqual(added["changed_slide_ids"], ["s2"])
+        self.assertEqual(added["slide_count"], 2)
+        edited = self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Hi"'}])
+        self.assertEqual(edited["slide_ids"], ["s1", "s2"])
+
     def test_add_slide_unknown_layout(self):
         self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
         r = self._run(AddSlideTool(), layout="nope")
