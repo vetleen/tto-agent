@@ -55,12 +55,28 @@ class DataRoomDocumentAdmin(admin.ModelAdmin):
 
 @admin.register(DataRoomDocumentVersion)
 class DataRoomDocumentVersionAdmin(admin.ModelAdmin):
-    list_display = ("document", "version_index", "origin", "status", "is_searchable", "is_quarantined", "token_count", "created_by", "created_at", "processed_at")
-    list_filter = ("origin", "status", "is_searchable", "is_quarantined")
+    list_display = ("document", "version_index", "origin", "status", "parser_type", "is_searchable", "is_quarantined", "token_count", "created_by", "created_at", "processed_at")
+    list_filter = ("origin", "status", "parser_type", "is_searchable", "is_quarantined")
     search_fields = ("document__original_filename", "document__name")
     raw_id_fields = ("document", "created_by")
     inlines = [DataRoomDocumentTagInline, DataRoomDocumentChunkInline]
-    readonly_fields = ("created_at", "processed_at", "updated_at")
+    readonly_fields = ("created_at", "processed_at", "updated_at", "processing_metadata_pretty")
+    # Derived artefact (e.g. the spreadsheet manifest: mesh geometry + paid
+    # vision results) — display it, never let it be hand-edited.
+    exclude = ("processing_metadata",)
+
+    @admin.display(description="Processing metadata")
+    def processing_metadata_pretty(self, obj):
+        import json
+
+        from django.utils.html import format_html
+
+        if not obj.processing_metadata:
+            return "—"
+        return format_html(
+            '<pre style="max-height: 400px; max-width: 80ch; overflow: auto; margin: 0;">{}</pre>',
+            json.dumps(obj.processing_metadata, indent=2, ensure_ascii=False),
+        )
 
 
 @admin.register(DataRoomDocumentTag)
