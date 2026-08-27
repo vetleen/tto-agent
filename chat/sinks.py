@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 
+from core.redis_errors import is_redis_blip, log_broadcast_failure
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +51,8 @@ class BroadcastSink:
 
         self._group = f"thread_{thread_id}"
         self._channel_layer = get_channel_layer()
+        # Whether a Redis blip on this sink has already been reported; see below.
+        self._redis_blip_reported = False
 
     async def send_event(self, event: dict) -> None:
         if self._channel_layer is None:
@@ -57,8 +61,25 @@ class BroadcastSink:
             await self._channel_layer.group_send(
                 self._group, {"type": "loop.event", "event": event},
             )
-        except Exception:
-            logger.debug("BroadcastSink: could not publish event to %s", self._group)
+        except Exception as exc:
+            # This runs once per streamed event — per token — so reporting every
+            # Redis blip at WARNING would put thousands of Sentry events on the
+            # board for a single outage. Report the first blip of an episode and
+            # go quiet until a send succeeds again, which keeps the signal (an
+            # outage is visible) without the flood.
+            log_broadcast_failure(
+                logger,
+                exc,
+                "BroadcastSink: could not publish event to %s",
+                self._group,
+                redis_level=(
+                    logging.DEBUG if self._redis_blip_reported else logging.WARNING
+                ),
+            )
+            if is_redis_blip(exc):
+                self._redis_blip_reported = True
+        else:
+            self._redis_blip_reported = False
 
 
 class NullSink:

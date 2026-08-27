@@ -10,19 +10,10 @@ from dataclasses import dataclass, field
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
-from redis.exceptions import (
-    ConnectionError as _RedisConnectionError,
-    TimeoutError as _RedisTimeoutError,
-)
+
+from core.redis_errors import REDIS_BLIP as _REDIS_BLIP
 
 logger = logging.getLogger(__name__)
-
-# Transient channels-Redis failures (the shared Redis Mini resets connections
-# under load): the consumer's best-effort group_add/discard should degrade on
-# these, not crash the turn. OSError covers the builtin ConnectionResetError
-# raised from the SSL-handshake path. See WILFRED-6P and core/cache.py's
-# ResilientRedisCache for the same fail-open philosophy on the cache side.
-_REDIS_BLIP = (_RedisConnectionError, _RedisTimeoutError, OSError)
 
 
 @dataclass

@@ -358,6 +358,23 @@ heroku redis:cli -a wilfred-production --confirm wilfred-production <<< 'client 
 Moving off `mini` (premium-0: 40 connections + HA, $15/mo) remains the capacity fix if
 these bounds ever stop fitting.
 
+**What surfaces in Sentry.** Best-effort channel-layer broadcasts swallow their failures
+so a dead group can't break a turn, which for a long time also hid genuine Redis trouble —
+they logged at DEBUG, and prod `LOG_LEVEL` is INFO, so nothing was emitted at all. They now
+route through `core/redis_errors.log_broadcast_failure`, which logs a *Redis* failure at
+WARNING (an event, per the LoggingIntegration's `event_level`) and everything else at DEBUG:
+
+| Path | Reporting |
+|------|-----------|
+| `chat/sinks.py` `BroadcastSink` | Runs per streamed token — reports the **first** blip per sink, then stays quiet until a send succeeds |
+| `chat/tasks.py` `_notify_consumer` | Unthrottled (once per sub-agent completion) |
+| `chat/slides/render_service.py` `notify_render_event` | Unthrottled (a few per render run) |
+| `meetings/tasks.py` `_push_to_ws` | Unthrottled, already `logger.exception` |
+| `core/cache.py` `ResilientRedisCache` | **INFO by design** — breadcrumb only, so a degraded cache does not re-flood the issue stream |
+
+Note there is still no *metric* alert on Redis capacity — the alert rules are issue-based,
+so `rejected_connections` is only visible when someone runs the command above.
+
 **TLS cert verification (`rediss://`).** Heroku Data for Redis serves a self-signed cert chain that fails default verification, so all three Redis consumers — Celery broker, Channels layer, and Django cache — set `ssl_cert_reqs=CERT_NONE` (`config/settings.py`, gated on `_redis_is_tls`). This disables certificate *verification* only; the connection is still TLS-encrypted and stays within Heroku's private network. Accepted risk, consistent with Heroku's documented guidance for redis-py / Celery / channels_redis. Revisit (move to `CERT_REQUIRED` with a CA bundle) only if we migrate off Heroku Redis or a verifiable CA becomes available.
 
 ## Environment Variables

@@ -15,6 +15,7 @@ from django.utils import timezone
 from chat.assets import store_slide_set_file, store_slide_set_image
 from chat.models import Asset, SlideRender, SlideRenderRun
 from chat.slides import schema
+from core.redis_errors import log_broadcast_failure
 
 logger = logging.getLogger(__name__)
 
@@ -204,5 +205,10 @@ def notify_render_event(deck, run, event: str) -> None:
                 "purpose": run.purpose,
             },
         )
-    except Exception:  # noqa: BLE001
-        logger.debug("Could not notify consumer of render %s", run.pk, exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        # A handful of calls per render run (started / rendered / pdf_ready /
+        # failed), so an unthrottled WARNING is safe. A Redis blip here strands the
+        # deck panel on "rendering" even though the render itself succeeded.
+        log_broadcast_failure(
+            logger, exc, "Could not notify consumer of render %s", run.pk
+        )

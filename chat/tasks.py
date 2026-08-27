@@ -8,6 +8,8 @@ import uuid
 from celery import Task, shared_task
 from django.db.utils import OperationalError
 
+from core.redis_errors import log_broadcast_failure
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,8 +28,16 @@ def _notify_consumer(run_id: str, thread_id: str) -> None:
                 "thread_id": thread_id,
             },
         )
-    except Exception:
-        logger.debug("Could not notify consumer of sub-agent %s completion", run_id)
+    except Exception as exc:
+        # Fires once per sub-agent completion, so an unthrottled WARNING is safe.
+        # A Redis blip here is worth an alert: the run finished but the browser
+        # never hears about it, and the user just sees the sub-agent hang.
+        log_broadcast_failure(
+            logger,
+            exc,
+            "Could not notify consumer of sub-agent %s completion",
+            run_id,
+        )
 
 
 def _capture_subagent_failure(exc: BaseException, run_id_str: str) -> None:
