@@ -6,6 +6,7 @@ from llm.admin import _pretty_json_html
 from llm.models import LLMCallLog
 
 from .models import (
+    Asset,
     CanvasCheckpoint,
     ChatCanvas,
     ChatMessage,
@@ -186,3 +187,106 @@ class ChatMessageAdmin(admin.ModelAdmin):
     @admin.display(description="Content")
     def short_content(self, obj):
         return obj.content[:100] if obj.content else ""
+
+
+@admin.register(Asset)
+class AssetAdmin(admin.ModelAdmin):
+    """Inspector for machine-created assets (embedded document images,
+    spreadsheet tiles, generated/web images, file references). Everything but
+    the two human-readable text fields is read-only, and rows can't be added
+    by hand — the exactly-one-owner constraint and blob naming conventions
+    belong to the code paths that mint them."""
+
+    list_display = ("short_id", "thumbnail", "kind", "content_type", "owner",
+                    "width", "height", "size_display", "created_by", "created_at")
+    list_filter = ("kind", "content_type", "created_at")
+    search_fields = ("description", "alt_text", "sha256", "version__document__original_filename")
+    raw_id_fields = ("version", "canvas", "message", "thread", "slide_set", "created_by")
+    readonly_fields = ("id", "preview", "kind", "content_type", "blob", "size_bytes",
+                       "width", "height", "sha256", "source_url", "source_page_url",
+                       "version", "canvas", "message", "thread", "slide_set",
+                       "created_by", "created_at")
+    fields = ("id", "preview", "kind", "content_type", "blob", "size_bytes",
+              "width", "height", "sha256", "description", "alt_text",
+              "source_url", "source_page_url",
+              "version", "canvas", "message", "thread", "slide_set",
+              "created_by", "created_at")
+    list_select_related = ("version__document", "created_by")
+    ordering = ["-created_at"]
+    list_per_page = 50
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.display(description="ID")
+    def short_id(self, obj):
+        return str(obj.id)[:8]
+
+    @admin.display(description="Owner")
+    def owner(self, obj):
+        if obj.version_id:
+            doc = obj.version.document
+            return f"v{obj.version.version_index} of {doc.original_filename[:40]}"
+        if obj.canvas_id:
+            return f"canvas {obj.canvas_id}"
+        if obj.message_id:
+            return f"message {obj.message_id}"
+        if obj.thread_id:
+            return f"thread {str(obj.thread_id)[:8]}"
+        if obj.slide_set_id:
+            return f"slide set {str(obj.slide_set_id)[:8]}"
+        return "—"
+
+    @admin.display(description="Size")
+    def size_display(self, obj):
+        if not obj.size_bytes:
+            return "—"
+        if obj.size_bytes >= 1024 * 1024:
+            return f"{obj.size_bytes / (1024 * 1024):.1f} MB"
+        return f"{obj.size_bytes / 1024:.0f} KB"
+
+    def _image_url(self, obj) -> str:
+        """Best-effort browser-viewable URL for the asset's image bytes: the
+        blob itself, else a reference asset's data-room source. Storage URL
+        generation is local (signed for S3); the bytes are only fetched by the
+        admin user's browser. Orphaned files (see the 2026-08 bucket swap) just
+        render as a broken image."""
+        try:
+            if obj.blob:
+                return obj.blob.url
+            if obj.version_id:
+                from chat.assets import image_asset_source
+
+                source, content_type = image_asset_source(obj)
+                if source and (content_type or "").startswith("image/"):
+                    return source.url
+        except Exception:  # noqa: BLE001 — cosmetic only, never break the page
+            pass
+        return ""
+
+    @admin.display(description="Preview")
+    def thumbnail(self, obj):
+        from django.utils.html import format_html
+
+        url = self._image_url(obj)
+        if url and (obj.content_type or "").startswith("image/"):
+            return format_html(
+                '<img src="{}" loading="lazy" style="height: 40px; max-width: 120px; object-fit: contain;" />',
+                url,
+            )
+        return "reference" if (obj.version_id and not obj.blob) else "—"
+
+    @admin.display(description="Preview")
+    def preview(self, obj):
+        from django.utils.html import format_html
+
+        url = self._image_url(obj)
+        if url and (obj.content_type or "").startswith("image/"):
+            return format_html(
+                '<img src="{}" style="max-height: 320px; max-width: 640px; object-fit: contain; '
+                'border: 1px solid #ccc;" />',
+                url,
+            )
+        if obj.version_id and not obj.blob:
+            return "Blob-less reference — bytes resolve from the data-room version on serve."
+        return "—"
