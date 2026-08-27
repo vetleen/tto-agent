@@ -1243,10 +1243,16 @@
 
   // Defense-in-depth sanitization for mermaid-rendered SVG before it is assigned
   // to innerHTML. mermaid runs with securityLevel:'strict', but we never trust its
-  // output directly. The svg + html profiles keep <foreignObject> label markup that
-  // mermaid v11 emits while DOMPurify strips <script>, on* handlers and javascript: URIs.
+  // output directly. mermaid v11 renders node labels as HTML inside <foreignObject>,
+  // which DOMPurify's svg profile does NOT allow — so it must be re-added explicitly
+  // via ADD_TAGS or every label is stripped and diagrams render as empty boxes. The
+  // html profile still sanitizes the label contents; DOMPurify strips <script>,
+  // on* handlers and javascript: URIs.
   function sanitizeSvg(svg) {
-    return DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true, html: true } });
+    return DOMPurify.sanitize(svg, {
+      USE_PROFILES: { svg: true, svgFilters: true, html: true },
+      ADD_TAGS: ['foreignObject'],
+    });
   }
 
   window.copyMessage = function(btn) {
