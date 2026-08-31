@@ -20,10 +20,11 @@ logger = logging.getLogger(__name__)
 # Collapses runs of whitespace (incl. newlines) in a token label.
 _TOKEN_WS_RE = re.compile(r"\s+")
 
-# Cap how many embedded images get a vision description per document; beyond
+# Cap how many embedded images get a vision description per document (or, for an
+# email attachment tree, across the whole tree — see the ``counter`` arg); beyond
 # this they're still stored (bytes preserved) but labelled by format only, so a
 # 200-image deck can't fan out into 200 vision calls.
-MAX_DESCRIBED_EMBEDDED_IMAGES = 20
+MAX_DESCRIBED_EMBEDDED_IMAGES = 50
 
 
 def _ext_for(content_type: str) -> str:
@@ -43,15 +44,22 @@ def _sanitize_for_token(text: str) -> str:
     return _TOKEN_WS_RE.sub(" ", text).strip()
 
 
-def image_asset_sink(version, doc):
+def image_asset_sink(version, doc, *, counter=None):
     """Return an image_sink that stores each embedded image as an Asset
     scoped to *version* and emits a ``[[image:uuid|Image N: desc]]`` token.
 
-    Format-neutral: used by both the docx (core.docx.docx_to_markdown) and pdf
-    (core.pdf.pdf_to_text) extraction paths. Descriptions (capped at
-    MAX_DESCRIBED_EMBEDDED_IMAGES) use the org's vision-capable describer when
-    one is configured; otherwise images are still stored with a format-only
-    label so nothing is lost.
+    Format-neutral: used by the docx (core.docx.docx_to_markdown), pdf
+    (core.pdf.pdf_to_text), and pptx (documents.services.chunking) extraction
+    paths. Descriptions (capped at MAX_DESCRIBED_EMBEDDED_IMAGES) use the org's
+    vision-capable describer when one is configured; otherwise images are still
+    stored with a format-only label so nothing is lost.
+
+    ``counter`` — an optional shared ``{"n": int}`` dict. When supplied, images
+    are numbered and cap-checked using this tree-global counter instead of the
+    loader's per-document ``idx`` (which restarts at 1 for each file). The email
+    attachment path passes one counter through the whole message tree so the
+    ``Image N`` sequence and the description cap span every attachment, and a
+    mail full of image-heavy files can't reset the budget or fan out.
     """
     from django.core.files.base import ContentFile
 
@@ -65,6 +73,9 @@ def image_asset_sink(version, doc):
     model = resolve_org_feature_model(org_id, "document_image_description")
 
     def sink(image, idx: int) -> str:
+        if counter is not None:
+            counter["n"] = counter.get("n", 0) + 1
+            idx = counter["n"]
         content_type = image.content_type or "application/octet-stream"
         with image.open() as f:
             img_bytes = f.read()

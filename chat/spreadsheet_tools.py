@@ -518,7 +518,7 @@ class DocumentViewSheetTool(ContextAwareTool):
                 png = fh.read()
             description = f"Sheet '{entry.get('name')}' tile x{x}y{y} ({extent})"
             token = image_token(asset.id, description)
-            self.context.pending_image_assets.append({
+            self.context.pending_native_assets.append({
                 "asset_id": token,
                 "b64": base64.b64encode(png).decode("ascii"),
                 "media_type": "image/png",

@@ -136,6 +136,91 @@ class ChunkingTests(TestCase):
             path.unlink(missing_ok=True)
 
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_load_documents_pptx_extracts_image_via_sink(self):
+        import io
+
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        from chat.tests.test_attachments import _tiny_png
+        from documents.services.chunking import _load_pptx_as_markdown
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+        slide.shapes.add_picture(io.BytesIO(_tiny_png()), Inches(1), Inches(1), Inches(1), Inches(1))
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as f:
+            path = Path(f.name)
+        prs.save(str(path))
+
+        seen = []
+
+        def sink(image, idx):
+            with image.open() as fh:
+                seen.append((image.content_type, len(fh.read()), idx))
+            return f"[[image:pptx-{idx}|pic]]"
+
+        try:
+            docs = _load_pptx_as_markdown(path, image_sink=sink)
+            content = docs[0].page_content
+            self.assertIn("[[image:pptx-1|pic]]", content)
+            self.assertEqual(seen[0][0], "image/png")
+            self.assertGreater(seen[0][1], 0)
+        finally:
+            path.unlink(missing_ok=True)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_load_documents_pptx_image_only_not_empty(self):
+        # A slide with only a picture (no text) still yields output (the sink's
+        # placeholder token), so extraction doesn't fail like an empty deck would.
+        import io
+
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        from chat.tests.test_attachments import _tiny_png
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        slide.shapes.add_picture(io.BytesIO(_tiny_png()), Inches(1), Inches(1), Inches(1), Inches(1))
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as f:
+            path = Path(f.name)
+        prs.save(str(path))
+        try:
+            docs = load_documents(path, "pptx")  # default placeholder sink
+            content = docs[0].page_content.strip()
+            self.assertTrue(content)
+            self.assertIn("[Image 1]", content)
+        finally:
+            path.unlink(missing_ok=True)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_load_documents_pptx_chart_to_table(self):
+        from pptx import Presentation
+        from pptx.chart.data import CategoryChartData
+        from pptx.enum.chart import XL_CHART_TYPE
+        from pptx.util import Inches
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        chart_data = CategoryChartData()
+        chart_data.categories = ["Q1", "Q2", "Q3"]
+        chart_data.add_series("Revenue", (10.0, 20.0, 30.0))
+        slide.shapes.add_chart(
+            XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(5), Inches(4), chart_data
+        )
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as f:
+            path = Path(f.name)
+        prs.save(str(path))
+        try:
+            docs = load_documents(path, "pptx")
+            content = docs[0].page_content
+            self.assertIn("| Category | Revenue |", content)
+            self.assertIn("| Q1 | 10.0 |", content)
+            self.assertIn("| Q3 | 30.0 |", content)
+        finally:
+            path.unlink(missing_ok=True)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
     def test_strip_nul_bytes_removes_null_characters(self):
         from langchain_core.documents import Document
         docs = [
@@ -2054,6 +2139,80 @@ class EmailLoaderTests(TestCase):
         finally:
             eml_path.unlink()
 
+    def _eml_with_attachment(self, payload, filename, maintype, subtype, subject="Att"):
+        from email import encoders
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = "a@b.com"
+        msg["To"] = "c@d.com"
+        msg.attach(MIMEText("See attached.", "plain"))
+        att = MIMEBase(maintype, subtype)
+        att.set_payload(payload)
+        encoders.encode_base64(att)
+        att.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(att)
+        return msg.as_bytes()
+
+    def test_eml_docx_attachment_keeps_embedded_image(self):
+        # A docx *inside* an email keeps its embedded images: the sink threaded
+        # through the email loader reaches the attachment's extraction.
+        from chat.tests.test_attachments import _docx_with_image
+
+        eml = self._eml_with_attachment(
+            _docx_with_image(), "report.docx", "application",
+            "vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(eml)
+            path = Path(f.name)
+
+        seen = []
+
+        def sink(image, idx):
+            with image.open() as fh:
+                seen.append(len(fh.read()))
+            return f"[[image:eml-{idx}|x]]"
+
+        try:
+            docs = _load_eml_as_markdown(path, image_sink=sink)
+            self.assertTrue(seen, "sink should reach the docx's embedded image")
+            self.assertIn("[[image:eml-1|x]]", docs[0].page_content)
+        finally:
+            path.unlink()
+
+    def test_eml_nested_email_cascades_to_image(self):
+        # email -> attached email -> docx-with-image: the cascade descends and
+        # still hands the innermost image to the sink.
+        from chat.tests.test_attachments import _docx_with_image
+
+        inner = self._eml_with_attachment(
+            _docx_with_image(), "report.docx", "application",
+            "vnd.openxmlformats-officedocument.wordprocessingml.document", subject="Inner",
+        )
+        outer = self._eml_with_attachment(
+            inner, "inner.eml", "application", "octet-stream", subject="Outer",
+        )
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False, mode="wb") as f:
+            f.write(outer)
+            path = Path(f.name)
+
+        seen = []
+
+        def sink(image, idx):
+            with image.open() as fh:
+                seen.append(len(fh.read()))
+            return f"[[image:nested-{idx}|x]]"
+
+        try:
+            docs = _load_eml_as_markdown(path, image_sink=sink)
+            self.assertTrue(seen, "sink should reach an image nested inside an attached email")
+        finally:
+            path.unlink()
+
     def test_load_eml_no_subject(self):
         """Defaults to '(No Subject)' when subject is missing."""
         from email.mime.text import MIMEText
@@ -2086,7 +2245,7 @@ class EmailLoaderTests(TestCase):
 
         try:
             docs = load_documents(path, "msg")
-            mock_loader.assert_called_once_with(path)
+            mock_loader.assert_called_once_with(path, image_sink=None)
             self.assertEqual(len(docs), 1)
         finally:
             path.unlink()
@@ -2102,7 +2261,7 @@ class EmailLoaderTests(TestCase):
 
         try:
             docs = load_documents(path, "eml")
-            mock_loader.assert_called_once_with(path)
+            mock_loader.assert_called_once_with(path, image_sink=None)
             self.assertEqual(len(docs), 1)
         finally:
             path.unlink()
@@ -2185,13 +2344,15 @@ class EmailLoaderTests(TestCase):
 
     @override_settings(DOCUMENT_ALLOWED_EXTENSIONS={"txt", "msg", "eml"})
     def test_extract_attachment_content_depth_limit(self):
-        """Returns None when _depth >= 1 for email extensions."""
-        result = _extract_attachment_content(b"fake", "nested.eml", _depth=1)
+        """Returns None for nested emails at/over MAX_EMAIL_NESTING_DEPTH."""
+        from documents.services.chunking import MAX_EMAIL_NESTING_DEPTH
+
+        result = _extract_attachment_content(b"fake", "nested.eml", _depth=MAX_EMAIL_NESTING_DEPTH)
         self.assertIsNone(result)
-        result = _extract_attachment_content(b"fake", "nested.msg", _depth=1)
+        result = _extract_attachment_content(b"fake", "nested.msg", _depth=MAX_EMAIL_NESTING_DEPTH)
         self.assertIsNone(result)
-        # Non-email types should still work at depth >= 1
-        result = _extract_attachment_content(b"some text", "file.txt", _depth=1)
+        # Non-email types are leaves — never depth-limited — so they still work.
+        result = _extract_attachment_content(b"some text", "file.txt", _depth=MAX_EMAIL_NESTING_DEPTH)
         self.assertIsNotNone(result)
 
     # ---- _load_msg_as_markdown with attachment extraction ----
@@ -2286,15 +2447,16 @@ class EmailLoaderTests(TestCase):
         finally:
             eml_path.unlink()
 
-    def test_load_eml_nested_eml_depth_limit(self):
-        """Nested .eml body extracted at depth 0, but its own .eml attachment is not recursed."""
+    def test_load_eml_nested_eml_cascades(self):
+        """Nested emails cascade: with MAX_EMAIL_NESTING_DEPTH=5, an email three
+        levels deep is still extracted (was capped at one level before)."""
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
         from email.mime.base import MIMEBase
         from email import encoders
 
-        # Inner-inner email (should NOT be extracted — depth 2)
-        inner_inner = MIMEText("You should not see this inner-inner body.")
+        # Inner-inner email (depth 2 — now extracted, under the depth-5 cap)
+        inner_inner = MIMEText("Deep inner-inner body content.")
         inner_inner["Subject"] = "Inner Inner"
         inner_inner["From"] = "z@z.com"
         inner_inner["To"] = "z@z.com"
@@ -2338,9 +2500,8 @@ class EmailLoaderTests(TestCase):
             # Inner email extracted as attachment at depth 0→1
             self.assertIn("## Attachment: inner.eml", content)
             self.assertIn("Inner email body content.", content)
-            # Inner-inner should NOT be extracted (depth 1→2 blocked)
-            self.assertNotIn("You should not see this inner-inner body.", content)
-            # deep.eml should appear as bullet-list attachment within the inner email content
+            # Inner-inner IS extracted now (depth 2, under the depth-5 cap)
+            self.assertIn("Deep inner-inner body content.", content)
             self.assertIn("deep.eml", content)
         finally:
             eml_path.unlink()

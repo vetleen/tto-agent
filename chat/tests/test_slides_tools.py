@@ -404,8 +404,8 @@ class PreviewToolTests(TestCase):
             r = json.loads(tool._run(slide_ids=["s1"]))
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["previewed_count"], 1)
-        self.assertEqual(len(self.ctx.pending_image_assets), 1)
-        item = self.ctx.pending_image_assets[0]
+        self.assertEqual(len(self.ctx.pending_native_assets), 1)
+        item = self.ctx.pending_native_assets[0]
         self.assertEqual(item["media_type"], "image/png")
         self.assertIn("Rendered slide s1", item["description"])
 

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Per-image download cap (smaller than the page cap — a single content image).
 _WEB_IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
-# Cap unique image handles processed per call, mirroring document_view_image.
+# Cap unique image handles processed per call, mirroring document_view_native.
 _MAX_HANDLES_PER_CALL = 4
 
 
@@ -141,7 +141,7 @@ class WebImageViewTool(ContextAwareTool):
                 created_by=user,
             )
             token = image_token(asset.id, "")
-            context.pending_image_assets.append({
+            context.pending_native_assets.append({
                 "asset_id": token,
                 "b64": base64.b64encode(safe_bytes).decode("ascii"),
                 "media_type": media_type,

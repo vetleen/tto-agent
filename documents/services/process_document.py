@@ -204,11 +204,18 @@ def _extract_native(version, doc):
 
             logger.info("process_document_version: version_id=%s stage=extracting", version.id)
             image_sink = None
-            if ext in ("docx", "pdf"):
+            if ext in ("docx", "pdf", "pptx"):
                 # Embedded images become Assets (bytes preserved) + inline
                 # [[image:uuid|...]] tokens (searchable descriptions).
                 from documents.services.image_assets import image_asset_sink
                 image_sink = image_asset_sink(version, doc)
+            elif ext in ("msg", "eml"):
+                # Email trees: one sink + one shared counter across every
+                # attachment (and nested email), so image numbering and the
+                # vision-description cap span the whole message rather than
+                # resetting per attachment.
+                from documents.services.image_assets import image_asset_sink
+                image_sink = image_asset_sink(version, doc, counter={"n": 0})
             docs = load_documents(file_path, ext, image_sink=image_sink)
             combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
             cleaned = clean_extracted_text(combined)

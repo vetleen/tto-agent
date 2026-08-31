@@ -84,8 +84,8 @@ class ChatGenerateImageToolTests(TestCase):
         self.assertTrue(asset.blob)
         self.assertEqual(asset.created_by, self.user)
         # The image is surfaced to the model for this turn.
-        self.assertEqual(len(self.ctx.pending_image_assets), 1)
-        self.assertEqual(self.ctx.pending_image_assets[0]["media_type"], "image/png")
+        self.assertEqual(len(self.ctx.pending_native_assets), 1)
+        self.assertEqual(self.ctx.pending_native_assets[0]["media_type"], "image/png")
 
     def test_disabled_returns_error(self):
         disabled = SimpleNamespace(image_model="", allowed_image_models=[])

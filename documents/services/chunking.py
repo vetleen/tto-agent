@@ -6,9 +6,11 @@ embedding-based splitting into ~300-token flat chunks.
 """
 from __future__ import annotations
 
+import io
 import logging
 import re
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -96,13 +98,24 @@ class EmailAttachment:
     content: str | None  # Extracted text, or None if unsupported/failed
 
 
+# How many levels of nested emails (email attached to email attached to …) we
+# descend before giving up. Non-email attachments (docx/pdf/pptx) are leaves —
+# they don't recurse — so this only bounds email-in-email nesting.
+MAX_EMAIL_NESTING_DEPTH = 5
+
+
 def _extract_attachment_content(
-    data: bytes, filename: str, *, _depth: int = 0
+    data: bytes, filename: str, *, _depth: int = 0, image_sink=None
 ) -> str | None:
     """Try to extract text content from an email attachment.
 
     Returns the extracted text, or None if the file type is unsupported,
     extraction fails, or depth limit is exceeded for nested emails.
+
+    ``image_sink`` is threaded down to docx/pdf/pptx attachments (and nested
+    emails) so a file *inside* an email keeps its embedded images — persisted as
+    Assets on the parent email's version with searchable tokens, numbered by the
+    sink's tree-global counter.
     """
     from django.conf import settings
 
@@ -118,7 +131,7 @@ def _extract_attachment_content(
         return None
 
     # Cap recursion for nested emails
-    if ext in ("msg", "eml") and _depth >= 1:
+    if ext in ("msg", "eml") and _depth >= MAX_EMAIL_NESTING_DEPTH:
         return None
 
     tmp_path = None
@@ -130,11 +143,11 @@ def _extract_attachment_content(
             tmp_path = Path(tmp.name)
 
         if ext == "msg":
-            docs = _load_msg_as_markdown(tmp_path, _depth=_depth + 1)
+            docs = _load_msg_as_markdown(tmp_path, _depth=_depth + 1, image_sink=image_sink)
         elif ext == "eml":
-            docs = _load_eml_as_markdown(tmp_path, _depth=_depth + 1)
+            docs = _load_eml_as_markdown(tmp_path, _depth=_depth + 1, image_sink=image_sink)
         else:
-            docs = load_documents(tmp_path, ext)
+            docs = load_documents(tmp_path, ext, image_sink=image_sink)
 
         text = "\n\n".join(d.page_content for d in docs if d.page_content)
         return text if text.strip() else None
@@ -165,24 +178,143 @@ def _load_docx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
     return [Document(page_content=content.strip())]
 
 
-def _load_pptx_as_markdown(path: Path) -> list[Any]:
+class _PptxImage:
+    """Adapter giving a python-pptx embedded image the shape an ``image_sink``
+    expects (``.content_type``, ``.alt_text``, ``.open()``) — mirrors
+    core.pdf._PdfImage so the shared sinks work unchanged."""
+
+    def __init__(self, data: bytes, content_type: str, alt_text: str = ""):
+        self._data = data
+        self.content_type = content_type
+        self.alt_text = alt_text
+
+    @contextmanager
+    def open(self):
+        bio = io.BytesIO(self._data)
+        try:
+            yield bio
+        finally:
+            bio.close()
+
+
+def _pptx_shape_image(shape):
+    """Return a picture shape's embedded pptx Image, or None for non-pictures.
+
+    ``shape.image`` exists only on picture shapes (incl. picture placeholders)
+    and raises on everything else, so probe it rather than switch on shape_type.
+    """
+    try:
+        return shape.image
+    except (AttributeError, KeyError, NotImplementedError, ValueError):
+        return None
+
+
+def _pptx_shape_alt_text(shape) -> str:
+    """Best-effort alt/description text from a shape's ``cNvPr @descr``, or ""."""
+    try:
+        for el in shape._element.iter():
+            if el.tag.rsplit("}", 1)[-1] == "cNvPr":
+                return (el.get("descr") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _pptx_chart_to_markdown(chart) -> str:
+    """Render a native pptx chart's underlying data as a Markdown table.
+
+    A chart authored in PowerPoint keeps its category labels and per-series
+    values in the XML, so we can transcribe the numbers with no rendering or
+    vision pass. Returns "" when the chart exposes no usable data (charts pasted
+    as images aren't charts at all — they fall to the picture path instead).
+    """
+    try:
+        plots = list(chart.plots)
+    except Exception:
+        return ""
+    if not plots:
+        return ""
+
+    chart_title = ""
+    try:
+        if chart.has_title:
+            chart_title = (chart.chart_title.text_frame.text or "").strip()
+    except Exception:
+        chart_title = ""
+
+    tables: list[str] = []
+    for plot in plots:
+        try:
+            categories = [("" if c is None else str(c)) for c in plot.categories]
+        except Exception:
+            categories = []
+        try:
+            series_list = list(plot.series)
+        except Exception:
+            series_list = []
+        if not series_list:
+            continue
+
+        names: list[str] = []
+        values: list[list] = []
+        for i, s in enumerate(series_list):
+            try:
+                names.append(str(s.name) if s.name else f"Series {i + 1}")
+            except Exception:
+                names.append(f"Series {i + 1}")
+            try:
+                values.append(list(s.values))
+            except Exception:
+                values.append([])
+
+        n = max([len(categories)] + [len(v) for v in values])
+        if n == 0:
+            continue
+        headers = ["Category"] + names
+        out = [
+            "| " + " | ".join(h.replace("|", "\\|") for h in headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+        ]
+        for r in range(n):
+            cat = categories[r] if r < len(categories) else ""
+            cells = [cat.replace("|", "\\|")]
+            for v in values:
+                cell = v[r] if r < len(v) else ""
+                cells.append("" if cell is None else str(cell))
+            out.append("| " + " | ".join(cells) + " |")
+        tables.append("\n".join(out))
+
+    if not tables:
+        return ""
+    prefix = f"**Chart: {chart_title}**\n" if chart_title else ""
+    return prefix + "\n\n".join(tables)
+
+
+def _load_pptx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
     """Extract PPTX (PowerPoint) slide content as Markdown.
 
     Each slide becomes a ``## Slide N`` section (title folded into the heading
     when present) so the structure-aware chunker splits on slide boundaries.
-    Body text frames become bullet lines, tables become Markdown tables, and
-    speaker notes are appended as a blockquote. Grouped shapes are walked
-    recursively so text nested in groups is not lost.
+    Body text frames become bullet lines, tables and native charts become
+    Markdown tables, and speaker notes are appended as a blockquote. Grouped
+    shapes are walked recursively so text nested in groups is not lost.
 
-    Image-only slides contribute no text; a deck that is entirely images will
-    yield empty output and fail extraction upstream (same as a scanned PDF).
-    Embedded-image assets are NOT extracted for v1.
+    Embedded pictures are rendered inline via ``image_sink`` (see
+    documents.services.image_assets.image_asset_sink) — bytes preserved as an
+    Asset plus a searchable ``[[image:uuid|...]]`` token; when omitted they
+    become simple ``[Image N]`` placeholders. Native charts have their data
+    transcribed directly (no vision needed); a chart pasted as an image is a
+    picture and goes through the image path.
     """
     from langchain_core.documents import Document
     from pptx import Presentation
 
+    from core.docx import placeholder_image_sink
+
+    sink = image_sink or placeholder_image_sink
     prs = Presentation(str(path))
     parts: list[str] = []
+    img_idx = {"n": 0}  # per-document picture counter (the sink may override it)
 
     def _iter_shapes(shapes):
         for shape in shapes:
@@ -204,10 +336,31 @@ def _load_pptx_as_markdown(path: Path) -> list[Any]:
         for shape in _iter_shapes(slide.shapes):
             if title_id is not None and getattr(shape, "shape_id", None) == title_id:
                 continue
+            # Native chart: transcribe its data as a table (no vision needed).
+            if getattr(shape, "has_chart", False):
+                chart_md = _pptx_chart_to_markdown(shape.chart)
+                if chart_md:
+                    body_lines.append(chart_md)
+                continue
             if getattr(shape, "has_table", False):
                 table_md = _pptx_table_to_markdown(shape.table)
                 if table_md:
                     body_lines.append(table_md)
+                continue
+            # Embedded picture: hand its bytes to the image_sink.
+            image = _pptx_shape_image(shape)
+            if image is not None:
+                img_idx["n"] += 1
+                try:
+                    token = sink(
+                        _PptxImage(image.blob, image.content_type, _pptx_shape_alt_text(shape)),
+                        img_idx["n"],
+                    )
+                    if token:
+                        body_lines.append(token)
+                except Exception:
+                    logger.exception("pptx image_sink failed for a shape; skipping")
+                    img_idx["n"] -= 1
                 continue
             if getattr(shape, "has_text_frame", False):
                 for para in shape.text_frame.paragraphs:
@@ -322,7 +475,7 @@ def _format_email_as_markdown(
     return "\n".join(parts)
 
 
-def _load_msg_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
+def _load_msg_as_markdown(path: Path, *, _depth: int = 0, image_sink=None) -> list[Any]:
     """Extract .msg (Outlook) email as a Markdown LangChain Document."""
     import extract_msg
     from langchain_core.documents import Document
@@ -356,7 +509,10 @@ def _load_msg_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
             data = getattr(att, "data", None)
             size = getattr(att, "dataLength", None) or (len(data) if data else 0)
             size_str = _format_size(size)
-            extracted = _extract_attachment_content(data, name, _depth=_depth) if data else None
+            extracted = (
+                _extract_attachment_content(data, name, _depth=_depth, image_sink=image_sink)
+                if data else None
+            )
             attachments.append(EmailAttachment(filename=name, size_str=size_str, content=extracted))
 
         content = _format_email_as_markdown(
@@ -368,7 +524,7 @@ def _load_msg_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
         msg.close()
 
 
-def _load_eml_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
+def _load_eml_as_markdown(path: Path, *, _depth: int = 0, image_sink=None) -> list[Any]:
     """Extract .eml (RFC 822) email as a Markdown LangChain Document."""
     import email
     import email.policy
@@ -403,7 +559,10 @@ def _load_eml_as_markdown(path: Path, *, _depth: int = 0) -> list[Any]:
         data = att.get_payload(decode=True)
         size = len(data) if data else 0
         size_str = _format_size(size)
-        extracted = _extract_attachment_content(data, filename, _depth=_depth) if data else None
+        extracted = (
+            _extract_attachment_content(data, filename, _depth=_depth, image_sink=image_sink)
+            if data else None
+        )
         attachments.append(EmailAttachment(filename=filename, size_str=size_str, content=extracted))
 
     content = _format_email_as_markdown(
@@ -418,7 +577,8 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
     """
     Load a file into a list of LangChain Document objects.
     file_extension should be lowercased (e.g. 'pdf', 'txt', 'md', 'html').
-    ``image_sink`` (docx only) controls how embedded images are rendered.
+    ``image_sink`` (docx/pdf/pptx, and email attachments of those types)
+    controls how embedded images are rendered.
     """
     path = Path(file_path)
     if not path.exists():
@@ -436,7 +596,7 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "pptx":
-        docs = _load_pptx_as_markdown(path)
+        docs = _load_pptx_as_markdown(path, image_sink=image_sink)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext in ("xlsx", "xlsm"):
@@ -453,11 +613,11 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "msg":
-        docs = _load_msg_as_markdown(path)
+        docs = _load_msg_as_markdown(path, image_sink=image_sink)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "eml":
-        docs = _load_eml_as_markdown(path)
+        docs = _load_eml_as_markdown(path, image_sink=image_sink)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext in ("txt", "md", "html", "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log"):

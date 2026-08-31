@@ -205,35 +205,60 @@ class SimpleChatPipeline(BasePipeline):
             return [f.result() for f in futures]
 
     @staticmethod
-    def _append_pending_images(new_messages: List[Message], req: ChatRequest) -> None:
-        """Drain context.pending_image_assets into a user message so the model
-        can view them on its next turn.
+    def _append_pending_native_assets(new_messages: List[Message], req: ChatRequest) -> None:
+        """Drain context.pending_native_assets into a user message so the model
+        can view the file(s) it asked for on its next turn.
 
-        Native image blocks are used when the model accepts image input; a
-        non-vision model gets the text descriptions instead. No-op when no tool
-        queued any images this turn (the common case), so blast radius is small.
+        Each queued item carries a ``kind`` (``"image"`` — the default and the
+        common case — or ``"pdf"``). Native content blocks are used when the
+        model accepts that modality (image / pdf); otherwise the item degrades to
+        its text description (image) or extracted text (pdf). No-op when nothing
+        was queued this turn, so blast radius is small.
         """
         ctx = req.context
-        pending = list(getattr(ctx, "pending_image_assets", None) or [])
+        pending = list(getattr(ctx, "pending_native_assets", None) or [])
         if not pending:
             return
-        ctx.pending_image_assets.clear()
+        ctx.pending_native_assets.clear()
 
         from llm.display import supports_modality
 
-        blocks: list = [{"type": "text", "text": "Here are the image(s) you requested to view:"}]
-        if req.model and supports_modality(req.model, "image"):
-            from chat.services import build_image_content_block
-            from llm.core.model_factory import detect_provider
+        model = req.model or ""
+        _provider_cache: list = []
 
-            provider = detect_provider(req.model)
-            for item in pending:
-                blocks.append(build_image_content_block(item["b64"], item["media_type"], provider))
+        def _provider():
+            if not _provider_cache:
+                from llm.core.model_factory import detect_provider
+                _provider_cache.append(detect_provider(model))
+            return _provider_cache[0]
+
+        blocks: list = [{"type": "text", "text": "Here are the file(s) you requested to view:"}]
+        for item in pending:
+            kind = item.get("kind", "image")
+            if kind == "pdf":
+                filename = item.get("filename") or "document.pdf"
+                if model and supports_modality(model, "pdf"):
+                    from chat.services import build_pdf_content_block
+
+                    blocks.append(build_pdf_content_block(item["b64"], filename, _provider()))
+                    desc = item.get("description")
+                    if desc:
+                        blocks.append({"type": "text", "text": f"(above: {filename} — {desc})"})
+                else:
+                    # Model can't take PDF natively — fall back to extracted text.
+                    from chat.services import build_text_content_block
+
+                    blocks.append(build_text_content_block(item.get("extracted_text") or "", filename))
+                continue
+            # kind == "image"
+            if model and supports_modality(model, "image"):
+                from chat.services import build_image_content_block
+
+                blocks.append(build_image_content_block(item["b64"], item["media_type"], _provider()))
                 desc = item.get("description")
                 if desc:
                     blocks.append({"type": "text", "text": f"(above: {desc})"})
-        else:
-            for item in pending:
+            else:
                 blocks.append({
                     "type": "text",
                     "text": f"[Image not shown — model has no vision. Description: {item.get('description', '')}]",
@@ -245,7 +270,7 @@ class SimpleChatPipeline(BasePipeline):
         """Drain context.pending_skill_instructions into a user message so a skill
         the agent just attached takes effect this turn.
 
-        Mirrors _append_pending_images: chat_skill_attach pushes the rendered
+        Mirrors _append_pending_native_assets: chat_skill_attach pushes the rendered
         instruction block(s) of newly-attached skills onto the shared context, and
         the loop injects them as an ephemeral (non-persisted) user message on the
         next iteration. No-op when nothing was queued (the common case).
@@ -404,7 +429,7 @@ class SimpleChatPipeline(BasePipeline):
                     ),
                 ))
 
-            self._append_pending_images(new_messages, req)
+            self._append_pending_native_assets(new_messages, req)
             self._append_pending_skill_instructions(new_messages, req)
             tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
@@ -701,7 +726,7 @@ class SimpleChatPipeline(BasePipeline):
                     ),
                 ))
 
-            self._append_pending_images(new_messages, req)
+            self._append_pending_native_assets(new_messages, req)
             self._append_pending_skill_instructions(new_messages, req)
             tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})

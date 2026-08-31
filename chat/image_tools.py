@@ -139,7 +139,7 @@ class ChatGenerateImageTool(ContextAwareTool):
 
         # Surface the image to the model too, so it can describe/caption it.
         if context is not None:
-            context.pending_image_assets.append(
+            context.pending_native_assets.append(
                 {
                     "asset_id": token,
                     "b64": base64.b64encode(result.img_bytes).decode("ascii"),

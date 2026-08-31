@@ -70,8 +70,8 @@ class WebImageViewToolTests(TestCase):
         self.assertEqual(asset.content_type, "image/png")
         self.assertTrue(asset.blob)
         # Surfaced to the model this turn.
-        self.assertEqual(len(self.ctx.pending_image_assets), 1)
-        self.assertEqual(self.ctx.pending_image_assets[0]["media_type"], "image/png")
+        self.assertEqual(len(self.ctx.pending_native_assets), 1)
+        self.assertEqual(self.ctx.pending_native_assets[0]["media_type"], "image/png")
 
     def test_unknown_handle_errors(self):
         result = self._invoke({"handles": ["img-99"]}, return_value=_resp(_png()))
@@ -114,7 +114,7 @@ class WebImageViewToolTests(TestCase):
 
         fetch.assert_called_once()
         self.assertEqual(result.count("img-1: viewed"), 1)
-        self.assertEqual(len(self.ctx.pending_image_assets), 1)
+        self.assertEqual(len(self.ctx.pending_native_assets), 1)
 
     def test_failed_fetches_are_capped_at_first_four_unique_handles(self):
         urls = [_IMG_URL]
@@ -133,7 +133,7 @@ class WebImageViewToolTests(TestCase):
         self.assertEqual(fetch.call_count, 4)
         self.assertEqual([call.args[0] for call in fetch.call_args_list], urls[:4])
         self.assertIn("max 4 images per call", result)
-        self.assertEqual(len(self.ctx.pending_image_assets), 0)
+        self.assertEqual(len(self.ctx.pending_native_assets), 0)
 
     def test_per_call_attachment_cap(self):
         for i in range(6):
@@ -144,7 +144,7 @@ class WebImageViewToolTests(TestCase):
         handles = [f"img-{n}" for n in range(2, 8)]  # 6 fresh valid handles
         result = self._invoke({"handles": handles}, return_value=_resp(_png()))
         self.assertIn("max 4 images per call", result)
-        self.assertEqual(len(self.ctx.pending_image_assets), 4)
+        self.assertEqual(len(self.ctx.pending_native_assets), 4)
 
     def test_subagent_context_can_view(self):
         sub_ctx = RunContext.create(user_id=self.user.pk, conversation_id=str(self.thread.id))

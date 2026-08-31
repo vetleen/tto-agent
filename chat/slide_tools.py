@@ -594,7 +594,7 @@ class PreviewSlidesTool(ContextAwareTool):
                 with source.open("rb") as fh:
                     data = fh.read()
                 data, ct = _downscale_png(data, ct)
-                ctx.pending_image_assets.append({
+                ctx.pending_native_assets.append({
                     "asset_id": sid,  # label only — unused by the pipeline drain
                     "b64": base64.b64encode(data).decode("ascii"),
                     "media_type": ct or "image/png",

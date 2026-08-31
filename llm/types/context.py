@@ -22,15 +22,17 @@ class RunContext(BaseModel):
     # Which agent kind this run is: "main" (the orchestrator) or "subagent".
     # Lets the pipeline defensively drop tools whose audience excludes this kind.
     agent_kind: str = "main"
-    # Image assets a tool asked to surface to the model this turn. The chat
-    # pipeline drains these into a user message — native image blocks when the
-    # model supports vision, else their text descriptions. Each item is a dict:
-    # {"asset_id", "b64", "media_type", "description"}.
-    pending_image_assets: list = Field(default_factory=list)
+    # Files a tool asked to surface to the model this turn (document_view_native
+    # queues images/pdf). The chat pipeline drains these into a user message as
+    # native content blocks when the model supports the modality, else a text
+    # fallback. Each item is a dict keyed by "kind" ("image" default, or "pdf"):
+    #   image: {"asset_id", "b64", "media_type", "description"}
+    #   pdf:   {"kind": "pdf", "b64", "filename", "description", "extracted_text"}
+    pending_native_assets: list = Field(default_factory=list)
     # Skill activation the agent triggered mid-turn (via chat_skill_attach).
     # The chat pipeline drains these each tool-loop iteration so a skill the
     # agent attaches takes effect on the very next step of the SAME turn — not
-    # the next user turn. Mirrors the pending_image_assets drain pattern.
+    # the next user turn. Mirrors the pending_native_assets drain pattern.
     #   added_tool_names           — tool names to union into the live tool set.
     #   pending_skill_instructions — rendered instruction blocks to inject.
     added_tool_names: list = Field(default_factory=list)

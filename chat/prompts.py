@@ -434,7 +434,7 @@ def build_semi_static_prompt(
             "To show an image from an attached data room — in a canvas or directly in "
             "your chat reply — paste its image token where you want the image to appear "
             "(e.g. right under a heading). The document tools (`document_search`, "
-            "`document_list`, `document_read`, `document_view_image`) surface a token of "
+            "`document_list`, `document_read`, `document_view_native`) surface a token of "
             "the form `[[image:<uuid>|]]` for each image document. The part after the "
             "`|` is an **optional caption** that becomes the image's alt text — leave it "
             "empty, or write your own short caption between the `|` and the `]]` (e.g. "

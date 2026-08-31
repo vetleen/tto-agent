@@ -1,5 +1,5 @@
-"""Tests for same-turn image viewing: the pipeline injection helper and the
-document_view_image tool."""
+"""Tests for same-turn native viewing: the pipeline injection helper and the
+document_view_native tool (images + PDFs)."""
 
 import tempfile
 
@@ -20,7 +20,7 @@ _MEDIA = tempfile.mkdtemp()
 
 def _req(model, pending):
     ctx = RunContext.create(user_id=1)
-    ctx.pending_image_assets = pending
+    ctx.pending_native_assets = pending
     return ChatRequest(
         messages=[Message(role="user", content="hi")],
         model=model,
@@ -30,13 +30,13 @@ def _req(model, pending):
     ), ctx
 
 
-class AppendPendingImagesTests(TestCase):
+class AppendPendingNativeAssetsTests(TestCase):
     def test_vision_model_gets_native_image_block(self):
         req, ctx = _req("anthropic/claude-opus-4-8", [
             {"asset_id": "", "b64": "AAAA", "media_type": "image/png", "description": "a bar chart"},
         ])
         new_messages = []
-        SimpleChatPipeline._append_pending_images(new_messages, req)
+        SimpleChatPipeline._append_pending_native_assets(new_messages, req)
 
         self.assertEqual(len(new_messages), 1)
         msg = new_messages[0]
@@ -44,14 +44,14 @@ class AppendPendingImagesTests(TestCase):
         self.assertIsInstance(msg.content, list)
         self.assertTrue(any(isinstance(b, dict) and b.get("type") == "image" for b in msg.content))
         # Collector is drained so it isn't re-injected next iteration.
-        self.assertEqual(ctx.pending_image_assets, [])
+        self.assertEqual(ctx.pending_native_assets, [])
 
     def test_non_vision_model_gets_text_fallback(self):
         req, ctx = _req("openai/whisper-1", [
             {"asset_id": "", "b64": "AAAA", "media_type": "image/png", "description": "a bar chart"},
         ])
         new_messages = []
-        SimpleChatPipeline._append_pending_images(new_messages, req)
+        SimpleChatPipeline._append_pending_native_assets(new_messages, req)
 
         self.assertEqual(len(new_messages), 1)
         msg = new_messages[0]
@@ -61,12 +61,34 @@ class AppendPendingImagesTests(TestCase):
     def test_no_pending_is_noop(self):
         req, ctx = _req("anthropic/claude-opus-4-8", [])
         new_messages = []
-        SimpleChatPipeline._append_pending_images(new_messages, req)
+        SimpleChatPipeline._append_pending_native_assets(new_messages, req)
         self.assertEqual(new_messages, [])
+
+    def test_pdf_model_gets_native_document_block(self):
+        req, ctx = _req("anthropic/claude-opus-4-8", [
+            {"kind": "pdf", "b64": "AAAA", "filename": "report.pdf",
+             "description": "q3 deck", "extracted_text": "fallback text"},
+        ])
+        new_messages = []
+        SimpleChatPipeline._append_pending_native_assets(new_messages, req)
+        msg = new_messages[0]
+        self.assertTrue(any(isinstance(b, dict) and b.get("type") == "document" for b in msg.content))
+        self.assertEqual(ctx.pending_native_assets, [])
+
+    def test_non_pdf_model_falls_back_to_text(self):
+        req, ctx = _req("openai/whisper-1", [
+            {"kind": "pdf", "b64": "AAAA", "filename": "report.pdf",
+             "description": "q3 deck", "extracted_text": "fallback text here"},
+        ])
+        new_messages = []
+        SimpleChatPipeline._append_pending_native_assets(new_messages, req)
+        msg = new_messages[0]
+        self.assertFalse(any(isinstance(b, dict) and b.get("type") == "document" for b in msg.content))
+        self.assertTrue(any("fallback text here" in b.get("text", "") for b in msg.content))
 
 
 @override_settings(MEDIA_ROOT=_MEDIA)
-class DocumentViewImageToolTests(TestCase):
+class DocumentViewNativeToolTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="siv@test.com", password="pw")
         self.room = DataRoom.objects.create(name="R", slug="r-siv", created_by=self.user)
@@ -83,9 +105,9 @@ class DocumentViewImageToolTests(TestCase):
         self.doc.save(update_fields=["current_version"])
 
     def _tool(self, data_room_ids):
-        from chat.tools import DocumentViewImageTool
+        from chat.tools import DocumentViewNativeTool
 
-        tool = DocumentViewImageTool()
+        tool = DocumentViewNativeTool()
         tool.set_context(RunContext.create(user_id=self.user.pk, data_room_ids=data_room_ids))
         return tool
 
@@ -93,7 +115,7 @@ class DocumentViewImageToolTests(TestCase):
         tool = self._tool([self.room.pk])
         result = tool._run([1])
         self.assertIn("attached", result.lower())
-        pending = tool.context.pending_image_assets
+        pending = tool.context.pending_native_assets
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["media_type"], "image/png")
         self.assertTrue(pending[0]["b64"])
@@ -104,19 +126,19 @@ class DocumentViewImageToolTests(TestCase):
         tool = self._tool([self.room.pk])
         result = tool._run([1])
         self.assertIn("[[image:", result)
-        self.assertTrue(tool.context.pending_image_assets[0]["asset_id"].startswith("[[image:"))
+        self.assertTrue(tool.context.pending_native_assets[0]["asset_id"].startswith("[[image:"))
 
     def test_inaccessible_room_is_denied(self):
         other = User.objects.create_user(email="siv-other@test.com", password="pw")
         room2 = DataRoom.objects.create(name="R2", slug="r2-siv", created_by=other)
         tool = self._tool([room2.pk])  # this user does not own room2
         result = tool._run([1])
-        self.assertEqual(tool.context.pending_image_assets, [])
+        self.assertEqual(tool.context.pending_native_assets, [])
         self.assertNotIn("attached", result.lower())
 
     def test_attaches_image_from_original_file_when_native_blob_empty(self):
         # Production shape: a freshly-uploaded image keeps its bytes on
-        # doc.original_file with an EMPTY native_blob. document_view_image must still
+        # doc.original_file with an EMPTY native_blob. document_view_native must still
         # find the image, not report "no viewable image".
         doc = DataRoomDocument.objects.create(
             data_room=self.room, uploaded_by=self.user,
@@ -133,9 +155,32 @@ class DocumentViewImageToolTests(TestCase):
         tool = self._tool([self.room.pk])
         result = tool._run([2])
         self.assertIn("attached", result.lower())
-        pending = tool.context.pending_image_assets
+        pending = tool.context.pending_native_assets
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["media_type"], "image/jpeg")
+        self.assertEqual(pending[0]["kind"], "image")
+        self.assertTrue(pending[0]["b64"])
+
+    def test_attaches_pdf_natively(self):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.user,
+            original_filename="report.pdf", mime_type="application/pdf",
+            doc_index=3, status=DataRoomDocument.Status.READY,
+        )
+        version = DataRoomDocumentVersion.objects.create(
+            document=doc, parser_type="pypdf", mime_type="application/pdf",
+            native_blob=ContentFile(b"%PDF-1.4 fake-pdf", name="report.pdf"),
+        )
+        doc.current_version = version
+        doc.save(update_fields=["current_version"])
+
+        tool = self._tool([self.room.pk])
+        result = tool._run([3])
+        self.assertIn("attached", result.lower())
+        pending = tool.context.pending_native_assets
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["kind"], "pdf")
+        self.assertEqual(pending[0]["filename"], "report.pdf")
         self.assertTrue(pending[0]["b64"])
 
 

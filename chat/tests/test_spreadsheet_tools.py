@@ -209,7 +209,7 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
             result = tool._run(1)
         self.assertIn("Attached tile x0y0", result)
         self.assertIn("columns A–C", result)
-        pending = tool.context.pending_image_assets
+        pending = tool.context.pending_native_assets
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["media_type"], "image/png")
         self.assertTrue(pending[0]["asset_id"].startswith("[[image:"))
@@ -220,7 +220,7 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
         with patch("documents.services.spreadsheets.tiles.render_band", side_effect=_fake_render_band):
             result = tool._run(1, rows="2-3")
         self.assertIn("Attached tile x0y0", result)
-        self.assertEqual(len(tool.context.pending_image_assets), 1)
+        self.assertEqual(len(tool.context.pending_native_assets), 1)
 
     def test_second_view_hits_tile_cache(self):
         tool = self._view_tool()
@@ -232,7 +232,7 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
             tool2 = self._view_tool()
             tool2._run(1)
             self.assertEqual(render.call_count, 1)  # cached Asset reused
-        self.assertEqual(len(tool2.context.pending_image_assets), 1)
+        self.assertEqual(len(tool2.context.pending_native_assets), 1)
 
     @override_settings(XLSX_MAX_TILES_PER_VIEW=1)
     def test_tile_cap_reports_excess(self):
@@ -240,13 +240,13 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
         with patch("documents.services.spreadsheets.tiles.render_band", side_effect=_fake_render_band):
             result = tool._run(1, tiles=["x0y0", "x0y1"])
         self.assertIn("showing the first 1", result)
-        self.assertEqual(len(tool.context.pending_image_assets), 1)
+        self.assertEqual(len(tool.context.pending_native_assets), 1)
 
     def test_duplicate_tile_refs_attach_once(self):
         tool = self._view_tool()
         with patch("documents.services.spreadsheets.tiles.render_band", side_effect=_fake_render_band):
             tool._run(1, tiles=["x0y0", "x0y0"])
-        self.assertEqual(len(tool.context.pending_image_assets), 1)
+        self.assertEqual(len(tool.context.pending_native_assets), 1)
 
     def test_invalid_tile_and_missing_tile_reported(self):
         tool = self._view_tool()
@@ -254,7 +254,7 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
             result = tool._run(1, tiles=["bogus", "x9y9"])
         self.assertIn("Invalid tile reference", result)
         self.assertIn("does not exist", result)
-        self.assertEqual(tool.context.pending_image_assets, [])
+        self.assertEqual(tool.context.pending_native_assets, [])
 
     def test_render_unavailable_degrades_to_message(self):
         tool = self._view_tool()
@@ -264,7 +264,7 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
         ):
             result = tool._run(1)
         self.assertIn("unavailable", result)
-        self.assertEqual(tool.context.pending_image_assets, [])
+        self.assertEqual(tool.context.pending_native_assets, [])
 
     def test_quarantine_refuses(self):
         self.version.is_partially_quarantined = True
@@ -274,7 +274,7 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
 
 
 class CollectDocImagesTileExclusionTests(SpreadsheetToolTestCase):
-    def test_tiles_are_excluded_from_document_view_image(self):
+    def test_tiles_are_excluded_from_document_view_native(self):
         from chat.models import Asset
         from chat.tools import _collect_doc_images
         from documents.services.spreadsheets.tiles import TILE_ALT_MARKER, store_tile

@@ -4,7 +4,7 @@ Covers:
 - A1: document_open_to_canvas is main-audience (not exposed to sub-agents).
 - A2: canvas-export SSRF guards (WeasyPrint url_fetcher + remote-<img> stripping).
 - A3: document_open_to_canvas gates a still-scanning upload, keeps agent remediation.
-- A4: document_view_image gates quarantined / still-scanning documents.
+- A4: document_view_native gates quarantined / still-scanning documents.
 - A5: the Loops page embeds JSON via json_script (no </script> breakout).
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from django.urls import reverse
 
 from chat.models import ChatThread
 from chat.pdf_export import _safe_url_fetcher
-from chat.tools import DocumentViewImageTool, OpenDocumentToCanvasTool
+from chat.tools import DocumentViewNativeTool, OpenDocumentToCanvasTool
 from chat.views import _strip_remote_images
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentVersion
 from documents.tests._helpers import make_document, make_version
@@ -131,7 +131,7 @@ class ViewImageGateTests(TestCase):
         self.ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[self.room.pk])
 
     def _view(self, doc):
-        tool = DocumentViewImageTool()
+        tool = DocumentViewNativeTool()
         tool.set_context(self.ctx)
         return tool.invoke({"doc_indices": [doc.doc_index]})
 
@@ -139,19 +139,19 @@ class ViewImageGateTests(TestCase):
         doc = make_document(self.room, self.user, status=SCANNING, chunks=["x"])
         msg = self._view(doc)
         self.assertIn("No document with index", msg)
-        self.assertEqual(list(self.ctx.pending_image_assets), [])
+        self.assertEqual(list(self.ctx.pending_native_assets), [])
 
     def test_quarantined_document_attaches_nothing(self):
         doc = make_document(self.room, self.user, status=READY, is_quarantined=True, chunks=["x"])
         msg = self._view(doc)
         self.assertIn("quarantined", msg)
-        self.assertEqual(list(self.ctx.pending_image_assets), [])
+        self.assertEqual(list(self.ctx.pending_native_assets), [])
 
     def test_deferred_draft_does_not_block_live_version(self):
         # Doc-level is_quarantined is a union over retained versions: a kept-but-
         # blocked draft sets it while the live version stays clean. The tool must
-        # gate on the served (live) version — here the doc has no image, so the
-        # answer is "no viewable image", not a quarantine refusal.
+        # gate on the served (live) version — here the doc has no image, so it
+        # returns the live version's extracted text, not a quarantine refusal.
         from documents.services.versioning import recompute_document_sensitivity
 
         doc = make_document(self.room, self.user, status=READY, chunks=["clean"])
@@ -162,8 +162,9 @@ class ViewImageGateTests(TestCase):
         )
         recompute_document_sensitivity(doc.pk)
         msg = self._view(doc)
-        self.assertIn("no viewable image found", msg)
         self.assertNotIn("quarantined", msg)
+        self.assertIn("clean", msg)
+        self.assertNotIn("flagged", msg)
 
     def test_quarantined_draft_with_no_live_version_refuses(self):
         # A brand-new doc whose only version is a kept-but-blocked draft (active
@@ -180,7 +181,7 @@ class ViewImageGateTests(TestCase):
         )
         msg = self._view(doc)
         self.assertIn("quarantined", msg)
-        self.assertEqual(list(self.ctx.pending_image_assets), [])
+        self.assertEqual(list(self.ctx.pending_native_assets), [])
 
 
 # ---------------------------------------------------------------------------

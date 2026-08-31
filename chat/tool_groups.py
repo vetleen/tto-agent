@@ -9,7 +9,7 @@ DATA_ROOM_TOOL_NAMES = frozenset({
     "document_search",
     "document_read",
     "document_read_sheet",
-    "document_view_image",
+    "document_view_native",
     "document_view_sheet",
     "document_list",
     "document_open_to_canvas",

@@ -1299,9 +1299,9 @@ class GetDocumentStatusTool(ContextAwareTool):
 
 
 # Register on import
-class DocumentViewImageInput(ReasonBaseModel):
+class DocumentViewNativeInput(ReasonBaseModel):
     doc_indices: list[int] = Field(
-        description="Document index number(s) of the image(s) to view, from an attached data room."
+        description="Document index number(s) to view, from an attached data room."
     )
     data_room_id: Optional[int] = Field(
         default=None, description="Optional data room id to disambiguate the document indices."
@@ -1348,90 +1348,166 @@ def _collect_doc_images(doc, max_images: int = 4):
     return out[:max_images]
 
 
-class DocumentViewImageTool(ContextAwareTool):
-    """Attach data-room image(s) to the conversation so the model can view them."""
+def _read_native_bytes(doc, version) -> bytes | None:
+    """Read a document's original file bytes (native_blob else original_file)."""
+    source = version.native_blob if version.native_blob else doc.original_file
+    if not source:
+        return None
+    try:
+        with source.open("rb") as f:
+            return f.read()
+    except Exception:
+        logger.exception("document_view_native: failed to read native bytes for doc %s", doc.id)
+        return None
 
-    name: str = "document_view_image"
+
+def _version_text(version, cap: int) -> str:
+    """Join a version's non-quarantined chunk texts, capped to ``cap`` chars."""
+    parts: list[str] = []
+    used = 0
+    for text in (
+        version.chunks.filter(is_quarantined=False)
+        .order_by("chunk_index")
+        .values_list("text", flat=True)
+    ):
+        if not text:
+            continue
+        parts.append(text)
+        used += len(text) + 2
+        if used >= cap:
+            break
+    return "\n\n".join(parts)[:cap]
+
+
+class DocumentViewNativeTool(ContextAwareTool):
+    """Show data-room document(s) to the model in the richest form it accepts:
+    images and PDFs natively, other types as extracted text."""
+
+    name: str = "document_view_native"
     section: str = "skills"
     subagent_section: str = "chat"
-    start_label: str = "Viewing image..."
-    end_label: str = "Viewed image"
+    start_label: str = "Viewing document..."
+    end_label: str = "Viewed document"
     description: str = (
-        "View image(s) from an attached data room by document index so you can see and reason "
-        "about them (charts, diagrams, screenshots, photos). The image(s) are attached to the "
-        "conversation for you to inspect. Use to view an "
-        "image document, or to inspect an uploaded image."
+        "View document(s) from an attached data room by index, in the richest form supported. "
+        "HandlesSupported files are attached to "
+        "the conversation so you can SEE them natively; any other file "
+        "type comes back as its extracted TEXT inline. Use this to actually "
+        "look at an image or a PDF, or to pull a document's text."
     )
-    args_schema: type[BaseModel] = DocumentViewImageInput
+    args_schema: type[BaseModel] = DocumentViewNativeInput
+
+    _MAX_ATTACHMENTS: int = 4
+    _TEXT_CAP: int = 24_000
 
     def _run(self, doc_indices: list[int], data_room_id: int | None = None, **kwargs) -> str:
         import base64
+        from pathlib import Path
 
-        from chat.assets import get_or_create_version_image_token
+        from chat.assets import file_token_for_document, get_or_create_version_image_token
+        from core.file_types import KIND_PDF, kind_for_extension
         from documents.models import DataRoomDocument
 
         if not doc_indices or not isinstance(doc_indices, list):
-            raise ValueError("document_view_image requires a non-empty 'doc_indices' list")
+            raise ValueError("document_view_native requires a non-empty 'doc_indices' list")
         context = self.context
-        results = []
+        results: list[str] = []
         attached = 0
+
         for idx in doc_indices:
             doc, err = _resolve_document(context, idx, data_room_id)
             if err:
                 results.append(f"Document #{idx}: {err}")
                 continue
-            # Same gate as document_read: don't attach bytes from a document that is
-            # still scanning (don't leak scan state). Quarantine is gated on the
-            # version actually served (_collect_doc_images reads active, falling
-            # back to current) — doc-level is_quarantined is a union over retained
-            # versions and would wrongly refuse a document whose live version is
-            # clean (e.g. after a deferred draft).
+            # Same gates as document_read: never attach bytes from a document
+            # that is still scanning (don't leak scan state), and gate quarantine
+            # on the version actually served.
             if doc.status != DataRoomDocument.Status.READY:
                 results.append(f"Document #{idx}: No document with index {idx} found.")
                 continue
-            ver = doc.active_searchable_version or doc.current_version
-            if ver is None:
+            version = doc.active_searchable_version or doc.current_version
+            if version is None:
                 results.append(f"Document #{idx}: No document with index {idx} found.")
                 continue
-            if ver.is_quarantined:
+            if version.is_quarantined:
                 results.append(f"Document #{idx}: This document is quarantined and unavailable.")
                 continue
-            images = _collect_doc_images(doc)
-            if not images:
-                results.append(f"Document #{idx} ('{doc.original_filename}'): no viewable image found.")
-                continue
-            # For an image-as-document, surface a reusable embed token alongside
-            # the bytes so the model can place it in a canvas or its reply.
-            token = ""
-            if getattr(ver, "parser_type", "") == "image":
-                token = get_or_create_version_image_token(
-                    version_id=ver.id, mime=doc.mime_type, description=doc.description,
-                )
-            for img_bytes, media_type, description in images:
-                if attached >= 4:
-                    break
-                context.pending_image_assets.append({
-                    "asset_id": token,
-                    "b64": base64.b64encode(img_bytes).decode("ascii"),
-                    "media_type": media_type,
-                    "description": description or "",
+
+            remaining = self._MAX_ATTACHMENTS - attached
+            ext = Path(doc.original_filename or "").suffix.lower().lstrip(".")
+            is_pdf = kind_for_extension(ext) == KIND_PDF or (doc.mime_type or "").lower() == "application/pdf"
+
+            # --- PDF: attach natively (the model sees the whole page). ---
+            if is_pdf:
+                if remaining <= 0:
+                    results.append(f"Document #{idx} ('{doc.original_filename}'): attachment limit reached; call again to view it.")
+                    continue
+                data = _read_native_bytes(doc, version)
+                if not data:
+                    results.append(f"Document #{idx} ('{doc.original_filename}'): the original PDF is unavailable.")
+                    continue
+                context.pending_native_assets.append({
+                    "kind": "pdf",
+                    "b64": base64.b64encode(data).decode("ascii"),
+                    "filename": doc.original_filename or "document.pdf",
+                    "description": doc.description or "",
+                    "extracted_text": _version_text(version, self._TEXT_CAP),
                 })
                 attached += 1
-            msg = f"Document #{idx} ('{doc.original_filename}'): attached {min(len(images), 4)} image(s)."
-            if token:
-                msg += (
-                    f" To place it in a canvas or your reply, paste this token where you "
-                    f"want the image (optionally add your own caption between the | and ]]): {token}"
-                )
-            results.append(msg)
+                msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF for you to view."
+                file_tok = file_token_for_document(doc)
+                if file_tok:
+                    msg += f" To offer the original file as a download, paste this token: {file_tok}"
+                results.append(msg)
+                continue
+
+            # --- Image (native image, or a doc's embedded image assets). ---
+            images = _collect_doc_images(doc, max_images=remaining) if remaining > 0 else []
+            if images:
+                token = ""
+                if getattr(version, "parser_type", "") == "image":
+                    token = get_or_create_version_image_token(
+                        version_id=version.id, mime=doc.mime_type, description=doc.description,
+                    )
+                for img_bytes, media_type, description in images:
+                    if attached >= self._MAX_ATTACHMENTS:
+                        break
+                    context.pending_native_assets.append({
+                        "kind": "image",
+                        "asset_id": token,
+                        "b64": base64.b64encode(img_bytes).decode("ascii"),
+                        "media_type": media_type,
+                        "description": description or "",
+                    })
+                    attached += 1
+                msg = f"Document #{idx} ('{doc.original_filename}'): attached {len(images)} image(s) for you to view."
+                if token:
+                    msg += (
+                        f" To place it in a canvas or your reply, paste this token where you "
+                        f"want the image (optionally add a caption between the | and ]]): {token}"
+                    )
+                results.append(msg)
+                continue
+
+            # --- Everything else: not natively viewable — return extracted text. ---
+            text = _version_text(version, self._TEXT_CAP)
+            if not text:
+                results.append(f"Document #{idx} ('{doc.original_filename}'): no readable content found.")
+                continue
+            results.append(
+                f"Document #{idx} ('{doc.original_filename}') — this file type isn't viewable "
+                f"natively; its extracted text follows (use document_read to page through more):"
+                f"\n\n{text}"
+            )
+
         if attached == 0:
-            return "\n".join(results) or "No images were attached."
-        return "\n".join(results) + "\n\n(The image(s) are now visible to you below.)"
+            return "\n".join(results) or "No documents were attached."
+        return "\n".join(results) + "\n\n(The attached image(s)/PDF(s) are now visible to you below.)"
 
 
 _registry = get_tool_registry()
 _registry.register_tool(SearchDocumentsTool())
-_registry.register_tool(DocumentViewImageTool())
+_registry.register_tool(DocumentViewNativeTool())
 _registry.register_tool(ReadDocumentTool())
 _registry.register_tool(CanvasSaveToDocumentTool())
 _registry.register_tool(ListDocumentsTool())

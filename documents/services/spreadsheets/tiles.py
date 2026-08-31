@@ -5,7 +5,7 @@ Construction mirrors ``documents.services.image_assets.image_asset_sink``
 are immutable per version (the native bytes never change), and are keyed by
 ``description`` = ``xlsx-tile:s<sheet>:x<x>:y<y>:rev<RENDERER_REV>`` with
 ``alt_text`` = TILE_ALT_MARKER — the marker keeps them out of
-``_collect_doc_images`` (``document_view_image`` must not attach random
+``_collect_doc_images`` (``document_view_native`` must not attach random
 tiles), and the rev in the key invalidates the cache on renderer changes.
 
 The render unit is the column band: one WeasyPrint pass yields all (or the
