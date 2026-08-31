@@ -1256,6 +1256,60 @@ class JinaFallbackTests(TestCase):
         self.assertIn("Error", result)
         self.assertIn("Connection", result)
 
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_per_url_http_failure_logs_info(self, mock_pinned, mock_requests_get):
+        """A 422 (Jina couldn't fetch that one page) is routine web noise —
+        INFO breadcrumb, not a Sentry WARNING event (WILFRED-79)."""
+        mock_pinned.side_effect = req_lib.exceptions.ConnectionError("refused")
+        unprocessable = _mock_response(status_code=422, content_type=None)
+        unprocessable.raise_for_status.side_effect = req_lib.exceptions.HTTPError(
+            response=unprocessable
+        )
+        mock_requests_get.return_value = unprocessable
+
+        with self.assertLogs("llm.tools.web_fetch", level="INFO") as logs:
+            self.tool.invoke({"url": "https://example.com/hostile"})
+
+        failed = [r for r in logs.records if "Jina fallback failed" in r.getMessage()]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0].levelno, logging.INFO)
+
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_timeout_logs_info(self, mock_pinned, mock_requests_get):
+        """A Jina read timeout is one slow page, not a dead fallback (WILFRED-7A)."""
+        mock_pinned.side_effect = req_lib.exceptions.ConnectionError("refused")
+        mock_requests_get.side_effect = req_lib.exceptions.Timeout("read timed out")
+
+        with self.assertLogs("llm.tools.web_fetch", level="INFO") as logs:
+            self.tool.invoke({"url": "https://example.com/slow-through-jina"})
+
+        failed = [r for r in logs.records if "Jina fallback failed" in r.getMessage()]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0].levelno, logging.INFO)
+
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_dead_fallback_status_logs_warning(self, mock_pinned, mock_requests_get):
+        """401/402 mean the fallback is dead for every URL (bad key / out of
+        tokens) — those must stay WARNING so Sentry surfaces them."""
+        for status in (401, 402):
+            with self.subTest(status=status):
+                mock_pinned.side_effect = req_lib.exceptions.ConnectionError("refused")
+                dead = _mock_response(status_code=status, content_type=None)
+                dead.raise_for_status.side_effect = req_lib.exceptions.HTTPError(
+                    response=dead
+                )
+                mock_requests_get.return_value = dead
+
+                with self.assertLogs("llm.tools.web_fetch", level="WARNING") as logs:
+                    self.tool.invoke({"url": f"https://example.com/dead-{status}"})
+
+                self.assertTrue(
+                    any("Jina fallback failed" in r.getMessage() for r in logs.records)
+                )
+
     @override_settings(WEB_FETCH_MAX_RESPONSE_BYTES=1000)
     @patch("llm.tools.web_fetch.requests.get")
     @patch("llm.tools.web_fetch._pinned_get")

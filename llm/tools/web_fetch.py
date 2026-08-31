@@ -485,12 +485,18 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
                 )
                 time.sleep(_JINA_503_BACKOFF[attempt])
                 continue
-            # 402 = InsufficientBalanceError (account out of tokens) — make it
-            # visible in logs so a dead fallback doesn't go unnoticed again.
-            logger.warning("web_fetch: Jina fallback failed for url=%s status=%s", url, status)
+            # 401/402 (bad key / account out of tokens) kill the fallback for
+            # every URL — keep those at WARNING so a dead fallback doesn't go
+            # unnoticed again. Anything else (422/404/451, post-retry 5xx) is
+            # one page failing through Jina: routine web noise, breadcrumb
+            # only (WILFRED-79).
+            level = logging.WARNING if status in (401, 402) else logging.INFO
+            logger.log(level, "web_fetch: Jina fallback failed for url=%s status=%s", url, status)
             return None
         except Exception as e:
-            logger.warning(
+            # Timeouts/connection errors are one slow or hostile page failing
+            # through Jina (WILFRED-7A), not a dead fallback — breadcrumb only.
+            logger.info(
                 "web_fetch: Jina fallback failed for url=%s error=%s: %s",
                 url, type(e).__name__, str(e)[:200],
             )
