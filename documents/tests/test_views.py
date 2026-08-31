@@ -1647,7 +1647,9 @@ class DocumentUploadInFlightCapTests(TestCase):
         self._in_flight(1)  # one slot remaining
         files = []
         for i in range(3):
-            b = BytesIO(b"hello world"); b.name = f"m{i}.txt"; files.append(b)
+            # Distinct bytes per file so content dedupe doesn't swallow the
+            # overflow before it can hit the cap.
+            b = BytesIO(f"hello world {i}".encode()); b.name = f"m{i}.txt"; files.append(b)
 
         resp = self._upload(files)
 
@@ -1709,3 +1711,253 @@ class DocumentUploadInFlightCapTests(TestCase):
         resp = self._upload(f)  # to self.data_room, but the user is at cap elsewhere
 
         self.assertEqual(resp.status_code, 429)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class DocumentUploadDedupeTests(TestCase):
+    """Content-identity dedupe: the same bytes are not uploaded twice.
+
+    A duplicate is skipped before the document is created, so no bytes reach
+    storage and no processing task is enqueued. Scope is the data room; archived
+    and failed documents deliberately don't match.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="dedupe@example.com", password="testpass")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.data_room = DataRoom.objects.create(name="Dedupe", slug="dedupe", created_by=self.user)
+        self.other = User.objects.create_user(email="dedupe-other@example.com", password="testpass")
+        self.url = reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid})
+        self.check_url = reverse(
+            "document_duplicate_check", kwargs={"data_room_id": self.data_room.uuid}
+        )
+        self.client.force_login(self.user)
+
+    def _upload(self, content, name, url=None, ajax=True):
+        f = BytesIO(content)
+        f.name = name
+        kwargs = {"HTTP_ACCEPT": "application/json"} if ajax else {"follow": True}
+        return self.client.post(url or self.url, {"file": f}, **kwargs)
+
+    def _doc_count(self, data_room=None):
+        return DataRoomDocument.objects.filter(data_room=data_room or self.data_room).count()
+
+    # ------------------------------------------------------------------ #
+    # recording the hash                                                   #
+    # ------------------------------------------------------------------ #
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_upload_records_content_hash(self, _delay):
+        import hashlib
+
+        self._upload(b"Hello world", "a.txt")
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
+        self.assertEqual(doc.content_sha256, hashlib.sha256(b"Hello world").hexdigest())
+
+    # ------------------------------------------------------------------ #
+    # skipping                                                             #
+    # ------------------------------------------------------------------ #
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_identical_bytes_are_skipped(self, delay):
+        self._upload(b"Hello world", "a.txt")
+        delay.reset_mock()
+
+        resp = self._upload(b"Hello world", "a.txt")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "skipped")
+        self.assertEqual(body["skipped"][0]["duplicate_of"], "a.txt")
+        self.assertEqual(self._doc_count(), 1)
+        delay.assert_not_called()
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_skip_matches_on_bytes_not_filename(self, _delay):
+        """Renaming the file doesn't make it a new document…"""
+        self._upload(b"Hello world", "a.txt")
+
+        resp = self._upload(b"Hello world", "renamed.txt")
+
+        self.assertEqual(resp.json()["status"], "skipped")
+        self.assertEqual(self._doc_count(), 1)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_same_filename_different_bytes_uploads(self, _delay):
+        """…and reusing the filename for different bytes is a real new document."""
+        self._upload(b"version one", "a.txt")
+
+        resp = self._upload(b"version two", "a.txt")
+
+        self.assertEqual(resp.json()["status"], "ok")
+        self.assertEqual(self._doc_count(), 2)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_skip_reports_current_display_name(self, _delay):
+        self._upload(b"Hello world", "a.txt")
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
+        doc.name = "Q3 report"
+        doc.save(update_fields=["name"])
+
+        resp = self._upload(b"Hello world", "a.txt")
+
+        self.assertEqual(resp.json()["skipped"][0]["duplicate_of"], "Q3 report")
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_duplicates_within_one_request_collapse(self, _delay):
+        f1 = BytesIO(b"Hello world"); f1.name = "a.txt"
+        f2 = BytesIO(b"Hello world"); f2.name = "b.txt"
+
+        resp = self.client.post(self.url, {"file": [f1, f2]}, HTTP_ACCEPT="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["skipped"][0]["duplicate_of"], "a.txt")
+        self.assertEqual(self._doc_count(), 1)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_non_ajax_post_reports_the_skip(self, _delay):
+        self._upload(b"Hello world", "a.txt")
+
+        resp = self._upload(b"Hello world", "a.txt", ajax=False)
+
+        self.assertContains(resp, "already in this data room")
+        self.assertEqual(self._doc_count(), 1)
+
+    # ------------------------------------------------------------------ #
+    # what does NOT count as a duplicate                                   #
+    # ------------------------------------------------------------------ #
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_same_bytes_in_another_data_room_upload(self, _delay):
+        other_room = DataRoom.objects.create(name="Other", slug="dedupe-other", created_by=self.user)
+        self._upload(b"Hello world", "a.txt")
+
+        resp = self._upload(
+            b"Hello world", "a.txt",
+            url=reverse("document_upload", kwargs={"data_room_id": other_room.uuid}),
+        )
+
+        self.assertEqual(resp.json()["status"], "ok")
+        self.assertEqual(self._doc_count(), 1)
+        self.assertEqual(self._doc_count(other_room), 1)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_archived_duplicate_uploads_again(self, _delay):
+        self._upload(b"Hello world", "a.txt")
+        DataRoomDocument.objects.filter(data_room=self.data_room).update(is_archived=True)
+
+        resp = self._upload(b"Hello world", "a.txt")
+
+        self.assertEqual(resp.json()["status"], "ok")
+        self.assertEqual(self._doc_count(), 2)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_failed_duplicate_uploads_again(self, _delay):
+        """Re-uploading is the normal way to retry a document that failed."""
+        self._upload(b"Hello world", "a.txt")
+        DataRoomDocument.objects.filter(data_room=self.data_room).update(
+            status=DataRoomDocument.Status.FAILED
+        )
+
+        resp = self._upload(b"Hello world", "a.txt")
+
+        self.assertEqual(resp.json()["status"], "ok")
+        self.assertEqual(self._doc_count(), 2)
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_legacy_row_without_a_hash_never_matches(self, _delay):
+        DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="legacy.txt", status=DataRoomDocument.Status.READY,
+        )
+
+        resp = self._upload(b"Hello world", "legacy.txt")
+
+        self.assertEqual(resp.json()["status"], "ok")
+        self.assertEqual(self._doc_count(), 2)
+
+    @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
+    @patch("documents.tasks.process_document_task.delay")
+    def test_skipped_duplicate_does_not_consume_an_in_flight_slot(self, _delay):
+        """A skip is free: it must not push the user against the in-flight cap."""
+        f1 = BytesIO(b"Hello world"); f1.name = "a.txt"
+        f2 = BytesIO(b"Hello world"); f2.name = "b.txt"
+
+        resp = self.client.post(self.url, {"file": [f1, f2]}, HTTP_ACCEPT="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self._doc_count(), 1)
+        self.assertEqual(resp.json().get("errors"), [])
+
+    # ------------------------------------------------------------------ #
+    # document_duplicate_check                                             #
+    # ------------------------------------------------------------------ #
+
+    def _sha(self, content):
+        import hashlib
+
+        return hashlib.sha256(content).hexdigest()
+
+    def _check(self, hashes):
+        return self.client.post(
+            self.check_url, data=json.dumps({"hashes": hashes}), content_type="application/json"
+        )
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_duplicate_check_reports_known_hashes(self, _delay):
+        self._upload(b"Hello world", "a.txt")
+        known = self._sha(b"Hello world")
+        unknown = self._sha(b"never seen")
+
+        resp = self._check([known, unknown])
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["duplicates"], {known: "a.txt"})
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_duplicate_check_uses_display_name(self, _delay):
+        self._upload(b"Hello world", "a.txt")
+        DataRoomDocument.objects.filter(data_room=self.data_room).update(name="Q3 report")
+
+        resp = self._check([self._sha(b"Hello world")])
+
+        self.assertEqual(list(resp.json()["duplicates"].values()), ["Q3 report"])
+
+    @patch("documents.tasks.process_document_task.delay")
+    def test_duplicate_check_ignores_archived_and_failed(self, _delay):
+        self._upload(b"Hello world", "a.txt")
+        DataRoomDocument.objects.filter(data_room=self.data_room).update(is_archived=True)
+
+        resp = self._check([self._sha(b"Hello world")])
+
+        self.assertEqual(resp.json()["duplicates"], {})
+
+    def test_duplicate_check_forbidden_for_other_user(self):
+        self.client.force_login(self.other)
+
+        resp = self._check([self._sha(b"Hello world")])
+
+        self.assertEqual(resp.status_code, 403)
+
+    def test_duplicate_check_requires_post(self):
+        resp = self.client.get(self.check_url)
+        self.assertEqual(resp.status_code, 405)
+
+    def test_duplicate_check_rejects_bad_payloads(self):
+        self.assertEqual(self._check([]).status_code, 400)
+        self.assertEqual(self._check(["not-a-hash"]).status_code, 400)
+        self.assertEqual(self._check([123]).status_code, 400)
+        self.assertEqual(self._check(["z" * 64]).status_code, 400)  # right length, not hex
+        self.assertEqual(self._check([self._sha(b"x")[:63]]).status_code, 400)  # too short
+        self.assertEqual(self._check([self._sha(b"x")] * 201).status_code, 400)
+
+    def test_duplicate_check_accepts_uppercase_hex(self):
+        resp = self._check([self._sha(b"x").upper()])
+        self.assertEqual(resp.status_code, 200)
+
+    def test_duplicate_check_rejects_non_object_body(self):
+        resp = self.client.post(self.check_url, data="[]", content_type="application/json")
+        self.assertEqual(resp.status_code, 400)

@@ -18,7 +18,7 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
-from core.files import safe_filename
+from core.files import safe_filename, sha256_of_bytes
 from core.http import parse_json_object
 
 from .models import Meeting, MeetingAttachment
@@ -696,6 +696,7 @@ def meeting_save_to_data_room(request, meeting_uuid):
         original_filename=export_name,
         mime_type=mime,
         size_bytes=len(payload),
+        content_sha256=sha256_of_bytes(payload),
         status=DataRoomDocument.Status.UPLOADED,
     )
     # v0 carries the transcript markdown; create_version enqueues processing

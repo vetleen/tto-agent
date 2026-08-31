@@ -13,6 +13,7 @@ urlpatterns = [
     path("<uuid:data_room_id>/documents/bulk-archive/", views.document_bulk_archive, name="document_bulk_archive"),
     path("<uuid:data_room_id>/documents/status/", views.document_status, name="document_status"),
     path("<uuid:data_room_id>/documents/upload/", views.document_upload, name="document_upload"),
+    path("<uuid:data_room_id>/documents/duplicate-check/", views.document_duplicate_check, name="document_duplicate_check"),
     path(
         "<uuid:data_room_id>/documents/<int:document_id>/delete/",
         views.document_delete,

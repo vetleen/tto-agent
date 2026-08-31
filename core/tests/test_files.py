@@ -1,9 +1,12 @@
-"""Tests for core.files.safe_filename (shared by documents + meetings)."""
+"""Tests for core.files (shared by documents + meetings)."""
 from __future__ import annotations
 
+import hashlib
+
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
 
-from core.files import safe_filename
+from core.files import safe_filename, sha256_of_bytes, sha256_of_upload
 
 
 class SafeFilenameTests(SimpleTestCase):
@@ -32,3 +35,33 @@ class SafeFilenameTests(SimpleTestCase):
     def test_truncation_without_extension(self):
         out = safe_filename("a" * 300, max_length=10)
         self.assertEqual(out, "a" * 10)
+
+
+class Sha256Tests(SimpleTestCase):
+    def test_bytes_matches_hashlib(self):
+        self.assertEqual(sha256_of_bytes(b"hello"), hashlib.sha256(b"hello").hexdigest())
+
+    def test_empty_bytes(self):
+        self.assertEqual(sha256_of_bytes(b""), hashlib.sha256(b"").hexdigest())
+
+    def test_upload_matches_hashlib(self):
+        upload = SimpleUploadedFile("a.txt", b"hello world", content_type="text/plain")
+        self.assertEqual(sha256_of_upload(upload), hashlib.sha256(b"hello world").hexdigest())
+
+    def test_upload_spans_multiple_chunks(self):
+        payload = b"x" * (3 * 1024 * 1024 + 17)
+        upload = SimpleUploadedFile("big.txt", payload, content_type="text/plain")
+        self.assertEqual(sha256_of_upload(upload), hashlib.sha256(payload).hexdigest())
+
+    def test_upload_is_rewound_so_caller_can_still_save_it(self):
+        upload = SimpleUploadedFile("a.txt", b"hello", content_type="text/plain")
+        sha256_of_upload(upload)
+        self.assertEqual(upload.read(), b"hello")
+
+    def test_unreadable_upload_returns_empty_string(self):
+        class Broken:
+            def chunks(self, size=None):
+                raise OSError("storage is gone")
+
+        with self.assertLogs("core.files", level="WARNING"):
+            self.assertEqual(sha256_of_upload(Broken()), "")

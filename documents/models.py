@@ -82,6 +82,14 @@ class DataRoomDocument(models.Model):
     name = models.CharField(max_length=255, blank=True, default="")
     mime_type = models.CharField(max_length=128, blank=True)
     size_bytes = models.PositiveIntegerField(null=True, blank=True)
+    # SHA-256 (hex) of the uploaded bytes — content identity, used to skip
+    # re-uploading a file already in this data room (documents.views.
+    # _duplicate_in_data_room). Empty for rows created before this field existed
+    # and for any path that couldn't read the bytes; an empty digest never
+    # matches. Deliberately NOT unique: legacy blanks, archived/failed rows and
+    # repeated canvas exports all collide legitimately, so two truly concurrent
+    # uploads of the same file can still both land.
+    content_sha256 = models.CharField(max_length=64, blank=True, default="")
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
@@ -165,6 +173,13 @@ class DataRoomDocument(models.Model):
                 fields=["data_room", "doc_index"],
                 name="documents_unique_doc_index_per_data_room",
                 condition=models.Q(doc_index__gt=0),
+            ),
+        ]
+        indexes = [
+            # The only shape the duplicate lookup uses — always scoped to a room.
+            models.Index(
+                fields=["data_room", "content_sha256"],
+                name="documents_doc_room_sha_idx",
             ),
         ]
 

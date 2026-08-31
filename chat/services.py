@@ -15,6 +15,7 @@ from core.file_types import (
     KIND_TEXT,
     canonical_mimes_for_kinds,
 )
+from core.files import sha256_of_bytes
 from core.styles import FOOTNOTE_MARKER
 from llm.core.model_factory import detect_provider
 
@@ -599,6 +600,7 @@ def save_canvas_to_data_room(canvas, data_room, user, *, enqueue=True):
         name=title,
         mime_type="text/markdown",
         size_bytes=len(file_bytes),
+        content_sha256=sha256_of_bytes(file_bytes),
         status=DataRoomDocument.Status.UPLOADED,
     )
     # v0 carries the canvas markdown as working content; create_version advances

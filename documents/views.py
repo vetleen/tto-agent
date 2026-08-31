@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from django.conf import settings
 from django.db import IntegrityError
@@ -13,7 +14,7 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
-from core.files import safe_filename
+from core.files import safe_filename, sha256_of_upload
 from core.http import parse_json_object
 from .models import DataRoom, DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentTag
 from .pii_labels import CRIMINAL_TOOLTIP, PILL_LABEL, SPECIAL_TOOLTIP, summarize_pii_keys
@@ -289,6 +290,26 @@ def _allowed_mime(mime_type: str) -> bool:
 _GENERIC_MIME_TYPES = {"", "application/octet-stream"}
 
 
+def _live_documents_qs(data_room):
+    """Documents in *data_room* that count as "already uploaded".
+
+    Archived documents don't count — re-dropping a file you archived is a
+    deliberate way to bring it back. Neither do failed ones: re-uploading is the
+    normal way to retry a document whose processing broke. Shared by the upload
+    view and the pre-check endpoint so the two can't drift.
+    """
+    return DataRoomDocument.objects.filter(
+        data_room=data_room, is_archived=False
+    ).exclude(status=DataRoomDocument.Status.FAILED)
+
+
+def _duplicate_in_data_room(data_room, sha: str):
+    """Existing live document in *data_room* with identical bytes, or None."""
+    if not sha:
+        return None
+    return _live_documents_qs(data_room).filter(content_sha256=sha).order_by("id").first()
+
+
 def _mime_matches_extension(ext: str, mime_type: str) -> bool:
     """Cross-check the browser-supplied MIME type against the file extension.
 
@@ -343,6 +364,11 @@ def document_upload(request, data_room_id):
     audio_max_size = getattr(settings, "AUDIO_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
     errors = []
     created_docs = []
+    # Files not uploaded because their exact bytes are already in this data room
+    # (or appeared twice in this same request). Reported separately from errors —
+    # a skip is a success, not a failure.
+    skipped = []
+    seen_shas = {}  # sha256 -> filename accepted earlier in this same request
 
     # In-flight cap: how many more this user may start right now, across all their
     # data rooms. "In flight" = non-terminal (uploaded/processing/scanning or
@@ -396,6 +422,21 @@ def document_upload(request, data_room_id):
             if not feature_is_available(request.user, "document_image_description"):
                 errors.append(f"{safe_filename}: image uploads require a vision-capable model, which isn't enabled for your organization.")
                 continue
+        # Content-identity dedupe, before the cap check (a skipped file consumes
+        # no slot) and before create (so the bytes never reach storage and no
+        # processing task is enqueued). The client pre-checks hashes to avoid
+        # sending duplicates at all, but this is what actually enforces it — a
+        # plain <form> post never calls that endpoint.
+        sha = sha256_of_upload(file_obj)
+        if sha:
+            if sha in seen_shas:
+                skipped.append({"filename": safe_filename, "duplicate_of": seen_shas[sha]})
+                continue
+            dup = _duplicate_in_data_room(data_room, sha)
+            if dup is not None:
+                skipped.append({"filename": safe_filename, "duplicate_of": dup.display_name})
+                continue
+
         # Fill the remaining in-flight slots, then stop (fill-slots overflow). One
         # generic message covers the rest — a per-file line for a large overflow
         # would just spam the error list. Only files that pass every other check
@@ -413,9 +454,12 @@ def document_upload(request, data_room_id):
             original_filename=safe_filename,
             mime_type=mime,
             size_bytes=file_obj.size,
+            content_sha256=sha,
             status=DataRoomDocument.Status.UPLOADED,
         )
         created_docs.append(doc)
+        if sha:
+            seen_shas[sha] = safe_filename
 
     # Provenance is recorded by the v0 version's origin=uploaded (set when
     # process_document creates it); no separate "source" tag is needed.
@@ -441,8 +485,13 @@ def document_upload(request, data_room_id):
             return JsonResponse({
                 "status": "ok",
                 "document": {"id": doc.id, "filename": doc.original_filename, "status": doc.status},
+                "skipped": skipped,
                 "errors": errors,
             })
+        if skipped:
+            # Distinct from the error branch below: nothing was created, but
+            # nothing went wrong either — the file is already in the room.
+            return JsonResponse({"status": "skipped", "skipped": skipped, "errors": errors})
         if cap_hit:
             # Distinct from the 600/h rate-limit 429 (via `code`) so the client can
             # show the in-flight message and stop its sequential upload loop.
@@ -455,9 +504,65 @@ def document_upload(request, data_room_id):
     if created_docs:
         count = len(created_docs)
         messages.success(request, f"{count} file{'s' if count != 1 else ''} uploaded.")
+    if skipped:
+        count = len(skipped)
+        messages.info(
+            request,
+            f"{count} file{'s were' if count != 1 else ' was'} already in this data room "
+            f"and {'were' if count != 1 else 'was'} skipped.",
+        )
     for err in errors:
         messages.error(request, err)
     return redirect("data_room_documents", data_room_id=data_room.uuid)
+
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_DUPLICATE_CHECK_MAX_HASHES = 200
+
+
+@login_required
+@require_POST
+@ratelimit(key="user", rate="600/h", method="POST", block=True)
+def document_duplicate_check(request, data_room_id):
+    """Report which of the client's SHA-256 hashes are already in this data room.
+
+    Lets the browser skip sending bytes it knows are duplicates — the win is
+    avoiding the upload entirely on a large drop. Advisory only: document_upload
+    re-hashes every file and re-checks, which is what actually enforces the skip
+    (a plain <form> post never calls this endpoint).
+    """
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_modify_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    hashes = body.get("hashes")
+    if not isinstance(hashes, list) or not hashes:
+        return JsonResponse({"error": "hashes must be a non-empty list"}, status=400)
+    if len(hashes) > _DUPLICATE_CHECK_MAX_HASHES:
+        return JsonResponse(
+            {"error": f"hashes must contain at most {_DUPLICATE_CHECK_MAX_HASHES} entries"},
+            status=400,
+        )
+    cleaned = []
+    for h in hashes:
+        if not isinstance(h, str) or not _SHA256_HEX_RE.match(h.strip().lower()):
+            return JsonResponse({"error": "hashes must be hex-encoded SHA-256 digests"}, status=400)
+        cleaned.append(h.strip().lower())
+
+    rows = (
+        _live_documents_qs(data_room)
+        .filter(content_sha256__in=cleaned)
+        .order_by("id")
+        .values_list("content_sha256", "name", "original_filename")
+    )
+    duplicates = {}
+    for sha, name, original_filename in rows:
+        # First writer wins, matching _duplicate_in_data_room's order_by("id").
+        duplicates.setdefault(sha, name or original_filename)
+    return JsonResponse({"duplicates": duplicates})
 
 
 @login_required

@@ -77,6 +77,7 @@
   <!-- Config for JS -->
   <div id="doc-list-config" class="hidden"
        data-upload-url="{% url 'document_upload' data_room_id=data_room.uuid %}"
+       data-duplicate-check-url="{% url 'document_duplicate_check' data_room_id=data_room.uuid %}"
        data-bulk-delete-url="{% url 'document_bulk_delete' data_room_id=data_room.uuid %}"
        data-bulk-archive-url="{% url 'document_bulk_archive' data_room_id=data_room.uuid %}"
        data-delete-check-url="{% url 'document_delete_check' data_room_id=data_room.uuid %}"
@@ -372,6 +373,7 @@
     if (!container || !dropOverlay || !fileInput || !uploadForm || !config) return;
 
     var uploadUrl = config.dataset.uploadUrl;
+    var dupeCheckUrl = config.dataset.duplicateCheckUrl;
     var csrf = config.dataset.csrfToken;
     var uploading = false;
     var dragCounter = 0;
@@ -396,6 +398,84 @@
       li.className = 'text-sm text-fg-danger-strong bg-danger-soft border border-danger-subtle rounded-base px-3 py-2';
       li.textContent = msg;
       errorList.appendChild(li);
+    }
+
+    // Neutral styling — a skipped duplicate is a success, not a failure, so it
+    // must not read as an error.
+    function addNotice(msg) {
+      var li = document.createElement('li');
+      li.className = 'text-sm text-body bg-neutral-secondary-soft border border-default rounded-base px-3 py-2';
+      li.textContent = msg;
+      errorList.appendChild(li);
+    }
+
+    function skipNotice(filename, existingName) {
+      if (existingName && existingName !== filename) {
+        return filename + ' — already in this data room (as "' + existingName + '"). Skipped.';
+      }
+      return filename + ' — already in this data room. Skipped.';
+    }
+
+    // SHA-256 of a File as lowercase hex, matching core.files.sha256_of_upload.
+    // Returns '' when SubtleCrypto is unavailable (non-secure context) so the
+    // caller falls through to uploading and lets the server dedupe.
+    async function sha256Hex(file) {
+      if (!window.crypto || !window.crypto.subtle) return '';
+      try {
+        var digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+        return Array.prototype.map.call(new Uint8Array(digest), function(b) {
+          return b.toString(16).padStart(2, '0');
+        }).join('');
+      } catch (err) {
+        return '';
+      }
+    }
+
+    // Drop files whose bytes are already in this data room (or repeated within
+    // this batch) before spending the upload. Best-effort: any failure here
+    // returns the list untouched — document_upload re-checks server-side, which
+    // is what actually enforces the skip.
+    async function filterDuplicates(files) {
+      var hashed = [];
+      var seen = Object.create(null);
+      var kept = [];
+      for (var i = 0; i < files.length; i++) {
+        progressText.textContent = 'Checking for duplicates ' + (i + 1) + '/' + files.length + '…';
+        var sha = await sha256Hex(files[i]);
+        if (sha && seen[sha]) {
+          addNotice(files[i].name + ' — same file as "' + seen[sha] + '" in this batch. Skipped.');
+          continue;
+        }
+        if (sha) seen[sha] = files[i].name;
+        hashed.push({ file: files[i], sha: sha });
+      }
+
+      var shas = hashed.map(function(h) { return h.sha; }).filter(Boolean);
+      var duplicates = {};
+      if (shas.length && dupeCheckUrl) {
+        try {
+          var resp = await fetch(dupeCheckUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRFToken': csrf },
+            body: JSON.stringify({ hashes: shas })
+          });
+          if (resp.ok) {
+            var data = await resp.json();
+            duplicates = (data && data.duplicates) || {};
+          }
+        } catch (err) { /* pre-check is advisory; the server still dedupes */ }
+      }
+
+      for (var j = 0; j < hashed.length; j++) {
+        var existing = hashed[j].sha ? duplicates[hashed[j].sha] : null;
+        if (existing) {
+          addNotice(skipNotice(hashed[j].file.name, existing));
+        } else {
+          kept.push(hashed[j].file);
+        }
+      }
+      return kept;
     }
 
     function validateFiles(fileList) {
@@ -484,7 +564,22 @@
 
       var uploaded = 0;
       var failed = 0;
+      var skipped = 0;
       var uploadedDocIds = [];
+
+      var queued = await filterDuplicates(valid);
+      skipped = valid.length - queued.length;
+      valid = queued;
+      if (!valid.length) {
+        progressBar.style.width = '100%';
+        progressText.textContent = skipped === 1
+          ? 'That file is already in this data room.'
+          : 'Those ' + skipped + ' files are already in this data room.';
+        progressSpinner.classList.add('hidden');
+        uploading = false;
+        setFormEnabled(true);
+        return;
+      }
 
       for (var i = 0; i < valid.length; i++) {
         progressText.textContent = 'Uploading file ' + (i + 1) + '/' + valid.length + '…';
@@ -531,6 +626,12 @@
             if (data.errors && data.errors.length) {
               data.errors.forEach(function(e) { addError(e); });
             }
+          } else if (data && data.status === 'skipped') {
+            // The server caught a duplicate the pre-check missed (unavailable
+            // SubtleCrypto, or a file added since the check).
+            skipped++;
+            var dup = (data.skipped && data.skipped[0]) || {};
+            addNotice(skipNotice(valid[i].name, dup.duplicate_of));
           } else {
             failed++;
             addError((data && data.error) || (valid[i].name + ": upload didn't go through. Try again."));
@@ -544,10 +645,14 @@
 
       progressBar.style.width = '100%';
 
+      var skipNote = skipped > 0 ? ', ' + skipped + ' already here' : '';
       if (uploaded > 0 && failed === 0) {
-        progressText.textContent = uploaded + ' file' + (uploaded === 1 ? '' : 's') + ' uploaded. Preparing…';
+        progressText.textContent = uploaded + ' file' + (uploaded === 1 ? '' : 's') + ' uploaded' + skipNote + '. Preparing…';
       } else if (uploaded > 0) {
-        progressText.textContent = uploaded + ' uploaded, ' + failed + ' failed. Preparing…';
+        progressText.textContent = uploaded + ' uploaded, ' + failed + ' failed' + skipNote + '. Preparing…';
+      } else if (failed === 0 && skipped > 0) {
+        progressText.textContent = 'Everything was already in this data room.';
+        progressSpinner.classList.add('hidden');
       } else {
         progressText.textContent = "Upload didn't go through.";
         progressSpinner.classList.add('hidden');
