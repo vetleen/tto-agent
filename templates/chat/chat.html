@@ -469,15 +469,24 @@
       class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21a9 9 0 110-18c4.97 0 9 3.582 9 8 0 2.21-1.79 4-4 4h-2a2 2 0 00-1.5 3.32c.5.56.16 1.68-1 1.68z"/><circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/></svg>
     </button>
-    <button id="slides-download-pptx" title="Download PowerPoint (.pptx)" aria-label="Download PowerPoint"
-      class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-    </button>
-    <button id="slides-download-pdf" title="Download PDF" aria-label="Download PDF"
-      class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-70">
-      <svg id="slides-pdf-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4" d="M8.5 14.5h.6a.9.9 0 000-1.8h-.6v3m3-3v3h.6a.9.9 0 00.9-.9v-1.2a.9.9 0 00-.9-.9H11.5m4 0H15v3m0-1.5h.8"/></svg>
-      <svg id="slides-pdf-spinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-    </button>
+    {# Export (PowerPoint / PDF) — icon button opening a format dropdown #}
+    <div class="relative">
+      <button id="slides-export-btn" title="Export" aria-label="Export"
+        class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-80">
+        <svg class="slides-export-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        <svg class="slides-export-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+      </button>
+      <div id="slides-export-dropdown" class="hidden absolute right-0 top-full mt-1 z-50 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg w-48 py-1">
+        <button type="button" class="slides-export-option flex items-center gap-2 w-full px-3 py-2 text-sm text-body hover:bg-neutral-tertiary text-left" data-format="pptx">
+          <svg class="w-4 h-4 shrink-0 text-fg-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h18M4 4v9a1 1 0 001 1h14a1 1 0 001-1V4"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14v4m0 0l-3 2m3-2l3 2"/></svg>
+          PowerPoint (.pptx)
+        </button>
+        <button type="button" class="slides-export-option flex items-center gap-2 w-full px-3 py-2 text-sm text-body hover:bg-neutral-tertiary text-left" data-format="pdf">
+          <svg class="w-4 h-4 shrink-0 text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M8.5 14.5h.5a1 1 0 000-2h-.5v3m3-3v3h.6a1 1 0 001-1v-1a1 1 0 00-1-1H11.5m4 0H15v3m0-1.5h.8"/></svg>
+          PDF (.pdf)
+        </button>
+      </div>
+    </div>
     <button id="slides-close-btn" title="Close" aria-label="Close slide panel"
       class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
       <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>
@@ -4359,8 +4368,11 @@
     var tabsEl = document.getElementById("slides-tabs");
     var commentBar = document.getElementById("slides-comment-bar");
     var commentCountEl = document.getElementById("slides-comment-count");
-    var pdfBtn = document.getElementById("slides-download-pdf");
-    var pptxBtn = document.getElementById("slides-download-pptx");
+    var exportBtn = document.getElementById("slides-export-btn");
+    var exportDropdown = document.getElementById("slides-export-dropdown");
+    var exportIcon = exportBtn ? exportBtn.querySelector(".slides-export-icon") : null;
+    var exportSpinner = exportBtn ? exportBtn.querySelector(".slides-export-spinner") : null;
+    var pdfOption = exportDropdown ? exportDropdown.querySelector('.slides-export-option[data-format="pdf"]') : null;
     var chatPane = document.getElementById("chat-pane");
     var contentArea = document.getElementById("content-area");
     var canvasPanel = document.getElementById("canvas-panel");
@@ -4570,8 +4582,8 @@
 
     function renderFilmstrip() {
       // PDF export uses the same worker render as previews, so when previews are
-      // down PDF can't work either — hide it and let .pptx be the clear path.
-      if (pdfBtn) pdfBtn.style.display = renderFailed ? "none" : "";
+      // down PDF can't work either — hide that option and let .pptx be the clear path.
+      if (pdfOption) pdfOption.classList.toggle("hidden", renderFailed);
       filmstrip.innerHTML = "";
       if (!slides.length) { filmstrip.innerHTML = '<div class="text-sm text-body text-center py-10">No slides yet.</div>'; return; }
       if (renderFailed) filmstrip.appendChild(renderFailedBanner());
@@ -4606,12 +4618,13 @@
       if (openComments > 0) { commentBar.classList.remove("hidden"); commentBar.classList.add("flex"); commentCountEl.textContent = openComments + (openComments === 1 ? " comment" : " comments"); }
       else { commentBar.classList.add("hidden"); commentBar.classList.remove("flex"); }
     }
-    var pdfIcon = document.getElementById("slides-pdf-icon");
-    var pdfSpinner = document.getElementById("slides-pdf-spinner");
     function setPdfBusy(b) {
-      if (pdfBtn) { pdfBtn.disabled = b; pdfBtn.title = b ? "Building PDF…" : "Download PDF"; }
-      if (pdfIcon) pdfIcon.classList.toggle("hidden", b);
-      if (pdfSpinner) pdfSpinner.classList.toggle("hidden", !b);
+      // While the PDF builds, the shared export button shows a spinner (the
+      // .pptx path is instant, so it never enters this state).
+      if (exportBtn) { exportBtn.disabled = b; exportBtn.title = b ? "Building PDF…" : "Export"; }
+      if (exportIcon) exportIcon.classList.toggle("hidden", b);
+      if (exportSpinner) exportSpinner.classList.toggle("hidden", !b);
+      if (b && exportDropdown) exportDropdown.classList.add("hidden");
     }
     function triggerDownload(url) { var a = document.createElement("a"); a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); }
     function downloadPptx() { if (deckId) triggerDownload("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/"); }
@@ -4712,8 +4725,26 @@
     var closeBtn = document.getElementById("slides-close-btn");
     if (closeBtn) closeBtn.addEventListener("click", close);
     if (slidesToggleBtn) slidesToggleBtn.addEventListener("click", function() { if (isOpen) close(); else { open(); requestState(); } });
-    if (pptxBtn) pptxBtn.addEventListener("click", downloadPptx);
-    if (pdfBtn) pdfBtn.addEventListener("click", function() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); });
+    function exportPdf() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); }
+    if (exportBtn && exportDropdown) {
+      exportBtn.addEventListener("click", function(e) {
+        e.stopPropagation();
+        if (!deckId) return;
+        exportDropdown.classList.toggle("hidden");
+      });
+      exportDropdown.querySelectorAll(".slides-export-option").forEach(function(opt) {
+        opt.addEventListener("click", function() {
+          exportDropdown.classList.add("hidden");
+          if (this.dataset.format === "pdf") exportPdf();
+          else downloadPptx();
+        });
+      });
+      document.addEventListener("click", function(e) {
+        if (!exportDropdown.contains(e.target) && !exportBtn.contains(e.target)) {
+          exportDropdown.classList.add("hidden");
+        }
+      });
+    }
 
     // Theme picker modal
     var themeBtn = document.getElementById("slides-theme-btn");
