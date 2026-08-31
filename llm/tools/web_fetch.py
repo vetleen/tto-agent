@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import socket
+import threading
 import time
 
 from urllib.parse import urljoin, urlparse
@@ -62,6 +63,26 @@ _DEFAULT_MAX_PARSE_BYTES = 8_000_000  # 8 MB
 
 def _max_parse_bytes() -> int:
     return getattr(django_settings, "WEB_FETCH_MAX_PARSE_BYTES", _DEFAULT_MAX_PARSE_BYTES)
+
+
+# Dyno-wide cap on concurrent HTML parse+extract — the memory-heavy window: a
+# bs4/lxml tree plus trafilatura's and readability's own trees, several MB each.
+# The threads-pool worker can otherwise run up to CELERY_WORKER_CONCURRENCY x the
+# per-turn tool-pool web_fetches at once (Aug-2026 R14). One module semaphore
+# covers the whole dyno (mirrors chat/slides/render.py's soffice cap); the
+# network fetch stays outside it (I/O-bound, cheap). Set WEB_FETCH_CONCURRENCY.
+_web_fetch_semaphore: threading.BoundedSemaphore | None = None
+_web_fetch_semaphore_lock = threading.Lock()
+
+
+def _get_web_fetch_semaphore() -> threading.BoundedSemaphore:
+    global _web_fetch_semaphore
+    if _web_fetch_semaphore is None:
+        with _web_fetch_semaphore_lock:
+            if _web_fetch_semaphore is None:
+                n = max(1, int(getattr(django_settings, "WEB_FETCH_CONCURRENCY", 4)))
+                _web_fetch_semaphore = threading.BoundedSemaphore(n)
+    return _web_fetch_semaphore
 
 
 class _SSRFBlocked(Exception):
@@ -900,38 +921,49 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     # candidates first (chrome + aria still present, base = final URL after
     # redirects), then finish the text clean on the same tree. Output is
     # byte-identical to the old two-parse path.
-    try:
-        soup = BeautifulSoup(raw_html, _HTML_PARSER)
-    except Exception:
-        return {"error": "Failed to parse HTML", "url": url}
+    #
+    # Bound the parse+extract concurrency dyno-wide and drop the heavy objects
+    # (bs4/lxml tree + serialized HTML) the moment extraction is done — before
+    # the network/cache tail — so glibc isn't holding a tree per in-flight fetch.
+    # raw_html's length is captured for the JS-render check before it is freed.
+    raw_len = len(raw_html)
+    with _get_web_fetch_semaphore():
+        try:
+            soup = BeautifulSoup(raw_html, _HTML_PARSER)
+        except Exception:
+            return {"error": "Failed to parse HTML", "url": url}
 
-    # Image-discovery clean: non-content + visually-hidden removed, chrome and
-    # aria-hidden kept — on homepage/portal layouts the content images live in
-    # the chrome/aria-hidden regions the text path strips.
-    _strip_for_images(soup)
+        # Image-discovery clean: non-content + visually-hidden removed, chrome
+        # and aria-hidden kept — on homepage/portal layouts the content images
+        # live in the chrome/aria-hidden regions the text path strips.
+        _strip_for_images(soup)
 
-    # Read image candidates from the tree at this state (read-only). Non-fatal:
-    # a failure here must not lose the page text.
-    try:
-        images = _extract_image_candidates(soup, current_url)
-    except Exception:
-        logger.debug("web_fetch: image candidate extraction failed (non-fatal)")
-        images = []
+        # Read image candidates from the tree at this state (read-only). Non-fatal:
+        # a failure here must not lose the page text.
+        try:
+            images = _extract_image_candidates(soup, current_url)
+        except Exception:
+            logger.debug("web_fetch: image candidate extraction failed (non-fatal)")
+            images = []
 
-    # Finish the text clean on the SAME tree: drop semantic chrome and the
-    # aria-hidden elements the image path intentionally kept. Combined with the
-    # non-content + hidden removal above, this reproduces _strip_hidden_elements.
-    for tag in soup.find_all(_CHROME_TAGS):
-        tag.decompose()
-    _remove_hidden_elements(soup, include_aria=True)
-    cleaned_html = str(soup)
+        # Finish the text clean on the SAME tree: drop semantic chrome and the
+        # aria-hidden elements the image path intentionally kept. Combined with the
+        # non-content + hidden removal above, this reproduces _strip_hidden_elements.
+        for tag in soup.find_all(_CHROME_TAGS):
+            tag.decompose()
+        _remove_hidden_elements(soup, include_aria=True)
+        cleaned_html = str(soup)
 
-    # --- Extract content as markdown ---
-    title, text = _extract_content(cleaned_html, soup)
+        # --- Extract content as markdown ---
+        title, text = _extract_content(cleaned_html, soup)
+
+        # Heavy objects no longer needed — free them before the network/cache tail
+        # so the semaphore slot and the arenas are released promptly.
+        del soup, cleaned_html, raw_html
 
     # --- JS-rendered page detection: fall back to Jina ---
-    if len(text) < _JS_RENDER_MAX_CONTENT and len(raw_html) > _JS_RENDER_MIN_HTML:
-        logger.info("web_fetch: suspected JS-rendered page url=%s (html=%d, content=%d)", url, len(raw_html), len(text))
+    if len(text) < _JS_RENDER_MAX_CONTENT and raw_len > _JS_RENDER_MIN_HTML:
+        logger.info("web_fetch: suspected JS-rendered page url=%s (html=%d, content=%d)", url, raw_len, len(text))
         jina = _fetch_via_jina(url, context, reason="js_rendered")
         if jina:
             # Prefer Jina's own image summary (it rendered the page); fall back to

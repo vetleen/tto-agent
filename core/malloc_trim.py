@@ -86,6 +86,51 @@ def _read_rss_kb() -> int | None:
     return None
 
 
+# --- Task-triggered trim (Celery worker) -----------------------------------
+# The periodic daemon below is web-only (see _should_start). The worker instead
+# trims after each task via maybe_trim(), wired to Celery's task_postrun in
+# config.celery — that's exactly when a task's transient allocations (sub-agent
+# web research: several-MB bs4/lxml trees; thousands of streamed LLM events) have
+# just been freed and glibc is still holding the arenas (RSS pinned -> R14).
+# Threshold- AND rate-limited so a threads pool finishing many tasks at once
+# doesn't hammer malloc_trim's global lock.
+_maybe_trim_lock = threading.Lock()
+_last_maybe_trim = 0.0
+
+
+def maybe_trim(threshold_mb: float = 700.0, min_interval_s: float = 15.0) -> bool:
+    """Trim glibc arenas back to the OS iff RSS is elevated and we haven't
+    trimmed in the last ``min_interval_s`` seconds. For per-event callers (the
+    Celery ``task_postrun`` hook) that have no periodic daemon.
+
+    Returns ``True`` iff a trim was actually performed. Best-effort — a
+    diagnostics/ops helper must never raise into the task path.
+    """
+    global _last_maybe_trim
+    try:
+        rss = _read_rss_kb()
+        if rss is not None and rss < threshold_mb * 1024:
+            return False  # lean: nothing worth releasing, pay nothing
+        now = time.monotonic()
+        with _maybe_trim_lock:
+            if now - _last_maybe_trim < min_interval_s:
+                return False  # trimmed recently (a concurrent caller has it)
+            _last_maybe_trim = now
+        # Release the Python lock before the C call (glibc takes its own lock).
+        if trim_malloc() and rss is not None:
+            after = _read_rss_kb()
+            if after is not None and after < rss:
+                logger.info(
+                    "malloc_trim (task) released RSS %.0f->%.0fMB",
+                    rss / 1024, after / 1024,
+                )
+            return True
+        return False
+    except Exception:  # noqa: BLE001 — never break the caller (a Celery task)
+        logger.debug("maybe_trim failed", exc_info=True)
+        return False
+
+
 def _should_start(env: dict[str, str], argv: list[str]) -> bool:
     """Decide whether the trimmer should run in *this* process (pure/testable).
 

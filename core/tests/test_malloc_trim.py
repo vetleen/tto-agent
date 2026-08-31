@@ -68,3 +68,38 @@ class TrimMallocTests(SimpleTestCase):
             malloc_trim.maybe_start(env={"MALLOC_TRIM_INTERVAL": "0"}, argv=["daphne"])
         )
         self.assertFalse(malloc_trim._started)
+
+
+class MaybeTrimTests(SimpleTestCase):
+    """The task-triggered worker trim (``maybe_trim``): threshold- and
+    rate-limited, and never raises into the calling Celery task."""
+
+    def setUp(self):
+        # Put the last-trim clock well in the past so the rate limit doesn't
+        # block the first call on a freshly-booted host (monotonic() may be small).
+        malloc_trim._last_maybe_trim = malloc_trim.time.monotonic() - 10_000
+
+    def test_skips_when_rss_below_threshold(self):
+        with mock.patch.object(malloc_trim, "_read_rss_kb", return_value=100 * 1024), \
+             mock.patch.object(malloc_trim, "trim_malloc") as trim:
+            self.assertFalse(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=0))
+            trim.assert_not_called()
+
+    def test_trims_when_rss_elevated(self):
+        # First read (threshold check) is high; second (post-trim log) is lower.
+        with mock.patch.object(malloc_trim, "_read_rss_kb", side_effect=[800 * 1024, 600 * 1024]), \
+             mock.patch.object(malloc_trim, "trim_malloc", return_value=True) as trim:
+            self.assertTrue(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=0))
+            trim.assert_called_once()
+
+    def test_rate_limited_within_interval(self):
+        with mock.patch.object(malloc_trim, "_read_rss_kb", return_value=800 * 1024), \
+             mock.patch.object(malloc_trim, "trim_malloc", return_value=True) as trim:
+            self.assertTrue(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=1000))
+            # A second call inside the interval must not trim again.
+            self.assertFalse(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=1000))
+            trim.assert_called_once()
+
+    def test_never_raises_into_task(self):
+        with mock.patch.object(malloc_trim, "_read_rss_kb", side_effect=RuntimeError("boom")):
+            self.assertFalse(malloc_trim.maybe_trim(min_interval_s=0))

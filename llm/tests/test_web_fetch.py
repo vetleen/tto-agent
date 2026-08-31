@@ -17,10 +17,12 @@ from llm.tools.web_fetch import (
     _SSRFBlocked,
     _enforce_size_and_buffer,
     _fetch_via_jina,
+    _get_web_fetch_semaphore,
     _is_private_ip,
     _pinned_get,
     _resolve_and_validate,
 )
+import llm.tools.web_fetch as web_fetch_module
 
 
 def _mock_response(
@@ -1396,3 +1398,28 @@ class TrafilaturaLoggerMutedTests(TestCase):
         core = logging.getLogger("trafilatura.core")
         self.assertFalse(core.isEnabledFor(logging.WARNING))
         self.assertTrue(core.isEnabledFor(logging.ERROR))
+
+
+class WebFetchConcurrencyCapTests(TestCase):
+    """The dyno-wide parse+extract semaphore that bounds concurrent bs4/lxml
+    trees (the sub-agent web-research R14 driver). Extraction-output correctness
+    is covered by the WebFetchToolTests above (unchanged by the cap)."""
+
+    def setUp(self):
+        # Reset the lazy module singleton so a per-test setting takes effect.
+        web_fetch_module._web_fetch_semaphore = None
+        self.addCleanup(setattr, web_fetch_module, "_web_fetch_semaphore", None)
+
+    def test_semaphore_is_a_singleton(self):
+        self.assertIs(_get_web_fetch_semaphore(), _get_web_fetch_semaphore())
+
+    @override_settings(WEB_FETCH_CONCURRENCY=2)
+    def test_semaphore_honours_setting(self):
+        sem = _get_web_fetch_semaphore()
+        # BoundedSemaphore records its ceiling as _initial_value.
+        self.assertEqual(sem._initial_value, 2)
+
+    @override_settings(WEB_FETCH_CONCURRENCY=0)
+    def test_setting_floored_at_one(self):
+        # A misconfigured 0 must not deadlock every fetch — floored to 1.
+        self.assertEqual(_get_web_fetch_semaphore()._initial_value, 1)

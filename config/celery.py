@@ -45,6 +45,31 @@ def close_db_connections_after_task(**kwargs):
     close_old_connections()
 
 
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var, falling back to *default* on missing/garbage."""
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+@task_postrun.connect
+def trim_worker_memory_after_task(**kwargs):
+    """Return freed glibc arenas to the OS after each task so the worker's RSS
+    recovers after memory-heavy tasks (sub-agent web research builds several-MB
+    bs4/lxml trees and streams thousands of LLM events; freed at task end but
+    otherwise pinned in glibc's arenas -> sustained R14 even when idle).
+
+    The web dyno has a periodic malloc_trim daemon; the Celery worker has none,
+    so this is its per-task equivalent. Threshold- and rate-limited inside
+    ``core.malloc_trim.maybe_trim`` (a no-op off glibc / when RSS is lean)."""
+    from core.malloc_trim import maybe_trim
+    maybe_trim(
+        _env_float("WORKER_MALLOC_TRIM_THRESHOLD_MB", 700.0),
+        _env_float("WORKER_MALLOC_TRIM_MIN_INTERVAL_S", 15.0),
+    )
+
+
 @task_failure.connect
 def close_db_connections_on_failure(**kwargs):
     close_old_connections()

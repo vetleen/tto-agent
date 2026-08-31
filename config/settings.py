@@ -561,6 +561,10 @@ elif not DEBUG and not _is_test_run and not _get_env_bool(
 # Web fetch: hard ceiling on bytes downloaded from a (user/LLM-supplied) URL,
 # enforced while streaming so a malicious/huge response can't exhaust worker memory.
 WEB_FETCH_MAX_RESPONSE_BYTES = _env_int("WEB_FETCH_MAX_RESPONSE_BYTES", "10000000")  # 10 MB
+# Dyno-wide cap on concurrent HTML parse+extract (bs4/lxml trees, several MB each).
+# Bounds the transient RSS peak when many sub-agent web_fetches run at once on the
+# threads-pool worker (Aug-2026 R14). See llm/tools/web_fetch.py.
+WEB_FETCH_CONCURRENCY = _env_int("WEB_FETCH_CONCURRENCY", "4")
 
 # Document upload and chunking (MVP)
 DATA_UPLOAD_MAX_NUMBER_FILES = 100
