@@ -259,6 +259,12 @@ def data_room_documents(request, data_room_id):
             # Client-side pre-upload validation list — derived from the same
             # table as the picker and the server check so they cannot drift.
             "upload_extensions_json": json.dumps(sorted(allowed_extensions(upload_kinds))),
+            # Upload limits, rendered into the help text and the client-side
+            # pre-checks straight from settings (same defaults the upload view
+            # enforces) so they always reflect the real, env-configurable caps.
+            "upload_max_size_bytes": getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 50_000_000),
+            "upload_max_size_mb": getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 50_000_000) // 1_000_000,
+            "upload_in_flight_cap": getattr(settings, "DOCUMENT_MAX_IN_FLIGHT_PER_USER", 100),
         },
     )
 

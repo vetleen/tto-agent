@@ -154,6 +154,26 @@ class DocumentViewsTests(TestCase):
         self.assertNotIn("jpeg", exts)
         self.assertIn("pdf", exts)
 
+    @override_settings(
+        DOCUMENT_MAX_IN_FLIGHT_PER_USER=50,
+        DOCUMENT_UPLOAD_MAX_SIZE_BYTES=25_000_000,
+    )
+    def test_upload_limits_render_from_settings(self):
+        # The help text and the client-side pre-checks must reflect the actual
+        # env-configurable caps (prod runs a 50-file cap), not a hardcoded 100.
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid})
+        )
+        self.assertEqual(response.context["upload_in_flight_cap"], 50)
+        self.assertEqual(response.context["upload_max_size_mb"], 25)
+        self.assertEqual(response.context["upload_max_size_bytes"], 25_000_000)
+        # Rendered into the visible help text...
+        self.assertContains(response, "Max 25 MB per file, up to 50 files processing at a time.")
+        # ...and into the client-side JS guards, so they can't drift.
+        self.assertContains(response, "var MAX_FILES = 50;")
+        self.assertContains(response, "var MAX_SIZE = 25000000;")
+
     def test_document_upload_creates_document_and_redirects(self):
         self.client.force_login(self.user)
         content = b"Hello world"

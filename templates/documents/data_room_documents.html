@@ -54,7 +54,7 @@
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
     <input class="cursor-pointer border border-default bg-neutral-primary-soft text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept="{{ upload_accept }}" required multiple aria-describedby="file_input_help">
-        <p class="mt-2 text-xs text-body" id="file_input_help">.pdf, .docx, .pptx, .xlsx, .msg, .eml, .txt, .md,{% if upload_images_enabled %} images,{% endif %} and audio files. Max 50 MB per file, up to 100 files processing at a time.</p>
+        <p class="mt-2 text-xs text-body" id="file_input_help">Max {{ upload_max_size_mb }} MB per file, up to {{ upload_in_flight_cap }} files processing at a time.</p>
       </div>
       <button id="upload-btn" type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
         Add to data room
@@ -378,8 +378,8 @@
     var uploading = false;
     var dragCounter = 0;
 
-    var MAX_FILES = 100;
-    var MAX_SIZE = 50000000;
+    var MAX_FILES = {{ upload_in_flight_cap }};
+    var MAX_SIZE = {{ upload_max_size_bytes }};
     var ALLOWED_EXTENSIONS = new Set({{ upload_extensions_json|safe }});
 
     var progressDiv = document.getElementById('upload-progress');
@@ -493,7 +493,7 @@
         if (f.size <= 0) {
           addError(f.name + ': file is empty.');
         } else if (f.size > MAX_SIZE) {
-          addError(f.name + ': file is too large (max 50 MB).');
+          addError(f.name + ': file is too large (max {{ upload_max_size_mb }} MB).');
         } else if (!ALLOWED_EXTENSIONS.has(ext)) {
           addError(f.name + ": {{ assistant_name|escapejs }} can't read this file type yet.");
         } else {
