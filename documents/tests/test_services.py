@@ -870,6 +870,163 @@ class ProcessDocumentServiceTests(TestCase):
                 )
 
     @override_settings(PGVECTOR_CONNECTION="")
+    def test_image_asset_sink_dedupes_identical_images(self):
+        """The sink stores + describes an identical image once and re-emits the
+        exact same token for every repeat; the distinct-image ``Image N``
+        numbering has no gap for the skipped duplicate."""
+        import io
+
+        from chat.models import Asset
+        from chat.tests.test_attachments import _tiny_png
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.image_assets import image_asset_sink
+
+        class _FakeImg:
+            def __init__(self, data, content_type="image/png", alt_text=""):
+                self._data = data
+                self.content_type = content_type
+                self.alt_text = alt_text
+
+            def open(self):
+                return io.BytesIO(self._data)
+
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room,
+            uploaded_by=self.user,
+            original_filename="deck.pptx",
+            status=DataRoomDocument.Status.UPLOADED,
+        )
+        version = DataRoomDocumentVersion.objects.create(document=doc, version_index=0)
+
+        same = _tiny_png()
+        other = _tiny_png() + b"\x00"  # different bytes -> different sha256
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                with patch("chat.services.describe_image", return_value="A logo") as mock_describe, \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"):
+                    sink = image_asset_sink(version, doc)
+                    t1 = sink(_FakeImg(same), 1)
+                    t2 = sink(_FakeImg(same), 2)   # duplicate -> no work
+                    t3 = sink(_FakeImg(other), 3)  # distinct image
+
+        # The duplicate re-emits the first occurrence's token verbatim.
+        self.assertEqual(t1, t2)
+        self.assertIn("Image 1:", t1)
+        # The next distinct image is numbered 2 (the duplicate consumed no ordinal).
+        self.assertIn("Image 2:", t3)
+        # One Asset + one vision call per *distinct* image.
+        self.assertEqual(Asset.objects.filter(version=version).count(), 2)
+        self.assertEqual(mock_describe.call_count, 2)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_process_document_pptx_repeated_image_deduped(self):
+        """A logo repeated across slides is stored + described once, yet its one
+        token is still re-emitted on every slide it appears on."""
+        import io
+
+        from django.core.files.base import ContentFile
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        from chat.models import Asset
+        from chat.tests.test_attachments import _tiny_png
+        from documents.services.process_document import process_document
+
+        png = _tiny_png()
+        prs = Presentation()
+        for _ in range(3):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+            slide.shapes.add_picture(io.BytesIO(png), Inches(1), Inches(1), Inches(1), Inches(1))
+        buf = io.BytesIO()
+        prs.save(buf)
+        pptx_bytes = buf.getvalue()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="deck.pptx",
+                    mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("deck.pptx", ContentFile(pptx_bytes), save=True)
+
+                with patch("chat.services.describe_image", return_value="A logo") as mock_describe, \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+                version = doc.current_version
+                assets = list(Asset.objects.filter(version=version))
+                # Same image on 3 slides -> one Asset, one vision call.
+                self.assertEqual(len(assets), 1)
+                self.assertEqual(mock_describe.call_count, 1)
+                # ...but the token is still placed on each slide (re-emitted, not collapsed).
+                token = f"[[image:{assets[0].id}|"
+                occurrences = sum(c.text.count(token) for c in version.chunks.all())
+                self.assertGreaterEqual(occurrences, 2)
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_eml_shared_image_across_attachments_deduped(self):
+        """One sink spans the whole email tree: the same image embedded in two
+        separate attachments is stored + described exactly once."""
+        from email import encoders
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        from django.core.files.base import ContentFile
+
+        from chat.models import Asset
+        from chat.tests.test_attachments import _docx_with_image
+        from documents.services.process_document import process_document
+
+        docx_bytes = _docx_with_image()
+        msg = MIMEMultipart()
+        msg["Subject"] = "Two decks"
+        msg["From"] = "a@b.com"
+        msg["To"] = "c@d.com"
+        msg.attach(MIMEText("See attached.", "plain"))
+        for name in ("first.docx", "second.docx"):
+            att = MIMEBase(
+                "application",
+                "vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            att.set_payload(docx_bytes)  # identical bytes in both attachments
+            encoders.encode_base64(att)
+            att.add_header("Content-Disposition", "attachment", filename=name)
+            msg.attach(att)
+        eml_bytes = msg.as_bytes()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="mail.eml",
+                    mime_type="message/rfc822",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("mail.eml", ContentFile(eml_bytes), save=True)
+
+                with patch("chat.services.describe_image", return_value="A logo") as mock_describe, \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                version = doc.current_version
+                assets = list(Asset.objects.filter(version=version))
+                # Shared image across the two attachments -> one Asset, one vision call.
+                self.assertEqual(len(assets), 1)
+                self.assertEqual(mock_describe.call_count, 1)
+
+    @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_image_only_pdf_no_longer_fails(self):
         """A scanned/image-only PDF (no extractable text) used to hard-fail with
         the empty-text error; now its embedded page image is described, so the

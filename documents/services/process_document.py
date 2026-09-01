@@ -210,12 +210,12 @@ def _extract_native(version, doc):
                 from documents.services.image_assets import image_asset_sink
                 image_sink = image_asset_sink(version, doc)
             elif ext in ("msg", "eml"):
-                # Email trees: one sink + one shared counter across every
-                # attachment (and nested email), so image numbering and the
-                # vision-description cap span the whole message rather than
+                # Email trees: one sink threaded through every attachment (and
+                # nested email), so image numbering, the vision-description cap,
+                # and content-hash dedup all span the whole message rather than
                 # resetting per attachment.
                 from documents.services.image_assets import image_asset_sink
-                image_sink = image_asset_sink(version, doc, counter={"n": 0})
+                image_sink = image_asset_sink(version, doc)
             docs = load_documents(file_path, ext, image_sink=image_sink)
             combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
             cleaned = clean_extracted_text(combined)

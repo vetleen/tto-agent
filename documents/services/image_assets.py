@@ -44,22 +44,27 @@ def _sanitize_for_token(text: str) -> str:
     return _TOKEN_WS_RE.sub(" ", text).strip()
 
 
-def image_asset_sink(version, doc, *, counter=None):
+def image_asset_sink(version, doc):
     """Return an image_sink that stores each embedded image as an Asset
     scoped to *version* and emits a ``[[image:uuid|Image N: desc]]`` token.
 
     Format-neutral: used by the docx (core.docx.docx_to_markdown), pdf
     (core.pdf.pdf_to_text), and pptx (documents.services.chunking) extraction
-    paths. Descriptions (capped at MAX_DESCRIBED_EMBEDDED_IMAGES) use the org's
+    paths, and threaded once through a whole email attachment tree
+    (documents.services.chunking) so a single sink spans every nested file.
+    Descriptions (capped at MAX_DESCRIBED_EMBEDDED_IMAGES) use the org's
     vision-capable describer when one is configured; otherwise images are still
     stored with a format-only label so nothing is lost.
 
-    ``counter`` — an optional shared ``{"n": int}`` dict. When supplied, images
-    are numbered and cap-checked using this tree-global counter instead of the
-    loader's per-document ``idx`` (which restarts at 1 for each file). The email
-    attachment path passes one counter through the whole message tree so the
-    ``Image N`` sequence and the description cap span every attachment, and a
-    mail full of image-heavy files can't reset the budget or fan out.
+    Identical images are de-duplicated by content hash across the whole run: a
+    logo repeated on every slide (or shared by two attachments of one email) is
+    stored and vision-described exactly once, and every occurrence re-emits the
+    same token. This stops a repeated image from burning a vision call apiece
+    and from consuming the description budget, which now applies to *distinct*
+    images. The ``idx`` the loader passes is ignored for numbering — the sink
+    owns a distinct-image counter, so the ``Image N`` sequence has no gaps and
+    spans the whole email tree (the pdf loader keeps its own earlier dedup; the
+    sink simply never sees a pdf duplicate).
     """
     from django.core.files.base import ContentFile
 
@@ -72,16 +77,29 @@ def image_asset_sink(version, doc, *, counter=None):
     # "" when the org has no vision-capable model — assets are still stored.
     model = resolve_org_feature_model(org_id, "document_image_description")
 
+    # Per-run state, shared across the whole email tree via this single sink
+    # instance: sha256 -> the token already emitted for that image, and a
+    # counter of distinct images (drives ``Image N`` and the description cap).
+    seen: dict[str, str] = {}
+    count = {"n": 0}
+
     def sink(image, idx: int) -> str:
-        if counter is not None:
-            counter["n"] = counter.get("n", 0) + 1
-            idx = counter["n"]
         content_type = image.content_type or "application/octet-stream"
         with image.open() as f:
             img_bytes = f.read()
+        sha = hashlib.sha256(img_bytes).hexdigest()
+
+        # Same bytes seen earlier this run: re-emit the original token (same
+        # asset id and label), skipping the vision call and a duplicate row.
+        cached = seen.get(sha)
+        if cached is not None:
+            return cached
+
+        count["n"] += 1
+        n = count["n"]
 
         description = ""
-        if model and idx <= MAX_DESCRIBED_EMBEDDED_IMAGES:
+        if model and n <= MAX_DESCRIBED_EMBEDDED_IMAGES:
             try:
                 description = describe_image(
                     img_bytes, content_type, doc.uploaded_by,
@@ -97,12 +115,14 @@ def image_asset_sink(version, doc, *, counter=None):
             version=version,
             content_type=content_type,
             size_bytes=len(img_bytes),
-            sha256=hashlib.sha256(img_bytes).hexdigest(),
+            sha256=sha,
             description=description,
             alt_text=(image.alt_text or "")[:1024],
             created_by=doc.uploaded_by,
         )
         asset.blob.save(f"{asset.id}.{_ext_for(content_type)}", ContentFile(img_bytes), save=True)
-        return f"[[image:{asset.id}|Image {idx}: {_sanitize_for_token(description)}]]"
+        token = f"[[image:{asset.id}|Image {n}: {_sanitize_for_token(description)}]]"
+        seen[sha] = token
+        return token
 
     return sink
