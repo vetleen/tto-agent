@@ -492,6 +492,19 @@
       <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>
     </button>
   </div>
+  {# Render-status bar: live status + manual re-check, shown only while a slide is still rendering. #}
+  <div id="slides-render-bar" class="hidden items-center justify-between gap-3 px-4 py-2 border-b border-default bg-neutral-primary-soft shrink-0">
+    <span class="flex items-center gap-2 min-w-0 text-xs text-body">
+      <span class="w-2 h-2 rounded-full bg-brand animate-pulse shrink-0"></span>
+      <span id="slides-render-status" class="truncate">Rendering slides…</span>
+    </span>
+    <button id="slides-render-check" title="Check for finished slides" aria-label="Check for finished slides"
+      class="cursor-pointer inline-flex items-center gap-1.5 shrink-0 px-2.5 py-1 rounded-full text-xs font-medium bg-neutral-tertiary text-heading hover:bg-neutral-quaternary border border-default disabled:cursor-default disabled:opacity-70">
+      <svg class="slides-render-check-icon w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992V4.356m0 4.992l-3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99h-4.99M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7"/></svg>
+      <svg class="slides-render-check-spinner w-3.5 h-3.5 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+      <span>Check now</span>
+    </button>
+  </div>
   {# Filmstrip #}
   <div id="slides-filmstrip" class="flex-1 overflow-y-auto px-5 py-5 space-y-6 bg-neutral-secondary-soft"></div>
   {# Comments footer #}
@@ -4368,6 +4381,11 @@
     var tabsEl = document.getElementById("slides-tabs");
     var commentBar = document.getElementById("slides-comment-bar");
     var commentCountEl = document.getElementById("slides-comment-count");
+    var renderBar = document.getElementById("slides-render-bar");
+    var renderStatusEl = document.getElementById("slides-render-status");
+    var renderCheckBtn = document.getElementById("slides-render-check");
+    var renderCheckIcon = renderCheckBtn ? renderCheckBtn.querySelector(".slides-render-check-icon") : null;
+    var renderCheckSpinner = renderCheckBtn ? renderCheckBtn.querySelector(".slides-render-check-spinner") : null;
     var exportBtn = document.getElementById("slides-export-btn");
     var exportDropdown = document.getElementById("slides-export-dropdown");
     var exportIcon = exportBtn ? exportBtn.querySelector(".slides-export-icon") : null;
@@ -4380,6 +4398,66 @@
     if (!panel) return { handleEvent: function(){}, requestState: function(){} };
 
     var isOpen = false, deckId = null, slides = [], decks = [], comments = [], openComments = 0, renderFailed = false;
+    // Self-heal for a dropped render-complete push. The worker's
+    // "slidedeck.rendered" event rides a best-effort channel group and can be
+    // silently lost on a Redis blip (its own notify comment admits this "strands
+    // the deck panel on rendering"), leaving a slide stuck on its "Preparing…/
+    // Rendering…" placeholder until a manual page reload. So while any slide is
+    // pending, re-request deck state on a backing-off timer to pull in the
+    // renders whose event never arrived — no F5. Unchanged slides keep their
+    // cached image URL, so only the freshly-rendered slides actually re-fetch.
+    // Bounded, so a genuinely failed render doesn't poll forever.
+    var reconcileTimer = null, reconcileTries = 0;
+    var RECONCILE_MAX_TRIES = 8;
+    function pendingCount() { return slides.filter(function(s) { return s.status === "queued" || s.status === "rendering"; }).length; }
+    function anyPending() { return pendingCount() > 0; }
+    function stopReconcile() { if (reconcileTimer) { clearTimeout(reconcileTimer); reconcileTimer = null; } reconcileTries = 0; }
+    // Re-hydrate the deck actually on screen (pass deck_id so a non-active deck
+    // the user switched to isn't snapped back to the thread's active one).
+    function reconcileNow() {
+      if (activeThreadId && ws && deckId) ws.send(JSON.stringify({ type: "chat.slides_open", thread_id: activeThreadId, deck_id: deckId }));
+      else requestState();   // → slidedeck.state → setState re-hydrates the finished renders
+    }
+    function scheduleReconcile() {
+      if (!anyPending()) { stopReconcile(); return; }   // everything settled — nothing to poll
+      if (reconcileTimer || reconcileTries >= RECONCILE_MAX_TRIES) return;
+      var delay = Math.min(2500 * Math.pow(1.6, reconcileTries), 15000);  // ~2.5s → 15s, ~8 tries
+      reconcileTimer = setTimeout(function() {
+        reconcileTimer = null;
+        if (!anyPending()) { stopReconcile(); return; }
+        reconcileTries++;
+        reconcileNow();
+        scheduleReconcile();   // re-arm for the next attempt (becomes a no-op once nothing's pending)
+      }, delay);
+    }
+    // The render-status bar's manual "Check now" — an escape hatch when the auto
+    // poll has backed off or hit its cap. Restarts the backoff and re-hydrates now.
+    function setRenderCheckBusy(b) {
+      if (renderCheckBtn) renderCheckBtn.disabled = b;
+      if (renderCheckIcon) renderCheckIcon.classList.toggle("hidden", b);
+      if (renderCheckSpinner) renderCheckSpinner.classList.toggle("hidden", !b);
+    }
+    function checkNow() {
+      if (!anyPending()) { updateRenderBar(); return; }
+      reconcileTries = 0;                                        // a manual check restarts the backoff
+      setRenderCheckBusy(true);
+      setTimeout(function() { setRenderCheckBusy(false); }, 1200);  // brief feedback; the bar hides on settle
+      reconcileNow();
+      scheduleReconcile();                                       // (re-)arm the auto-poll even past the cap
+    }
+    // Show a live "rendering N slides…" bar with the manual check only while
+    // something is pending; kept in sync by renderFilmstrip on every state change.
+    function updateRenderBar() {
+      if (!renderBar) return;
+      var n = renderFailed ? 0 : pendingCount();
+      if (n > 0) {
+        renderBar.classList.remove("hidden"); renderBar.classList.add("flex");
+        if (renderStatusEl) renderStatusEl.textContent = "Rendering " + n + (n === 1 ? " slide…" : " slides…");
+      } else {
+        renderBar.classList.add("hidden"); renderBar.classList.remove("flex");
+        setRenderCheckBusy(false);
+      }
+    }
     function newClientId() { return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
     function findComment(cid) {
       return comments.filter(function(c) { return String(c.id) === cid; })[0];
@@ -4427,6 +4505,7 @@
       else { handle.classList.remove("hidden", "sm:hidden"); handle.classList.add("flex"); }
     }
     function close() {
+      stopReconcile();  // no need to poll for a panel the user has closed (reopening re-requests state)
       panel.classList.add("hidden"); panel.classList.remove("flex");
       handle.classList.add("hidden"); handle.classList.remove("flex");
       isOpen = false;
@@ -4581,6 +4660,7 @@
     });
 
     function renderFilmstrip() {
+      updateRenderBar();  // show/hide the "rendering…" bar in step with slide statuses
       // PDF export uses the same worker render as previews, so when previews are
       // down PDF can't work either — hide that option and let .pptx be the clear path.
       if (pdfOption) pdfOption.classList.toggle("hidden", renderFailed);
@@ -4632,14 +4712,26 @@
     function setState(data) {
       deckId = data.deck_id;
       titleEl.textContent = data.title || "Slide deck";
-      slides = (data.slides || []).slice();
+      // Carry a still-pending slide's status across a re-hydrate: a slide whose
+      // render hasn't finished comes back with asset_url=null and no status,
+      // which would flip its friendly "Preparing…/Rendering…" card to a bare
+      // "Awaiting render". Keep the prior pending status (and keep polling) until
+      // the image actually lands. A slide that now HAS an image settles.
+      var prevStatus = {}; slides.forEach(function(s) { prevStatus[s.slide_id] = s.status; });
+      slides = (data.slides || []).map(function(s) {
+        var wasPending = prevStatus[s.slide_id] === "queued" || prevStatus[s.slide_id] === "rendering";
+        return { slide_id: s.slide_id, name: s.name, page: s.page, asset_url: s.asset_url,
+                 width: s.width, height: s.height, status: (!s.asset_url && wasPending) ? prevStatus[s.slide_id] : undefined };
+      });
       decks = data.decks || [];
       comments = (data.comments || []).slice();
       openComments = comments.length;
       renderTabs(); renderFilmstrip(); updateCommentBar();
+      scheduleReconcile();
     }
     function applyUpdated(data) {
       deckId = data.deck_id;
+      reconcileTries = 0;  // a fresh deck change starts a new render cycle — reset the backoff
       if (data.title) titleEl.textContent = data.title;
       // Deck changed but the worker hasn't picked up the render yet — mark
       // changed/new slides "queued" (they flip to "rendering" on render_started).
@@ -4655,12 +4747,14 @@
         slides.forEach(function(s) { if (changed[s.slide_id]) s.status = "queued"; });
       }
       renderFilmstrip();
+      scheduleReconcile();
     }
     function applyRenderStarted() {
       // The worker started — anything waiting is now genuinely rendering.
       var any = false;
       slides.forEach(function(s) { if (s.status === "queued") { s.status = "rendering"; any = true; } });
       if (any) renderFilmstrip();
+      scheduleReconcile();
     }
     function applyRendered(data) {
       var byId = {}; (data.slides || []).forEach(function(s) { byId[s.slide_id] = s; });
@@ -4682,6 +4776,7 @@
         slides.sort(function(a, b) { return (a.page || 0) - (b.page || 0); });
       }
       renderFilmstrip();
+      scheduleReconcile();  // stops the poll once nothing's pending; keeps it if a slide still is
     }
 
     function requestState() { if (activeThreadId && ws) ws.send(JSON.stringify({ type: "chat.slides_open", thread_id: activeThreadId })); }
@@ -4695,7 +4790,7 @@
       if (et === "slidedeck.render_failed") {
         setPdfBusy(false);
         if (data.purpose === "pdf_export") { if (typeof showToast === "function") showToast("Couldn't build the PDF. You can still download the .pptx."); return; }
-        renderFailed = true; slides.forEach(function(s) { s.status = undefined; }); renderFilmstrip(); return;
+        stopReconcile(); renderFailed = true; slides.forEach(function(s) { s.status = undefined; }); renderFilmstrip(); return;
       }
       if (et === "slidedeck.active_changed") { requestState(); return; }
       if (et === "slidedeck.deleted") { requestState(); return; }  // switch to the promoted deck, or close if none remain
@@ -4724,6 +4819,7 @@
     // Header buttons
     var closeBtn = document.getElementById("slides-close-btn");
     if (closeBtn) closeBtn.addEventListener("click", close);
+    if (renderCheckBtn) renderCheckBtn.addEventListener("click", checkNow);
     if (slidesToggleBtn) slidesToggleBtn.addEventListener("click", function() { if (isOpen) close(); else { open(); requestState(); } });
     function exportPdf() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); }
     if (exportBtn && exportDropdown) {
