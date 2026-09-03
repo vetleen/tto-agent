@@ -448,6 +448,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return {
             "deck_id": str(deck.pk),
             "title": deck.title,
+            # The deck's current named theme id, so the in-deck theme picker can
+            # highlight the active theme on first open (before any in-session pick).
+            "theme_id": (content.get("theme") or {}).get("_theme_id") or "forest",
             "slides": slide_list,
             "comments": comments,
             "decks": [

@@ -4650,6 +4650,9 @@
 
     function setState(data) {
       deckId = data.deck_id;
+      // Seed the theme picker's "active" highlight from the deck's saved theme so it
+      // shows the current theme on first open, not only after an in-session pick.
+      if (data.theme_id) { currentThemeId = data.theme_id; if (themeModal && !themeModal.classList.contains("hidden")) renderThemes(); }
       titleEl.textContent = data.title || "Slide deck";
       // Carry a still-pending slide's status across a re-hydrate: a slide whose
       // render hasn't finished comes back with asset_url=null and no status,
