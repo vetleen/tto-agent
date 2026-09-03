@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import threading
 
+from django.contrib.staticfiles.storage import HashedFilesMixin
 from storages.backends.s3boto3 import S3Boto3Storage
+from whitenoise.storage import CompressedManifestStaticFilesStorage
 
 
 class SharedSessionS3Storage(S3Boto3Storage):
@@ -67,3 +69,50 @@ class SharedSessionS3Storage(S3Boto3Storage):
                     # failure doesn't cache a half-initialized session.
                     cls._shared_session = session
         return cls._shared_session
+
+
+class ManifestStaticStorage(CompressedManifestStaticFilesStorage):
+    """Hashed + compressed static storage for production (WhiteNoise).
+
+    Gives every collected file a content hash (``output.<hash>.css``) so WhiteNoise
+    serves it ``Cache-Control: public, max-age=31536000, immutable``. The browser then
+    reuses it from disk cache with **no revalidation round-trip** on every navigation —
+    the fix for the intermittent unstyled-content flash on repeat page loads. A deploy
+    changes the content, hence the hash, hence the URL, so caches bust automatically.
+    """
+
+    # Don't 500 a page when a template references a static file missing from the
+    # manifest; fall back to the unhashed path (served, just not cache-busted). Prudent
+    # for the first rollout — can be tightened to True once we've confirmed there are no
+    # dangling ``{% static %}`` references.
+    manifest_strict = False
+
+    # Drop the default ``*.js`` reference-rewriting pattern while keeping Django's CSS
+    # rules (so the self-hosted font ``url()``s still get hashed). Several vendored
+    # ``static/js/vendor/*.min.js`` files end with ``//# sourceMappingURL=<name>.map``
+    # comments whose ``.map`` targets we don't ship; the default post-processing tries to
+    # resolve them and raises ``ValueError``, which would fail ``collectstatic`` (the
+    # Heroku release step). None of our served JS relies on intra-file reference
+    # rewriting, so dropping only the JS entry is safe. Filtering Django's own tuple keeps
+    # us aligned with its CSS regex across versions. File hashing is independent of
+    # ``patterns``, so every JS file still gets a hashed name.
+    patterns = tuple(p for p in HashedFilesMixin.patterns if p[0] != "*.js")
+
+    # Build-only sources that live under ``static/`` but are never served: the Tailwind
+    # source ``src/input.css`` ``@import``s node_modules paths (``flowbite/…``) that
+    # aren't collected, so hashing/rewriting it would fail the whole run. Only the
+    # compiled ``src/output.css`` is served. Skipping post-processing leaves the file
+    # collected but un-hashed and out of the manifest — fine, since nothing links to it —
+    # while ``output.css`` keeps full strict validation, so a genuinely broken font
+    # reference there still fails loudly.
+    _UNPROCESSED_SOURCES = frozenset({"src/input.css"})
+
+    def post_process(self, paths, **options):
+        # collectstatic keys ``paths`` with the OS separator (backslashes on Windows);
+        # normalize to forward slashes before matching.
+        filtered = {
+            path: storage_and_name
+            for path, storage_and_name in paths.items()
+            if path.replace("\\", "/") not in self._UNPROCESSED_SOURCES
+        }
+        yield from super().post_process(filtered, **options)

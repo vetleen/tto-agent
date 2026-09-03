@@ -39,8 +39,11 @@
     <link rel="stylesheet" href="{% static 'src/output.css' %}">
     {% if user.is_authenticated %}
     <meta name="csrf-token" content="{{ csrf_token }}">
-    <script src="{% static 'js/editor.bundle.js' %}"></script>
     {% endif %}
+    {# editor.bundle.js (CodeMirror, ~560 KB) loads only on pages that mount an editor #}
+    {# (chat canvas, skill editor) through this block, kept synchronous so #}
+    {# window.WilfredEditor exists before those pages' parse-time mount scripts run. #}
+    {% block editor_bundle %}{% endblock %}
     {% block extra_head %}{% endblock %}
   </head>
   <body class="{% block body_class %}pt-20 bg-neutral-primary min-h-screen{% endblock %}">

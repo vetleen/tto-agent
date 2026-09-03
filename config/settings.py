@@ -520,6 +520,17 @@ MEDIA_URL = "/media/"
 # When AWS_STORAGE_BUCKET_NAME is set, media uploads go to S3.
 # Local dev: leave it unset and files use MEDIA_ROOT on disk.
 _aws_bucket = os.environ.get("AWS_STORAGE_BUCKET_NAME", "")
+
+# Static files backend, chosen independently of the S3-media branch below. In prod-like
+# envs (DEBUG off, not a test run) use hashed + compressed + immutable-cached storage so
+# browsers serve CSS/JS from disk cache with no per-navigation revalidation — the fix for
+# the unstyled-content flash on repeat navigation. Local dev and tests keep plain, unhashed
+# storage served straight from source, so edits show up without running collectstatic.
+if not DEBUG and not _is_test_run:
+    _staticfiles_backend = "core.storage_backends.ManifestStaticStorage"
+else:
+    _staticfiles_backend = "django.contrib.staticfiles.storage.StaticFilesStorage"
+
 if _aws_bucket:
     STORAGES = {
         "default": {
@@ -544,7 +555,7 @@ if _aws_bucket:
             },
         },
         "staticfiles": {
-            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+            "BACKEND": _staticfiles_backend,
         },
     }
 elif not DEBUG and not _is_test_run and not _get_env_bool(
@@ -557,6 +568,13 @@ elif not DEBUG and not _is_test_run and not _get_env_bool(
         "the dyno filesystem is lost on every restart. Set "
         "MEDIA_ALLOW_EPHEMERAL=true to override deliberately."
     )
+else:
+    # Local dev / tests / deliberate ephemeral override: media on the local filesystem
+    # (Django's default), but still apply the static backend chosen above.
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {"BACKEND": _staticfiles_backend},
+    }
 
 # Web fetch: hard ceiling on bytes downloaded from a (user/LLM-supplied) URL,
 # enforced while streaming so a malicious/huge response can't exhaust worker memory.

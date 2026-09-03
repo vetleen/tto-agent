@@ -2060,3 +2060,37 @@ class OrgPreferenceValidationTests(TestCase):
             "accounts:preferences_max_context_update", {"max_context_tokens": 2_000_001}
         )
         self.assertEqual(response.status_code, 400)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class EditorBundleScopingTests(TestCase):
+    """editor.bundle.js (CodeMirror, ~560 KB) loads only on pages that mount an editor —
+    the skill editor and the chat canvas — via the per-page ``{% block editor_bundle %}``,
+    not on every authenticated page. Guards its move out of the base template so a plain
+    page never pays the download."""
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="bundlescope@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Bundle TTO", slug="bundle-tto")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.ADMIN)
+        self.client.login(email=self.user.email, password=self.password)
+
+    def test_skill_editor_page_loads_bundle(self):
+        response = self.client.get(reverse("accounts:agent"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "js/editor.bundle")
+
+    def test_chat_page_loads_bundle(self):
+        response = self.client.get(reverse("chat_home"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "js/editor.bundle")
+
+    def test_plain_page_does_not_load_bundle(self):
+        response = self.client.get(reverse("accounts:usage"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "js/editor.bundle")

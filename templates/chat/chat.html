@@ -2,6 +2,8 @@
 {% load static %}
 {% load branding %}
 {% block body_class %}pt-16 bg-neutral-primary{% endblock %}
+{# Canvas mounts CodeMirror (window.WilfredEditor) at parse time below, so load the bundle synchronously here in <head>, before that script runs. #}
+{% block editor_bundle %}<script src="{% static 'js/editor.bundle.js' %}"></script>{% endblock %}
 {% block feedback_widget %}{% include "feedback/_widget.html" with hide_mobile_fab=True %}{% endblock %}
 {% block content %}
 
