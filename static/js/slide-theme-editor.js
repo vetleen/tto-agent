@@ -131,6 +131,7 @@
       logoFile = null; existingLogoExt = ""; el("ste-logo-file").value = "";
       showLogoPreview(null);
     });
+    el("ste-label").addEventListener("input", function () { this.style.borderColor = ""; });
   }
 
   function showLogoPreview(url) {
@@ -227,7 +228,12 @@
 
   function save() {
     var theme = collect();
-    if (!theme.label) { setStatus("Give the theme a name.", true); return; }
+    if (!theme.label) {
+      setStatus("Give the theme a name.", true);
+      var li = el("ste-label");
+      if (li) { li.style.borderColor = "#B23A2E"; try { li.scrollIntoView({ block: "center" }); } catch (e) {} li.focus(); }
+      return;
+    }
     setStatus("Saving…", false);
     postJSON(cfg.save, { scope: scope, theme: theme }).then(function (res) {
       if (!res.ok || res.d.error) { setStatus(res.d.error || "Could not save.", true); return; }

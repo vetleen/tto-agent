@@ -553,15 +553,17 @@
 
       <!-- Slide themes -->
       <section id="slide-styles" class="scroll-mt-24">
-        <div class="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <h2 class="text-base font-semibold text-heading">Slide themes</h2>
-            <p class="mt-0.5 text-sm text-body">Named themes for this organization&rsquo;s slide decks &mdash; colours, fonts, tables, and a footer band (logo, disclaimer, page number). The <span class="font-medium text-heading">default</span> seeds new decks; anyone can still switch a deck&rsquo;s theme from the slide panel.</p>
-          </div>
-          <button type="button" id="org-theme-add" class="shrink-0 rounded-base bg-brand text-on-brand px-3 py-1.5 text-sm font-medium hover:bg-brand-medium">Add theme</button>
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Slide themes</h2>
+          <p class="mt-0.5 text-sm text-body">Named themes for this organization&rsquo;s slide decks &mdash; colours, fonts, tables, and a footer band (logo, disclaimer, page number). The <span class="font-medium text-heading">default</span> seeds new decks; anyone can still switch a deck&rsquo;s theme from the slide panel.</p>
         </div>
-        <div id="org-theme-list" class="grid grid-cols-1 sm:grid-cols-2 gap-2" role="list"></div>
-        <p id="org-theme-status" class="mt-2 text-xs text-body" role="status"></p>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div id="org-theme-list" class="divide-y divide-default" role="list"></div>
+          <div class="flex items-center gap-3 border-t border-default px-5 py-4">
+            <button type="button" id="org-theme-add" class="rounded-base bg-brand text-on-brand px-3 py-1.5 text-sm font-medium hover:bg-brand-medium">Add theme</button>
+            <span id="org-theme-status" class="text-xs text-body" role="status"></span>
+          </div>
+        </div>
       </section>
 
     </div>
@@ -1663,7 +1665,7 @@
       var isDefault = t.id === orgDefault || (!orgDefault && isForest);
       var sw = t.swatch || {bg:"#eee",dark:"#333",accent:"#888"};
       var div = document.createElement("div");
-      div.className = "flex items-center gap-3 rounded-base border p-2.5 " + (isDefault ? "border-brand bg-brand-softer" : "border-default");
+      div.className = "flex items-center gap-3 px-5 py-4 " + (isDefault ? "bg-brand-softer" : "");
       div.setAttribute("role","listitem");
       div.innerHTML =
         '<span class="flex shrink-0 overflow-hidden rounded-base border border-default" style="width:46px;height:32px">' +
