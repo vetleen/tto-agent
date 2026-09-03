@@ -658,8 +658,8 @@ def build_dynamic_context(
         section = (
             f'# Active Slide Deck: "{active_slide_set.title}"\n'
             "This is the deck the user sees rendered in the side panel — edit it with "
-            "`slide_canvas_edit` (find/replace on this EXACT JSON) or `slide_canvas_write`. "
-            "Slide/element ids are permanent; the user comments by slide id.\n"
+            "`slide_canvas_edit` (find/replace on this EXACT JSON) or `slide_canvas_write` "
+            "(full rewrite). Slide/element ids are permanent; the user comments by slide id.\n"
         )
         # Inventory of this thread's decks, so you know what you can switch between.
         if slide_decks and len(slide_decks) > 1:

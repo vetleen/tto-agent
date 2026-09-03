@@ -1,4 +1,4 @@
-"""Seed slide JSON for ``slides_add_slide(layout=...)``.
+"""Seed slide JSON for ``slides_add_slide(layout=...)`` and ``slides_create_deck(layouts=[...])``.
 
 Each entry is a ready-to-edit single slide on the 960x540 grid (48pt side
 margins -> 864pt content width). The tool deep-copies the seed, mints fresh

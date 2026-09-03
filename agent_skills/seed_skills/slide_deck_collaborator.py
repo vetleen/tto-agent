@@ -1,9 +1,9 @@
 """Slide Deck Collaborator (seed skill).
 
-A main-agent skill that unlocks the slide-deck tools (``slide_canvas_write``,
-``slide_canvas_edit``, ``slide_canvas_activate``, ``slide_canvas_delete``,
-``slides_add_slide`` and ``slides_preview_slide``; all ``section="skills"``,
-``audience="main"``). Off by default per org — enable via
+A main-agent skill that unlocks the slide-deck tools (``slides_create_deck``,
+``slide_canvas_write``, ``slide_canvas_edit``, ``slide_canvas_activate``,
+``slide_canvas_delete``, ``slides_add_slide`` and ``slides_preview_slide``; all
+``section="skills"``, ``audience="main"``). Off by default per org — enable via
 ``org.preferences["skills"]["slide_deck_collaborator"]["enabled"] = True``.
 
 Design decisions (2026-08):
@@ -235,6 +235,9 @@ bottom for the footer.
      that turn a star into a web.
 
 ## Rules
+- **Prefer the premade layouts.** Create slides from the pre-designed layouts (the `layouts`
+  list of `slides_create_deck`, or `slides_add_slide`) whenever you add a slide; reach for the
+  `blank` layout or a bespoke `slide_canvas_write` rewrite only when no premade layout fits.
 - **Colours & fonts: prefer the theme, but literals are allowed.** Lean on the theme colour
   names (`dk1, lt1, dk2, lt2, accent1..accent6, success, warning, danger`) and text classes so a
   slide re-themes cleanly — but you *may* set a raw `#RRGGBB` colour on any run/shape, or a
@@ -293,13 +296,19 @@ bottom for the footer.
 
 ## Workflow
 1. Consider if another slide design skill should be added for taste guidance. Once added, prefer its workflow.
-2. Add and design beautiful slides with relevant content. Vary layouts and use images and other design elements where appropriate. Design should support the point being made, not the other way around.
-3. Preview created/updated slides and fix any issues you can see. Aim for perfection in layout, at least. For example if the headline breaks into an additional line, and therefore overlaps other content, either move that content or shorten the headline so it fits beautifully.
-4. Hand back by referring to the panel and inviting comments (and noting any assumptions you
+2. Create the deck with `slides_create_deck`, passing the ordered list of layout ids as your
+   storyboard — plan the narrative first and pick one layout per point. The result returns the
+   full seeded deck JSON (minted ids, placeholder text); fill the placeholders in with
+   `slide_canvas_edit`. (`slide_canvas_write` is only for rebuilding an existing deck around a
+   new narrative, never for creating one.)
+3. Add and design beautiful slides with relevant content. Vary layouts and use images and other design elements where appropriate. Design should support the point being made, not the other way around.
+4. Preview created/updated slides and fix any issues you can see. Aim for perfection in layout, at least. For example if the headline breaks into an additional line, and therefore overlaps other content, either move that content or shorten the headline so it fits beautifully.
+5. Hand back by referring to the panel and inviting comments (and noting any assumptions you
    made). The user downloads the .pptx / PDF from the panel themselves — you can't export for them, or save to a dataroom.
 """,
     "tool_names": [
         "slide_canvas_activate",
+        "slides_create_deck",
         "slide_canvas_write",
         "slide_canvas_edit",
         "slide_canvas_delete",

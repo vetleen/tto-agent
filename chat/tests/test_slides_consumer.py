@@ -17,7 +17,7 @@ class SlidesUpdatedToolsMembershipTests(SimpleTestCase):
         refreshes in the UI (mirror of the CANVAS_UPDATED_TOOLS assertion)."""
         from chat.consumers import SLIDES_UPDATED_TOOLS
 
-        for name in ("slide_canvas_write", "slide_canvas_edit", "slides_add_slide"):
+        for name in ("slides_create_deck", "slide_canvas_write", "slide_canvas_edit", "slides_add_slide"):
             self.assertIn(name, SLIDES_UPDATED_TOOLS)
 
 

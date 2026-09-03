@@ -13,7 +13,7 @@ from django.test import TestCase
 from chat.models import ChatThread, SlideSet, SlideRenderRun
 from chat.slides.schema import canonical_deck_text
 from chat.slide_tools import (
-    ActivateDeckTool, AddSlideTool, DeleteDeckTool, EditDeckTool,
+    ActivateDeckTool, AddSlideTool, CreateDeckTool, DeleteDeckTool, EditDeckTool,
     ListThemesTool, PreviewSlidesTool, SetThemeTool, WriteDeckTool,
 )
 from llm.types.context import RunContext
@@ -46,53 +46,112 @@ class SlideToolTests(TestCase):
         tool.set_context(self.ctx)
         return json.loads(tool._run(**kw))
 
-    def test_write_creates_activates_checkpoints(self):
-        r = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
-        self.assertEqual(r["status"], "ok")
-        self.assertEqual(r["slide_ids"], ["s1"])
-        deck = SlideSet.objects.get(pk=r["deck_id"])
-        self.assertTrue(deck.is_active)
-        self.assertEqual(deck.content["slides"][0]["id"], "s1")
-        self.assertEqual([c.source for c in deck.checkpoints.all()], ["original"])
-
-    def test_write_empty_deck_when_content_omitted(self):
-        """Omitting content creates an empty, active deck to build up from layouts."""
-        r = self._run(WriteDeckTool(), title="Scratch")
+    def test_create_empty_deck(self):
+        r = self._run(CreateDeckTool(), title="Scratch")
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["slide_ids"], [])
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertTrue(deck.is_active)
         self.assertEqual(deck.content["slides"], [])
+        self.assertEqual([c.source for c in deck.checkpoints.all()], ["original"])
         # ...and it's a valid deck we can immediately seed a layout into.
         seed = self._run(AddSlideTool(), layout="title_01")
         self.assertEqual(seed["status"], "ok")
 
+    def test_create_with_layouts_storyboard(self):
+        """The ordered layouts list seeds one slide per id, in order, and the result
+        carries the full seeded deck JSON — the model edits placeholders from it,
+        since the deck JSON in the turn context is a pre-turn snapshot."""
+        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01", "bullets", "closing"])
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["slide_ids"], ["s1", "s2", "s3"])
+        self.assertEqual(r["changed_slide_ids"], ["s1", "s2", "s3"])
+        self.assertEqual(r["slide_count"], 3)
+        self.assertIn("Presentation title", r["deck_json"])  # title_01 placeholder text
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertTrue(deck.is_active)
+        self.assertEqual(len(deck.content["slides"]), 3)
+        self.assertEqual(deck.content["slides"][0]["name"], "Title 1")
+
+    def test_create_unknown_layout_is_all_or_nothing(self):
+        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01", "nope"])
+        self.assertEqual(r["status"], "error")
+        self.assertIn("bullets", r["available_layouts"])
+        self.assertFalse(SlideSet.objects.filter(thread=self.thread).exists())
+
+    def test_create_duplicate_title_errors(self):
+        self._run(CreateDeckTool(), title="Deck A")
+        r = self._run(CreateDeckTool(), title="Deck A")
+        self.assertEqual(r["status"], "error")
+        self.assertEqual(SlideSet.objects.filter(thread=self.thread).count(), 1)
+
+    def test_create_respects_deck_limit(self):
+        from chat.slides.schema import MAX_SLIDE_SETS_PER_THREAD
+
+        for i in range(MAX_SLIDE_SETS_PER_THREAD):
+            self.assertEqual(self._run(CreateDeckTool(), title=f"Deck {i}")["status"], "ok")
+        r = self._run(CreateDeckTool(), title="One more")
+        self.assertEqual(r["status"], "error")
+
+    def test_write_rewrites_active_deck(self):
+        self._run(CreateDeckTool(), title="Deck A")
+        r = self._run(WriteDeckTool(), content_json=_deck_json())
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["slide_ids"], ["s1"])
+        self.assertEqual(r["title"], "Deck A")  # empty title keeps the name
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertEqual(deck.content["slides"][0]["id"], "s1")
+        self.assertEqual(
+            [c.source for c in deck.checkpoints.order_by("order")], ["original", "ai_edit"]
+        )
+
+    def test_write_can_rename(self):
+        self._run(CreateDeckTool(), title="Deck A")
+        r = self._run(WriteDeckTool(), title="Deck B", content_json=_deck_json())
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["title"], "Deck B")
+
+    def test_write_without_deck_errors(self):
+        """Creation moved to slides_create_deck — a rewrite with no deck must point there."""
+        r = self._run(WriteDeckTool(), content_json=_deck_json())
+        self.assertEqual(r["status"], "error")
+        self.assertIn("slides_create_deck", r["message"])
+
+    def test_write_requires_content(self):
+        self._run(CreateDeckTool(), title="Deck A")
+        r = self._run(WriteDeckTool())
+        self.assertEqual(r["status"], "error")
+        self.assertIn("content", r["message"])
+
     def test_write_accepts_native_object(self):
         """The deck may be passed as a native JSON object (no string escaping) —
         the primary path for the model, which avoids double-escaping errors."""
+        self._run(CreateDeckTool(), title="Obj")
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [
             {"name": "Title", "skip_footer": True, "elements": [
                 {"type": "text", "x": 80, "y": 210, "w": 800, "h": 100, "class": "headline",
                  "paragraphs": [{"align": "center", "runs": [{"t": "Object Deck"}]}]},
             ]},
         ]}
-        r = self._run(WriteDeckTool(), title="Obj", content=deck)
+        r = self._run(WriteDeckTool(), content=deck)
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["slide_ids"], ["s1"])
         self.assertEqual(SlideSet.objects.get(pk=r["deck_id"]).content["slides"][0]["id"], "s1")
 
     def test_write_invalid_json(self):
-        r = self._run(WriteDeckTool(), title="X", content_json="{not json")
+        self._run(CreateDeckTool(), title="X")
+        r = self._run(WriteDeckTool(), content_json="{not json")
         self.assertEqual(r["status"], "error")
 
     def test_write_invalid_deck(self):
+        self._run(CreateDeckTool(), title="X")
         bad = json.dumps({"slides": [{"elements": [{"type": "text", "x": 1, "y": 1, "w": 1}]}]})
-        r = self._run(WriteDeckTool(), title="X", content_json=bad)
+        r = self._run(WriteDeckTool(), content_json=bad)
         self.assertEqual(r["status"], "error")
         self.assertTrue(r["issues"])
 
     def test_add_slide(self):
-        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
         r = self._run(AddSlideTool(), layout="bullets")
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["slide_id"], "s2")
@@ -102,16 +161,16 @@ class SlideToolTests(TestCase):
         """add_slide / edit must return the full ordered slide_ids (and add names the
         new one in changed_slide_ids). The client rebuilds its filmstrip from this list,
         so without it a newly added slide never appears live — it needed a manual F5."""
-        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
         added = self._run(AddSlideTool(), layout="bullets")
         self.assertEqual(added["slide_ids"], ["s1", "s2"])
         self.assertEqual(added["changed_slide_ids"], ["s2"])
         self.assertEqual(added["slide_count"], 2)
-        edited = self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Hi"'}])
+        edited = self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Hi"'}])
         self.assertEqual(edited["slide_ids"], ["s1", "s2"])
 
     def test_add_slide_unknown_layout(self):
-        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self._run(CreateDeckTool(), title="Deck A")
         r = self._run(AddSlideTool(), layout="nope")
         self.assertEqual(r["status"], "error")
         self.assertIn("bullets", r["available_layouts"])
@@ -126,15 +185,15 @@ class SlideToolTests(TestCase):
 
     def test_add_slide_carries_layout_comment(self):
         """A seed's authoring ``comment`` travels into the inserted slide JSON."""
-        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self._run(CreateDeckTool(), title="Deck A")
         r = self._run(AddSlideTool(), layout="image_right")
         self.assertEqual(r["status"], "ok")
         self.assertIn('"comment"', r["slide_json"])
         self.assertIn("either side", r["slide_json"])
 
     def test_edit_valid(self):
-        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
-        r = self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Welcome"'}])
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
+        r = self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["applied"], 1)
         self.assertEqual(r["changed_slide_ids"], ["s1"])
@@ -142,7 +201,7 @@ class SlideToolTests(TestCase):
         self.assertIn("Welcome", json.dumps(deck.content))
 
     def test_edit_json_guard_rejects_and_preserves(self):
-        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
         deck = SlideSet.objects.get(pk=w["deck_id"])
         before = json.dumps(deck.content, sort_keys=True)
         r = self._run(EditDeckTool(), edits=[{"old_text": '"version": 1', "new_text": '"version": 1 OOPS'}])
@@ -158,13 +217,14 @@ class SlideToolTests(TestCase):
             {"elements": [{"type": "text", "x": 1, "y": 1, "w": 1, "h": 1,
                            "paragraphs": [{"runs": [{"t": "dup"}]}, {"runs": [{"t": "dup"}]}]}]},
         ]})
-        self._run(WriteDeckTool(), title="Deck A", content_json=json_deck)
+        self._run(CreateDeckTool(), title="Deck A")
+        self._run(WriteDeckTool(), content_json=json_deck)
         r = self._run(EditDeckTool(), edits=[{"old_text": '"t": "dup"', "new_text": '"t": "x"'}])
         self.assertEqual(r["status"], "error")
         self.assertTrue(any("matches" in f["error"] for f in r["failed"]))
 
     def test_activate_and_delete(self):
-        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        self._run(CreateDeckTool(), title="Deck A")
         r = self._run(ActivateDeckTool(), deck_names=["Deck A"])
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["activated"][0]["title"], "Deck A")
@@ -175,9 +235,9 @@ class SlideToolTests(TestCase):
     def test_delete_active_promotes_survivor(self):
         """Deleting the active deck when others remain promotes the newest survivor
         so the thread keeps an active deck (the panel can switch instead of orphaning)."""
-        self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
-        self._run(WriteDeckTool(), title="Deck B", content_json=_deck_json())
-        # Deck B is active (written last); delete it and Deck A should take over.
+        self._run(CreateDeckTool(), title="Deck A")
+        self._run(CreateDeckTool(), title="Deck B")
+        # Deck B is active (created last); delete it and Deck A should take over.
         self.assertTrue(SlideSet.objects.get(title="Deck B").is_active)
         self._run(DeleteDeckTool(), deck_name="Deck B")
         self.assertIsNotNone(SlideSet.objects.get(title="Deck B").deleted_at)
@@ -214,7 +274,7 @@ class DeckConcurrentWriteTests(TestCase):
         return SlideSet.objects.get(pk=deck_id)
 
     def test_add_slide_reads_fresh_content_under_lock(self):
-        w = self._run(WriteDeckTool(), title="Deck A")
+        w = self._run(CreateDeckTool(), title="Deck A")
         stale = self._stale(w["deck_id"])  # zero slides
         self.assertEqual(stale.content["slides"], [])
 
@@ -233,14 +293,14 @@ class DeckConcurrentWriteTests(TestCase):
         self.assertNotEqual(first["slide_id"], second["slide_id"])
 
     def test_edit_deck_reads_fresh_content_under_lock(self):
-        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
         stale = self._stale(w["deck_id"])  # one slide
 
         added = self._run(AddSlideTool(), layout="bullets")
         self.assertEqual(added["status"], "ok")
 
         with mock.patch("chat.slides.service.resolve_deck", return_value=(stale, None)):
-            r = self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Welcome"'}])
+            r = self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])
 
         deck = SlideSet.objects.get(pk=w["deck_id"])
         # Whether the edit applied or cleanly failed, the concurrently added slide
@@ -258,10 +318,10 @@ class DeckConcurrentWriteTests(TestCase):
         to the stale-instance trick above. The real race needs true concurrency, which
         only the row lock closes.
         """
-        w = self._run(WriteDeckTool(), title="Deck A", content_json=_deck_json())
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
         self._run(AddSlideTool(), layout="bullets")
-        self._run(AddSlideTool(), layout="title_01")
-        self._run(EditDeckTool(), edits=[{"old_text": '"Hello Deck"', "new_text": '"Welcome"'}])
+        self._run(AddSlideTool(), layout="closing")
+        self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])
 
         deck = SlideSet.objects.get(pk=w["deck_id"])
         orders = list(deck.checkpoints.order_by("id").values_list("order", flat=True))
@@ -370,12 +430,7 @@ class PreviewToolTests(TestCase):
         self.user = User.objects.create_user(email=f"p+{uuid.uuid4().hex[:6]}@ex.com", password="x")
         self.thread = ChatThread.objects.create(created_by=self.user, title="t")
         self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
-        WriteDeckTool().set_context(self.ctx)._run(
-            title="Deck A",
-            content_json=json.dumps({"version": 1, "size": {"w": 960, "h": 540}, "slides": [
-                {"name": "A", "elements": []}, {"name": "B", "elements": []},
-            ]}),
-        )
+        CreateDeckTool().set_context(self.ctx)._run(title="Deck A", layouts=["blank", "blank"])
 
     def _fake_delay(self, run_id_str):
         """Fabricate a completed render (no LibreOffice) for the polling tool."""
@@ -449,7 +504,12 @@ class DeckThemeSeedingTests(TestCase):
         self.thread = ChatThread.objects.create(created_by=self.user, title="t")
         self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
 
-    def _write(self, deck, title="Deck", deck_name=""):
+    def _create(self, title="Deck", layouts=None):
+        tool = CreateDeckTool()
+        tool.set_context(self.ctx)
+        return json.loads(tool._run(title=title, layouts=layouts or []))
+
+    def _write(self, deck, title="", deck_name=""):
         tool = WriteDeckTool()
         tool.set_context(self.ctx)
         return json.loads(tool._run(title=title, content=deck, deck_name=deck_name))
@@ -468,7 +528,7 @@ class DeckThemeSeedingTests(TestCase):
     def test_new_deck_inherits_org_default_theme(self):
         # The org's legacy single style becomes its default theme; the deck's
         # theme override carries that palette (full v2 shape + provenance).
-        r = self._write(self._bare_deck())
+        r = self._create()
         deck = SlideSet.objects.get(pk=r["deck_id"])
         th = deck.content.get("theme") or {}
         self.assertEqual(th.get("colors", {}).get("dk1"), "#1E293B")  # slate body colour
@@ -477,6 +537,7 @@ class DeckThemeSeedingTests(TestCase):
 
     def test_explicit_theme_is_untouched(self):
         custom = {"colors": {"accent1": "#123456"}}
+        self._create()
         r = self._write(self._bare_deck(theme=custom))
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertEqual(deck.content["theme"], custom)
@@ -486,12 +547,12 @@ class DeckThemeSeedingTests(TestCase):
 
         # Create the deck (gets the org default), then simulate the user picking
         # "ocean" from the slide panel, then a full rewrite that omits the theme.
-        r = self._write(self._bare_deck(), title="Deck")
+        r = self._create()
         deck = SlideSet.objects.get(pk=r["deck_id"])
         deck.content["theme"] = preset_theme_override("ocean")
         deck.save(update_fields=["content"])
 
-        self._write(self._bare_deck(), title="Deck")
+        self._write(self._bare_deck())
         deck.refresh_from_db()
         self.assertEqual(deck.content["theme"], preset_theme_override("ocean"))
 
@@ -500,7 +561,7 @@ class DeckThemeSeedingTests(TestCase):
         from accounts.models import Membership
 
         Membership.objects.filter(user=self.user).delete()
-        r = self._write(self._bare_deck())
+        r = self._create()
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertNotIn("theme", deck.content)
 
@@ -509,7 +570,7 @@ class ThemeToolTests(SlideToolTests):
     """slides_list_themes / slides_set_theme (v2 named themes)."""
 
     def _make_deck(self):
-        return self._run(WriteDeckTool(), title="Deck", content_json=_deck_json())["deck_id"]
+        return self._run(CreateDeckTool(), title="Deck")["deck_id"]
 
     def test_new_deck_seeded_forest_and_listed_current(self):
         self._make_deck()
@@ -517,7 +578,7 @@ class ThemeToolTests(SlideToolTests):
         self.assertEqual(r["status"], "ok")
         forest = next((t for t in r["themes"] if t["id"] == "forest"), None)
         self.assertIsNotNone(forest)
-        self.assertTrue(forest["current"])  # WriteDeck seeds the default (Forest)
+        self.assertTrue(forest["current"])  # CreateDeck seeds the default (Forest)
 
     def test_set_forest_applies(self):
         self._make_deck()

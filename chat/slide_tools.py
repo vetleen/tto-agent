@@ -39,22 +39,35 @@ class ActivateDeckInput(ReasonBaseModel):
     )
 
 
+class CreateDeckInput(ReasonBaseModel):
+    title: str = Field(description="Title for the new deck.")
+    layouts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered layout ids, one per slide — the deck's storyboard. Each one of: "
+            + _LAYOUT_IDS + ". Omit or pass [] to create an empty deck."
+        ),
+    )
+
+
 class WriteDeckInput(ReasonBaseModel):
-    title: str = Field(description="Title for the deck.")
     content: dict | str | None = Field(
         default=None,
         description=(
-            "The full deck as a JSON OBJECT — pass it directly as structured JSON, do NOT "
-            "wrap it in a string or escape the quotes: "
+            "The full replacement deck as a JSON OBJECT — pass it directly as structured JSON, "
+            "do NOT wrap it in a string or escape the quotes: "
             '{"version":1,"size":{"w":960,"h":540},"slides":[...]}. Coordinates are points; '
-            "the slide is 960x540; omit slide/element ids and they are minted. OMIT this "
-            "entirely to create an EMPTY deck, then build it up from the pre-designed layouts "
-            "with slides_add_slide and fill them in with slide_canvas_edit."
+            "the slide is 960x540. KEEP the ids of slides/elements you carry over (the user "
+            "comments by id); leave ids off anything new and they are minted."
         ),
+    )
+    title: str = Field(
+        default="",
+        description="Rename the deck. Empty = keep the deck's current title.",
     )
     deck_name: str = Field(
         default="",
-        description="Target an existing deck by title. Empty = create/overwrite by the given title.",
+        description="Title of the deck to rewrite. Empty = the active deck.",
     )
 
 
@@ -199,6 +212,103 @@ class ActivateDeckTool(ContextAwareTool):
         return json.dumps(result)
 
 
+class CreateDeckTool(ContextAwareTool):
+    name: str = "slides_create_deck"
+    audience: str = "main"
+    section: str = "skills"
+    start_label: str = "Creating deck..."
+    end_label: str = "Created the deck"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") == "ok":
+            n = result.get("slide_count", 0)
+            return f"Created a deck with {n} slide(s)" if n else "Created an empty deck"
+        return None
+
+    description: str = (
+        "Create a new slide deck — the only way a deck comes into existence — and make it the "
+        "active one (the user sees a rendered preview, never the JSON). Pass `layouts`, an ordered "
+        "list of pre-designed layout ids (one per slide), as the deck's storyboard: plan the "
+        "narrative first, then pick one layout per point. The result includes the full seeded deck "
+        "JSON (ids minted, placeholder text) — fill the placeholders in with slide_canvas_edit. "
+        "Available layouts:\n" + _LAYOUT_MENU
+    )
+    args_schema: type[BaseModel] = CreateDeckInput
+
+    def _run(self, title: str, layouts=None, **kwargs) -> str:
+        from chat.slides import layouts as layouts_mod
+        from chat.slides import schema, service
+        from chat.slides import theme as theme_mod
+
+        thread_id = _thread_id(self)
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        if service.get_deck_by_title(thread_id, title):
+            return json.dumps({
+                "status": "error",
+                "message": f'A deck titled "{title}" already exists. Pick a different title, or '
+                           "rework the existing deck with slide_canvas_edit / slide_canvas_write.",
+            })
+
+        # All-or-nothing on layout ids: a partial deck from a typo'd storyboard is
+        # worse than an error the model can correct and retry.
+        wanted = list(layouts or [])
+        slides = []
+        unknown = []
+        for lid in wanted:
+            seed = layouts_mod.get_layout(lid)
+            if seed is None:
+                unknown.append(lid)
+            else:
+                slides.append(seed)
+        if unknown:
+            return json.dumps({
+                "status": "error",
+                "message": "Unknown layout(s): " + ", ".join(unknown) + ". No deck was created.",
+                "available_layouts": [c["id"] for c in layouts_mod.layout_catalog()],
+            })
+
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": slides}
+        schema.mint_ids(deck)
+
+        # New-deck default theme: user's default -> org default -> Forest. Forest is
+        # the base theme, so leave the deck theme unset for it (a plain deck stays
+        # lean); only a non-default org/user theme is written.
+        default = theme_mod.default_theme_for(_tool_user(self), _tool_org(self))
+        if default.get("id") != "forest":
+            deck["theme"] = theme_mod.theme_to_deck_override(default)
+
+        issues = schema.validate_deck(deck)
+        if issues:
+            return json.dumps({
+                "status": "error",
+                "message": "The assembled deck is invalid.",
+                "issues": issues[:20],
+            })
+
+        try:
+            obj, _created, _old = service.write_deck(thread_id, title=title, content=deck)
+        except service.DeckLimitError as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+
+        service.activate_deck(thread_id, obj)
+
+        slide_ids = [s.get("id") for s in deck["slides"]]
+        return json.dumps({
+            "status": "ok",
+            "deck_id": str(obj.pk),
+            "title": obj.title,
+            "slide_ids": slide_ids,
+            "changed_slide_ids": slide_ids,
+            "slide_count": len(slide_ids),
+            # The full seeded deck (minted ids + placeholder text): the deck JSON in
+            # the turn context is a pre-turn snapshot, so this is what the model
+            # edits against in the same run.
+            "deck_json": schema.canonical_deck_text(deck),
+        })
+
+
 class WriteDeckTool(ContextAwareTool):
     name: str = "slide_canvas_write"
     audience: str = "main"
@@ -206,31 +316,41 @@ class WriteDeckTool(ContextAwareTool):
     start_label: str = "Writing slides..."
     end_label: str = "Wrote the slide deck"
     description: str = (
-        "Create or completely rewrite a slide deck — this is how a deck comes into existence, and "
-        "it becomes the active deck (the user sees a rendered preview, never the JSON). RECOMMENDED: "
-        "call it with just a `title` (omit `content`) to create an EMPTY deck, then build it up from "
-        "the pre-designed layouts with `slides_add_slide` and fill them in with `slide_canvas_edit`. "
-        "Alternatively, pass a full deck JSON in `content` for a bespoke deck or a full restructure. "
-        "For targeted changes to an existing deck use `slide_canvas_edit`. The deck/element JSON "
-        "format is documented in the Slide Deck Collaborator skill."
+        "Completely restructure an EXISTING deck by replacing its entire JSON — a rework tool for "
+        "when the deck needs rebuilding around a new narrative, not how decks are created (use "
+        "slides_create_deck for that) and not for targeted changes (use slide_canvas_edit). KEEP "
+        "the ids of slides/elements you carry over — the user comments by id. The deck/element "
+        "JSON format is documented in the Slide Deck Collaborator skill."
     )
     args_schema: type[BaseModel] = WriteDeckInput
 
-    def _run(self, title: str, content=None, deck_name: str = "", **kwargs) -> str:
+    def _run(self, content=None, title: str = "", deck_name: str = "", **kwargs) -> str:
         from chat.slides import schema, service
 
         thread_id = _thread_id(self)
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
+        target, err = service.resolve_deck(thread_id, deck_name or None)
+        if err:
+            return json.dumps({"status": "error", **err})
+        if target is None:
+            return json.dumps({
+                "status": "error",
+                "message": "No deck exists for this thread. Create one with slides_create_deck first.",
+            })
+
         # Accept the deck as a native object (preferred — no escaping) or a JSON
-        # string (back-compat, under either name). An OMITTED deck creates an
-        # empty deck to build up from layouts with slides_add_slide.
+        # string (back-compat, under either name).
         if content is None:
             content = kwargs.get("content_json")
         if content is None:
-            deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
-        elif isinstance(content, str):
+            return json.dumps({
+                "status": "error",
+                "message": "content is required — pass the full replacement deck JSON. "
+                           "(New decks are created with slides_create_deck.)",
+            })
+        if isinstance(content, str):
             try:
                 deck = json.loads(content)
             except (ValueError, TypeError) as exc:
@@ -242,21 +362,16 @@ class WriteDeckTool(ContextAwareTool):
 
         schema.mint_ids(deck)
 
-        # Seed the deck's theme when the model didn't set one: keep an existing
-        # deck's theme (so a user's picker choice survives a full rewrite),
-        # otherwise inherit the org's default slide theme. A deck that carries an
-        # explicit theme is left untouched.
+        # Keep the deck's theme across a rewrite when the model didn't set one (so a
+        # user's picker choice survives); a theme-less deck falls back to the default
+        # like at creation. A deck that carries an explicit theme is left untouched.
         if not deck.get("theme"):
             from chat.slides import theme as theme_mod
 
-            existing = service.get_deck_by_title(thread_id, deck_name or title)
-            prev_theme = (existing.content or {}).get("theme") if existing else None
+            prev_theme = (target.content or {}).get("theme")
             if prev_theme:
                 deck["theme"] = prev_theme
             else:
-                # New-deck default theme: user's default -> org default -> Forest.
-                # Forest is the base theme, so leave the deck theme unset for it (a
-                # plain deck stays lean); only a non-default org/user theme is written.
                 default = theme_mod.default_theme_for(_tool_user(self), _tool_org(self))
                 if default.get("id") != "forest":
                     deck["theme"] = theme_mod.theme_to_deck_override(default)
@@ -267,9 +382,11 @@ class WriteDeckTool(ContextAwareTool):
 
         try:
             # write_deck checkpoints the result itself, inside the row lock it takes
-            # for the overwrite path, so the checkpoint order stays monotonic.
+            # for the overwrite path, so the checkpoint order stays monotonic. Looking
+            # the target up by its current title pins the overwrite path; an empty
+            # `title` keeps that name.
             obj, created, old = service.write_deck(
-                thread_id, title=title, content=deck, deck_name=deck_name
+                thread_id, title=(title or target.title), content=deck, deck_name=target.title
             )
         except service.DeckLimitError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
@@ -325,7 +442,7 @@ class EditDeckTool(ContextAwareTool):
         if deck is None:
             return json.dumps({
                 "status": "error",
-                "message": "No deck exists for this thread. Use slide_canvas_write to create one first.",
+                "message": "No deck exists for this thread. Use slides_create_deck to create one first.",
             })
 
         pairs = [
@@ -399,7 +516,7 @@ class AddSlideTool(ContextAwareTool):
         return f"Added a {layout} slide" if layout else None
     description: str = (
         "Insert a pre-designed layout slide into the active deck (create the deck first with "
-        "slide_canvas_write), then edit its placeholder text with slide_canvas_edit. Returns the "
+        "slides_create_deck), then edit its placeholder text with slide_canvas_edit. Returns the "
         "new slide's JSON and id. Available layouts:\n" + _LAYOUT_MENU
     )
     args_schema: type[BaseModel] = AddSlideInput
@@ -417,7 +534,7 @@ class AddSlideTool(ContextAwareTool):
         if deck is None:
             return json.dumps({
                 "status": "error",
-                "message": "No active deck. Create one with slide_canvas_write first.",
+                "message": "No active deck. Create one with slides_create_deck first.",
             })
 
         seed = layouts.get_layout(layout)
@@ -743,7 +860,7 @@ class SetThemeTool(ContextAwareTool):
         if deck is None:
             return json.dumps({
                 "status": "error",
-                "message": "No deck to theme. Create one with slide_canvas_write first.",
+                "message": "No deck to theme. Create one with slides_create_deck first.",
             })
 
         override = theme_mod.theme_to_deck_override(chosen)
@@ -772,6 +889,7 @@ class SetThemeTool(ContextAwareTool):
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(ActivateDeckTool())
+_registry.register_tool(CreateDeckTool())
 _registry.register_tool(WriteDeckTool())
 _registry.register_tool(EditDeckTool())
 _registry.register_tool(AddSlideTool())
