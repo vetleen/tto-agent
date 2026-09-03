@@ -142,6 +142,69 @@ class BuildDeckTests(SimpleTestCase):
         self.assertIn("HW", xml)  # legend series name
         self.assertEqual(warns, [])
 
+    def test_scatter_creates_native_chart_part(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "sc", "type": "chart", "x": 48, "y": 80, "w": 620, "h": 340, "chart": "scatter",
+             "series": [{"name": "A", "points": [[3, 120], [5, 90], [8, 200]]}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertTrue([n for n in z.namelist() if "/charts/chart" in n and n.endswith(".xml")],
+                        "no native scatter chart part embedded")
+        self.assertEqual(warns, [])
+
+    def test_bubble_scatter_builds(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "bb", "type": "chart", "x": 48, "y": 80, "w": 620, "h": 340, "chart": "scatter",
+             "series": [{"name": "A", "points": [[3, 120, 10], [5, 90, 40]]}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        self.assertTrue(data and warns == [])
+
+    def test_histogram_creates_native_chart_part(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "hg", "type": "chart", "x": 48, "y": 80, "w": 620, "h": 340, "chart": "histogram",
+             "bins": 6, "series": [{"name": "d", "values": [12, 15, 18, 22, 25, 28, 33, 40, 19, 24]}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertTrue([n for n in z.namelist() if "/charts/chart" in n and n.endswith(".xml")],
+                        "no native histogram chart part embedded")
+        self.assertEqual(warns, [])
+
+    def test_dot_builds_shapes(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "dt", "type": "chart", "x": 48, "y": 80, "w": 620, "h": 340, "chart": "dot",
+             "categories": ["Alpha", "Beta", "Gamma"], "series": [{"name": "S", "values": [72, 55, 88]}]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertGreaterEqual(xml.count('prst="ellipse"'), 3)  # one dot per category
+        self.assertIn("Alpha", xml)  # category label
+        self.assertEqual(warns, [])
+
+    def test_bullet_builds_shapes(self):
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
+            {"id": "bl", "type": "chart", "x": 48, "y": 80, "w": 620, "h": 340, "chart": "bullet",
+             "categories": ["Revenue", "NPS"], "series": [{"values": [72, 58]}],
+             "targets": [80, 60], "bands": [40, 70, 100]},
+        ]}]}
+        data, warns = build_deck_pptx(deck)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        xml = z.read("ppt/slides/slide1.xml").decode()
+        self.assertGreaterEqual(xml.count('prst="rect"'), 4)  # band + measure rects
+        self.assertIn("Revenue", xml)
+        self.assertEqual(warns, [])
+
+    def test_roadmap_gantt_layout_builds(self):
+        from chat.slides.layouts import get_layout
+        from chat.slides.schema import mint_ids
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [get_layout("roadmap_gantt")]}
+        mint_ids(deck)
+        data, warns = build_deck_pptx(deck)
+        self.assertTrue(data and warns == [])
+
     def test_shape_gradient_writes_gradfill(self):
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": [
             {"id": "g1", "type": "shape", "shape": "rounded_rect", "x": 60, "y": 80, "w": 240, "h": 150,

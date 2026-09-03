@@ -1,0 +1,22 @@
+{% comment %}Shared slide-theme editor modal. Include once per page that uses it,
+and load static js/slide-theme-editor.js. window.SlideThemeEditor.open(theme, {scope, onSaved}).{% endcomment %}
+<div id="ste-modal"
+     class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+     data-csrf="{{ csrf_token }}"
+     data-save-url="{% url 'accounts:slide_theme_save' %}"
+     data-logo-upload-url="{% url 'accounts:slide_theme_logo_upload' %}"
+     data-logo-delete-url="{% url 'accounts:slide_theme_logo_delete' %}"
+     data-logo-serve-url="{% url 'accounts:slide_theme_logo_serve' %}">
+  <div class="relative w-full max-w-2xl rounded-base border border-default bg-neutral-primary shadow-lg max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between border-b border-default px-5 py-3 sticky top-0 bg-neutral-primary z-10">
+      <h3 id="ste-title" class="text-base font-semibold text-heading">Theme</h3>
+      <button type="button" id="ste-close" class="text-body hover:text-heading text-xl leading-none px-2" aria-label="Close">&times;</button>
+    </div>
+    <div id="ste-body" class="px-5 py-4 space-y-4"><!-- built by slide-theme-editor.js --></div>
+    <div class="flex items-center justify-end gap-3 border-t border-default px-5 py-3 sticky bottom-0 bg-neutral-primary">
+      <span id="ste-status" class="text-xs text-body mr-auto" role="status"></span>
+      <button type="button" id="ste-cancel" class="rounded-base border border-default px-4 py-1.5 text-sm text-heading hover:bg-neutral-secondary-soft">Cancel</button>
+      <button type="button" id="ste-save" class="rounded-base bg-brand text-on-brand px-4 py-1.5 text-sm font-medium hover:bg-brand-medium">Save theme</button>
+    </div>
+  </div>
+</div>

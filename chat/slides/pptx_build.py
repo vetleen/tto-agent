@@ -890,6 +890,259 @@ def _add_marimekko(slide, el, theme, warnings, bg_dark=False):
             lx += Pt(104)
 
 
+def _chart_label(slide, bx, by, bw, bh, text, size, color, align=None, bold=False):
+    """A small non-wrapping textbox — the shared label primitive for the
+    shape-drawn charts (dot / bullet), mirroring the local helper in marimekko."""
+    from pptx.enum.text import PP_ALIGN
+
+    tb = slide.shapes.add_textbox(bx, by, bw, bh)
+    tb.text_frame.word_wrap = False
+    p = tb.text_frame.paragraphs[0]
+    p.alignment = align if align is not None else PP_ALIGN.LEFT
+    r = p.add_run()
+    r.text = text
+    r.font.size = Pt(size)
+    r.font.color.rgb = color
+    r.font.bold = bold
+    return tb
+
+
+def _add_scatter(slide, el, theme, warnings, bg_dark=False):
+    """A native, editable XY scatter — or a bubble chart when any point carries a
+    3rd (size) value. python-pptx has native XY_SCATTER / BUBBLE types."""
+    from pptx.chart.data import BubbleChartData, XyChartData
+    from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
+
+    series = el.get("series") or []
+    has_pts = any((s.get("points") or []) for s in series)
+    if not has_pts:
+        warnings.append("empty chart skipped")
+        return
+    is_bubble = any(len(p) >= 3 for s in series for p in (s.get("points") or []) if isinstance(p, list))
+    sizes = [float(p[2]) for s in series for p in (s.get("points") or [])
+             if isinstance(p, list) and len(p) >= 3 and isinstance(p[2], (int, float))]
+    default_size = (sum(sizes) / len(sizes)) if sizes else 1.0
+
+    if is_bubble:
+        data = BubbleChartData()
+        for s in series:
+            ser = data.add_series(s.get("name", ""))
+            for p in (s.get("points") or []):
+                if isinstance(p, list) and len(p) >= 2:
+                    ser.add_data_point(p[0], p[1], p[2] if len(p) >= 3 else default_size)
+        xl = XL_CHART_TYPE.BUBBLE
+    else:
+        data = XyChartData()
+        for s in series:
+            ser = data.add_series(s.get("name", ""))
+            for p in (s.get("points") or []):
+                if isinstance(p, list) and len(p) >= 2:
+                    ser.add_data_point(p[0], p[1])
+        xl = XL_CHART_TYPE.XY_SCATTER
+
+    x, y, w, h = _pt_box(el)
+    chart = slide.shapes.add_chart(xl, x, y, w, h, data).chart
+    if bg_dark:
+        chart.font.color.rgb = _chart_text_rgb(theme, True)
+    if el.get("title"):
+        chart.has_title = True
+        chart.chart_title.text_frame.text = el["title"]
+    else:
+        chart.has_title = False
+    show_legend = len(series) > 1 and el.get("legend", True)
+    chart.has_legend = show_legend
+    if show_legend:
+        chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+        chart.legend.include_in_layout = False
+
+    ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
+    for i, ser in enumerate(chart.series):
+        if not ramp:
+            break
+        color = ramp[i % len(ramp)]
+        try:
+            if is_bubble:
+                ser.format.fill.solid()
+                ser.format.fill.fore_color.rgb = color
+            else:
+                ser.marker.format.fill.solid()
+                ser.marker.format.fill.fore_color.rgb = color
+                ser.marker.format.line.fill.background()
+            ser.format.line.fill.background()  # no connecting line
+        except Exception:  # noqa: BLE001 — colour styling is best-effort
+            logger.debug("scatter colour styling failed", exc_info=True)
+
+
+def _add_histogram(slide, el, theme, warnings, bg_dark=False):
+    """A native, editable histogram: raw values binned into a clustered column
+    chart with gap width 0 so the columns are contiguous."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    from chat.slides.pillow_render import _fmt_num, _histogram_bins
+
+    series = el.get("series") or []
+    edges, counts = _histogram_bins(series[0].get("values"), el.get("bins")) if series else ([], [])
+    if not counts:
+        warnings.append("empty chart skipped")
+        return
+    data = CategoryChartData()
+    data.categories = [_fmt_num(edges[i]) for i in range(len(counts))]  # left edge per bin
+    data.add_series(series[0].get("name", ""), tuple(counts))
+
+    x, y, w, h = _pt_box(el)
+    chart = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, x, y, w, h, data).chart
+    if bg_dark:
+        chart.font.color.rgb = _chart_text_rgb(theme, True)
+    if el.get("title"):
+        chart.has_title = True
+        chart.chart_title.text_frame.text = el["title"]
+    else:
+        chart.has_title = False
+    chart.has_legend = False
+    try:
+        chart.plots[0].gap_width = 0  # contiguous bars = a histogram
+    except Exception:  # noqa: BLE001
+        logger.debug("histogram gap_width poke failed", exc_info=True)
+    ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
+    if ramp:
+        try:
+            ser = chart.series[0]
+            ser.format.fill.solid()
+            ser.format.fill.fore_color.rgb = ramp[0]
+        except Exception:  # noqa: BLE001
+            logger.debug("histogram colour styling failed", exc_info=True)
+    if el.get("value_labels"):
+        try:
+            chart.plots[0].has_data_labels = True
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _add_dot(slide, el, theme, warnings, bg_dark=False):
+    """A native, editable horizontal dot plot / lollipop drawn as shapes (oval
+    dots + stem connectors), matching the Pillow preview."""
+    from pptx.enum.text import PP_ALIGN
+
+    from chat.slides.pillow_render import _fmt_num, _nice_ticks, _val_axis
+
+    series = el.get("series") or []
+    n_vals = max((len(s.get("values") or []) for s in series), default=0)
+    cats = list(el.get("categories") or [str(i + 1) for i in range(n_vals)])
+    if not series or not cats:
+        warnings.append("empty chart skipped")
+        return
+    n_cat = len(cats)
+    lo, hi = _val_axis(series)
+    span = (hi - lo) or 1.0
+    _, step = _nice_ticks(hi if hi > 0 else 1.0)
+    ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
+    if not ramp:
+        ramp = [RGBColor(0x2E, 0x6B, 0x52)]
+    txt_rgb = _chart_text_rgb(theme, bg_dark)
+    grid_rgb = _resolve_rgb(theme, "accent3", RGBColor(0xC0, 0xC0, 0xC0))
+
+    x, y, w, h = _pt_box(el)
+    gutter_l, gutter_b = Pt(30), Pt(16)
+    ax, ay = x + gutter_l, y
+    aw, ah = w - gutter_l, h - gutter_b
+
+    def _fx(v):
+        return ax + int((v - lo) / span * aw)
+
+    t = lo
+    while t <= hi + 1e-9:
+        gx = _fx(t)
+        conn = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, gx, ay, gx, ay + ah)
+        conn.line.color.rgb = grid_rgb
+        conn.line.width = Pt(0.5)
+        _chart_label(slide, gx - Pt(16), ay + ah, Pt(32), gutter_b, _fmt_num(t), 7, txt_rgb, PP_ALIGN.CENTER)
+        t += step
+    zx = _fx(0.0)
+    dot_r = Pt(4)
+    for ci in range(n_cat):
+        cy = ay + int((ci + 0.5) * ah / n_cat)
+        _chart_label(slide, x, cy - Pt(6), gutter_l - Pt(3), Pt(12), cats[ci], 8, txt_rgb, PP_ALIGN.RIGHT)
+        for si, s in enumerate(series):
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            if not isinstance(v, (int, float)):
+                continue
+            gx = _fx(v)
+            color = ramp[si % len(ramp)]
+            stem = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, zx, cy, gx, cy)
+            stem.line.color.rgb = color
+            stem.line.width = Pt(1)
+            dot = slide.shapes.add_shape(MSO_SHAPE.OVAL, gx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2)
+            dot.fill.solid()
+            dot.fill.fore_color.rgb = color
+            dot.line.fill.background()
+            if el.get("value_labels"):
+                _chart_label(slide, gx + dot_r, cy - Pt(6), Pt(40), Pt(12), _fmt_num(v), 8, txt_rgb, PP_ALIGN.LEFT)
+
+
+def _add_bullet(slide, el, theme, warnings, bg_dark=False):
+    """A native, editable bullet chart drawn as shapes. Each row scales to its OWN
+    target (KPIs carry different units), so the qualitative bands — FRACTIONS of the
+    row's target — stretch across the row; the category label sits ABOVE the bar so
+    a long name can't overflow the slide."""
+    from chat.slides.pillow_render import _bullet_bands, _fmt_num
+
+    series = el.get("series") or []
+    vals = series[0].get("values") or [] if series else []
+    cats = list(el.get("categories") or [])
+    n = len(cats) if cats else len(vals)
+    if n == 0:
+        warnings.append("empty chart skipped")
+        return
+    targets = list(el.get("targets") or [])
+    fracs = _bullet_bands(el.get("bands"))
+    top_frac = fracs[-1] if fracs else 1.0
+    ramp = _chart_ramp_rgb(theme, el.get("colors") or theme.get("colors", {}).get("chart_ramp") or [])
+    accent = ramp[0] if ramp else RGBColor(0x2E, 0x6B, 0x52)
+    txt_rgb = _chart_text_rgb(theme, bg_dark)
+
+    x, y, w, h = _pt_box(el)
+    ax, ay, aw, ah = x, y, w, h
+    row_h = ah // n
+    label_h = min(Pt(16), int(row_h * 0.42))
+
+    for ci in range(n):
+        v = vals[ci] if ci < len(vals) else 0
+        v = float(v) if isinstance(v, (int, float)) else 0.0
+        tgt = float(targets[ci]) if (ci < len(targets) and isinstance(targets[ci], (int, float))) else (v or 1.0)
+        row_max = (max(v, tgt, top_frac * tgt) * 1.12) or 1.0
+        y0 = ay + ci * row_h
+
+        def _fx(val, _rm=row_max):
+            return ax + int(val / _rm * aw)
+
+        _chart_label(slide, x, y0, aw, label_h, cats[ci] if ci < len(cats) else "", 8, txt_rgb)
+        band_top = y0 + label_h
+        band_h = min(row_h - label_h - Pt(6), Pt(24))
+        cy = band_top + band_h // 2
+        prev = 0.0
+        for bi, f in enumerate(fracs):
+            x0, x1 = _fx(prev * tgt), _fx(f * tgt)
+            g = 232 - int(bi / max(1, len(fracs)) * 70)
+            band = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x0, band_top, max(x1 - x0, 1), band_h)
+            band.fill.solid()
+            band.fill.fore_color.rgb = RGBColor(g, g, g)
+            band.line.fill.background()
+            prev = f
+        mh = int(band_h * 0.46)
+        bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, ax, cy - mh // 2, max(_fx(v) - ax, 1), mh)
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = accent
+        bar.line.fill.background()
+        tx = _fx(tgt)
+        tick = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, tx, band_top - Pt(2), tx, band_top + band_h + Pt(2))
+        tick.line.color.rgb = txt_rgb
+        tick.line.width = Pt(2)
+        if el.get("value_labels"):
+            _chart_label(slide, min(_fx(v) + Pt(3), ax + aw - Pt(30)), cy - Pt(6), Pt(30), Pt(12), _fmt_num(v), 8, txt_rgb)
+
+
 def _add_chart(slide, el, theme, warnings, bg_dark=False):
     from pptx.chart.data import CategoryChartData
     from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
@@ -905,6 +1158,18 @@ def _add_chart(slide, el, theme, warnings, bg_dark=False):
         return
     if el.get("chart") == "combo":
         _add_combo(slide, el, theme, warnings, bg_dark)
+        return
+    if el.get("chart") == "scatter":
+        _add_scatter(slide, el, theme, warnings, bg_dark)
+        return
+    if el.get("chart") == "histogram":
+        _add_histogram(slide, el, theme, warnings, bg_dark)
+        return
+    if el.get("chart") == "dot":
+        _add_dot(slide, el, theme, warnings, bg_dark)
+        return
+    if el.get("chart") == "bullet":
+        _add_bullet(slide, el, theme, warnings, bg_dark)
         return
 
     kind_map = {
@@ -1106,43 +1371,110 @@ def _apply_bg_image(slide, sdict, theme, resolver, prs, warnings):
         pokes.set_shape_fill_alpha(shp, float(scrim.get("opacity", 0.4)))
 
 
-def _stamp_footer(slide, theme, page_num, total, bg_dark=False):
-    footer = theme.get("footer", {})
-    # Optional footer logo.
-    logo_name = footer.get("logo_asset")
-    if logo_name:
-        logo_path = ASSETS_DIR / logo_name
-        if logo_path.exists():
-            try:
-                slide.shapes.add_picture(
-                    str(logo_path), Pt(footer["x"]), Pt(footer["y"]),
-                    height=Pt(footer.get("h", 18)),
-                )
-            except Exception:  # noqa: BLE001
-                logger.warning("footer logo failed: %s", logo_name)
-    # Optional footer text.
-    if footer.get("text"):
-        tb = slide.shapes.add_textbox(
-            Pt(footer["x"] + (footer.get("h", 18) if logo_name else 0)),
-            Pt(footer["y"]), Pt(footer.get("w", 200)), Pt(footer.get("h", 18)),
-        )
-        p = tb.text_frame.paragraphs[0]
-        p.alignment = ALIGN_MAP.get(footer.get("align", "left"), PP_ALIGN.LEFT)
-        r = p.add_run()
-        r.text = footer["text"]
-        r.font.size = Pt(footer.get("size", 9))
-        r.font.name = _pptx_font(theme, "data")
-        _apply_color(r.font.color, theme, "lt2" if bg_dark else footer.get("color", "dk2"))
-    # Page number.
-    pn = theme.get("page_number", {})
-    tb = slide.shapes.add_textbox(Pt(pn.get("x", 900)), Pt(pn.get("y", 512)), Pt(pn.get("w", 36)), Pt(pn.get("h", 18)))
-    p = tb.text_frame.paragraphs[0]
-    p.alignment = ALIGN_MAP.get(pn.get("align", "right"), PP_ALIGN.RIGHT)
+def _color_is_dark(theme, color) -> bool:
+    """Whether a theme colour name / ``#hex`` reads as dark (for text contrast)."""
+    hexv = None
+    if isinstance(color, str):
+        if color.startswith("#"):
+            hexv = color.lstrip("#")
+        else:
+            c = (theme.get("colors") or {}).get(color)
+            hexv = c.lstrip("#") if isinstance(c, str) and c.startswith("#") else None
+    if not hexv or len(hexv) != 6:
+        return False
+    try:
+        r, g, b = int(hexv[0:2], 16), int(hexv[2:4], 16), int(hexv[4:6], 16)
+    except ValueError:
+        return False
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+
+
+def _footer_text_box(slide, theme, txt, x, w, y0, band_h, align, size, color):
+    from pptx.enum.text import MSO_ANCHOR
+
+    tb = slide.shapes.add_textbox(Pt(x), Pt(y0), Pt(w), Pt(band_h))
+    tf = tb.text_frame
+    tf.word_wrap = False
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    tf.margin_top = tf.margin_bottom = 0
+    p = tf.paragraphs[0]
+    p.alignment = ALIGN_MAP.get(align, PP_ALIGN.LEFT)
     r = p.add_run()
-    r.text = str(page_num)
-    r.font.size = Pt(pn.get("size", 9))
-    r.font.name = _pptx_font(theme, pn.get("font", "data"))
-    _apply_color(r.font.color, theme, "lt2" if bg_dark else pn.get("color", "dk2"))
+    r.text = txt
+    r.font.size = Pt(size)
+    r.font.name = _pptx_font(theme, "data")
+    _apply_color(r.font.color, theme, color)
+
+
+def _footer_logo_pic(slide, logo_bytes, x, w, y0, band_h, align):
+    if not logo_bytes:
+        return
+    from pptx.util import Emu
+
+    pad = 4
+    try:
+        pic = slide.shapes.add_picture(BytesIO(logo_bytes), Pt(x), Pt(y0 + pad), height=Pt(band_h - 2 * pad))
+    except Exception:  # noqa: BLE001
+        logger.warning("footer logo failed", exc_info=True)
+        return
+    left, box_w, pw = int(Pt(x)), int(Pt(w)), int(pic.width)
+    if align == "center":
+        pic.left = Emu(left + (box_w - pw) // 2)
+    elif align == "right":
+        pic.left = Emu(left + box_w - pw)
+
+
+def _footer_logo_bytes(theme) -> bytes | None:
+    """The current theme's logo bytes, from its ``_theme_id``/``_theme_logo_ext``
+    provenance keys (set by ``theme_to_deck_override``). ``None`` if no logo."""
+    tid, ext = theme.get("_theme_id"), theme.get("_theme_logo_ext")
+    if not tid or not ext:
+        return None
+    try:
+        from chat.slides.logos import slide_theme_logo_bytes
+
+        return slide_theme_logo_bytes(tid, ext)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _stamp_footer(slide, theme, page_num, total, bg_dark=False, footer_logo=None):
+    """Stamp the footer band: a full-bleed background (optional) with three grid
+    sections (logo / disclaimer text / page number), each at its colspan + align."""
+    from pptx.enum.shapes import MSO_SHAPE
+
+    from chat.slides.layouts import footer_section_box
+
+    footer = theme.get("footer", {}) or {}
+    band_h = theme_mod.FOOTER_BAND_H
+    y0 = 540 - band_h
+
+    bgc = footer.get("bg_color") or ""
+    band_dark = _color_is_dark(theme, bgc) if bgc else bg_dark
+    if bgc:
+        band = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Pt(0), Pt(y0), Pt(960), Pt(band_h))
+        band.fill.solid()
+        band.fill.fore_color.rgb = _resolve_rgb(theme, bgc, RGBColor(0xEC, 0xEF, 0xE9))
+        band.line.fill.background()
+        band.shadow.inherit = False
+
+    size = footer.get("size", 9)
+    text_color = "lt2" if band_dark else footer.get("color", "dk2")
+
+    start_col = 1
+    for sec in footer.get("sections", []) or []:
+        colspan = int(sec.get("colspan", 4) or 4)
+        content = sec.get("content", "none")
+        align = sec.get("align", "left")
+        if content and content != "none" and start_col <= 12:
+            x, w = footer_section_box(start_col, colspan)
+            if content == "logo":
+                _footer_logo_pic(slide, footer_logo, x, w, y0, band_h, align)
+            else:
+                txt = footer.get("text", "") if content == "text" else str(page_num)
+                if txt:
+                    _footer_text_box(slide, theme, txt, x, w, y0, band_h, align, size, text_color)
+        start_col += colspan
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1518,7 @@ def build_deck_pptx(
     """
     warnings: list[str] = []
     theme = theme_mod.resolve_theme(deck)
+    footer_logo = _footer_logo_bytes(theme)
     prs = _open_template(base_template, theme)
     size = deck.get("size") or {}
     prs.slide_width = Pt(size.get("w", 960))
@@ -1210,7 +1543,7 @@ def build_deck_pptx(
         for el in sdict.get("elements") or []:
             _render_element(slide, el, theme, image_resolver, warnings, bg_dark)
         if not sdict.get("skip_footer"):
-            _stamp_footer(slide, theme, idx + 1, total, bg_dark)
+            _stamp_footer(slide, theme, idx + 1, total, bg_dark, footer_logo)
         if sdict.get("notes"):
             slide.notes_slide.notes_text_frame.text = sdict["notes"]
 
@@ -1247,7 +1580,18 @@ def make_image_resolver(slide_set):
     cache: dict[str, tuple[bytes, str] | None] = {}
 
     def resolve(token: str):
-        match = _TOKEN_RE.search(token or "")
+        t = token or ""
+        # Reserved brand-logo slug -> the deck's CURRENT theme logo (the slug the
+        # cover seeds already carry). Bytes come from the deck's own theme, so it
+        # can't reach another deck's assets.
+        if "[[image:company-logo" in t:
+            if "__brand__" in cache:
+                return cache["__brand__"]
+            th = (slide_set.content or {}).get("theme") or {}
+            b = _footer_logo_bytes(th)
+            cache["__brand__"] = (b, "image/png") if b else None
+            return cache["__brand__"]
+        match = _TOKEN_RE.search(t)
         if not match:
             return None
         aid = match.group(1).lower()

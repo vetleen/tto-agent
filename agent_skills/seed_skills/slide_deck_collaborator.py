@@ -134,7 +134,8 @@ bottom for the footer.
      connector around another element. (Dashes are ignored on a curved line.)
 6. **chart** — `{"type":"chart","x":48,"y":130,"w":520,"h":300,"chart":"column","title":"Revenue","categories":["2023","2024","2025"],"series":[{"name":"ARR ($M)","values":[1.2,3.4,6.1]}],"legend":true,"value_labels":false}`.
    `chart`: `column` (vertical bars), `bar` (horizontal), `line`, `area`, `pie`, `doughnut`,
-   `waterfall`. Pie/doughnut use one series; the `categories` become the slice labels.
+   `waterfall`, `scatter`, `histogram`, `dot`, `bullet`, `marimekko`, `funnel`, `combo`.
+   Pie/doughnut use one series; the `categories` become the slice labels.
    **`doughnut`** is a pie with a hole — set `"center_label"` for a KPI ring dial (e.g. a single
    series `[34,66]` with `point_colors`/`colors` accenting the first slice and
    `"center_label":"34%"` in the middle); `"hole"` (0.2–0.85) tunes the ring thickness.
@@ -166,7 +167,38 @@ bottom for the footer.
    `{"type":"chart","x":60,"y":140,"w":840,"h":300,"chart":"waterfall","value_labels":true,`
    `"categories":["FY25","New","Expansion","Churn","FY26"],`
    `"series":[{"name":"Revenue","values":[103,24,18,-3,142]}],"totals":[0,4]}`.
+   **`scatter`** (relationship between two measures): each series carries `"points"` — a list of
+   `[x, y]` (or `[x, y, size]` for a **bubble**, radius ∝ size). Multiple series read as coloured
+   groups. Example: `"series":[{"name":"Deals","points":[[3,120],[5,90],[8,200]]}]`. Use it for
+   "does X drive Y"; reach for bubble only when a 3rd variable matters.
+   **`histogram`** (a distribution): ONE series of RAW values; set `"bins"` (2–50, or omit for an
+   auto count) and it buckets them into contiguous columns. Example:
+   `{"chart":"histogram","bins":8,"series":[{"values":[12,15,18,22,25,...]}]}`. Use it for "what's
+   the spread" — not a mean-only bar.
+   **`dot`** (a dot plot / lollipop — the clean alternative to a sorted bar): `categories` +
+   `series` values like a bar, drawn as a dot at each value. **Sort the categories yourself** for a
+   ranked dot plot. Multiple series ⇒ several dots per row (a good before/after or A-vs-B).
+   **`bullet`** (distance from target): `categories` = KPI rows, `series[0].values` = the actual,
+   `"targets"` = the target per row (each in its OWN units — $, count, months). Each row is scaled
+   to its own target, so different-unit KPIs sit together cleanly; `"bands"` are ascending grey
+   qualitative zones expressed as FRACTIONS of the target (e.g. `[0.6,0.85,1.0]` = 60/85/100%, omit
+   for a 50/75/100% default). The row label sits above its bar. Example:
+   `{"chart":"bullet","categories":["Revenue ($M)","NPS"],"series":[{"values":[8.2,58]}],`
+   `"targets":[10,60],"bands":[0.6,0.85,1.0]}`. Use it instead of a gauge/speedometer.
    Prefer a chart over a wall of numbers when you have a trend, comparison, or bridge.
+
+   **Which chart for which question** (starting point → *usually avoid*):
+   - Change over time → `line` (slope = a 2-point line). *Avoid dozens of clustered columns.*
+   - Which is larger / ranking → sorted `bar` or `dot` (sort the data). *Avoid an unsorted or
+     many-slice pie.*
+   - Distance from target → `bullet`. *Avoid a gauge/speedometer.*
+   - Distribution → `histogram`. *Avoid a mean-only bar.*
+   - Relationship of two measures → `scatter` (`bubble` only if a 3rd variable matters). *Avoid a
+     dual-axis chart as the default.*
+   - Composition / share → `stacked` bar or `marimekko`. *Avoid multiple pies.*
+   - Contribution to a change → `waterfall`. *Avoid decorative arrows.*
+   - $ metric + % metric together → `combo`. Pipeline stages → `funnel`.
+   - Exact values → a `table` (colour cells for a heat-map). Schedule → the `roadmap_gantt` layout.
 7. **icon** — a crisp single-colour line/solid icon: `{"type":"icon","x":80,"y":120,"w":28,"h":28,"name":"trend_up","color":"accent1"}`.
    Use icons to anchor feature lists, KPI callouts, agenda rows, or section markers (place an
    icon left of a short label). Keep them small (18–36pt) and consistent. Names:
@@ -209,11 +241,13 @@ bottom for the footer.
   specific `font`, when you want something outside the palette. The footer and page number are
   stamped automatically — never add them yourself; set `"skip_footer":true` on title, section,
   and closing slides to suppress them.
-- **Deck-level theme.** A new deck inherits the organization's default colour palette, and users
-  can also switch a deck's theme themselves from the panel — so prefer to use the theme colour
-  names above and the right hues follow. Add a top-level `theme` override if the user explicitly
-  asks for specific brand colours, or you think this deck should be branded differently from the
-  organization.
+- **Deck-level theme.** A deck has a named theme — palette, fonts, tables, and a footer band. New
+  decks inherit the default theme (the user's default, else the org's, else the built-in Forest).
+  Call `slides_list_themes` to see the choices (Forest, the org's themes, the user's) and
+  `slides_set_theme` to apply one to the deck; you can still fine-tune individual colours with
+  `slide_canvas_edit` afterwards. Prefer theme colour NAMES so a re-theme stays coherent. Users
+  also switch/manage themes from the panel. If the current theme carries a logo, place it where it
+  fits (e.g. the cover) with the token `[[image:company-logo]]`.
 - **Layout hygiene.** Stay inside the 48pt margins and snap x/width to the grid above;
   don't overlap unrelated elements. Estimate text
   fit before finishing: characters-per-line ≈ width_pt ÷ (0.5 × font_size); if the lines
@@ -249,9 +283,10 @@ bottom for the footer.
     `network` element (or `ecosystem` layout) — an interconnected mesh, not a plain list.
   - *modern / branded title or divider, KPI cards, hero stats* → gradient fills (`gradient` on a
     shape, `bg_gradient` on the slide).
-  - *timeline / roadmap* → the `timeline` layout; *process / steps* → `process` (chevrons);
-    *process with ownership / operating model / who-does-what across stages* → the `swimlane`
-    layout (role lanes × stages with handoff arrows).
+  - *single-track timeline / milestones on a line* → the `timeline` layout; *multi-workstream
+    schedule / roadmap / Gantt (tracks × time with duration bars)* → the `roadmap_gantt` layout;
+    *process / steps* → `process` (chevrons); *process with ownership / operating model /
+    who-does-what across stages* → the `swimlane` layout (role lanes × stages with handoff arrows).
   - *issue tree / hypothesis tree / MECE decomposition / driver tree / "break the question down"*
     → the `issue_tree` layout (a key question → branches → sub-drivers wired with elbow
     connectors) — not a flat bullet list.
@@ -270,5 +305,7 @@ bottom for the footer.
         "slide_canvas_delete",
         "slides_add_slide",
         "slides_preview_slide",
+        "slides_list_themes",
+        "slides_set_theme",
     ],
 }

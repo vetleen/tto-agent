@@ -14,7 +14,7 @@ from chat.models import ChatThread, SlideSet, SlideRenderRun
 from chat.slides.schema import canonical_deck_text
 from chat.slide_tools import (
     ActivateDeckTool, AddSlideTool, DeleteDeckTool, EditDeckTool,
-    PreviewSlidesTool, WriteDeckTool,
+    ListThemesTool, PreviewSlidesTool, SetThemeTool, WriteDeckTool,
 )
 from llm.types.context import RunContext
 
@@ -466,11 +466,14 @@ class DeckThemeSeedingTests(TestCase):
         return deck
 
     def test_new_deck_inherits_org_default_theme(self):
-        from chat.slides.theme import preset_theme_override
-
+        # The org's legacy single style becomes its default theme; the deck's
+        # theme override carries that palette (full v2 shape + provenance).
         r = self._write(self._bare_deck())
         deck = SlideSet.objects.get(pk=r["deck_id"])
-        self.assertEqual(deck.content.get("theme"), preset_theme_override("slate"))
+        th = deck.content.get("theme") or {}
+        self.assertEqual(th.get("colors", {}).get("dk1"), "#1E293B")  # slate body colour
+        self.assertIn("footer", th)
+        self.assertTrue(th.get("_theme_id"))
 
     def test_explicit_theme_is_untouched(self):
         custom = {"colors": {"accent1": "#123456"}}
@@ -500,3 +503,52 @@ class DeckThemeSeedingTests(TestCase):
         r = self._write(self._bare_deck())
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertNotIn("theme", deck.content)
+
+
+class ThemeToolTests(SlideToolTests):
+    """slides_list_themes / slides_set_theme (v2 named themes)."""
+
+    def _make_deck(self):
+        return self._run(WriteDeckTool(), title="Deck", content_json=_deck_json())["deck_id"]
+
+    def test_new_deck_seeded_forest_and_listed_current(self):
+        self._make_deck()
+        r = self._run(ListThemesTool())
+        self.assertEqual(r["status"], "ok")
+        forest = next((t for t in r["themes"] if t["id"] == "forest"), None)
+        self.assertIsNotNone(forest)
+        self.assertTrue(forest["current"])  # WriteDeck seeds the default (Forest)
+
+    def test_set_forest_applies(self):
+        self._make_deck()
+        r = self._run(SetThemeTool(), theme="forest")
+        self.assertEqual(r["status"], "ok")
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertEqual(deck.content["theme"]["_theme_id"], "forest")
+
+    def test_set_unknown_theme_errors_with_choices(self):
+        self._make_deck()
+        r = self._run(SetThemeTool(), theme="does-not-exist")
+        self.assertEqual(r["status"], "error")
+        self.assertTrue(r["available"])
+
+    def test_set_user_theme_by_label_carries_footer_and_logo_hint(self):
+        from accounts.models import UserSettings
+        from chat.slides import theme as T
+
+        th = T.slide_theme_defaults()
+        th["id"], th["label"], th["logo_ext"] = "tuser1", "My Brand", "png"
+        th["footer"] = {"bg_color": "dk2", "text": "x", "size": 9, "color": "dk2", "sections": [
+            {"colspan": 4, "align": "left", "content": "logo"},
+            {"colspan": 4, "align": "center", "content": "none"},
+            {"colspan": 4, "align": "right", "content": "page"}]}
+        UserSettings.objects.update_or_create(user=self.user, defaults={"preferences": {"slide_themes": [th]}})
+
+        self._make_deck()
+        r = self._run(SetThemeTool(), theme="My Brand")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["theme_id"], "tuser1")
+        self.assertIn("company-logo", r.get("note", ""))
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertEqual(deck.content["theme"]["_theme_id"], "tuser1")
+        self.assertEqual(deck.content["theme"]["footer"]["sections"][0]["content"], "logo")

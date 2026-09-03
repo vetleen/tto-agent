@@ -232,7 +232,7 @@ class LineElement(_Strict):
 
 
 _CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall",
-                "marimekko", "funnel", "combo")
+                "marimekko", "funnel", "combo", "scatter", "histogram", "dot", "bullet")
 
 
 class ChartSeries(_Strict):
@@ -242,6 +242,9 @@ class ChartSeries(_Strict):
     # (left) or secondary (right) value axis. Ignored by other chart kinds.
     kind: Literal["bar", "line"] = "bar"
     axis: Literal["primary", "secondary"] = "primary"
+    # chart="scatter" only: xy points, each [x, y] or [x, y, size] (a size makes
+    # it a bubble). Used instead of `values`; other chart kinds ignore it.
+    points: list[list[float]] = Field(default_factory=list)
 
 
 class ChartElement(_Strict):
@@ -278,6 +281,16 @@ class ChartElement(_Strict):
     # For chart="marimekko": per-category column widths (the "size" dimension,
     # e.g. market size). Omit to size each column by its own stacked total.
     widths: list[float] | None = None
+    # For chart="histogram": number of equal-width bins the raw values in
+    # series[0] are bucketed into (2–50). Omit for an automatic bin count.
+    bins: int | None = None
+    # For chart="bullet": the target marker per category row (`targets[i]` is the
+    # target for `categories[i]`, in that row's own units). Each row is scaled to
+    # its own target, so `bands` are ascending qualitative thresholds expressed as
+    # FRACTIONS of the target (e.g. [0.6, 0.85, 1.0] = 60/85/100%); omit for a
+    # 50/75/100% default.
+    targets: list[float] = Field(default_factory=list)
+    bands: list[float] | None = None
 
 
 _LABEL_POS = ("t", "b", "l", "r", "c", "none")
@@ -448,6 +461,20 @@ def _semantic_issues(deck: dict) -> list[dict]:
                     if len(s.get("values") or []) > MAX_CHART_POINTS:
                         issues.append({"path": path, "message": f"Too many chart data points (max {MAX_CHART_POINTS})."})
                         break
+                if el.get("chart") == "scatter":
+                    for s in sers:
+                        pts = s.get("points") or []
+                        if len(pts) > MAX_CHART_POINTS:
+                            issues.append({"path": path, "message": f"Too many scatter points (max {MAX_CHART_POINTS})."})
+                            break
+                        if any(not (isinstance(p, list) and 2 <= len(p) <= 3
+                                    and all(isinstance(c, (int, float)) for c in p)) for p in pts):
+                            issues.append({"path": path, "message": "Each scatter point must be [x, y] or [x, y, size]."})
+                            break
+                if el.get("chart") == "histogram":
+                    bins = el.get("bins")
+                    if bins is not None and not (isinstance(bins, int) and 2 <= bins <= 50):
+                        issues.append({"path": path, "message": "Histogram bins must be an integer 2–50."})
             if el.get("type") == "network":
                 path = f"slides.{si}.elements.{ei}"
                 nodes = el.get("nodes") or []

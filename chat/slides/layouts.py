@@ -48,6 +48,15 @@ def _span(a, b):
     return x, right - x
 
 
+def footer_section_box(start_col: int, colspan: int) -> tuple[int, int]:
+    """(x, w) for a footer section beginning at 1-indexed ``start_col`` and spanning
+    ``colspan`` grid columns (clamped to the 12-column grid). Shared by the pptx and
+    pillow footer stampers so footer content lands on the same grid as slide bodies."""
+    start_col = max(1, min(12, int(start_col)))
+    end_col = max(start_col, min(12, start_col + int(colspan) - 1))
+    return _span(start_col, end_col)
+
+
 def _text(x, y, w, h, cls, paragraphs, **extra):
     el = {"type": "text", "x": x, "y": y, "w": w, "h": h, "class": cls, "paragraphs": paragraphs}
     el.update(extra)
@@ -260,6 +269,7 @@ _LAYOUTS: dict[str, dict] = {
     "chart": {
         "name": "Chart",
         "description": "A chart on the left with takeaway bullets on the right.",
+        "comment": "Pick the chart kind that fits the question: change the type from 'column' to 'line' (trend), 'bar' (ranked, horizontal), 'scatter' (relationship between two measures — uses point [x,y]/[x,y,size]), 'histogram' (distribution — set 'bins'), 'dot' (a ranked dot plot), 'bullet' (target vs actual — set 'targets'/'bands'), or 'waterfall' (contribution to a change). For the full-bleed chart, widen it to x=48 w=864 and drop the bullets.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
             {"type": "chart", "x": 48, "y": 130, "w": 564, "h": 320, "chart": "column",
@@ -448,6 +458,43 @@ _LAYOUTS: dict[str, dict] = {
             {"type": "shape", "x": 696, "y": 246, "w": 20, "h": 20, "shape": "oval", "fill": "accent1"},
             _text(696, 292, 180, 30, "subhead", [_p("Q4 · Milestone", size=20, color="dk2")]),
             _text(696, 328, 180, 70, "caption", [_p("One line on what lands here.", size=12)]),
+        ],
+    },
+    "roadmap_gantt": {
+        "name": "Roadmap / Gantt",
+        "description": "A multi-workstream roadmap — tracks down the side, quarters across the top, and duration bars spanning the periods each workstream runs, with milestone diamonds and a 'now' marker.",
+        "comment": "Rename the four workstream labels and the Q1–Q4 headers, then stretch each duration bar to span its real periods: a bar's left edge is its start quarter's x (156 / 345 / 534 / 723) and its right edge the end quarter's right edge (345 / 534 / 723 / 912). Move the diamonds to real milestone dates, slide the dashed 'Now' line to today, and drop a row (label + bar) for fewer workstreams.",
+        "elements": [
+            _gtext(1, 12, 44, 60, "headline", [_p("Roadmap")]),
+            # Quarter headers over four columns (156–345 / 345–534 / 534–723 /
+            # 723–912); a rule under them and dashed quarter gridlines behind the bars.
+            _text(156, 120, 189, 24, "body", [_p("Q1", size=13, bold=True, color="dk2", align="center")]),
+            _text(345, 120, 189, 24, "body", [_p("Q2", size=13, bold=True, color="dk2", align="center")]),
+            _text(534, 120, 189, 24, "body", [_p("Q3", size=13, bold=True, color="dk2", align="center")]),
+            _text(723, 120, 189, 24, "body", [_p("Q4", size=13, bold=True, color="dk2", align="center")]),
+            {"type": "line", "x1": _ML, "y1": 150, "x2": _MR, "y2": 150, "color": "accent3", "w": 1},
+            {"type": "line", "x1": 345, "y1": 150, "x2": 345, "y2": 462, "color": "accent3", "w": 1, "dash": "dash"},
+            {"type": "line", "x1": 534, "y1": 150, "x2": 534, "y2": 462, "color": "accent3", "w": 1, "dash": "dash"},
+            {"type": "line", "x1": 723, "y1": 150, "x2": 723, "y2": 462, "color": "accent3", "w": 1, "dash": "dash"},
+            # Workstream labels (left) + duration bars spanning their quarters.
+            _text(_ML, 183, 100, 30, "body", [_p("Workstream 1", size=12, bold=True)], valign="middle"),
+            {"type": "shape", "x": 156, "y": 183, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent1",
+             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Phase 1", "color": "lt1", "b": True, "size": 12}]}]}},
+            _text(_ML, 259, 100, 30, "body", [_p("Workstream 2", size=12, bold=True)], valign="middle"),
+            {"type": "shape", "x": 345, "y": 259, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent2",
+             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Build", "color": "lt1", "b": True, "size": 12}]}]}},
+            _text(_ML, 335, 100, 30, "body", [_p("Workstream 3", size=12, bold=True)], valign="middle"),
+            {"type": "shape", "x": 156, "y": 335, "w": 756, "h": 30, "shape": "rounded_rect", "fill": "accent4",
+             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Ongoing engagement", "color": "lt1", "b": True, "size": 12}]}]}},
+            _text(_ML, 411, 100, 30, "body", [_p("Workstream 4", size=12, bold=True)], valign="middle"),
+            {"type": "shape", "x": 534, "y": 411, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent6",
+             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Launch", "color": "lt1", "b": True, "size": 12}]}]}},
+            # Milestone diamonds sit on a bar at a key date.
+            {"type": "shape", "x": 525, "y": 189, "w": 18, "h": 18, "shape": "diamond", "fill": "dk2"},
+            {"type": "shape", "x": 714, "y": 341, "w": 18, "h": 18, "shape": "diamond", "fill": "dk2"},
+            # "Now" marker (dashed), drawn last so it reads over the bars.
+            _text(560, 128, 80, 20, "caption", [_p("Now", size=11, bold=True, color="accent1", align="center")]),
+            {"type": "line", "x1": 600, "y1": 150, "x2": 600, "y2": 470, "color": "accent1", "w": 1.5, "dash": "dash"},
         ],
     },
     "matrix_2x2": {

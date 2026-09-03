@@ -723,12 +723,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
             deck = self._owned_deck(thread_id, deck_id)
             if deck is None:
                 return None
-            if name == "org":
-                override = theme_mod.org_slide_theme_override(self._user_org())
-            else:
-                override = theme_mod.resolve_named_slide_theme(name, self.user)
-            if override is None:
+            resolved = theme_mod.resolve_theme_by_id(name, self.user, self._user_org())
+            if resolved is None:
+                # Back-compat for the pre-v2 picker: a bare preset name, or "org".
+                if name == "org":
+                    resolved = theme_mod.default_theme_for(self.user, self._user_org())
+                elif name in theme_mod.PRESET_THEMES:
+                    fields = theme_mod._full_style_from_override(theme_mod.preset_theme_override(name))
+                    resolved = {"id": name, "label": name.title(),
+                                "footer": theme_mod.default_footer(), "logo_ext": "", **fields}
+            if resolved is None:
                 return None
+            override = theme_mod.theme_to_deck_override(resolved)
             # Re-read under the row lock: the assistant may be adding slides to this
             # same deck right now, and a theme apply against a pre-click snapshot
             # would write those slides back out of existence.

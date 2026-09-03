@@ -735,6 +735,217 @@ def org_logo_delete(request):
     return JsonResponse({"ok": True})
 
 
+# ---------------------------------------------------------------------------
+# Slide themes v2 — named theme CRUD + per-theme logo (org + user scope). Org
+# scope requires an org admin; user scope is the acting user's own themes. The
+# org-settings page and the in-deck picker share these endpoints + the modal.
+# ---------------------------------------------------------------------------
+def _resolve_theme_scope(request, scope):
+    """('org', org, None) / ('user', None, None) / (None, None, error_response)."""
+    from accounts.views._helpers import get_admin_membership
+
+    if scope == "org":
+        m = get_admin_membership(request.user)
+        if not m:
+            return None, None, JsonResponse({"error": "Admin access required."}, status=403)
+        return "org", m.org, None
+    return "user", None, None
+
+
+def _scope_themes(scope, org, user):
+    from chat.slides import theme as theme_mod
+
+    return theme_mod.org_slide_themes(org) if scope == "org" else theme_mod.user_full_slide_themes(user)
+
+
+def _write_scope_prefs(scope, org, user, mutate):
+    if scope == "org":
+        update_org_preferences(org.id, mutate)
+    else:
+        update_user_preferences(user, mutate)
+
+
+@login_required
+@require_POST
+def slide_theme_save(request):
+    """Create or update a named slide theme (body: {scope, theme})."""
+    from chat.slides import theme as theme_mod
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+    scope, org, resp = _resolve_theme_scope(request, _str_field(data, "scope", "user"))
+    if resp:
+        return resp
+    payload = data.get("theme") or {}
+    clean, error = theme_mod.validate_slide_theme(payload)
+    if error:
+        return JsonResponse({"error": error}, status=400)
+
+    tid = _str_field(payload, "id") or _str_field(data, "id")
+    current = _scope_themes(scope, org, request.user)
+    prior = next((t for t in current if t.get("id") == tid), None) if tid else None
+    # The logo is uploaded via a separate endpoint; preserve it across a save.
+    if prior and not clean.get("logo_ext"):
+        clean["logo_ext"] = prior.get("logo_ext", "")
+    if prior is not None:
+        clean["id"] = tid
+        themes = [clean if t.get("id") == tid else t for t in current]
+    else:
+        clean["id"] = theme_mod.new_slide_theme_id()
+        themes = current + [clean]
+        if scope == "user":
+            themes = themes[-theme_mod.MAX_USER_SLIDE_THEMES:]
+
+    _write_scope_prefs(scope, org, request.user, lambda prefs: prefs.__setitem__("slide_themes", themes))
+    return JsonResponse({"ok": True, "theme": clean})
+
+
+@login_required
+@require_POST
+def slide_theme_delete(request):
+    """Delete a named theme + its logo (body: {scope, id})."""
+    from chat.slides.logos import delete_slide_theme_logo
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+    scope, org, resp = _resolve_theme_scope(request, _str_field(data, "scope", "user"))
+    if resp:
+        return resp
+    tid = _str_field(data, "id")
+    if not tid:
+        return JsonResponse({"error": "Missing theme id."}, status=400)
+    themes = [t for t in _scope_themes(scope, org, request.user) if t.get("id") != tid]
+
+    def mutate(prefs):
+        prefs["slide_themes"] = themes
+        if prefs.get("slide_theme_default") == tid:
+            prefs["slide_theme_default"] = ""
+
+    _write_scope_prefs(scope, org, request.user, mutate)
+    delete_slide_theme_logo(tid)
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_POST
+def slide_theme_set_default(request):
+    """Set the scope's default theme (body: {scope, id}); id '' or 'forest' clears to Forest."""
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+    scope, org, resp = _resolve_theme_scope(request, _str_field(data, "scope", "user"))
+    if resp:
+        return resp
+    tid = _str_field(data, "id")
+    valid = {"", "forest"} | {t.get("id") for t in _scope_themes(scope, org, request.user)}
+    if tid not in valid:
+        return JsonResponse({"error": "Unknown theme."}, status=400)
+    _write_scope_prefs(scope, org, request.user, lambda prefs: prefs.__setitem__("slide_theme_default", tid))
+    return JsonResponse({"ok": True, "default": tid})
+
+
+@login_required
+@require_POST
+@ratelimit(key="user", rate="60/h", method="POST", block=True)
+def slide_theme_logo_upload(request):
+    """Upload a per-theme logo (multipart: scope, theme_id, logo)."""
+    from accounts.avatars import InvalidLogo, process_org_logo
+    from chat.slides.logos import save_slide_theme_logo
+
+    too_large = _reject_oversized_request(
+        request, getattr(django_settings, "LOGO_REQUEST_MAX_BYTES", LOGO_REQUEST_MAX_BYTES),
+        message="Image is too large.")
+    if too_large:
+        return too_large
+    scope, org, resp = _resolve_theme_scope(request, (request.POST.get("scope") or "user"))
+    if resp:
+        return resp
+    tid = (request.POST.get("theme_id") or "").strip()
+    current = _scope_themes(scope, org, request.user)
+    if not tid or not any(t.get("id") == tid for t in current):
+        return JsonResponse({"error": "Save the theme before adding a logo."}, status=400)
+    upload = request.FILES.get("logo")
+    if not upload:
+        return JsonResponse({"error": "No image was provided."}, status=400)
+    try:
+        ext, processed = process_org_logo(upload)
+    except InvalidLogo as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    save_slide_theme_logo(tid, processed, ext)
+    themes = [dict(t, logo_ext=ext) if t.get("id") == tid else t for t in current]
+    _write_scope_prefs(scope, org, request.user, lambda prefs: prefs.__setitem__("slide_themes", themes))
+    return JsonResponse({"ok": True, "logo_ext": ext})
+
+
+@login_required
+@require_POST
+def slide_theme_logo_delete(request):
+    """Remove a per-theme logo (body: {scope, id})."""
+    from chat.slides.logos import delete_slide_theme_logo
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+    scope, org, resp = _resolve_theme_scope(request, _str_field(data, "scope", "user"))
+    if resp:
+        return resp
+    tid = _str_field(data, "id")
+    current = _scope_themes(scope, org, request.user)
+    if not tid or not any(t.get("id") == tid for t in current):
+        return JsonResponse({"error": "Unknown theme."}, status=400)
+    delete_slide_theme_logo(tid)
+    themes = [dict(t, logo_ext="") if t.get("id") == tid else t for t in current]
+    _write_scope_prefs(scope, org, request.user, lambda prefs: prefs.__setitem__("slide_themes", themes))
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_GET
+def slide_theme_logo_serve(request):
+    """Serve a theme's logo bytes (GET: scope, id) for the editor preview."""
+    from django.http import Http404, HttpResponse
+
+    from chat.slides.logos import slide_theme_logo_bytes
+
+    scope, org, resp = _resolve_theme_scope(request, (request.GET.get("scope") or "user"))
+    if resp:
+        return resp
+    tid = (request.GET.get("id") or "").strip()
+    theme = next((t for t in _scope_themes(scope, org, request.user) if t.get("id") == tid), None)
+    if not theme or not theme.get("logo_ext"):
+        raise Http404
+    data = slide_theme_logo_bytes(tid, theme["logo_ext"])
+    if not data:
+        raise Http404
+    ext = theme["logo_ext"]
+    ct = {"png": "image/png", "webp": "image/webp"}.get(ext, "image/jpeg")
+    return HttpResponse(data, content_type=ct)
+
+
+@login_required
+@require_GET
+def slide_themes_list(request):
+    """Available themes (builtin + org + user) for the picker/settings to render."""
+    from accounts.models import get_membership
+    from accounts.views._helpers import get_admin_membership
+    from chat.slides import theme as theme_mod
+
+    mem = get_membership(request.user)
+    org = mem.org if mem else None
+    out = []
+    for t in theme_mod.list_available_themes(request.user, org):
+        out.append({**t, "scope": t.get("scope", ""),
+                    "has_logo": bool(t.get("logo_ext")), "swatch": theme_mod.theme_swatch(t)})
+    return JsonResponse({
+        "ok": True, "themes": out,
+        "user_default": theme_mod._user_default_theme_id(request.user),
+        "org_default": theme_mod._org_default_theme_id(org),
+        "is_org_admin": bool(get_admin_membership(request.user)),
+    })
+
+
 @login_required
 @require_POST
 @org_admin_required

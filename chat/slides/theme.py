@@ -106,18 +106,21 @@ WILFRED_BASE_THEME: dict = {
         "grid_color": "accent3",
         "text_class": "data",
     },
-    # Footer + page number are stamped by the builder on every non-skip_footer
-    # slide; they never appear in slide JSON. logo_asset is a filename under
-    # chat/slides/assets/ (empty = no logo).
+    # Footer band — stamped by the builder on every non-skip_footer slide (never in
+    # slide JSON). A theme's footer is a full-bleed band (FOOTER_BAND_H tall, at the
+    # bottom of the slide) carrying three grid sections; see default_footer().
+    # ``bg_color`` fills the whole band (""=none); ``text`` is the disclaimer used by
+    # a section with content "text"; ``size``/``color`` style the section text.
     "footer": {
-        "logo_asset": "",
+        "bg_color": "",
         "text": "",
-        "x": 48, "y": 512, "w": 200, "h": 18,   # left content margin (grid column 1)
-        "size": 9, "color": "dk2", "align": "left",
-    },
-    "page_number": {
-        "x": 876, "y": 512, "w": 36, "h": 18,    # right-aligned to the 912 content margin
-        "font": "data", "size": 9, "color": "dk2", "align": "right",
+        "size": 9,
+        "color": "dk2",
+        "sections": [
+            {"colspan": 4, "align": "left", "content": "none"},
+            {"colspan": 4, "align": "center", "content": "none"},
+            {"colspan": 4, "align": "right", "content": "page"},
+        ],
     },
 }
 
@@ -268,6 +271,41 @@ SLIDE_TABLE_FIELD_META = (
     ("band_fill", "Banded row fill"),
     ("grid_color", "Gridlines"),
 )
+
+# ---------------------------------------------------------------------------
+# Footer (part of a theme). A theme's footer is a full-bleed band (fixed height,
+# edge-to-edge to the bottom) with three sections laid left->right on the
+# 12-column grid; each section spans ``colspan`` columns, aligns its content, and
+# shows one of: nothing, the theme logo, the disclaimer text, or the page number.
+# ---------------------------------------------------------------------------
+FOOTER_CONTENTS = ("none", "logo", "text", "page")
+FOOTER_ALIGNS = ("left", "center", "right")
+FOOTER_SECTION_COUNT = 3
+FOOTER_TEXT_MAX = 200
+FOOTER_BAND_H = 28  # fixed band height in points (renderer constant, not user-set)
+
+# Metadata for the theme-editor footer UI.
+FOOTER_CONTENT_META = (
+    ("none", "Empty"),
+    ("logo", "Logo"),
+    ("text", "Disclaimer text"),
+    ("page", "Page number"),
+)
+FOOTER_ALIGN_META = (("left", "Left"), ("center", "Center"), ("right", "Right"))
+
+
+def default_footer() -> dict:
+    """The default footer — a single page-number section on the right, i.e. the
+    historical "page number bottom-right, nothing else" look."""
+    return {
+        "bg_color": "",
+        "text": "",
+        "sections": [
+            {"colspan": 4, "align": "left", "content": "none"},
+            {"colspan": 4, "align": "center", "content": "none"},
+            {"colspan": 4, "align": "right", "content": "page"},
+        ],
+    }
 
 
 def _hex_hash(value) -> str:
@@ -569,6 +607,246 @@ def resolve_named_slide_theme(name: str, user=None) -> dict | None:
             if entry["id"] == name:
                 return custom_theme_override(entry)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Themes v2 — first-class NAMED themes (colours + fonts + typography + tables +
+# footer + a per-theme logo) at org and user scope. Forest is the only built-in.
+# Org themes live on ``Organization.preferences["slide_themes"]`` (list) with
+# ``["slide_theme_default"]``; user themes on ``UserSettings.preferences`` under
+# the same keys. Old shapes (org single ``slide_theme``, colour-only user themes,
+# removed presets) are upgraded to full themes at READ time — no data migration.
+# ---------------------------------------------------------------------------
+def new_slide_theme_id() -> str:
+    """A fresh id for a v2 theme, namespaced so it can't collide with a preset name."""
+    return "t" + _uuid.uuid4().hex[:10]
+
+
+def _is_full_theme_entry(e) -> bool:
+    """True for a v2 full theme (has all four style groups) vs. a legacy shape."""
+    return isinstance(e, dict) and all(k in e for k in ("colors", "fonts", "typography", "tables"))
+
+
+def slide_theme_defaults() -> dict:
+    """The built-in Forest theme as a full v2 theme object (id ``forest``)."""
+    style = slide_style_defaults()
+    return {
+        "id": "forest",
+        "label": "Forest",
+        "colors": style["colors"],
+        "fonts": style["fonts"],
+        "typography": style["typography"],
+        "tables": style["tables"],
+        "footer": default_footer(),
+        "logo_ext": "",
+    }
+
+
+def _validate_footer(data) -> tuple[dict | None, str | None]:
+    """Validate a theme footer block; ``None`` -> the default footer."""
+    if data is None:
+        return default_footer(), None
+    if not isinstance(data, dict):
+        return None, "Invalid footer."
+    bg = data.get("bg_color", "") or ""
+    if bg:
+        if bg in SLIDE_STYLE_COLOR_KEYS:
+            pass  # a theme colour slot
+        elif isinstance(bg, str) and _norm_hex(bg):
+            bg = "#" + _norm_hex(bg)
+        else:
+            return None, "Footer background must be a theme colour or a hex value."
+    text = data.get("text", "") or ""
+    if not isinstance(text, str):
+        return None, "Invalid footer text."
+    text = text[:FOOTER_TEXT_MAX]
+    secs_in = data.get("sections")
+    if secs_in is None:
+        return {"bg_color": bg, "text": text, "sections": default_footer()["sections"]}, None
+    if not isinstance(secs_in, list) or len(secs_in) != FOOTER_SECTION_COUNT:
+        return None, f"Footer needs exactly {FOOTER_SECTION_COUNT} sections."
+    secs = []
+    for s in secs_in:
+        if not isinstance(s, dict):
+            return None, "Invalid footer section."
+        try:
+            colspan = int(s.get("colspan", 4))
+        except (TypeError, ValueError):
+            return None, "Footer colspan must be a number."
+        colspan = max(1, min(12, colspan))
+        align = s.get("align", "left")
+        if align not in FOOTER_ALIGNS:
+            return None, "Invalid footer alignment."
+        content = s.get("content", "none")
+        if content not in FOOTER_CONTENTS:
+            return None, "Invalid footer content."
+        secs.append({"colspan": colspan, "align": align, "content": content})
+    return {"bg_color": bg, "text": text, "sections": secs}, None
+
+
+def validate_slide_theme(data) -> tuple[dict | None, str | None]:
+    """Validate a full v2 theme payload (label + style groups + footer + logo_ext).
+
+    Returns ``(clean, None)`` with NO ``id`` (the caller assigns/preserves it), or
+    ``(None, error)``. Style groups reuse :func:`validate_org_slide_style`, so
+    missing colour/font/size/table values fall back to Forest defaults.
+    """
+    if not isinstance(data, dict):
+        return None, "Invalid theme payload."
+    label = data.get("label")
+    if not isinstance(label, str) or not label.strip():
+        return None, "Give the theme a name."
+    label = label.strip()[:_CUSTOM_LABEL_MAX]
+
+    style, err = validate_org_slide_style({
+        "colors": data.get("colors"),
+        "fonts": data.get("fonts"),
+        "typography": data.get("typography"),
+        "tables": data.get("tables"),
+    })
+    if err:
+        return None, err
+
+    footer, err = _validate_footer(data.get("footer"))
+    if err:
+        return None, err
+
+    logo_ext = data.get("logo_ext")
+    logo_ext = logo_ext if logo_ext in ("png", "jpg", "jpeg", "webp") else ""
+
+    return {
+        "label": label,
+        "colors": style["colors"],
+        "fonts": style["fonts"],
+        "typography": style["typography"],
+        "tables": style["tables"],
+        "footer": footer,
+        "logo_ext": logo_ext,
+    }, None
+
+
+def theme_to_deck_override(theme: dict) -> dict:
+    """The deck ``content["theme"]`` override for a full theme object.
+
+    Carries the style groups (via :func:`_style_to_override`), the ``footer`` block,
+    and ``_theme_*`` provenance so the active theme is known and its logo resolvable.
+    """
+    ov = _style_to_override({
+        "colors": theme["colors"],
+        "fonts": theme["fonts"],
+        "typography": theme["typography"],
+        "tables": theme["tables"],
+    })
+    ov["footer"] = copy.deepcopy(theme.get("footer") or default_footer())
+    ov["_theme_id"] = theme.get("id") or ""
+    ov["_theme_label"] = theme.get("label") or ""
+    ov["_theme_logo_ext"] = theme.get("logo_ext") or ""
+    return ov
+
+
+def _upgrade_legacy_theme(entry) -> dict | None:
+    """Coerce any stored theme entry (v2 full, old colour-only, or synthesized) to
+    a validated full v2 theme, preserving its id. ``None`` if unusable."""
+    if not isinstance(entry, dict):
+        return None
+    if _is_full_theme_entry(entry):
+        clean, err = validate_slide_theme(entry)
+        if err:
+            return None
+        clean["id"] = entry.get("id") or new_slide_theme_id()
+        return clean
+    # Old colour-only user theme {label, base, colours}.
+    if "colors" in entry or "base" in entry:
+        fields = _full_style_from_override(custom_theme_override(entry))
+        clean = {
+            "label": (entry.get("label") or "Custom")[:_CUSTOM_LABEL_MAX],
+            **fields,
+            "footer": default_footer(),
+            "logo_ext": "",
+        }
+        clean["id"] = entry.get("id") or new_slide_theme_id()
+        return clean
+    return None
+
+
+def org_slide_themes(org) -> list[dict]:
+    """An org's full v2 themes (upgrading legacy shapes at read time)."""
+    prefs = (getattr(org, "preferences", None) or {}) if org is not None else {}
+    raw = prefs.get("slide_themes")
+    if isinstance(raw, list) and raw:
+        out = [t for t in (_upgrade_legacy_theme(e) for e in raw) if t]
+        if out:
+            return out
+    # Back-compat: synthesize one org theme from the old single ``slide_theme``.
+    if prefs.get("slide_theme") is not None:
+        fields = get_org_slide_style(org)
+        return [{
+            "id": "org-legacy", "label": "Organization theme",
+            **fields, "footer": default_footer(), "logo_ext": "",
+        }]
+    return []
+
+
+def user_full_slide_themes(user) -> list[dict]:
+    """A user's full v2 themes (upgrading legacy colour-only entries at read time)."""
+    prefs = _user_prefs(user)
+    raw = prefs.get("slide_themes") if isinstance(prefs, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return [t for t in (_upgrade_legacy_theme(e) for e in raw) if t]
+
+
+def _org_default_theme_id(org) -> str:
+    prefs = (getattr(org, "preferences", None) or {}) if org is not None else {}
+    val = prefs.get("slide_theme_default")
+    return val if isinstance(val, str) else ""
+
+
+def _user_default_theme_id(user) -> str:
+    val = _user_prefs(user).get("slide_theme_default")
+    return val if isinstance(val, str) else ""
+
+
+def list_available_themes(user=None, org=None) -> list[dict]:
+    """Forest + org themes + the user's themes — each a full object with ``scope``."""
+    out = [dict(slide_theme_defaults(), scope="builtin")]
+    out += [dict(t, scope="org") for t in org_slide_themes(org)]
+    out += [dict(t, scope="user") for t in user_full_slide_themes(user)]
+    return out
+
+
+def resolve_theme_by_id(theme_id: str, user=None, org=None) -> dict | None:
+    """The full theme object for ``theme_id`` across builtin/org/user scope, or None."""
+    if not theme_id:
+        return None
+    for t in list_available_themes(user, org):
+        if t.get("id") == theme_id:
+            return t
+    return None
+
+
+def default_theme_for(user=None, org=None) -> dict:
+    """The theme a NEW deck should use: user default -> org default -> the org's
+    first theme (covers a legacy org that configured a single style) -> Forest."""
+    for cand in (_user_default_theme_id(user), _org_default_theme_id(org)):
+        if cand:
+            t = resolve_theme_by_id(cand, user, org)
+            if t:
+                return t
+    org_themes = org_slide_themes(org)
+    if org_themes:
+        return dict(org_themes[0], scope="org")
+    return dict(slide_theme_defaults(), scope="builtin")
+
+
+def theme_swatch(theme: dict) -> dict:
+    """``{bg, dark, accent}`` hexes for a theme's picker swatch."""
+    colors = (theme or {}).get("colors") or {}
+    return {
+        "bg": _hex_hash(colors.get("lt1")),
+        "dark": _hex_hash(colors.get("dk2")),
+        "accent": _hex_hash(colors.get("accent1")),
+    }
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

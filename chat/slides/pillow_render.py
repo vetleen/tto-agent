@@ -984,7 +984,10 @@ def _draw_chart(draw, theme, el, scale, bg=None):
         tw = f.getlength(el["title"])
         draw.text((x + (w - tw) / 2, top), el["title"], font=f, fill=txt)
         top += 22 * scale
-    show_legend = (kind in ("pie", "doughnut", "waterfall") or len(series) > 1) and el.get("legend", True)
+    # histogram/bullet read only series[0] (extra series are ignored), so a
+    # multi-series legend would be misleading — never legend those.
+    show_legend = (kind in ("pie", "doughnut", "waterfall")
+                   or (len(series) > 1 and kind not in ("histogram", "bullet"))) and el.get("legend", True)
     legend_h = 22 * scale if show_legend else 0
     stacked = bool(el.get("stacked"))
     # Waterfall uses conventional semantic colours (green up / red down / dark total).
@@ -1014,6 +1017,14 @@ def _draw_chart(draw, theme, el, scale, bg=None):
         _chart_funnel(draw, plot, series[0], cats, ramp, fnt, txt, el.get("value_labels"))
     elif kind == "combo":
         _chart_combo(draw, plot, series, cats, ramp, fnt, txt, grid, scale)
+    elif kind == "scatter":
+        _chart_scatter(draw, plot, series, ramp, fnt, txt, grid, scale)
+    elif kind == "histogram":
+        _chart_histogram(draw, plot, series[0], el.get("bins"), ramp, fnt, txt, grid, el.get("value_labels"))
+    elif kind == "dot":
+        _chart_dot(draw, plot, series, cats, ramp, fnt, txt, grid, el.get("value_labels"), scale)
+    elif kind == "bullet":
+        _chart_bullet(draw, plot, series[0], cats, el.get("targets") or [], el.get("bands"), ramp, fnt, txt, el.get("value_labels"), scale)
     elif kind == "bar":
         _chart_bars(draw, plot, series, cats, ramp, fnt, txt, axis, grid, True, el.get("value_labels"), stacked, pt_colors)
     elif kind in ("line", "area"):
@@ -1517,24 +1528,304 @@ def _fmt_num(v):
     return f"{v:.1f}"
 
 
+# --- Shared compute helpers (also used by the .pptx builder so preview and
+#     download bin/scale identically) ----------------------------------------
+def _histogram_bins(values, bins=None):
+    """``(edges, counts)`` for a histogram of raw ``values``. ``edges`` has
+    ``len(counts)+1`` entries. ``bins`` is the bucket count (2–50); when None it
+    defaults to ~sqrt(n), clamped to 5..20."""
+    nums = [float(v) for v in (values or []) if isinstance(v, (int, float))]
+    if not nums:
+        return [], []
+    lo, hi = min(nums), max(nums)
+    if hi <= lo:
+        hi = lo + 1.0
+    if isinstance(bins, int) and bins >= 2:
+        n = min(50, bins)
+    else:
+        n = max(5, min(20, int(round(math.sqrt(len(nums)))) or 5))
+    width = (hi - lo) / n
+    edges = [lo + i * width for i in range(n + 1)]
+    counts = [0] * n
+    for v in nums:
+        idx = int((v - lo) / width)
+        counts[min(idx, n - 1)] += 1  # the max value lands in the last bin
+    return edges, counts
+
+
+def _scatter_bounds(series):
+    """``(xlo, xhi, ylo, yhi)`` padded data ranges for a scatter/bubble chart."""
+    xs, ys = [], []
+    for s in series:
+        for p in (s.get("points") or []):
+            if isinstance(p, list) and len(p) >= 2 and all(isinstance(c, (int, float)) for c in p[:2]):
+                xs.append(float(p[0]))
+                ys.append(float(p[1]))
+    if not xs:
+        return (0.0, 1.0, 0.0, 1.0)
+
+    def _pad(lo, hi):
+        if hi <= lo:
+            hi = lo + 1.0
+        m = (hi - lo) * 0.08
+        return lo - m, hi + m
+
+    xlo, xhi = _pad(min(xs), max(xs))
+    ylo, yhi = _pad(min(ys), max(ys))
+    return (xlo, xhi, ylo, yhi)
+
+
+def _chart_scatter(draw, plot, series, ramp, fnt, txt, grid, scale):
+    """An x/y scatter (relationship between two measures). A point with a 3rd
+    value is drawn as a bubble whose radius scales with that value."""
+    px, py, pw, ph = plot
+    xlo, xhi, ylo, yhi = _scatter_bounds(series)
+    xspan, yspan = (xhi - xlo) or 1.0, (yhi - ylo) or 1.0
+    lbl = fnt(9)
+    val_gutter, cat_gutter = 30, 18
+    ax, ay, aw, ah = px + val_gutter, py, pw - val_gutter, ph - cat_gutter
+
+    def gx_(v):
+        return ax + (v - xlo) / xspan * aw
+
+    def gy_(v):
+        return ay + ah - (v - ylo) / yspan * ah
+
+    _, ystep = _nice_ticks(yhi if yhi > 0 else 1.0)
+    t = math.ceil(ylo / ystep) * ystep
+    while t <= yhi + 1e-9:
+        gy = gy_(t)
+        draw.line([(ax, gy), (ax + aw, gy)], fill=grid, width=1)
+        draw.text((px, gy - 6), _fmt_num(t), font=lbl, fill=txt)
+        t += ystep
+    _, xstep = _nice_ticks(xhi if xhi > 0 else 1.0)
+    t = math.ceil(xlo / xstep) * xstep
+    while t <= xhi + 1e-9:
+        gx = gx_(t)
+        draw.text((gx - lbl.getlength(_fmt_num(t)) / 2, ay + ah + 3), _fmt_num(t), font=lbl, fill=txt)
+        t += xstep
+
+    sizes = [float(p[2]) for s in series for p in (s.get("points") or [])
+             if isinstance(p, list) and len(p) >= 3 and isinstance(p[2], (int, float))]
+    smax = max(sizes) if sizes else 0.0
+    base_r = max(2.5, 3.0 * scale)
+    for si, s in enumerate(series):
+        color = ramp[si % len(ramp)]
+        for p in (s.get("points") or []):
+            if not (isinstance(p, list) and len(p) >= 2):
+                continue
+            cx, cy = gx_(float(p[0])), gy_(float(p[1]))
+            if len(p) >= 3 and smax > 0 and isinstance(p[2], (int, float)):
+                r = base_r + (max(0.0, float(p[2])) / smax) * (18 * scale)  # bubble
+            else:
+                r = base_r
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+
+
+def _chart_histogram(draw, plot, series, bins, ramp, fnt, txt, grid, value_labels):
+    """A histogram: raw ``series['values']`` bucketed into equal-width, contiguous
+    (gapless) columns of counts."""
+    px, py, pw, ph = plot
+    edges, counts = _histogram_bins(series.get("values"), bins)
+    if not counts:
+        return
+    top, step = _nice_ticks(max(counts) or 1)
+    span = top or 1.0
+    lbl = fnt(9)
+    val_gutter, cat_gutter = 26, 16
+    ax, ay, aw, ah = px + val_gutter, py, pw - val_gutter, ph - cat_gutter
+    t = 0
+    while t <= top + 1e-9:
+        gy = ay + ah - (t / span) * ah
+        draw.line([(ax, gy), (ax + aw, gy)], fill=grid, width=1)
+        draw.text((px, gy - 6), _fmt_num(t), font=lbl, fill=txt)
+        t += step
+    n = len(counts)
+    color = ramp[0]
+    slot = aw / n
+    for i, c in enumerate(counts):
+        bh = (c / span) * ah
+        x0 = ax + i * slot
+        draw.rectangle([x0, ay + ah - bh, x0 + slot, ay + ah], fill=color,
+                       outline=(255, 255, 255), width=1)  # hairline separates bins
+        if value_labels and c > 0:
+            cw = lbl.getlength(str(c))
+            draw.text((x0 + slot / 2 - cw / 2, ay + ah - bh - 12), str(c), font=lbl, fill=txt)
+    everyk = max(1, round((n + 1) / 6))
+    for i in range(0, n + 1, everyk):
+        lt = _fmt_num(edges[i])
+        draw.text((ax + i * slot - lbl.getlength(lt) / 2, ay + ah + 3), lt, font=lbl, fill=txt)
+
+
+def _chart_dot(draw, plot, series, cats, ramp, fnt, txt, grid, value_labels, scale):
+    """A horizontal dot plot / lollipop — a stem + a dot at each category's value.
+    Sort the categories upstream for a ranked dot plot."""
+    px, py, pw, ph = plot
+    n_cat = len(cats)
+    if n_cat == 0 or not series:
+        return
+    lo, hi = _val_axis(series)
+    span = (hi - lo) or 1.0
+    lbl = fnt(9)
+    cat_gutter = 30
+    ax, ay, aw, ah = px + cat_gutter, py, pw - cat_gutter, ph - 16
+    _, step = _nice_ticks(hi if hi > 0 else 1.0)
+    t = lo
+    while t <= hi + 1e-9:
+        gx = ax + (t - lo) / span * aw
+        draw.line([(gx, ay), (gx, ay + ah)], fill=grid, width=1)
+        draw.text((gx - lbl.getlength(_fmt_num(t)) / 2, ay + ah + 3), _fmt_num(t), font=lbl, fill=txt)
+        t += step
+    zx = ax + (0.0 - lo) / span * aw  # baseline x for the stems
+    dot_r = max(3.0, 4.0 * scale)
+    for ci in range(n_cat):
+        cy = ay + (ci + 0.5) * (ah / n_cat)
+        clbl = cats[ci]
+        draw.text((px + cat_gutter - lbl.getlength(clbl) - 4, cy - 6), clbl, font=lbl, fill=txt)
+        for si, s in enumerate(series):
+            vals = s.get("values") or []
+            v = vals[ci] if ci < len(vals) else 0
+            if not isinstance(v, (int, float)):
+                continue
+            gx = ax + (v - lo) / span * aw
+            color = ramp[si % len(ramp)]
+            draw.line([(zx, cy), (gx, cy)], fill=color, width=max(1, int(scale)))
+            draw.ellipse([gx - dot_r, cy - dot_r, gx + dot_r, cy + dot_r], fill=color)
+            if value_labels:
+                draw.text((gx + dot_r + 3, cy - 6), _fmt_num(v), font=lbl, fill=txt)
+
+
+def _bullet_bands(bands):
+    """Qualitative-band thresholds as ascending FRACTIONS of each row's target
+    (default 50/75/100%). A list that looks absolute (any value > 2) is treated as
+    unset, so a mis-authored bullet still renders sensible bands."""
+    fracs = [float(b) for b in (bands or []) if isinstance(b, (int, float))]
+    if not fracs or max(fracs) > 2.0:
+        fracs = [0.5, 0.75, 1.0]
+    return sorted(min(2.0, max(0.0, f)) for f in fracs)
+
+
+def _chart_bullet(draw, plot, series, cats, targets, bands, ramp, fnt, txt, value_labels, scale):
+    """A bullet chart. Each row is scaled to its OWN target (KPIs carry different
+    units), so the qualitative ``bands`` — FRACTIONS of that row's target — stretch
+    across the row; a measure bar and a target tick sit on top. The category label
+    sits ABOVE its bar, so a long name can never overflow the slide edge."""
+    px, py, pw, ph = plot
+    vals = series.get("values") or []
+    n = len(cats) if cats else len(vals)
+    if n == 0:
+        return
+    lbl = fnt(9)
+    fracs = _bullet_bands(bands)
+    top_frac = fracs[-1] if fracs else 1.0
+    ax, ay, aw, ah = px, py, pw, ph
+    row_h = ah / n
+    label_h = min(16 * scale, row_h * 0.42)
+    for ci in range(n):
+        v = vals[ci] if ci < len(vals) else 0
+        v = float(v) if isinstance(v, (int, float)) else 0.0
+        tgt = float(targets[ci]) if (ci < len(targets) and isinstance(targets[ci], (int, float))) else (v or 1.0)
+        row_max = (max(v, tgt, top_frac * tgt) * 1.12) or 1.0
+        y0 = ay + ci * row_h
+        # label ABOVE the bar (full width; cannot overflow the left edge)
+        draw.text((ax, y0 + 1), (cats[ci] if ci < len(cats) else ""), font=lbl, fill=txt)
+        band_top = y0 + label_h
+        band_h = min(row_h - label_h - 6, 24 * scale)
+        cy = band_top + band_h / 2
+        # qualitative zones: light -> dark, as fractions of the row's target
+        prev = 0.0
+        for bi, f in enumerate(fracs):
+            x0 = ax + (prev * tgt) / row_max * aw
+            x1 = ax + (f * tgt) / row_max * aw
+            g = 232 - int(bi / max(1, len(fracs)) * 70)
+            draw.rectangle([x0, band_top, x1, band_top + band_h], fill=(g, g, g))
+            prev = f
+        # measure bar (thinner, drawn over the bands)
+        mh = band_h * 0.46
+        draw.rectangle([ax, cy - mh / 2, ax + v / row_max * aw, cy + mh / 2], fill=ramp[0])
+        # target tick
+        tx = ax + tgt / row_max * aw
+        draw.line([(tx, band_top - 2), (tx, band_top + band_h + 2)], fill=txt, width=max(2, int(2 * scale)))
+        if value_labels:
+            draw.text((min(ax + v / row_max * aw + 3, ax + aw - 26 * scale), cy - 6), _fmt_num(v), font=lbl, fill=txt)
+
+
 # ---------------------------------------------------------------------------
 # Footer / page number
 # ---------------------------------------------------------------------------
-def _stamp_footer(draw, theme, scale, page_num, total, bg=None):
-    dark = bg is not None and _is_dark(bg)
-    footer = theme.get("footer", {})
-    if footer.get("text"):
-        font = _font(theme_mod.font_family(theme, "data"), (footer.get("size", 9)) * scale, False, False)
-        fcol = "lt2" if dark else footer.get("color", "dk2")
-        draw.text((footer["x"] * scale, footer["y"] * scale), footer["text"],
-                  font=font, fill=_rgb(theme, fcol))
-    pn = theme.get("page_number", {})
-    font = _font(theme_mod.font_family(theme, pn.get("font", "data")), (pn.get("size", 9)) * scale, False, False)
-    txt = str(page_num)
+def _footer_text_pillow(draw, font, txt, x, w, y0, band_h, align, fill, scale):
     tw = font.getlength(txt)
-    px = pn.get("x", 900) * scale + (pn.get("w", 36) * scale - tw)  # right-align in the box
-    pcol = "lt2" if dark else pn.get("color", "dk2")
-    draw.text((px, pn.get("y", 512) * scale), txt, font=font, fill=_rgb(theme, pcol))
+    asc, desc = font.getmetrics()
+    ty = (y0 + band_h / 2) * scale - (asc + desc) / 2
+    if align == "center":
+        tx = (x + w / 2) * scale - tw / 2
+    elif align == "right":
+        tx = (x + w) * scale - tw
+    else:
+        tx = x * scale
+    draw.text((tx, ty), txt, font=font, fill=fill)
+
+
+def _footer_logo_pillow(img, logo_bytes, x, w, y0, band_h, align, scale):
+    if not logo_bytes:
+        return
+    try:
+        src = Image.open(BytesIO(logo_bytes)).convert("RGBA")
+    except Exception:  # noqa: BLE001
+        logger.warning("pillow footer logo failed", exc_info=True)
+        return
+    sw, sh = src.size
+    if not sw or not sh:
+        return
+    pad = 4
+    lh = max(1, int((band_h - 2 * pad) * scale))
+    lw = max(1, int(sw * (lh / sh)))
+    placed = src.resize((lw, lh))
+    if align == "center":
+        px = int((x + w / 2) * scale - lw / 2)
+    elif align == "right":
+        px = int((x + w) * scale - lw)
+    else:
+        px = int(x * scale)
+    img.paste(placed, (px, int((y0 + pad) * scale)), placed)
+
+
+def _stamp_footer(draw, img, theme, scale, page_num, total, bg=None, footer_logo=None):
+    """Footer band: an optional full-bleed background plus three grid sections
+    (logo / disclaimer text / page number), each at its colspan + alignment."""
+    from chat.slides.layouts import footer_section_box
+
+    footer = theme.get("footer", {}) or {}
+    band_h = theme_mod.FOOTER_BAND_H
+    y0 = 540 - band_h
+
+    bgc = footer.get("bg_color") or ""
+    if bgc:
+        band_rgb = _rgb(theme, bgc, (236, 239, 233))
+        band_dark = _is_dark(band_rgb)
+        draw.rectangle([0, y0 * scale, img.width, 540 * scale], fill=band_rgb)
+    else:
+        band_dark = bg is not None and _is_dark(bg)
+
+    size = footer.get("size", 9)
+    text_color = "lt2" if band_dark else footer.get("color", "dk2")
+    fill = _rgb(theme, text_color)
+    font = _font(theme_mod.font_family(theme, "data"), size * scale, False, False)
+
+    start_col = 1
+    for sec in footer.get("sections", []) or []:
+        colspan = int(sec.get("colspan", 4) or 4)
+        content = sec.get("content", "none")
+        align = sec.get("align", "left")
+        if content and content != "none" and start_col <= 12:
+            x, w = footer_section_box(start_col, colspan)
+            if content == "logo":
+                _footer_logo_pillow(img, footer_logo, x, w, y0, band_h, align, scale)
+            else:
+                txt = footer.get("text", "") if content == "text" else str(page_num)
+                if txt:
+                    _footer_text_pillow(draw, font, txt, x, w, y0, band_h, align, fill, scale)
+        start_col += colspan
 
 
 # ---------------------------------------------------------------------------
@@ -1655,7 +1946,16 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
             logger.warning("pillow render: element %s failed", etype, exc_info=True)
 
     if not slide.get("skip_footer"):
-        _stamp_footer(draw, theme, scale, index + 1, len(slides), bg)
+        footer_logo = None
+        _tid, _ext = theme.get("_theme_id"), theme.get("_theme_logo_ext")
+        if _tid and _ext:
+            try:
+                from chat.slides.logos import slide_theme_logo_bytes
+
+                footer_logo = slide_theme_logo_bytes(_tid, _ext)
+            except Exception:  # noqa: BLE001
+                footer_logo = None
+        _stamp_footer(draw, img, theme, scale, index + 1, len(slides), bg, footer_logo)
 
     if supersample > 1:
         img = img.resize((int(round(w_pt * dpi / 72.0)), int(round(h_pt * dpi / 72.0))), Image.LANCZOS)

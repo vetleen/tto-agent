@@ -398,6 +398,47 @@ class PillowRenderTests(SimpleTestCase):
         ws2, _ = pillow_render._marimekko_columns(series, ["X", "Y"], None)
         self.assertEqual(ws2, [40.0, 40.0])
 
+    def test_new_chart_kinds_render(self):
+        kinds = {
+            "scatter": {"chart": "scatter", "series": [
+                {"name": "A", "points": [[3, 120], [5, 90], [8, 200]]},
+                {"name": "B", "points": [[4, 80, 10], [7, 180, 40]]}]},
+            "histogram": {"chart": "histogram", "bins": 6, "value_labels": True,
+                          "series": [{"name": "d", "values": [12, 15, 18, 22, 25, 28, 33, 40, 19, 24]}]},
+            "dot": {"chart": "dot", "value_labels": True, "categories": ["A", "B", "C"],
+                    "series": [{"name": "S", "values": [72, 55, 88]}]},
+            "bullet": {"chart": "bullet", "categories": ["Rev", "NPS"],
+                       "series": [{"values": [72, 58]}], "targets": [80, 60], "bands": [40, 70, 100]},
+        }
+        for kind, ch in kinds.items():
+            deck = self._deck([{"elements": [
+                {"type": "chart", "x": 48, "y": 80, "w": 620, "h": 340, **ch},
+            ]}])
+            png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+            self.assertGreater(len(_colours(_open(png))), 3, f"{kind} chart drew nothing")
+
+    def test_histogram_bins_math(self):
+        edges, counts = pillow_render._histogram_bins([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], bins=5)
+        self.assertEqual(len(counts), 5)
+        self.assertEqual(len(edges), 6)
+        self.assertEqual(sum(counts), 11)          # every value bucketed
+        self.assertEqual(counts[-1], counts[-1])   # max value lands in the last bin (no overflow)
+        self.assertEqual(pillow_render._histogram_bins([], 5), ([], []))
+
+    def test_scatter_bounds_padded(self):
+        xlo, xhi, ylo, yhi = pillow_render._scatter_bounds(
+            [{"points": [[10, 100], [20, 300]]}])
+        self.assertLess(xlo, 10)   # padded below the data min
+        self.assertGreater(xhi, 20)
+        self.assertLess(ylo, 100)
+        self.assertGreater(yhi, 300)
+
+    def test_roadmap_gantt_layout_renders(self):
+        from chat.slides.layouts import get_layout
+        deck = self._deck([get_layout("roadmap_gantt")])
+        png, *_ = pillow_render.render_slide_png(deck, 0, dpi=96)
+        self.assertGreater(len(_colours(_open(png))), 3)
+
     def test_marimekko_renders(self):
         deck = self._deck([{"elements": [
             {"type": "chart", "x": 48, "y": 80, "w": 700, "h": 320, "chart": "marimekko",

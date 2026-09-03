@@ -112,6 +112,17 @@ class PreviewSlidesInput(ReasonBaseModel):
     deck_name: str = Field(default="", description="Deck title. Empty = the active deck.")
 
 
+class ListThemesInput(ReasonBaseModel):
+    pass
+
+
+class SetThemeInput(ReasonBaseModel):
+    theme: str = Field(
+        description="Theme name or id to apply (from slides_list_themes). 'forest' is the built-in default."
+    )
+    deck_name: str = Field(default="", description="Deck title. Empty = the active deck.")
+
+
 def _thread_id(tool) -> str | None:
     return tool.context.conversation_id if tool.context else None
 
@@ -135,6 +146,19 @@ def _tool_org(tool):
         )
         return m.org if m else None
     except Exception:  # noqa: BLE001 — seeding is best-effort
+        return None
+
+
+def _tool_user(tool):
+    """The acting user object (for user-scoped themes), or ``None`` (best-effort)."""
+    user_id = tool.context.user_id if tool.context else None
+    if not user_id:
+        return None
+    try:
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.filter(id=user_id).first()
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -230,9 +254,12 @@ class WriteDeckTool(ContextAwareTool):
             if prev_theme:
                 deck["theme"] = prev_theme
             else:
-                override = theme_mod.org_slide_theme_override(_tool_org(self))
-                if override:
-                    deck["theme"] = override
+                # New-deck default theme: user's default -> org default -> Forest.
+                # Forest is the base theme, so leave the deck theme unset for it (a
+                # plain deck stays lean); only a non-default org/user theme is written.
+                default = theme_mod.default_theme_for(_tool_user(self), _tool_org(self))
+                if default.get("id") != "forest":
+                    deck["theme"] = theme_mod.theme_to_deck_override(default)
 
         issues = schema.validate_deck(deck)
         if issues:
@@ -623,6 +650,125 @@ def _downscale_png(data: bytes, ct: str, max_w: int = 1024):
     return data, ct
 
 
+def _theme_summary(t: dict) -> str:
+    """A one-line summary of a theme's palette + footer for the agent."""
+    c = t.get("colors") or {}
+    footer = t.get("footer") or {}
+    used = [s.get("content") for s in (footer.get("sections") or []) if s.get("content") not in (None, "none")]
+    fbits = ("footer: " + " / ".join(used)) if used else "no footer content"
+    if footer.get("bg_color"):
+        fbits += " (banded)"
+    logo = "; has logo" if t.get("logo_ext") else ""
+    return f"bg {c.get('lt1', '?')}, headings {c.get('dk2', '?')}, accent {c.get('accent1', '?')}; {fbits}{logo}"
+
+
+class ListThemesTool(ContextAwareTool):
+    name: str = "slides_list_themes"
+    audience: str = "main"
+    section: str = "skills"
+    start_label: str = "Listing themes..."
+    end_label: str = "Listed themes"
+    description: str = (
+        "List the slide themes available for the current deck — the built-in Forest, the "
+        "organization's themes, and the user's own themes. Each has an id, a name, a scope "
+        "(builtin/org/user) and a short summary of its palette and footer, and the deck's current "
+        "theme is flagged. Apply one with slides_set_theme; the user manages their own themes from "
+        "the deck panel."
+    )
+    args_schema: type[BaseModel] = ListThemesInput
+
+    def _run(self, **kwargs) -> str:
+        from chat.slides import service
+        from chat.slides import theme as theme_mod
+
+        user, org = _tool_user(self), _tool_org(self)
+        themes = theme_mod.list_available_themes(user, org)
+        current_id = ""
+        thread_id = _thread_id(self)
+        if thread_id:
+            deck, _err = service.resolve_deck(thread_id, None)
+            if deck is not None:
+                # No theme override == the base Forest theme.
+                current_id = ((deck.content or {}).get("theme") or {}).get("_theme_id", "") or "forest"
+        out = [{
+            "id": t["id"], "name": t["label"], "scope": t.get("scope", ""),
+            "summary": _theme_summary(t), "current": t["id"] == current_id,
+        } for t in themes]
+        return json.dumps({"status": "ok", "themes": out, "current_theme_id": current_id})
+
+
+class SetThemeTool(ContextAwareTool):
+    name: str = "slides_set_theme"
+    audience: str = "main"
+    section: str = "skills"
+    start_label: str = "Applying theme..."
+    end_label: str = "Applied the theme"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        name = result.get("applied")
+        return f"Applied the '{name}' theme" if name else None
+
+    description: str = (
+        "Set the active deck's theme (palette, fonts, tables and footer) by name or id — get the "
+        "choices from slides_list_themes. Applies to the whole deck; you can still fine-tune "
+        "individual colours afterwards with slide_canvas_edit. If the theme carries a logo, place it "
+        "where it fits (e.g. the cover) with the token [[image:company-logo]]."
+    )
+    args_schema: type[BaseModel] = SetThemeInput
+
+    def _run(self, theme: str, deck_name: str = "", **kwargs) -> str:
+        from chat.slides import service
+        from chat.slides import theme as theme_mod
+
+        thread_id = _thread_id(self)
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        user, org = _tool_user(self), _tool_org(self)
+        avail = theme_mod.list_available_themes(user, org)
+        chosen = next((t for t in avail if t["id"] == theme), None)
+        if chosen is None:
+            key = (theme or "").strip().lower()
+            chosen = next((t for t in avail if t["label"].lower() == key), None)
+        if chosen is None:
+            return json.dumps({
+                "status": "error",
+                "message": f"Unknown theme '{theme}'. Call slides_list_themes for the choices.",
+                "available": [{"id": t["id"], "name": t["label"]} for t in avail],
+            })
+
+        deck, err = service.resolve_deck(thread_id, deck_name or None)
+        if err:
+            return json.dumps({"status": "error", **err})
+        if deck is None:
+            return json.dumps({
+                "status": "error",
+                "message": "No deck to theme. Create one with slide_canvas_write first.",
+            })
+
+        override = theme_mod.theme_to_deck_override(chosen)
+        with service.locked_deck(deck.pk) as deck:
+            if deck is None:
+                return json.dumps({"status": "error", "message": "The deck was deleted."})
+            content = deck.content or {}
+            content["theme"] = override
+            service.save_deck_content(deck, content)
+            service.create_deck_checkpoint(
+                deck, source="ai_edit", description=f"Applied '{chosen['label']}' theme"
+            )
+        service.activate_deck(thread_id, deck)
+        slide_ids = [s.get("id") for s in (content.get("slides") or [])]
+        res = {
+            "status": "ok", "applied": chosen["label"], "theme_id": chosen["id"],
+            "deck_id": str(deck.pk), "title": deck.title,
+            "slide_ids": slide_ids, "changed_slide_ids": slide_ids,
+        }
+        if chosen.get("logo_ext"):
+            res["note"] = ("This theme has a logo — place it where it fits (e.g. the cover) "
+                           "with the token [[image:company-logo]].")
+        return json.dumps(res)
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(ActivateDeckTool())
@@ -631,3 +777,5 @@ _registry.register_tool(EditDeckTool())
 _registry.register_tool(AddSlideTool())
 _registry.register_tool(DeleteDeckTool())
 _registry.register_tool(PreviewSlidesTool())
+_registry.register_tool(ListThemesTool())
+_registry.register_tool(SetThemeTool())

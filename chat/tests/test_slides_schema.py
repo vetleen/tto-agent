@@ -111,6 +111,37 @@ class ValidateDeckTests(SimpleTestCase):
         issues = schema.validate_deck(deck)
         self.assertTrue(any("Too many chart series" in i["message"] for i in issues))
 
+    def test_valid_scatter_and_bubble(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "chart", "x": 1, "y": 1, "w": 400, "h": 300, "chart": "scatter",
+             "series": [{"name": "A", "points": [[3, 120], [5, 90, 10]]}]},
+        ]}]}
+        self.assertEqual(schema.validate_deck(deck), [])
+
+    def test_scatter_bad_point_rejected(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "chart", "x": 1, "y": 1, "w": 400, "h": 300, "chart": "scatter",
+             "series": [{"name": "A", "points": [[3]]}]},  # needs [x, y]
+        ]}]}
+        issues = schema.validate_deck(deck)
+        self.assertTrue(any("scatter point" in i["message"] for i in issues))
+
+    def test_histogram_bins_out_of_range_rejected(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "chart", "x": 1, "y": 1, "w": 400, "h": 300, "chart": "histogram",
+             "bins": 200, "series": [{"values": [1, 2, 3]}]},
+        ]}]}
+        issues = schema.validate_deck(deck)
+        self.assertTrue(any("bins must be" in i["message"] for i in issues))
+
+    def test_valid_bullet(self):
+        deck = {"version": 1, "slides": [{"elements": [
+            {"type": "chart", "x": 1, "y": 1, "w": 400, "h": 300, "chart": "bullet",
+             "categories": ["Rev", "NPS"], "series": [{"values": [72, 58]}],
+             "targets": [80, 60], "bands": [40, 70, 100]},
+        ]}]}
+        self.assertEqual(schema.validate_deck(deck), [])
+
     def test_zero_or_negative_dimension_rejected(self):
         deck = {"version": 1, "slides": [{"elements": [
             {"type": "shape", "x": 1, "y": 1, "w": 0, "h": 50, "shape": "rect"},

@@ -86,10 +86,10 @@ class SetThemeHandlerTests(TransactionTestCase):
 
         sent, m_delay = self._run_handler("slate")
         self.deck.refresh_from_db()
-        # The deck's theme override is now the preset's colours.
-        self.assertEqual(
-            self.deck.content["theme"], theme_mod.preset_theme_override("slate")
-        )
+        # The deck's theme override now carries the preset's full palette + provenance.
+        th = self.deck.content["theme"]
+        self.assertEqual(th["colors"]["dk1"], "#1E293B")  # slate body colour
+        self.assertEqual(th["_theme_id"], "slate")
         # A render run was dispatched (all slides re-render on a theme change).
         m_delay.assert_called_once()
         # The client is told every slide changed so the filmstrip shimmers.
