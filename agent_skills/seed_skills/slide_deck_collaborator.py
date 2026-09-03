@@ -42,13 +42,44 @@ they never see or edit the JSON. When you finish, refer to the deck (e.g. "I've 
 ## The deck format
 A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 - Coordinates and sizes are in POINTS. The slide is 960 wide × 540 tall (16:9), origin
-  top-left. Keep roughly a 48pt margin around content.
+  top-left. Place elements on the 12-column grid below (48pt side margins).
 - `slides` is an ordered array. A slide:
   `{"id":"s1","name":"Title","bg":"lt1","skip_footer":false,"notes":"speaker notes","elements":[ ... ]}`.
   A slide may also carry a `"comment"` — an authoring note (never rendered; `notes` becomes the
   .pptx speaker notes). Layout seeds use it for per-layout tips; read it, act on it, and drop or
   rewrite it as the slide takes shape.
 - `elements` is an ordered array — later elements draw on top. Each element has an id and a geometry.
+
+### The 12-column grid — read x and width off these tables (don't compute them)
+Snap every element's horizontal position to a 12-column grid: 12 columns of 72pt inside
+48pt side margins (content runs x=48 to x=912). **Look the numbers up below — never do
+arithmetic to find them.** This is strong guidance, not a hard rule: you may still place
+an element anywhere when a layout genuinely needs it, but prefer these positions so
+everything lines up.
+
+**Where each column STARTS — use for an element's `x`:**
+
+| col | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|-----|----|----|----|----|----|----|----|----|----|----|----|----|
+| `x` | 48 | 120 | 192 | 264 | 336 | 408 | 480 | 552 | 624 | 696 | 768 | 840 |
+
+**Common blocks — copy `x` and `w` together for something spanning several columns:**
+
+| block | `x` | `w` | block | `x` | `w` |
+|-------|-----|-----|-------|-----|-----|
+| full width (cols 1–12) | 48 | 864 | third ① (cols 1–4) | 48 | 276 |
+| left half (cols 1–6) | 48 | 420 | third ② (cols 5–8) | 336 | 276 |
+| right half (cols 7–12) | 480 | 432 | third ③ (cols 9–12) | 624 | 288 |
+| quarter ① (cols 1–3) | 48 | 204 | quarter ③ (cols 7–9) | 480 | 204 |
+| quarter ② (cols 4–6) | 264 | 204 | quarter ④ (cols 10–12) | 696 | 216 |
+| wide left (cols 1–8) | 48 | 564 | narrow right (cols 9–12) | 624 | 288 |
+
+Quick recall: **headline / full-width** → x=48, w=864. **Two columns** → left x=48 w=420,
+right x=480 w=432. **Three columns** → x=48 / 336 / 624 (≈276–288 wide each). The block
+that reaches the right edge runs flush to x=912, so the last/right block is a touch wider
+than its siblings — that's correct, not a mistake. Vertically there's no column grid: keep
+the title near y=44 (height ~60), start content around y=130, and leave ~40pt clear at the
+bottom for the footer.
 
 ### Element types (one example each)
 1. **text** — `{"type":"text","x":48,"y":40,"w":864,"h":60,"class":"headline","paragraphs":[{"align":"left","runs":[{"t":"Pipeline overview"}]}]}`
@@ -183,7 +214,8 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
   names above and the right hues follow. Add a top-level `theme` override if the user explicitly
   asks for specific brand colours, or you think this deck should be branded differently from the
   organization.
-- **Layout hygiene.** Keep ≈48pt margins; don't overlap unrelated elements. Estimate text
+- **Layout hygiene.** Stay inside the 48pt margins and snap x/width to the grid above;
+  don't overlap unrelated elements. Estimate text
   fit before finishing: characters-per-line ≈ width_pt ÷ (0.5 × font_size); if the lines
   exceed the box height the text overflows. Keep to ≤6 bullets per slide and short lines.
   A long **action-title headline can wrap to two lines** — give it enough height (≈64pt) and
@@ -200,7 +232,7 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
 - **Show, don't tell.** A single big metric (the `metric` layout), a callout box, a small
   table, or an image usually lands better than more bullets.
 - **Use structure.** Break a long deck with `section` slides; open with `title`, close with
-  `closing`. Keep a consistent left margin — align related elements to the same `x`.
+  `closing`. Keep a consistent left margin — align related elements to the same grid column (`x`).
 - **Let the theme do the work.** Lean on classes (`headline`/`subhead`/`body`/`data`) and
   theme colours; reserve accent colours for emphasis, not whole paragraphs.
 - **Dark backgrounds need light text.** The default text colours are dark, so on a slide
@@ -217,7 +249,12 @@ A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
     `network` element (or `ecosystem` layout) — an interconnected mesh, not a plain list.
   - *modern / branded title or divider, KPI cards, hero stats* → gradient fills (`gradient` on a
     shape, `bg_gradient` on the slide).
-  - *timeline / roadmap* → the `timeline` layout; *process / steps* → `process` (chevrons).
+  - *timeline / roadmap* → the `timeline` layout; *process / steps* → `process` (chevrons);
+    *process with ownership / operating model / who-does-what across stages* → the `swimlane`
+    layout (role lanes × stages with handoff arrows).
+  - *issue tree / hypothesis tree / MECE decomposition / driver tree / "break the question down"*
+    → the `issue_tree` layout (a key question → branches → sub-drivers wired with elbow
+    connectors) — not a flat bullet list.
 
 ## Workflow
 1. Consider if another slide design skill should be added for taste guidance. Once added, prefer its workflow.

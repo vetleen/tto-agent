@@ -112,11 +112,11 @@ WILFRED_BASE_THEME: dict = {
     "footer": {
         "logo_asset": "",
         "text": "",
-        "x": 28, "y": 512, "w": 200, "h": 18,
+        "x": 48, "y": 512, "w": 200, "h": 18,   # left content margin (grid column 1)
         "size": 9, "color": "dk2", "align": "left",
     },
     "page_number": {
-        "x": 900, "y": 512, "w": 36, "h": 18,
+        "x": 876, "y": 512, "w": 36, "h": 18,    # right-aligned to the 912 content margin
         "font": "data", "size": 9, "color": "dk2", "align": "right",
     },
 }
