@@ -85,6 +85,27 @@ class ValidateSlideTheme(TestCase):
         self.assertEqual(clean["footer"]["sections"][0]["colspan"], 12)
         self.assertEqual(clean["footer"]["sections"][1]["colspan"], 1)
 
+    def test_footer_logo_height_default_and_clamped(self):
+        # Default when unspecified.
+        clean, _ = T.validate_slide_theme({"label": "x"})
+        self.assertEqual(clean["footer"]["logo_height"], T.FOOTER_LOGO_H_DEFAULT)
+        # Out-of-range values clamp to the allowed band; junk falls back to default.
+        hi, _ = T.validate_slide_theme({"label": "x", "footer": {"logo_height": 999}})
+        lo, _ = T.validate_slide_theme({"label": "x", "footer": {"logo_height": 1}})
+        junk, _ = T.validate_slide_theme({"label": "x", "footer": {"logo_height": "big"}})
+        self.assertEqual(hi["footer"]["logo_height"], T.FOOTER_LOGO_H_MAX)
+        self.assertEqual(lo["footer"]["logo_height"], T.FOOTER_LOGO_H_MIN)
+        self.assertEqual(junk["footer"]["logo_height"], T.FOOTER_LOGO_H_DEFAULT)
+
+    def test_footer_logo_box_centres_and_stays_on_slide(self):
+        # Default height centres within the 28pt band (historical y0+4 look).
+        h, top = T.footer_logo_box(T.FOOTER_LOGO_H_DEFAULT)
+        self.assertEqual(h, T.FOOTER_LOGO_H_DEFAULT)
+        self.assertAlmostEqual(top, (540 - T.FOOTER_BAND_H) + (T.FOOTER_BAND_H - h) / 2.0)
+        # A tall logo never spills past the slide's bottom edge.
+        h2, top2 = T.footer_logo_box(T.FOOTER_LOGO_H_MAX)
+        self.assertLessEqual(top2 + h2, 540 - 1)
+
 
 class DeckOverride(TestCase):
     def test_override_carries_footer_and_provenance(self):
@@ -210,3 +231,68 @@ class FooterRender(TestCase):
             im = self._render(self._deck(footer, theme_id="tlogo", logo_ext="png"))
         reds = [c for c in im.getcolors(maxcolors=100000) if c[1][0] > 150 and c[1][1] < 90 and c[1][2] < 90]
         self.assertTrue(reds, "the footer logo (red block) should be painted in the band")
+
+
+class SlideCustomFonts(TestCase):
+    """Org-uploaded custom fonts in slide themes: validation, resolution, render."""
+
+    def _org_with_font(self, family="Acme Brand"):
+        import uuid as _uuid
+
+        from accounts.models import FontAsset, Organization
+        from core.fonts import bundled_resolution, normalize_font_name
+
+        org = Organization.objects.create(name="Acme", slug=f"acme-{_uuid.uuid4().hex[:6]}")
+        data = bundled_resolution("Caladea").faces[0].data  # real embeddable TTF bytes
+        fa = FontAsset(
+            organization=org, family=family, family_norm=normalize_font_name(family),
+            source=FontAsset.SOURCE_UPLOAD, weight=400, style="normal",
+            font_format="truetype", embeddable=True,
+        )
+        fa.blob.save("f.ttf", ContentFile(data), save=True)
+        return org
+
+    def test_save_gate_accepts_uploaded_rejects_unknown(self):
+        with tempfile.TemporaryDirectory() as d, self.settings(MEDIA_ROOT=d):
+            org = self._org_with_font("Acme Brand")
+            fonts = {"headline": "Acme Brand", "subhead": "Caladea", "body": "Carlito", "data": "Carlito"}
+            clean, err = T.validate_slide_theme({"label": "X", "fonts": fonts}, org=org)
+            self.assertIsNone(err)
+            self.assertEqual(clean["fonts"]["headline"], "Acme Brand")
+            _, err2 = T.validate_slide_theme({"label": "X", "fonts": dict(fonts, headline="Totally Missing")}, org=org)
+            self.assertTrue(err2)
+        # bundled-only save still works without an org
+        _, err3 = T.validate_slide_theme({"label": "X"}, org=None)
+        self.assertIsNone(err3)
+
+    def test_override_preserves_uploaded_family(self):
+        th = dict(T.slide_theme_defaults())
+        th["fonts"] = dict(th["fonts"], headline="Acme Brand")
+        self.assertEqual(T.theme_to_deck_override(th)["fonts"]["headline"], "Acme Brand")
+
+    def test_read_path_keeps_theme_with_removed_font(self):
+        entry = dict(T.slide_theme_defaults(), id="t1")
+        entry["fonts"] = dict(entry["fonts"], headline="Ghost Font")
+        out = T._upgrade_legacy_theme(entry)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["fonts"]["headline"], "Ghost Font")
+
+    def test_resolve_faces_and_fontbook(self):
+        from chat.slides import pillow_render
+        from chat.slides.font_resolve import is_bundled_family, resolve_deck_font_faces
+
+        with tempfile.TemporaryDirectory() as d, self.settings(MEDIA_ROOT=d):
+            org = self._org_with_font("Acme Brand")
+            theme = {"fonts": {"headline": "Acme Brand", "subhead": "Caladea", "body": "Carlito", "data": "Carlito"}}
+            faces = resolve_deck_font_faces(theme, org)
+            self.assertTrue(faces["Acme Brand"]["faces"])
+            self.assertFalse(faces["Acme Brand"]["bundled"])
+            self.assertTrue(faces["Caladea"]["bundled"])
+            self.assertTrue(is_bundled_family("Caladea"))
+            self.assertFalse(is_bundled_family("Acme Brand"))
+            # the FontBook builds a PIL face from the uploaded bytes
+            book = pillow_render._FontBook(faces)
+            self.assertIsNotNone(book.pil_font("Acme Brand", 24, False, False))
+            # and the render entry accepts the face map without error
+            deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1", "elements": []}]}
+            self.assertEqual(len(pillow_render.render_deck_pngs(deck, dpi=96, font_faces=faces)), 1)

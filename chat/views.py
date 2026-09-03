@@ -520,6 +520,21 @@ def _slide_org_theme(user):
         return None
 
 
+def _slide_editor_fonts_json(user):
+    """The org's uploaded font families (JSON) for the shared theme editor's font
+    picker — so a user can pick a brand font uploaded for canvas/slides. Best-effort."""
+    try:
+        import json as _json
+
+        from accounts.models import get_user_org
+        from core.fonts import org_font_families
+
+        org = get_user_org(user)
+        return _json.dumps(org_font_families(org) if org else [])
+    except Exception:  # noqa: BLE001
+        return "[]"
+
+
 @login_required
 @require_http_methods(["GET"])
 def chat_home(request):
@@ -746,6 +761,7 @@ def chat_home(request):
             "slide_theme_presets": _slide_theme_presets(),
             "slide_user_themes": _slide_user_themes(request.user),
             "slide_org_theme": _slide_org_theme(request.user),
+            "slide_editor_fonts_json": _slide_editor_fonts_json(request.user),
         },
     )
 

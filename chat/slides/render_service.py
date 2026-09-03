@@ -20,6 +20,22 @@ from core.redis_errors import log_broadcast_failure
 logger = logging.getLogger(__name__)
 
 
+def _deck_font_faces(deck, content):
+    """Resolve the deck's theme fonts (bundled + the org's uploaded families) to faces
+    for the Pillow renderer. The org is reached via ``deck.thread.created_by`` (loaded
+    by the run query's ``select_related``). Never raises — ``None`` on any failure."""
+    try:
+        from accounts.models import get_user_org
+        from chat.slides.font_resolve import resolve_deck_font_faces
+        from chat.slides.theme import resolve_theme
+
+        org = get_user_org(deck.thread.created_by) if getattr(deck, "thread_id", None) else None
+        return resolve_deck_font_faces(resolve_theme(content), org)
+    except Exception:  # noqa: BLE001
+        logger.warning("slide font face resolution failed", exc_info=True)
+        return None
+
+
 def _render_slides(deck, content, only_slide_ids, *, need_pdf):
     """Render slides to ``(pdf_bytes|None, [(png, w, h), ...], warnings)`` via the
     configured backend, in ``all_ids``-filtered order.
@@ -41,6 +57,7 @@ def _render_slides(deck, content, only_slide_ids, *, need_pdf):
         rendered = pillow_render.render_deck_pngs(
             content, dpi=dpi, only_slide_ids=only_slide_ids,
             image_resolver=make_image_resolver(deck),
+            font_faces=_deck_font_faces(deck, content),
         )
         pngs = [(png, w, h) for (_sid, png, w, h) in rendered]
         return (_pngs_to_pdf(pngs, dpi=dpi) if need_pdf else None), pngs, []
@@ -73,7 +90,9 @@ def _pngs_to_pdf(pngs, dpi: float = 120.0) -> bytes | None:
 
 
 def execute_render_run(run_id: str) -> None:
-    run = SlideRenderRun.objects.select_related("slide_set").filter(pk=run_id).first()
+    run = (SlideRenderRun.objects
+           .select_related("slide_set", "slide_set__thread", "slide_set__thread__created_by")
+           .filter(pk=run_id).first())
     if run is None:
         return
     if run.status == SlideRenderRun.Status.COMPLETED:

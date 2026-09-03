@@ -1406,14 +1406,14 @@ def _footer_text_box(slide, theme, txt, x, w, y0, band_h, align, size, color):
     _apply_color(r.font.color, theme, color)
 
 
-def _footer_logo_pic(slide, logo_bytes, x, w, y0, band_h, align):
+def _footer_logo_pic(slide, logo_bytes, x, w, y0, band_h, align, logo_height=None):
     if not logo_bytes:
         return
     from pptx.util import Emu
 
-    pad = 4
+    lh_pt, top_pt = theme_mod.footer_logo_box(logo_height, y0, band_h)
     try:
-        pic = slide.shapes.add_picture(BytesIO(logo_bytes), Pt(x), Pt(y0 + pad), height=Pt(band_h - 2 * pad))
+        pic = slide.shapes.add_picture(BytesIO(logo_bytes), Pt(x), Pt(top_pt), height=Pt(lh_pt))
     except Exception:  # noqa: BLE001
         logger.warning("footer logo failed", exc_info=True)
         return
@@ -1469,7 +1469,7 @@ def _stamp_footer(slide, theme, page_num, total, bg_dark=False, footer_logo=None
         if content and content != "none" and start_col <= 12:
             x, w = footer_section_box(start_col, colspan)
             if content == "logo":
-                _footer_logo_pic(slide, footer_logo, x, w, y0, band_h, align)
+                _footer_logo_pic(slide, footer_logo, x, w, y0, band_h, align, footer.get("logo_height"))
             else:
                 txt = footer.get("text", "") if content == "text" else str(page_num)
                 if txt:
@@ -1508,6 +1508,7 @@ def build_deck_pptx(
     base_template: str = "wilfred_default",
     only_slide_ids=None,
     image_resolver=None,
+    font_bundle=None,
 ) -> tuple[bytes, list[str]]:
     """Render a deck dict to ``.pptx`` bytes. Returns ``(bytes, warnings)``.
 
@@ -1515,6 +1516,12 @@ def build_deck_pptx(
     page numbers still reflect each slide's position in the FULL deck so partial
     renders match. ``image_resolver(token) -> (bytes, content_type) | None``
     supplies image bytes; a missing image degrades to a placeholder box.
+
+    ``font_bundle`` is the org-resolved face map from
+    :func:`chat.slides.font_resolve.resolve_deck_font_faces`; its **non-bundled**
+    (uploaded/custom) TTF/OTF families are embedded into the ``.pptx`` so the brand
+    font renders on machines that don't have it installed. Bundled families are left
+    name-only (they alias to metric-compatible Office fonts).
     """
     warnings: list[str] = []
     theme = theme_mod.resolve_theme(deck)
@@ -1549,7 +1556,30 @@ def build_deck_pptx(
 
     out = BytesIO()
     prs.save(out)
-    return out.getvalue(), warnings
+    data = out.getvalue()
+
+    embed = _fonts_to_embed(font_bundle)
+    if embed:
+        try:
+            from chat.slides.pptx_fonts import embed_fonts
+
+            data = embed_fonts(data, embed)
+        except Exception:  # noqa: BLE001 — embedding must never fail the export
+            logger.warning("pptx font embedding failed", exc_info=True)
+    return data, warnings
+
+
+def _fonts_to_embed(font_bundle) -> list[dict]:
+    """From a resolve_deck_font_faces map, the non-bundled TTF/OTF families to embed,
+    keyed by the family name stamped on runs (so PowerPoint matches the face)."""
+    out = []
+    for family, rec in (font_bundle or {}).items():
+        if rec.get("bundled"):
+            continue
+        faces = [f for f in (rec.get("faces") or []) if getattr(f, "fmt", "") in ("truetype", "opentype")]
+        if faces:
+            out.append({"typeface": family, "faces": faces})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1559,11 +1589,22 @@ def build_pptx(slide_set, *, only_slide_ids=None) -> tuple[bytes, list[str]]:
     """Build ``.pptx`` bytes for a ``SlideSet`` model instance."""
     deck = slide_set.content or {}
     resolver = make_image_resolver(slide_set)
+    font_bundle = None
+    try:
+        from accounts.models import get_user_org
+        from chat.slides.font_resolve import resolve_deck_font_faces
+
+        thread = getattr(slide_set, "thread", None)
+        org = get_user_org(thread.created_by) if thread is not None else None
+        font_bundle = resolve_deck_font_faces(theme_mod.resolve_theme(deck), org)
+    except Exception:  # noqa: BLE001
+        logger.warning("pptx font resolution failed", exc_info=True)
     return build_deck_pptx(
         deck,
         base_template=slide_set.base_template or "wilfred_default",
         only_slide_ids=only_slide_ids,
         image_resolver=resolver,
+        font_bundle=font_bundle,
     )
 
 

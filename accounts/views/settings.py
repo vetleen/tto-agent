@@ -475,6 +475,7 @@ def org_settings_page(request):
         "font_choices": FONT_CHOICES,
         "org_fonts": org_fonts,
         "org_fonts_json": json.dumps(org_fonts),
+        "slide_editor_fonts_json": json.dumps(org_fonts),
         "monthly_budget_per_user": org_prefs.get("monthly_budget_per_user", 0),
         "monthly_budget_org": org_prefs.get("monthly_budget_org", 0),
         "system_models": system_models,
@@ -601,7 +602,7 @@ def org_slide_style_update(request):
     if err:
         return err
 
-    clean, error = validate_org_slide_style(data)
+    clean, error = validate_org_slide_style(data, org=membership.org)
     if error:
         return JsonResponse({"error": error}, status=400)
 
@@ -778,7 +779,7 @@ def slide_theme_save(request):
     if resp:
         return resp
     payload = data.get("theme") or {}
-    clean, error = theme_mod.validate_slide_theme(payload)
+    clean, error = theme_mod.validate_slide_theme(payload, org=org)
     if error:
         return JsonResponse({"error": error}, status=400)
 

@@ -91,10 +91,54 @@ def _font(family: str, px: int, bold: bool, italic: bool) -> ImageFont.FreeTypeF
     return ImageFont.load_default()
 
 
+class _FontBook:
+    """Per-render loader for org-resolved font faces (bundled or uploaded).
+
+    Built from :func:`chat.slides.font_resolve.resolve_deck_font_faces` output —
+    ``{family: {"faces": [core.fonts.FontFace, …]}}`` — and attached to the resolved
+    theme as ``theme["_fontbook"]`` so ``_run_font`` can rasterise uploaded fonts from
+    bytes. Kept per-render (not a module ``lru_cache``) so two orgs' fonts under the
+    same family name never collide.
+    """
+    def __init__(self, font_faces: dict | None):
+        self._faces = font_faces or {}
+        self._cache: dict = {}
+
+    @staticmethod
+    def _pick(faces, bold, italic):
+        want_w = 700 if bold else 400
+        want_s = "italic" if italic else "normal"
+        return min(faces, key=lambda f: (0 if f.style == want_s else 1, abs(f.weight - want_w)))
+
+    def pil_font(self, family, px, bold, italic):
+        rec = self._faces.get(family)
+        faces = rec.get("faces") if rec else None
+        if not faces:
+            return None
+        px = max(1, int(round(px)))
+        key = (family, bool(bold), bool(italic), px)
+        if key in self._cache:
+            return self._cache[key]
+        font = None
+        try:
+            face = self._pick(faces, bold, italic)
+            font = ImageFont.truetype(BytesIO(face.data), px)
+        except Exception:  # noqa: BLE001 — fall back to the bundled disk lookup
+            font = None
+        self._cache[key] = font
+        return font
+
+
 def _run_font(theme: dict, style: dict, scale: float) -> ImageFont.FreeTypeFont:
     family = theme_mod.font_family(theme, style.get("font"))
-    size_pt = style.get("size") or 14
-    return _font(family, size_pt * scale, bool(style.get("bold")), bool(style.get("italic")))
+    px = (style.get("size") or 14) * scale
+    bold, italic = bool(style.get("bold")), bool(style.get("italic"))
+    book = theme.get("_fontbook")
+    if book is not None:
+        f = book.pil_font(family, px, bold, italic)
+        if f is not None:
+            return f
+    return _font(family, px, bold, italic)
 
 
 # The brand serif/sans (Caladea/Carlito) lack many symbol glyphs the model likes
@@ -1766,7 +1810,7 @@ def _footer_text_pillow(draw, font, txt, x, w, y0, band_h, align, fill, scale):
     draw.text((tx, ty), txt, font=font, fill=fill)
 
 
-def _footer_logo_pillow(img, logo_bytes, x, w, y0, band_h, align, scale):
+def _footer_logo_pillow(img, logo_bytes, x, w, y0, band_h, align, scale, logo_height=None):
     if not logo_bytes:
         return
     try:
@@ -1777,8 +1821,8 @@ def _footer_logo_pillow(img, logo_bytes, x, w, y0, band_h, align, scale):
     sw, sh = src.size
     if not sw or not sh:
         return
-    pad = 4
-    lh = max(1, int((band_h - 2 * pad) * scale))
+    lh_pt, top_pt = theme_mod.footer_logo_box(logo_height, y0, band_h)
+    lh = max(1, int(round(lh_pt * scale)))
     lw = max(1, int(sw * (lh / sh)))
     placed = src.resize((lw, lh))
     if align == "center":
@@ -1787,7 +1831,7 @@ def _footer_logo_pillow(img, logo_bytes, x, w, y0, band_h, align, scale):
         px = int((x + w) * scale - lw)
     else:
         px = int(x * scale)
-    img.paste(placed, (px, int((y0 + pad) * scale)), placed)
+    img.paste(placed, (px, int(round(top_pt * scale))), placed)
 
 
 def _stamp_footer(draw, img, theme, scale, page_num, total, bg=None, footer_logo=None):
@@ -1820,7 +1864,7 @@ def _stamp_footer(draw, img, theme, scale, page_num, total, bg=None, footer_logo
         if content and content != "none" and start_col <= 12:
             x, w = footer_section_box(start_col, colspan)
             if content == "logo":
-                _footer_logo_pillow(img, footer_logo, x, w, y0, band_h, align, scale)
+                _footer_logo_pillow(img, footer_logo, x, w, y0, band_h, align, scale, footer.get("logo_height"))
             else:
                 txt = footer.get("text", "") if content == "text" else str(page_num)
                 if txt:
@@ -1891,9 +1935,11 @@ def _draw_element_rotated(img, theme, el, scale, resolver, angle):
 # Slide / deck
 # ---------------------------------------------------------------------------
 def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=None,
-                     supersample: int = 2) -> tuple[bytes, int, int]:
+                     supersample: int = 2, font_book=None) -> tuple[bytes, int, int]:
     """Render slide ``index`` of ``deck`` to ``(png_bytes, width_px, height_px)``."""
     theme = theme_mod.resolve_theme(deck)
+    if font_book is not None:
+        theme["_fontbook"] = font_book   # picked up by _run_font (transient, per-render)
     size = deck.get("size") or {}
     w_pt, h_pt = size.get("w", 960), size.get("h", 540)
     scale = (dpi / 72.0) * supersample
@@ -1965,15 +2011,22 @@ def render_slide_png(deck: dict, index: int, *, dpi: int = 120, image_resolver=N
 
 
 def render_deck_pngs(deck: dict, *, dpi: int = 120, image_resolver=None,
-                     only_slide_ids=None) -> list[tuple[str, bytes, int, int]]:
-    """Render a deck to ``[(slide_id, png_bytes, w, h)]``. ``only_slide_ids`` limits it."""
+                     only_slide_ids=None, font_faces=None) -> list[tuple[str, bytes, int, int]]:
+    """Render a deck to ``[(slide_id, png_bytes, w, h)]``. ``only_slide_ids`` limits it.
+
+    ``font_faces`` is the org-resolved face map from
+    :func:`chat.slides.font_resolve.resolve_deck_font_faces` (bundled + uploaded); when
+    given, uploaded brand fonts rasterise from their bytes instead of falling back to a
+    bundled face. ``None`` keeps the historical bundled-on-disk behaviour.
+    """
     slides = deck.get("slides") or []
     only = set(only_slide_ids) if only_slide_ids else None
+    book = _FontBook(font_faces) if font_faces else None
     out = []
     for i, s in enumerate(slides):
         sid = s.get("id") or f"_{i}"
         if only is not None and sid not in only:
             continue
-        png, w, h = render_slide_png(deck, i, dpi=dpi, image_resolver=image_resolver)
+        png, w, h = render_slide_png(deck, i, dpi=dpi, image_resolver=image_resolver, font_book=book)
         out.append((sid, png, w, h))
     return out

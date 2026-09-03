@@ -226,6 +226,31 @@ SLIDE_FONT_FAMILIES = (
 )
 _SLIDE_FONT_KEYS = frozenset(k for k, _ in SLIDE_FONT_FAMILIES)
 
+
+def slide_font_allowed(name, org=None) -> bool:
+    """True if ``name`` is a bundled slide font key or a family the ``org`` uploaded.
+
+    Uploaded fonts live as ``FontAsset`` rows (the same store the doc/PDF side uses),
+    so a font uploaded for canvas or slides is selectable in both. Lazy-imports Django
+    so this module stays importable without it; only queries when ``org`` is given.
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    if name in _SLIDE_FONT_KEYS:
+        return True
+    if org is None:
+        return False
+    try:
+        from accounts.models import FontAsset
+        from core.fonts import normalize_font_name
+
+        return FontAsset.objects.filter(
+            organization=org, source=FontAsset.SOURCE_UPLOAD,
+            family_norm=normalize_font_name(name),
+        ).exists()
+    except Exception:  # noqa: BLE001 — a lookup failure must not block saving
+        return False
+
 # Typography sizes exposed: form key -> (text-style key, min pt, max pt).
 SLIDE_STYLE_SIZE_KEYS = {
     "headline_size": ("headline", 18, 60),
@@ -283,6 +308,12 @@ FOOTER_ALIGNS = ("left", "center", "right")
 FOOTER_SECTION_COUNT = 3
 FOOTER_TEXT_MAX = 200
 FOOTER_BAND_H = 28  # fixed band height in points (renderer constant, not user-set)
+# Footer logo height in points (user-set, per theme). The default reproduces the
+# historical look (band height minus symmetric padding); the logo is always
+# vertically centred on the band.
+FOOTER_LOGO_H_DEFAULT = 20
+FOOTER_LOGO_H_MIN = 8
+FOOTER_LOGO_H_MAX = 48
 
 # Metadata for the theme-editor footer UI.
 FOOTER_CONTENT_META = (
@@ -300,12 +331,37 @@ def default_footer() -> dict:
     return {
         "bg_color": "",
         "text": "",
+        "logo_height": FOOTER_LOGO_H_DEFAULT,
         "sections": [
             {"colspan": 4, "align": "left", "content": "none"},
             {"colspan": 4, "align": "center", "content": "none"},
             {"colspan": 4, "align": "right", "content": "page"},
         ],
     }
+
+
+def clamp_footer_logo_height(value) -> int:
+    """Coerce a footer logo height (points) to an int within the allowed range."""
+    try:
+        h = int(round(float(value)))
+    except (TypeError, ValueError):
+        h = FOOTER_LOGO_H_DEFAULT
+    return max(FOOTER_LOGO_H_MIN, min(FOOTER_LOGO_H_MAX, h))
+
+
+def footer_logo_box(logo_height, y0=None, band_h=None) -> tuple[int, float]:
+    """``(height_pt, top_pt)`` for a footer logo, vertically centred on the band
+    and clamped so it never spills past the slide's bottom edge. Shared by both
+    renderers so the .pptx and preview place the logo identically."""
+    band_h = FOOTER_BAND_H if band_h is None else band_h
+    if y0 is None:
+        y0 = 540 - band_h
+    h = clamp_footer_logo_height(logo_height)
+    top = y0 + (band_h - h) / 2.0          # centre on the band
+    max_top = (y0 + band_h) - 2 - h        # keep 2pt clear of the slide bottom
+    if top > max_top:
+        top = max_top
+    return h, top
 
 
 def _hex_hash(value) -> str:
@@ -339,7 +395,7 @@ def _full_style_from_override(override: dict) -> dict:
     return {
         "colors": {k: _hex_hash(colors.get(k)) for k in SLIDE_STYLE_COLOR_KEYS},
         "fonts": {
-            k: (theme["fonts"].get(k) if theme["fonts"].get(k) in _SLIDE_FONT_KEYS else base_fonts[k])
+            k: (theme["fonts"].get(k) or base_fonts[k])
             for k in SLIDE_STYLE_FONT_KEYS
         },
         "typography": {
@@ -369,7 +425,7 @@ def get_org_slide_style(org) -> dict:
     """
     stored = (getattr(org, "preferences", None) or {}).get("slide_theme") if org is not None else None
     if _is_full_style(stored):
-        clean, err = validate_org_slide_style(stored)
+        clean, err = validate_org_slide_style(stored, allow_any_font=True)
         return clean if (clean and not err) else slide_style_defaults()
     # Old shape {"name": preset} or nothing — expand the preset into fields.
     name = stored.get("name") if isinstance(stored, dict) else None
@@ -378,13 +434,18 @@ def get_org_slide_style(org) -> dict:
     return _full_style_from_override(preset_theme_override(name))
 
 
-def validate_org_slide_style(data) -> tuple[dict | None, str | None]:
+def validate_org_slide_style(data, *, org=None, allow_any_font=False) -> tuple[dict | None, str | None]:
     """Validate a slide-style payload from the org settings endpoint.
 
     Returns ``(clean, None)`` — ``clean`` is the full field set
     (``colors``/``fonts``/``typography``/``tables``) — or ``(None, error)``. A
     bare ``{"name": <preset>}`` is accepted and expanded (back-compat / a raw
     quick-pick save).
+
+    Fonts must be a bundled key or one of ``org``'s uploaded families (see
+    :func:`slide_font_allowed`). ``allow_any_font`` skips that gate for READ-path
+    re-validation of already-stored themes, so a theme never vanishes because its
+    font was later removed from the allow-list.
     """
     if not isinstance(data, dict):
         return None, "Invalid slide style payload."
@@ -414,7 +475,9 @@ def validate_org_slide_style(data) -> tuple[dict | None, str | None]:
         return None, "Invalid fonts."
     for key in SLIDE_STYLE_FONT_KEYS:
         val = fonts_in.get(key, defaults["fonts"][key])
-        if val not in _SLIDE_FONT_KEYS:
+        if not isinstance(val, str) or not val:
+            val = defaults["fonts"][key]
+        elif not allow_any_font and not slide_font_allowed(val, org):
             return None, "Pick a slide font from the list."
         clean["fonts"][key] = val
 
@@ -472,7 +535,7 @@ def org_slide_theme_override(org) -> dict:
     """
     stored = (getattr(org, "preferences", None) or {}).get("slide_theme") if org is not None else None
     if _is_full_style(stored):
-        clean, err = validate_org_slide_style(stored)
+        clean, err = validate_org_slide_style(stored, allow_any_font=True)
         return _style_to_override(clean) if (clean and not err) else {}
     # Old shape {"name": preset} — resolve via the preset (forest → empty).
     name = stored.get("name") if isinstance(stored, dict) else None
@@ -660,9 +723,10 @@ def _validate_footer(data) -> tuple[dict | None, str | None]:
     if not isinstance(text, str):
         return None, "Invalid footer text."
     text = text[:FOOTER_TEXT_MAX]
+    logo_height = clamp_footer_logo_height(data.get("logo_height"))
     secs_in = data.get("sections")
     if secs_in is None:
-        return {"bg_color": bg, "text": text, "sections": default_footer()["sections"]}, None
+        return {"bg_color": bg, "text": text, "logo_height": logo_height, "sections": default_footer()["sections"]}, None
     if not isinstance(secs_in, list) or len(secs_in) != FOOTER_SECTION_COUNT:
         return None, f"Footer needs exactly {FOOTER_SECTION_COUNT} sections."
     secs = []
@@ -681,15 +745,16 @@ def _validate_footer(data) -> tuple[dict | None, str | None]:
         if content not in FOOTER_CONTENTS:
             return None, "Invalid footer content."
         secs.append({"colspan": colspan, "align": align, "content": content})
-    return {"bg_color": bg, "text": text, "sections": secs}, None
+    return {"bg_color": bg, "text": text, "logo_height": logo_height, "sections": secs}, None
 
 
-def validate_slide_theme(data) -> tuple[dict | None, str | None]:
+def validate_slide_theme(data, *, org=None, allow_any_font=False) -> tuple[dict | None, str | None]:
     """Validate a full v2 theme payload (label + style groups + footer + logo_ext).
 
     Returns ``(clean, None)`` with NO ``id`` (the caller assigns/preserves it), or
     ``(None, error)``. Style groups reuse :func:`validate_org_slide_style`, so
-    missing colour/font/size/table values fall back to Forest defaults.
+    missing colour/font/size/table values fall back to Forest defaults. ``org`` /
+    ``allow_any_font`` are forwarded to the font gate (see there).
     """
     if not isinstance(data, dict):
         return None, "Invalid theme payload."
@@ -703,7 +768,7 @@ def validate_slide_theme(data) -> tuple[dict | None, str | None]:
         "fonts": data.get("fonts"),
         "typography": data.get("typography"),
         "tables": data.get("tables"),
-    })
+    }, org=org, allow_any_font=allow_any_font)
     if err:
         return None, err
 
@@ -750,7 +815,7 @@ def _upgrade_legacy_theme(entry) -> dict | None:
     if not isinstance(entry, dict):
         return None
     if _is_full_theme_entry(entry):
-        clean, err = validate_slide_theme(entry)
+        clean, err = validate_slide_theme(entry, allow_any_font=True)
         if err:
             return None
         clean["id"] = entry.get("id") or new_slide_theme_id()

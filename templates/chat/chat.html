@@ -534,20 +534,18 @@
 {# ---- Slide theme picker modal ---- #}
 {{ slide_user_themes|json_script:"slides-user-themes-data" }}
 <div id="slides-theme-modal" class="hidden fixed inset-0 z-[60] items-center justify-center bg-black/40 p-4">
-  <div class="w-full max-w-md max-h-[85vh] overflow-y-auto rounded-lg border border-default bg-neutral-primary-soft shadow-xl p-5">
-    <div class="flex items-center justify-between mb-1">
-      <h3 class="text-sm font-semibold text-heading">Deck theme</h3>
-      <button id="slides-theme-close" title="Close" aria-label="Close" class="cursor-pointer p-1 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-        <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>
+  <div class="w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-lg border border-default bg-neutral-primary-soft shadow-xl">
+    <div class="flex items-start justify-between gap-3 border-b border-default-subtle px-6 pb-4 pt-5">
+      <div>
+        <h3 class="font-serif text-lg font-semibold text-heading">Deck theme</h3>
+        <p class="mt-1 text-xs text-body-subtle">Applies to every slide, including the footer band. Selecting a theme applies it immediately.</p>
+      </div>
+      <button id="slides-theme-close" title="Close" aria-label="Close" class="inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-base text-body hover:bg-neutral-tertiary hover:text-heading">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
       </button>
     </div>
-    <p class="text-xs text-body mb-3">Pick a theme for this deck &mdash; it applies to every slide, including the footer band.</p>
-    <div id="slides-theme-grid" class="grid grid-cols-1 gap-2"></div>
-    <div class="mt-4 flex items-center justify-between">
-      <span class="text-[11px] font-semibold uppercase tracking-wide text-body">Your themes</span>
-      <button type="button" id="slides-theme-new" class="cursor-pointer text-xs font-medium text-brand hover:underline">+ New theme</button>
-    </div>
-    <p id="slides-theme-status" class="mt-2 text-xs text-body"></p>
+    <div id="slides-theme-grid" class="grid grid-cols-2 gap-3 px-6 py-5"></div>
+    <p id="slides-theme-status" class="-mt-2 px-6 pb-5 text-xs text-body-subtle"></p>
   </div>
 </div>
 
@@ -4787,7 +4785,6 @@
     var themeModal = document.getElementById("slides-theme-modal");
     var themeGrid = document.getElementById("slides-theme-grid");
     var themeStatusEl = document.getElementById("slides-theme-status");
-    var themeNewBtn = document.getElementById("slides-theme-new");
     var THEMES_URL = "{% url 'accounts:slide_themes_list' %}";
     var THEME_DEL_URL = "{% url 'accounts:slide_theme_delete' %}";
     var csrfTok = document.querySelector('meta[name="csrf-token"]') ? document.querySelector('meta[name="csrf-token"]').getAttribute('content') : '';
@@ -4800,29 +4797,43 @@
       if (deckId && id && ws) { ws.send(JSON.stringify({ type:"chat.slides_set_theme", thread_id: activeThreadId, deck_id: deckId, theme: id })); currentThemeId = id; renderThemes(); }
       closeThemeModal();
     }
-    function themeRow(t) {
-      var sw = t.swatch || {bg:"#eee",dark:"#333",accent:"#888"};
+    var CHECK_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+    var EDIT_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    var DEL_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>';
+    function themeCard(t) {
       var active = t.id === currentThemeId;
       var isDefault = t.id === userDefault;
       var canEdit = t.scope === "user";
-      var row = document.createElement("div");
-      row.className = "flex items-center gap-3 rounded-base border p-2 " + (active ? "border-brand bg-brand-softer" : "border-default");
-      row.innerHTML =
-        '<button type="button" class="ste-pick flex flex-1 items-center gap-3 text-left cursor-pointer min-w-0">' +
-        '<span class="flex shrink-0 overflow-hidden rounded-base border border-default" style="width:46px;height:32px">' +
-        '<span style="flex:0 0 58%;background:'+sw.bg+'"></span><span style="flex:0 0 24%;background:'+sw.dark+'"></span><span style="flex:0 0 18%;background:'+sw.accent+'"></span></span>' +
-        '<span class="min-w-0"><span class="block text-sm text-heading truncate">'+escapeHtml(t.label||"Theme")+'</span>' +
-        '<span class="block text-[11px] text-body">'+ (t.scope==="builtin"?"Built-in":(t.scope==="org"?"Organization":"Yours")) + (t.has_logo?" &bull; logo":"") + (isDefault?" &bull; default":"") +'</span></span>' +
-        (active?'<span class="ml-auto text-[10px] uppercase tracking-wide text-fg-accent">Active</span>':'') +
-        '</button>' +
-        (canEdit?'<button type="button" class="ste-edit text-xs text-fg-accent hover:underline">Edit</button>':'') +
-        (canEdit?'<button type="button" class="ste-del text-xs text-fg-danger hover:underline">Delete</button>':'');
-      row.querySelector(".ste-pick").addEventListener("click", function(){ applyTheme(t.id); });
-      var eb = row.querySelector(".ste-edit"); if (eb) eb.addEventListener("click", function(){ window.SlideThemeEditor.open(t, {scope:"user", onSaved:function(){ loadThemes(); }}); });
-      var db = row.querySelector(".ste-del"); if (db) db.addEventListener("click", function(){ if(confirm("Delete this theme?")) themePost(THEME_DEL_URL,{scope:"user",id:t.id}).then(function(){ loadThemes(); }); });
-      return row;
+      var scopeLabel = t.scope === "builtin" ? "Built-in" : (t.scope === "org" ? "Organization" : "Yours");
+      var caption = scopeLabel + (isDefault ? " · default" : "") + (t.has_logo ? " · logo" : "");
+      var right = "";
+      if (active) right += '<span class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent text-on-brand' + (canEdit ? " group-hover:hidden" : "") + '">' + CHECK_SVG + '</span>';
+      if (canEdit) right += '<span class="hidden shrink-0 items-center gap-1 group-hover:flex">' +
+        '<button type="button" class="ste-edit inline-flex h-6 w-6 items-center justify-center rounded-base text-body hover:bg-neutral-tertiary hover:text-heading" title="Edit theme" aria-label="Edit theme">' + EDIT_SVG + '</button>' +
+        '<button type="button" class="ste-del inline-flex h-6 w-6 items-center justify-center rounded-base text-body hover:bg-neutral-tertiary hover:text-fg-danger" title="Delete theme" aria-label="Delete theme">' + DEL_SVG + '</button></span>';
+      var card = document.createElement("div");
+      card.className = "group relative cursor-pointer overflow-hidden rounded-lg border transition-colors " +
+        (active ? "border-accent ring-2 ring-accent/40" : "border-default hover:border-default-strong");
+      card.innerHTML =
+        window.SlideThemeEditor.miniSlide(t, { height: 96 }) +
+        '<div class="flex items-center justify-between gap-2 border-t border-default-subtle bg-neutral-primary-medium px-3 py-2">' +
+        '<span class="min-w-0"><span class="block truncate text-[13px] font-semibold text-heading">' + escapeHtml(t.label || "Theme") + '</span>' +
+        '<span class="block truncate font-mono text-[10px] text-body-subtle">' + caption + '</span></span>' +
+        '<span class="flex shrink-0 items-center">' + right + '</span></div>';
+      card.addEventListener("click", function () { applyTheme(t.id); });
+      var eb = card.querySelector(".ste-edit"); if (eb) eb.addEventListener("click", function (e) { e.stopPropagation(); window.SlideThemeEditor.open(t, { scope: "user", onSaved: function () { loadThemes(); } }); });
+      var db = card.querySelector(".ste-del"); if (db) db.addEventListener("click", function (e) { e.stopPropagation(); if (confirm("Delete this theme?")) themePost(THEME_DEL_URL, { scope: "user", id: t.id }).then(function () { loadThemes(); }); });
+      return card;
     }
-    function renderThemes() { if (!themeGrid) return; themeGrid.innerHTML = ""; themesCache.forEach(function(t){ themeGrid.appendChild(themeRow(t)); }); }
+    function newThemeTile() {
+      var b = document.createElement("button");
+      b.type = "button"; b.id = "slides-theme-new";
+      b.className = "col-span-2 flex h-[52px] cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-default text-[13px] font-semibold text-body-subtle hover:border-accent hover:text-fg-accent";
+      b.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New theme';
+      b.addEventListener("click", function () { window.SlideThemeEditor.open(null, { scope: "user", onSaved: function () { loadThemes(); } }); });
+      return b;
+    }
+    function renderThemes() { if (!themeGrid) return; themeGrid.innerHTML = ""; themesCache.forEach(function (t) { themeGrid.appendChild(themeCard(t)); }); themeGrid.appendChild(newThemeTile()); }
     function loadThemes() {
       fetch(THEMES_URL, {credentials:"same-origin"}).then(function(r){return r.json();}).then(function(d){
         themesCache = d.themes || []; userDefault = d.user_default || ""; renderThemes();
@@ -4832,7 +4843,6 @@
     var themeCloseBtn = document.getElementById("slides-theme-close");
     if (themeCloseBtn) themeCloseBtn.addEventListener("click", closeThemeModal);
     if (themeModal) themeModal.addEventListener("click", function(e){ if (e.target === themeModal) closeThemeModal(); });
-    if (themeNewBtn) themeNewBtn.addEventListener("click", function(){ window.SlideThemeEditor.open(null, {scope:"user", onSaved:function(){ loadThemes(); }}); });
     document.addEventListener("keydown", function(e){ if (e.key === "Escape" && themeModal && !themeModal.classList.contains("hidden")) closeThemeModal(); });
 
     var sendBtn = document.getElementById("slides-comments-send");

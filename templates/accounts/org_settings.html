@@ -558,7 +558,7 @@
           <p class="mt-0.5 text-sm text-body">Named themes for this organization&rsquo;s slide decks &mdash; colours, fonts, tables, and a footer band (logo, disclaimer, page number). The <span class="font-medium text-heading">default</span> seeds new decks; anyone can still switch a deck&rsquo;s theme from the slide panel.</p>
         </div>
         <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
-          <div id="org-theme-list" class="divide-y divide-default" role="list"></div>
+          <div id="org-theme-list" class="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2" role="list"></div>
           <div class="flex items-center gap-3 border-t border-default px-5 py-4">
             <button type="button" id="org-theme-add" class="rounded-base bg-brand text-on-brand px-3 py-1.5 text-sm font-medium hover:bg-brand-medium">Add theme</button>
             <span id="org-theme-status" class="text-xs text-body" role="status"></span>
@@ -1663,22 +1663,25 @@
     function card(t) {
       var isForest = t.scope === "builtin";
       var isDefault = t.id === orgDefault || (!orgDefault && isForest);
-      var sw = t.swatch || {bg:"#eee",dark:"#333",accent:"#888"};
+      var caption = (isForest ? "Built-in" : "Organization") + (t.has_logo ? " · logo" : "");
       var div = document.createElement("div");
-      div.className = "flex items-center gap-3 px-5 py-4 " + (isDefault ? "bg-brand-softer" : "");
+      div.className = "relative overflow-hidden rounded-lg border transition-colors " + (isDefault ? "border-accent ring-2 ring-accent/40" : "border-default");
       div.setAttribute("role","listitem");
+      var actions = "";
+      if (!isDefault) actions += '<button type="button" data-act="default" class="text-fg-accent hover:underline">Set default</button>';
+      if (!isForest) actions += '<button type="button" data-act="edit" class="text-fg-accent hover:underline">Edit</button>';
+      if (!isForest) actions += '<button type="button" data-act="delete" class="text-fg-danger hover:underline">Delete</button>';
+      var mini = (window.SlideThemeEditor && window.SlideThemeEditor.miniSlide) ? window.SlideThemeEditor.miniSlide(t, {height:96}) : "";
       div.innerHTML =
-        '<span class="flex shrink-0 overflow-hidden rounded-base border border-default" style="width:46px;height:32px">' +
-        '<span style="flex:0 0 58%;background:'+sw.bg+'"></span><span style="flex:0 0 24%;background:'+sw.dark+'"></span><span style="flex:0 0 18%;background:'+sw.accent+'"></span></span>' +
-        '<div class="min-w-0 flex-1"><div class="flex items-center gap-2 flex-wrap"><span class="text-sm font-medium text-heading truncate">'+ (t.label||"Theme") +'</span>' +
-        (isDefault ? '<span class="text-[10px] uppercase tracking-wide text-fg-accent border border-brand rounded px-1">Default</span>' : '') +
-        (isForest ? '<span class="text-[10px] uppercase tracking-wide text-body">Built-in</span>' : '') +
-        (t.has_logo ? '<span class="text-[10px] text-body">&bull; logo</span>' : '') + '</div>' +
-        '<div class="mt-1 flex gap-3 text-xs">' +
-        (isDefault ? '' : '<button type="button" data-act="default" class="text-fg-accent hover:underline">Set default</button>') +
-        (isForest ? '' : '<button type="button" data-act="edit" class="text-fg-accent hover:underline">Edit</button>') +
-        (isForest ? '' : '<button type="button" data-act="delete" class="text-fg-danger hover:underline">Delete</button>') +
-        '</div></div>';
+        mini +
+        '<div class="border-t border-default-subtle bg-neutral-primary-medium px-3 py-2">' +
+        '<div class="flex items-center justify-between gap-2">' +
+        '<span class="min-w-0"><span class="block truncate text-[13px] font-semibold text-heading">'+ (t.label||"Theme") +'</span>' +
+        '<span class="block truncate font-mono text-[10px] text-body-subtle">'+ caption +'</span></span>' +
+        (isDefault ? '<span class="shrink-0 rounded border border-accent px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fg-accent">Default</span>' : '') +
+        '</div>' +
+        (actions ? '<div class="mt-2 flex flex-wrap gap-3 text-xs">'+ actions +'</div>' : '') +
+        '</div>';
       div.querySelectorAll("[data-act]").forEach(function(b){
         b.addEventListener("click", function(){
           var act=b.dataset.act;
