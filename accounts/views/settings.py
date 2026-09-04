@@ -925,6 +925,111 @@ def slide_theme_logo_serve(request):
     return HttpResponse(data, content_type=ct)
 
 
+# The four faces each bundled slide family ships (weight, style) -> filename face.
+_SLIDE_BUNDLED_FACES = {
+    (400, "normal"): "Regular",
+    (700, "normal"): "Bold",
+    (400, "italic"): "Italic",
+    (700, "italic"): "BoldItalic",
+}
+_FONT_CT = {"truetype": "font/ttf", "opentype": "font/otf", "woff": "font/woff", "woff2": "font/woff2"}
+
+
+@login_required
+@require_GET
+def slide_fonts_css(request):
+    """``@font-face`` rules for every family selectable in the slide theme editor —
+    the bundled slide fonts plus the org's uploaded fonts — so the theme previews
+    (editor modal, deck picker, org theme list) render text in the real faces.
+    Declarations are lazy: the browser only downloads a face when rendered text
+    uses its family."""
+    from urllib.parse import urlencode
+
+    from django.http import HttpResponse
+    from django.urls import reverse
+
+    from accounts.models import FontAsset, get_user_org
+    from chat.slides.theme import SLIDE_FONT_FAMILIES
+
+    file_url = reverse("accounts:slide_font_file")
+
+    def face_rule(family, weight, style, fmt, params):
+        return (
+            "@font-face{font-family:'%s';font-weight:%d;font-style:%s;"
+            "src:url(%s?%s) format('%s');font-display:swap}"
+            % (family.replace("'", ""), weight, style, file_url, urlencode(params), fmt)
+        )
+
+    rules = []
+    for key, _label in SLIDE_FONT_FAMILIES:
+        for (weight, style), _face in _SLIDE_BUNDLED_FACES.items():
+            rules.append(face_rule(key, weight, style, "truetype",
+                                   {"family": key, "weight": weight, "style": style}))
+    org = get_user_org(request.user)
+    if org is not None:
+        rows = FontAsset.objects.filter(
+            organization=org, source=FontAsset.SOURCE_UPLOAD
+        ).order_by("family", "weight", "style")
+        for row in rows:
+            rules.append(face_rule(
+                row.family, row.weight, row.style, row.font_format or "truetype",
+                {"family": row.family_norm, "weight": row.weight, "style": row.style},
+            ))
+    resp = HttpResponse("\n".join(rules), content_type="text/css")
+    resp["Cache-Control"] = "private, max-age=300"
+    return resp
+
+
+@login_required
+@require_GET
+def slide_font_file(request):
+    """Serve one font face (GET: family, weight, style) for :func:`slide_fonts_css`.
+    The requesting user's org-uploaded faces win over the bundled families."""
+    from pathlib import Path
+
+    from django.http import Http404, HttpResponse
+
+    from accounts.models import FontAsset, get_user_org
+    from chat.slides.theme import SLIDE_FONT_FAMILIES
+    from core.fonts import normalize_font_name
+
+    family = normalize_font_name(request.GET.get("family") or "")
+    style = "italic" if (request.GET.get("style") or "") == "italic" else "normal"
+    try:
+        weight = int(request.GET.get("weight") or 400)
+    except ValueError:
+        weight = 400
+    if not family:
+        raise Http404
+
+    org = get_user_org(request.user)
+    if org is not None:
+        row = FontAsset.objects.filter(
+            organization=org, source=FontAsset.SOURCE_UPLOAD,
+            family_norm=family, weight=weight, style=style,
+        ).first()
+        if row is not None:
+            try:
+                data = row.blob.read()
+            except Exception:  # noqa: BLE001 — orphaned blob (e.g. bucket swap)
+                data = None
+            if data:
+                resp = HttpResponse(data, content_type=_FONT_CT.get(row.font_format, "font/ttf"))
+                resp["Cache-Control"] = "private, max-age=86400"
+                return resp
+
+    key = next((k for k, _ in SLIDE_FONT_FAMILIES if normalize_font_name(k) == family), None)
+    if key is None:
+        raise Http404
+    face = _SLIDE_BUNDLED_FACES.get((weight, style), "Regular")
+    path = Path(__file__).resolve().parents[2] / "core" / "assets" / "fonts" / key / f"{key}-{face}.ttf"
+    if not path.exists():
+        raise Http404
+    resp = HttpResponse(path.read_bytes(), content_type="font/ttf")
+    resp["Cache-Control"] = "private, max-age=86400"
+    return resp
+
+
 @login_required
 @require_GET
 def slide_themes_list(request):

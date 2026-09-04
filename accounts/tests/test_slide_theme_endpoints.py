@@ -95,3 +95,75 @@ class SlideThemeEndpointTests(TestCase):
         self.assertEqual(self._post("slide_theme_set_default", {"scope": "org", "id": tid}).status_code, 200)
         self.assertEqual(self._list()["org_default"], tid)
         self.assertTrue(self._list()["is_org_admin"])
+
+
+class SlideFontEndpointTests(TestCase):
+    """accounts:slide_fonts_css + accounts:slide_font_file (theme-preview fonts)."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"f+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def _add_font(self, org, family="Brand Sans", norm="brand sans"):
+        from accounts.models import FontAsset
+
+        fa = FontAsset(
+            organization=org, family=family, family_norm=norm,
+            source=FontAsset.SOURCE_UPLOAD, content_type="font/ttf",
+            font_format="truetype", weight=400, style="normal",
+            size_bytes=4, sha256=uuid.uuid4().hex, embeddable=True,
+        )
+        fa.blob.save(f"{fa.id}.ttf", SimpleUploadedFile("f.ttf", b"font"), save=True)
+        return fa
+
+    def test_css_lists_bundled_and_uploaded_families(self):
+        org = Organization.objects.create(name="Acme", slug=f"acme-{uuid.uuid4().hex[:6]}")
+        Membership.objects.create(user=self.user, org=org, role=Membership.Role.MEMBER)
+        with tempfile.TemporaryDirectory() as d, self.settings(MEDIA_ROOT=d):
+            self._add_font(org)
+            r = self.client.get(reverse("accounts:slide_fonts_css"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Content-Type"], "text/css")
+        css = r.content.decode()
+        self.assertIn("font-family:'Caladea'", css)
+        self.assertIn("font-family:'Carlito'", css)
+        self.assertIn("font-family:'Brand Sans'", css)
+
+    def test_css_without_org_has_only_bundled(self):
+        r = self.client.get(reverse("accounts:slide_fonts_css"))
+        self.assertEqual(r.status_code, 200)
+        css = r.content.decode()
+        self.assertIn("font-family:'Arimo'", css)
+        self.assertNotIn("Brand Sans", css)
+
+    def test_file_serves_bundled_face(self):
+        r = self.client.get(reverse("accounts:slide_font_file"),
+                            {"family": "Caladea", "weight": 400, "style": "normal"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Content-Type"], "font/ttf")
+        self.assertGreater(len(r.content), 10_000)
+
+    def test_file_serves_uploaded_face_and_is_org_scoped(self):
+        org = Organization.objects.create(name="Acme", slug=f"acme-{uuid.uuid4().hex[:6]}")
+        Membership.objects.create(user=self.user, org=org, role=Membership.Role.MEMBER)
+        with tempfile.TemporaryDirectory() as d, self.settings(MEDIA_ROOT=d):
+            self._add_font(org)
+            r = self.client.get(reverse("accounts:slide_font_file"),
+                                {"family": "Brand Sans", "weight": 400, "style": "normal"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.content, b"font")
+
+            # A user outside the org gets a 404 for the same family.
+            User = get_user_model()
+            other = User.objects.create_user(email=f"o+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+            c2 = Client()
+            c2.force_login(other)
+            r2 = c2.get(reverse("accounts:slide_font_file"),
+                        {"family": "Brand Sans", "weight": 400, "style": "normal"})
+            self.assertEqual(r2.status_code, 404)
+
+    def test_file_unknown_family_404(self):
+        r = self.client.get(reverse("accounts:slide_font_file"), {"family": "Nope"})
+        self.assertEqual(r.status_code, 404)

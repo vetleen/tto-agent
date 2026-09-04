@@ -27,7 +27,8 @@ from pathlib import Path
 BASE = "https://raw.githubusercontent.com/google/fonts/main"
 HERE = Path(__file__).resolve().parent
 
-# family_key -> (dir, token, kind, license)   kind: "static" | "variable"
+# family_key -> (dir, token, kind, license)   kind: "static" | "variable" | "regular"
+# ("regular" = the upstream family ships a single Regular face only)
 FAMILIES = {
     "Carlito": ("ofl/carlito", "Carlito", "static", "OFL-1.1"),       # Calibri-metric
     "Caladea": ("ofl/caladea", "Caladea", "static", "OFL-1.1"),       # Cambria-metric
@@ -37,6 +38,9 @@ FAMILIES = {
     "Gelasio": ("ofl/gelasio", "Gelasio", "variable", "OFL-1.1"),     # Georgia-metric
     "EBGaramond": ("ofl/ebgaramond", "EBGaramond", "variable", "OFL-1.1"),  # Garamond-visual
     "NotoEmoji": ("ofl/notoemoji", "NotoEmoji", "variable", "OFL-1.1"),  # monochrome emoji fallback
+    # Symbol fallback for the slide renderers (dingbats, geometric shapes,
+    # ornament brackets like U+276F that no metric-compatible family carries).
+    "NotoSansSymbols2": ("ofl/notosanssymbols2", "NotoSansSymbols2", "regular", "OFL-1.1"),
 }
 
 # style -> (variable upright|italic file, weight to instance at)
@@ -79,7 +83,14 @@ def main() -> int:
         (dest / "LICENSE.txt").write_text(
             f"{key} is licensed under {lic}.\nSource: {BASE}/{dir_}\n", encoding="utf-8"
         )
-        if kind == "static":
+        if kind == "regular":
+            data = fetch(f"{BASE}/{dir_}/{token}-Regular.ttf")
+            if data:
+                (dest / f"{key}-Regular.ttf").write_bytes(data)
+                ok.append(f"{key}-Regular ({len(data)//1024} KB)")
+            else:
+                missing.append(f"{key}-Regular")
+        elif kind == "static":
             for style in VAR_INSTANCES:
                 data = fetch(f"{BASE}/{dir_}/{token}-{style}.ttf")
                 if data:

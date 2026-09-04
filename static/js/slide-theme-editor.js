@@ -10,9 +10,13 @@
  * applying a theme to the deck.
  *
  * Usage:  window.SlideThemeEditor.open(themeOrNull, {scope:'org'|'user', onSaved:fn});
- * Shared: window.SlideThemeEditor.miniSlide(theme, {height, logoUrl, showBullet})
+ * Shared: window.SlideThemeEditor.miniSlide(theme, {height, logoUrl, showBullet, showFooter})
  *         → HTML string for a miniature title slide (also used by the picker and
  *         the org theme list so all three surfaces render identical previews).
+ *         The title is the theme's own name, set in its headline font — the
+ *         accounts:slide_fonts_css stylesheet (linked by the modal partial)
+ *         provides @font-face for bundled + org-uploaded families. The footer
+ *         band renders only with showFooter (the editor, where it's configured).
  */
 (function () {
   "use strict";
@@ -118,13 +122,29 @@
         '<span style="color:' + dk2 + ';font-size:11px">' + esc(bch) + '</span>' +
         '<span style="height:5px;flex:1;max-width:120px;border-radius:9999px;background:' + lt2 + '"></span></div>';
     }
+    // Title = the theme's own name in its headline font (the eyes should land on
+    // the name, not sample copy); subtitle stays sample text in the subhead font.
+    var fonts = t.fonts || {};
+    var headStack = cssFontStack(fonts.headline, "var(--font-serif)");
+    var subStack = cssFontStack(fonts.subhead || fonts.body, "var(--font-serif)");
+    var title = (t.label || "").trim() || "Theme name";
+    var footerBand = "";
+    if (opts.showFooter) {
+      footerBand = '<div style="margin-top:auto;margin-left:-' + pad + 'px;margin-right:-' + pad + 'px;display:flex;align-items:center;height:' + (big ? 24 : 18) + 'px;background:' + band + '">' +
+        secs.map(cell).join("") + '</div>';
+    }
     return '<div style="background:' + lt1 + ';padding:' + pad + 'px ' + pad + 'px 0;height:' + h + 'px;display:flex;flex-direction:column">' +
-      '<div style="font-family:var(--font-serif);font-weight:600;font-size:' + titleSize + 'px;line-height:1.15;color:' + dk2 + '">Quarterly overview</div>' +
-      '<div style="font-size:' + subSize + 'px;color:' + dk1 + ';margin-top:2px">Highlights and results for the period.</div>' +
+      '<div style="font-family:' + headStack + ';font-weight:600;font-size:' + titleSize + 'px;line-height:1.15;color:' + dk2 + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(title) + '</div>' +
+      '<div style="font-family:' + subStack + ';font-size:' + subSize + 'px;color:' + dk1 + ';margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Highlights and results for the period.</div>' +
       '<div style="display:flex;gap:' + (big ? 5 : 4) + 'px;margin-top:' + (big ? 12 : 8) + 'px">' + pills + '</div>' +
-      bullet +
-      '<div style="margin-top:auto;margin-left:-' + pad + 'px;margin-right:-' + pad + 'px;display:flex;align-items:center;height:' + (big ? 24 : 18) + 'px;background:' + band + '">' +
-      secs.map(cell).join("") + '</div></div>';
+      bullet + footerBand + '</div>';
+  }
+
+  // A safe CSS font-family stack: the family name stripped of characters that
+  // could break out of the inline style, quoted, with the given fallback.
+  function cssFontStack(family, fallback) {
+    var fam = family ? String(family).replace(/['"<>\\;{}()&]/g, "").trim() : "";
+    return fam ? "'" + fam + "', " + fallback : fallback;
   }
 
   /* ---- Form construction -------------------------------------------------- */
@@ -207,15 +227,15 @@
       var label = ["Left", "Middle", "Right"][i];
       return '<div class="grid grid-cols-[3.5rem_1fr_1fr_3.5rem] items-center gap-2 text-xs">' +
         '<span class="text-body">' + label + '</span>' +
-        '<select data-sec="' + i + '" data-k="content" class="h-8 rounded-base border border-default bg-neutral-secondary-soft px-2 text-heading">' + cOpts + '</select>' +
-        '<select data-sec="' + i + '" data-k="align" class="h-8 rounded-base border border-default bg-neutral-secondary-soft px-2 text-heading">' + aOpts + '</select>' +
-        '<input type="number" data-sec="' + i + '" data-k="colspan" min="1" max="12" class="h-8 w-full rounded-base border border-default bg-neutral-secondary-soft px-2 text-heading" title="Columns (1-12)"></div>';
+        '<select data-sec="' + i + '" data-k="content" class="h-8 rounded-base border border-default bg-neutral-secondary-soft px-2 text-xs text-heading">' + cOpts + '</select>' +
+        '<select data-sec="' + i + '" data-k="align" class="h-8 rounded-base border border-default bg-neutral-secondary-soft px-2 text-xs text-heading">' + aOpts + '</select>' +
+        '<input type="number" data-sec="' + i + '" data-k="colspan" min="1" max="12" class="h-8 w-full rounded-base border border-default bg-neutral-secondary-soft px-2 text-xs text-heading" title="Columns (1-12)"></div>';
     }).join("");
     var pFooter = '<div class="ste-panel hidden space-y-3" data-panel="footer">' +
       '<div class="grid grid-cols-[3.5rem_1fr_1fr_3.5rem] gap-2 text-[10px] font-semibold uppercase tracking-wide text-body-subtle"><span></span><span>Content</span><span>Align</span><span>Cols</span></div>' +
       sectionRows +
       '<label class="block text-xs text-body">Disclaimer text' +
-      '<input id="ste-footer-text" type="text" maxlength="200" class="mt-1 h-8 w-full rounded-base border border-default bg-neutral-secondary-soft px-2 text-sm text-heading"></label>' +
+      '<input id="ste-footer-text" type="text" maxlength="200" class="mt-1 h-9 w-full rounded-base border border-default bg-neutral-secondary-soft px-2 text-sm text-heading"></label>' +
       '<div class="flex items-center gap-3">' +
       '<label class="flex items-center gap-2 text-xs text-body"><input id="ste-footer-bg-on" type="checkbox" class="rounded border-default text-brand"> Band background</label>' +
       '<input id="ste-footer-bg" type="color" class="h-7 w-10 rounded border border-default bg-transparent p-0"></div>' +
@@ -272,6 +292,15 @@
     showSection("general");
   }
 
+  // Re-fetch the @font-face stylesheet (cache-busted) so a just-uploaded font
+  // can render in the live preview without a page reload.
+  function refreshFontsCss() {
+    var link = el("ste-fonts-css");
+    if (!link) return;
+    var href = link.getAttribute("href").split("?")[0];
+    link.setAttribute("href", href + "?t=" + Date.now());
+  }
+
   function uploadFont(file) {
     var st = el("ste-font-status");
     var setSt = function (msg, err) { if (st) { st.textContent = msg; st.className = "text-xs " + (err ? "text-fg-danger" : "text-body-subtle"); } };
@@ -284,6 +313,7 @@
         var before = uploadedFonts.map(function (f) { return f.family; });
         uploadedFonts = res.d.fonts || [];
         rebuildFontSelects();
+        refreshFontsCss();
         var added = uploadedFonts.map(function (f) { return f.family; }).filter(function (f) { return before.indexOf(f) < 0; });
         setSt(added.length ? ("Added “" + added[0] + "” — pick it above.") : "Fonts updated.", false);
       })
@@ -418,7 +448,7 @@
   function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 60); }
   function renderPreview() {
     var t = collect();
-    el("ste-preview").innerHTML = miniSlide(t, { height: 150, logoUrl: currentLogoUrl(), showBullet: true });
+    el("ste-preview").innerHTML = miniSlide(t, { height: 150, logoUrl: currentLogoUrl(), showBullet: true, showFooter: true });
     renderSummary(t);
   }
   function summaryRow(label, val) {

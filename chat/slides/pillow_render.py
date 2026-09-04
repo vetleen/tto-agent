@@ -143,9 +143,12 @@ def _run_font(theme: dict, style: dict, scale: float) -> ImageFont.FreeTypeFont:
 
 # The brand serif/sans (Caladea/Carlito) lack many symbol glyphs the model likes
 # to use inline — arrows ↑↓→, triangles ▲▼►, checks ✓ — which would otherwise
-# render as .notdef "tofu" boxes. Arimo (Arial-metric, bundled) covers them, so
-# we fall back to it per-glyph. PowerPoint substitutes similarly for the .pptx.
-_SYMBOL_FALLBACK = "Arimo"
+# render as .notdef "tofu" boxes. We fall back per-glyph through a chain: Arimo
+# (Arial-metric, covers most arrows/shapes), then NotoSansSymbols2 (dingbats and
+# ornament brackets like ❯ U+276F that no metric-compatible family carries), then
+# Gelasio (has the math angle brackets ⟨⟩ the others lack). PowerPoint
+# substitutes similarly for the .pptx.
+_SYMBOL_FALLBACKS = ("Arimo", "NotoSansSymbols2", "Gelasio")
 
 
 @lru_cache(maxsize=32)
@@ -161,22 +164,31 @@ def _font_codepoints(family: str) -> frozenset:
         return frozenset()
 
 
+def _fallback_family(cp: int, prim: frozenset) -> str | None:
+    """The first fallback family whose cmap has ``cp``, or None when the primary
+    font covers it (ASCII assumed covered) or nothing bundled does."""
+    if cp < 0x80 or cp in prim:
+        return None
+    for fam in _SYMBOL_FALLBACKS:
+        if cp in _font_codepoints(fam):
+            return fam
+    return None
+
+
 def _coverage_segments(text: str, family: str):
-    """Split ``text`` into (segment, needs_fallback) runs — a char needs the
-    fallback when it's non-ASCII, the primary font lacks it, and Arimo has it."""
+    """Split ``text`` into (segment, fallback_family_or_None) runs — a char uses a
+    fallback when it's non-ASCII, the primary font lacks it, and a chain font has it."""
     prim = _font_codepoints(family)
-    fb = _font_codepoints(_SYMBOL_FALLBACK)
-    out, cur, cur_fb = [], "", False
+    out, cur, cur_fb = [], "", None
     for ch in text:
-        cp = ord(ch)
-        need = cp >= 0x80 and cp not in prim and cp in fb
+        fb = _fallback_family(ord(ch), prim)
         if not cur:
-            cur, cur_fb = ch, need
-        elif need == cur_fb:
+            cur, cur_fb = ch, fb
+        elif fb == cur_fb:
             cur += ch
         else:
             out.append((cur, cur_fb))
-            cur, cur_fb = ch, need
+            cur, cur_fb = ch, fb
     if cur:
         out.append((cur, cur_fb))
     return out
@@ -191,17 +203,17 @@ def _coverage_segments(text: str, family: str):
 class _Word:
     __slots__ = ("text", "font", "color", "underline", "w", "ascent", "descent", "space_w", "segs")
 
-    def __init__(self, text, font, color, underline, family=None, fb_font=None):
+    def __init__(self, text, font, color, underline, family=None, fb_fonts=None):
         self.text = text
         self.font = font
         self.color = color
         self.underline = underline
-        # (segment, font) pairs so glyphs the primary font lacks draw with the
+        # (segment, font) pairs so glyphs the primary font lacks draw with a
         # fallback face; plain text stays a single segment on the primary font.
-        if fb_font is not None and family:
+        if fb_fonts and family:
             self.segs, self.w = [], 0.0
-            for seg, need in _coverage_segments(text, family):
-                f = fb_font if need else font
+            for seg, fb_fam in _coverage_segments(text, family):
+                f = fb_fonts.get(fb_fam, font) if fb_fam else font
                 self.segs.append((seg, f))
                 self.w += f.getlength(seg)
         else:
@@ -226,16 +238,19 @@ def _para_words(theme, para, base_style, scale):
         underline = bool(style.get("underline"))
         text = run.get("t", "")
         family = theme_mod.font_family(theme, style.get("font"))
-        fb_font = None
-        if any(ord(c) >= 0x80 for c in text):  # only build a fallback for non-ASCII runs
-            fb_font = _font(_SYMBOL_FALLBACK, (style.get("size") or 14) * scale,
-                            bool(style.get("bold")), bool(style.get("italic")))
+        fb_fonts = None
+        if any(ord(c) >= 0x80 for c in text):  # only build fallbacks for non-ASCII runs
+            fb_fonts = {
+                fam: _font(fam, (style.get("size") or 14) * scale,
+                           bool(style.get("bold")), bool(style.get("italic")))
+                for fam in _SYMBOL_FALLBACKS
+            }
         segments = text.split("\n")
         for si, seg in enumerate(segments):
             for tok in seg.split(" "):
                 if tok == "":
                     continue
-                words.append(_Word(tok, font, color, underline, family, fb_font))
+                words.append(_Word(tok, font, color, underline, family, fb_fonts))
             if si < len(segments) - 1 and words:
                 breaks.add(len(words) - 1)  # hard break after the last word so far
     return words, breaks
@@ -278,11 +293,19 @@ _INSET_TB = 3.6   # pt
 
 def _bullet_font(theme, style, scale, char):
     """The font to draw a bullet glyph with — the paragraph's own face, or the
-    Arimo symbol fallback when that face lacks the glyph (Carlito has no ‣)."""
+    first symbol-fallback family that has the glyph (Carlito has no ‣, and no
+    metric-compatible family has ornament brackets like ❯)."""
     family = theme_mod.font_family(theme, style.get("font"))
-    if any(ord(c) >= 0x80 and ord(c) not in _font_codepoints(family) for c in char):
-        return _font(_SYMBOL_FALLBACK, (style.get("size") or 14) * scale,
-                     bool(style.get("bold")), bool(style.get("italic")))
+
+    def covers(fam):
+        cps = _font_codepoints(fam)
+        return all(ord(c) < 0x80 or ord(c) in cps for c in char)
+
+    if not covers(family):
+        for fam in _SYMBOL_FALLBACKS:
+            if covers(fam):
+                return _font(fam, (style.get("size") or 14) * scale,
+                             bool(style.get("bold")), bool(style.get("italic")))
     return _run_font(theme, style, scale)
 
 

@@ -1,5 +1,9 @@
 {% comment %}Shared slide-theme editor modal. Include once per page that uses it,
 and load static js/slide-theme-editor.js. window.SlideThemeEditor.open(theme, {scope, onSaved}).{% endcomment %}
+{# @font-face for bundled + org-uploaded slide fonts, so the miniature previews  #}
+{# (editor, deck picker, org theme list) render in the theme's real faces. Faces #}
+{# are only downloaded when rendered text actually uses them.                    #}
+<link rel="stylesheet" id="ste-fonts-css" href="{% url 'accounts:slide_fonts_css' %}">
 <div id="ste-modal"
      class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
      data-csrf="{{ csrf_token }}"

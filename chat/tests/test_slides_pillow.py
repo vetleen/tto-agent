@@ -101,6 +101,11 @@ class PillowRenderTests(SimpleTestCase):
         # – is covered by Carlito, so no fallback there.
         font = pillow_render._bullet_font(th, {"font": "body", "size": 14}, 1.0, "–")
         self.assertIn("Carlito", str(getattr(font, "path", "")))
+        # Custom bullets no bundled text face has: ❯/❱ (ornament brackets) come
+        # from NotoSansSymbols2, ⟩ (math angle bracket) from Gelasio — never tofu.
+        for char, family in (("❯", "NotoSansSymbols2"), ("❱", "NotoSansSymbols2"), ("⟩", "Gelasio")):
+            font = pillow_render._bullet_font(th, {"font": "body", "size": 14}, 1.0, char)
+            self.assertIn(family, str(getattr(font, "path", "")), char)
 
     def test_render_deck_pngs_respects_only_filter(self):
         deck = self._deck([
@@ -321,7 +326,14 @@ class PillowRenderTests(SimpleTestCase):
         # ASCII stays on the primary font — so it never renders as a tofu box.
         segs = pillow_render._coverage_segments("A▲B", "Carlito")
         self.assertEqual([s for s, _ in segs], ["A", "▲", "B"])
-        self.assertEqual([need for _, need in segs], [False, True, False])
+        self.assertEqual([fam for _, fam in segs], [None, "Arimo", None])
+        # Glyphs Arimo also lacks walk further down the chain: ornament brackets
+        # (❯ U+276F) land on NotoSansSymbols2, math angle brackets (⟩ U+27E9)
+        # on Gelasio.
+        segs = pillow_render._coverage_segments("x❯y⟩", "Carlito")
+        self.assertEqual(
+            segs, [("x", None), ("❯", "NotoSansSymbols2"), ("y", None), ("⟩", "Gelasio")]
+        )
         # a slide using inline momentum triangles renders (more than 1 colour).
         deck = self._deck([{"elements": [
             {"type": "text", "x": 60, "y": 100, "w": 400, "h": 40, "class": "data",
