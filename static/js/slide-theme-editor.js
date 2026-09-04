@@ -135,7 +135,7 @@
     }
     return '<div style="background:' + lt1 + ';padding:' + pad + 'px ' + pad + 'px 0;height:' + h + 'px;display:flex;flex-direction:column">' +
       '<div style="font-family:' + headStack + ';font-weight:600;font-size:' + titleSize + 'px;line-height:1.15;color:' + dk2 + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(title) + '</div>' +
-      '<div style="font-family:' + subStack + ';font-size:' + subSize + 'px;color:' + dk1 + ';margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Highlights and results for the period.</div>' +
+      '<div style="font-family:' + subStack + ';font-size:' + subSize + 'px;color:' + dk1 + ';margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Lorem ipsum dolor sit amet, consectetur adipiscing elit.</div>' +
       '<div style="display:flex;gap:' + (big ? 5 : 4) + 'px;margin-top:' + (big ? 12 : 8) + 'px">' + pills + '</div>' +
       bullet + footerBand + '</div>';
   }
