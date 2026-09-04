@@ -10,13 +10,14 @@
  * applying a theme to the deck.
  *
  * Usage:  window.SlideThemeEditor.open(themeOrNull, {scope:'org'|'user', onSaved:fn});
- * Shared: window.SlideThemeEditor.miniSlide(theme, {height, logoUrl, showBullet, showFooter})
+ * Shared: window.SlideThemeEditor.miniSlide(theme, {height, showBullet, showFooter})
  *         → HTML string for a miniature title slide (also used by the picker and
  *         the org theme list so all three surfaces render identical previews).
  *         The title is the theme's own name, set in its headline font — the
  *         accounts:slide_fonts_css stylesheet (linked by the modal partial)
  *         provides @font-face for bundled + org-uploaded families. The footer
- *         band renders only with showFooter (the editor, where it's configured).
+ *         band renders only with showFooter (the editor, where it's configured)
+ *         and shows just the band color — no section contents.
  */
 (function () {
   "use strict";
@@ -94,25 +95,12 @@
     var lt1 = c.lt1 || "#FBFAF6", dk1 = c.dk1 || "#12241B", dk2 = c.dk2 || "#1F3D30", lt2 = c.lt2 || "#ECEFE9";
     var footer = t.footer || {};
     var band = footer.bg_color ? footer.bg_color : lt1;
-    var logoUrl = opts.logoUrl || null;
     var h = opts.height || 96;
     var big = h >= 130;
     var pillW = big ? 26 : 20, pillH = big ? 8 : 6, titleSize = big ? 19 : 15, subSize = big ? 11 : 9;
     var pills = ["accent1", "accent2", "accent3", "accent4"].map(function (k) {
       return '<span style="width:' + pillW + 'px;height:' + pillH + 'px;border-radius:9999px;background:' + (c[k] || "#8FA891") + '"></span>';
     }).join("");
-
-    var bandPx = big ? 24 : 18;
-    var logoH = Math.max(4, Math.round((footer.logo_height || 20) * bandPx / 28));  // 28 = FOOTER_BAND_H (pt)
-    var secs = (footer.sections && footer.sections.length) ? footer.sections : [{ colspan: 4, align: "right", content: "page" }];
-    function cell(s) {
-      var a = s.align === "center" ? "center" : (s.align === "right" ? "flex-end" : "flex-start");
-      var inner = "";
-      if (s.content === "text") inner = '<span style="font-size:' + (big ? 9 : 8) + 'px;color:' + dk2 + '">' + esc(footer.text || "Disclaimer") + '</span>';
-      else if (s.content === "page") inner = '<span style="font-size:' + (big ? 9 : 8) + 'px;color:' + dk2 + '">1</span>';
-      else if (s.content === "logo") inner = logoUrl ? '<img src="' + logoUrl + '" style="height:' + logoH + 'px;width:auto;display:block">' : "";
-      return '<div style="flex:' + (s.colspan || 4) + ';display:flex;justify-content:' + a + ';align-items:center;padding:0 6px;min-width:0;overflow:hidden">' + inner + '</div>';
-    }
 
     var pad = big ? 18 : 14;
     var bullet = "";
@@ -128,10 +116,11 @@
     var headStack = cssFontStack(fonts.headline, "var(--font-serif)");
     var subStack = cssFontStack(fonts.subhead || fonts.body, "var(--font-serif)");
     var title = (t.label || "").trim() || "Theme name";
+    // Empty band on purpose: rendering the real section contents (logo, page,
+    // disclaimer) at miniature scale mangles them, so only the color is shown.
     var footerBand = "";
     if (opts.showFooter) {
-      footerBand = '<div style="margin-top:auto;margin-left:-' + pad + 'px;margin-right:-' + pad + 'px;display:flex;align-items:center;height:' + (big ? 24 : 18) + 'px;background:' + band + '">' +
-        secs.map(cell).join("") + '</div>';
+      footerBand = '<div style="margin-top:auto;margin-left:-' + pad + 'px;margin-right:-' + pad + 'px;height:' + (big ? 24 : 18) + 'px;background:' + band + '"></div>';
     }
     return '<div style="background:' + lt1 + ';padding:' + pad + 'px ' + pad + 'px 0;height:' + h + 'px;display:flex;flex-direction:column">' +
       '<div style="font-family:' + headStack + ';font-weight:600;font-size:' + titleSize + 'px;line-height:1.15;color:' + dk2 + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(title) + '</div>' +
@@ -448,7 +437,7 @@
   function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 60); }
   function renderPreview() {
     var t = collect();
-    el("ste-preview").innerHTML = miniSlide(t, { height: 150, logoUrl: currentLogoUrl(), showBullet: true, showFooter: true });
+    el("ste-preview").innerHTML = miniSlide(t, { height: 150, showBullet: true, showFooter: true });
     renderSummary(t);
   }
   function summaryRow(label, val) {
