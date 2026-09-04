@@ -832,7 +832,10 @@ def slide_theme_delete(request):
 @login_required
 @require_POST
 def slide_theme_set_default(request):
-    """Set the scope's default theme (body: {scope, id}); id '' or 'forest' clears to Forest."""
+    """Set the scope's default theme (body: {scope, id}) — a built-in id or one of
+    the scope's own themes; id '' clears back to Forest."""
+    from chat.slides import theme as theme_mod
+
     data, err = _parse_json_body(request)
     if err:
         return err
@@ -840,7 +843,8 @@ def slide_theme_set_default(request):
     if resp:
         return resp
     tid = _str_field(data, "id")
-    valid = {"", "forest"} | {t.get("id") for t in _scope_themes(scope, org, request.user)}
+    valid = ({""} | {t["id"] for t in theme_mod.builtin_slide_themes()}
+             | {t.get("id") for t in _scope_themes(scope, org, request.user)})
     if tid not in valid:
         return JsonResponse({"error": "Unknown theme."}, status=400)
     _write_scope_prefs(scope, org, request.user, lambda prefs: prefs.__setitem__("slide_theme_default", tid))

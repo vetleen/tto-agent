@@ -29,6 +29,18 @@ class ThemeDefaultsAndFooter(TestCase):
             self.assertIn(k, t)
         self.assertEqual(len(t["colors"]), len(T.SLIDE_STYLE_COLOR_KEYS))
 
+    def test_builtin_themes_cover_all_presets_as_full_themes(self):
+        themes = T.builtin_slide_themes()
+        self.assertEqual([t["id"] for t in themes], list(T.PRESET_THEMES))
+        self.assertEqual([t["label"] for t in themes],
+                         [spec["label"] for spec in T.PRESET_THEMES.values()])
+        for t in themes:
+            self.assertTrue(T._is_full_theme_entry(t))
+            for k in ("footer", "logo_ext"):
+                self.assertIn(k, t)
+        # The first builtin is Forest with the base palette.
+        self.assertEqual(themes[0], T.slide_theme_defaults())
+
     def test_default_footer_is_page_number_right(self):
         f = T.default_footer()
         self.assertEqual(len(f["sections"]), T.FOOTER_SECTION_COUNT)
@@ -165,6 +177,21 @@ class ScopeResolution(TestCase):
         scopes = {t["scope"] for t in avail}
         self.assertEqual(scopes, {"builtin", "org"})
         self.assertEqual(avail[0]["id"], "forest")
+
+    def test_list_includes_all_builtin_presets(self):
+        avail = T.list_available_themes(user=None, org=_fake_org({}))
+        builtin_ids = [t["id"] for t in avail if t["scope"] == "builtin"]
+        self.assertEqual(builtin_ids, ["forest", "slate", "warm", "mono", "ocean"])
+
+    def test_resolve_builtin_preset_by_id(self):
+        slate = T.resolve_theme_by_id("slate", None, None)
+        self.assertEqual(slate["label"], "Slate")
+        self.assertEqual(slate["scope"], "builtin")
+        self.assertEqual(slate["colors"]["accent1"], "#2563EB")
+        # A builtin resolves into a deck override with provenance intact.
+        ov = T.theme_to_deck_override(slate)
+        self.assertEqual(ov["_theme_id"], "slate")
+        self.assertEqual(ov["colors"]["accent1"], "#2563EB")
 
     def test_default_precedence_org_then_forest(self):
         org = _fake_org({

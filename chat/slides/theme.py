@@ -674,7 +674,9 @@ def resolve_named_slide_theme(name: str, user=None) -> dict | None:
 
 # ---------------------------------------------------------------------------
 # Themes v2 — first-class NAMED themes (colours + fonts + typography + tables +
-# footer + a per-theme logo) at org and user scope. Forest is the only built-in.
+# footer + a per-theme logo) at org and user scope. The built-ins are the
+# PRESET_THEMES palettes (Forest/Slate/Warm sand/Monochrome/Ocean) expanded to
+# full theme objects; Forest is the base/default.
 # Org themes live on ``Organization.preferences["slide_themes"]`` (list) with
 # ``["slide_theme_default"]``; user themes on ``UserSettings.preferences`` under
 # the same keys. Old shapes (org single ``slide_theme``, colour-only user themes,
@@ -703,6 +705,29 @@ def slide_theme_defaults() -> dict:
         "footer": default_footer(),
         "logo_ext": "",
     }
+
+
+def builtin_slide_themes() -> list[dict]:
+    """All built-in themes — each PRESET_THEMES palette as a full v2 theme object.
+
+    Ids are the preset names (``forest``/``slate``/``warm``/``mono``/``ocean``),
+    stable across releases so stored defaults and deck ``_theme_id`` provenance
+    keep resolving.
+    """
+    out = []
+    for name, spec in PRESET_THEMES.items():
+        style = _full_style_from_override(spec["theme"])
+        out.append({
+            "id": name,
+            "label": spec["label"],
+            "colors": style["colors"],
+            "fonts": style["fonts"],
+            "typography": style["typography"],
+            "tables": style["tables"],
+            "footer": default_footer(),
+            "logo_ext": "",
+        })
+    return out
 
 
 def _validate_footer(data) -> tuple[dict | None, str | None]:
@@ -873,8 +898,8 @@ def _user_default_theme_id(user) -> str:
 
 
 def list_available_themes(user=None, org=None) -> list[dict]:
-    """Forest + org themes + the user's themes — each a full object with ``scope``."""
-    out = [dict(slide_theme_defaults(), scope="builtin")]
+    """Built-in themes + org themes + the user's themes — each a full object with ``scope``."""
+    out = [dict(t, scope="builtin") for t in builtin_slide_themes()]
     out += [dict(t, scope="org") for t in org_slide_themes(org)]
     out += [dict(t, scope="user") for t in user_full_slide_themes(user)]
     return out

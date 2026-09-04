@@ -1661,16 +1661,16 @@
     function setStatus(m, e){ if(statusEl){ statusEl.textContent=m||""; statusEl.className="mt-2 text-xs "+(e?"text-fg-danger":"text-body"); } }
 
     function card(t) {
-      var isForest = t.scope === "builtin";
-      var isDefault = t.id === orgDefault || (!orgDefault && isForest);
-      var caption = (isForest ? "Built-in" : "Organization") + (t.has_logo ? " · logo" : "");
+      var isBuiltin = t.scope === "builtin";
+      var isDefault = t.id === orgDefault || (!orgDefault && t.id === "forest");
+      var caption = (isBuiltin ? "Built-in" : "Organization") + (t.has_logo ? " · logo" : "");
       var div = document.createElement("div");
       div.className = "relative overflow-hidden rounded-lg border transition-colors " + (isDefault ? "border-accent ring-2 ring-accent/40" : "border-default");
       div.setAttribute("role","listitem");
       var actions = "";
       if (!isDefault) actions += '<button type="button" data-act="default" class="text-fg-accent hover:underline">Set default</button>';
-      if (!isForest) actions += '<button type="button" data-act="edit" class="text-fg-accent hover:underline">Edit</button>';
-      if (!isForest) actions += '<button type="button" data-act="delete" class="text-fg-danger hover:underline">Delete</button>';
+      if (!isBuiltin) actions += '<button type="button" data-act="edit" class="text-fg-accent hover:underline">Edit</button>';
+      if (!isBuiltin) actions += '<button type="button" data-act="delete" class="text-fg-danger hover:underline">Delete</button>';
       var mini = (window.SlideThemeEditor && window.SlideThemeEditor.miniSlide) ? window.SlideThemeEditor.miniSlide(t, {height:96}) : "";
       div.innerHTML =
         mini +

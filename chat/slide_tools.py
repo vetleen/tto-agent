@@ -786,7 +786,7 @@ class ListThemesTool(ContextAwareTool):
     start_label: str = "Listing themes..."
     end_label: str = "Listed themes"
     description: str = (
-        "List the slide themes available for the current deck — the built-in Forest, the "
+        "List the slide themes available for the current deck — the built-in themes, the "
         "organization's themes, and the user's own themes. Each has an id, a name, a scope "
         "(builtin/org/user) and a short summary of its palette and footer, and the deck's current "
         "theme is flagged. Apply one with slides_set_theme; the user manages their own themes from "

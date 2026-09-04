@@ -54,6 +54,16 @@ class SlideThemeEndpointTests(TestCase):
         self.assertEqual(self._post("slide_theme_delete", {"scope": "user", "id": tid}).status_code, 200)
         self.assertNotIn(tid, {t["id"] for t in self._list()["themes"]})
 
+    def test_builtin_themes_listed_and_settable_as_default(self):
+        by_id = {t["id"]: t for t in self._list()["themes"]}
+        for name in ("forest", "slate", "warm", "mono", "ocean"):
+            self.assertIn(name, by_id)
+            self.assertEqual(by_id[name]["scope"], "builtin")
+        self.assertEqual(self._post("slide_theme_set_default", {"scope": "user", "id": "slate"}).status_code, 200)
+        self.assertEqual(self._list()["user_default"], "slate")
+        r = self._post("slide_theme_set_default", {"scope": "user", "id": "nope"})
+        self.assertEqual(r.status_code, 400)
+
     def test_user_theme_logo_upload_serve_delete(self):
         tid = self._post("slide_theme_save", {"scope": "user", "theme": {"label": "L"}}).json()["theme"]["id"]
         with tempfile.TemporaryDirectory() as d, self.settings(MEDIA_ROOT=d):
