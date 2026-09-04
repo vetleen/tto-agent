@@ -1,5 +1,7 @@
 {% extends "_base.html" %}
 {% load static %}
+{# skills-detail.js mounts CodeMirror (window.WilfredEditor) over the description/instructions/template textareas, so load the bundle here in <head>. #}
+{% block editor_bundle %}<script src="{% static 'js/editor.bundle.js' %}"></script>{% endblock %}
 {% block body_class %}pt-16 bg-neutral-primary min-h-screen{% endblock %}
 {% block content %}
 {% include "_markdown_styles.html" %}
