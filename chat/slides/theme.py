@@ -86,7 +86,10 @@ WILFRED_BASE_THEME: dict = {
         "body": {"font": "body", "size": 14, "bold": False, "italic": False, "color": "dk1"},
         "data": {"font": "data", "size": 12, "bold": False, "italic": False, "color": "dk1"},
         "quote": {"font": "headline", "size": 20, "bold": False, "italic": True, "color": "dk2"},
-        "caption": {"font": "data", "size": 10, "bold": False, "italic": False, "color": "accent3"},
+        # dk2, not accent3: captions carry real content (sources, context lines)
+        # and accent3 is a hairline colour — 1.9–3:1 on lt1 across the presets,
+        # unreadable at 9–10pt. dk2 keeps small text at WCAG-ish contrast.
+        "caption": {"font": "data", "size": 10, "bold": False, "italic": False, "color": "dk2"},
     },
     # Bullet glyphs: ``char`` marks top-level bullets (the org style can override
     # it); ``sub_chars`` marks nested levels 1, 2, … — the last entry repeats for
@@ -95,6 +98,9 @@ WILFRED_BASE_THEME: dict = {
     "boxes": {
         "callout": {"shape": "rounded_rect", "fill": "accent1", "text_color": "lt1", "class": "body"},
         "panel": {"shape": "rect", "fill": "lt2", "text_color": "dk1", "class": "body"},
+        # The takeaway / conclusion bar: a quiet full-width strip carrying the
+        # slide's one-line "so what", placed just above the source line.
+        "takeaway": {"shape": "rounded_rect", "fill": "lt2", "text_color": "dk1", "class": "body"},
         "pill": {"shape": "rounded_rect", "fill": "dk2", "text_color": "lt1", "class": "data"},
         "arrow_r": {"shape": "right_arrow", "fill": "accent2", "text_color": "lt1", "class": "data"},
         "arrow_l": {"shape": "left_arrow", "fill": "accent2", "text_color": "lt1", "class": "data"},

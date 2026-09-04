@@ -600,7 +600,10 @@ def _block_arrow_pts(x, y, w, h, name):
 
 
 def _chevron_pts(x, y, w, h):
-    notch = w * 0.28
+    # Match the OOXML preset geometry (default adj 50000): the notch/tip depth is
+    # half the SHORT side, so a chain of chevrons interlocks in the preview
+    # exactly as it does in the downloaded .pptx.
+    notch = min(w, h) * 0.5
     return [(x, y), (x + w - notch, y), (x + w, y + h / 2), (x + w - notch, y + h),
             (x, y + h), (x + notch, y + h / 2)]
 

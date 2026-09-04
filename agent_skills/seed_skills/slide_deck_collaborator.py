@@ -78,8 +78,9 @@ Quick recall: **headline / full-width** → x=48, w=864. **Two columns** → lef
 right x=480 w=432. **Three columns** → x=48 / 336 / 624 (≈276–288 wide each). The block
 that reaches the right edge runs flush to x=912, so the last/right block is a touch wider
 than its siblings — that's correct, not a mistake. Vertically there's no column grid: keep
-the title near y=44 (height ~60), start content around y=130, and leave ~40pt clear at the
-bottom for the footer.
+the title near y=44 (height ~60), start content around y=130, and end it by y≈480. The
+strip y=486–508 is reserved for the source line (see *Sources & the takeaway bar* below);
+the footer band is stamped under that.
 
 ### Element types (one example each)
 1. **text** — `{"type":"text","x":48,"y":40,"w":864,"h":60,"class":"headline","paragraphs":[{"align":"left","runs":[{"t":"Pipeline overview"}]}]}`
@@ -92,13 +93,18 @@ bottom for the footer.
 2. **shape** — `{"type":"shape","x":600,"y":120,"w":300,"h":80,"shape":"rounded_rect","fill":"accent1","text":{"paragraphs":[{"align":"center","runs":[{"t":"38% growth"}]}]}}`
    - shapes: `rect, rounded_rect, oval, right_arrow, left_arrow, up_arrow, down_arrow,
      chevron, pentagon, diamond, hexagon, star, plus, callout, harvey`.
+   - **`chevron`** — the notch/tip depth is half the shape's SHORT side (48pt at the usual
+     h=96). To interlock a chain, start each chevron `notch − 8` before the previous one
+     ends: e.g. w=246 at x=48/254/460/666 fills the full content width (the `process`
+     layout ships pre-interlocked). Steps are peers — give them all the same fill and
+     recolour a single chevron only to spotlight it.
    - **`harvey`** (a Harvey ball — the consulting qualitative-rating circle): set
      `"value"` 0–1 (rendered in fifths: 0/¼/½/¾/1) and `"fill"` for the colour, e.g.
      `{"type":"shape","shape":"harvey","x":..,"y":..,"w":18,"h":18,"value":0.75,"fill":"dk2"}`.
      Use a small square box (w≈h). Build a capability scorecard as a grid of row-label text +
      one harvey per criterion — a real single-symbol rating, not a string of dots.
    - Or a themed box: `{"type":"shape","box":"callout","x":..,"y":..,"w":..,"h":..,"text":{...}}` —
-     boxes: `callout, panel, pill, arrow_r, arrow_l`.
+     boxes: `callout, panel, pill, takeaway, arrow_r, arrow_l`.
    - Add a border with `"line":{"color":"dk2","w":1,"dash":"dash"}`.
    - **Gradient fill** — instead of a flat `fill`, give a shape a two-colour linear gradient:
      `"gradient":{"from":"accent1","to":"accent2","angle":90}` (`angle` degrees: 0 = left→right,
@@ -271,7 +277,18 @@ bottom for the footer.
 - **Use structure.** Break a long deck with `section` slides; open with `title`, close with
   `closing`. Keep a consistent left margin — align related elements to the same grid column (`x`).
 - **Let the theme do the work.** Lean on classes (`headline`/`subhead`/`body`/`data`) and
-  theme colours; reserve accent colours for emphasis, not whole paragraphs.
+  theme colours; reserve accent colours for emphasis, not whole paragraphs. Colour carries
+  meaning, never decoration: peer objects (process steps, roadmap bars, tiles, KPI numbers)
+  share ONE colour, and you vary it only to encode something or to highlight the one that
+  matters (like the accented quadrant in the `matrix_2x2` layout).
+- **Sources & the takeaway bar.** The strip y=486–508, above the stamped footer, is
+  reserved for a one-line source note — every chart/table/data slide should carry one
+  (the `chart` and `table` layouts seed it; keep the same element on bespoke data slides):
+  `{"type":"text","x":48,"y":488,"w":864,"h":20,"class":"caption","paragraphs":[{"runs":[{"t":"Source: Eurostat energy balance, 2024; team analysis.","size":9}]}]}`.
+  When a slide needs an explicit one-line conclusion (the "so what"), add the themed
+  takeaway bar just above the source line and end the body content by y≈438:
+  `{"type":"shape","box":"takeaway","x":48,"y":446,"w":864,"h":34,"text":{"paragraphs":[{"align":"center","runs":[{"t":"The one-line takeaway of the slide."}]}]}}`.
+  Keep it to one line; on slides without a source line it may sit lower (y=454).
 - **Dark backgrounds need light text.** The default text colours are dark, so on a slide
   with a dark `bg` (e.g. `dk1`/`dk2`) set each run's `color` to a light one (`lt1`/`lt2`)
   or the text will be invisible. (Auto-drawn text is the exception and adapts to the

@@ -239,6 +239,7 @@ _LAYOUTS: dict[str, dict] = {
     "table": {
         "name": "Table",
         "description": "A title over a data table (header row + banded rows; col_widths sets relative column widths).",
+        "comment": "Fill in the source line (what data, which period, who analysed it) — or drop it only if the table truly needs no sourcing.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
             {"type": "table", "x": _ML, "y": 130, "w": _MW, "h": 300, "header": True, "banding": True,
@@ -249,6 +250,7 @@ _LAYOUTS: dict[str, dict] = {
                  [{"t": "Row 2"}, {"t": "—"}, {"t": "—"}],
                  [{"t": "Row 3"}, {"t": "—"}, {"t": "—"}],
              ]},
+            _gtext(1, 12, 488, 20, "caption", [_p("Source: [dataset / report, period]; team analysis.", size=9)]),
         ],
     },
     "metric": {
@@ -259,7 +261,9 @@ _LAYOUTS: dict[str, dict] = {
             _gtext(1, 4, 44, 60, "headline", [_p("Key results", color="lt1")]),
             _gtext(1, 4, 180, 160, "headline", [_p("42%", size=120, bold=True, color="accent1")], valign="bottom"),
             _gtext(1, 4, 356, 40, "subhead", [_p("What this number means", size=18, color="lt1")]),
-            _gtext(6, 12, 186, 260, "body", [
+            # Bullets start at col 7 so they don't touch the panel's edge (col 6
+            # starts at x=408, exactly where the panel ends).
+            _gtext(7, 12, 186, 260, "body", [
                 _p("Context for the metric", bullet=True, space_after=10),
                 _p("Why it matters", bullet=True, space_after=10),
                 _p("What we do next", bullet=True, space_after=10),
@@ -269,17 +273,18 @@ _LAYOUTS: dict[str, dict] = {
     "chart": {
         "name": "Chart",
         "description": "A chart on the left with takeaway bullets on the right.",
-        "comment": "Pick the chart kind that fits the question: change the type from 'column' to 'line' (trend), 'bar' (ranked, horizontal), 'scatter' (relationship between two measures — uses point [x,y]/[x,y,size]), 'histogram' (distribution — set 'bins'), 'dot' (a ranked dot plot), 'bullet' (target vs actual — set 'targets'/'bands'), or 'waterfall' (contribution to a change). For the full-bleed chart, widen it to x=48 w=864 and drop the bullets.",
+        "comment": "Pick the chart kind that fits the question: change the type from 'column' to 'line' (trend), 'bar' (ranked, horizontal), 'scatter' (relationship between two measures — uses point [x,y]/[x,y,size]), 'histogram' (distribution — set 'bins'), 'dot' (a ranked dot plot), 'bullet' (target vs actual — set 'targets'/'bands'), or 'waterfall' (contribution to a change). Set legend:true only with more than one series. Fill in the source line (what data, which period, who analysed it) — or drop it only if the chart truly needs no sourcing. For the full-bleed chart, widen it to x=48 w=864 and drop the bullets.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
             {"type": "chart", "x": 48, "y": 130, "w": 564, "h": 320, "chart": "column",
-             "title": "", "legend": True,
+             "title": "", "legend": False,
              "categories": ["Q1", "Q2", "Q3", "Q4"],
              "series": [{"name": "Series 1", "values": [3, 5, 4, 7]}]},
             _gtext(9, 12, 150, 280, "body", [
                 _p("What the chart shows", bullet=True, space_after=10),
                 _p("The takeaway", bullet=True, space_after=10),
             ]),
+            _gtext(1, 12, 488, 20, "caption", [_p("Source: [dataset / report, period]; team analysis.", size=9)]),
         ],
     },
     "photo": {
@@ -300,22 +305,22 @@ _LAYOUTS: dict[str, dict] = {
         "comment": "Four 88pt rows from y=144, separated by hairlines. Drop a row (numeral + topic + gloss + duration, and the hairline above it) for a shorter agenda; drop the right-hand duration column if timings aren't relevant.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Agenda")]),
-            _text(_ML, 144, 96, 52, "headline", [_p("01", size=40, color="accent3")]),
+            _text(_ML, 144, 96, 52, "headline", [_p("01", size=40, color="accent1")]),
             _gtext(3, 10, 142, 34, "headline", [_p("First topic", size=24)]),
             _gtext(3, 10, 182, 28, "body", [_p("One line on what this part covers", size=13)]),
             _gtext(11, 12, 150, 24, "caption", [_p("10 min", size=12, align="right")]),
             {"type": "line", "x1": _ML, "y1": 222, "x2": _MR, "y2": 222, "color": "accent3", "w": 1},
-            _text(_ML, 232, 96, 52, "headline", [_p("02", size=40, color="accent3")]),
+            _text(_ML, 232, 96, 52, "headline", [_p("02", size=40, color="accent1")]),
             _gtext(3, 10, 230, 34, "headline", [_p("Second topic", size=24)]),
             _gtext(3, 10, 270, 28, "body", [_p("One line on what this part covers", size=13)]),
             _gtext(11, 12, 238, 24, "caption", [_p("15 min", size=12, align="right")]),
             {"type": "line", "x1": _ML, "y1": 310, "x2": _MR, "y2": 310, "color": "accent3", "w": 1},
-            _text(_ML, 320, 96, 52, "headline", [_p("03", size=40, color="accent3")]),
+            _text(_ML, 320, 96, 52, "headline", [_p("03", size=40, color="accent1")]),
             _gtext(3, 10, 318, 34, "headline", [_p("Third topic", size=24)]),
             _gtext(3, 10, 358, 28, "body", [_p("One line on what this part covers", size=13)]),
             _gtext(11, 12, 326, 24, "caption", [_p("20 min", size=12, align="right")]),
             {"type": "line", "x1": _ML, "y1": 398, "x2": _MR, "y2": 398, "color": "accent3", "w": 1},
-            _text(_ML, 408, 96, 52, "headline", [_p("04", size=40, color="accent3")]),
+            _text(_ML, 408, 96, 52, "headline", [_p("04", size=40, color="accent1")]),
             _gtext(3, 10, 406, 34, "headline", [_p("Fourth topic", size=24)]),
             _gtext(3, 10, 446, 28, "body", [_p("One line on what this part covers", size=13)]),
             _gtext(11, 12, 414, 24, "caption", [_p("5 min", size=12, align="right")]),
@@ -357,24 +362,25 @@ _LAYOUTS: dict[str, dict] = {
     },
     "process": {
         "name": "Process",
-        "description": "A left-to-right process flow of 4 chevron steps, each with a line of detail underneath.",
-        "comment": "Drop a chevron and its caption for a 3-step flow (then widen the rest to keep them flush with both margins).",
+        "description": "A left-to-right process flow of 4 interlocking chevron steps, each with a line of detail underneath.",
+        "comment": "The chevrons interlock: the notch/tip depth is h/2 (48pt here), so each chevron starts 40pt before the previous one ends — an 8pt seam. For a 3-step flow use w=312 at x=48/324/600. Steps are peers, so they share one colour; recolour a single chevron (e.g. dk2) only to spotlight the step that matters.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("How it works")]),
-            # Four chevrons on the quarter grid (cols 1-3 / 4-6 / 7-9 / 10-12).
-            # The captions inset 8pt to clear each chevron's left notch.
-            {"type": "shape", "x": 48, "y": 176, "w": 204, "h": 96, "shape": "chevron", "fill": "accent4",
+            # Four interlocking chevrons filling cols 1-12: w=246, notch 48 (h/2),
+            # each offset 206pt (w - notch + 8pt seam); the last ends flush at 912.
+            # The captions inset 8pt from each chevron's bottom-left corner.
+            {"type": "shape", "x": 48, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 1", "color": "lt1", "b": True}]}]}},
-            {"type": "shape", "x": 264, "y": 176, "w": 204, "h": 96, "shape": "chevron", "fill": "accent2",
+            {"type": "shape", "x": 254, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 2", "color": "lt1", "b": True}]}]}},
-            {"type": "shape", "x": 480, "y": 176, "w": 204, "h": 96, "shape": "chevron", "fill": "accent1",
+            {"type": "shape", "x": 460, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 3", "color": "lt1", "b": True}]}]}},
-            {"type": "shape", "x": 696, "y": 176, "w": 216, "h": 96, "shape": "chevron", "fill": "accent6",
+            {"type": "shape", "x": 666, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 4", "color": "lt1", "b": True}]}]}},
-            _text(56, 292, 188, 90, "body", [_p("One line on what happens in this step.", size=13)]),
-            _text(272, 292, 188, 90, "body", [_p("One line on what happens in this step.", size=13)]),
-            _text(488, 292, 188, 90, "body", [_p("One line on what happens in this step.", size=13)]),
-            _text(704, 292, 200, 90, "body", [_p("One line on what happens in this step.", size=13)]),
+            _text(56, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
+            _text(262, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
+            _text(468, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
+            _text(674, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
         ],
     },
     "swimlane": {
@@ -402,13 +408,15 @@ _LAYOUTS: dict[str, dict] = {
             _text(345, 118, 189, 26, "body", [_p("Phase 2", size=13, bold=True, color="dk2", align="center")]),
             _text(534, 118, 189, 26, "body", [_p("Phase 3", size=13, bold=True, color="dk2", align="center")]),
             _text(723, 118, 189, 26, "body", [_p("Phase 4", size=13, bold=True, color="dk2", align="center")]),
-            {"type": "shape", "x": 176, "y": 172, "w": 150, "h": 56, "shape": "rounded_rect", "fill": "accent4",
+            # Steps are peers and share one colour (their lane already encodes
+            # ownership); recolour a single step only to highlight it.
+            {"type": "shape", "x": 176, "y": 172, "w": 150, "h": 56, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 1", "color": "lt1", "b": True}]}]}},
             {"type": "shape", "x": 365, "y": 278, "w": 150, "h": 56, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 2", "color": "lt1", "b": True}]}]}},
             {"type": "shape", "x": 554, "y": 278, "w": 150, "h": 56, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 3", "color": "lt1", "b": True}]}]}},
-            {"type": "shape", "x": 743, "y": 384, "w": 150, "h": 56, "shape": "rounded_rect", "fill": "accent1",
+            {"type": "shape", "x": 743, "y": 384, "w": 150, "h": 56, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 4", "color": "lt1", "b": True}]}]}},
             # Handoff arrows: step 1 → 2 (down into lane 2), 2 → 3 (along lane 2), 3 → 4 (down into lane 3).
             {"type": "line", "x1": 326, "y1": 200, "x2": 440, "y2": 200, "color": "accent3", "w": 1.5},
@@ -427,7 +435,7 @@ _LAYOUTS: dict[str, dict] = {
             # ring at its N/E/S/W points, each label reading outward from it.
             {"type": "shape", "x": 352, "y": 179, "w": 256, "h": 256, "shape": "oval",
              "line": {"color": "accent3", "w": 2}},
-            _text(380, 294, 200, 30, "subhead", [_p("GROWTH", size=20, align="center")]),
+            _text(380, 294, 200, 30, "subhead", [_p("Growth", size=20, align="center")]),
             {"type": "shape", "x": 470, "y": 169, "w": 20, "h": 20, "shape": "oval", "fill": "dk2"},
             _text(380, 112, 200, 30, "subhead", [_p("Stage 1", size=18, color="dk2", align="center")], valign="bottom"),
             {"type": "shape", "x": 598, "y": 297, "w": 20, "h": 20, "shape": "oval", "fill": "dk2"},
@@ -477,17 +485,19 @@ _LAYOUTS: dict[str, dict] = {
             {"type": "line", "x1": 534, "y1": 150, "x2": 534, "y2": 462, "color": "accent3", "w": 1, "dash": "dash"},
             {"type": "line", "x1": 723, "y1": 150, "x2": 723, "y2": 462, "color": "accent3", "w": 1, "dash": "dash"},
             # Workstream labels (left) + duration bars spanning their quarters.
+            # Bars are peers and share one colour (the row label already names the
+            # workstream); accent1 is reserved for the "Now" marker below.
             _text(_ML, 183, 100, 30, "body", [_p("Workstream 1", size=12, bold=True)], valign="middle"),
-            {"type": "shape", "x": 156, "y": 183, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent1",
+            {"type": "shape", "x": 156, "y": 183, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Phase 1", "color": "lt1", "b": True, "size": 12}]}]}},
             _text(_ML, 259, 100, 30, "body", [_p("Workstream 2", size=12, bold=True)], valign="middle"),
             {"type": "shape", "x": 345, "y": 259, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Build", "color": "lt1", "b": True, "size": 12}]}]}},
             _text(_ML, 335, 100, 30, "body", [_p("Workstream 3", size=12, bold=True)], valign="middle"),
-            {"type": "shape", "x": 156, "y": 335, "w": 756, "h": 30, "shape": "rounded_rect", "fill": "accent4",
+            {"type": "shape", "x": 156, "y": 335, "w": 756, "h": 30, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Ongoing engagement", "color": "lt1", "b": True, "size": 12}]}]}},
             _text(_ML, 411, 100, 30, "body", [_p("Workstream 4", size=12, bold=True)], valign="middle"),
-            {"type": "shape", "x": 534, "y": 411, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent6",
+            {"type": "shape", "x": 534, "y": 411, "w": 378, "h": 30, "shape": "rounded_rect", "fill": "accent2",
              "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Launch", "color": "lt1", "b": True, "size": 12}]}]}},
             # Milestone diamonds sit on a bar at a key date.
             {"type": "shape", "x": 525, "y": 189, "w": 18, "h": 18, "shape": "diamond", "fill": "dk2"},
@@ -603,6 +613,7 @@ _LAYOUTS: dict[str, dict] = {
     "comparison": {
         "name": "Comparison",
         "description": "A side-by-side comparison of two options (A vs B).",
+        "comment": "The accent subhead marks the recommended option — move it to the winner, or colour both dk2 when the comparison is neutral.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Comparison")]),
             {"type": "line", "x1": 474, "y1": 140, "x2": 474, "y2": 450, "color": "accent3", "w": 2},
