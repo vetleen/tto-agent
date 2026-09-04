@@ -2090,6 +2090,34 @@ class EditorBundleScopingTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "js/editor.bundle")
 
+    def test_skill_detail_page_loads_bundle(self):
+        # skills-detail.js mounts WilfredEditor behind a silent no-bundle
+        # fallback, so a missing bundle leaves the Preview buttons inert
+        # rather than erroring.
+        skill = AgentSkill.objects.create(
+            slug="bundle-scope-skill", name="Bundle Scope", instructions="x",
+            level="user", created_by=self.user,
+        )
+        response = self.client.get(
+            reverse("agent_skills_detail", kwargs={"skill_id": skill.id})
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "js/editor.bundle")
+
+    def test_meeting_detail_page_loads_bundle(self):
+        # transcribe.js mounts WilfredEditor over the transcript textarea
+        # behind the same silent fallback.
+        from meetings.models import Meeting
+
+        meeting = Meeting.objects.create(
+            name="Bundle Scope", slug="bundle-scope-meeting", created_by=self.user,
+        )
+        response = self.client.get(
+            reverse("meeting_detail", kwargs={"meeting_uuid": meeting.uuid})
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "js/editor.bundle")
+
     def test_plain_page_does_not_load_bundle(self):
         response = self.client.get(reverse("accounts:usage"))
         self.assertEqual(response.status_code, 200)
