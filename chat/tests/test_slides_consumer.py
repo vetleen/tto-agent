@@ -140,6 +140,106 @@ class SetThemeHandlerTests(TransactionTestCase):
         self.assertEqual(sent, [])
 
 
+class RerenderHandlerTests(TransactionTestCase):
+    """Exercise ``chat.slides_rerender``: it must blank the per-slide render
+    cache (else the run is a cache no-op), dispatch a full USER_PREVIEW run,
+    and tell the client every slide changed."""
+
+    def setUp(self):
+        from chat.models import ChatThread, SlideSet
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email=f"rr+{uuid.uuid4().hex[:6]}@ex.com", password="x"
+        )
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.deck = SlideSet.objects.create(
+            thread=self.thread, title="Deck",
+            content={"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+                {"id": "s1", "name": "A", "elements": []},
+                {"id": "s2", "name": "B", "elements": []},
+            ]},
+        )
+
+    def _run_handler(self, user=None):
+        from chat.consumers import ChatConsumer
+
+        consumer = ChatConsumer()
+        consumer.user = user or self.user
+        sent = []
+
+        async def _capture(text_data=None, **_kw):
+            sent.append(json.loads(text_data))
+
+        consumer.send = _capture
+        with mock.patch("chat.tasks.render_deck_task.delay") as m_delay:
+            m_delay.return_value = mock.Mock(id="task-123")
+            async_to_sync(consumer._handle_slides_rerender)({
+                "thread_id": str(self.thread.pk),
+                "deck_id": str(self.deck.pk),
+            })
+        return sent, m_delay
+
+    def test_blanks_cache_and_dispatches_full_run(self):
+        from chat.models import SlideRender, SlideRenderRun
+
+        SlideRender.objects.create(slide_set=self.deck, slide_id="s1", content_hash="aaa")
+        SlideRender.objects.create(slide_set=self.deck, slide_id="s2", content_hash="bbb")
+        sent, m_delay = self._run_handler()
+        # Cached hashes blanked so every slide counts as dirty for this run.
+        hashes = set(
+            SlideRender.objects.filter(slide_set=self.deck)
+            .values_list("content_hash", flat=True)
+        )
+        self.assertEqual(hashes, {""})
+        m_delay.assert_called_once()
+        run = SlideRenderRun.objects.get(slide_set=self.deck)
+        self.assertEqual(run.purpose, SlideRenderRun.Purpose.USER_PREVIEW)
+        self.assertEqual(run.slide_ids, [])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["event_type"], "slidedeck.updated")
+        self.assertEqual(sorted(sent[0]["changed_slide_ids"]), ["s1", "s2"])
+
+    def test_foreign_deck_is_rejected(self):
+        from chat.models import SlideRender
+
+        other = get_user_model().objects.create_user(
+            email=f"o+{uuid.uuid4().hex[:6]}@ex.com", password="x"
+        )
+        SlideRender.objects.create(slide_set=self.deck, slide_id="s1", content_hash="aaa")
+        sent, m_delay = self._run_handler(user=other)
+        m_delay.assert_not_called()
+        self.assertEqual(sent, [])
+        # The cache must be untouched for a deck the requester doesn't own.
+        row = SlideRender.objects.get(slide_set=self.deck, slide_id="s1")
+        self.assertEqual(row.content_hash, "aaa")
+
+    def test_enqueue_failure_reports_render_failed(self):
+        from chat.consumers import ChatConsumer
+        from chat.models import SlideRenderRun
+
+        consumer = ChatConsumer()
+        consumer.user = self.user
+        sent = []
+
+        async def _capture(text_data=None, **_kw):
+            sent.append(json.loads(text_data))
+
+        consumer.send = _capture
+        with mock.patch(
+            "chat.tasks.render_deck_task.delay", side_effect=RuntimeError("broker down")
+        ):
+            async_to_sync(consumer._handle_slides_rerender)({
+                "thread_id": str(self.thread.pk),
+                "deck_id": str(self.deck.pk),
+            })
+        run = SlideRenderRun.objects.get(slide_set=self.deck)
+        self.assertEqual(run.status, SlideRenderRun.Status.FAILED)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["event_type"], "slidedeck.render_failed")
+        self.assertEqual(sent[0]["purpose"], "user_preview")
+
+
 class SlidesOpenOwnershipTests(TransactionTestCase):
     """`chat.slides_open` must not leak another user's active deck for a guessed
     thread_id (the deck_id-omitted path used to skip the ownership check)."""

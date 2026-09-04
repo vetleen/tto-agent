@@ -467,6 +467,11 @@
   <div class="flex items-center gap-2 px-4 py-2 border-b-[3px] border-b-brand bg-neutral-primary-soft shrink-0">
     <span id="slides-title" class="flex-1 text-sm font-semibold text-heading truncate">Slide deck</span>
     <div id="slides-tabs" class="hidden items-center gap-1"></div>
+    <button id="slides-rerender-btn" title="Re-render" aria-label="Re-render slides"
+      class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-50">
+      <svg class="slides-rerender-icon w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992V4.356m0 4.992l-3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99h-4.99M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7"/></svg>
+      <svg class="slides-rerender-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+    </button>
     <button id="slides-theme-btn" title="Theme" aria-label="Change theme"
       class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21a9 9 0 110-18c4.97 0 9 3.582 9 8 0 2.21-1.79 4-4 4h-2a2 2 0 00-1.5 3.32c.5.56.16 1.68-1 1.68z"/><circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/></svg>
@@ -4325,6 +4330,9 @@
     var renderCheckBtn = document.getElementById("slides-render-check");
     var renderCheckIcon = renderCheckBtn ? renderCheckBtn.querySelector(".slides-render-check-icon") : null;
     var renderCheckSpinner = renderCheckBtn ? renderCheckBtn.querySelector(".slides-render-check-spinner") : null;
+    var rerenderBtn = document.getElementById("slides-rerender-btn");
+    var rerenderIcon = rerenderBtn ? rerenderBtn.querySelector(".slides-rerender-icon") : null;
+    var rerenderSpinner = rerenderBtn ? rerenderBtn.querySelector(".slides-rerender-spinner") : null;
     var exportBtn = document.getElementById("slides-export-btn");
     var exportDropdown = document.getElementById("slides-export-dropdown");
     var exportIcon = exportBtn ? exportBtn.querySelector(".slides-export-icon") : null;
@@ -4384,6 +4392,21 @@
       reconcileNow();
       scheduleReconcile();                                       // (re-)arm the auto-poll even past the cap
     }
+    // Header "Re-render" button: forces a fresh render of every slide (the
+    // server blanks the per-slide render cache). Spins until the server acks,
+    // then stays disabled while the resulting render is pending so impatient
+    // clicks can't stack duplicate full-deck runs.
+    var rerenderBusy = false;
+    function setRerenderBusy(b) {
+      rerenderBusy = b;
+      updateRerenderBtn();
+    }
+    function updateRerenderBtn() {
+      if (!rerenderBtn) return;
+      rerenderBtn.disabled = rerenderBusy || pendingCount() > 0;
+      if (rerenderIcon) rerenderIcon.classList.toggle("hidden", rerenderBusy);
+      if (rerenderSpinner) rerenderSpinner.classList.toggle("hidden", !rerenderBusy);
+    }
     // Show a live "rendering N slides…" bar with the manual check only while
     // something is pending; kept in sync by renderFilmstrip on every state change.
     function updateRenderBar() {
@@ -4396,6 +4419,7 @@
         renderBar.classList.add("hidden"); renderBar.classList.remove("flex");
         setRenderCheckBusy(false);
       }
+      updateRerenderBtn();
     }
     function newClientId() { return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
     function findComment(cid) {
@@ -4725,13 +4749,14 @@
 
     function handleEvent(data) {
       var et = data.event_type;
-      if (et === "slidedeck.updated") { renderFailed = false; open(); applyUpdated(data); return; }
-      if (et === "slidedeck.state") { renderFailed = false; open(); setState(data); return; }
+      if (et === "slidedeck.updated") { renderFailed = false; setRerenderBusy(false); open(); applyUpdated(data); return; }
+      if (et === "slidedeck.state") { renderFailed = false; setRerenderBusy(false); open(); setState(data); return; }
       if (et === "slidedeck.render_started") { applyRenderStarted(); return; }
       if (et === "slidedeck.rendered") { renderFailed = false; open(); applyRendered(data); return; }
       if (et === "slidedeck.render_failed") {
         setPdfBusy(false);
         if (data.purpose === "pdf_export") { if (typeof showToast === "function") showToast("Couldn't build the PDF. You can still download the .pptx."); return; }
+        setRerenderBusy(false);
         stopReconcile(); renderFailed = true; slides.forEach(function(s) { s.status = undefined; }); renderFilmstrip(); return;
       }
       if (et === "slidedeck.active_changed") { requestState(); return; }
@@ -4758,6 +4783,13 @@
     var closeBtn = document.getElementById("slides-close-btn");
     if (closeBtn) closeBtn.addEventListener("click", close);
     if (renderCheckBtn) renderCheckBtn.addEventListener("click", checkNow);
+    if (rerenderBtn) rerenderBtn.addEventListener("click", function() {
+      if (!deckId || !ws || rerenderBtn.disabled) return;
+      setRerenderBusy(true);
+      // Failsafe: never leave the spinner stuck if the ack is lost (socket drop).
+      setTimeout(function() { setRerenderBusy(false); }, 10000);
+      ws.send(JSON.stringify({ type: "chat.slides_rerender", thread_id: activeThreadId, deck_id: deckId }));
+    });
     if (slidesToggleBtn) slidesToggleBtn.addEventListener("click", function() { if (isOpen) close(); else { open(); requestState(); } });
     function exportPdf() { if (deckId) ws.send(JSON.stringify({ type: "chat.slides_export_pdf", thread_id: activeThreadId, deck_id: deckId })); }
     if (exportBtn && exportDropdown) {

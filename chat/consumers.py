@@ -711,6 +711,63 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "run_id": run_id,
         }))
 
+    async def _handle_slides_rerender(self, data):
+        """Force a fresh preview render of every slide in the deck.
+
+        The per-slide render cache means a plain USER_PREVIEW run over unchanged
+        content is a no-op — blank the cached content hashes first so the worker
+        treats every slide as dirty. Deck content itself is untouched (no lock
+        needed; a concurrent agent edit at worst costs an extra render).
+        """
+        thread_id = data.get("thread_id")
+        deck_id = data.get("deck_id")
+
+        def _dispatch():
+            from chat.models import SlideRender, SlideRenderRun
+            from chat.tasks import render_deck_task
+
+            deck = self._owned_deck(thread_id, deck_id)
+            if deck is None:
+                return None
+            slide_ids = [
+                s.get("id") for s in (deck.content or {}).get("slides") or [] if s.get("id")
+            ]
+            if not slide_ids:
+                return None
+            SlideRender.objects.filter(slide_set=deck).update(content_hash="")
+            run = SlideRenderRun.objects.create(
+                slide_set=deck, purpose=SlideRenderRun.Purpose.USER_PREVIEW, slide_ids=[]
+            )
+            try:
+                task = render_deck_task.delay(str(run.id))
+                run.celery_task_id = task.id
+                run.save(update_fields=["celery_task_id"])
+            except Exception:  # noqa: BLE001
+                SlideRenderRun.objects.filter(pk=run.id).update(
+                    status=SlideRenderRun.Status.FAILED, error="Could not enqueue render."
+                )
+                return {"failed": True, "deck_id": str(deck.pk)}
+            return {"deck_id": str(deck.pk), "slide_ids": slide_ids}
+
+        res = await database_sync_to_async(_dispatch)()
+        if not res:
+            return
+        if res.get("failed"):
+            # Broker unreachable — tell the panel instead of leaving the click silent.
+            await self.send(text_data=json.dumps({
+                "event_type": "slidedeck.render_failed",
+                "deck_id": res["deck_id"],
+                "run_id": "",
+                "purpose": "user_preview",
+            }))
+            return
+        await self.send(text_data=json.dumps({
+            "event_type": "slidedeck.updated",
+            "deck_id": res["deck_id"],
+            "slide_ids": res["slide_ids"],
+            "changed_slide_ids": res["slide_ids"],
+        }))
+
     async def _handle_slides_set_theme(self, data):
         """Apply a preset colour theme to the active deck and re-render every slide."""
         thread_id = data.get("thread_id")
@@ -964,6 +1021,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_slides_comments_send(data)
         elif msg_type == "chat.slides_export_pdf":
             await self._handle_slides_export_pdf(data)
+        elif msg_type == "chat.slides_rerender":
+            await self._handle_slides_rerender(data)
         elif msg_type == "chat.slides_set_theme":
             await self._handle_slides_set_theme(data)
         elif msg_type == "chat.slides_save_theme":
