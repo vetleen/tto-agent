@@ -34,6 +34,10 @@ class _TurnState:
     warn_verdict: object | None = None
     modified_canvas_ids: set = field(default_factory=set)
     modified_slide_set_ids: set = field(default_factory=set)
+    # Whether hidden sub-agent outcome messages were replayed into this turn's
+    # prompt; the final assistant message is then tagged subagent_response so
+    # the unreported-claim logic counts this turn as the report.
+    history_has_subagent_results: bool = False
 
 
 def _valid_uuids(values):
@@ -202,6 +206,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._current_thread_id: str | None = None
         self._stopped: bool = False
         self._stream_task: asyncio.Task | None = None
+        self._subagent_watch_task: asyncio.Task | None = None
 
         # Output sink for turn streaming. Interactive chat delivers events over
         # this WebSocket; headless loop turns swap in a BroadcastSink/NullSink.
@@ -272,6 +277,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except asyncio.CancelledError:
                 pass
 
+        # Cancel the sub-agent self-heal watchdog
+        await self._cancel_subagent_watch()
+
     async def loop_event(self, event):
         """Channel-layer handler: forward a headless loop turn's event to this socket.
 
@@ -300,6 +308,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "event_type": "subagents.updated",
             "active_count": active_count,
         }))
+
+        # Self-heal: sibling completion events may get lost (the group_send is
+        # at-most-once), so keep a watchdog alive until nothing is pending.
+        self._ensure_subagent_watch(thread_id)
 
         if self._stream_task and not self._stream_task.done():
             return
@@ -1128,6 +1140,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Leave previous thread group, join the new one
         if self._current_thread_id and self._current_thread_id != thread_id:
             await self._safe_group_discard(f"thread_{self._current_thread_id}")
+            await self._cancel_subagent_watch()
         self._current_thread_id = thread_id
         await self._safe_group_add(f"thread_{thread_id}")
 
@@ -1187,6 +1200,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 } for t in task_list],
             }))
 
+            # Self-heal: while sub-agents are in flight, poll for completions
+            # the at-most-once group_send may fail to deliver.
+            if active_subagent_count > 0:
+                self._ensure_subagent_watch(thread_id)
+
             # Kick off the seed assistant turn if one was pending, or if
             # subagents completed while the user was disconnected.
             needs_seed = pending_consumed
@@ -1199,31 +1217,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
 
     # Re-claimable after this long: covers seeded streams that died before
-    # producing the assistant response (retried on the next load/notification).
+    # producing the assistant response (retried on the next load/notification
+    # or watchdog tick).
     SUBAGENT_REPORT_LEASE_MINUTES = 5
 
-    @database_sync_to_async
-    def _claim_unreported_subagents(self, thread_id) -> bool:
-        """Atomically claim completed subagent results that haven't been reported.
+    def _unreported_subagent_run_ids_sync(self, thread_id) -> list:
+        """Terminal runs whose hidden outcome message has no assistant response.
 
-        Returns True iff this caller won the claim and should seed an
-        orchestrator turn. The claim is an optimistic CAS on ``reported_at``,
-        so when the same thread is open in multiple tabs only one consumer
-        seeds — preventing duplicate assistant turns (and double LLM cost).
-        A stale claim (older than the lease, still no response) is re-claimable.
+        A run's outcome — final text, working canvas, or terminal failure — is
+        persisted as a hidden chat message, and that message's existence is the
+        gate here: cancelled runs never get one, so FAILED-by-cancel rows are
+        naturally excluded even though FAILED is included in the status filter.
+        Sync so both the async read-only wrapper and the claim share it.
         """
-        from datetime import timedelta
-
-        from django.db.models import Q
-        from django.utils import timezone
-
         from chat.models import ChatMessage, SubAgentRun
 
-        # A sub-agent delivers via its final text and/or its working canvas, so a
-        # canvas-only run (completed with no final message) and a terminally-failed
-        # run that still built a canvas both count. The hidden-message check below
-        # is the precise gate — cancelled runs never get one, so they're filtered
-        # out there even though FAILED is included here.
         candidate_run_ids = list(
             SubAgentRun.objects.filter(
                 thread_id=thread_id,
@@ -1231,10 +1239,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     SubAgentRun.Status.COMPLETED,
                     SubAgentRun.Status.FAILED,
                 ],
-            ).exclude(result="", canvas="").values_list("id", flat=True)
+            ).values_list("id", flat=True)
         )
-        if not candidate_run_ids:
-            return False
 
         unreported_ids = []
         for run_id in candidate_run_ids:
@@ -1252,6 +1258,31 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 ).exists()
                 if not has_response:
                     unreported_ids.append(run_id)
+        return unreported_ids
+
+    @database_sync_to_async
+    def _get_unreported_subagent_run_ids(self, thread_id) -> list:
+        """Read-only view of unreported terminal runs (used by the watchdog)."""
+        return self._unreported_subagent_run_ids_sync(thread_id)
+
+    @database_sync_to_async
+    def _claim_unreported_subagents(self, thread_id) -> bool:
+        """Atomically claim terminal subagent outcomes that haven't been reported.
+
+        Returns True iff this caller won the claim and should seed an
+        orchestrator turn. The claim is an optimistic CAS on ``reported_at``,
+        so when the same thread is open in multiple tabs only one consumer
+        seeds — preventing duplicate assistant turns (and double LLM cost).
+        A stale claim (older than the lease, still no response) is re-claimable.
+        """
+        from datetime import timedelta
+
+        from django.db.models import Q
+        from django.utils import timezone
+
+        from chat.models import SubAgentRun
+
+        unreported_ids = self._unreported_subagent_run_ids_sync(thread_id)
         if not unreported_ids:
             return False
 
@@ -1261,6 +1292,77 @@ class ChatConsumer(AsyncWebsocketConsumer):
             Q(reported_at__isnull=True) | Q(reported_at__lt=lease_cutoff)
         ).update(reported_at=now)
         return claimed > 0
+
+    # The completion group_send is at-most-once — and the thread-group
+    # subscription itself is best-effort (WILFRED-6P) — so while sub-agents are
+    # in flight a watchdog polls: it resyncs the status bar and claims any
+    # outcome whose completion event never arrived. Class attr so tests can
+    # shrink the interval.
+    SUBAGENT_WATCH_INTERVAL_SECONDS = 20
+
+    def _ensure_subagent_watch(self, thread_id) -> None:
+        """Start the sub-agent watchdog for this thread if none is running."""
+        if self._subagent_watch_task and not self._subagent_watch_task.done():
+            return
+        self._subagent_watch_task = asyncio.create_task(
+            self._subagent_watch_loop(str(thread_id))
+        )
+
+    async def _cancel_subagent_watch(self) -> None:
+        task = self._subagent_watch_task
+        self._subagent_watch_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _subagent_watch_loop(self, thread_id: str) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self.SUBAGENT_WATCH_INTERVAL_SECONDS)
+                if not await self._subagent_watch_tick(thread_id):
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Sub-agent watchdog died for thread %s", thread_id)
+
+    async def _subagent_watch_tick(self, thread_id: str) -> bool:
+        """One watchdog pass. Returns True to keep watching, False to stop."""
+        if self._stopped or str(self._current_thread_id) != str(thread_id):
+            return False
+        # A live stream delivers results itself via the post-stream claim;
+        # keep watching without interfering.
+        if self._stream_task and not self._stream_task.done():
+            return True
+
+        active_count = await self._get_active_subagent_count(thread_id)
+        try:
+            await self.send(text_data=json.dumps({
+                "event_type": "subagents.updated",
+                "active_count": active_count,
+            }))
+        except Exception:
+            # Socket gone; disconnect cleanup cancels this task shortly.
+            return False
+
+        unreported = await self._get_unreported_subagent_run_ids(thread_id)
+        if (
+            unreported
+            and self._has_tool("chat_subagent_create")
+            and await self._claim_unreported_subagents(thread_id)
+        ):
+            await self._handle_chat_message(
+                {"thread_id": thread_id, "content": ""},
+                seed_mode=True,
+            )
+            return True
+        # Keep watching while runs are active or outcomes await a (possibly
+        # lease-held) claim; stop once everything is delivered. Unclaimable
+        # outcomes (sub-agent tool revoked mid-flight) don't hold the watch open.
+        return bool(active_count or (unreported and self._has_tool("chat_subagent_create")))
 
     @database_sync_to_async
     def _consume_pending_initial_turn(self, thread_id) -> bool:
@@ -1940,6 +2042,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         goes through this turn's ``_TurnState`` so a superseded turn's late
         verdict can't leak into this one.
         """
+        turn.history_has_subagent_results = bool(meta.get("has_subagent_results"))
         try:
             await self._stream_response(
                 thread, static_system, history,
@@ -2007,6 +2110,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     await self._dispatch_deck_previews(list(turn.modified_slide_set_ids))
                 except Exception:
                     logger.exception("Failed to dispatch deck previews")
+
+            # Resync the sub-agent status bar and arm the self-heal watchdog —
+            # this turn may have dispatched sub-agents (the watchdog then covers
+            # lost completion events) or consumed results while the bar was
+            # stale. Best-effort; must not break the turn.
+            if self._turn is turn and not self._stopped:
+                try:
+                    active_count = await self._get_active_subagent_count(str(thread.id))
+                    await self._sink.send_event({
+                        "event_type": "subagents.updated",
+                        "active_count": active_count,
+                    })
+                    if active_count > 0:
+                        self._ensure_subagent_watch(str(thread.id))
+                except Exception:
+                    logger.exception("Failed to resync sub-agent status")
 
             # Seed a continuation for any sub-agent result that arrived while the
             # stream ran — but ONLY if this turn is still the current, live turn.
@@ -2243,6 +2362,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         turn = _TurnState(
             cancel_event=threading.Event(),
             stream_finished=asyncio.Event(),
+            history_has_subagent_results=bool(meta.get("has_subagent_results")),
         )
         self._turn = turn
         self._cancel_event = turn.cancel_event
@@ -2672,7 +2792,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     metadata = {}
                     if accumulated_thinking:
                         metadata["thinking"] = accumulated_thinking
-                    if seed_mode:
+                    # Any turn whose prompt replayed sub-agent outcomes counts
+                    # as their report — not just seeded continuations. Without
+                    # this, a manual user message that consumed the results
+                    # still left them "unreported" and the post-stream claim
+                    # fired a redundant duplicate seeded turn.
+                    if seed_mode or (turn and turn.history_has_subagent_results):
                         metadata["subagent_response"] = True
                     await self._create_message(
                         thread, "assistant", accumulated_content, metadata=metadata,
@@ -4150,6 +4275,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "included_history_tokens": 0,
                     "summary_tokens": 0,
                     "history_truncated": False,
+                    "has_subagent_results": False,
                 },
             }
 
@@ -4238,11 +4364,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ]
 
         # 6. Merge consecutive user messages when at least one is a sub-agent
-        #    result, so providers requiring strict role alternation (Anthropic)
-        #    don't reject the request.  This happens when multiple sub-agents
-        #    complete simultaneously and their hidden messages land in the DB
-        #    before the consumer processes the first completion notification.
-        _SA_PREFIX = "[Sub-agent result:"
+        #    outcome (result or failure), so providers requiring strict role
+        #    alternation (Anthropic) don't reject the request.  This happens
+        #    when multiple sub-agents finish simultaneously and their hidden
+        #    messages land in the DB before the consumer processes the first
+        #    completion notification.
+        _SA_PREFIXES = ("[Sub-agent result:", "[Sub-agent failed:")
         merged: list[dict] = []
         for msg in messages:
             if (
@@ -4250,8 +4377,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 and msg["role"] == "user"
                 and merged[-1]["role"] == "user"
                 and (
-                    merged[-1]["content"].startswith(_SA_PREFIX)
-                    or msg["content"].startswith(_SA_PREFIX)
+                    merged[-1]["content"].startswith(_SA_PREFIXES)
+                    or msg["content"].startswith(_SA_PREFIXES)
                 )
             ):
                 merged[-1] = {**merged[-1], "content": merged[-1]["content"] + "\n\n---\n\n" + msg["content"]}
@@ -4273,6 +4400,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "included_history_tokens": included_history_tokens,
                 "summary_tokens": summary_token_count,
                 "history_truncated": total_messages > len(included),
+                # Whether hidden sub-agent outcome messages were replayed into
+                # this turn's prompt. The final assistant message is then tagged
+                # subagent_response so the unreported-claim logic counts this
+                # turn as the report (no duplicate seeded turn).
+                "has_subagent_results": any(
+                    m.metadata and m.metadata.get("source") == "subagent"
+                    for m in included
+                ),
             },
         }
 

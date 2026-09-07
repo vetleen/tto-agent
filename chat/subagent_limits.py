@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 
 SUBAGENT_MAX_PER_USER = int(os.environ.get("SUBAGENT_MAX_PER_USER", "4"))
@@ -73,9 +76,37 @@ def _expire_stale_runs() -> int:
         )
 
     if expired:
+        _persist_expiry_failure_messages(
+            [r[0] for r in stale_pending + stale_running]
+        )
         _notify_expired_threads(stale_pending + stale_running)
 
     return expired
+
+
+def _persist_expiry_failure_messages(run_ids: list) -> None:
+    """Write a hidden failure message for each run the sweeper just expired.
+
+    Makes the expiry visible to the orchestrator (via the unreported-claim
+    logic) instead of only decrementing the status bar. Best-effort; scoped to
+    rows the guarded updates actually flipped (status=FAILED with the expiry
+    error), so a run that legitimately transitioned mid-sweep is untouched.
+    """
+    try:
+        from chat.models import SubAgentRun
+        from chat.subagent_service import _create_subagent_failure_message
+
+        expired_runs = SubAgentRun.objects.filter(
+            pk__in=run_ids,
+            status=SubAgentRun.Status.FAILED,
+            error__startswith="Expired:",
+        )
+        for run in expired_runs:
+            _create_subagent_failure_message(run)
+    except Exception:
+        logger.exception(
+            "Failed to persist failure messages for expired sub-agent runs"
+        )
 
 
 def _notify_expired_threads(expired_runs: list[tuple]) -> None:

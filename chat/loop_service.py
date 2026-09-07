@@ -61,6 +61,7 @@ class HeadlessTurnRunner(ChatConsumer):
         self._active_thread_id = str(thread_id)
         self._stopped = False
         self._stream_task = None
+        self._subagent_watch_task = None
         self._sink = sink
         self.channel_layer = get_channel_layer()
         self.channel_name = None

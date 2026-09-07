@@ -96,9 +96,23 @@ class _SubagentTask(Task):
                 completed_at=timezone.now(),
             )
             if updated:
-                run = SubAgentRun.objects.filter(pk=run_id_str).values("thread_id").first()
+                run = SubAgentRun.objects.filter(pk=run_id_str).first()
                 if run:
-                    _notify_consumer(run_id_str, str(run["thread_id"]))
+                    # Surface the failure to the orchestrator so it reacts
+                    # (retry / do the work itself / tell the user) instead of
+                    # the thread going silent. Deduplicated internally — the
+                    # terminal-failure canvas path may already have written a
+                    # result message for this run.
+                    from chat.subagent_service import _create_subagent_failure_message
+
+                    try:
+                        _create_subagent_failure_message(run)
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist failure message for sub-agent run %s",
+                            run_id_str,
+                        )
+                    _notify_consumer(run_id_str, str(run.thread_id))
         except Exception:
             logger.exception("Failed to mark sub-agent run %s as FAILED", run_id_str)
 

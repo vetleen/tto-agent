@@ -274,6 +274,41 @@ class LoadHistoryTests(TransactionTestCase):
         user_msgs = [m for m in messages if m["role"] == "user"]
         self.assertEqual(len(user_msgs), 2)
 
+    async def test_consecutive_subagent_failure_messages_merged(self):
+        """Failure messages merge like results — two failed sub-agents landing
+        together must not produce consecutive user messages (Anthropic rejects
+        non-alternating roles)."""
+        await self._make_msg("[Sub-agent failed: aaa11111]\nError: timeout")
+        await self._make_msg("[Sub-agent result: bbb22222]\nResult B")
+        await self._make_msg("OK", role="assistant")
+
+        result = await self.consumer._load_history(self.thread)
+        user_msgs = [m for m in result["messages"] if m["role"] == "user"]
+        self.assertEqual(len(user_msgs), 1)
+        self.assertIn("[Sub-agent failed: aaa11111]", user_msgs[0]["content"])
+        self.assertIn("[Sub-agent result: bbb22222]", user_msgs[0]["content"])
+
+    @database_sync_to_async
+    def _make_subagent_msg(self, content):
+        return ChatMessage.objects.create(
+            thread=self.thread,
+            role="user",
+            content=content,
+            metadata={"source": "subagent", "subagent_run_id": "fake-run-id"},
+            token_count=count_tokens(content),
+            is_hidden_from_user=True,
+        )
+
+    async def test_meta_flags_subagent_results_in_history(self):
+        await self._make_subagent_msg("[Sub-agent result: aaa11111]\nFindings")
+        meta = (await self.consumer._load_history(self.thread))["meta"]
+        self.assertTrue(meta["has_subagent_results"])
+
+    async def test_meta_no_subagent_results_flag_false(self):
+        await self._make_msg("Just a normal message")
+        meta = (await self.consumer._load_history(self.thread))["meta"]
+        self.assertFalse(meta["has_subagent_results"])
+
 
 class LoopPassScopingTests(TransactionTestCase):
     """`_load_history(scope_to_current_pass=True)` limits history to the current

@@ -166,6 +166,40 @@ def _create_subagent_result_message(run) -> None:
     )
 
 
+def _create_subagent_failure_message(run) -> None:
+    """Persist a terminal sub-agent failure as a hidden ChatMessage.
+
+    Mirrors :func:`_create_subagent_result_message` so the orchestrator's
+    unreported-claim logic picks the failure up and seeds a continuation turn —
+    without this, a run that fails with no result and no canvas is invisible:
+    the status bar decrements but the assistant never reacts and the thread
+    goes silent. Guarded against duplicates (the terminal-failure canvas path
+    may already have written a result message for the same run). Cancelled
+    runs never reach this — every caller writes only for rows it newly
+    transitioned to FAILED, and a user cancel flips the row to FAILED first.
+    """
+    from chat.models import ChatMessage
+    from core.tokens import count_tokens
+
+    if _subagent_result_message_exists(run):
+        return
+    short_id = str(run.id)[:8]
+    wrapped = (
+        f"[Sub-agent failed: {short_id}]\n"
+        f"The sub-agent did not complete its task. Error: {run.error or 'unknown'}\n"
+        "Decide how to proceed: retry with a new sub-agent, do the work "
+        "yourself, or tell the user what happened."
+    )
+    ChatMessage.objects.create(
+        thread_id=run.thread_id,
+        role="user",
+        content=wrapped,
+        metadata={"source": "subagent", "subagent_run_id": str(run.id)},
+        token_count=count_tokens(wrapped),
+        is_hidden_from_user=True,
+    )
+
+
 def _notify_consumer_safely(run_id: str, thread_id: str) -> None:
     """Notify the WebSocket consumer of a finished run; best-effort with one retry."""
     from chat.tasks import _notify_consumer
@@ -359,10 +393,13 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             )
             return
 
-        # Persist the result (and working canvas) as a hidden ChatMessage so it
-        # survives across reconnects and failed LLM streams.
+        # Persist the outcome as a hidden ChatMessage so it survives across
+        # reconnects and failed LLM streams — a no-content failure gets a
+        # failure message so the orchestrator still reacts to it.
         if delivered:
             _create_subagent_result_message(run)
+        else:
+            _create_subagent_failure_message(run)
 
         # Notify the WebSocket consumer so it auto-triggers the orchestrator
         _notify_consumer_safely(str(run.id), str(run.thread_id))

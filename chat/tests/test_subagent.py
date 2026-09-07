@@ -1076,7 +1076,9 @@ class RunSubagentServiceTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
-    def test_no_message_created_for_empty_result(self, mock_prefs, mock_svc):
+    def test_failure_message_created_for_empty_result(self, mock_prefs, mock_svc):
+        """A no-content run gets a hidden failure message (not a result one) so
+        the orchestrator still reacts instead of the thread going silent."""
         mock_prefs.return_value = _prefs()
         mock_response = MagicMock()
         mock_response.message.content = ""
@@ -1093,12 +1095,16 @@ class RunSubagentServiceTests(TestCase):
         from chat.subagent_service import run_subagent
         run_subagent(run.id)
 
-        msg_count = ChatMessage.objects.filter(
+        msgs = list(ChatMessage.objects.filter(
             thread=self.thread,
             metadata__source="subagent",
             metadata__subagent_run_id=str(run.id),
-        ).count()
-        self.assertEqual(msg_count, 0)
+        ))
+        self.assertEqual(len(msgs), 1)
+        short_id = str(run.id)[:8]
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {short_id}]"))
+        self.assertIn("no text output", msgs[0].content)
+        self.assertTrue(msgs[0].is_hidden_from_user)
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
@@ -1491,3 +1497,242 @@ class ClaimUnreportedSubagentsTests(TransactionTestCase):
 
     async def test_no_completed_runs_returns_false(self):
         self.assertFalse(await self._claim())
+
+    @database_sync_to_async
+    def _make_failed_run(self, *, with_message=True, error="Boom"):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.FAILED,
+            error=error,
+        )
+        if with_message:
+            from chat.subagent_service import _create_subagent_failure_message
+            _create_subagent_failure_message(run)
+        return run
+
+    async def test_failed_run_with_failure_message_is_claimable(self):
+        """A terminal failure is surfaced to the orchestrator like a result."""
+        await self._make_failed_run()
+        self.assertTrue(await self._claim())
+
+    async def test_cancelled_run_without_message_not_claimed(self):
+        """User-cancelled runs never get a hidden message, so they must never
+        trigger a seeded continuation."""
+        await self._make_failed_run(with_message=False, error="Cancelled by user.")
+        self.assertFalse(await self._claim())
+
+    async def test_unreported_ids_helper_matches_claim(self):
+        run = await self._make_completed_run()
+        ids = await self.consumer._get_unreported_subagent_run_ids(str(self.thread.id))
+        self.assertEqual(ids, [run.id])
+        # Read-only: the helper must not take the claim.
+        self.assertTrue(await self._claim())
+
+
+# ---------------------------------------------------------------------------
+# Hidden failure messages (fix: terminally-failed runs were invisible — the
+# status bar decremented but the orchestrator never reacted)
+# ---------------------------------------------------------------------------
+
+class SubagentFailureMessageTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="failmsg@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _failure_messages(self, run):
+        return ChatMessage.objects.filter(
+            thread=self.thread,
+            metadata__source="subagent",
+            metadata__subagent_run_id=str(run.id),
+        )
+
+    def test_on_failure_creates_hidden_failure_message(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="doomed", status=SubAgentRun.Status.RUNNING,
+        )
+
+        from chat.tasks import run_subagent_task
+        run_subagent_task.on_failure(
+            RuntimeError("Provider exploded"), "fake-task-id", [str(run.id)], {}, None,
+        )
+
+        msgs = list(self._failure_messages(run))
+        self.assertEqual(len(msgs), 1)
+        short_id = str(run.id)[:8]
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {short_id}]"))
+        self.assertIn("Provider exploded", msgs[0].content)
+        self.assertEqual(msgs[0].role, "user")
+        self.assertTrue(msgs[0].is_hidden_from_user)
+
+    def test_on_failure_cancelled_run_gets_no_message(self):
+        """A user-cancelled run is already FAILED; on_failure must not surface it."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="cancelled", status=SubAgentRun.Status.FAILED,
+            error="Cancelled by user.",
+        )
+
+        from chat.tasks import run_subagent_task
+        run_subagent_task.on_failure(
+            RuntimeError("Worker terminated"), "fake-task-id", [str(run.id)], {}, None,
+        )
+
+        self.assertEqual(self._failure_messages(run).count(), 0)
+
+    def test_failure_message_deduplicated_against_existing_result(self):
+        """The except-path may already have persisted a canvas result message;
+        on_failure must not add a second hidden message for the same run."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="canvas then crash", status=SubAgentRun.Status.RUNNING,
+            canvas="Partial work",
+        )
+        from chat.subagent_service import _create_subagent_result_message
+        _create_subagent_result_message(run)
+
+        from chat.tasks import run_subagent_task
+        run_subagent_task.on_failure(
+            RuntimeError("Crash after canvas"), "fake-task-id", [str(run.id)], {}, None,
+        )
+
+        self.assertEqual(self._failure_messages(run).count(), 1)
+
+    def test_expiry_creates_failure_messages(self):
+        """The stale-run sweeper surfaces expired runs to the orchestrator."""
+        pending = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="never started", status=SubAgentRun.Status.PENDING,
+        )
+        running = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="stuck", status=SubAgentRun.Status.RUNNING,
+        )
+        SubAgentRun.objects.filter(pk=pending.pk).update(
+            created_at=timezone.now() - timedelta(minutes=11),
+        )
+        SubAgentRun.objects.filter(pk=running.pk).update(
+            started_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
+        )
+
+        expired = _expire_stale_runs()
+        self.assertEqual(expired, 2)
+
+        for run in (pending, running):
+            msgs = list(self._failure_messages(run))
+            self.assertEqual(len(msgs), 1, f"missing failure message for {run.prompt}")
+            self.assertIn("Expired:", msgs[0].content)
+
+
+# ---------------------------------------------------------------------------
+# Self-heal watchdog (fix: the completion group_send is at-most-once; a lost
+# event left the status bar stuck and the orchestrator never continued)
+# ---------------------------------------------------------------------------
+
+class SubagentWatchdogTests(TransactionTestCase):
+    def setUp(self):
+        from unittest.mock import AsyncMock
+
+        from chat.consumers import ChatConsumer
+
+        self.user = User.objects.create_user(email="watch@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.consumer = ChatConsumer()
+        self.consumer.user = self.user
+        self.consumer.resolved_prefs = _prefs()
+        self.consumer._stopped = False
+        self.consumer._current_thread_id = str(self.thread.id)
+        self.consumer._stream_task = None
+        self.consumer._subagent_watch_task = None
+        self.consumer.send = AsyncMock()
+        self.consumer._handle_chat_message = AsyncMock()
+
+    def _sent_counts(self):
+        return [
+            json.loads(c.kwargs["text_data"])["active_count"]
+            for c in self.consumer.send.call_args_list
+            if json.loads(c.kwargs["text_data"]).get("event_type") == "subagents.updated"
+        ]
+
+    @database_sync_to_async
+    def _make_completed_unreported_run(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.COMPLETED,
+            result="Findings.",
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="user",
+            content=f"[Sub-agent result: {str(run.id)[:8]}]\nFindings.",
+            metadata={"source": "subagent", "subagent_run_id": str(run.id)},
+            is_hidden_from_user=True,
+        )
+        return run
+
+    async def _tick(self):
+        return await self.consumer._subagent_watch_tick(str(self.thread.id))
+
+    async def test_tick_resyncs_count_and_seeds_unreported(self):
+        """The core self-heal: a completed run whose completion event was lost
+        gets its count pushed and a continuation seeded on the next tick."""
+        await self._make_completed_unreported_run()
+
+        keep_watching = await self._tick()
+
+        self.assertTrue(keep_watching)
+        self.assertEqual(self._sent_counts(), [0])
+        self.consumer._handle_chat_message.assert_awaited_once_with(
+            {"thread_id": str(self.thread.id), "content": ""}, seed_mode=True,
+        )
+
+    async def test_tick_stops_when_idle(self):
+        """Nothing running, nothing unreported → the watchdog retires."""
+        self.assertFalse(await self._tick())
+        self.assertEqual(self._sent_counts(), [0])
+        self.consumer._handle_chat_message.assert_not_awaited()
+
+    async def test_tick_keeps_watching_while_runs_active(self):
+        await database_sync_to_async(SubAgentRun.objects.create)(
+            thread=self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.RUNNING,
+        )
+        self.assertTrue(await self._tick())
+        self.assertEqual(self._sent_counts(), [1])
+        self.consumer._handle_chat_message.assert_not_awaited()
+
+    async def test_tick_defers_to_live_stream(self):
+        """While a stream runs, the post-stream claim owns delivery — the tick
+        must neither push counts nor seed, but must keep watching."""
+        import asyncio
+
+        self.consumer._stream_task = asyncio.create_task(asyncio.sleep(10))
+        try:
+            await self._make_completed_unreported_run()
+            self.assertTrue(await self._tick())
+            self.assertEqual(self._sent_counts(), [])
+            self.consumer._handle_chat_message.assert_not_awaited()
+        finally:
+            self.consumer._stream_task.cancel()
+
+    async def test_tick_exits_on_thread_switch(self):
+        self.consumer._current_thread_id = str(uuid.uuid4())
+        self.assertFalse(await self._tick())
+        self.consumer.send.assert_not_awaited()
+
+    async def test_tick_exits_when_stopped(self):
+        self.consumer._stopped = True
+        self.assertFalse(await self._tick())
+        self.consumer.send.assert_not_awaited()
+
+    async def test_tick_keeps_watching_when_claim_lease_held(self):
+        """Another tab holds a fresh claim: don't seed, but keep watching so a
+        died seeded turn is retried once the lease expires."""
+        run = await self._make_completed_unreported_run()
+        await database_sync_to_async(
+            lambda: SubAgentRun.objects.filter(pk=run.pk).update(
+                reported_at=timezone.now(),
+            )
+        )()
+
+        self.assertTrue(await self._tick())
+        self.consumer._handle_chat_message.assert_not_awaited()
