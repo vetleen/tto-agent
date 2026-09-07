@@ -46,7 +46,7 @@ _AUTO_DETECT: dict[str, str] = {
 
 # Fallback prefix set for OpenAI's Responses API — used only for models not in
 # the registry (registered models carry ModelInfo.uses_responses_api).
-_RESPONSES_API_PREFIXES = ("gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
+_RESPONSES_API_PREFIXES = ("gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")
 
 
 def _uses_responses_api(api_model: str) -> bool:

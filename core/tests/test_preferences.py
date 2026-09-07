@@ -22,11 +22,11 @@ class NoOrgPreferencesTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
-        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_system_defaults(self, mock_registry, mock_allowed):
@@ -43,10 +43,10 @@ class NoOrgPreferencesTest(TestCase):
         prefs = get_preferences(user)
 
         self.assertEqual(prefs.top_model, "openai/gpt-5.4")
-        self.assertEqual(prefs.mid_model, "openai/gpt-5.4-mini")
+        self.assertEqual(prefs.mid_model, "gemini/gemini-3.5-flash")
         self.assertEqual(prefs.cheap_model, "openai/gpt-5.4-nano")
         self.assertEqual(prefs.allowed_models, [
-            "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+            "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
         ])
         self.assertNotIn("document_search", prefs.allowed_tools)
         self.assertIn("document_search", prefs.allowed_subagent_tools)
@@ -839,11 +839,11 @@ class TierConstraintTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
-        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_stored_user_mid_model_is_ignored(self, mock_registry, mock_allowed):
@@ -855,7 +855,7 @@ class TierConstraintTest(TestCase):
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.mid_model, "openai/gpt-5.4-mini")
+        self.assertEqual(prefs.mid_model, "gemini/gemini-3.5-flash")
 
 
 class FallbackWarningsTest(TestCase):
@@ -863,11 +863,11 @@ class FallbackWarningsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
-        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_no_cheap_falls_back_to_mid(self, mock_registry, mock_allowed):
@@ -876,7 +876,7 @@ class FallbackWarningsTest(TestCase):
 
         user = _create_user(email="fallback-cheap@example.com")
         org = Organization.objects.create(name="NoCheap", slug="nocheap", preferences={
-            "allowed_models": ["openai/gpt-5.4", "openai/gpt-5.4-mini"],
+            "allowed_models": ["openai/gpt-5.4", "gemini/gemini-3.5-flash"],
         })
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
@@ -929,11 +929,12 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.6-sol",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.6-luna",
+        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.7-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
-        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "gemini/gemini-3.7-flash",
+        "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_org_chat_override_becomes_new_thread_default(self, mock_registry, mock_allowed):
@@ -947,10 +948,11 @@ class FeatureModelOverrideTest(TestCase):
             preferences={
                 "allowed_models": [
                     "openai/gpt-5.6-sol",
-                    "openai/gpt-5.6-luna",
+                    "openai/gpt-5.6-terra",
+                    "gemini/gemini-3.7-flash",
                     "openai/gpt-5.4-nano",
                 ],
-                "feature_models": {"chat": "openai/gpt-5.6-luna"},
+                "feature_models": {"chat": "openai/gpt-5.6-terra"},
             },
         )
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
@@ -958,10 +960,10 @@ class FeatureModelOverrideTest(TestCase):
         prefs = get_preferences(user)
 
         self.assertEqual(
-            prefs.feature_models["chat"], "openai/gpt-5.6-luna"
+            prefs.feature_models["chat"], "openai/gpt-5.6-terra"
         )
         self.assertEqual(
-            resolve_thread_model("", prefs), "openai/gpt-5.6-luna"
+            resolve_thread_model("", prefs), "openai/gpt-5.6-terra"
         )
 
     @override_settings(
@@ -1030,11 +1032,11 @@ class ModalityFeatureResolutionTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
-        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_image_feature_resolves_to_vision_model(self, mock_registry, mock_allowed):
@@ -1044,10 +1046,10 @@ class ModalityFeatureResolutionTest(TestCase):
         user = _create_user(email="modality-ok@example.com")
         prefs = get_preferences(user)
         # default_slot="mid" and the mid model is vision-capable.
-        self.assertEqual(prefs.feature_models["document_image_description"], "openai/gpt-5.4-mini")
+        self.assertEqual(prefs.feature_models["document_image_description"], "gemini/gemini-3.5-flash")
         self.assertTrue(feature_is_available(user, "document_image_description"))
         # spreadsheet_description shares the same modality gate.
-        self.assertEqual(prefs.feature_models["spreadsheet_description"], "openai/gpt-5.4-mini")
+        self.assertEqual(prefs.feature_models["spreadsheet_description"], "gemini/gemini-3.5-flash")
         self.assertTrue(feature_is_available(user, "spreadsheet_description"))
 
     @override_settings(
@@ -1114,11 +1116,11 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
-        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
         "gemini/gemini-3.1-flash-lite",
     ])
     def test_org_feature_override_below_min_tier_falls_back(self, mock_allowed):
@@ -1130,7 +1132,7 @@ class ResolveOrgFeatureModelTest(TestCase):
             "feature_models": {"document_description": "gemini/gemini-3.1-flash-lite"},
         })
         model = resolve_org_feature_model(org.pk, "document_description")
-        self.assertEqual(model, "openai/gpt-5.4-mini")
+        self.assertEqual(model, "gemini/gemini-3.5-flash")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",

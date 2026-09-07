@@ -16,6 +16,7 @@ from llm.display import (
 
 class DisplayNameTests(SimpleTestCase):
     def test_registered_names(self):
+        self.assertEqual(get_display_name("openai/gpt-6-astra"), "GPT-6 Astra")
         self.assertEqual(get_display_name("openai/gpt-5.6-sol"), "GPT-5.6 Sol")
         self.assertEqual(get_display_name("anthropic/claude-fable-5"), "Claude Fable 5")
         self.assertEqual(get_display_name("gemini/gemini-3.5-flash-lite"), "Gemini 3.5 Flash-Lite")
@@ -56,6 +57,12 @@ class ReasoningLevelTests(SimpleTestCase):
             ["none", "low", "medium", "high", "xhigh", "max"],
         )
         self.assertEqual(get_default_thinking_level("openai/gpt-5.6-terra"), "medium")
+        # Astra dropped the "none" effort level.
+        self.assertEqual(
+            get_thinking_levels("openai/gpt-6-astra"),
+            ["low", "medium", "high", "xhigh", "max"],
+        )
+        self.assertEqual(get_default_thinking_level("openai/gpt-6-astra"), "medium")
 
     def test_fable_has_no_off_level(self):
         self.assertEqual(
@@ -94,22 +101,28 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(get_price_level("gemini/gemini-3.7-flash"), 2)
         self.assertEqual(get_price_level("openai/gpt-5.6-terra"), 3)
         self.assertEqual(get_price_level("openai/gpt-5.6-sol"), 4)
+        self.assertEqual(get_price_level("openai/gpt-6-astra"), 4)
         self.assertEqual(get_price_level("custom/unknown"), 0)
 
     def test_capability_buckets(self):
         self.assertEqual(get_capability_level("openai/gpt-5.4-nano"), 1)
-        self.assertEqual(get_capability_level("openai/gpt-5.6-luna"), 2)
+        self.assertEqual(get_capability_level("openai/gpt-5.6-luna"), 1)
         self.assertEqual(get_capability_level("openai/gpt-5.6-terra"), 3)
         self.assertEqual(get_capability_level("anthropic/claude-opus-5"), 4)
         self.assertEqual(get_capability_level("anthropic/claude-opus-4-6"), 4)
-        self.assertEqual(get_capability_level("openai/gpt-5.6-sol"), 5)
+        self.assertEqual(get_capability_level("openai/gpt-5.6-sol"), 3)
+        self.assertEqual(get_capability_level("openai/gpt-6-astra"), 5)
         self.assertEqual(get_capability_level("anthropic/claude-fable-5"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-3.1-pro-preview"), 3)
 
     def test_tooltips(self):
         self.assertEqual(
+            get_model_meta_tooltip("openai/gpt-6-astra"),
+            "Flagship · $50 / 1M output tokens",
+        )
+        self.assertEqual(
             get_model_meta_tooltip("openai/gpt-5.6-sol"),
-            "Flagship · $30 / 1M output tokens",
+            "Standard · $20 / 1M output tokens",
         )
         self.assertEqual(
             get_model_meta_tooltip("anthropic/claude-opus-5"),

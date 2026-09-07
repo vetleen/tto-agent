@@ -8,7 +8,7 @@ from llm.types.requests import ChatRequest
 # Fallback prefixes for reasoning support of models NOT in the registry
 # (registered models report ModelInfo.supports_thinking, preferred below).
 _REASONING_PREFIXES = (
-    "o1", "o3", "o4", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro",
+    "o1", "o3", "o4", "gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro",
 )
 
 

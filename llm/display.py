@@ -84,7 +84,7 @@ def supports_thinking(model_id: str) -> bool:
     name = lower.split("/", 1)[-1] if "/" in lower else lower
     if re.match(r"^o[134]\b", name):
         return True
-    if name.startswith(("gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")):
+    if name.startswith(("gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2-pro")):
         return True
 
     # Models with "thinking" in their name
@@ -130,7 +130,7 @@ def supports_vision(model_id: str) -> bool:
         return True
 
     # OpenAI GPT-4+ and GPT-5+ models
-    if lower.startswith("openai/") and re.match(r"^gpt-[45]", name):
+    if lower.startswith("openai/") and re.match(r"^gpt-[4-6]", name):
         return True
 
     # Gemini models

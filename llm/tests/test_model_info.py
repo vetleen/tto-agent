@@ -23,10 +23,11 @@ class GetContextWindowTests(TestCase):
         self.assertEqual(get_context_window(""), 128_000)
 
     def test_openai_model(self):
-        self.assertEqual(get_context_window("gpt-5.4"), 1_000_000)
+        # gpt-5.4 canonicalizes to gpt-5.6-terra (1,050,000).
+        self.assertEqual(get_context_window("gpt-5.4"), 1_050_000)
 
     def test_gemini_model(self):
-        self.assertEqual(get_context_window("gemini-3.1-pro-preview"), 1_000_000)
+        self.assertEqual(get_context_window("gemini-3.1-pro-preview"), 1_048_576)
 
 
 class GetHistoryBudgetTests(TestCase):
@@ -40,8 +41,11 @@ class GetHistoryBudgetTests(TestCase):
         self.assertEqual(get_history_budget("gpt-5.4"), 150_000)
 
     def test_small_context_not_capped(self):
-        # gpt-5.4-nano: 128k * 0.75 = 96k (under cap)
-        self.assertEqual(get_history_budget("gpt-5.4-nano"), 96_000)
+        # Every registered model now exceeds the 150k cap; shrink the window
+        # via max_context_tokens to exercise the uncapped branch: 120k * 0.75.
+        self.assertEqual(
+            get_history_budget("gpt-5.4-nano", max_context_tokens=120_000), 90_000
+        )
 
     def test_none_model(self):
         # Default: 128k * 0.75 = 96k

@@ -23,6 +23,7 @@ from llm.model_registry import (
 
 
 EXPECTED_IDS = [
+    "openai/gpt-6-astra",
     "openai/gpt-5.6-sol",
     "openai/gpt-5.6-terra",
     "openai/gpt-5.6-luna",
@@ -61,6 +62,7 @@ class RegistryTests(SimpleTestCase):
 
     def test_exact_reasoning_capabilities(self):
         expected = {
+            "openai/gpt-6-astra": (("low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
@@ -88,12 +90,12 @@ class RegistryTests(SimpleTestCase):
         self.assertEqual(get_model_info("gemini-3.7-flash").context_window, 1_048_576)
 
     def test_flagship_pricing_is_present(self):
-        info = get_model_info("openai/gpt-5.6-sol")
-        self.assertEqual(info.input_price, Decimal("5.00"))
-        self.assertEqual(info.cache_write_price, Decimal("6.25"))
-        self.assertEqual(info.output_price, Decimal("30.00"))
+        info = get_model_info("openai/gpt-6-astra")
+        self.assertEqual(info.input_price, Decimal("10.00"))
+        self.assertEqual(info.cache_write_price, Decimal("12.50"))
+        self.assertEqual(info.output_price, Decimal("50.00"))
         self.assertEqual(info.long_context_threshold, 272_000)
-        self.assertEqual(info.long_context_output_price, Decimal("45.00"))
+        self.assertEqual(info.long_context_output_price, Decimal("75.00"))
 
     def test_anthropic_thinking_transport_is_explicit(self):
         for model_id in EXPECTED_IDS:
@@ -148,17 +150,18 @@ class TierTests(SimpleTestCase):
     def test_tier_sets(self):
         self.assertEqual(
             get_models_by_tier(TIER_CHEAP),
-            ["openai/gpt-5.4-nano", "gemini/gemini-3.5-flash-lite"],
+            ["openai/gpt-5.6-luna", "openai/gpt-5.4-nano", "gemini/gemini-3.5-flash-lite"],
         )
         self.assertEqual(
             get_models_by_tier(TIER_MID),
-            ["openai/gpt-5.6-luna", "anthropic/claude-haiku-4-5", "gemini/gemini-3.7-flash"],
+            ["anthropic/claude-haiku-4-5", "gemini/gemini-3.7-flash"],
         )
         self.assertIn("openai/gpt-5.6-terra", get_models_by_tier(TIER_STANDARD))
+        self.assertIn("openai/gpt-5.6-sol", get_models_by_tier(TIER_STANDARD))
         self.assertEqual(
             get_models_by_tier(TIER_PREMIUM),
             [
-                "openai/gpt-5.6-sol",
+                "openai/gpt-6-astra",
                 "anthropic/claude-fable-5",
                 "anthropic/claude-opus-5",
                 "anthropic/claude-opus-4-6",
@@ -167,11 +170,12 @@ class TierTests(SimpleTestCase):
 
     def test_slot_validation(self):
         self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4-nano", "cheap"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.6-luna", "cheap"))
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-luna", "mid"))
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-luna", "cheap"))
+        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.6-luna", "mid"))
         self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-terra", "mid"))
         self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-terra", "primary"))
         self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-sol", "primary"))
+        self.assertTrue(is_model_valid_for_slot("openai/gpt-6-astra", "primary"))
         self.assertFalse(is_model_valid_for_slot("openai/gpt-5.6-luna", "primary"))
 
     def test_get_models_for_slot_canonicalizes_filter(self):
@@ -185,7 +189,7 @@ class TierTests(SimpleTestCase):
         for model_id in get_models_at_or_above_tier(TIER_STANDARD):
             self.assertIn(get_model_tier(model_id), (TIER_STANDARD, TIER_PREMIUM))
 
-    def test_only_sol_and_fable_are_flagships(self):
+    def test_only_astra_and_fable_are_flagships(self):
         flagships = [
             model_id
             for model_id in EXPECTED_IDS
@@ -193,5 +197,5 @@ class TierTests(SimpleTestCase):
         ]
         self.assertEqual(
             flagships,
-            ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"],
+            ["openai/gpt-6-astra", "anthropic/claude-fable-5"],
         )
