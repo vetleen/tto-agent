@@ -1,7 +1,11 @@
 """Tests for model display and picker capabilities."""
 
+from decimal import Decimal
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 
+from llm.model_registry import ModelInfo
 from llm.display import (
     get_capability_level,
     get_default_thinking_level,
@@ -106,23 +110,35 @@ class PickerRatingTests(SimpleTestCase):
 
     def test_capability_buckets(self):
         self.assertEqual(get_capability_level("openai/gpt-5.4-nano"), 1)
-        self.assertEqual(get_capability_level("openai/gpt-5.6-luna"), 1)
+        # Manually rated 2 to match Haiku (cheap price tier would say 1).
+        self.assertEqual(get_capability_level("openai/gpt-5.6-luna"), 2)
         self.assertEqual(get_capability_level("openai/gpt-5.6-terra"), 3)
         self.assertEqual(get_capability_level("anthropic/claude-opus-5"), 4)
+        self.assertEqual(get_capability_level("anthropic/claude-opus-4-8"), 4)
         self.assertEqual(get_capability_level("anthropic/claude-opus-4-6"), 4)
-        self.assertEqual(get_capability_level("openai/gpt-5.6-sol"), 3)
+        # Manually held at 4 stars through the promo price ($4.00 would
+        # otherwise demote Sol to the standard tier's 3).
+        self.assertEqual(get_capability_level("openai/gpt-5.6-sol"), 4)
         self.assertEqual(get_capability_level("openai/gpt-6-astra"), 5)
         self.assertEqual(get_capability_level("anthropic/claude-fable-5"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-3.1-pro-preview"), 3)
+
+    def test_capability_falls_back_to_price_tier_without_manual_stars(self):
+        unstarred = ModelInfo(
+            "X", "openai", "x", flagship=True, input_price=Decimal("10.00")
+        )
+        with patch("llm.display.get_model_info", return_value=unstarred):
+            self.assertEqual(get_capability_level("openai/x"), 5)
 
     def test_tooltips(self):
         self.assertEqual(
             get_model_meta_tooltip("openai/gpt-6-astra"),
             "Flagship · $50 / 1M output tokens",
         )
+        # Label follows the manual 4-star rating, not the promo-price tier.
         self.assertEqual(
             get_model_meta_tooltip("openai/gpt-5.6-sol"),
-            "Standard · $20 / 1M output tokens",
+            "Premium · $20 / 1M output tokens",
         )
         self.assertEqual(
             get_model_meta_tooltip("anthropic/claude-opus-5"),

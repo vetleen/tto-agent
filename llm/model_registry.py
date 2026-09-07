@@ -58,8 +58,12 @@ class ModelInfo:
     display_name: str
     provider: str  # "openai" | "anthropic" | "google_genai"
     api_model: str
-    # The first four performance stars derive from the standard input price.
-    # Only the very best current models receive the manually curated fifth.
+    # Manually curated 1-5 picker star rating. When None, the stars fall back
+    # to the input-price tier (+1 for flagship) — set them explicitly so promo
+    # pricing can't demote a model's standing (e.g. Sol's 2026 promo price).
+    stars: int | None = None
+    # Only the very best current models are flagships (tooltip label; also the
+    # fifth star in the price-derived fallback).
     flagship: bool = False
     # Exact values accepted by the provider for this model, in UX order.
     reasoning_levels: tuple[str, ...] = ()
@@ -114,7 +118,7 @@ _MODELS: dict[str, ModelInfo] = {
     # OpenAI
     "openai/gpt-6-astra": ModelInfo(
         display_name="GPT-6 Astra", provider="openai", api_model="gpt-6-astra",
-        flagship=True,
+        stars=5, flagship=True,
         # Astra dropped the "none" effort the GPT-5.6 family accepts.
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="medium",
@@ -130,6 +134,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "openai/gpt-5.6-sol": ModelInfo(
         display_name="GPT-5.6 Sol", provider="openai", api_model="gpt-5.6-sol",
+        stars=4,
         reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
@@ -145,6 +150,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "openai/gpt-5.6-terra": ModelInfo(
         display_name="GPT-5.6 Terra", provider="openai", api_model="gpt-5.6-terra",
+        stars=3,
         reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
@@ -158,6 +164,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "openai/gpt-5.6-luna": ModelInfo(
         display_name="GPT-5.6 Luna", provider="openai", api_model="gpt-5.6-luna",
+        stars=2,
         reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
@@ -171,6 +178,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "openai/gpt-5.4-nano": ModelInfo(
         display_name="GPT-5.4 Nano", provider="openai", api_model="gpt-5.4-nano",
+        stars=1,
         reasoning_levels=("none", "low", "medium", "high", "xhigh"),
         default_reasoning_level="none", uses_responses_api=True,
         input_modalities=_MULTIMODAL, context_window=400_000,
@@ -181,7 +189,7 @@ _MODELS: dict[str, ModelInfo] = {
     # Anthropic
     "anthropic/claude-fable-5": ModelInfo(
         display_name="Claude Fable 5", provider="anthropic", api_model="claude-fable-5",
-        flagship=True,
+        stars=5, flagship=True,
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
         input_modalities=_MULTIMODAL, context_window=1_000_000,
@@ -191,6 +199,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "anthropic/claude-opus-5": ModelInfo(
         display_name="Claude Opus 5", provider="anthropic", api_model="claude-opus-5",
+        stars=4,
         reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
         input_modalities=_MULTIMODAL, context_window=1_000_000,
@@ -198,8 +207,19 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("0.50"), cache_write_price=Decimal("6.25"),
         cache_write_1h_price=Decimal("10.00"), output_price=Decimal("25.00"),
     ),
+    "anthropic/claude-opus-4-8": ModelInfo(
+        display_name="Claude Opus 4.8", provider="anthropic", api_model="claude-opus-4-8",
+        stars=4,
+        reasoning_levels=("off", "low", "medium", "high", "max"),
+        default_reasoning_level="off", thinking_mode="adaptive",
+        input_modalities=_MULTIMODAL, context_window=1_000_000,
+        max_output_tokens=128_000, input_price=Decimal("5.00"),
+        cached_input_price=Decimal("0.50"), cache_write_price=Decimal("6.25"),
+        cache_write_1h_price=Decimal("10.00"), output_price=Decimal("25.00"),
+    ),
     "anthropic/claude-opus-4-6": ModelInfo(
         display_name="Claude Opus 4.6", provider="anthropic", api_model="claude-opus-4-6",
+        stars=4,
         reasoning_levels=("off", "low", "medium", "high", "max"),
         default_reasoning_level="off", thinking_mode="adaptive",
         input_modalities=_MULTIMODAL, context_window=1_000_000,
@@ -209,6 +229,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "anthropic/claude-sonnet-5": ModelInfo(
         display_name="Claude Sonnet 5", provider="anthropic", api_model="claude-sonnet-5",
+        stars=3,
         reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
         input_modalities=_MULTIMODAL, context_window=1_000_000,
@@ -218,6 +239,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "anthropic/claude-haiku-4-5": ModelInfo(
         display_name="Claude Haiku 4.5", provider="anthropic", api_model="claude-haiku-4-5",
+        stars=2,
         reasoning_levels=("off", "low", "medium", "high"),
         default_reasoning_level="off", thinking_mode="extended",
         input_modalities=_MULTIMODAL, context_window=200_000,
@@ -228,7 +250,7 @@ _MODELS: dict[str, ModelInfo] = {
     # Google Gemini
     "gemini/gemini-3.1-pro-preview": ModelInfo(
         display_name="Gemini 3.1 Pro Preview", provider="google_genai",
-        api_model="gemini-3.1-pro-preview",
+        api_model="gemini-3.1-pro-preview", stars=3,
         reasoning_levels=("low", "medium", "high"), default_reasoning_level="high",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
         max_output_tokens=65_536, input_price=Decimal("2.00"),
@@ -240,7 +262,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "gemini/gemini-3.7-flash": ModelInfo(
         display_name="Gemini 3.7 Flash", provider="google_genai",
-        api_model="gemini-3.7-flash",
+        api_model="gemini-3.7-flash", stars=2,
         reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
         max_output_tokens=65_536, input_price=Decimal("0.75"),
@@ -253,7 +275,7 @@ _MODELS: dict[str, ModelInfo] = {
     ),
     "gemini/gemini-3.5-flash-lite": ModelInfo(
         display_name="Gemini 3.5 Flash-Lite", provider="google_genai",
-        api_model="gemini-3.5-flash-lite",
+        api_model="gemini-3.5-flash-lite", stars=1,
         reasoning_levels=("minimal", "low", "medium", "high"),
         default_reasoning_level="minimal", input_modalities=_MULTIMODAL,
         context_window=1_048_576, max_output_tokens=65_536,
@@ -267,7 +289,6 @@ MODEL_REPLACEMENTS: dict[str, str] = {
     "openai/gpt-5.5": "openai/gpt-5.6-sol",
     "openai/gpt-5.4": "openai/gpt-5.6-terra",
     "openai/gpt-5.4-mini": "openai/gpt-5.6-luna",
-    "anthropic/claude-opus-4-8": "anthropic/claude-opus-5",
     "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
     "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
     "gemini/gemini-3.5-flash": "gemini/gemini-3.7-flash",

@@ -195,12 +195,15 @@ def get_price_level(model_id: str) -> int:
 def get_capability_level(model_id: str) -> int:
     """Return a 1-5 performance rating (0 if unknown).
 
-    Four stars come from the input-price tier (cheap through premium); the
-    manually curated ``flagship`` marker awards a fifth.
+    The registry's manually curated ``stars`` wins when set. Models without it
+    fall back to the input-price tier (cheap through premium), with the
+    ``flagship`` marker awarding a fifth star.
     """
     info = get_model_info(model_id)
     if info is None:
         return 0
+    if info.stars is not None:
+        return info.stars
     return TIER_ORDER.get(info.tier, 0) + 1 + (1 if info.flagship else 0)
 
 
@@ -211,11 +214,16 @@ def _format_output_price(price: Decimal) -> str:
     return f"${price:.2f}"
 
 
+# Standing label per star count, so the tooltip always matches the stars —
+# including manually starred models whose price-derived tier would say less.
+_CAPABILITY_LABELS = {1: "Cheap", 2: "Mid", 3: "Standard", 4: "Premium", 5: "Flagship"}
+
+
 def get_model_meta_tooltip(model_id: str) -> str | None:
     """Hover text combining standing and output price, or None if unknown.
 
-    Flagship models lead with "Flagship" (explaining their fifth star); others
-    show their price-derived tier. Example: ``"Flagship · $30 / 1M output tokens"``.
+    The standing label follows the star rating (five stars read "Flagship").
+    Example: ``"Flagship · $30 / 1M output tokens"``.
     """
     from llm.service.pricing import get_model_pricing
 
@@ -223,7 +231,7 @@ def get_model_meta_tooltip(model_id: str) -> str | None:
     pricing = get_model_pricing(model_id)
     if info is None or pricing is None:
         return None
-    label = "Flagship" if info.flagship else info.tier.capitalize()
+    label = _CAPABILITY_LABELS.get(get_capability_level(model_id), info.tier.capitalize())
     return (
         f"{label} · "
         f"{_format_output_price(pricing[3])} / 1M output tokens"

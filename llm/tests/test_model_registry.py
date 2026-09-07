@@ -30,6 +30,7 @@ EXPECTED_IDS = [
     "openai/gpt-5.4-nano",
     "anthropic/claude-fable-5",
     "anthropic/claude-opus-5",
+    "anthropic/claude-opus-4-8",
     "anthropic/claude-opus-4-6",
     "anthropic/claude-sonnet-5",
     "anthropic/claude-haiku-4-5",
@@ -69,6 +70,7 @@ class RegistryTests(SimpleTestCase):
             "openai/gpt-5.4-nano": (("none", "low", "medium", "high", "xhigh"), "none"),
             "anthropic/claude-fable-5": (("low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-opus-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
+            "anthropic/claude-opus-4-8": (("off", "low", "medium", "high", "max"), "off"),
             "anthropic/claude-opus-4-6": (("off", "low", "medium", "high", "max"), "off"),
             "anthropic/claude-sonnet-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-haiku-4-5": (("off", "low", "medium", "high"), "off"),
@@ -105,6 +107,13 @@ class RegistryTests(SimpleTestCase):
         self.assertEqual(get_model_info("claude-opus-4-6").thinking_mode, "adaptive")
         self.assertEqual(get_model_info("claude-haiku-4-5").thinking_mode, "extended")
 
+    def test_every_model_has_manual_stars(self):
+        # Curated models must not rely on the price-derived fallback, which
+        # promo pricing can silently demote (that's how Sol lost a star once).
+        for model_id in EXPECTED_IDS:
+            with self.subTest(model=model_id):
+                self.assertIn(get_model_info(model_id).stars, (1, 2, 3, 4, 5))
+
     def test_unknown_model_returns_none(self):
         self.assertIsNone(get_model_info("unknown/model"))
 
@@ -115,7 +124,6 @@ class ReplacementTests(SimpleTestCase):
             "openai/gpt-5.5": "openai/gpt-5.6-sol",
             "openai/gpt-5.4": "openai/gpt-5.6-terra",
             "openai/gpt-5.4-mini": "openai/gpt-5.6-luna",
-            "anthropic/claude-opus-4-8": "anthropic/claude-opus-5",
             "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
             "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
             "gemini/gemini-3.5-flash": "gemini/gemini-3.7-flash",
@@ -164,6 +172,7 @@ class TierTests(SimpleTestCase):
                 "openai/gpt-6-astra",
                 "anthropic/claude-fable-5",
                 "anthropic/claude-opus-5",
+                "anthropic/claude-opus-4-8",
                 "anthropic/claude-opus-4-6",
             ],
         )
