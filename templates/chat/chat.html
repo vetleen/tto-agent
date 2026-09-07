@@ -467,6 +467,7 @@
   <div class="flex items-center gap-2 px-4 py-2 border-b-[3px] border-b-brand bg-neutral-primary-soft shrink-0">
     <span id="slides-title" class="flex-1 text-sm font-semibold text-heading truncate">Slide deck</span>
     <div id="slides-tabs" class="hidden items-center gap-1"></div>
+    <div class="flex items-center gap-1 shrink-0">
     <button id="slides-rerender-btn" title="Re-render" aria-label="Re-render slides"
       class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary disabled:cursor-default disabled:opacity-50">
       <svg class="slides-rerender-icon w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992V4.356m0 4.992l-3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99h-4.99M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7"/></svg>
@@ -496,8 +497,9 @@
     </div>
     <button id="slides-close-btn" title="Close" aria-label="Close slide panel"
       class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
-      <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
     </button>
+    </div>
   </div>
   {# Render-status bar: live status + manual re-check, shown only while a slide is still rendering. #}
   <div id="slides-render-bar" class="hidden items-center justify-between gap-3 px-4 py-2 border-b border-default bg-neutral-primary-soft shrink-0">
