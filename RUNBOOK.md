@@ -406,6 +406,7 @@ See `.env.example` for the full list with comments. Key production variables:
 | `SUBAGENT_MAX_PER_USER` | No | Max sub-agents waiting + running per user (default 4). Hard deny; the orchestrator prompt states this number. |
 | `RERANK_ON_WORKER` | No | Enable FlashRank rerank on the Celery worker (default `false`). Off keeps FlashRank/onnxruntime (~45 MB) from loading on the worker, but does **not** by itself get a real workload under the 512 MB cap (the LLM/ML stack dominates — see *Worker pool & concurrency*); enable only after a Standard-2X bump. Main-chat rerank is controlled separately by `RERANK_ENABLED`. Worker restart required to take effect. |
 | `MALLOC_ARENA_MAX` | No | Caps glibc malloc arenas to reduce threads-pool memory fragmentation. Set to `2` on staging + production. Worker restart required to take effect. |
+| `MEM_DEBUG_WORKER` | No | Worker memory attribution (`core.memreport`): logs a `MEMREPORT` line set before/after every non-trivial task (RSS delta, glibc `mallinfo2`, pymalloc arenas, gc type movers, busy-thread stacks, tracemalloc growth when `MEM_DEBUG_TRACEMALLOC=1`) plus a periodic sample every `MEM_DEBUG_INTERVAL` s. Diagnostics only — leave unset in production. Independently of it, `manage.py memreport` enqueues a one-off report from the live worker. Read with `heroku logs --dyno worker \| grep MEMREPORT`. |
 | `OPENAI_API_KEY` | Yes | Embeddings + OpenAI LLM provider |
 | `LLM_DEFAULT_MODEL` | Yes | Primary model (e.g., `openai/gpt-5.2`) |
 | `LLM_DEFAULT_MID_MODEL` | Yes | Mid-tier model for sub-agents |

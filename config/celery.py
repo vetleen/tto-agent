@@ -2,7 +2,14 @@ import logging
 import os
 import sys
 from celery import Celery
-from celery.signals import setup_logging, task_failure, task_postrun, task_prerun
+from celery.signals import (
+    setup_logging,
+    task_failure,
+    task_postrun,
+    task_prerun,
+    worker_init,
+    worker_ready,
+)
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 app = Celery("config")
@@ -43,6 +50,39 @@ def set_sentry_celery_tags(task_id, task, **kwargs):
 @task_postrun.connect
 def close_db_connections_after_task(**kwargs):
     close_old_connections()
+
+
+# --- Opt-in worker memory attribution (MEM_DEBUG_WORKER=1) -------------------
+# core.memtrace / core.malloc_trim deliberately refuse to run under Celery, so
+# the worker had no way to say WHERE its RSS lives. These hooks are no-ops
+# unless MEM_DEBUG_WORKER is truthy; see core.memreport for what they log.
+# Connected before the malloc_trim hook below so a task_end report shows the
+# pre-trim state (the trim then logs its own before->after line).
+
+@worker_init.connect
+def start_worker_memory_tracing(**kwargs):
+    """Start tracemalloc early (before the pool) when MEM_DEBUG_TRACEMALLOC asks."""
+    from core.memreport import ensure_tracemalloc, worker_debug_enabled
+    if worker_debug_enabled():
+        ensure_tracemalloc()
+
+
+@worker_ready.connect
+def start_worker_memory_sampler(**kwargs):
+    from core.memreport import maybe_start_worker_sampler
+    maybe_start_worker_sampler()
+
+
+@task_prerun.connect
+def memory_report_before_task(task_id, task, **kwargs):
+    from core.memreport import task_prerun_report
+    task_prerun_report(task_id, task.name)
+
+
+@task_postrun.connect
+def memory_report_after_task(task_id, task, **kwargs):
+    from core.memreport import task_postrun_report
+    task_postrun_report(task_id, task.name)
 
 
 def _env_float(name: str, default: float) -> float:
