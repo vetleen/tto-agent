@@ -164,9 +164,10 @@ def supports_modality(model_id: str, modality: str) -> bool:
 
 
 # Output-price buckets (USD per 1M output tokens) -> "$" count (1-5).
-# Upper-inclusive: $ <= $1, $$ <= $5, $$$ <= $15, $$$$ <= $50, $$$$$ > $50.
+# "$" is exclusive (< $3, so $3.00 exactly reads "$$"); the rest are
+# upper-inclusive: $$ <= $5, $$$ <= $15, $$$$ <= $50, $$$$$ > $50.
+_PRICE_SINGLE_DOLLAR_MAX = Decimal("3")
 _PRICE_THRESHOLDS = (
-    (Decimal("1"), 1),
     (Decimal("5"), 2),
     (Decimal("15"), 3),
     (Decimal("50"), 4),
@@ -176,8 +177,8 @@ _PRICE_THRESHOLDS = (
 def get_price_level(model_id: str) -> int:
     """Return a 1-5 cost rating from a model's output price (0 if unknown).
 
-    Buckets are upper-inclusive on USD per 1M output tokens:
-    ``<=1 -> 1``, ``<=5 -> 2``, ``<=15 -> 3``, ``<=50 -> 4``, ``>50 -> 5``.
+    Buckets on USD per 1M output tokens: ``<3 -> 1`` (exclusive), then
+    upper-inclusive ``<=5 -> 2``, ``<=15 -> 3``, ``<=50 -> 4``, ``>50 -> 5``.
     Drives the ``$``-``$$$$$`` glyphs in the chat model picker.
     """
     from llm.service.pricing import get_model_pricing
@@ -186,6 +187,8 @@ def get_price_level(model_id: str) -> int:
     if pricing is None:
         return 0
     output_price = pricing[3]
+    if output_price < _PRICE_SINGLE_DOLLAR_MAX:
+        return 1
     for threshold, level in _PRICE_THRESHOLDS:
         if output_price <= threshold:
             return level

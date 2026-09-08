@@ -101,8 +101,12 @@ class ReasoningLevelTests(SimpleTestCase):
 
 class PickerRatingTests(SimpleTestCase):
     def test_price_buckets(self):
-        self.assertEqual(get_price_level("openai/gpt-5.4-nano"), 2)
+        # "$" is exclusive at $3 output; $2.50 flash-lite is in, $3.75 flash is not.
+        self.assertEqual(get_price_level("openai/gpt-5.6-luna"), 1)
+        self.assertEqual(get_price_level("openai/gpt-5.4-nano"), 1)
+        self.assertEqual(get_price_level("gemini/gemini-3.5-flash-lite"), 1)
         self.assertEqual(get_price_level("gemini/gemini-3.7-flash"), 2)
+        self.assertEqual(get_price_level("anthropic/claude-haiku-4-5"), 2)
         self.assertEqual(get_price_level("openai/gpt-5.6-terra"), 3)
         self.assertEqual(get_price_level("openai/gpt-5.6-sol"), 4)
         self.assertEqual(get_price_level("openai/gpt-6-astra"), 4)
