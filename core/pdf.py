@@ -14,6 +14,7 @@ typical *scanned* page contains). True page rasterization / OCR is out of scope.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import io
 import logging
@@ -99,7 +100,7 @@ def _too_small(pil_image, data: bytes, min_dim: int) -> bool:
     return len(data) < PDF_MIN_IMAGE_BYTES
 
 
-def _release_decoded_streams(page, page_images) -> None:
+def _release_decoded_streams(page, image_refs) -> None:
     """Drop pypdf's per-object decoded-data cache for a page we are done with.
 
     ``EncodedStreamObject.get_data()`` stores the decoded bytes on the object
@@ -108,10 +109,11 @@ def _release_decoded_streams(page, page_images) -> None:
     until the whole document is extracted — measured at ~240 MB live for four
     concurrent figure-heavy papers on the worker (2026-09-08), multiplied by
     concurrency straight into R14/R15. Page content streams get the same
-    treatment. Best-effort: pypdf internals, so every step is guarded.
+    treatment. ``image_refs`` are the images' ``indirect_reference`` objects
+    (collected while iterating, so nothing is decoded a second time).
+    Best-effort: pypdf internals, so every step is guarded.
     """
-    for image_file in page_images or ():
-        ref = getattr(image_file, "indirect_reference", None)
+    for ref in image_refs or ():
         if ref is None:
             continue
         try:
@@ -149,9 +151,15 @@ def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
     min_dim = getattr(settings, "PDF_MIN_IMAGE_DIMENSION", PDF_MIN_IMAGE_DIMENSION)
     max_images = getattr(settings, "PDF_MAX_EMBEDDED_IMAGES", PDF_MAX_EMBEDDED_IMAGES)
 
-    data = _read_bytes(file)
+    # A path is handed to pypdf as-is so it reads objects from disk on demand;
+    # loading a 13 MB file into bytes plus a BytesIO copy was ~26 MB of the
+    # transient peak for nothing. Bytes / file-likes still go through memory.
+    if isinstance(file, (str, Path)):
+        source = str(file)
+    else:
+        source = io.BytesIO(_read_bytes(file))
     try:
-        reader = PdfReader(io.BytesIO(data))
+        reader = PdfReader(source)
     except Exception as exc:
         raise ValueError("This PDF file is corrupt or not a valid PDF document.") from exc
 
@@ -160,66 +168,90 @@ def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
     capped = False
     pages_out: list[str] = []
 
-    for page in reader.pages:
-        try:
-            text = (page.extract_text() or "").replace("\x00", "")
-        except Exception:
-            logger.warning("pdf_to_text: failed to extract text from a page", exc_info=True)
-            text = ""
-
-        try:
-            page_images = list(page.images)
-        except Exception:
-            logger.warning("pdf_to_text: failed to enumerate images on a page", exc_info=True)
-            page_images = []
-
-        tokens: list[str] = []
-        for image_file in page_images:
+    try:
+        for page in reader.pages:
             try:
-                img_bytes = image_file.data
-                pil_image = image_file.image  # may be None / may raise
+                text = (page.extract_text() or "").replace("\x00", "")
             except Exception:
-                logger.warning("pdf_to_text: failed to decode an embedded image; skipping", exc_info=True)
-                continue
-            if not img_bytes or _too_small(pil_image, img_bytes, min_dim):
-                continue
+                logger.warning("pdf_to_text: failed to extract text from a page", exc_info=True)
+                text = ""
 
-            sha = hashlib.sha256(img_bytes).hexdigest()
-            existing = seen.get(sha)
-            if existing is not None:
-                tokens.append(existing)
-                continue
-            if len(seen) >= max_images:
-                if not capped:
-                    logger.warning(
-                        "pdf_to_text: more than %d distinct embedded images; "
-                        "storing the first %d and dropping the rest",
-                        max_images, max_images,
-                    )
-                    capped = True
-                continue
-
-            idx += 1
-            content_type = _content_type_for(image_file, pil_image)
+            tokens: list[str] = []
+            image_refs: list = []
+            # Iterate lazily: list(page.images) would decode every raster on the
+            # page (PIL buffers included) before the first one is handled; one at
+            # a time, the previous image is released as the next is decoded.
             try:
-                token = image_sink(_PdfImage(img_bytes, content_type), idx)
+                image_iter = iter(page.images)
             except Exception:
-                logger.exception("pdf_to_text: image_sink failed for an embedded image; skipping")
-                idx -= 1
-                continue
-            seen[sha] = token
-            tokens.append(token)
+                logger.warning("pdf_to_text: failed to enumerate images on a page", exc_info=True)
+                image_iter = iter(())
+            while True:
+                try:
+                    image_file = next(image_iter)
+                except StopIteration:
+                    break
+                except Exception:
+                    logger.warning("pdf_to_text: failed to decode an embedded image; skipping", exc_info=True)
+                    continue
+                image_refs.append(getattr(image_file, "indirect_reference", None))
+                try:
+                    img_bytes = image_file.data
+                    pil_image = image_file.image  # may be None / may raise
+                except Exception:
+                    logger.warning("pdf_to_text: failed to decode an embedded image; skipping", exc_info=True)
+                    continue
+                if not img_bytes or _too_small(pil_image, img_bytes, min_dim):
+                    continue
 
-        if tokens:
-            page_str = (text + "\n\n" + "\n\n".join(tokens)).strip() if text else "\n\n".join(tokens)
-        else:
-            page_str = text
-        if page_str:
-            pages_out.append(page_str)
+                sha = hashlib.sha256(img_bytes).hexdigest()
+                existing = seen.get(sha)
+                if existing is not None:
+                    tokens.append(existing)
+                    continue
+                if len(seen) >= max_images:
+                    if not capped:
+                        logger.warning(
+                            "pdf_to_text: more than %d distinct embedded images; "
+                            "storing the first %d and dropping the rest",
+                            max_images, max_images,
+                        )
+                        capped = True
+                    continue
 
-        # Free this page's decoded rasters before moving on — otherwise pypdf
-        # keeps every decoded image of the document resident until we return.
-        _release_decoded_streams(page, page_images)
-        page_images = []
+                idx += 1
+                content_type = _content_type_for(image_file, pil_image)
+                try:
+                    token = image_sink(_PdfImage(img_bytes, content_type), idx)
+                except Exception:
+                    logger.exception("pdf_to_text: image_sink failed for an embedded image; skipping")
+                    idx -= 1
+                    continue
+                seen[sha] = token
+                tokens.append(token)
+            image_file = pil_image = img_bytes = None  # noqa: F841 — drop the last raster
+
+            if tokens:
+                page_str = (text + "\n\n" + "\n\n".join(tokens)).strip() if text else "\n\n".join(tokens)
+            else:
+                page_str = text
+            if page_str:
+                pages_out.append(page_str)
+
+            # Free this page's decoded rasters before moving on — otherwise pypdf
+            # keeps every decoded image of the document resident until we return.
+            _release_decoded_streams(page, image_refs)
+    finally:
+        close = getattr(reader, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
+        # The reader's object graph is cyclic (page <-> reader), so dropping the
+        # reference alone leaves tens of MB of parsed objects and raw streams to
+        # the cyclic GC's discretion. Collect now, while we still hold the slot.
+        del reader
+        gc.collect()
 
     return "\n\n".join(pages_out).strip()
