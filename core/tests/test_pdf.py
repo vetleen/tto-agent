@@ -92,6 +92,47 @@ class PdfToTextTests(SimpleTestCase):
         self.assertEqual(calls[0]["idx"], 1)
         self.assertIn("[[image:fake-1|", out)
 
+    def test_decoded_stream_cache_released_per_page(self):
+        """pypdf caches decoded stream bytes on the object for the reader's
+        lifetime; the extractor must drop that cache page by page, or every
+        decoded raster of a figure-heavy document stays resident until the end."""
+        from unittest import mock
+
+        import pypdf
+
+        pdf = _image_pdf(_img(120, 80), _img(90, 90, (20, 120, 200)))
+
+        # Control: reading images the plain way leaves the cache populated.
+        control = pypdf.PdfReader(io.BytesIO(pdf))
+        for page in control.pages:
+            for image_file in page.images:
+                self.assertIsNotNone(image_file.indirect_reference.get_object().decoded_self)
+
+        readers = []
+        real_reader = pypdf.PdfReader
+
+        class RecordingReader(real_reader):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                readers.append(self)
+
+        sink, calls = _recording_sink()
+        with mock.patch.object(pypdf, "PdfReader", RecordingReader):
+            out = pdf_to_text(pdf, image_sink=sink)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("[[image:fake-2|", out)
+        self.assertEqual(len(readers), 1)
+        for page in readers[0].pages:
+            xobjects = page["/Resources"].get("/XObject") or {}
+            self.assertTrue(xobjects, "fixture page should carry an image XObject")
+            for name in xobjects:
+                self.assertIsNone(getattr(xobjects[name].get_object(), "decoded_self", None))
+            contents = page.get_contents()
+            streams = contents if isinstance(contents, (list, tuple)) else [contents]
+            for stream in streams:
+                obj = stream.get_object() if hasattr(stream, "get_object") else stream
+                self.assertIsNone(getattr(obj, "decoded_self", None))
+
     def test_content_type_derived(self):
         sink, calls = _recording_sink()
         pdf_to_text(_image_pdf(_img(120, 80)), image_sink=sink)

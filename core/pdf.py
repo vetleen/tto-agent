@@ -99,6 +99,41 @@ def _too_small(pil_image, data: bytes, min_dim: int) -> bool:
     return len(data) < PDF_MIN_IMAGE_BYTES
 
 
+def _release_decoded_streams(page, page_images) -> None:
+    """Drop pypdf's per-object decoded-data cache for a page we are done with.
+
+    ``EncodedStreamObject.get_data()`` stores the decoded bytes on the object
+    (``decoded_self``) for the reader's lifetime. ``page.images`` decodes every
+    embedded raster, so without this each Flate-encoded figure stays resident
+    until the whole document is extracted — measured at ~240 MB live for four
+    concurrent figure-heavy papers on the worker (2026-09-08), multiplied by
+    concurrency straight into R14/R15. Page content streams get the same
+    treatment. Best-effort: pypdf internals, so every step is guarded.
+    """
+    for image_file in page_images or ():
+        ref = getattr(image_file, "indirect_reference", None)
+        if ref is None:
+            continue
+        try:
+            obj = ref.get_object()
+        except Exception:  # noqa: BLE001 — pypdf internals; never fail extraction
+            continue
+        if getattr(obj, "decoded_self", None) is not None:
+            obj.decoded_self = None
+    try:
+        contents = page.get_contents()
+    except Exception:  # noqa: BLE001
+        return
+    streams = contents if isinstance(contents, (list, tuple)) else [contents]
+    for stream in streams:
+        try:
+            obj = stream.get_object() if hasattr(stream, "get_object") else stream
+        except Exception:  # noqa: BLE001
+            continue
+        if getattr(obj, "decoded_self", None) is not None:
+            obj.decoded_self = None
+
+
 def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
     """Extract a PDF to text. ``file`` may be a path, bytes, or a binary
     file-like. For each page: ``page.extract_text()`` followed by the inline
@@ -181,5 +216,10 @@ def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
             page_str = text
         if page_str:
             pages_out.append(page_str)
+
+        # Free this page's decoded rasters before moving on — otherwise pypdf
+        # keeps every decoded image of the document resident until we return.
+        _release_decoded_streams(page, page_images)
+        page_images = []
 
     return "\n\n".join(pages_out).strip()
