@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import datetime
 import logging
+import threading
 import time
+from contextlib import contextmanager
 
 from django.conf import settings
 from django.db import transaction
@@ -39,6 +41,43 @@ from documents.services.chunking import clean_extracted_text, extract_file_metad
 from documents.services.storage_utils import local_copy
 
 logger = logging.getLogger(__name__)
+
+# Process-wide cap on the memory-heavy stages of an ingest (extract + chunk).
+# Parsing a figure-heavy PDF is 100-200 MB of transient RSS even after the
+# per-page pypdf cache release (core/pdf.py); on the threads-pool worker a folder
+# upload could otherwise run CELERY_WORKER_CONCURRENCY extractions at once —
+# four concurrent ones took the 1 GB staging worker to R15 on 2026-09-08. The
+# embed and scan stages are network-bound and stay outside the slot.
+DOCUMENT_EXTRACT_CONCURRENCY = max(1, int(getattr(settings, "DOCUMENT_EXTRACT_CONCURRENCY", 2)))
+_extract_semaphore = threading.BoundedSemaphore(DOCUMENT_EXTRACT_CONCURRENCY)
+# While a version waits for a slot it is already PROCESSING; touch it this often
+# so the stale sweeper (STALE_PROCESSING_MINUTES) doesn't requeue a version that
+# is merely queued behind other extractions.
+_EXTRACT_WAIT_HEARTBEAT_S = 60.0
+
+
+def _touch_version(version_id: int) -> None:
+    DataRoomDocumentVersion.objects.filter(pk=version_id).update(updated_at=timezone.now())
+
+
+@contextmanager
+def _extraction_slot(version_id: int):
+    """Hold one of ``DOCUMENT_EXTRACT_CONCURRENCY`` slots; heartbeat while queued."""
+    waited = 0.0
+    while not _extract_semaphore.acquire(timeout=_EXTRACT_WAIT_HEARTBEAT_S):
+        waited += _EXTRACT_WAIT_HEARTBEAT_S
+        try:
+            _touch_version(version_id)
+        except Exception:  # noqa: BLE001 — a failed heartbeat must not abort the ingest
+            logger.debug("process_document_version: heartbeat failed for version_id=%s", version_id, exc_info=True)
+        logger.info(
+            "process_document_version: version_id=%s waiting for an extraction slot (%.0fs)",
+            version_id, waited,
+        )
+    try:
+        yield
+    finally:
+        _extract_semaphore.release()
 
 
 def process_document(document_id: int) -> None:
@@ -258,48 +297,51 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
     logger.info("process_document_version: version_id=%s document_id=%s stage=processing", version_id, doc.id)
     started_at = time.perf_counter()
     try:
-        # 1. Get cleaned text — markdown edits use stored content; uploads extract.
-        if (version.content or "").strip():
-            cleaned = clean_extracted_text(version.content)
-            version.parser_type = "markdown"
-            file_meta_date = None
-            prechunked = None
-        else:
-            cleaned, file_meta_date, prechunked = _extract_native(version, doc)
-
-        # Pre-chunked formats (spreadsheets) skip the text guards: their
-        # overview chunk guarantees non-empty output and XLSX_MAX_CELLS is
-        # their size budget.
-        if prechunked is None:
-            if not cleaned or not cleaned.strip():
-                raise ValueError(
-                    "No text could be extracted from this document. "
-                    "It may be a scanned PDF or image-only file that requires OCR."
-                )
-
-            max_chars = getattr(settings, "DOCUMENT_MAX_EXTRACTED_CHARS", 20_000_000)
-            if len(cleaned) > max_chars:
-                raise ValueError(
-                    "This document's extracted text is too large to process "
-                    f"(over {max_chars // 1_000_000} million characters)."
-                )
-
-        # 2. Chunk (pre-chunked formats bring their own; else strategy from settings)
-        logger.info("process_document_version: version_id=%s stage=chunking", version_id)
-        if prechunked is not None:
-            chunks_data = prechunked["chunks"]
-            version.chunking_strategy = "spreadsheet_rows"
-            version.processing_metadata = prechunked["manifest"]
-        else:
-            strategy = getattr(settings, "CHUNKING_STRATEGY", "structure_aware")
-            if strategy == "structure_aware":
-                chunks_data = structure_aware_chunk(cleaned)
-                version.chunking_strategy = "structure_aware"
+        # Stages 1-2 hold an extraction slot (see _extraction_slot); the slot is
+        # released before the network-bound embed/scan stages.
+        with _extraction_slot(version_id):
+            # 1. Get cleaned text — markdown edits use stored content; uploads extract.
+            if (version.content or "").strip():
+                cleaned = clean_extracted_text(version.content)
+                version.parser_type = "markdown"
+                file_meta_date = None
+                prechunked = None
             else:
-                chunks_data = semantic_chunk(cleaned)
-                version.chunking_strategy = "semantic"
-        chunk_count = len(chunks_data)
-        del cleaned, prechunked
+                cleaned, file_meta_date, prechunked = _extract_native(version, doc)
+
+            # Pre-chunked formats (spreadsheets) skip the text guards: their
+            # overview chunk guarantees non-empty output and XLSX_MAX_CELLS is
+            # their size budget.
+            if prechunked is None:
+                if not cleaned or not cleaned.strip():
+                    raise ValueError(
+                        "No text could be extracted from this document. "
+                        "It may be a scanned PDF or image-only file that requires OCR."
+                    )
+
+                max_chars = getattr(settings, "DOCUMENT_MAX_EXTRACTED_CHARS", 20_000_000)
+                if len(cleaned) > max_chars:
+                    raise ValueError(
+                        "This document's extracted text is too large to process "
+                        f"(over {max_chars // 1_000_000} million characters)."
+                    )
+
+            # 2. Chunk (pre-chunked formats bring their own; else strategy from settings)
+            logger.info("process_document_version: version_id=%s stage=chunking", version_id)
+            if prechunked is not None:
+                chunks_data = prechunked["chunks"]
+                version.chunking_strategy = "spreadsheet_rows"
+                version.processing_metadata = prechunked["manifest"]
+            else:
+                strategy = getattr(settings, "CHUNKING_STRATEGY", "structure_aware")
+                if strategy == "structure_aware":
+                    chunks_data = structure_aware_chunk(cleaned)
+                    version.chunking_strategy = "structure_aware"
+                else:
+                    chunks_data = semantic_chunk(cleaned)
+                    version.chunking_strategy = "semantic"
+            chunk_count = len(chunks_data)
+            del cleaned, prechunked
         logger.info("process_document_version: version_id=%s stage=chunked count=%s", version_id, chunk_count)
 
         if not chunks_data:

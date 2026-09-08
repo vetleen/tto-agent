@@ -618,6 +618,88 @@ class ProcessDocumentServiceTests(TestCase):
                 self.assertEqual(doc.chunking_strategy, "semantic")
                 self.assertIsNotNone(doc.processed_at)
 
+    def test_extraction_slot_waits_and_heartbeats_when_full(self):
+        """A version queued behind other extractions waits for a slot and keeps
+        touching updated_at, so the stale sweeper never requeues it."""
+        import threading
+
+        from documents.services import process_document as svc
+
+        entered = threading.Event()
+        touched = []
+        sem = threading.BoundedSemaphore(1)
+        sem.acquire()  # the test holds the only slot
+
+        def worker():
+            with svc._extraction_slot(4242):
+                entered.set()
+
+        with patch.object(svc, "_extract_semaphore", sem), \
+             patch.object(svc, "_EXTRACT_WAIT_HEARTBEAT_S", 0.05), \
+             patch.object(svc, "_touch_version", side_effect=lambda vid: touched.append(vid)):
+            t = threading.Thread(target=worker)
+            t.start()
+            self.assertFalse(entered.wait(0.3))  # still queued
+            self.assertGreaterEqual(len(touched), 2)
+            self.assertTrue(all(v == 4242 for v in touched))
+            sem.release()
+            self.assertTrue(entered.wait(2))
+            t.join(2)
+        # The slot was released by the context manager: a fresh acquire succeeds.
+        self.assertTrue(sem.acquire(timeout=1))
+
+    def test_extraction_slot_released_on_error(self):
+        import threading
+
+        from documents.services import process_document as svc
+
+        sem = threading.BoundedSemaphore(1)
+        with patch.object(svc, "_extract_semaphore", sem):
+            with self.assertRaises(RuntimeError):
+                with svc._extraction_slot(1):
+                    raise RuntimeError("parse failed")
+        self.assertTrue(sem.acquire(timeout=1))
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
+    def test_extract_and_chunk_run_inside_the_slot(self):
+        """Extraction and chunking happen while the slot is held; embedding happens after."""
+        from contextlib import contextmanager
+
+        from django.core.files.base import ContentFile
+        from documents.services import process_document as svc
+
+        events = []
+
+        @contextmanager
+        def fake_slot(version_id):
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+        def fake_chunk(text):
+            events.append("chunk")
+            return [{"text": "c", "heading": None, "token_count": 1, "chunk_index": 0,
+                     "source_page_start": None, "source_page_end": None,
+                     "source_offset_start": 0, "source_offset_end": 1}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room, uploaded_by=self.user,
+                    original_filename="slot.txt", status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("slot.txt", ContentFile(b"hello world"), save=True)
+                with patch.object(svc, "_extraction_slot", fake_slot), \
+                     patch.object(svc, "load_documents", side_effect=lambda *a, **k: (events.append("extract") or [Mock(page_content="hello world")])), \
+                     patch.object(svc, "semantic_chunk", side_effect=fake_chunk), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    svc.process_document(doc.id)
+        self.assertEqual(events, ["enter", "extract", "chunk", "exit"])
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_sets_failed_when_file_missing(self):
         """Doc with no attached file transitions to FAILED with a processing_error."""

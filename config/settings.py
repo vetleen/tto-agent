@@ -583,6 +583,12 @@ WEB_FETCH_MAX_RESPONSE_BYTES = _env_int("WEB_FETCH_MAX_RESPONSE_BYTES", "1000000
 # Bounds the transient RSS peak when many sub-agent web_fetches run at once on the
 # threads-pool worker (Aug-2026 R14). See llm/tools/web_fetch.py.
 WEB_FETCH_CONCURRENCY = _env_int("WEB_FETCH_CONCURRENCY", "4")
+# Dyno-wide cap on concurrent document extract+chunk stages (pypdf/docx/pptx
+# parsing, image extraction, chunking). One figure-heavy PDF is 100-200 MB of
+# transient RSS even after the pypdf cache fix; a folder upload can otherwise put
+# CELERY_WORKER_CONCURRENCY of them on the worker at once (2026-09-08 R15).
+# See documents/services/process_document.py.
+DOCUMENT_EXTRACT_CONCURRENCY = _env_int("DOCUMENT_EXTRACT_CONCURRENCY", "2")
 
 # Document upload and chunking (MVP)
 DATA_UPLOAD_MAX_NUMBER_FILES = 100
