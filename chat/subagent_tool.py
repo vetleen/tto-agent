@@ -73,7 +73,11 @@ class CreateSubagentTool(ContextAwareTool):
         from django.contrib.auth import get_user_model
 
         from chat.models import SubAgentRun
-        from chat.subagent_limits import create_subagent_run_if_allowed, get_queue_depth
+        from chat.subagent_limits import (
+            create_subagent_run_if_allowed,
+            dispatch_pending_subagents,
+            get_queue_depth,
+        )
 
         context = self.context
         if not context or not context.user_id:
@@ -143,36 +147,44 @@ class CreateSubagentTool(ContextAwareTool):
         if run is None:
             return json.dumps({"status": "error", "message": err_msg})
 
-        # Always dispatch to Celery
-        from chat.tasks import run_subagent_task
-        task = run_subagent_task.delay(str(run.id))
-        run.celery_task_id = task.id
-        run.save(update_fields=["celery_task_id"])
+        # Hand it to Celery now if an execution slot is free; otherwise it waits
+        # in line and is dispatched when a running sub-agent finishes. A
+        # dispatcher error is not a spawn error: the row exists and the sweeper
+        # backstop will dispatch it.
+        try:
+            dispatched = dispatch_pending_subagents()
+        except Exception:
+            logger.exception("Dispatch after creating sub-agent run %s failed", run.id)
+            dispatched = []
+        started = run.id in dispatched
 
         if timeout == 0:
+            if started:
+                return json.dumps({
+                    "status": "started",
+                    "run_id": str(run.id),
+                    "message": f"Sub-agent started (model: {model_tier}). Its result will appear in the conversation automatically.",
+                })
             queue = get_queue_depth()
-            # Don't count the run we just created as "ahead"
-            others_ahead = max(0, queue["pending"] - 1)
-            # Queued only when every worker slot is taken by runs ahead of this
-            # one (already running + pending ahead). With free slots it starts now.
-            is_queued = (others_ahead + queue["running"]) >= queue["worker_slots"]
-            result = {
-                "status": "queued" if is_queued else "started",
+            ahead = SubAgentRun.objects.filter(
+                status=SubAgentRun.Status.PENDING,
+                dispatched_at__isnull=True,
+                created_at__lt=run.created_at,
+            ).count()
+            return json.dumps({
+                "status": "queued",
                 "run_id": str(run.id),
-                "queue_position": others_ahead + 1,
-                "worker_slots": queue["worker_slots"],
-                "ahead_in_queue": others_ahead,
+                "queue_position": ahead + 1,
+                "ahead_in_queue": ahead,
                 "currently_running": queue["running"],
-            }
-            if is_queued:
-                result["message"] = (
-                    f"Sub-agent queued (position {others_ahead + 1}). "
-                    f"Only {queue['worker_slots']} sub-agents execute at a time. "
-                    f"Currently {queue['running']} running, {others_ahead} others waiting ahead."
-                )
-            else:
-                result["message"] = f"Sub-agent started (model: {model_tier}). Its result will appear in the conversation automatically."
-            return json.dumps(result)
+                "worker_slots": queue["worker_slots"],
+                "message": (
+                    f"Sub-agent queued (position {ahead + 1}): all {queue['worker_slots']} "
+                    f"execution slots are busy ({queue['running']} running, {ahead} waiting ahead of it). "
+                    "It starts automatically when a slot frees up and its result will appear "
+                    "in the conversation — do not create it again."
+                ),
+            })
 
         # Poll for result until timeout
         deadline = time.monotonic() + timeout
@@ -207,13 +219,28 @@ class CreateSubagentTool(ContextAwareTool):
                     "message": f"Sub-agent failed: {run.error}",
                 })
 
-        # Timeout exceeded — still running or queued
+        # Timeout exceeded — still waiting for a slot, or still running
+        state = SubAgentRun.objects.filter(pk=run.id).values_list("status", "dispatched_at").first()
+        waiting = bool(state) and state[0] == SubAgentRun.Status.PENDING and state[1] is None
         queue = get_queue_depth()
+        if waiting:
+            return json.dumps({
+                "status": "queued",
+                "run_id": str(run.id),
+                "currently_running": queue["running"],
+                "ahead_in_queue": queue["waiting"],
+                "worker_slots": queue["worker_slots"],
+                "message": (
+                    f"Sub-agent is still waiting for a free execution slot after {timeout}s "
+                    f"({queue['running']} running, {queue['waiting']} waiting). It starts "
+                    "automatically and its result will appear in the conversation — do not create it again."
+                ),
+            })
         return json.dumps({
             "status": "started",
             "run_id": str(run.id),
             "currently_running": queue["running"],
-            "ahead_in_queue": queue["pending"],
+            "ahead_in_queue": queue["waiting"],
             "worker_slots": queue["worker_slots"],
             "message": f"Sub-agent is still running after {timeout}s. Its result will appear in the conversation automatically.",
         })

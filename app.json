@@ -79,6 +79,21 @@
       "description": "Celery threads-pool worker thread count.",
       "value": "8"
     },
+    "SUBAGENT_WORKER_SLOTS": {
+      "description": "Max sub-agents executing at once, system-wide. The sub-agent memory lever on the worker; applies on the next dispatch, no restart. Production runs 8.",
+      "value": "4",
+      "required": false
+    },
+    "SUBAGENT_MAX_SYSTEM": {
+      "description": "Max sub-agents waiting + running system-wide (the queue depth). Above it a spawn is refused with 'system busy'. Production runs 24.",
+      "value": "8",
+      "required": false
+    },
+    "SUBAGENT_MAX_PER_USER": {
+      "description": "Max sub-agents waiting + running per user. Hard deny; the orchestrator prompt states this number.",
+      "value": "4",
+      "required": false
+    },
     "RERANK_ON_WORKER": {
       "description": "Enable FlashRank rerank on the Celery worker. Default false. FlashRank/onnxruntime is ~45MB resident (TinyBERT + onnxruntime session); on its own this flag won't get a real workload under the 512MB cap (the shared LLM/ML stack dominates — tiktoken alone is ~80MB), but keeping it off avoids stacking that extra ~45MB toward the R15 kill under concurrency. Main-chat rerank is controlled by RERANK_ENABLED. Enable only after a Standard-2X bump gives headroom; worker restart required.",
       "value": "false",

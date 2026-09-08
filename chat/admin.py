@@ -26,8 +26,8 @@ from .models import (
 class SubAgentRunInline(admin.TabularInline):
     model = SubAgentRun
     extra = 0
-    readonly_fields = ("id", "status", "prompt", "model_tier", "model_used", "tokens_used", "cost_usd", "created_at", "completed_at")
-    fields = ("status", "prompt", "model_tier", "model_used", "tokens_used", "cost_usd", "created_at", "completed_at")
+    readonly_fields = ("id", "status", "prompt", "model_tier", "model_used", "tokens_used", "cost_usd", "created_at", "dispatched_at", "started_at", "completed_at")
+    fields = ("status", "prompt", "model_tier", "model_used", "tokens_used", "cost_usd", "created_at", "dispatched_at", "started_at", "completed_at")
 
 
 class ChatMessageInline(admin.TabularInline):
@@ -157,7 +157,7 @@ class SubAgentRunAdmin(admin.ModelAdmin):
     list_display = ("short_id", "thread", "user", "status", "model_tier", "model_used", "short_prompt", "tokens_used", "cost_display", "has_result", "created_at")
     list_filter = ("status", "model_tier", "created_at")
     search_fields = ("prompt", "result", "id")
-    readonly_fields = ("id", "created_at", "completed_at")
+    readonly_fields = ("id", "created_at", "dispatched_at", "started_at", "completed_at")
     list_select_related = ("thread", "user")
     ordering = ["-created_at"]
 

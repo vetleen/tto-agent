@@ -452,9 +452,11 @@ class StaleRunExpirationTests(TestCase):
             thread=self.thread, user=self.user,
             prompt="stuck", status=SubAgentRun.Status.PENDING,
         )
-        # Backdate created_at to 11 minutes ago
+        # Handed to Celery 8 minutes ago and never picked up. (A PENDING row
+        # with no dispatched_at is merely waiting in line and is not stale.)
         SubAgentRun.objects.filter(pk=run.pk).update(
             created_at=timezone.now() - timedelta(minutes=11),
+            dispatched_at=timezone.now() - timedelta(minutes=8),
         )
 
         expired = _expire_stale_runs()
@@ -1612,6 +1614,7 @@ class SubagentFailureMessageTests(TestCase):
         )
         SubAgentRun.objects.filter(pk=pending.pk).update(
             created_at=timezone.now() - timedelta(minutes=11),
+            dispatched_at=timezone.now() - timedelta(minutes=11),
         )
         SubAgentRun.objects.filter(pk=running.pk).update(
             started_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
@@ -1701,6 +1704,22 @@ class SubagentWatchdogTests(TransactionTestCase):
         self.assertTrue(await self._tick())
         self.assertEqual(self._sent_counts(), [1])
         self.consumer._handle_chat_message.assert_not_awaited()
+
+    async def test_tick_reports_waiting_count(self):
+        """A run still queued for an execution slot counts as active (keeps the
+        watchdog alive) and is reported separately as waiting."""
+        await database_sync_to_async(SubAgentRun.objects.create)(
+            thread=self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.PENDING,
+        )
+        self.assertTrue(await self._tick())
+        frames = [
+            json.loads(c.kwargs["text_data"])
+            for c in self.consumer.send.call_args_list
+            if json.loads(c.kwargs["text_data"]).get("event_type") == "subagents.updated"
+        ]
+        self.assertEqual(frames[0]["active_count"], 1)
+        self.assertEqual(frames[0]["waiting_count"], 1)
 
     async def test_tick_defers_to_live_stream(self):
         """While a stream runs, the post-stream claim owns delivery — the tick

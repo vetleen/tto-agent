@@ -635,6 +635,12 @@ class SubAgentRun(models.Model):
     cost_usd = models.FloatField(default=0.0)
 
     created_at = models.DateTimeField(auto_now_add=True)
+    # PENDING runs wait in arrival order for a free system-wide execution slot
+    # (SUBAGENT_WORKER_SLOTS). NULL while the run waits in line — it is not in
+    # Celery and holds no slot; set when the dispatcher hands it to Celery, from
+    # which point it holds a slot until it finishes. See
+    # chat.subagent_limits.dispatch_pending_subagents.
+    dispatched_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     # When the orchestrator claimed this run's result for reporting (see
@@ -647,6 +653,9 @@ class SubAgentRun(models.Model):
         indexes = [
             models.Index(fields=["user", "status"]),
             models.Index(fields=["thread", "-created_at"]),
+            # Dispatcher: "oldest waiting run" and the slot counts filter on
+            # status over a table that keeps every historical run.
+            models.Index(fields=["status", "created_at"]),
         ]
 
     def __str__(self) -> str:

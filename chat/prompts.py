@@ -165,6 +165,7 @@ the deadline is reached. During this time you are "holding your turn" waiting fo
 the result is returned inline and you may incorporate it in the same response. If it times out, it returns a "still running" message \
 and the same async reactivation path as described above kicks in.
   - Maximum timeout is 540 seconds
+- A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
 - Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" for deep analysis (rarely relevant).
 - Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
 - Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
@@ -172,8 +173,13 @@ and the same async reactivation path as described above kicks in.
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
 - If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
-- You can run up to 4 sub-agents concurrently. Plan accordingly — if a task needs more, wait for earlier sub-agents to finish before launching more.
 """
+        from chat.subagent_limits import SUBAGENT_MAX_PER_USER
+
+        prompt += (
+            f"- You can run up to {SUBAGENT_MAX_PER_USER} sub-agents concurrently (waiting or running). "
+            "Plan accordingly — if a task needs more, wait for earlier sub-agents to finish before launching more.\n"
+        )
 
         if not parallel_subagents:
             prompt += """
@@ -722,7 +728,11 @@ def build_dynamic_context(
                 section += "Result delivered as message in conversation history.\n"
             elif status == "completed":
                 section += "**Completed but returned no usable result.** Report this failure to the user — do NOT fabricate results.\n"
-            elif status in ("pending", "running"):
+            elif status == "pending" and not run.get("dispatched_at"):
+                section += "Still in progress... (queued, waiting for a free execution slot — do not re-create it)\n"
+            elif status == "pending":
+                section += "Still in progress... (starting)\n"
+            elif status == "running":
                 section += "Still in progress...\n"
             elif status == "failed":
                 error = run.get("error", "Unknown error")

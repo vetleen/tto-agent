@@ -630,14 +630,20 @@ def chat_home(request):
         ).aggregate(total=Sum("cost_usd"))
         thread_cost_usd = float(result["total"]) if result["total"] is not None else 0.0
 
-    # Active sub-agents for status bar
+    # Active sub-agents for status bar (waiting = still queued for an execution slot)
     active_subagent_count = 0
+    waiting_subagent_count = 0
     if thread:
         from chat.models import SubAgentRun
 
         active_subagent_count = SubAgentRun.objects.filter(
             thread_id=thread.id,
             status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
+        ).count()
+        waiting_subagent_count = SubAgentRun.objects.filter(
+            thread_id=thread.id,
+            status=SubAgentRun.Status.PENDING,
+            dispatched_at__isnull=True,
         ).count()
 
     # If thread selected, get its attached data rooms
@@ -753,6 +759,7 @@ def chat_home(request):
             "draft_input": draft_input,
             "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
             "active_subagent_count": active_subagent_count,
+            "waiting_subagent_count": waiting_subagent_count,
             "assistant_name": django_settings.ASSISTANT_NAME,
             # File-picker accept list derived from the unified capability table.
             # Includes image/* so iOS Safari offers the photo library instead of

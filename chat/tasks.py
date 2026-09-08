@@ -118,13 +118,31 @@ class _SubagentTask(Task):
 
         _capture_subagent_failure(exc, run_id_str)
 
+    def after_return(self, status, retval, task_id, args, kwargs, einfo):
+        # This run released its execution slot (SUCCESS, or FAILURE after
+        # on_failure ran): hand the slot to the next run waiting in line. Celery
+        # skips after_return on RETRY, so a retrying run keeps its slot. Must
+        # never raise — an exception escaping here makes the tracer report a
+        # finished task as an internal failure.
+        try:
+            from chat.subagent_limits import dispatch_pending_subagents
+
+            dispatch_pending_subagents()
+        except Exception:
+            logger.exception(
+                "Sub-agent dispatch after run %s failed",
+                args[0] if args else kwargs.get("run_id"),
+            )
+
 
 @shared_task(
     base=_SubagentTask,
     bind=True,
-    retry_backoff=True,
-    retry_backoff_max=60,
-    retry_kwargs={"max_retries": 2},
+    # Read by the manual self.retry() below (retry_backoff / retry_kwargs only
+    # apply with autoretry_for). Short delay: a retrying run holds an execution
+    # slot while it waits.
+    max_retries=2,
+    default_retry_delay=30,
     time_limit=600,
     soft_time_limit=540,
 )
@@ -158,10 +176,16 @@ def expire_stale_subagent_runs() -> int:
     INFO so routine maintenance blips don't surface as Sentry errors (WILFRED-5K).
     """
     from django.db.utils import InterfaceError, OperationalError
-    from chat.subagent_limits import _expire_stale_runs
+    from chat.subagent_limits import _expire_stale_runs, dispatch_pending_subagents
 
     try:
-        return _expire_stale_runs()
+        expired = _expire_stale_runs()
+        # Backstop dispatcher: covers a missed after_return (a worker restart
+        # left RUNNING ghosts that just expired above, freeing slots), a
+        # publish that failed and was reverted, and a cancelled run that Celery
+        # discarded at delivery without running the task.
+        dispatch_pending_subagents()
+        return expired
     except (OperationalError, InterfaceError):
         logger.info(
             "Skipping stale sub-agent cleanup: database temporarily unavailable; "

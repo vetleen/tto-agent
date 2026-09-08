@@ -290,6 +290,11 @@ class BuildSystemPromptTests(TestCase):
         prompt = build_system_prompt(has_subagent_tool=True)
         self.assertIn("up to 4 sub-agents concurrently", prompt)
 
+    def test_subagent_section_says_queued_is_not_a_failure(self):
+        prompt = build_system_prompt(has_subagent_tool=True)
+        self.assertIn('A "queued" status is not a failure', prompt)
+        self.assertIn("Never create it again", prompt)
+
     def test_parallel_subagents_disabled_includes_sequential_instruction(self):
         prompt = build_system_prompt(
             has_subagent_tool=True, parallel_subagents=False

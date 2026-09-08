@@ -44,6 +44,18 @@ those multiplex onto `PGBOUNCER_DEFAULT_POOL_SIZE` real connections rather than 
 increasing real DB connections — no code change, just `heroku config:set`. Local Windows dev is unaffected: it uses the solo
 pool (`config/celery.py:win32` override).
 
+**Sub-agent execution queue.** Sub-agents are the worker's main RSS spike, so how many run
+at once is capped separately from thread concurrency by `SUBAGENT_WORKER_SLOTS` (production:
+8). Admitted runs (`SUBAGENT_MAX_PER_USER` per user, `SUBAGENT_MAX_SYSTEM` waiting + running
+system-wide — the queue depth) wait in arrival order as `SubAgentRun` rows with
+`dispatched_at = NULL` and are handed to Celery by `chat.subagent_limits.dispatch_pending_subagents`
+whenever a slot frees (on every run's completion, on user cancel, and from the 120 s
+`expire_stale_subagent_runs` sweeper as a backstop). The tool tells the orchestrator
+"queued (position N)" from the real line. **On a worker R14 day, lowering
+`SUBAGENT_WORKER_SLOTS` is the first lever** — it takes effect on the next dispatch, no restart.
+Caveat: a worker restart mid-load leaves RUNNING ghosts that hold their slots until the sweeper
+expires them (15 min from `started_at`), which can stall the whole line for that long.
+
 **`-B` embeds Celery beat in the worker.** Beat is the scheduler for periodic tasks
 (`CELERY_BEAT_SCHEDULE` in `config/settings.py`, e.g. `expire_stale_subagent_runs`
 every 120s) and **must run on exactly one process.** The threads pool supports embedding
@@ -168,12 +180,12 @@ If the release included a migration, rolling back the code without reversing the
 | Task | App | Retries | Time Limit | Purpose |
 |------|-----|---------|------------|---------|
 | `process_document_task` | documents | 5 | 600s hard / 540s soft | Extract → chunk → embed uploaded documents |
-| `run_subagent_task` | chat | 3 | 600s hard / 540s soft | Execute sub-agent runs |
+| `run_subagent_task` | chat | 2 | 600s hard / 540s soft | Execute sub-agent runs (slot-gated — see *Sub-agent execution queue*) |
 | `scan_document_chunks` | guardrails | 3 | 600s hard / 570s soft | Adversarial content scanning (heuristic + LLM) |
 | `transcribe_meeting_chunk_task` | meetings | default | 600s hard / 540s soft | Transcribe a live-meeting audio chunk |
 | `transcribe_uploaded_audio_task` | meetings | default | 1800s hard / 1740s soft | Transcribe an uploaded audio file (may be long) |
 
-All tasks use exponential backoff on retry.
+Tasks use exponential backoff on retry, except `run_subagent_task`, which retries after a fixed 30 s: a retrying run keeps holding its sub-agent execution slot, so it must not sit idle for long.
 
 ### Stuck/failed tasks
 
@@ -389,6 +401,9 @@ See `.env.example` for the full list with comments. Key production variables:
 | `DATABASE_URL` | Auto | Postgres connection (set by Heroku add-on) |
 | `REDIS_URL` | Auto | Redis connection (set by Heroku add-on) |
 | `CELERY_WORKER_CONCURRENCY` | No | threads-pool worker thread count (default 8; ≈ max worker DB connections). Raise to ~16–20 on a 40-connection Postgres plan. |
+| `SUBAGENT_WORKER_SLOTS` | No | Max sub-agents executing at once, system-wide (default 4; production 8). The sub-agent memory lever — applies on the next dispatch, no restart. See *Sub-agent execution queue*. |
+| `SUBAGENT_MAX_SYSTEM` | No | Max sub-agents waiting + running system-wide, i.e. the queue depth (default 8; production 24). Above it a spawn is refused with "system busy". |
+| `SUBAGENT_MAX_PER_USER` | No | Max sub-agents waiting + running per user (default 4). Hard deny; the orchestrator prompt states this number. |
 | `RERANK_ON_WORKER` | No | Enable FlashRank rerank on the Celery worker (default `false`). Off keeps FlashRank/onnxruntime (~45 MB) from loading on the worker, but does **not** by itself get a real workload under the 512 MB cap (the LLM/ML stack dominates — see *Worker pool & concurrency*); enable only after a Standard-2X bump. Main-chat rerank is controlled separately by `RERANK_ENABLED`. Worker restart required to take effect. |
 | `MALLOC_ARENA_MAX` | No | Caps glibc malloc arenas to reduce threads-pool memory fragmentation. Set to `2` on staging + production. Worker restart required to take effect. |
 | `OPENAI_API_KEY` | Yes | Embeddings + OpenAI LLM provider |
