@@ -348,32 +348,61 @@ def ensure_tracemalloc(env: dict[str, str] | None = None) -> bool:
         return False
 
 
-def tracemalloc_snapshot():
-    """Current tracemalloc snapshot, or None when not tracing."""
+# A tracemalloc snapshot materializes one Python tuple per live traced block
+# (millions of them under load — hundreds of MB, transiently). Snapshots are
+# therefore never *held*: they are reduced at once to a {(file, line): bytes}
+# dict (thousands of entries) and dropped, and only one is materialized at a
+# time process-wide so concurrent task ends cannot stack their transients.
+_snapshot_lock = threading.Lock()
+
+
+def tracemalloc_line_sizes(*, by: str = "lineno") -> dict[tuple, int] | None:
+    """{(filename, lineno): live bytes} from a tracemalloc snapshot, or None.
+
+    The snapshot itself is discarded before returning. ``by="filename"``
+    groups per file instead (lineno 0).
+    """
     try:
         import tracemalloc
 
         if not tracemalloc.is_tracing():
             return None
-        return tracemalloc.take_snapshot()
+        with _snapshot_lock:
+            snap = tracemalloc.take_snapshot()
+            try:
+                stats = snap.statistics(by)
+                sizes = {(s.traceback[0].filename, s.traceback[0].lineno): s.size for s in stats}
+            finally:
+                del snap
+        return sizes
     except Exception:  # noqa: BLE001
         return None
 
 
-def _fmt_stats(stats, top: int, root: str, growth: bool) -> str:
-    parts = []
-    for s in stats[:top]:
-        fr = s.traceback[0]
-        fn = fr.filename
-        if fn.startswith(root):
-            fn = os.path.relpath(fn, root).replace("\\", "/")
-        else:
-            fn = fn.split("site-packages/")[-1].split("site-packages\\")[-1]
-        if growth:
-            parts.append(f"{fn}:{fr.lineno} {s.size_diff / _MB:+.1f}MB (now {s.size / _MB:.1f})")
-        else:
-            parts.append(f"{fn}:{fr.lineno} {s.size / _MB:.1f}MB")
-    return " | ".join(parts) or "(none)"
+def _short_file(fn: str, root: str) -> str:
+    if fn.startswith(root):
+        return os.path.relpath(fn, root).replace("\\", "/")
+    return fn.split("site-packages/")[-1].split("site-packages\\")[-1]
+
+
+def _fmt_sizes(sizes: dict[tuple, int], top: int, root: str) -> str:
+    items = sorted(sizes.items(), key=lambda kv: kv[1], reverse=True)[:top]
+    return " | ".join(
+        f"{_short_file(fn, root)}:{ln} {size / _MB:.1f}MB" for (fn, ln), size in items
+    ) or "(none)"
+
+
+def _fmt_growth(now: dict[tuple, int], before: dict[tuple, int], top: int, root: str) -> str:
+    keys = set(now) | set(before)
+    diffs = sorted(
+        ((k, now.get(k, 0) - before.get(k, 0), now.get(k, 0)) for k in keys),
+        key=lambda t: t[1], reverse=True,
+    )
+    diffs = [d for d in diffs if d[1] != 0][:top]
+    return " | ".join(
+        f"{_short_file(fn, root)}:{ln} {diff / _MB:+.1f}MB (now {size / _MB:.1f})"
+        for (fn, ln), diff, size in diffs
+    ) or "(none)"
 
 
 def _caches_summary() -> str:
@@ -421,19 +450,23 @@ def memory_report(
     tag: str,
     *,
     full: bool = False,
-    prev_snapshot=None,
+    prev_sizes: dict[tuple, int] | None = None,
     prev_rss_kb: int | None = None,
     top: int = 10,
     force: bool = False,
     collect: bool = False,
+    tracemalloc_lines: bool = True,
 ) -> dict:
     """Log a memory report and return the numbers (for tests / callers).
 
-    ``full`` adds the largest mappings and a bigger tracemalloc top list;
-    ``prev_snapshot`` (a tracemalloc snapshot) adds allocation growth since it;
-    ``collect`` runs ``gc.collect()`` first and reports what it freed (so a
-    post-task report shows whether reference cycles were holding the memory).
-    ``force`` bypasses the ``MEM_DEBUG_WORKER`` gate (on-demand task).
+    ``full`` adds the largest mappings, a bigger tracemalloc top list and a
+    per-file grouping; ``prev_sizes`` (from :func:`tracemalloc_line_sizes`)
+    adds allocation growth since then; ``collect`` runs ``gc.collect()`` first
+    and reports what it freed (so a post-task report shows whether reference
+    cycles were holding the memory); ``tracemalloc_lines=False`` skips the
+    snapshot entirely (the periodic sample — a snapshot is too expensive to
+    take every minute under load). ``force`` bypasses the ``MEM_DEBUG_WORKER``
+    gate (on-demand task).
     """
     if not force and not worker_debug_enabled():
         return {}
@@ -522,25 +555,25 @@ def memory_report(
         except Exception:  # noqa: BLE001
             logger.debug("MEMREPORT thread dump failed", exc_info=True)
 
-        snap = tracemalloc_snapshot()
-        if snap is not None:
+        sizes = tracemalloc_line_sizes() if tracemalloc_lines else None
+        if sizes is not None:
             root = _app_root()
+            result["tracemalloc_sizes"] = sizes
             try:
                 n = top * 2 if full else top
-                logger.info(
-                    "MEMREPORT %s tracemalloc top: %s", tag,
-                    _fmt_stats(snap.statistics("lineno"), n, root, growth=False),
-                )
-                if prev_snapshot is not None:
+                logger.info("MEMREPORT %s tracemalloc top: %s", tag, _fmt_sizes(sizes, n, root))
+                if prev_sizes is not None:
                     logger.info(
                         "MEMREPORT %s tracemalloc growth since start: %s", tag,
-                        _fmt_stats(snap.compare_to(prev_snapshot, "lineno"), n, root, growth=True),
+                        _fmt_growth(sizes, prev_sizes, n, root),
                     )
                 if full:
-                    logger.info(
-                        "MEMREPORT %s tracemalloc by file: %s", tag,
-                        _fmt_stats(snap.statistics("filename"), top, root, growth=False),
-                    )
+                    by_file = tracemalloc_line_sizes(by="filename")
+                    if by_file:
+                        logger.info(
+                            "MEMREPORT %s tracemalloc by file: %s", tag,
+                            _fmt_sizes(by_file, top, root),
+                        )
             except Exception:  # noqa: BLE001
                 logger.debug("MEMREPORT tracemalloc summary failed", exc_info=True)
 
@@ -563,15 +596,15 @@ _task_state_lock = threading.Lock()
 
 
 def task_prerun_report(task_id: str, task_name: str | None) -> None:
-    """Record RSS (and a tracemalloc snapshot) when a non-trivial task starts."""
+    """Record RSS (and per-line tracemalloc sizes) when a non-trivial task starts."""
     if not worker_debug_enabled() or _skip_task(task_name):
         return
     try:
         status = read_proc_status()
         rss_kb = status.get("VmRSS")
-        snap = tracemalloc_snapshot()
+        sizes = tracemalloc_line_sizes()
         with _task_state_lock:
-            _task_state[task_id] = (rss_kb, snap, time.monotonic())
+            _task_state[task_id] = (rss_kb, sizes, time.monotonic())
         logger.info(
             "MEMREPORT task_start name=%s id=%s rss=%s swap=%s threads=%s",
             task_name, task_id, _mb(rss_kb), _mb(status.get("VmSwap")),
@@ -588,11 +621,11 @@ def task_postrun_report(task_id: str, task_name: str | None) -> None:
     try:
         with _task_state_lock:
             prev = _task_state.pop(task_id, None)
-        prev_rss, prev_snap, t0 = prev if prev else (None, None, None)
+        prev_rss, prev_sizes, t0 = prev if prev else (None, None, None)
         dur = f" took={time.monotonic() - t0:.0f}s" if t0 else ""
         memory_report(
             f"task_end name={task_name} id={task_id}{dur}",
-            full=True, prev_snapshot=prev_snap, prev_rss_kb=prev_rss, collect=True,
+            full=True, prev_sizes=prev_sizes, prev_rss_kb=prev_rss, collect=True,
         )
     except Exception:  # noqa: BLE001
         logger.debug("MEMREPORT postrun failed", exc_info=True)
@@ -611,7 +644,10 @@ def _sampler_loop(interval: float) -> None:
     while True:
         time.sleep(interval)
         try:
-            memory_report("sample")
+            # No tracemalloc snapshot here: under load it materializes millions
+            # of trace tuples and can take longer than the interval. The
+            # task_end reports carry the per-line attribution.
+            memory_report("sample", tracemalloc_lines=False)
         except Exception:  # noqa: BLE001
             logger.debug("MEMREPORT sample failed", exc_info=True)
 
@@ -652,4 +688,5 @@ __all__ = [
     "mallinfo2",
     "thread_dump",
     "largest_mappings",
+    "tracemalloc_line_sizes",
 ]

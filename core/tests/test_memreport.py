@@ -138,6 +138,39 @@ class ReportTests(SimpleTestCase):
         self.assertFalse(memreport._sampler_started)
 
 
+class TracemallocTests(SimpleTestCase):
+    def test_line_sizes_none_when_not_tracing(self):
+        import tracemalloc
+
+        if tracemalloc.is_tracing():
+            self.skipTest("tracemalloc already tracing in this process")
+        self.assertIsNone(memreport.tracemalloc_line_sizes())
+
+    def test_line_sizes_and_growth_when_tracing(self):
+        import tracemalloc
+
+        was_tracing = tracemalloc.is_tracing()
+        if not was_tracing:
+            tracemalloc.start(3)
+        try:
+            before = memreport.tracemalloc_line_sizes()
+            keep = [bytearray(256 * 1024) for _ in range(8)]  # ~2 MB attributed to this line
+            after = memreport.tracemalloc_line_sizes()
+            self.assertIsInstance(before, dict)
+            self.assertIsInstance(after, dict)
+            growth = memreport._fmt_growth(after, before, 5, memreport._app_root())
+            self.assertIn("test_memreport.py", growth)
+            self.assertIn("+", growth)
+            del keep
+        finally:
+            if not was_tracing:
+                tracemalloc.stop()
+
+    def test_growth_formatting_empty(self):
+        self.assertEqual(memreport._fmt_growth({}, {}, 5, "/x"), "(none)")
+        self.assertEqual(memreport._fmt_sizes({}, 5, "/x"), "(none)")
+
+
 class OnDemandTests(SimpleTestCase):
     def test_task_forces_a_report(self):
         from core.tasks import memory_report_task
