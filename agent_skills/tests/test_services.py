@@ -461,6 +461,8 @@ class GetAvailableSkillsWithSelectionTests(TestCase):
         Membership.objects.create(user=self.user, org=self.org)
 
     def _set_pref(self, slug, selected_skill_id):
+        from accounts.models import invalidate_user_preferences_cache
+
         us, _ = UserSettings.objects.get_or_create(user=self.user)
         prefs = us.preferences or {}
         skills = prefs.get("skills") or {}
@@ -468,6 +470,9 @@ class GetAvailableSkillsWithSelectionTests(TestCase):
         prefs["skills"] = skills
         us.preferences = prefs
         us.save(update_fields=["preferences"])
+        # Direct row write bypasses update_user_preferences (which invalidates);
+        # prefs are memoized on the user instance, so drop the memo by hand.
+        invalidate_user_preferences_cache(self.user)
 
     def test_selection_overrides_shadowing(self):
         org_skill = AgentSkill.objects.create(

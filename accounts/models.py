@@ -291,6 +291,36 @@ def invalidate_membership_cache(user) -> None:
         delattr(user, _MEMBERSHIP_CACHE_ATTR)
 
 
+_USER_PREFS_CACHE_ATTR = "_cached_user_preferences"
+
+
+def get_user_preferences_dict(user) -> dict:
+    """Return UserSettings.preferences for the user, memoized on the instance.
+
+    One get_preferences() resolution reads this dict several times (directly
+    and via the skill resolvers), and a sub-agent run repeats the lookup —
+    the same instance memoization get_membership() uses collapses them into
+    one query. The same caveats apply: long-lived holders of a user instance
+    (WebSocket consumers) must invalidate before re-reading, and preference
+    writers must invalidate after saving.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return {}
+    if not hasattr(user, _USER_PREFS_CACHE_ATTR):
+        try:
+            prefs = UserSettings.objects.get(user=user).preferences or {}
+        except UserSettings.DoesNotExist:
+            prefs = {}
+        setattr(user, _USER_PREFS_CACHE_ATTR, prefs)
+    return getattr(user, _USER_PREFS_CACHE_ATTR)
+
+
+def invalidate_user_preferences_cache(user) -> None:
+    """Drop the memoized preferences so the next read re-queries."""
+    if hasattr(user, _USER_PREFS_CACHE_ATTR):
+        delattr(user, _USER_PREFS_CACHE_ATTR)
+
+
 def get_user_org(user):
     """Return the user's single Organization, or None."""
     m = get_membership(user)

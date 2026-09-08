@@ -255,3 +255,46 @@ class MembershipMemoizationTests(TestCase):
 
         self.assertIsNone(get_membership(AnonymousUser()))
         self.assertIsNone(get_membership(None))
+
+
+class UserPreferencesMemoizationTests(TestCase):
+    """get_user_preferences_dict memoizes UserSettings.preferences on the user
+    instance — one query per request/run instead of one per read (WILFRED-7H)."""
+
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(email="prefsmemo@example.com", password="pass")
+
+    def test_second_call_hits_cache(self) -> None:
+        from accounts.models import UserSettings, get_user_preferences_dict
+
+        UserSettings.objects.filter(user=self.user).update(preferences={"theme": "dark"})
+        with self.assertNumQueries(1):
+            first = get_user_preferences_dict(self.user)
+            second = get_user_preferences_dict(self.user)
+        self.assertEqual(first, {"theme": "dark"})
+        self.assertIs(first, second)
+
+    def test_missing_settings_row_cached_as_empty(self) -> None:
+        from accounts.models import UserSettings, get_user_preferences_dict
+
+        UserSettings.objects.filter(user=self.user).delete()
+        with self.assertNumQueries(1):
+            self.assertEqual(get_user_preferences_dict(self.user), {})
+            self.assertEqual(get_user_preferences_dict(self.user), {})
+
+    def test_update_user_preferences_invalidates(self) -> None:
+        from accounts.models import get_user_preferences_dict
+        from accounts.services import update_user_preferences
+
+        self.assertIsNone(get_user_preferences_dict(self.user).get("pet"))
+
+        update_user_preferences(self.user, lambda prefs: prefs.__setitem__("pet", "cat"))
+        self.assertEqual(get_user_preferences_dict(self.user).get("pet"), "cat")
+
+    def test_anonymous_returns_empty(self) -> None:
+        from django.contrib.auth.models import AnonymousUser
+
+        from accounts.models import get_user_preferences_dict
+
+        self.assertEqual(get_user_preferences_dict(AnonymousUser()), {})
+        self.assertEqual(get_user_preferences_dict(None), {})

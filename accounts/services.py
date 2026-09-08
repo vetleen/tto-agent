@@ -21,7 +21,7 @@ from typing import Callable
 
 from django.db import transaction
 
-from .models import Organization, UserSettings
+from .models import Organization, UserSettings, invalidate_user_preferences_cache
 
 
 def update_user_preferences(user, mutate: Callable[[dict], None]) -> dict:
@@ -38,6 +38,7 @@ def update_user_preferences(user, mutate: Callable[[dict], None]) -> dict:
         mutate(prefs)
         obj.preferences = prefs
         obj.save(update_fields=["preferences"])
+    invalidate_user_preferences_cache(user)
     return prefs
 
 

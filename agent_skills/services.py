@@ -176,14 +176,13 @@ def shadowing_default(candidates: list[AgentSkill]) -> AgentSkill:
 
 
 def get_user_skill_prefs(user) -> dict:
-    """Return the per-user skill preferences sub-dict from UserSettings."""
-    from accounts.models import UserSettings
+    """Return the per-user skill preferences sub-dict from UserSettings.
 
-    try:
-        us = UserSettings.objects.get(user=user)
-    except UserSettings.DoesNotExist:
-        return {}
-    prefs = us.preferences or {}
+    Memoized on the user instance — see accounts.models.get_user_preferences_dict.
+    """
+    from accounts.models import get_user_preferences_dict
+
+    prefs = get_user_preferences_dict(user)
     skills_prefs = prefs.get("skills", {})
     return skills_prefs if isinstance(skills_prefs, dict) else {}
 

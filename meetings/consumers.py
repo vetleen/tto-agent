@@ -1125,12 +1125,16 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         allowed_models: list[str] = []
         live_default = ""
         try:
-            from accounts.models import invalidate_membership_cache
+            from accounts.models import (
+                invalidate_membership_cache,
+                invalidate_user_preferences_cache,
+            )
             from core.preferences import get_preferences
 
-            # self.user outlives a single request — drop the membership memo
-            # so org-level preference changes are seen mid-session.
+            # self.user outlives a single request — drop the memos so
+            # preference changes are seen mid-session.
             invalidate_membership_cache(self.user)
+            invalidate_user_preferences_cache(self.user)
             prefs = get_preferences(self.user)
             allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
             live_default = getattr(prefs, "transcription_model_live", "") or ""
@@ -1249,10 +1253,14 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_allowed_transcription_models(self) -> list[str]:
-        from accounts.models import invalidate_membership_cache
+        from accounts.models import (
+            invalidate_membership_cache,
+            invalidate_user_preferences_cache,
+        )
         from core.preferences import get_preferences
 
         invalidate_membership_cache(self.user)
+        invalidate_user_preferences_cache(self.user)
         prefs = get_preferences(self.user)
         return list(getattr(prefs, "allowed_transcription_models", None) or [])
 

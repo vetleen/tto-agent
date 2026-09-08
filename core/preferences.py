@@ -641,14 +641,13 @@ def _get_org_preferences(user) -> dict:
 
 
 def _get_user_preferences(user) -> dict:
-    """Get the user preferences dict from UserSettings, or empty dict if missing."""
-    from accounts.models import UserSettings
+    """Get the user preferences dict from UserSettings, or empty dict if missing.
 
-    try:
-        us = UserSettings.objects.get(user=user)
-        return us.preferences or {}
-    except UserSettings.DoesNotExist:
-        return {}
+    Memoized on the user instance — see accounts.models.get_user_preferences_dict.
+    """
+    from accounts.models import get_user_preferences_dict
+
+    return get_user_preferences_dict(user)
 
 
 def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:

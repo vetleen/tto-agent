@@ -11,7 +11,7 @@ from django_ratelimit.decorators import ratelimit
 
 from django.conf import settings as django_settings
 
-from accounts.models import UserSettings
+from accounts.models import UserSettings, invalidate_user_preferences_cache
 from accounts.services import update_org_preferences, update_user_preferences
 from accounts.views._builders import (
     build_feature_rows,
@@ -97,6 +97,7 @@ def theme_update(request):
         prefs["theme"] = theme_value
         settings.preferences = prefs
         settings.save(update_fields=["theme", "preferences"])
+    invalidate_user_preferences_cache(request.user)
     return JsonResponse({"theme": theme_value})
 
 
