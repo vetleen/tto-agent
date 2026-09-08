@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 
 from celery import Task, shared_task
@@ -14,30 +15,42 @@ logger = logging.getLogger(__name__)
 
 
 def _notify_consumer(run_id: str, thread_id: str) -> None:
-    """Best-effort channel-layer notification that a subagent run finished."""
-    try:
-        from channels.layers import get_channel_layer
-        from asgiref.sync import async_to_sync
+    """Best-effort channel-layer notification that a subagent run finished.
 
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            f"thread_{thread_id}",
-            {
-                "type": "subagent.completed",
-                "run_id": run_id,
-                "thread_id": thread_id,
-            },
-        )
-    except Exception as exc:
-        # Fires once per sub-agent completion, so an unthrottled WARNING is safe.
-        # A Redis blip here is worth an alert: the run finished but the browser
-        # never hears about it, and the user just sees the sub-agent hang.
-        log_broadcast_failure(
-            logger,
-            exc,
-            "Could not notify consumer of sub-agent %s completion",
-            run_id,
-        )
+    Retries once after a short sleep: from a sync Celery thread each
+    ``async_to_sync`` call builds a fresh event loop (and thus a fresh pubsub
+    connection pool, torn down when the loop closes), so the retry can never
+    inherit the failed socket and holds no connection past the call.
+    """
+    from channels.layers import get_channel_layer
+    from asgiref.sync import async_to_sync
+
+    for attempt in range(2):
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"thread_{thread_id}",
+                {
+                    "type": "subagent.completed",
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                },
+            )
+            return
+        except Exception as exc:
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            # Fires once per sub-agent completion, so an unthrottled WARNING is
+            # safe. A Redis blip that survives the retry is worth an alert: the
+            # run finished but the browser never hears about it, and only the
+            # consumer watchdog stands between the user and a hung sub-agent.
+            log_broadcast_failure(
+                logger,
+                exc,
+                "Could not notify consumer of sub-agent %s completion",
+                run_id,
+            )
 
 
 def _capture_subagent_failure(exc: BaseException, run_id_str: str) -> None:

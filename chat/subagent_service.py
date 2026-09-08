@@ -206,26 +206,6 @@ def _create_subagent_failure_message(run) -> None:
     )
 
 
-def _notify_consumer_safely(run_id: str, thread_id: str) -> None:
-    """Notify the WebSocket consumer of a finished run; best-effort with one retry."""
-    from chat.tasks import _notify_consumer
-
-    for attempt in range(2):
-        try:
-            _notify_consumer(run_id, thread_id)
-            return
-        except Exception:
-            if attempt == 0:
-                import time
-
-                time.sleep(0.5)
-                continue
-            logger.warning(
-                "Failed to notify consumer of sub-agent %s completion after 2 attempts",
-                run_id,
-            )
-
-
 def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> None:
     """Execute a sub-agent run. Called by the Celery task."""
     from chat.models import SubAgentRun
@@ -410,8 +390,11 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         else:
             _create_subagent_failure_message(run)
 
-        # Notify the WebSocket consumer so it auto-triggers the orchestrator
-        _notify_consumer_safely(str(run.id), str(run.thread_id))
+        # Notify the WebSocket consumer so it auto-triggers the orchestrator.
+        # _notify_consumer retries once internally and never raises.
+        from chat.tasks import _notify_consumer
+
+        _notify_consumer(str(run.id), str(run.thread_id))
 
     except Exception as exc:
         if is_retryable_subagent_error(exc):
@@ -439,7 +422,9 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
                 and not _subagent_result_message_exists(fresh)
             ):
                 _create_subagent_result_message(fresh)
-                _notify_consumer_safely(str(fresh.id), str(fresh.thread_id))
+                from chat.tasks import _notify_consumer
+
+                _notify_consumer(str(fresh.id), str(fresh.thread_id))
         except Exception:
             logger.warning(
                 "Failed to surface canvas for terminally-failed sub-agent run %s",
